@@ -4501,19 +4501,10 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
-      // What the gate bounds. Only grows, unlike cumulativeText, which the
-      // ${...} strip can shorten, and it counts tool-argument deltas too.
+      // What the gate's cap is measured against. Only grows, unlike
+      // cumulativeText, which the ${...} strip can shorten, and it counts
+      // tool-argument deltas, which never reach cumulativeText at all.
       let streamedChars = 0;
-      // When the reasoning the next publish will reveal actually ARRIVED. The
-      // gate can only parse a group out of the text on a publishing chunk, so
-      // without this a pass that arrived while the gate was closed would be
-      // timed from the publish and measure as zero. Cleared on every publish.
-      let gateHeldSince: number | undefined;
-      // When held reasoning ENDED, for the case where the gate has not revealed
-      // the group yet. hasActiveGroup is false until a publish parses it out, so
-      // the close below cannot record it, and finishing at the eventual publish
-      // would charge the whole wait in between to the reasoning.
-      let gateReasoningEndedAt: number | undefined;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -4528,59 +4519,6 @@ export function createOpenAIStreamAdapter(
               text.slice(continuationPartial.length),
             )
           : text;
-      // A group whose every revealing chunk the gate coalesced away was never
-      // started, leaving a hole in the persisted durations where the panel
-      // renders a group. Both terminal publishes call this before metadata().
-      const adoptGatedReasoningGroups = (
-        content: readonly { type?: unknown; text?: unknown }[],
-        firstSeenAt?: number,
-      ) => {
-        const groups = countReasoningGroups(content);
-        if (groups > reasoningDurationTracker.groupCount) {
-          // startGroup back-fills the indexes it skips, so one call is enough.
-          reasoningDurationTracker.startGroup(groups - 1, firstSeenAt);
-        }
-      };
-      /**
-       * The whole tracker transition for a publish, not just the start: adopting
-       * a group and leaving it open publishes a group with no duration behind
-       * it, and leaves the timer running across whatever comes next. Every path
-       * that yields has to do all three, so they share one implementation.
-       */
-      const reconcileReasoning = (
-        content: readonly { type?: unknown; text?: unknown }[],
-        firstSeenAt?: number,
-        // At the end of the stream there is no later publish to close the
-        // group, so the unclosed-tag guard below has to be lifted: a provider
-        // that never emits the closing tag would otherwise leave the group
-        // open and unmeasured.
-        final = false,
-      ) => {
-        adoptGatedReasoningGroups(content, firstSeenAt);
-        const groups = countReasoningGroups(content);
-        if (groups > 0) {
-          reasoningDurationTracker.resumeGroup(
-            groups - 1,
-            lastReasoningGroupTextLength(content),
-          );
-          // The stamp is dropped here rather than at the call sites, and only
-          // once the pass it marks is actually being timed. A publish can land
-          // between an opening tag and any reasoning body -- a provider that
-          // emits a bare "<think>" as its own delta parses to no parts at all
-          // -- and an EARLIER pass leaves groups > 0 on that publish, so the
-          // count alone cannot tell the two apart. An active group can only be
-          // one the adopt or resume above just took the stamp for. Between
-          // them, a pass whose body the gate held would start at whatever later
-          // publish first saw it and measure 0.
-          if (reasoningDurationTracker.hasActiveGroup) {
-            gateHeldSince = undefined;
-          }
-          if (final || !hasUnclosedThinkTag(cumulativeText)) {
-            reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
-          }
-        }
-        gateReasoningEndedAt = undefined;
-      };
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
@@ -5392,6 +5330,7 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
+            // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
@@ -5419,15 +5358,6 @@ export function createOpenAIStreamAdapter(
               const reasoningMs = (
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
-              if (reasoningMs !== undefined) {
-                // A reasoning pass short enough to fit inside one gate window
-                // is still unknown to the tracker when its summary lands, and
-                // the summary would then be consumed with nothing to assign it
-                // to, losing the authoritative duration in favour of a local
-                // measurement. Adopt what the text already shows first. Summary
-                // frames are one per pass, so this parse is not on the hot path.
-                reconcileReasoning(liveAssistantContent(), gateHeldSince);
-              }
               if (
                 reasoningDurationTracker.recordServerDuration(reasoningMs)
               ) {
@@ -5567,10 +5497,10 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      // Gated like the text path: this preview repeats per
+                      // Paced like the text path: this preview repeats per
                       // argument delta and tool_start replaces it with the
-                      // authoritative parse. The tool events are rare and carry
-                      // the card's state, so those publish ungated.
+                      // authoritative parse. The tool events themselves are
+                      // rare and carry the card's state, so those stay ungated.
                       if (canPublish(streamedChars)) {
                         yield {
                           content: liveAssistantContent(),
@@ -5903,11 +5833,6 @@ export function createOpenAIStreamAdapter(
                     };
                   }
                 }
-                // Ungated and state-bearing, so it can be the first publish to
-                // expose a group the gate is holding: an external provider can
-                // synthesize a _toolEvent with no delta.tool_calls fragment
-                // before it.
-                reconcileReasoning(liveAssistantContent(), gateHeldSince);
                 yield {
                   content: liveAssistantContent(),
                   metadata: {
@@ -5975,9 +5900,9 @@ export function createOpenAIStreamAdapter(
               )?.extra_content;
               // Replay state, not a preview: a Gemini thought signature or a
               // Codex reasoning ledger reaches the message only through a yield,
-              // and a Stop while the gate holds one would persist a turn that
-              // replays without it. Same rule as the tool events -- gate the
-              // previews, never the publishes that carry state.
+              // and a Stop while the gate holds one persists a turn that then
+              // replays without it. Pace the previews, never a publish that
+              // carries state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<string, unknown>;
@@ -6043,7 +5968,7 @@ export function createOpenAIStreamAdapter(
               ) {
                 closeReasoningContent();
                 // A fragment extending an existing call's arguments is the same
-                // per-delta preview as tool_args, so it is gated the same way.
+                // per-delta preview as tool_args, so it is paced the same way.
                 // One that introduces a call always publishes: that is state an
                 // aborted turn would otherwise lose.
                 let addedToolCall = false;
@@ -6110,11 +6035,9 @@ export function createOpenAIStreamAdapter(
                       JSON.stringify(call.extra_content) !==
                         JSON.stringify(prevExtra)
                     ) {
-                      // Gemini carries the thought signature per tool call, not
-                      // only at message level, and the next turn is rejected
-                      // outright without it. Same rule as the message-level
-                      // ledger: gate the previews, never a publish that carries
-                      // state a Stop would persist without.
+                      // Gemini carries the thought signature on the call
+                      // itself, and the next turn is rejected outright without
+                      // it, so this is state rather than a preview.
                       replayStateChanged = true;
                     }
                     const updated: PositionedToolCallPart = {
@@ -6174,11 +6097,6 @@ export function createOpenAIStreamAdapter(
                   replayStateChanged ||
                   canPublish(streamedChars)
                 ) {
-                  // This publish can be the first to expose a reasoning group
-                  // the gate was holding. Starting it is not enough: left open
-                  // it yields with no duration and keeps timing across the tool
-                  // run, so run the full transition.
-                  reconcileReasoning(liveAssistantContent(), gateHeldSince);
                   yield {
                     content: liveAssistantContent(),
                     metadata: {
@@ -6193,18 +6111,13 @@ export function createOpenAIStreamAdapter(
                 }
                 continue;
               }
-              // A chunk whose ONLY payload is extra_content: Gemini 3 ships a
+              // A chunk whose ONLY payload is extra_content: Gemini ships a
               // content-free thoughtSignature fragment, and the Codex client
               // puts its reasoning ledger on a text-free terminal delta. The
-              // skip below would drop both before the gate ever sees them, so
-              // the metadata would reach the message only if some later chunk
-              // happened to publish.
+              // skip below would drop both, so the metadata would reach the
+              // message only if some later chunk happened to publish.
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
-                // Third publish path, so it owes the same reconciliation as the
-                // other two: this yield can be the first to expose a group the
-                // gate was holding.
-                reconcileReasoning(replayContent, gateHeldSince);
                 if (replayContent.length > 0) {
                   yield {
                     content: replayContent,
@@ -6223,8 +6136,8 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
-              // Where this chunk's text starts, so the tag check below can look
-              // at the join instead of at the delta alone.
+              // Where this chunk's text starts, so the strip below can be
+              // told from a chunk that genuinely added nothing.
               const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
@@ -6257,81 +6170,59 @@ export function createOpenAIStreamAdapter(
                   "",
                 );
               }
-              // Stamped before the close below can read it. Assigning it only
-              // in the skip branch meant a chunk carrying a COMPLETE
-              // <think>...</think> block stamped its start after its own end
-              // check had already run, so the end fell to the next arrival and
-              // any pause in between was charged to the reasoning. Cleared on
-              // every publish, so stamping a chunk that turns out to publish is
-              // harmless.
-              // Searched from just before this chunk's first character, not in
-              // the delta, so an opening tag split across two arrivals still
-              // registers: "<thi" then "nk>reasoning" contains the tag only at
-              // the join. Bounded by the tag length, so still O(delta).
-              const THINK_OPEN = "<think>";
-              const thinkOpenedNow =
-                cumulativeText.indexOf(
-                  THINK_OPEN,
-                  Math.max(0, textLenBeforeChunk - (THINK_OPEN.length - 1)),
-                ) !== -1;
-              if (reasoning || thinkOpenedNow) {
-                gateHeldSince ??= Date.now();
-                // A provider can emit several complete <think>...</think>
-                // blocks in a row, which the panel coalesces into one group.
-                // Keeping the first block's close would finish the whole group
-                // there and drop every later block's time, so a new block
-                // invalidates it. Answer-only arrivals leave it alone, which is
-                // what keeps a pause after the reasoning out of the duration.
-                gateReasoningEndedAt = undefined;
+              const assistantContent = liveAssistantContent();
+
+              // Fallback when no server-side reasoning_summary arrives.
+              const parsedReasoningGroupCount =
+                countReasoningGroups(assistantContent);
+              if (
+                parsedReasoningGroupCount >
+                reasoningDurationTracker.groupCount
+              ) {
+                reasoningDurationTracker.startGroup(
+                  parsedReasoningGroupCount - 1,
+                );
               }
-              // Closing a group reads only pre-gate state, so it runs on every
-              // arrival: deferring it to the next publish let a pause after the
-              // reasoning ended count as part of the reasoning. Only the START
-              // needs the parsed content, so only that stays gated.
-              const reasoningJustClosed =
+              if (parsedReasoningGroupCount > 0) {
+                // Providers that close every reasoning block atomically
+                // (structured parts wrapped as <think>..</think>) end the group
+                // on each chunk. Reopen while the reasoning text is still
+                // growing so the timer spans the whole pass.
+                reasoningDurationTracker.resumeGroup(
+                  parsedReasoningGroupCount - 1,
+                  lastReasoningGroupTextLength(assistantContent),
+                );
+              }
+              if (
+                reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText);
-              if (
-                reasoningJustClosed &&
-                (reasoningDurationTracker.hasActiveGroup ||
-                  gateHeldSince !== undefined)
+                !hasUnclosedThinkTag(cumulativeText)
               ) {
-                // Recorded even when the group is active and closed right here,
-                // because a later publish can resumeGroup it (its text grew) and
-                // the finish that follows would otherwise run at the publish and
-                // stretch the duration across the wait.
-                gateReasoningEndedAt ??= Date.now();
-                if (reasoningDurationTracker.hasActiveGroup) {
-                  reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
-                }
+                reasoningDurationTracker.finishGroup();
               }
+
+              // Everything above runs on every arrival. Only the publish is
+              // coalesced, because the cost this is here to remove is what
+              // happens AFTER the yield -- assistant-ui, React, markdown and
+              // paint -- not the rebuild above, which measures in tens of
+              // milliseconds across a whole reply.
+              //
               // A chunk the strip left with nothing new to show is skipped
-              // below anyway; asking the gate would spend this cycle's publish
-              // on it and hold the next real chunk. Both shapes count: the
-              // reply emptied entirely, and a nonempty reply the strip returned
-              // to exactly its previous length, which is the ${...} fragment
-              // the Mistral path targets arriving mid-reply.
+              // outright rather than paced: asking the gate would spend this
+              // cycle's publish on an identical rebuild and hold the next real
+              // chunk until a frame, the timer or the cap.
               if (
-                (mergeContinuation(cumulativeText).length === 0 ||
-                  cumulativeText.length === textLenBeforeChunk) &&
-                toolCallParts.length === 0 &&
-                !replayStateChanged
+                !replayStateChanged &&
+                (assistantContent.length === 0 ||
+                  cumulativeText.length === textLenBeforeChunk)
               ) {
                 continue;
               }
-              // Coalesce text arriving before the next frame; cumulativeText
-              // keeps it, and the cap publishes before a stop could drop it.
               if (!replayStateChanged && !canPublish(streamedChars)) {
                 continue;
               }
-              const reasoningSeenAt = gateHeldSince;
-              const assistantContent = liveAssistantContent();
 
-              // Fallback when no server-side reasoning_summary arrives. Shared
-              // with the forced tool-call publish, which needs the same three
-              // transitions and used to do only the first.
-              reconcileReasoning(assistantContent, reasoningSeenAt);
               if (assistantContent.length > 0) {
                 yield {
                   content: assistantContent,
@@ -6457,19 +6348,10 @@ export function createOpenAIStreamAdapter(
         );
 
         // Finalize reasoning-only streams.
-        const finalContent = buildAssistantContent(
-          mergeContinuation(cumulativeText),
-        );
-        // Adoption alone is not enough: reasoning held by the gate can extend
-        // a group that ALREADY exists, where there is nothing to adopt and the
-        // group was closed by the previous publish, so its duration would stay
-        // frozen there. resumeGroup reopens it on the grown text. Finishing at
-        // the recorded end keeps any pause or trailing control frames before
-        // stream close out of the reasoning.
-        reconcileReasoning(finalContent, gateHeldSince, true);
+        reasoningDurationTracker.finishGroup();
         yield {
           content: [
-            ...finalContent,
+            ...buildAssistantContent(mergeContinuation(cumulativeText)),
             ...sourceParts,
             ...documentCitationParts,
           ],
@@ -6544,8 +6426,6 @@ export function createOpenAIStreamAdapter(
           const partialText = mergeContinuation(cumulativeText);
           const partialContent = buildAssistantContent(partialText);
           if (partialContent.length > 0) {
-            // This partial can render a group the gate hid from the tracker.
-            reconcileReasoning(partialContent, gateHeldSince, true);
             const partialTiming = buildTiming(
               streamStartTime,
               totalChunks,

@@ -9,7 +9,12 @@ import {
   MAX_HELD_CHARS,
   createStreamPublishGate,
 } from "../src/features/chat/utils/stream-pacing.ts";
-import { createReasoningDurationTracker } from "../src/features/chat/utils/reasoning-duration.ts";
+import {
+  countReasoningGroups,
+  createReasoningDurationTracker,
+  lastReasoningGroupTextLength,
+} from "../src/features/chat/utils/reasoning-duration.ts";
+import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
 
 type Scheduled = {
   frames: Array<() => void>;
@@ -278,29 +283,157 @@ function regionOf(from: string, to: string, maxChars = 60_000): string {
   return withoutComments(ADAPTER.slice(start, end));
 }
 
-test("the stream loop gates the text publish, not just the yield", () => {
+test("the gate paces the publish, not the bookkeeping before it", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
     "} catch (streamError) {",
   );
 
-  // Tolerant of extra conditions on the same line (a state-bearing delta
-  // forces a publish), but not of the gate call going away.
-  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  assert.notEqual(gate, -1, "the text publish is not gated");
+  // The whole shape of this change. Everything that interprets the stream --
+  // the content rebuild and the reasoning tracker -- runs on EVERY arrival, and
+  // only the yield to assistant-ui is coalesced. Pacing the interpretation too
+  // is what dragged reasoning timing, split tags, server summaries and replay
+  // metadata into a change that is about paint cost.
+  const append = loop.indexOf("cumulativeText += delta");
   const rebuild = loop.indexOf(
     "const assistantContent = liveAssistantContent()",
   );
-  assert.ok(rebuild > gate, "the gate must precede the message rebuild");
+  const track = loop.indexOf("countReasoningGroups(assistantContent)");
+  const finish = loop.indexOf("reasoningDurationTracker.finishGroup()");
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
+  const publish = loop.indexOf("content: assistantContent,");
+
+  for (const [name, at] of [
+    ["the text append", append],
+    ["the content rebuild", rebuild],
+    ["the reasoning tracker", track],
+    ["the group finish", finish],
+    ["the gate", gate],
+    ["the publish", publish],
+  ] as const) {
+    assert.notEqual(at, -1, `${name} is gone from the loop`);
+  }
+
+  assert.ok(append < rebuild, "the chunk must be accumulated before the rebuild");
+  assert.ok(rebuild < track, "the tracker reads the rebuilt content");
+  assert.ok(
+    finish < gate,
+    "the reasoning tracker must observe every arrival, not only publishing ones",
+  );
+  assert.ok(gate < publish, "the publish must be paced");
+
   const skip = loop.indexOf("continue;", gate);
   assert.ok(
-    skip > gate && skip < rebuild,
-    "a closed gate must skip the rebuild instead of becoming a no-op",
+    skip > gate && skip < publish,
+    "a closed gate must skip the publish instead of becoming a no-op",
   );
+});
 
-  // Accumulate before the gate, so the next publish still carries a skipped chunk.
-  const append = loop.indexOf("cumulativeText += delta");
-  assert.ok(append !== -1 && append < gate);
+test("pacing cannot change a reasoning duration", () => {
+  // The property the placement buys, stated directly: run the loop's
+  // interpretation over a set of arrivals, publish on every one, then publish
+  // on only the last, and require identical durations. Under the old placement
+  // each of these cases measured differently depending on which arrivals the
+  // gate let through, and each one cost a review round.
+  const hasUnclosed = (text: string) =>
+    text.lastIndexOf("<think>") > text.lastIndexOf("</think>");
+
+  const run = (
+    arrivals: Array<[number, string]>,
+    publishes: ReadonlySet<number>,
+  ) => {
+    let clock = 0;
+    const tracker = createReasoningDurationTracker(() => clock);
+    let cumulative = "";
+    let lastPublished = "";
+
+    arrivals.forEach(([at, delta], index) => {
+      clock = at;
+      cumulative += delta;
+      // Everything here is what the loop does before it consults the gate.
+      const content = parseAssistantContent(cumulative);
+      const groups = countReasoningGroups(content);
+      if (groups > tracker.groupCount) {
+        tracker.startGroup(groups - 1);
+      }
+      if (groups > 0) {
+        tracker.resumeGroup(groups - 1, lastReasoningGroupTextLength(content));
+      }
+      if (tracker.hasActiveGroup && !hasUnclosed(cumulative)) {
+        tracker.finishGroup();
+      }
+      if (publishes.has(index)) {
+        lastPublished = cumulative;
+      }
+    });
+    return { meta: tracker.metadata(), lastPublished };
+  };
+
+  const cases: Array<[string, Array<[number, string]>]> = [
+    [
+      "an opening tag split across two arrivals",
+      [[0, "Hello "], [1000, "<thi"], [1000, "nk>why"], [9000, "</think>"], [9500, "answer"]],
+    ],
+    [
+      "the opening tag as its own delta",
+      [[0, "<think>"], [1000, "body"], [30000, "</think>"], [30100, "answer"]],
+    ],
+    [
+      "several complete blocks in a row",
+      [[1000, "<think>a</think>"], [5000, "<think>b</think>"], [9000, "<think>c</think>"], [12000, "answer"]],
+    ],
+    [
+      "a later pass that opens bodyless",
+      [[1000, "<think>first</think>"], [2000, "text "], [3000, "<think>"], [4000, "second "], [30000, "more</think>"], [31000, "end"]],
+    ],
+    [
+      "a long pause between the reasoning and the answer",
+      [[1000, "<think>x"], [2000, "y</think>"], [32000, "answer"]],
+    ],
+  ];
+
+  for (const [name, arrivals] of cases) {
+    const everyChunk = run(
+      arrivals,
+      new Set(arrivals.map((_, index) => index)),
+    );
+    const onlyTheLast = run(arrivals, new Set([arrivals.length - 1]));
+    assert.deepEqual(
+      onlyTheLast.meta,
+      everyChunk.meta,
+      `pacing changed the durations for ${name}`,
+    );
+    assert.equal(
+      onlyTheLast.lastPublished,
+      everyChunk.lastPublished,
+      `pacing changed the final text for ${name}`,
+    );
+  }
+});
+
+test("no gate timestamp is threaded through the reasoning tracker", () => {
+  const source = withoutComments(ADAPTER);
+
+  // The tracker sees every arrival, so it never has to be told when something
+  // it missed happened. These are the names the deferred-parse design needed;
+  // if any comes back, the coalescing has leaked into the bookkeeping again.
+  for (const leaked of [
+    "gateHeldSince",
+    "gateReasoningEndedAt",
+    "reconcileReasoning",
+    "adoptGatedReasoningGroups",
+  ]) {
+    assert.ok(
+      !source.includes(leaked),
+      `${leaked} is back: the gate is deferring interpretation again`,
+    );
+  }
+
+  // And the tracker's own API stays free of the back-dating arguments.
+  assert.ok(
+    source.includes("reasoningDurationTracker.finishGroup()"),
+    "finishGroup is being given a timestamp again",
+  );
 });
 
 test("the run creates one gate, not one per chunk", () => {
@@ -361,34 +494,6 @@ test("the gate is fed a counter that only grows", () => {
   );
 });
 
-test("a reasoning group the gate skipped is adopted before the final metadata", () => {
-  const source = withoutComments(ADAPTER);
-
-  const adopt = source.indexOf("reconcileReasoning(finalContent,");
-  assert.notEqual(adopt, -1, "a group revealed only by skipped chunks is lost");
-  // Scoped to the finalizer, so a metadata() belonging to some later path
-  // cannot stand in for the one that has to follow the adoption here. The
-  // finish itself now lives inside reconcileReasoning, which is what makes it
-  // impossible for a caller to adopt and then forget to close.
-  const finalizer = source.slice(adopt, adopt + 600);
-  assert.ok(
-    finalizer.includes("reasoningDurationTracker.metadata()"),
-    "the group must be adopted before the run persists durations",
-  );
-});
-
-test("the interrupted-stream partial adopts skipped groups too", () => {
-  const source = withoutComments(ADAPTER);
-
-  // A non-abort failure yields its own partial with its own metadata(), so it
-  // needs the same adoption; otherwise an interrupted reply renders a reasoning
-  // group with no duration entry behind it.
-  assert.ok(
-    source.includes("reconcileReasoning(partialContent,"),
-    "the non-abort failure path does not adopt gate-hidden reasoning groups",
-  );
-});
-
 test("streaming tool-call argument deltas are paced like the text path", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
@@ -413,21 +518,6 @@ test("streaming tool-call argument deltas are paced like the text path", () => {
   assert.ok(
     loop.includes("addedToolCall = true;"),
     "a newly created tool call no longer forces a publish",
-  );
-});
-
-test("a chunk with nothing to show does not spend the gate's publish", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  const empty = loop.indexOf("mergeContinuation(cumulativeText).length === 0");
-  assert.notEqual(empty, -1, "an emptied chunk still consumes a gate cycle");
-  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  assert.ok(
-    empty < gate,
-    "the emptiness check must run before the gate is consulted",
   );
 });
 
@@ -461,42 +551,6 @@ test("a cap-forced publish resets the baseline for the next one", () => {
   });
 });
 
-test("a gated reasoning group is timed from when it arrived", () => {
-  // The gate can only parse a group out of the text on a publishing chunk. A
-  // pass shorter than the cap, in a window that produces no frames, is revealed
-  // only at the terminal adoption, so without the arrival stamp it would start
-  // and finish there and persist 0s for a pass that really took seconds.
-  let clock = 0;
-  const tracker = createReasoningDurationTracker(() => clock);
-
-  clock = 1_000;
-  const arrivedAt = clock;         // the reasoning lands here, gate closed
-  clock = 11_000;                  // ...and is only parsed out ten seconds later
-  tracker.startGroup(0, arrivedAt);
-  tracker.finishGroup();
-
-  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
-    .reasoningDurations;
-  assert.deepEqual(durations, [10], "the group must span its real arrival");
-});
-
-test("groups revealed inside one discovery keep their measured zero", () => {
-  // Backdating the whole discovery would hand every skipped index the entire
-  // coalescing interval, so three groups revealed together would each claim the
-  // same 30s and overlap. Only the group still open takes the arrival time.
-  let clock = 0;
-  const tracker = createReasoningDurationTracker(() => clock);
-
-  const arrivedAt = 1_000;
-  clock = 31_000;
-  tracker.startGroup(2, arrivedAt);
-  tracker.finishGroup();
-
-  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
-    .reasoningDurations;
-  assert.deepEqual(durations, [0, 0, 30]);
-});
-
 test("a state-bearing provider delta is never held by the gate", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
@@ -511,42 +565,6 @@ test("a state-bearing provider delta is never held by the gate", () => {
   );
   const gate = loop.search(/if \(!replayStateChanged && !canPublish\(/);
   assert.notEqual(gate, -1, "replay state does not force a publish");
-});
-
-test("the reasoning timer stops on arrival, not on the next publish", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  // finishGroup reads only pre-gate state, so deferring it to the next publish
-  // counted a post-reasoning pause as reasoning.
-  const finish = loop.search(/reasoningDurationTracker\.finishGroup\(/);
-  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  assert.notEqual(finish, -1, "the group is never closed in the loop");
-  assert.ok(finish < gate, "the close must run before the gate can skip");
-});
-
-test("the stream loop stamps when a held chunk arrived", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
-  const stamp = loop.indexOf("gateHeldSince ??= Date.now();");
-  const close = loop.indexOf("gateReasoningEndedAt ??= Date.now();");
-  assert.notEqual(stamp, -1, "a held chunk's arrival time is not recorded");
-  // Before the close check, not just before the gate: a chunk carrying a
-  // COMPLETE <think>...</think> block has to stamp its own start early enough
-  // for its own end check to see it, or the end falls to the next arrival and
-  // any pause in between is charged to the reasoning.
-  assert.ok(stamp < close, "the arrival stamp must precede the close check");
-  assert.ok(stamp < gate, "and be taken whether or not the chunk publishes");
-  assert.ok(
-    loop.includes("reconcileReasoning(assistantContent, reasoningSeenAt)"),
-    "the publish does not hand the arrival time to the tracker",
-  );
 });
 
 test("a content-free replay delta still reaches the message", () => {
@@ -568,114 +586,6 @@ test("a content-free replay delta still reaches the message", () => {
     replaySkip < emptySkip,
     "replay state must be handled before the empty-content skip",
   );
-});
-
-test("every publish runs the whole tracker transition, not just the start", () => {
-  const source = withoutComments(ADAPTER);
-
-  // Adopting a group and leaving it open yields a group with no duration behind
-  // it and keeps the timer running across whatever follows, so the forced
-  // tool-call publish and the normal publish share one reconciliation.
-  assert.ok(
-    source.includes("const reconcileReasoning = ("),
-    "the shared reasoning reconciliation is gone",
-  );
-  // Two CALL sites: the forced tool-call publish and the normal one. The
-  // definition uses `= (` and so does not match this.
-  const calls = source.match(/reconcileReasoning\(/g) ?? [];
-  assert.ok(
-    calls.length >= 2,
-    `both publish paths must reconcile; found ${calls.length} call sites`,
-  );
-});
-
-test("a group the gate never revealed is finished when it really ended", () => {
-  // The first <think>...</think> chunk can itself be gated, so the tracker has
-  // no group to close when the answer delta ends the reasoning. Finishing at
-  // the eventual publish charged the whole wait in between to the reasoning:
-  // a 1s pass followed by a 30s pause measured 31s.
-  let clock = 0;
-  const tracker = createReasoningDurationTracker(() => clock);
-
-  clock = 32_000;
-  tracker.startGroup(0, 1_000);
-  tracker.finishGroup(2_000);
-
-  const durations = (tracker.metadata() as { reasoningDurations?: number[] })
-    .reasoningDurations;
-  assert.deepEqual(durations, [1]);
-});
-
-test("the replay-only publish reconciles like the other two", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  // It is a third publish path and can be the first to expose a held group.
-  const branch = loop.indexOf(
-    "if (replayStateChanged && !delta && !reasoning) {",
-  );
-  assert.notEqual(branch, -1, "the replay-only publish is gone");
-  const reconcile = loop.indexOf("reconcileReasoning(replayContent", branch);
-  const yielded = loop.indexOf("content: replayContent,", branch);
-  assert.notEqual(reconcile, -1, "the replay publish does not reconcile");
-  assert.ok(reconcile < yielded, "it must reconcile before it yields");
-});
-
-test("every publish path reconciles, including the backend tool events", () => {
-  const source = withoutComments(ADAPTER);
-
-  // Four paths can be the first to expose a group the gate is holding: the
-  // normal text publish, the forced tool-call publish, the replay-only publish
-  // and the ungated _toolEvent publish. Each needs the shared transition, and
-  // the last one was missed twice.
-  const calls = source.match(/reconcileReasoning\(/g) ?? [];
-  assert.ok(
-    calls.length >= 4,
-    `every publish path must reconcile; found ${calls.length} call sites`,
-  );
-});
-
-test("the arrival stamp survives a publish that adopted no group", () => {
-  const source = withoutComments(ADAPTER);
-
-  // A provider can emit a bare "<think>" as its own delta. It parses to no
-  // parts at all, so a publish there is timing nothing yet; if it cleared the
-  // stamp, the group would start at whatever later publish first sees the body.
-  // Exactly one place may clear it, so a new publish path cannot get this wrong
-  // by omission.
-  const clears = [...source.matchAll(/gateHeldSince = undefined;/g)];
-  assert.equal(clears.length, 1, "the stamp is cleared in more than one place");
-
-  // And a mere group COUNT is not enough to clear on: an earlier pass leaves
-  // groups > 0 while a later bodyless pass is still pending, so the clear has
-  // to be gated on a group actually being timed, after the resume that could
-  // have started timing it.
-  const reconcile = source.indexOf("const reconcileReasoning = (");
-  const resume = source.indexOf("reasoningDurationTracker.resumeGroup(", reconcile);
-  const guard = source.indexOf(
-    "if (reasoningDurationTracker.hasActiveGroup) {",
-    reconcile,
-  );
-  const clear = clears[0].index ?? 0;
-  assert.ok(reconcile !== -1 && resume !== -1, "the reconcile shape changed");
-  assert.ok(
-    guard !== -1 && guard < clear,
-    "the stamp is cleared without checking that a group is being timed",
-  );
-  assert.ok(
-    resume < guard,
-    "the check runs before the resume that can start the timing",
-  );
-
-  // The finish must come after, or the clear would see the group it just closed
-  // as inactive and keep a stamp that has already been used.
-  const finish = source.indexOf(
-    "reasoningDurationTracker.finishGroup(",
-    reconcile,
-  );
-  assert.ok(clear < finish, "the group is closed before the stamp is dropped");
 });
 
 test("a per-call thought signature forces a publish", () => {
@@ -707,155 +617,37 @@ test("a per-call thought signature forces a publish", () => {
   );
 });
 
-test("a chunk the strip left unchanged does not spend a gate cycle", () => {
+test("a chunk with nothing new to show does not spend a gate cycle", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
     "} catch (streamError) {",
   );
 
-  // The ${...} strip can return a nonempty reply to exactly its previous
-  // length. Checking only for an EMPTY reply lets that chunk consume the open
-  // cycle on an identical publish, and the next real token then waits for a
+  // Two shapes, one guard. The reply can be empty, and the ${...} strip can
+  // return a nonempty reply to exactly its previous length -- the Mistral case.
+  // Either way the publish would be identical to the last one, and asking the
+  // gate would spend the open cycle on it and hold the next real token until a
   // frame, the timer or the cap.
-  const guard = loop.indexOf("cumulativeText.length === textLenBeforeChunk");
-  const gate = loop.indexOf("!canPublish(streamedChars)");
-  assert.notEqual(guard, -1, "an unchanged reply still reaches the gate");
-  assert.ok(guard < gate, "the skip must come before the gate is asked");
+  const emptied = loop.indexOf("assistantContent.length === 0");
+  const unchanged = loop.indexOf(
+    "cumulativeText.length === textLenBeforeChunk",
+  );
+  const gate = loop.search(/if \([^)]*!canPublish\(streamedChars\)\) \{/);
+  assert.notEqual(emptied, -1, "an emptied reply still reaches the gate");
+  assert.notEqual(unchanged, -1, "an unchanged reply still reaches the gate");
+  assert.ok(
+    emptied < gate && unchanged < gate,
+    "the skip must come before the gate is asked",
+  );
 
-  // Skipping must never swallow a publish that carries replay state.
-  const skip = loop.slice(guard, gate);
+  // Skipping must never swallow a publish that carries replay state. The latch
+  // guards the condition, so look back from it rather than forward.
+  const start = loop.lastIndexOf("if (", Math.min(emptied, unchanged));
+  const skip = loop.slice(start, gate);
   assert.ok(
     skip.includes("!replayStateChanged"),
     "the skip can drop a state-bearing publish",
   );
-});
-
-test("a server reasoning summary is assigned to the gated group", () => {
-  const source = withoutComments(ADAPTER);
-
-  // The summary frame is authoritative and is consumed by index. A pass short
-  // enough to fit inside one gate window is not yet known to the tracker when
-  // its summary lands, so the value would be dropped and replaced by a local
-  // measurement. Adoption has to come first.
-  const consume = source.indexOf(
-    "reasoningDurationTracker.recordServerDuration(",
-  );
-  assert.notEqual(consume, -1, "the summary frame is no longer consumed");
-  const before = source.slice(Math.max(0, consume - 600), consume);
-  assert.ok(
-    before.includes("reconcileReasoning("),
-    "the summary is consumed before the gated group is adopted",
-  );
-});
-
-test("the reconcile before the summary is skipped for ordinary chunks", () => {
-  const source = withoutComments(ADAPTER);
-
-  // Reconciling on EVERY chunk would re-parse the whole reply per chunk, which
-  // is exactly the cost the gate exists to remove. It must be conditional on a
-  // summary actually being present.
-  const consume = source.indexOf(
-    "reasoningDurationTracker.recordServerDuration(",
-  );
-  const before = source.slice(Math.max(0, consume - 600), consume);
-  const guard = before.lastIndexOf("if (reasoningMs !== undefined) {");
-  assert.ok(
-    guard !== -1 && guard < before.lastIndexOf("reconcileReasoning("),
-    "the pre-summary reconcile is unguarded and runs on every chunk",
-  );
-});
-
-test("an opening think tag split across arrivals still stamps", () => {
-  // A provider can split the literal tag: "<thi" then "nk>reasoning". Testing
-  // the delta alone misses it, and the group then starts only at the eventual
-  // publish. The search runs from just before the chunk's first character, so
-  // the tag is found at the join.
-  const THINK_OPEN = "<think>";
-  const opensOn = (deltas: string[]) => {
-    let cumulative = "";
-    const hits: number[] = [];
-    deltas.forEach((delta, index) => {
-      const before = cumulative.length;
-      cumulative += delta;
-      const at = cumulative.indexOf(
-        THINK_OPEN,
-        Math.max(0, before - (THINK_OPEN.length - 1)),
-      );
-      if (at !== -1) hits.push(index);
-    });
-    return hits;
-  };
-
-  assert.deepEqual(opensOn(["Hello ", "<thi", "nk>reasoning"]), [2]);
-  assert.deepEqual(opensOn(["Hello ", "<think>reasoning"]), [1]);
-  // Not re-stamped for text that merely follows the tag.
-  assert.deepEqual(opensOn(["<think>a", "b", "c"]), [0]);
-});
-
-test("the terminal publishes run the full reasoning transition", () => {
-  const source = withoutComments(ADAPTER);
-
-  // Adoption alone only covers a group the gate hid ENTIRELY. Reasoning held by
-  // the gate can also extend a group that already exists and was closed by the
-  // previous publish, where there is nothing to adopt and the duration stays
-  // frozen there. Both terminal paths need resume as well, which is what
-  // reconcileReasoning does, and the terminal flag lifts its unclosed-tag guard
-  // because no later publish is coming.
-  const terminal = [...source.matchAll(/reconcileReasoning\([^;]*?true\)/gs)];
-  assert.equal(
-    terminal.length,
-    2,
-    "the success finalizer and the interrupted partial must both finalize",
-  );
-  for (const match of terminal) {
-    assert.ok(
-      match[0].includes("gateHeldSince"),
-      "a terminal reconcile drops the arrival stamp",
-    );
-  }
-  assert.ok(
-    source.includes("if (final || !hasUnclosedThinkTag(cumulativeText)) {"),
-    "the terminal flag no longer lifts the unclosed-tag guard",
-  );
-});
-
-test("a new reasoning block invalidates the recorded end", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  // Several complete <think>...</think> blocks in a row render as one group.
-  // Holding the FIRST block's close would finish the whole group there and drop
-  // every later block's time, so an arriving block has to clear it. Answer-only
-  // arrivals must not, or a pause after the reasoning re-enters the duration.
-  const arrival = loop.indexOf("if (reasoning || thinkOpenedNow) {");
-  const clear = loop.indexOf("gateReasoningEndedAt = undefined;", arrival);
-  const close = loop.indexOf("gateReasoningEndedAt ??= Date.now();");
-  assert.ok(arrival !== -1 && clear !== -1, "the invalidation is gone");
-  assert.ok(clear < close, "the stamp is cleared after the close records it");
-  assert.ok(
-    close !== -1,
-    "the close no longer records an end time at all",
-  );
-});
-
-test("an active group records its close time as well", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  // A later publish can resumeGroup an active-and-closed group because its text
-  // grew; the finish that follows must use the close time, not the publish time.
-  const closed = loop.indexOf("const reasoningJustClosed =");
-  const stamp = loop.indexOf("gateReasoningEndedAt ??= Date.now();", closed);
-  const finish = loop.indexOf(
-    "reasoningDurationTracker.finishGroup(gateReasoningEndedAt)",
-    closed,
-  );
-  assert.notEqual(closed, -1, "the close condition is gone");
-  assert.ok(stamp !== -1 && stamp < finish, "the close time must be recorded first");
 });
 
 test("a scheduler that calls back synchronously does not throw", () => {

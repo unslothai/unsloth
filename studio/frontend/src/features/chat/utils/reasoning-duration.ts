@@ -143,27 +143,15 @@ export function createReasoningDurationTracker(
     get hasActiveGroup() {
       return activeIndex !== null;
     },
-    /**
-     * `firstSeenAt` is when the reasoning ARRIVED, for a caller that learns of
-     * the group later than that. The adapter coalesces publishes, so it can
-     * only parse a group out of the text on a publishing chunk; without this
-     * the timer would start there and a pass that arrived seconds earlier would
-     * measure as zero.
-     */
-    startGroup(index = groupCount, firstSeenAt?: number) {
+    startGroup(index = groupCount) {
       if (activeIndex === index) {
         return;
       }
       const at = now();
-      const from = firstSeenAt ?? at;
       finishGroupAt(at);
       // A single delta can reveal more than one group at once. Any index we
       // skipped became visible and closed within this same chunk, so give it a
       // measured zero rather than leaving a hole in the persisted array.
-      // Deliberately `at`, not `from`: these indexes became visible AND closed
-      // inside one discovery, so they keep their measured zero. Backdating them
-      // too would give every one of them the whole coalescing interval and have
-      // them all overlap.
       for (let skipped = groupCount; skipped < index; skipped += 1) {
         if (startedAt[skipped] === undefined) {
           startedAt[skipped] = at;
@@ -171,7 +159,7 @@ export function createReasoningDurationTracker(
         measure(skipped, at);
       }
       if (startedAt[index] === undefined) {
-        startedAt[index] = from;
+        startedAt[index] = at;
       }
       activeIndex = index;
       groupCount = Math.max(groupCount, index + 1);
@@ -196,14 +184,8 @@ export function createReasoningDurationTracker(
       finishGroupAt(now());
       activeIndex = index;
     },
-    /**
-     * `finishedAt` is when the reasoning actually ENDED, for a caller that
-     * learns of it later. The adapter can see a group close on a chunk whose
-     * group it has not parsed out yet, and finishing at that later discovery
-     * would charge the wait in between to the reasoning.
-     */
-    finishGroup(finishedAt?: number) {
-      finishGroupAt(finishedAt ?? now());
+    finishGroup() {
+      finishGroupAt(now());
     },
     recordServerDuration(reasoningMs: unknown): boolean {
       if (
