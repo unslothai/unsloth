@@ -62,16 +62,20 @@ pub fn init(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn apply_config(app: &AppHandle, config: &PillConfig) -> Result<(), String> {
-    // Saved first, so the user's choice survives even when the shortcut cannot
-    // be taken. The failure is still reported: swallowing it left PillState
-    // committed as enabled, which made the next syncNativePillConfig see native
-    // and backend as equal and never retry, so the bar read enabled for the
-    // rest of the session with no shortcut behind it. Returning Err leaves the
-    // state uncommitted instead, which is what drives that retry.
-    config::save_for_app(app, config)?;
+    // Register BEFORE persisting, so nothing that failed to take is written to
+    // disk. Saving first meant a taken shortcut still left enabled: true on
+    // disk, and init reloads that on the next launch while swallowing the same
+    // failure (rightly: a hotkey clash must not fail app startup), putting the
+    // bar back to reporting enabled with nothing behind it.
+    //
+    // Reporting the error also matters at runtime: swallowing it left PillState
+    // committed as enabled, so the next syncNativePillConfig saw native and
+    // backend as equal and never retried. Returning Err leaves the state
+    // uncommitted, which is what drives that retry.
     apply_hotkey(app, config).inspect_err(|e| {
         warn!("ask: hotkey registration failed: {e}");
-    })
+    })?;
+    config::save_for_app(app, config)
 }
 
 fn apply_hotkey(app: &AppHandle, config: &PillConfig) -> Result<(), String> {
