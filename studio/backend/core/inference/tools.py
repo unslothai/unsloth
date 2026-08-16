@@ -7160,7 +7160,8 @@ def _msys_path(path: str) -> str:
     """Convert a native Win32 path to the MSYS form Git Bash reports as pwd."""
     norm = os.path.normpath(path)
     if norm.startswith("\\\\"):
-        return "/" + norm.replace("\\", "/").lstrip("/")
+        # UNC: Git Bash uses //server/share, not /server/share.
+        return "//" + norm[2:].replace("\\", "/")
     if len(norm) >= 2 and norm[1] == ":":
         drive = norm[0].lower()
         rest = norm[2:].replace("\\", "/")
@@ -9135,12 +9136,13 @@ _TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
 def build_sandbox_workdir_nudge(session_id: str | None = None) -> str:
     """Tell the model which directory python/terminal tools run in.
 
-    Read-only: does not create a sandbox directory for ids that have never run
-    a tool. The path matches ``GET /sandbox/{session_id}`` and where users can
-    drop files for the model to read.
+    Uses the same resolver as execution (including legacy migration), so the
+    path matches the first tool call. The path also matches
+    ``GET /sandbox/{session_id}`` and where users can drop files for the model
+    to read.
     """
     try:
-        workdir = resolve_sandbox_workdir(session_id)
+        workdir = get_sandbox_workdir(session_id)
     except Exception:  # noqa: BLE001 - nudge is best effort
         return ""
     if not workdir:

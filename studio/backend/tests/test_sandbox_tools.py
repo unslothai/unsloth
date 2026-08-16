@@ -1980,6 +1980,11 @@ class TestSandboxWorkdirVisibility:
         from core.inference.tools import _msys_path
         assert _msys_path("C:\\Users\\foo\\sandbox") == "/c/Users/foo/sandbox"
 
+    def test_msys_path_preserves_unc_prefix(self):
+        from core.inference.tools import _msys_path
+
+        assert _msys_path("\\\\server\\share\\chat") == "//server/share/chat"
+
     def test_bash_wrap_prepends_cd_on_windows(self, monkeypatch):
         import core.inference.tools as tools_mod
         from core.inference.tools import _bash_wrap_for_workdir

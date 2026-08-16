@@ -3254,11 +3254,15 @@ def _build_tool_action_nudge(
     model_name: str,
     full_access: bool = False,
     full_access_only: bool = False,
+    workdir_only: bool = False,
     session_id: str | None = None,
 ) -> str:
     """``full_access_only`` returns the Full access sentence alone, for a caller
     that wants to state the environment without also introducing the general
-    tool guidance (and the date) to a path that has never carried it."""
+    tool guidance (and the date) to a path that has never carried it.
+
+    ``workdir_only`` returns only the sandbox workdir line (for external tool
+    loops that have never carried the general tool nudge)."""
     from core.inference.tools import build_sandbox_workdir_nudge
 
     tool_names = {
@@ -3272,8 +3276,17 @@ def _build_tool_action_nudge(
     has_artifact = "render_html" in tool_names
     if not (has_web or has_code or has_artifact):
         return ""
+    if workdir_only:
+        return build_sandbox_workdir_nudge(session_id) if has_code else ""
     if full_access_only:
-        return _full_access_tip(code_tools) if (full_access and has_code) else ""
+        parts: list[str] = []
+        if full_access and has_code:
+            parts.append(_full_access_tip(code_tools))
+        if has_code:
+            workdir_tip = build_sandbox_workdir_nudge(session_id)
+            if workdir_tip:
+                parts.append(workdir_tip)
+        return " ".join(parts) if parts else ""
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -12278,16 +12291,28 @@ async def _proxy_to_external_provider(
             # Only the Full access sentence is added: the path has never carried
             # the general tool nudge, and widening it would change every
             # non-Full-access Codex run as a side effect.
+            _codex_workdir_nudge = _build_tool_action_nudge(
+                tools = studio_tool_payloads,
+                model_name = model,
+                workdir_only = True,
+                session_id = payload.session_id,
+            )
+            if _codex_workdir_nudge and not payload.bypass_permissions:
+                chat_messages = _append_to_codex_instructions(
+                    chat_messages, _codex_workdir_nudge
+                )
             if payload.bypass_permissions:
                 _codex_full_access_nudge = _build_tool_action_nudge(
                     tools = studio_tool_payloads,
                     model_name = model,
                     full_access = True,
                     full_access_only = True,
+                    session_id = payload.session_id,
                 )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+                if _codex_full_access_nudge:
+                    chat_messages = _append_to_codex_instructions(
+                        chat_messages, _codex_full_access_nudge
+                    )
         cancel_event = threading.Event()
         cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
@@ -12545,15 +12570,22 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
-    if run_studio_tool_loop and payload.bypass_permissions:
-        # Full access disables the sandbox at execution time, so the schemas must
-        # say so too rather than describing a sandbox the model will not get.
-        _external_nudge = _build_tool_action_nudge(
-            tools = external_studio_tools,
-            model_name = model,
-            full_access = True,
-            full_access_only = True,
-        )
+    if run_studio_tool_loop:
+        if payload.bypass_permissions:
+            _external_nudge = _build_tool_action_nudge(
+                tools = external_studio_tools,
+                model_name = model,
+                full_access = True,
+                full_access_only = True,
+                session_id = payload.session_id,
+            )
+        else:
+            _external_nudge = _build_tool_action_nudge(
+                tools = external_studio_tools,
+                model_name = model,
+                workdir_only = True,
+                session_id = payload.session_id,
+            )
         if _external_nudge:
             chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
