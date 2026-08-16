@@ -372,6 +372,10 @@ export function useRagDocuments(
     }
     const read = () => setWorkElsewhere(projectWorkCount(workScopeId));
     read();
+    // Before the reconcile below: it takes its own lease before its first await,
+    // and an event fired ahead of this listener would be missed, leaving the
+    // composer sendable for the length of the lookup.
+    window.addEventListener(PROJECT_WORK_CHANGED_EVENT, read);
     // A sync already running on this project has no watcher here after a
     // reload, and its rows do not exist yet, so nothing else would gate on it.
     void reconcileProjectFolderJobs(workScopeId);
@@ -383,7 +387,6 @@ export function useRagDocuments(
     }, FOLDER_RECONCILE_INTERVAL_MS);
     // Work in another tab arrives over the same channel.
     subscribeProjectSourcesBroadcast();
-    window.addEventListener(PROJECT_WORK_CHANGED_EVENT, read);
     return () => {
       clearInterval(reconcile);
       window.removeEventListener(PROJECT_WORK_CHANGED_EVENT, read);

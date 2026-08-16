@@ -226,7 +226,7 @@ test("a failed look leaves the project open to the next one", async () => {
 
 // A durable job that scans before it writes any row leaves the composer's own list
 // legitimately empty, so the send gate is open for however long the lookup takes.
-test("the first look for folder jobs gates the composer while it runs", async () => {
+test("every look for folder jobs gates the composer while it runs", async () => {
   let release!: () => void;
   const answered = new Promise<void>((done) => { release = done; });
   const urls: string[] = [];
@@ -244,8 +244,9 @@ test("the first look for folder jobs gates the composer while it runs", async ()
     release();
     await looking;
     assert.equal(rag.projectWorkCount("p-folder-gate"), 0, "and must not wait past it");
-    // A periodic look afterwards runs beside a list the composer already has, so it
-    // must not flicker the gate every interval.
+    // A periodic look is gated the same way: the backend starts a job per
+    // auto-syncing folder on its own timer, so a list the composer already has
+    // does not prove there is nothing to wait for.
     clock += 60_000;
     await rag.reconcileProjectFolderJobs("p-folder-gate");
     assert.equal(urls.length, 2);

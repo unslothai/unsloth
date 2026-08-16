@@ -159,6 +159,9 @@ function InheritedProjectSources({
  * left. `undefined` while unresolved, which holds the attach controls instead
  * of reading as "not in a project" and filing the file into the chat.
  */
+/** Reads of the chat's own row before the scope is left unresolved. */
+const PROJECT_LOOKUP_RETRIES = 3;
+
 function useThreadProjectId(
   threadId: string | null,
 ): string | null | undefined {
@@ -179,24 +182,27 @@ function useThreadProjectId(
       return;
     }
     let cancelled = false;
-    getStoredChatThread(threadId).then(
-      (thread) => {
-        if (cancelled) {
+    void (async () => {
+      // A failed read is not proof of no project, and recording one as the
+      // answer would file the next attachment into the chat behind the user's
+      // back. Retry, and leave the scope unresolved if it never comes: nothing
+      // else re-runs this until the chat or the open project changes.
+      for (let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt += 1) {
+        try {
+          const thread = await getStoredChatThread(threadId);
+          if (cancelled) return;
+          // No row yet: initialize() does not await the write, so the composer's
+          // project is the answer that row is about to record.
+          const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
+          setResolved({ threadId, trigger: activeProjectId, projectId });
           return;
+        } catch {
+          if (cancelled) return;
+          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+          if (cancelled) return;
         }
-        // No row yet: initialize() does not await the write, so the composer's
-        // project is the answer that row is about to record.
-        const projectId = thread ? (thread.projectId ?? null) : activeProjectId;
-        setResolved({ threadId, trigger: activeProjectId, projectId });
-      },
-      // A failed lookup is not proof of no project, but it is no basis for
-      // filing a file into one either.
-      () => {
-        if (!cancelled) {
-          setResolved({ threadId, trigger: activeProjectId, projectId: null });
-        }
-      },
-    );
+      }
+    })();
     return () => {
       cancelled = true;
     };

@@ -778,6 +778,12 @@ test("a project composer picks up a folder sync already running", () => {
     hook,
     /const reconcile = setInterval\(\(\) => \{\s*void reconcileProjectFolderJobs\(workScopeId\);\s*\}, FOLDER_RECONCILE_INTERVAL_MS\);/,
   );
+  // The lookup takes a lease before its first await, so the listener that reads
+  // the count has to be registered ahead of it.
+  assert.match(
+    hook,
+    /window\.addEventListener\(PROJECT_WORK_CHANGED_EVENT, read\);[\s\S]{0,400}?void reconcileProjectFolderJobs\(workScopeId\);/,
+  );
   assert.match(hook, /clearInterval\(reconcile\);/);
 });
 
@@ -877,4 +883,31 @@ test("unlinking a folder announces for the project it was for", () => {
     hook,
     /if \(unlinkedProjectId\) announceProjectSourcesUpdated\(unlinkedProjectId\);\s*if \(currentScopeKey\.current !== operationScopeKey\) return;/,
   );
+});
+
+// A failed read of the chat's own row is not proof that the chat has no project.
+// Recording one as the answer files the next attachment into the chat instead of
+// the project, and nothing re-runs the lookup until the chat or the open project
+// changes.
+test("a failed project lookup leaves the scope unresolved", () => {
+  const bar = readFileSync(
+    new URL(
+      "../src/features/rag/components/thread-documents-bar.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(bar, /const PROJECT_LOOKUP_RETRIES = 3;/);
+  assert.match(
+    bar,
+    /for \(let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt \+= 1\)/,
+  );
+  // Nothing records a null project on the failure path any more.
+  assert.doesNotMatch(
+    bar,
+    /setResolved\(\{ threadId, trigger: activeProjectId, projectId: null \}\);/,
+  );
+  // And unresolved still disables the attach controls.
+  assert.match(bar, /const projectUnresolved = threadProjectId === undefined;/);
+  assert.match(bar, /uploading \|\| projectUploading \|\| projectUnresolved/);
 });
