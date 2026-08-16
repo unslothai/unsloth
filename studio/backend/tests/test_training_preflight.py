@@ -754,6 +754,18 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
     monkeypatch.setenv("MLX_HOSTFILE", str(empty))
     assert world_size_from_env() == 1
 
+    # The payload can also be inline, which is how unsloth_cli/_inference.py's
+    # _json_rank_count_from_env reads these two, including the {"hosts": [...]} form.
+    for inline, expected in (
+        (json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(6)]), 6),
+        (json.dumps({"hosts": ["a", "b", "c"]}), 3),
+        ("  " + json.dumps([["a"], ["b"]]), 2),
+        (json.dumps([]), 1),
+    ):
+        _single_process_launch(monkeypatch)
+        monkeypatch.setenv("MLX_HOSTFILE", inline)
+        assert world_size_from_env() == expected
+
     # Nothing about a hostfile may fail a run: unreadable, not JSON, not a list.
     bad_json = tmp_path / "bad.json"
     bad_json.write_text('[["10.0.0.1:5000"],', encoding = "utf-8")
@@ -766,7 +778,10 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
         str(bad_json),
         str(not_a_list),
         str(a_directory),
-        json.dumps([[1], [2]]),  # the JSON itself, not a path to it
+        '[["10.0.0.1:5000"],',  # inline and truncated
+        '{"hosts": 4}',
+        "[",
+        "{",
         "",
         "   ",
     ):

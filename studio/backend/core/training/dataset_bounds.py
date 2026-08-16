@@ -88,24 +88,38 @@ def world_size_from_rank_files(environ: Any = None) -> int:
     """Ranks an mlx.launch listed in a hostfile, or 1 when there is no readable one.
 
     Only a list counts, and its length is the count. Anything else -- no such file, a
-    truncated or malformed one, a JSON object, an empty ring hostfile (which is what
-    mlx.launch writes for a single host) -- reads as 1, the count of Studio's own
-    launch. Never raises: a row bound must not be what fails a run.
+    Either representation the rest of the repo accepts: the payload inline in the
+    variable, or a path to a file holding it. `unsloth_cli/_inference.py`'s
+    `_json_rank_count_from_env` reads the same two variables the same way, down to the
+    {"hosts": [...]} object form, so the two must not disagree about how many ranks a
+    launch has.
 
-    Regular files only. mlx.launch writes a temp file, and opening whatever else a
-    variable happens to name could block a run forever on a fifo.
+    Only a list of ranks counts, and its length is the count. Anything else -- no such
+    file, a truncated or malformed payload, some other object, an empty ring hostfile
+    (which is what mlx.launch writes for a single host) -- reads as 1, the count of
+    Studio's own launch. Never raises: a row bound must not be what fails a run.
+
+    A path must name a regular file. mlx.launch writes a temp file, and opening
+    whatever else a variable happens to name could block a run forever on a fifo.
     """
     source = os.environ if environ is None else environ
     sizes = [1]
     for name in WORLD_SIZE_ENV_FILES:
         try:
-            path = source.get(name)
-            if not path or not os.path.isfile(path):
+            value = source.get(name)
+            if not value:
                 continue
-            with open(path, encoding = "utf-8") as handle:
-                payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
+            if value.lstrip()[:1] in ("[", "{"):
+                payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
+            elif os.path.isfile(value):
+                with open(value, encoding = "utf-8") as handle:
+                    payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
+            else:
+                continue
         except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
             continue
+        if isinstance(payload, dict):
+            payload = payload.get("hosts")
         if isinstance(payload, list):
             sizes.append(len(payload))
     return max(sizes)
