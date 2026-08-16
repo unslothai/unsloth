@@ -143,7 +143,10 @@ export function AskApp(): ReactElement {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // Cleared here too rather than waiting for the ask://hide round trip
+        // this triggers, which is what would otherwise retire the controller.
         abortRef.current?.abort();
+        abortRef.current = null;
         void askHide();
       }
     };
@@ -303,7 +306,11 @@ export function AskApp(): ReactElement {
   };
 
   const clearThread = (): void => {
+    // Same reason as the show and hide handlers: a run parked on an
+    // abort-insensitive fetch would still pass isCurrentRun and drive the
+    // cleared panel back through loading and on to done.
     abortRef.current?.abort();
+    abortRef.current = null;
     setTurns([]);
     setContext(null);
     setErrorKey(null);
