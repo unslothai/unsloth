@@ -183,6 +183,53 @@ def test_the_pin_fires_where_the_projector_is_what_spills_layers(tmp_path):
     assert pinned["fit"] == "off"
 
 
+def test_the_floor_is_the_fits_floor_and_not_a_flat_4096(tmp_path):
+    """The reserve the placement cannot shrink is not priced as if it could.
+
+    Without a KV estimate the placement takes the file-size-only arm, which builds
+    ONE footprint against ``_mtp_bytes(self._context_length or ...)`` and hands
+    out a smaller context without lowering it. Asking the pin's question at the
+    4096 fallback there prices a reserve at an eighth of what the fit will charge,
+    so the projector-charged side looks placeable, the ranks tie, the pin declines
+    -- and the load goes out ``--fit on`` with layers on the CPU, which is exactly
+    the outcome the whole predicate exists to avoid.
+    """
+    backend, gguf = _vision_backend(tmp_path, free_mib = 12_000)
+    # No KV estimate, and a draft reserve that scales with the context: an
+    # embedded MTP head on a hybrid-Mamba trunk (the #8875 shape).
+    backend._can_estimate_kv = lambda: False
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 0
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._estimate_mtp_overhead_bytes = lambda ctx, *a, **k: int(ctx) * 32 * 1024
+    _base_metadata = backend._read_gguf_metadata
+
+    def read_metadata(path):
+        _base_metadata(path)
+        backend._nextn_predict_layers = 1
+        backend._full_attention_interval = 4
+        backend._ssm_inner_size = 6144
+        backend._ssm_state_size = 128
+        backend._ssm_group_count = 16
+        backend._ssm_conv_kernel = 4
+
+    backend._read_gguf_metadata = read_metadata
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_no_mmproj_offload": True,
+        "supports_kv_unified": True,
+        "mtp_token": "draft-mtp",
+        "supports_ngram_mod": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    with patch.object(llama_cpp, "_paravirtual_mmproj_pinnable", lambda _caps: True):
+        cmd = _launch(
+            backend, gguf, is_vision = True, speculative_type = "mtp", n_ctx = 0
+        )["cmd"]
+
+    assert _PIN in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+
+
 @pytest.mark.parametrize("free_mib", list(range(9_000, 18_001, 500)))
 def test_the_pin_never_fires_where_the_load_already_places(tmp_path, free_mib):
     """Swept form of the first cell, so the boundary cannot drift into the band.

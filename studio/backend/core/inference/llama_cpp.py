@@ -14699,6 +14699,14 @@ class LlamaCppBackend:
                             else 0.0
                         )
 
+                        # Where the fit charges the drafter's reserve. The file-size-only
+                        # arm below (no KV estimate, or no context to estimate for) prices
+                        # _fs_total off exactly this expression and no context it hands out
+                        # lowers it, so the reserve is a flat cost there rather than one
+                        # the placement can shrink.
+                        _mm_flat_mtp = not (self._can_estimate_kv() and effective_ctx > 0)
+                        _mm_mtp_ctx = self._context_length or effective_ctx or 4096
+
                         def _mmproj_fits(
                             with_projector: bool,
                             with_drafter: bool,
@@ -14727,8 +14735,18 @@ class LlamaCppBackend:
                             # direction that leaves today's behaviour alone when unsure.
                             if ctx > 0:
                                 _need += _kv_bytes(ctx) + _cc_bytes(ctx, n)
-                                if with_drafter:
-                                    _need += _mtp_bytes(ctx)
+                            if with_drafter:
+                                # The reserve is priced where the fit CHARGES it, which
+                                # is not always where the cache is priced. The arm that
+                                # cannot size a KV cache builds one _fs_total against
+                                # _mtp_bytes(native) and hands out a smaller context
+                                # without lowering it, so there the reserve is flat and
+                                # answering at a floor would promise room the fit never
+                                # sees. Where the cache can be sized, the reserve
+                                # shrinks with the context like everything else.
+                                _mtp_at = _mm_mtp_ctx if _mm_flat_mtp else ctx
+                                if _mtp_at > 0:
+                                    _need += _mtp_bytes(_mtp_at)
                             return _need / (1024 * 1024) <= _pool_budget_mib(
                                 subset, _mm_mtp_frac if with_drafter else _vram_frac
                             )
