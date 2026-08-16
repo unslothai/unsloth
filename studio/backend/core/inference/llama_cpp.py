@@ -14697,6 +14697,7 @@ class LlamaCppBackend:
                             with_drafter: bool,
                             n: int,
                             subset: list,
+                            ctx: int,
                         ) -> bool:
                             _mm = mmproj_size if with_projector else 0
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
@@ -14711,14 +14712,16 @@ class LlamaCppBackend:
                                 + _soft
                                 + max(0, n - 1) * _pipeline_overhead_bytes
                             )
-                            # Auto's context is capped later, so price KV only when the
-                            # context is already fixed. Omitting it makes "fits" the
-                            # optimistic answer, which pins less often -- the direction
-                            # that leaves today's behaviour alone when unsure.
-                            if effective_ctx > 0:
-                                _need += _kv_bytes(effective_ctx) + _cc_bytes(effective_ctx, n)
+                            # Priced at the context the caller is asking about, not at
+                            # one fixed length: the two questions below are asked at
+                            # different contexts on purpose. A context of 0 (no native
+                            # length and no request) prices weights only, which makes
+                            # "fits" the optimistic answer and pins less often -- the
+                            # direction that leaves today's behaviour alone when unsure.
+                            if ctx > 0:
+                                _need += _kv_bytes(ctx) + _cc_bytes(ctx, n)
                                 if with_drafter:
-                                    _need += _mtp_bytes(effective_ctx)
+                                    _need += _mtp_bytes(ctx)
                             return _need / (1024 * 1024) <= _pool_budget_mib(
                                 subset, _mm_mtp_frac if with_drafter else _vram_frac
                             )
@@ -14728,11 +14731,25 @@ class LlamaCppBackend:
                         _mm_ranked = sorted(gpus, key = lambda g: _gpu_usable(g), reverse = True)
                         _mm_subsets = [_mm_ranked[:_n] for _n in range(1, len(_mm_ranked) + 1)]
 
-                        def _mm_any(with_projector: bool, with_drafter: bool) -> bool:
+                        def _mm_any(with_projector: bool, with_drafter: bool, ctx: int) -> bool:
                             return any(
-                                _mmproj_fits(with_projector, with_drafter, _n + 1, _s)
+                                _mmproj_fits(with_projector, with_drafter, _n + 1, _s, ctx)
                                 for _n, _s in enumerate(_mm_subsets)
                             )
+
+                        # The context at which "does it fit" means "does every layer stay
+                        # on the GPU". Auto never spills layers to hold a native context:
+                        # the placement loop below shrinks the CONTEXT instead and only
+                        # reaches `--fit on` once even its own 4096 fallback will not
+                        # place. So a load that misses 32768 by a gigabyte is not a
+                        # partial offload, it is a smaller context -- and pricing this at
+                        # effective_ctx read the second as the first, which pinned loads
+                        # that were already fully resident (buying a few thousand tokens
+                        # with a ~3.6x image encode) while walking past the loads that
+                        # really did spill, where neither side reaches native and the
+                        # ranks tie at 0. An explicit context is honored verbatim and
+                        # overflows to --fit, so there it IS the residency question.
+                        _mm_floor_ctx = effective_ctx if explicit_ctx else min(4096, effective_ctx)
 
                         # Rank the placement each side of the choice actually reaches:
                         # 2 = every layer resident WITH the drafter, 1 = resident only
@@ -14740,19 +14757,40 @@ class LlamaCppBackend:
                         # rather than one boolean because both features mutate this same
                         # decision and their orders of preference agree: a per-token loss
                         # (layers on the CPU, then the drafter) outweighs the projector's
-                        # bounded per-image cost.
+                        # bounded per-image cost. Context is in neither order and cannot
+                        # move this ranking on its own.
+                        #
+                        # Residency is asked at the fallback floor, the drafter at the
+                        # context this load is actually bidding for -- the drop probe
+                        # below prices it there too, so a reserve that only fails at the
+                        # native length is still a reserve the probe may take away.
                         #
                         # Rank 1 is only on the table when the probe below is allowed to
                         # run. Where it is not -- forced mtp / mtp+ngram, a user-owned
                         # --spec-type, no KV estimate -- the reserve survives to the fit
                         # whatever this decides, so pretending the drafter can be dropped
-                        # would pin against a placement that cannot happen.
+                        # would pin against a placement that cannot happen; the drafter
+                        # is then simply part of the footprint that has to be placed.
                         def _mm_rank(with_projector: bool) -> int:
-                            if _mm_any(with_projector, _mm_mtp_on_gpu):
+                            if not _mm_any(with_projector, _mm_mtp_on_gpu, _mm_floor_ctx):
+                                # Not placeable even at the floor. The drafter is the one
+                                # thing that can still be given back to make it fit.
+                                if (
+                                    _mm_mtp_on_gpu
+                                    and _mtp_drop_probe_applies
+                                    and _mm_any(with_projector, False, _mm_floor_ctx)
+                                ):
+                                    return 1
+                                return 0
+                            if not _mm_mtp_on_gpu:
                                 return 2
-                            if _mm_mtp_on_gpu and _mtp_drop_probe_applies:
-                                return 1 if _mm_any(with_projector, False) else 0
-                            return 0
+                            if _mm_any(with_projector, True, effective_ctx):
+                                return 2
+                            # Placed, and the drafter fits at the floor but not at the
+                            # context being bid for. The probe takes it away only where
+                            # it is allowed to run; otherwise the reserve rides along and
+                            # the loop pays for it out of context, not out of residency.
+                            return 1 if _mtp_drop_probe_applies else 2
 
                         # Only when moving it actually buys a better placement. The
                         # projector is then demonstrably the thing tipping the model
