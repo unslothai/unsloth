@@ -1,0 +1,312 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Runtime LAN listener for Unsloth Studio.
+
+Studio binds 127.0.0.1 by default, so a phone or laptop on the same network
+cannot reach it without relaunching with ``-H 0.0.0.0``. This module adds a
+second uvicorn listener over the already-running app, on the machine's own
+network addresses and the same port, and takes it away again -- no restart, and
+the loopback socket keeps serving the desktop app throughout.
+
+The listener binds each detected address explicitly rather than the wildcard:
+``0.0.0.0`` collides with the loopback socket that already holds the port. It
+runs on the primary server's event loop with ``lifespan="off"``, so the app's
+startup and shutdown handlers stay owned by the primary server and never fire
+twice.
+
+IPv4 only. Every consumer of this (URLs in the UI, the QR code, the frontend
+gate) works off the addresses reported here, and a link-local IPv6 URL is not
+something a phone can be handed.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import socket
+import sys
+import threading
+import time
+from typing import Any, Optional
+
+import uvicorn
+
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
+# local socket work either way, so exceeding these means the event loop is wedged
+_START_TIMEOUT = 10.0
+# kept under the ~5s Windows console-close budget run.py's shutdown path works to
+_STOP_TIMEOUT = 3.0
+
+# uvicorn's own default, so a burst queues on the LAN socket as it does on loopback
+_LISTEN_BACKLOG = 2048
+
+_lock = threading.RLock()
+_server: Any = None
+_serve_loop: Any = None
+_sockets: tuple[socket.socket, ...] = ()
+_port: Optional[int] = None
+_error: Optional[str] = None
+# rebound whole, never mutated: request_on_lan_listener reads it without the lock
+_bound_addresses: tuple[str, ...] = ()
+
+
+def detect_lan_addresses() -> list[str]:
+    """The machine's own reachable IPv4 addresses, default route first.
+
+    Loopback, link-local (169.254/16) and multicast are dropped: none of them is
+    an address another device on the network can open. A public address is kept
+    -- a cloud VM binding its own public IP is the same operation as a laptop
+    binding its Wi-Fi address, and the caller decides whether that is wanted.
+    """
+    addresses: list[str] = []
+
+    def _add(candidate: str) -> None:
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            return
+        if parsed.version != 4:
+            return
+        if parsed.is_loopback or parsed.is_link_local or parsed.is_multicast:
+            return
+        if parsed.is_unspecified or parsed.is_reserved:
+            return
+        if candidate not in addresses:
+            addresses.append(candidate)
+
+    # a UDP connect only fixes the local end of the socket; nothing is sent to 8.8.8.8
+    probe = None
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("8.8.8.8", 80))
+        _add(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        if probe is not None:
+            probe.close()
+
+    # a host on both Wi-Fi and ethernet answers at either, and only one is the default route
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            _add(info[4][0])
+    except OSError:
+        pass
+    return addresses
+
+
+def is_public_address(address: str) -> bool:
+    """True when ``address`` is routable from the internet, not just this network.
+
+    A VPS or dedicated box usually carries its public IPv4 straight on the NIC, so
+    the addresses this module binds are not always the LAN addresses the name
+    implies. Callers surface that rather than refusing it: a public-IP campus or
+    office network is a legitimate place to serve, and only the operator knows
+    which one they are on.
+    """
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+def _bind_listener(address: str, port: int) -> socket.socket:
+    """A listening socket on exactly ``address:port``."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # skipped on Windows, where SO_REUSEADDR lets a socket take over a live listener
+        if sys.platform != "win32":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((address, port))
+        sock.listen(_LISTEN_BACKLOG)
+        sock.set_inheritable(False)
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+def _listener_config(app, host: str, port: int):
+    from utils.uvicorn_h11_shutdown import uvicorn_http_protocol
+    return uvicorn.Config(
+        app,
+        host = host,
+        port = port,
+        # a second lifespan would re-fire the app's startup handlers
+        lifespan = "off",
+        # uvicorn.Config applies log_config eagerly, resetting run.py's startup log rewrite
+        log_config = None,
+        access_log = False,
+        server_header = False,
+        http = uvicorn_http_protocol(),
+    )
+
+
+def _running_on_event_loop() -> bool:
+    """True when the caller is already inside a running event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _wait_until(predicate, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
+    """Serve ``app`` on every detected LAN address at ``port``. Idempotent.
+
+    Returns the bound addresses. Raises ``RuntimeError`` with a machine-readable
+    reason (``no_lan_address``, ``bind_failed``, ``listener_start_failed``) when
+    the listener could not be brought up.
+    """
+    global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
+
+    with _lock:
+        if _server is not None:
+            return _bound_addresses
+
+        candidates = detect_lan_addresses()
+        if not candidates:
+            _error = "no_lan_address"
+            raise RuntimeError(_error)
+
+        sockets: list[socket.socket] = []
+        bound: list[str] = []
+        failures: list[str] = []
+        for address in candidates:
+            try:
+                sockets.append(_bind_listener(address, port))
+            except OSError as exc:
+                failures.append(f"{address} ({exc})")
+                continue
+            bound.append(address)
+        if not sockets:
+            _error = "bind_failed"
+            logger.warning("LAN access could not bind port %s: %s", port, "; ".join(failures))
+            raise RuntimeError(_error)
+        if failures:
+            logger.info("LAN access skipped unbindable addresses: %s", "; ".join(failures))
+
+        server = uvicorn.Server(_listener_config(app, bound[0], port))
+        future = asyncio.run_coroutine_threadsafe(server.serve(sockets = sockets), loop)
+        started = _wait_until(lambda: server.started or future.done(), _START_TIMEOUT)
+        if not started or not server.started:
+            server.should_exit = True
+            cause = future.exception(timeout = 0) if future.done() else None
+            future.cancel()
+            _close_sockets(sockets)
+            _error = "listener_start_failed"
+            logger.warning(
+                "LAN access listener did not start on port %s: %s",
+                port,
+                cause if cause is not None else "timed out",
+            )
+            raise RuntimeError(_error)
+
+        _server, _serve_loop, _sockets = server, loop, tuple(sockets)
+        _bound_addresses, _port, _error = tuple(bound), port, None
+
+    logger.info("LAN access listening on %s", ", ".join(f"{a}:{port}" for a in bound))
+    return _bound_addresses
+
+
+def _close_sockets(sockets) -> None:
+    for sock in sockets:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def stop_lan_listener() -> bool:
+    """Release the LAN sockets and take the listener down. Idempotent.
+
+    Returns whether the port is confirmed released. A False means the sockets may
+    still be accepting, so the caller must keep treating the host as reachable.
+
+    Waits for the sockets, not for ``serve()`` to return: uvicorn closes the
+    sockets passed to it at the top of its shutdown and only then drains
+    in-flight responses, so waiting on the serve task would make a Stop pressed
+    from a LAN device wait out its own response.
+    """
+    global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
+
+    # held across the wait so a start cannot begin rebinding sockets still closing
+    with _lock:
+        server, loop, sockets = _server, _serve_loop, _sockets
+        port = _port
+        _server = _serve_loop = None
+        _sockets = ()
+        # cleared before the wait so a request landing mid-teardown already reads as off
+        _bound_addresses = ()
+        _port = None
+
+        if server is None:
+            return True
+        server.should_exit = True
+        if _running_on_event_loop():
+            # /api/shutdown tears down from a task on this very loop; waiting would deadlock
+            logger.info("LAN access stopping")
+            return True
+        if loop is None or loop.is_closed() or not loop.is_running():
+            # nothing is left to run uvicorn's shutdown, so release the sockets here
+            _close_sockets(sockets)
+            logger.info("LAN access stopped with its server loop")
+            return True
+        if _wait_until(lambda: all(sock.fileno() == -1 for sock in sockets), _STOP_TIMEOUT):
+            logger.info("LAN access stopped")
+            return True
+        _error = "stop_timed_out"
+        logger.warning("LAN access did not release port %s within %ss", port, _STOP_TIMEOUT)
+        return False
+
+
+def lan_listener_status() -> dict:
+    """Runtime view of the listener: whether it serves, where, and why not."""
+    with _lock:
+        return {
+            "running": _server is not None,
+            "addresses": list(_bound_addresses),
+            "port": _port,
+            "error": _error,
+        }
+
+
+def clear_lan_listener_error() -> None:
+    """Drop a recorded failure so a retry starts from a clean status."""
+    global _error
+    with _lock:
+        _error = None
+
+
+def request_on_lan_listener(scope) -> bool:
+    """True when this request arrived on a LAN listener socket, not on loopback.
+
+    ``scope["server"]`` is the accepting socket's own address, so it identifies
+    the listener a connection came in on without trusting any client header.
+    """
+    addresses = _bound_addresses
+    if not addresses:
+        return False
+    server = scope.get("server")
+    return bool(server) and server[0] in addresses
+
+
+def close_lan_listener_lifecycle() -> None:
+    """Shutdown hook: never raise, whatever state the listener is in."""
+    try:
+        stop_lan_listener()
+    except Exception as exc:
+        logger.warning("Error stopping the LAN listener: %s", exc)
