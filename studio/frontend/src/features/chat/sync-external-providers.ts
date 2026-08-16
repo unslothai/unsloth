@@ -250,10 +250,7 @@ export async function syncExternalProvidersFromBackend(
         baseUrl: config.base_url ?? "",
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
-        maxOutputTokens:
-          uiProviderType === LEGACY_CUSTOM_PROVIDER_TYPE
-            ? (config.max_output_tokens ?? undefined)
-            : undefined,
+        maxOutputTokens: config.max_output_tokens ?? undefined,
 
         hasApiKey: config.has_api_key,
 

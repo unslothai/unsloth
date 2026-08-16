@@ -1019,6 +1019,9 @@ export const ptBR = {
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
       },
+      pastedTextThreshold: "Condensar colagens longas",
+      pastedTextThresholdDescription: "Texto colado maior que isso vira um anexo .txt em vez de encher a caixa de mensagem.",
+      pastedTextThresholdOff: "Desativado",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",

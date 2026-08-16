@@ -12,11 +12,11 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import {
-  PermissionModeDropdown,
-  SIDEBAR_ORGANIZATION_STORAGE_KEY,
-  useChatRuntimeStore,
-} from "@/features/chat";
+import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+// Direct import, not via the @/features/chat barrel: the barrel is in an import cycle with this
+// file, so this key would still be in its temporal dead zone when the module-scope list below
+// reads it ("Cannot access ... before initialization"), killing the whole module graph.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,

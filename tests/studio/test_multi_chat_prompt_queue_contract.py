@@ -741,8 +741,10 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
+    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options
+    # argument, which changes nothing about the ordering this pins.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
-        "return await clearStoredChats();"
+        "return await clearStoredChats("
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER

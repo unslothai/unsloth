@@ -1040,6 +1040,9 @@ export const de = {
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
       },
+      pastedTextThreshold: "Lange Einfügungen verdichten",
+      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen.",
+      pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
