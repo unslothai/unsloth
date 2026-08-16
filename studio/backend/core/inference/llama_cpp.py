@@ -11909,9 +11909,18 @@ class LlamaCppBackend:
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True
-        if _cache_reset and mla:
+        _k_reset = False
+        if mla:
             # Symmetry, not size: an MLA model rejects K != V outright, so the K
-            # cache has to follow V down rather than stay quantized.
+            # cache has to follow V down rather than stay quantized. This is not
+            # conditional on having just reset V here: on this flash-attn-off path
+            # V always ends up f16 anyway (reset above when it was quantized on
+            # argv, dropped by _drop_env_quantized_v_cache when it was quantized
+            # in the environment, otherwise already f16/bf16/f32), so a quantized
+            # K left on argv is a guaranteed K != V abort. The asymmetric case
+            # that motivates this is -ctk q8_0 on argv with LLAMA_ARG_CACHE_TYPE_V
+            # in the environment: nothing quantized appears on argv for V, so a
+            # V-triggered reset would never fire.
             _k_cache_flags = (
                 "--cache-type-k",
                 "-ctk",
@@ -11926,18 +11935,20 @@ class LlamaCppBackend:
                     flag, _, value = tok.partition("=")
                     if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                         out[i] = f"{flag}=f16"
+                        _k_reset = True
                 elif i + 1 < len(out):
                     if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                         out[i + 1] = "f16"
-        if _cache_reset:
+                        _k_reset = True
+        if _cache_reset or _k_reset:
             logger.info(
-                "V cache dtype reset to f16 because flash attention is off (%s): a "
+                "KV cache dtype reset to f16 because flash attention is off (%s): a "
                 "quantized V cache requires flash attention in llama.cpp. %s",
                 reason,
                 (
-                    "The K cache followed it down: this model uses MLA, which "
+                    "The K cache went down with it: this model uses MLA, which "
                     "rejects different K and V cache types."
-                    if mla
+                    if _k_reset
                     else "The K cache is left untouched."
                 ),
             )
@@ -11996,7 +12007,9 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
+    def _drop_env_quantized_v_cache(
+        env: MutableMapping[str, str], *, mla: bool = False
+    ) -> bool:
         """Drop an inherited quantized V-cache env var (main or draft) in place
         before a flash-attn-off retry, returning True if anything was removed.
 
@@ -12006,11 +12019,22 @@ class LlamaCppBackend:
         cache set purely through ``LLAMA_ARG_CACHE_TYPE_V`` (or the draft
         ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V``) would still abort the FA-off retry
         with "V cache quantization requires flash_attn". Dropping it lets
-        llama.cpp fall back to the f16 default. Only V is dropped: a quantized K
-        cache runs fine without flash attention, so its env var is preserved.
+        llama.cpp fall back to the f16 default.
+
+        On a non-MLA model only V is dropped: a quantized K cache runs fine
+        without flash attention, so its env var is preserved. On an MLA model
+        (DeepSeek V2/V3/R1, Kimi K2, GLM-4.7/5.x) llama.cpp rejects K != V
+        outright, and it checks that *before* the V/flash-attn rule, so the
+        quantized K env vars have to go too. Every caller runs this after the
+        argv reset has already forced V to f16, so a surviving quantized K env
+        is a guaranteed "model does not support different K and V cache types"
+        abort rather than the recovery the retry is trying to perform.
         """
         dropped = False
-        for var in ("LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
+        variables = ["LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"]
+        if mla:
+            variables += ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K"]
+        for var in variables:
             value = (env.get(var) or "").strip().lower()
             if value and value not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                 env.pop(var, None)
@@ -15738,7 +15762,9 @@ class LlamaCppBackend:
                     )
                 # Same for an env-only quantized V cache, which the argv reset
                 # above cannot reach.
-                if _flash_attn_known_off and self._drop_env_quantized_v_cache(env):
+                if _flash_attn_known_off and self._drop_env_quantized_v_cache(
+                    env, mla = self._kv_lora_rank is not None
+                ):
                     logger.info(
                         "Dropped inherited quantized V-cache env: this build has "
                         "no --flash-attn."
@@ -16588,7 +16614,9 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env, mla = self._kv_lora_rank is not None
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
@@ -16654,7 +16682,9 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env, mla = self._kv_lora_rank is not None
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
