@@ -249,6 +249,10 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
   /** The vision projector is encoding on the CPU (--no-mmproj-offload). */
@@ -342,6 +346,10 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  /** The load ran with the vision projector deliberately left unloaded. Echoes the
+   * request, so it round-trips the Advanced Settings switch even on a GGUF that
+   * never had a projector -- unlike vision_disabled_by_user below. */
+  disable_vision?: boolean;
   /** Image input is off because the user asked, not because the mmproj is missing. */
   vision_disabled_by_user?: boolean;
   /** The vision projector is encoding on the CPU (--no-mmproj-offload). */
