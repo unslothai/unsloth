@@ -171,12 +171,12 @@ def fit_rolling_context(
         dropped_total += dropped
         current_tokens = count_tokens(fitted)
 
-    if dropped_total == 0:
+    if dropped_total == 0 or current_tokens > prompt_target:
         return messages, None
     return fitted, {
         "dropped_messages": dropped_total,
         "prompt_tokens_before": initial_tokens,
         "prompt_tokens_after": current_tokens,
         "context_length": context_length,
-        "fits": current_tokens <= prompt_target,
+        "fits": True,
     }

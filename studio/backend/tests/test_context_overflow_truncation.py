@@ -292,11 +292,12 @@ def test_rolling_fit_never_clips_an_irreducible_latest_turn():
         ),
     )
 
+    assert fitted is messages
     assert fitted == messages
     assert info is None
 
 
-def test_rolling_fit_reports_when_protected_messages_still_do_not_fit():
+def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     latest = {"role": "user", "content": "latest" * 200}
     messages = [
         {"role": "user", "content": "old" * 100},
@@ -312,9 +313,9 @@ def test_rolling_fit_reports_when_protected_messages_still_do_not_fit():
         ),
     )
 
-    assert fitted == [latest]
-    assert info is not None
-    assert info["fits"] is False
+    assert fitted is messages
+    assert fitted == messages
+    assert info is None
 
 
 # ---------------------------------------------------------------------------
