@@ -152,6 +152,27 @@ def _varlen_backward_overflows_int32(
     return _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
 
 
+def _configured_softcap(config) -> Optional[float]:
+    """The attention logit softcap this layer asked the fast kernels for, if any.
+
+    Only flash and the xformers ops take a `softcap`; the SDPA branch below has no way to
+    apply one. Gemma 2 passes it exclusively through these kwargs
+    (`unsloth/models/gemma2.py`), so a backend swap that ignores them would train on
+    uncapped logits.
+    """
+    for kwargs in (
+        config.flash_varlen_kwargs,
+        config.flash_dense_kwargs,
+        config.xformers_kwargs,
+    ):
+        if not kwargs:
+            continue
+        softcap = kwargs.get("softcap")
+        if softcap:
+            return softcap
+    return None
+
+
 def _warn_varlen_int32_overflow_once(backend: str, n_seqs: int, total_q: int, elements: int):
     if _VARLEN_INT32_WARNED[0]:
         return
@@ -344,6 +365,24 @@ def run_attention(
             n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
+                # SDPA cannot apply logit softcapping, so a softcapped model (Gemma 2) must
+                # NOT be quietly rerouted there: it would keep training, on wrong logits and
+                # wrong gradients, which is worse than the fault this guard exists to avoid.
+                # Stop with the two ways out instead.
+                softcap = _configured_softcap(config)
+                if softcap:
+                    raise RuntimeError(
+                        f"Unsloth: A packed row holds {n_seqs} documents over {total_q} "
+                        f"tokens, so the {backend} backward kernel would index a "
+                        f"{_varlen_backward_dq_accum_elements(n_seqs, total_q, context.n_heads, context.head_dim):,}"
+                        f"-element buffer with int32 (limit {_INT32_ELEMENTS:,}) and fault "
+                        "with 'CUDA error: an illegal memory access was encountered'.\n"
+                        f"This model softcaps attention logits (softcap={softcap}), and the "
+                        "SDPA fallback cannot reproduce that, so falling back would silently "
+                        "train on wrong logits.\n"
+                        "Pack fewer documents per row: lower the packing length, or filter "
+                        "out very short documents so one row cannot collect thousands of them."
+                    )
                 _warn_varlen_int32_overflow_once(
                     backend,
                     n_seqs,

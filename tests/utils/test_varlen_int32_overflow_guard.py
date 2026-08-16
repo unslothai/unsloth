@@ -98,6 +98,7 @@ def _run(
     n_docs,
     requires_grad,
     guard_disabled = False,
+    softcap = None,
 ):
     """Drive run_attention with every real kernel stubbed, and report which branch it took."""
     taken = {}
@@ -124,7 +125,14 @@ def _run(
     ad._VARLEN_INT32_WARNED[0] = False
 
     q = torch.zeros((1, 16, 4, 128), requires_grad = requires_grad)
-    config = ad.AttentionConfig(backend = backend, n_kv_heads = 16, n_groups = 1)
+    kwargs = {"softcap": softcap} if softcap is not None else None
+    config = ad.AttentionConfig(
+        backend = backend,
+        n_kv_heads = 16,
+        n_groups = 1,
+        flash_varlen_kwargs = kwargs,
+        flash_dense_kwargs = kwargs,
+    )
     ad.run_attention(config = config, context = _context(n_docs, 4, requires_grad), Q = q, K = q, V = q)
     return taken.get("backend")
 
@@ -133,6 +141,31 @@ def _run(
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
 def test_oversized_partition_falls_back_to_sdpa(monkeypatch, backend):
     assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True) == ad.SDPA
+
+
+@pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
+def test_softcapped_model_raises_instead_of_silently_dropping_the_softcap(monkeypatch, backend):
+    """Gemma 2 hands `attn_logit_softcapping` to the fast kernels through
+    `flash_varlen_kwargs` alone (unsloth/models/gemma2.py), and the SDPA branch has no
+    softcap at all. Downgrading a softcapped model would keep the run alive on wrong logits
+    and wrong gradients, which is worse than the fault the guard prevents, so it must stop."""
+    with pytest.raises(RuntimeError) as excinfo:
+        _run(monkeypatch, backend, n_docs = 20000, requires_grad = True, softcap = 50.0)
+    message = str(excinfo.value)
+    assert "softcap=50.0" in message
+    assert "Pack fewer documents per row" in message
+
+
+@pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
+def test_softcap_of_none_or_zero_still_falls_back(monkeypatch, backend):
+    """Only a real softcap blocks the fallback; every other model keeps the rescue."""
+    assert _run(monkeypatch, backend, n_docs = 20000, requires_grad = True, softcap = 0.0) == ad.SDPA
+
+
+@pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
+def test_softcapped_model_under_the_bound_is_untouched(monkeypatch, backend):
+    """A softcapped model that does not overflow must keep its fast kernel, not raise."""
+    assert _run(monkeypatch, backend, n_docs = 64, requires_grad = True, softcap = 50.0) == backend
 
 
 @pytest.mark.parametrize("backend", [ad.XFORMERS, ad.FLASH_VARLEN])
