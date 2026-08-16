@@ -14725,13 +14725,32 @@ class LlamaCppBackend:
 
                         # Fewest GPUs first over the same ranking the placement loop
                         # walks, so the answer is about placements it could choose.
-                        _mm_ranked = sorted(gpus, key = lambda g: _gpu_usable(g), reverse = True)
-                        _mm_subsets = [_mm_ranked[:_n] for _n in range(1, len(_mm_ranked) + 1)]
+                        #
+                        # Ranked at the fraction this side of the question is PRICED
+                        # at, which is what _gpu_usable asks its callers for and what
+                        # the MTP probe's two _probe_orders exist to keep: an unsized
+                        # drafter costs five points, and the budget is
+                        # free - (1 - frac) * total, so the gap between two cards moves
+                        # by 0.05 * their difference in total. A busy 80 GB card leads
+                        # at 0.97 and an idle 24 GB one at 0.92, and _pin_fraction --
+                        # what the placement loop below sorts under -- is this same
+                        # _mm_mtp_frac. Ranked once at the default, the prefixes were
+                        # subsets the loop would not choose: the pin declined placements
+                        # it could have kept whole (the load then ships `--fit on`, and
+                        # nothing re-opens a declined pin) and took ones that went out
+                        # `--fit off` anyway, paying the per-image cost for nothing.
+                        # Identical on a uniform pool, where the totals cancel.
+                        def _mm_ranked(with_drafter: bool) -> list:
+                            _frac = _mm_mtp_frac if with_drafter else _vram_frac
+                            return sorted(
+                                gpus, key = lambda g: _gpu_usable(g, _frac), reverse = True
+                            )
 
                         def _mm_any(with_projector: bool, with_drafter: bool) -> bool:
+                            _ranked = _mm_ranked(with_drafter)
                             return any(
-                                _mmproj_fits(with_projector, with_drafter, _n + 1, _s)
-                                for _n, _s in enumerate(_mm_subsets)
+                                _mmproj_fits(with_projector, with_drafter, _n, _ranked[:_n])
+                                for _n in range(1, len(_ranked) + 1)
                             )
 
                         # Rank the placement each side of the choice actually reaches:
