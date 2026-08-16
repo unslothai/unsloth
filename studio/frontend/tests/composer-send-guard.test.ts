@@ -16,12 +16,20 @@ const KEY = "chat-draft:thread-1";
 const typed = (value: string) => ({
   value,
   replacesText: false,
+  isUndo: false,
   composerIsEmpty: false,
 });
 const replacement = (value: string, composerIsEmpty = true) => ({
   value,
   replacesText: true,
+  isUndo: false,
   composerIsEmpty,
+});
+const undone = (value: string) => ({
+  value,
+  replacesText: false,
+  isUndo: true,
+  composerIsEmpty: true,
 });
 const armed = (texts: string[] = [PROMPT], key: string | null = KEY) =>
   armSentTextGuard(texts, key);
@@ -118,4 +126,27 @@ test("another thread's identical draft still restores", () => {
 test("an unrelated draft is restored", () => {
   assert.equal(sentTextGuardBlocksDraft(armed(), "something else", KEY), false);
   assert.equal(sentTextGuardBlocksDraft(null, PROMPT, KEY), false);
+});
+
+// Undo after sending is how a user recovers a prompt to edit and resend. It
+// restores exactly what was sent, so only the gesture tells it from a stale
+// write, and the gesture is deliberate.
+test("a deliberate undo restores the sent prompt and retires the guard", () => {
+  assert.deepEqual(applySentTextGuard(armed(), undone(PROMPT)), {
+    accept: true,
+    guard: null,
+  });
+});
+
+test("undo wins even over an armed wrapper pair", () => {
+  const guard = armed([`Apply this edit: ${PROMPT}`, PROMPT]);
+  assert.equal(applySentTextGuard(guard, undone(PROMPT)).accept, true);
+});
+
+// Autocorrect is the engine, not the user, so it stays refused.
+test("an autocorrect commit is still refused after the undo carve-out", () => {
+  assert.equal(
+    applySentTextGuard(armed(), replacement(`${PROMPT}!`)).accept,
+    false,
+  );
 });

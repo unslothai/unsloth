@@ -47,14 +47,20 @@ export function applySentTextGuard(
     value: string;
     /**
      * The engine replaced text rather than the user inserting it: an autocorrect
-     * commit or an undo. Such a write cannot originate from an empty composer,
-     * so on one it is necessarily stale, mutated value and all.
+     * commit. It cannot originate from an empty composer, so on one it is
+     * necessarily stale, mutated value and all.
      */
     replacesText: boolean;
+    /**
+     * The user asked for the previous value back. Deliberate, like a paste, so
+     * it retires the guard even though it restores exactly what was sent.
+     */
+    isUndo: boolean;
     composerIsEmpty: boolean;
   },
 ): { accept: boolean; guard: SentTextGuard | null } {
   if (guard === null) return { accept: true, guard: null };
+  if (write.isUndo) return { accept: true, guard: null };
   if (guard.texts.includes(write.value)) return { accept: false, guard };
   if (write.replacesText && write.composerIsEmpty) {
     return { accept: false, guard };

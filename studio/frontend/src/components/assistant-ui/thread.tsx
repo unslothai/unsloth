@@ -3895,12 +3895,20 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// An autocorrect commit or an undo, never a keystroke or a paste. Its value can
+// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
 // differ from what was sent, so equality alone would let it through.
 function isTextReplacement(event: Event | undefined) {
-  if (event === undefined || !("inputType" in event)) return false;
-  const inputType = (event as InputEvent).inputType;
-  return inputType === "insertReplacementText" || inputType === "historyUndo";
+  return inputTypeOf(event) === "insertReplacementText";
+}
+
+// Undo is a user gesture: the previous value is what was asked for.
+function isUndoWrite(event: Event | undefined) {
+  return inputTypeOf(event) === "historyUndo";
+}
+
+function inputTypeOf(event: Event | undefined): string | undefined {
+  if (event === undefined || !("inputType" in event)) return undefined;
+  return (event as InputEvent).inputType;
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
@@ -3974,6 +3982,7 @@ function useImeComposerInputHandlers({
         const result = applySentTextGuard(justSentRef.current, {
           value,
           replacesText: isTextReplacement(nativeEvent),
+          isUndo: isUndoWrite(nativeEvent),
           composerIsEmpty: composer.getState().text.length === 0,
         });
         justSentRef.current = result.guard;
