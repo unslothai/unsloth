@@ -3716,12 +3716,11 @@ class TestGGUFSafetensorsHealingParity:
             INTENT_SIGNAL as shared_re,
             is_short_intent_without_action as shared_fn,
         )
-
         for asks in (
             # the reported turn: a clarification request closing on an intent clause.
-            "\"balls\" is pretty broad, so what would you like to know or do? "
+            '"balls" is pretty broad, so what would you like to know or do? '
             "Let me know what you're after and I'll dig in.",
-            "I need more context. Could you please clarify what \"it\" refers to? "
+            'I need more context. Could you please clarify what "it" refers to? '
             "Let me know and I'll help analyze!",
             # the ask can follow the intent too; order carries no meaning here.
             "Let me check I have this right: could you confirm the repo is unslothai/unsloth?",
