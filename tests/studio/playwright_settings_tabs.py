@@ -314,7 +314,7 @@ def run(page) -> None:
 
 def write_report() -> None:
     OUT.parent.mkdir(parents = True, exist_ok = True)
-    OUT.write_text(json.dumps(report, indent = 2))
+    OUT.write_text(json.dumps(report, indent = 2), encoding = "utf-8")
     log(f"report -> {OUT}")
 
 
