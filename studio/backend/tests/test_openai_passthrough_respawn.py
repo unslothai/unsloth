@@ -42,7 +42,13 @@ _FRESH = "http://127.0.0.1:62933"
 class _Backend:
     """Stub llama backend whose base_url moves to a new port once respawned."""
 
-    def __init__(self, *, respawn_ok = True, mtp_handled = False, stays_dead = False):
+    def __init__(
+        self,
+        *,
+        respawn_ok = True,
+        mtp_handled = False,
+        stays_dead = False,
+    ):
         self.base_url = _DEAD
         self.context_length = 4096
         self.respawn_calls = 0
@@ -107,7 +113,9 @@ class _FakeNonStreamingClient:
             200,
             json = {
                 "id": "chatcmpl-1",
-                "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
                 "usage": {"prompt_tokens": 2, "completion_tokens": 1},
             },
         )
