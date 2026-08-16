@@ -883,7 +883,20 @@ def run() -> dict:
             )
             for size in SIZES:
                 info(f"measuring {engine} at {size} chars")
-                cell = measure_cell(context, engine, size)
+                # A renderer that dies mid-cell used to take the whole matrix with it: nine cells
+                # of work thrown away because one WebKit page ran out of memory at 300K on a
+                # loaded machine. The cell is recorded as crashed, the run continues, and
+                # harness_failures reports it -- a crash is still a failure, it is just no longer
+                # a failure that destroys the eight measurements that did work.
+                try:
+                    cell = measure_cell(context, engine, size)
+                except Exception as exc:  # noqa: BLE001 - the message is the whole point
+                    info(f"CRASHED {engine} at {size} chars: {type(exc).__name__}: {exc}")
+                    cell = {
+                        "chars_requested": size,
+                        "engine": engine,
+                        "crashed": f"{type(exc).__name__}: {exc}"[:400],
+                    }
                 results["by_engine"][engine]["by_size"][str(size)] = cell
             context.close()
             browser.close()
@@ -1164,6 +1177,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
         for size in results["sizes"]:
             row = results["by_engine"][engine]["by_size"][str(size)]
             where = f"{engine} at {size} chars"
+            if "crashed" in row:
+                failures.append(f"{where} crashed before it produced a measurement: {row['crashed']}")
+                continue
             counts = row["counts"]
             plan = row["plan"]
             # A request reaching the server is a round trip to another process inside a region
@@ -1306,10 +1322,12 @@ def harness_failures(results: dict, report: dict) -> list[str]:
         # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
         # across sizes is comparing columns measured on different mechanisms.
         layers = {
-            results["by_engine"][engine]["by_size"][str(size)]["actions"]["menu"].get(
-                "bodyPointerEvents"
-            )
+            results["by_engine"][engine]["by_size"][str(size)]
+            .get("actions", {})
+            .get("menu", {})
+            .get("bodyPointerEvents")
             for size in results["sizes"]
+            if "crashed" not in results["by_engine"][engine]["by_size"][str(size)]
         }
         if len(layers) > 1:
             failures.append(
