@@ -75,6 +75,18 @@ export const it = {
       description: "{path} non esiste.",
       backToChat: "Torna alla chat",
     },
+    selection: {
+      countSelected: "{count} selezionate",
+      pinChats: "Fissa le chat",
+      unpinChats: "Rimuovi le chat fissate",
+      archiveChats: "Archivia le chat",
+      markUnread: "Segna come non letta",
+      deleteChats: "Elimina le chat",
+      deleteTitle: "Elimina le chat",
+      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteFilesDescription:
+        "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
+    },
     organize: {
       sidebarHeading: "Organizza la barra laterale",
       byProject: "Per progetto",

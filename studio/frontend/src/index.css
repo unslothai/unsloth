@@ -1096,6 +1096,19 @@ html[data-chat-font] .aui-root {
 		color: #fff !important;
 	}
 
+	/* Multi-select. Carries its own ring so a selected row still reads as
+	   selected while it is also the active row or under the pointer. */
+	.sidebar-nav-btn[data-selected="true"] {
+		background-color: var(--nav-surface-hover) !important;
+		box-shadow: inset 0 0 0 1px var(--ring-soft, currentColor);
+	}
+	.sidebar-nav-btn[data-selected="true"] {
+		color: #000 !important;
+	}
+	.dark .sidebar-nav-btn[data-selected="true"] {
+		color: #fff !important;
+	}
+
 	.sidebar-row-action {
 		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
 	}

@@ -110,6 +110,18 @@ export const ptBR = {
       description: "{path} não existe.",
       backToChat: "Voltar para o chat",
     },
+    selection: {
+      countSelected: "{count} selecionadas",
+      pinChats: "Fixar conversas",
+      unpinChats: "Desafixar conversas",
+      archiveChats: "Arquivar conversas",
+      markUnread: "Marcar como não lida",
+      deleteChats: "Excluir conversas",
+      deleteTitle: "Excluir conversas",
+      deleteDescription: "Excluir {count} conversas? Esta ação não pode ser desfeita.",
+      deleteFilesDescription:
+        "A pasta de sandbox de cada conversa é removida do disco. Os arquivos escritos dentro de um projeto permanecem no espaço de trabalho desse projeto.",
+    },
     organize: {
       sidebarHeading: "Organizar a barra lateral",
       byProject: "Por projeto",

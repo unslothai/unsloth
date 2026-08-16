@@ -110,6 +110,18 @@ export const es = {
       description: "{path} no existe.",
       backToChat: "Volver al chat",
     },
+    selection: {
+      countSelected: "{count} seleccionados",
+      pinChats: "Fijar chats",
+      unpinChats: "Dejar de fijar chats",
+      archiveChats: "Archivar chats",
+      markUnread: "Marcar como no leído",
+      deleteChats: "Eliminar chats",
+      deleteTitle: "Eliminar chats",
+      deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+      deleteFilesDescription:
+        "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+    },
     organize: {
       sidebarHeading: "Organizar la barra lateral",
       byProject: "Por proyecto",

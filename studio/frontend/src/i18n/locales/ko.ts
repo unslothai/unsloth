@@ -108,6 +108,18 @@ export const ko = {
       description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
     },
+    selection: {
+      countSelected: "{count}개 선택됨",
+      pinChats: "채팅 고정",
+      unpinChats: "채팅 고정 해제",
+      archiveChats: "채팅 보관",
+      markUnread: "읽지 않음으로 표시",
+      deleteChats: "채팅 삭제",
+      deleteTitle: "채팅 삭제",
+      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteFilesDescription:
+        "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
+    },
     organize: {
       sidebarHeading: "사이드바 정리",
       byProject: "프로젝트별",

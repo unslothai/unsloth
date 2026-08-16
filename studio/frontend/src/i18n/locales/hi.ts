@@ -111,6 +111,18 @@ export const hi = {
       description: "{path} मौजूद नहीं है।",
       backToChat: "चैट पर वापस जाएँ",
     },
+    selection: {
+      countSelected: "{count} चुने गए",
+      pinChats: "चैट पिन करें",
+      unpinChats: "चैट अनपिन करें",
+      archiveChats: "चैट संग्रहित करें",
+      markUnread: "अपठित के रूप में चिह्नित करें",
+      deleteChats: "चैट हटाएँ",
+      deleteTitle: "चैट हटाएँ",
+      deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+      deleteFilesDescription:
+        "हर चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+    },
     organize: {
       sidebarHeading: "साइडबार व्यवस्थित करें",
       byProject: "प्रोजेक्ट के अनुसार",

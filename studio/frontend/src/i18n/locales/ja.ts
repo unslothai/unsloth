@@ -110,6 +110,18 @@ export const ja = {
       description: "{path} は存在しません。",
       backToChat: "チャットに戻る",
     },
+    selection: {
+      countSelected: "{count} 件選択中",
+      pinChats: "チャットをピン留め",
+      unpinChats: "ピン留めを解除",
+      archiveChats: "チャットをアーカイブ",
+      markUnread: "未読にする",
+      deleteChats: "チャットを削除",
+      deleteTitle: "チャットを削除",
+      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteFilesDescription:
+        "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
+    },
     organize: {
       sidebarHeading: "サイドバーの整理",
       byProject: "プロジェクト別",

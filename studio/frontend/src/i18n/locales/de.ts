@@ -111,6 +111,18 @@ export const de = {
       description: "{path} existiert nicht.",
       backToChat: "Zurück zum Chat",
     },
+    selection: {
+      countSelected: "{count} ausgewählt",
+      pinChats: "Chats anheften",
+      unpinChats: "Chats lösen",
+      archiveChats: "Chats archivieren",
+      markUnread: "Als ungelesen markieren",
+      deleteChats: "Chats löschen",
+      deleteTitle: "Chats löschen",
+      deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
+      deleteFilesDescription:
+        "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
+    },
     organize: {
       sidebarHeading: "Seitenleiste organisieren",
       byProject: "Nach Projekt",

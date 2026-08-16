@@ -20,6 +20,14 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
@@ -141,6 +149,8 @@ import {
   useChatSidebarItems,
   usePinnedChatsStore,
   usePinnedProjectsStore,
+  rangeBetween,
+  toggleSelected,
   useChatPreferencesStore,
   usePromptQueueUI,
   useSidebarOrganizationStore,
@@ -280,6 +290,14 @@ const SIDEBAR_PROJECT_LIMIT = 5;
 // The shared radio item ticks on the right; these read as settings, so tick first.
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
+
+// Whether cmd or ctrl adds a row to the selection. This is the user's own
+// keyboard, not the host Studio runs on, so it reads the browser rather than
+// the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
+// left alone on macOS, where ctrl click is the right click chord.
+const SELECT_WITH_META =
+  typeof navigator !== "undefined" &&
+  /mac/i.test(navigator.platform || navigator.userAgent);
 
 // Insertion cue on the edge the row will land on, inset to the pill.
 const DROP_CUE_BASE =
@@ -923,6 +941,7 @@ export function AppSidebar() {
   });
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
+  const setPinnedChats = usePinnedChatsStore((s) => s.setPinned);
   const unpinChat = usePinnedChatsStore((s) => s.unpin);
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
@@ -1189,6 +1208,130 @@ export function AppSidebar() {
     expandedChatProjectIds,
     sortedChatsByProjectId,
   ]);
+
+  // Multi-select. Ids only: a row that gets deleted elsewhere drops out of
+  // selectedChatItems on its own rather than leaving a ghost to act on.
+  const [selectedChatIds, setSelectedChatIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  // Which list the anchor belongs to, since one chat can sit in two lists.
+  const selectionAnchorRef = useRef<{ scope: string; id: string } | null>(null);
+  const selectedChatItems = useMemo(
+    () => allChatItems.filter((item) => selectedChatIds.has(item.id)),
+    [allChatItems, selectedChatIds],
+  );
+  const selectionCount = selectedChatItems.length;
+
+  const clearSelection = useCallback(() => {
+    selectionAnchorRef.current = null;
+    setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+  }, []);
+
+  // Escape is the way out of a selection, as it is for the menus.
+  useEffect(() => {
+    if (selectionCount === 0) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") clearSelection();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectionCount, clearSelection]);
+
+  /** True when the click was a selection gesture, so the row must not navigate. */
+  function handleSelectionClick(
+    event: React.MouseEvent,
+    item: SidebarItem,
+    list: { scope: string; ids: string[] },
+  ): boolean {
+    if (SELECT_WITH_META ? event.metaKey : event.ctrlKey) {
+      setSelectedChatIds((prev) => toggleSelected(prev, item.id));
+      selectionAnchorRef.current = { scope: list.scope, id: item.id };
+      return true;
+    }
+    if (!event.shiftKey) return false;
+    const anchor = selectionAnchorRef.current;
+    const sameList = anchor?.scope === list.scope;
+    // Shift without an anchor in this list starts one here.
+    if (!sameList) selectionAnchorRef.current = { scope: list.scope, id: item.id };
+    setSelectedChatIds(
+      new Set(
+        sameList && anchor
+          ? rangeBetween(list.ids, anchor.id, item.id)
+          : [item.id],
+      ),
+    );
+    return true;
+  }
+
+  /** Right-clicking outside the selection acts on that row alone. */
+  function selectForContextMenu(
+    item: SidebarItem,
+    list: { scope: string; ids: string[] },
+  ) {
+    if (selectedChatIds.has(item.id)) return;
+    selectionAnchorRef.current = { scope: list.scope, id: item.id };
+    setSelectedChatIds(new Set([item.id]));
+  }
+
+  const allSelectedPinned =
+    selectionCount > 0 &&
+    selectedChatItems.every((item) => pinnedIdSet.has(item.id));
+
+  function pinSelected(pinned: boolean) {
+    setPinnedChats(
+      selectedChatItems.map((item) => item.id),
+      pinned,
+    );
+    clearSelection();
+  }
+
+  function markSelectedUnread() {
+    const threadIds = selectedChatItems.flatMap(getSidebarItemThreadIds);
+    clearSelection();
+    setUnreadThreadIds((current) => {
+      const next = new Set(current);
+      for (const threadId of threadIds) next.add(threadId);
+      return next;
+    });
+  }
+
+  async function archiveSelected() {
+    const items = selectedChatItems;
+    clearSelection();
+    try {
+      // Sequential: each archive can reset the active thread, and two of those
+      // racing would fight over where the chat pane lands.
+      for (const item of items) {
+        await archiveChatItem(item, activeThreadId, (view) => {
+          navigate({
+            to: "/chat",
+            search: item.projectId
+              ? { project: item.projectId }
+              : { new: view.newThreadNonce },
+          });
+        });
+      }
+      // One notice for the batch, not one per chat.
+      showArchivedChatsToast();
+    } catch (err) {
+      toast.error("Failed to archive chats", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  function deleteSelected() {
+    const items = selectedChatItems;
+    if (items.length === 0) return;
+    if (confirmDeleteChats) {
+      openDeleteDialog({ kind: "chats", items });
+      return;
+    }
+    clearSelection();
+    void (async () => {
+      for (const item of items) await deleteChatWithCleanup(item);
+    })();
+  }
 
   // A row must know which list it is dragged within: the same chat can sit in
   // its project and in Recents, and each list keeps its own order.
@@ -1643,6 +1786,22 @@ export function AppSidebar() {
     }
   }
 
+  function showArchivedChatsToast() {
+    const toastId = toast(
+      <button
+        type="button"
+        onClick={() => {
+          toast.dismiss(toastId);
+          useSettingsDialogStore.getState().openArchivedChats();
+        }}
+        className="w-full cursor-pointer text-left"
+      >
+        You can view archived chats in Settings
+      </button>,
+      { closeButton: true },
+    );
+  }
+
   async function handleArchiveThread(item: SidebarItem) {
     try {
       await archiveChatItem(item, activeThreadId, (view) => {
@@ -1653,19 +1812,7 @@ export function AppSidebar() {
             : { new: view.newThreadNonce },
         });
       });
-      const toastId = toast(
-        <button
-          type="button"
-          onClick={() => {
-            toast.dismiss(toastId);
-            useSettingsDialogStore.getState().openArchivedChats();
-          }}
-          className="w-full cursor-pointer text-left"
-        >
-          You can view archived chats in Settings
-        </button>,
-        { closeButton: true },
-      );
+      showArchivedChatsToast();
     } catch (err) {
       toast.error("Failed to archive chat", {
         description: err instanceof Error ? err.message : undefined,
@@ -1788,6 +1935,7 @@ export function AppSidebar() {
 
   type DeleteTarget =
     | { kind: "chat"; item: SidebarItem }
+    | { kind: "chats"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
@@ -1805,7 +1953,11 @@ export function AppSidebar() {
    *  its own folder, and deletion never touches the project workspace. */
   function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
     if (!target) return false;
-    return target.kind === "project" || target.kind === "chat";
+    return (
+      target.kind === "project" ||
+      target.kind === "chat" ||
+      target.kind === "chats"
+    );
   }
 
   async function commitDelete() {
@@ -1814,7 +1966,7 @@ export function AppSidebar() {
     const shouldDeleteProjectFiles =
       target.kind === "project" && deleteFilesOnDelete;
     const shouldDeleteChatFiles =
-      deleteTargetHasFiles(target) && target.kind === "chat" && deleteFilesOnDelete;
+      (target.kind === "chat" || target.kind === "chats") && deleteFilesOnDelete;
     setConfirmingDelete(null);
     // Reset so the next delete never inherits this switch.
     setDeleteFilesOnDelete(false);
@@ -1822,6 +1974,16 @@ export function AppSidebar() {
       await deleteChatWithCleanup(target.item, {
         deleteFiles: shouldDeleteChatFiles,
       });
+      return;
+    }
+    if (target.kind === "chats") {
+      clearSelection();
+      // Sequential, so one failure's toast is not buried by the next delete.
+      for (const item of target.items) {
+        await deleteChatWithCleanup(item, {
+          deleteFiles: shouldDeleteChatFiles,
+        });
+      }
       return;
     }
     if (target.kind === "project") {
@@ -1991,12 +2153,50 @@ export function AppSidebar() {
     );
   }
 
+  /** Bulk actions for the current selection, on right-click of any chat row. */
+  function renderChatContextMenu() {
+    if (selectionCount === 0) return null;
+    return (
+      <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-52">
+        {selectionCount > 1 && (
+          <ContextMenuLabel>
+            {t("shell.selection.countSelected", { count: selectionCount })}
+          </ContextMenuLabel>
+        )}
+        <ContextMenuItem onSelect={() => pinSelected(!allSelectedPinned)}>
+          <HugeiconsIcon icon={allSelectedPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+          <span>
+            {allSelectedPinned
+              ? t("shell.selection.unpinChats")
+              : t("shell.selection.pinChats")}
+          </span>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => void archiveSelected()}>
+          <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.selection.archiveChats")}</span>
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => markSelectedUnread()}>
+          <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.selection.markUnread")}</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem variant="destructive" onSelect={() => deleteSelected()}>
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.selection.deleteChats")}</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    );
+  }
+
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
     // Manual order only: the list this row drags within, its ids to reorder,
     // and this row's slot in them.
     drag?: { scope: string; orderedIds: string[]; index: number },
+    // The list this row is rendered in, for shift-click ranges. Always passed;
+    // `drag` only turns up when the list is manually ordered.
+    list?: { scope: string; ids: string[] },
   ) {
     const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
@@ -2097,331 +2297,339 @@ export function AppSidebar() {
     }
 
     return (
-      <SidebarMenuItem
-        key={item.id}
-        className={cn(
-          itemClass,
-          draggingRow?.id === item.id && "opacity-50",
-          dropCueClass(drag?.scope, drag?.orderedIds, item.id),
-        )}
-        {...(drag
-          ? rowDragProps(drag.scope, drag.orderedIds, item.id)
-          : undefined)}
-      >
-        <SidebarMenuButton
-          data-testid="recent-thread"
-          data-thread-type={item.type}
-          data-thread-id={item.id}
-          data-generating={isGenerating ? "true" : undefined}
-          aria-busy={isGenerating || undefined}
-          isActive={activeThreadId === item.id}
-          className={buttonClass}
-          onClick={() => {
-            clearChatNotifications(item);
-            navigate({
-              to: "/chat",
-              search:
-                item.type === "single"
-                  ? {
-                      thread: item.id,
-                      ...(item.projectId ? { project: item.projectId } : {}),
-                    }
-                  : {
-                      compare: item.id,
-                      ...(item.projectId ? { project: item.projectId } : {}),
-                    },
-            });
-            closeMobileIfOpen();
-          }}
-        >
-          {isPinned && variant !== "project" && (
-            <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
-          )}
-          <span className="truncate">
-            {pendingRename?.id === item.id ? pendingRename.title : item.title}
-          </span>
-          {showWorkSpinner && (
-            <Spinner
-              data-testid="chat-row-spinner"
-              // role="status" + label: announced, not motion-only.
-              label={
-                isGenerating
-                  ? translate("shell.navigation.chatGenerating")
-                  : "Queued"
-              }
-              className="ml-auto size-3.5 shrink-0 text-muted-foreground"
-            />
-          )}
-        </SidebarMenuButton>
-        {hasUnreadActivity ? (
-          <span
+      <ContextMenu key={item.id}>
+        <ContextMenuTrigger asChild>
+          <SidebarMenuItem
             className={cn(
-              "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
-              variant === "project"
-                ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
-                : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+              itemClass,
+              draggingRow?.id === item.id && "opacity-50",
+              dropCueClass(drag?.scope, drag?.orderedIds, item.id),
             )}
-            aria-hidden
+            onContextMenu={() => list && selectForContextMenu(item, list)}
+            {...(drag
+              ? rowDragProps(drag.scope, drag.orderedIds, item.id)
+              : undefined)}
           >
-            {/* Neutral: a finished reply is news, not a fault. */}
-            <span className="size-2 rounded-full bg-muted-foreground/60" />
-          </span>
-        ) : null}
-        {variant === "project" && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              togglePinnedChat(item.id);
-            }}
-            aria-label={isPinned ? "Unpin chat" : "Pin chat"}
-            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-          >
-            <span className="sidebar-row-action-glyph">
-              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-            </span>
-          </button>
-        )}
-        {variant === "recent" && isPinned && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              togglePinnedChat(item.id);
-            }}
-            aria-label="Unpin chat"
-            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-          >
-            <span className="sidebar-row-action-glyph">
-              <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
-            </span>
-          </button>
-        )}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              onClick={(e) => e.stopPropagation()}
-              aria-label="Chat options"
-              className={actionClass}
-            >
-              <span className="sidebar-row-action-glyph">
-                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
-              </span>
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            side="bottom"
-            align="start"
-            sideOffset={0}
-            className="unsloth-plus-menu menu-flat-destructive w-56"
-          >
-            <DropdownMenuItem onSelect={() => openRenameChat(item)}>
-              <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-              <span>Rename</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
-              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-              <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
-            </DropdownMenuItem>
-            {drag &&
-              renderMoveRowItems(
-                drag.scope,
-                drag.orderedIds,
-                item.id,
-                drag.index,
-              )}
-            {sandboxSessionId ? (
-              isTauri ? (
-                <DropdownMenuItem
-                  title="Open the folder this chat's tool calls read and write"
-                  onSelect={() => {
-                    void (async () => {
-                      try {
-                        // A chat moved between projects keeps the sandbox it
-                        // wrote to, so its own history names the folder, not
-                        // current membership. Every pane is read, since a
-                        // compare row can hold one folder per pane.
-                        // One at a time, not Promise.all: this file's export
-                        // contract forbids a concurrent await here, and two
-                        // panes win nothing. A failed read stops the loop and
-                        // is reported below rather than being caught per pane,
-                        // which would read as "never ran a tool" and fall back
-                        // to current membership, the answer the recorded id
-                        // exists to override.
-                        const ids =
-                          threadIds.length > 0 ? threadIds : [item.id];
-                        const recorded: (string | undefined)[] = [];
-                        for (const threadId of ids) {
-                          recorded.push(
-                            recordedSandboxSessionId(
-                              await listStoredChatMessages(threadId),
-                            ),
-                          );
+            <SidebarMenuButton
+              data-testid="recent-thread"
+              data-thread-type={item.type}
+              data-thread-id={item.id}
+              data-generating={isGenerating ? "true" : undefined}
+              aria-busy={isGenerating || undefined}
+              isActive={activeThreadId === item.id}
+              data-selected={selectedChatIds.has(item.id) ? "true" : undefined}
+              className={buttonClass}
+              onClick={(event) => {
+                if (list && handleSelectionClick(event, item, list)) return;
+                clearSelection();
+                clearChatNotifications(item);
+                navigate({
+                  to: "/chat",
+                  search:
+                    item.type === "single"
+                      ? {
+                          thread: item.id,
+                          ...(item.projectId ? { project: item.projectId } : {}),
                         }
-                        let distinct = [...new Set(recorded.filter(Boolean))];
-                        if (distinct.length === 0 && item.projectId) {
-                          // Chats stored before results carried a session
-                          // recorded nothing, so one that ran loose and has
-                          // since joined a project would be sent to the project
-                          // workspace. Its thread sandbox is the only other
-                          // candidate, and files there are this chat's. Only in
-                          // this direction: a chat moved OUT wrote under
-                          // project-<id>, and nothing retains which one.
-                          const held: string[] = [];
-                          for (const threadId of ids) {
-                            if (await sandboxHasFiles(threadId)) {
-                              held.push(threadId);
+                      : {
+                          compare: item.id,
+                          ...(item.projectId ? { project: item.projectId } : {}),
+                        },
+                });
+                closeMobileIfOpen();
+              }}
+            >
+              {isPinned && variant !== "project" && (
+                <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
+              )}
+              <span className="truncate">
+                {pendingRename?.id === item.id ? pendingRename.title : item.title}
+              </span>
+              {showWorkSpinner && (
+                <Spinner
+                  data-testid="chat-row-spinner"
+                  // role="status" + label: announced, not motion-only.
+                  label={
+                    isGenerating
+                      ? translate("shell.navigation.chatGenerating")
+                      : "Queued"
+                  }
+                  className="ml-auto size-3.5 shrink-0 text-muted-foreground"
+                />
+              )}
+            </SidebarMenuButton>
+            {hasUnreadActivity ? (
+              <span
+                className={cn(
+                  "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+                  variant === "project"
+                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+                )}
+                aria-hidden
+              >
+                {/* Neutral: a finished reply is news, not a fault. */}
+                <span className="size-2 rounded-full bg-muted-foreground/60" />
+              </span>
+            ) : null}
+            {variant === "project" && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinnedChat(item.id);
+                }}
+                aria-label={isPinned ? "Unpin chat" : "Pin chat"}
+                className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/project-chat-item:opacity-100 group-hover/project-chat-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+              >
+                <span className="sidebar-row-action-glyph">
+                  <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                </span>
+              </button>
+            )}
+            {variant === "recent" && isPinned && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  togglePinnedChat(item.id);
+                }}
+                aria-label="Unpin chat"
+                className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+              >
+                <span className="sidebar-row-action-glyph">
+                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-icon" />
+                </span>
+              </button>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label="Chat options"
+                  className={actionClass}
+                >
+                  <span className="sidebar-row-action-glyph">
+                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                side="bottom"
+                align="start"
+                sideOffset={0}
+                className="unsloth-plus-menu menu-flat-destructive w-56"
+              >
+                <DropdownMenuItem onSelect={() => openRenameChat(item)}>
+                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Rename</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
+                  <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
+                </DropdownMenuItem>
+                {drag &&
+                  renderMoveRowItems(
+                    drag.scope,
+                    drag.orderedIds,
+                    item.id,
+                    drag.index,
+                  )}
+                {sandboxSessionId ? (
+                  isTauri ? (
+                    <DropdownMenuItem
+                      title="Open the folder this chat's tool calls read and write"
+                      onSelect={() => {
+                        void (async () => {
+                          try {
+                            // A chat moved between projects keeps the sandbox it
+                            // wrote to, so its own history names the folder, not
+                            // current membership. Every pane is read, since a
+                            // compare row can hold one folder per pane.
+                            // One at a time, not Promise.all: this file's export
+                            // contract forbids a concurrent await here, and two
+                            // panes win nothing. A failed read stops the loop and
+                            // is reported below rather than being caught per pane,
+                            // which would read as "never ran a tool" and fall back
+                            // to current membership, the answer the recorded id
+                            // exists to override.
+                            const ids =
+                              threadIds.length > 0 ? threadIds : [item.id];
+                            const recorded: (string | undefined)[] = [];
+                            for (const threadId of ids) {
+                              recorded.push(
+                                recordedSandboxSessionId(
+                                  await listStoredChatMessages(threadId),
+                                ),
+                              );
+                            }
+                            let distinct = [...new Set(recorded.filter(Boolean))];
+                            if (distinct.length === 0 && item.projectId) {
+                              // Chats stored before results carried a session
+                              // recorded nothing, so one that ran loose and has
+                              // since joined a project would be sent to the project
+                              // workspace. Its thread sandbox is the only other
+                              // candidate, and files there are this chat's. Only in
+                              // this direction: a chat moved OUT wrote under
+                              // project-<id>, and nothing retains which one.
+                              const held: string[] = [];
+                              for (const threadId of ids) {
+                                if (await sandboxHasFiles(threadId)) {
+                                  held.push(threadId);
+                                }
+                              }
+                              distinct = [...new Set(held)];
+                            }
+                            if (distinct.length > 1) {
+                              toast.error("This chat wrote to more than one folder.", {
+                                description:
+                                  "Its panes ran before it joined this project, so open the folder from a tool card instead.",
+                              });
+                              return;
+                            }
+                            await revealSandbox(distinct[0] ?? sandboxSessionId);
+                          } catch (error) {
+                            toast.error("Could not open the chat folder.", {
+                              description:
+                                error instanceof Error
+                                  ? error.message
+                                  : String(error),
+                            });
+                          }
+                        })();
+                      }}
+                    >
+                      <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
+                      <span>Open chat folder</span>
+                    </DropdownMenuItem>
+                  ) : (
+                    <OpenChatFolderUnavailableItem />
+                  )
+                ) : null}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>Move to project</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent
+                    sideOffset={0}
+                    alignOffset={-4}
+                    className="unsloth-plus-menu w-52"
+                  >
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        setProjectCreateMoveTarget(item);
+                        setCreatingProject(true);
+                      }}
+                    >
+                      <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
+                      <span>New project</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={!item.projectId}
+                      onSelect={() => void moveChatToProject(item, null)}
+                    >
+                      <span>Recents</span>
+                    </DropdownMenuItem>
+                    {projects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        disabled={item.projectId === project.id}
+                        onSelect={() => void moveChatToProject(item, project.id)}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Export</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                    {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                      <DropdownMenuItem
+                        key={label}
+                        onSelect={async () => {
+                          try {
+                            const ids = item.type === "single"
+                              ? [item.id]
+                              : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
+                            for (const id of ids) {
+                              await exportConversationByFormat(id, format);
+                            }
+                          } catch (error) {
+                            if (!isDownloadCancelled(error)) {
+                              toast.error("Export failed.");
                             }
                           }
-                          distinct = [...new Set(held)];
-                        }
-                        if (distinct.length > 1) {
-                          toast.error("This chat wrote to more than one folder.", {
-                            description:
-                              "Its panes ran before it joined this project, so open the folder from a tool card instead.",
-                          });
-                          return;
-                        }
-                        await revealSandbox(distinct[0] ?? sandboxSessionId);
-                      } catch (error) {
-                        toast.error("Could not open the chat folder.", {
-                          description:
-                            error instanceof Error
-                              ? error.message
-                              : String(error),
-                        });
+                        }}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    {/* Bulk export and import live in Settings -> Data. */}
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        useSettingsDialogStore.getState().openDialog("data")
                       }
-                    })();
-                  }}
-                >
-                  <HugeiconsIcon icon={FolderOpenIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>Open chat folder</span>
-                </DropdownMenuItem>
-              ) : (
-                <OpenChatFolderUnavailableItem />
-              )
-            ) : null}
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className="size-icon" />
-                <span>Move to project</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                sideOffset={0}
-                alignOffset={-4}
-                className="unsloth-plus-menu w-52"
-              >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    setProjectCreateMoveTarget(item);
-                    setCreatingProject(true);
-                  }}
-                >
-                  <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>New project</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={!item.projectId}
-                  onSelect={() => void moveChatToProject(item, null)}
-                >
-                  <span>Recents</span>
-                </DropdownMenuItem>
-                {projects.map((project) => (
-                  <DropdownMenuItem
-                    key={project.id}
-                    disabled={item.projectId === project.id}
-                    onSelect={() => void moveChatToProject(item, project.id)}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{project.name}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                <span>Export</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                {CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                  <DropdownMenuItem
-                    key={label}
-                    onSelect={async () => {
-                      try {
-                        const ids = item.type === "single"
-                          ? [item.id]
-                          : (await listStoredChatThreads({ pairId: item.id })).map((t) => t.id);
-                        for (const id of ids) {
-                          await exportConversationByFormat(id, format);
-                        }
-                      } catch (error) {
-                        if (!isDownloadCancelled(error)) {
-                          toast.error("Export failed.");
-                        }
-                      }
-                    }}
-                  >
-                    {label}
-                  </DropdownMenuItem>
-                ))}
+                    >
+                      Export all chats…
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Save to project sources</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
+                    {projects.length === 0 && (
+                      <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
+                    )}
+                    {projects.map((project) => (
+                      <DropdownMenuItem
+                        key={project.id}
+                        onSelect={async () => {
+                          try {
+                            await saveChatToProjectSources(item, project.id);
+                          } catch {
+                            toast.error("Failed to save to project sources.");
+                          }
+                        }}
+                      >
+                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                        <span className="truncate">{project.name}</span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
                 <DropdownMenuSeparator />
-                {/* Bulk export and import live in Settings -> Data. */}
+                <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+                  <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Archive</span>
+                </DropdownMenuItem>
                 <DropdownMenuItem
+                  variant="destructive"
                   onSelect={() =>
-                    useSettingsDialogStore.getState().openDialog("data")
+                    confirmDeleteChats
+                      ? openDeleteDialog({ kind: "chat", item })
+                      : void deleteChatWithCleanup(item)
                   }
                 >
-                  Export all chats…
+                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Delete</span>
                 </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={BookOpen01Icon} strokeWidth={1.75} className="size-icon" />
-                <span>Save to project sources</span>
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent sideOffset={8} alignOffset={-4} className="unsloth-plus-menu w-52">
-                {projects.length === 0 && (
-                  <DropdownMenuItem disabled>No projects yet</DropdownMenuItem>
-                )}
-                {projects.map((project) => (
-                  <DropdownMenuItem
-                    key={project.id}
-                    onSelect={async () => {
-                      try {
-                        await saveChatToProjectSources(item, project.id);
-                      } catch {
-                        toast.error("Failed to save to project sources.");
-                      }
-                    }}
-                  >
-                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                    <span className="truncate">{project.name}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
-              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
-              <span>Archive</span>
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              variant="destructive"
-              onSelect={() =>
-                confirmDeleteChats
-                  ? openDeleteDialog({ kind: "chat", item })
-                  : void deleteChatWithCleanup(item)
-              }
-            >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-              <span>Delete</span>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </SidebarMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </ContextMenuTrigger>
+        {renderChatContextMenu()}
+      </ContextMenu>
     );
   }
 
@@ -2867,6 +3075,7 @@ export function AppSidebar() {
                               index,
                             }
                           : undefined,
+                        { scope: PINNED_ORDER_SCOPE, ids: pinnedRowIds },
                       ),
                     )}
                   </SidebarMenu>
@@ -3057,6 +3266,10 @@ export function AppSidebar() {
                                     index,
                                   }
                                 : undefined,
+                              {
+                                scope: projectOrderScope(project.id),
+                                ids: projectChatIds,
+                              },
                             ),
                           )}
                         {expanded &&
@@ -3142,6 +3355,7 @@ export function AppSidebar() {
                               index,
                             }
                           : undefined,
+                        { scope: RECENTS_ORDER_SCOPE, ids: recentRowIds },
                       ),
                     )}
                   </SidebarMenu>
@@ -3526,7 +3740,9 @@ export function AppSidebar() {
               ? t("shell.dialog.deleteRun.title")
               : confirmingDelete?.kind === "project"
                 ? "Delete project"
-                : t("shell.dialog.deleteChat.title")}
+                : confirmingDelete?.kind === "chats"
+                  ? t("shell.selection.deleteTitle")
+                  : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
@@ -3541,6 +3757,10 @@ export function AppSidebar() {
                 "shell.dialog.deleteChat.description",
                 confirmingDelete.item.title,
               )
+            ) : confirmingDelete?.kind === "chats" ? (
+              t("shell.selection.deleteDescription", {
+                count: confirmingDelete.items.length,
+              })
             ) : confirmingDelete?.kind === "project" ? (
               <>
                 Delete{" "}
@@ -3562,7 +3782,9 @@ export function AppSidebar() {
                 {confirmingDelete?.kind === "project"
                   ? (confirmingDelete.project.rootPath ??
                     "The project workspace folder will be removed from disk.")
-                  : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
+                  : confirmingDelete?.kind === "chats"
+                    ? t("shell.selection.deleteFilesDescription")
+                    : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
               </span>
             </label>
             <Switch

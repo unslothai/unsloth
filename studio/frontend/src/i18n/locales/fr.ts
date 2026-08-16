@@ -111,6 +111,18 @@ export const fr = {
       description: "{path} n'existe pas.",
       backToChat: "Retour à la discussion",
     },
+    selection: {
+      countSelected: "{count} sélectionnés",
+      pinChats: "Épingler les discussions",
+      unpinChats: "Détacher les discussions",
+      archiveChats: "Archiver les discussions",
+      markUnread: "Marquer comme non lu",
+      deleteChats: "Supprimer les discussions",
+      deleteTitle: "Supprimer les discussions",
+      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteFilesDescription:
+        "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+    },
     organize: {
       sidebarHeading: "Organiser la barre latérale",
       byProject: "Par projet",

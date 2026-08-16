@@ -106,6 +106,18 @@ export const zhCN = {
       description: "{path} 不存在。",
       backToChat: "返回聊天",
     },
+    selection: {
+      countSelected: "已选择 {count} 个",
+      pinChats: "置顶对话",
+      unpinChats: "取消置顶",
+      archiveChats: "归档对话",
+      markUnread: "标记为未读",
+      deleteChats: "删除对话",
+      deleteTitle: "删除对话",
+      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteFilesDescription:
+        "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
+    },
     organize: {
       sidebarHeading: "整理侧边栏",
       byProject: "按项目",

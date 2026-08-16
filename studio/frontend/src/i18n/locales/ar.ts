@@ -108,6 +108,18 @@ export const ar = {
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
     },
+    selection: {
+      countSelected: "{count} محددة",
+      pinChats: "تثبيت المحادثات",
+      unpinChats: "إلغاء تثبيت المحادثات",
+      archiveChats: "أرشفة المحادثات",
+      markUnread: "وضع علامة كغير مقروءة",
+      deleteChats: "حذف المحادثات",
+      deleteTitle: "حذف المحادثات",
+      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteFilesDescription:
+        "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+    },
     organize: {
       sidebarHeading: "تنظيم الشريط الجانبي",
       byProject: "حسب المشروع",

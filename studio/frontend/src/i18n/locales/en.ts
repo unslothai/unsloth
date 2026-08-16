@@ -106,6 +106,19 @@ export const en = {
       description: "{path} does not exist.",
       backToChat: "Back to chat",
     },
+    // Bulk actions on a multi-row selection.
+    selection: {
+      countSelected: "{count} selected",
+      pinChats: "Pin chats",
+      unpinChats: "Unpin chats",
+      archiveChats: "Archive chats",
+      markUnread: "Mark as unread",
+      deleteChats: "Delete chats",
+      deleteTitle: "Delete chats",
+      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteFilesDescription:
+        "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
+    },
     // Sidebar list headers: how chats are grouped and ordered.
     organize: {
       sidebarHeading: "Organize sidebar",

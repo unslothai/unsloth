@@ -110,6 +110,18 @@ export const ru = {
       description: "{path} не существует.",
       backToChat: "Вернуться к чату",
     },
+    selection: {
+      countSelected: "Выбрано: {count}",
+      pinChats: "Закрепить чаты",
+      unpinChats: "Открепить чаты",
+      archiveChats: "Архивировать чаты",
+      markUnread: "Отметить как непрочитанное",
+      deleteChats: "Удалить чаты",
+      deleteTitle: "Удалить чаты",
+      deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",
+      deleteFilesDescription:
+        "Собственная папка песочницы каждого чата удаляется с диска. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
+    },
     organize: {
       sidebarHeading: "Настроить боковую панель",
       byProject: "По проектам",
