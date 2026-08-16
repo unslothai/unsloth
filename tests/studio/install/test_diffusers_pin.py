@@ -158,14 +158,14 @@ def test_the_ordering_check_reads_installs_not_prose():
     pin = 'pip_install("diffusers pin", "-r", "diffusers-pin.txt")\n'
 
     prose = _code_only(pin + "# cannot live in extras-no-deps.txt because markers\n")
-    assert prose.rfind("extras-no-deps.txt") < prose.index("diffusers-pin.txt"), (
-        "a commented mention of a requirements file must not count as an install"
-    )
+    assert prose.rfind("extras-no-deps.txt") < prose.index(
+        "diffusers-pin.txt"
+    ), "a commented mention of a requirements file must not count as an install"
 
     real = _code_only(pin + 'pip_install("extras", "-r", "extras-no-deps.txt")\n')
-    assert real.rfind("extras-no-deps.txt") > real.index("diffusers-pin.txt"), (
-        "a genuine later install must still be caught"
-    )
+    assert real.rfind("extras-no-deps.txt") > real.index(
+        "diffusers-pin.txt"
+    ), "a genuine later install must still be caught"
 
     # A `#` inside a string literal is not a comment and must survive intact.
     kept = _code_only('marker = "extras-no-deps.txt#egg"\n')
