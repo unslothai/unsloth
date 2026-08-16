@@ -388,9 +388,7 @@ class TestLoadModelNeverReadsEnvBeforeItExists:
         import inspect
         import textwrap
 
-        fn = ast.parse(
-            textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
-        )
+        fn = ast.parse(textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model)))
         stores = [
             n.lineno
             for n in ast.walk(fn)
