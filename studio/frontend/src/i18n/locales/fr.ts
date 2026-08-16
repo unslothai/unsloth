@@ -405,6 +405,9 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaEnable: "Changer de modèle d’image et de vidéo par requête",
+        mediaEnableDescription:
+          "Charger, avant la génération, un modèle d’image ou de vidéo téléchargé indiqué dans une requête API. Réglage distinct : celui ci-dessus ne concerne que le modèle de discussion. Désactivé par défaut.",
         mediaIdleUnload:
           "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
         mediaIdleUnloadDescription:
@@ -412,7 +415,7 @@ export const fr = {
         mediaIdleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
         mediaIdlePaused:
-          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
+          "En pause tant que « Conserver le modèle en mémoire GPU » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",

@@ -403,6 +403,9 @@ export const es = {
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
         idleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar el modelo",
+        mediaEnable: "Cambiar de modelo de imagen y vídeo según la solicitud",
+        mediaEnableDescription:
+          "Si una solicitud de la API especifica un modelo de imagen o vídeo ya descargado, lo carga antes de generar. Es una opción independiente: la de arriba solo se aplica al modelo de chat. Desactivado por defecto.",
         mediaIdleUnload:
           "Liberar imagen y vídeo automáticamente por inactividad",
         mediaIdleUnloadDescription:
@@ -410,7 +413,7 @@ export const es = {
         mediaIdleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar los modelos de imagen y vídeo",
         mediaIdlePaused:
-          "En pausa mientras «Mantener el modelo en la memoria de la GPU» o «Liberar solo los modelos cargados por la API» esté activado.",
+          "En pausa mientras «Mantener el modelo en la memoria de la GPU» está activado.",
         idleNeedsEnable: "Activa primero «Cambiar de modelo según la solicitud».",
         idleActiveViaEnv:
           "La descarga automática por inactividad está activa mediante la variable de entorno UNSLOTH_MODEL_IDLE_TTL.",

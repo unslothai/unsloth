@@ -34,6 +34,7 @@ def hidream_te4_kwargs(
     fam: Any = None,
     te_quant_mode: Optional[str] = None,
     target: Any = None,
+    local_files_only: bool = False,
 ) -> dict[str, Any]:
     """``{text_encoder_4, tokenizer_4}`` kwargs for a HiDream pipeline ``from_pretrained``.
 
@@ -44,11 +45,27 @@ def hidream_te4_kwargs(
     TE4 -- HiDream's HEAVIEST encoder -- is handled here: when the requested TE quant is
     layerwise fp8 (and the device/family qualify, same gates as the runtime cast), TE4 is
     fp8-cast too, preferring the hosted pre-cast checkpoint (~half the download) and
-    falling back to dense-load-then-cast. Any other mode keeps today's dense bf16 TE4."""
+    falling back to dense-load-then-cast. Any other mode keeps today's dense bf16 TE4.
+
+    ``local_files_only`` is set by a load no user asked for, where fetching this repo is the
+    thing the caller promised would not happen: it raises here instead of downloading 16 GB."""
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 
-    tokenizer_4 = AutoTokenizer.from_pretrained(HIDREAM_LLAMA_REPO, token = hf_token)
+    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an
+    # unpinned lookup after a mid-session cache-folder change searches huggingface_hub's
+    # import-time root instead and fails under local_files_only for a 16 GB encoder that is
+    # present, after the resident image pipeline was evicted.
+    from utils.hf_cache_settings import active_hf_hub_cache
+
+    cache_dir = active_hf_hub_cache()
+
+    tokenizer_4 = AutoTokenizer.from_pretrained(
+        HIDREAM_LLAMA_REPO,
+        token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
+    )
 
     fp8_engages = False
     if target is not None:
@@ -102,6 +119,8 @@ def hidream_te4_kwargs(
         output_attentions = True,
         torch_dtype = dtype,
         token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = cache_dir,
     )
     if fp8_engages:
         try:
@@ -122,6 +141,8 @@ def hidream_te4_kwargs(
                 output_hidden_states = True,
                 output_attentions = True,
                 torch_dtype = dtype,
+                local_files_only = local_files_only,
                 token = hf_token,
+                cache_dir = cache_dir,
             )
     return {"text_encoder_4": text_encoder_4, "tokenizer_4": tokenizer_4}

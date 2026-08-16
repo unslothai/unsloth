@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The image/video idle TTL rides the shared auto-switch PUT but is its own
-// setting: saving it must not carry the chat seconds along, and a backend that
-// predates the field must read as off rather than inheriting the chat TTL.
+// Image/video auto-switch rides the shared auto-switch PUT but is its own
+// setting: saving it must not carry any other field along, and a backend that
+// predates it must read as off rather than inheriting the chat toggle.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -34,6 +34,8 @@ const API = {
   media_auto_unload_idle_seconds: 0,
   // biome-ignore lint/style/useNamingConvention: API schema
   media_idle_unload_active: false,
+  // biome-ignore lint/style/useNamingConvention: API schema
+  media_auto_switch_model: false,
 };
 
 let nextBody: Record<string, unknown> = { ...API };
@@ -53,60 +55,53 @@ const {
   updateOpenAIAutoSwitchSettings,
 } = await import("../src/features/settings/api/openai-auto-switch.ts");
 
-test("a backend without the field reads as off, not as the chat TTL", async () => {
+test("a backend without the field reads as off, not as the chat toggle", async () => {
   invalidateOpenAIAutoSwitchSettings();
-  const {
-    media_auto_unload_idle_seconds: _seconds,
-    media_idle_unload_active: _active,
-    ...older
-  } = API;
+  const { media_auto_switch_model: _switch, ...older } = API;
   nextBody = older;
   const settings = await loadOpenAIAutoSwitchSettings();
-  assert.equal(settings.autoUnloadIdleSeconds, 300);
-  assert.equal(settings.mediaAutoUnloadIdleSeconds, 0);
-  assert.equal(settings.mediaIdleUnloadActive, false);
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.mediaAutoSwitchModel, false);
   nextBody = { ...API };
 });
 
-test("the seconds round-trip", async () => {
+test("the toggle round-trips", async () => {
   invalidateOpenAIAutoSwitchSettings();
-  nextBody = {
-    ...API,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    media_auto_unload_idle_seconds: 600,
-    // biome-ignore lint/style/useNamingConvention: API schema
-    media_idle_unload_active: true,
-  };
+  // biome-ignore lint/style/useNamingConvention: API schema
+  nextBody = { ...API, media_auto_switch_model: true };
   const saved = await updateOpenAIAutoSwitchSettings({
     enabled: true,
-    mediaAutoUnloadIdleSeconds: 600,
+    mediaAutoSwitchModel: true,
   });
-  assert.equal(saved.mediaAutoUnloadIdleSeconds, 600);
-  assert.equal(saved.mediaIdleUnloadActive, true);
+  assert.equal(saved.mediaAutoSwitchModel, true);
   nextBody = { ...API };
 });
 
-test("saving it alone leaves the chat TTL untouched", async () => {
+test("saving it alone leaves the other switches untouched", async () => {
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
   await updateOpenAIAutoSwitchSettings({
     enabled: true,
-    mediaAutoUnloadIdleSeconds: 600,
+    mediaAutoSwitchModel: true,
   });
   assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema
-    media_auto_unload_idle_seconds: 600,
+    media_auto_switch_model: true,
   });
 });
 
-test("saving the chat TTL does not send a media TTL", async () => {
+test("a false toggle is sent, not dropped as absent", async () => {
+  // Only `undefined` means "leave stored"; turning the switch OFF has to reach the server.
   invalidateOpenAIAutoSwitchSettings();
   bodies.length = 0;
-  await updateOpenAIAutoSwitchSettings({ enabled: true, autoUnloadIdleSeconds: 300 });
+  await updateOpenAIAutoSwitchSettings({
+    enabled: true,
+    mediaAutoSwitchModel: false,
+  });
   assert.deepEqual(JSON.parse(bodies[0] ?? "{}"), {
     enabled: true,
     // biome-ignore lint/style/useNamingConvention: API schema
-    auto_unload_idle_seconds: 300,
+    media_auto_switch_model: false,
   });
 });
