@@ -242,6 +242,46 @@ def test_a_task_head_the_planner_cannot_see_declines_planning():
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = reason) == "sequential"
 
 
+def test_the_optimized_llama_path_also_declines_a_classification_load():
+    """The same veto has to live on llama.py's own planner call, not just vision.py's.
+
+    loader.py delegates to FastModel only for 8bit / full finetuning / QAT, so
+    `FastLanguageModel.from_pretrained(..., num_labels = 2, device_map = "unsloth")` on a
+    llama/mistral/gemma/qwen repo dispatches to FastLlamaModel, plans the repo's causal LM,
+    and then loads AutoModelForSequenceClassification a few lines later. That model has
+    `score` and no `lm_head`, so accelerate's `dispatch_model` -> `check_device_map` raises
+    "does not give any device for the following parameters: score.weight".
+    """
+    llama = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    tree = ast.parse(llama)
+
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = assignments.get(target.id, "") + ast.unparse(node.value)
+
+    calls = _resolve_calls(llama)
+    assert calls, "llama.py no longer plans a device map"
+    for call in calls:
+        passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+        assert "skip_reason" in passed, f"llama.py:{call.lineno} plans a classification load"
+        source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
+        assert "num_labels" in source, f"llama.py:{call.lineno}"
+        assert "planner_class_mismatch_reason" in source, f"llama.py:{call.lineno}"
+
+    # The veto must be decided before the call, or it is a NameError on every load.
+    veto_line = min(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_planner_skip_reason" for t in node.targets)
+    )
+    assert veto_line < min(call.lineno for call in calls)
+
+
 def test_a_distributed_launch_never_gets_an_intra_model_split():
     """torchrun/DDP/FSDP already put one whole model per rank. Splitting a model across
     the cards on top of that puts every rank on every card, which OOMs rather than fits.

@@ -27,11 +27,14 @@ from ._utils import (
     _prepare_model_for_qat,
     is_bfloat16_supported,
     get_quant_type,
+    resolve_model_class,
 )
 from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -2602,6 +2605,20 @@ class FastLlamaModel:
         # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
+        # `num_labels` sends the load below to AutoModelForSequenceClassification, so
+        # LlamaForSequenceClassification's `score` replaces the `lm_head` the planner named
+        # off the repo's own config, and accelerate's `dispatch_model` refuses the map:
+        # "does not give any device for the following parameters: score.weight".
+        _planner_skip_reason = None
+        if num_labels is not None:
+            _planner_skip_reason = (
+                planner_class_mismatch_reason(
+                    resolve_model_class(AutoModelForSequenceClassification, model_config),
+                    planner_model_class(model_config, trust_remote_code = trust_remote_code),
+                )
+                or "num_labels loads a task head the repo config does not describe"
+            )
+
         # Here, not in loader.py: the mapper can still substitute the repo up there (a
         # -bnb-4bit name resolving to its 16-bit twin), and a plan sized for the repo the
         # caller named is the wrong plan for the one actually loaded.
@@ -2610,6 +2627,7 @@ class FastLlamaModel:
             model_name,
             fast_inference = fast_inference,
             planner_kwargs = device_map_planner_kwargs,
+            skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
