@@ -1713,6 +1713,40 @@ test("with no saved config the gate compares what the load would send", () => {
   );
 });
 
+test("adopting reseeds the slot and batch controls the rollback left behind", () => {
+  // The rollback restores the OUTGOING model's config, so the slot and batch controls in
+  // the store belong to the model the tab just left. Suppressing the model-change reseed
+  // kept them: the adopted model could run 4 slots while the control showed the outgoing
+  // count, and the next Apply saved that over it. Reachable coming back from an external
+  // provider to a still-resident GGUF, which is the case this shortcut began as.
+  const hydrator = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/lib/apply-inference-status-to-store.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.match(
+    hydrator.replace(/\s+/g, " "),
+    /const slotsModelChanged = hydratingExistingModel;/,
+  );
+  // Every other load-param seed at that call site already keys off the same flag, so the
+  // suppression is gone rather than merely unused.
+  assert.equal(hydrator.includes("readoptingSameModel"), false);
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  assert.equal(source.includes("readoptingSameModel"), false);
+});
+
 /** The repair window is only useful if it is consulted before the reload is decided. */
 test("selectModel asks about a repairable drafter before adopting", () => {
   const source = readFileSync(

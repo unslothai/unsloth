@@ -887,8 +887,6 @@ export function useChatModelRuntime() {
             applyActiveModelStatusToStore(confirmedStatus, {
               previousCheckpoint: selectedCheckpoint,
               previousGgufVariant,
-              // Id and variant matched above: same model, only the tab moved.
-              readoptingSameModel: true,
             });
             syncModelCapabilities(modelId, confirmedStatus);
             // The pick's own GPU selection, which the hydration above would otherwise

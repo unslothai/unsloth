@@ -130,9 +130,6 @@ export type ApplyInferenceStatusOptions = {
    * status -- without it a variant-only switch underneath the tab reads as
    * steady state and the hydration reseed keeps the old quant's baselines. */
   previousGgufVariant?: string | null;
-  /** The caller verified the status is the model this tab just picked, so the
-   * slot control it holds belongs to that model and must survive. */
-  readoptingSameModel?: boolean;
 };
 
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
@@ -208,11 +205,11 @@ export function applyActiveModelStatusToStore(
   // While a load is in flight, performLoad owns the load params. Seeding them
   // from a stale poll here would clobber the values the load dialog just set.
   const seedLoadParams = !prevState.modelLoading;
-  // A model/variant change underneath this tab, as opposed to re-adopting the
-  // model the tab just picked, where hydratingExistingModel fires on the stale
-  // checkpoint. The echo cannot stand in: a new model can report the old count.
-  const slotsModelChanged =
-    hydratingExistingModel && !options.readoptingSameModel;
+  // A model/variant change underneath this tab. The controls in the store belong
+  // to the model that just left, so they are reseeded here the way every other
+  // load param at this site already is: the echo cannot stand in, since a new
+  // model can report the old count.
+  const slotsModelChanged = hydratingExistingModel;
   // This model's remembered override, read only on a fresh store or a model
   // change, so a steady poll cannot re-pin a control the user just blanked.
   // Through the resident resolver, not the raw id: an API-driven load reports the
