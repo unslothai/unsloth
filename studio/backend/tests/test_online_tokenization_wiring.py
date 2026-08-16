@@ -208,7 +208,13 @@ def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
         def __init__(self):
             self.seen = []
 
-        def __call__(self, texts, truncation = True, max_length = 8, add_special_tokens = True):
+        def __call__(
+            self,
+            texts,
+            truncation = True,
+            max_length = 8,
+            add_special_tokens = True,
+        ):
             self.seen.append(add_special_tokens)
             return super().__call__(
                 texts,
