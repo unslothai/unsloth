@@ -4948,7 +4948,13 @@ for x in importlib.metadata.distributions(path=_paths):
         # install. The distinction is carried through to _verdict.
         record = x.read_text('RECORD')
     except Exception:
-        record = None
+        # False, not None: read_text answers None when RECORD is ABSENT and raises
+        # when it exists but its bytes are not valid UTF-8, which is a partial write
+        # or a quarantine -- corruption, and not to be mistaken for having no
+        # inventory at all. The boundary is the stdlib's: read_text SUPPRESSES
+        # PermissionError and answers None for it, so a merely locked RECORD stays on
+        # the lenient path, which is the same call made for a locked file below.
+        record = False
     if _norm(name) == _norm(_pkg):
         cands.append((x, record))
     for r in csv.reader((record or '').splitlines()):
@@ -5137,9 +5143,11 @@ def _verdict(d, d_record):
     # one either: top_level.txt legitimately names tops the wheel never ships
     # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
     # line boundary stays undetectable here.
-    # an existing but empty RECORD is corruption, not the absence of one
-    _empty_record = d_record is not None and not d_record.strip()
-    damaged = (not _edit) and (_empty_record
+    # an existing RECORD that is empty or unreadable is corruption, not the absence
+    # of one: only a genuinely missing inventory falls through to the lenient paths
+    _unreadable = d_record is False
+    _empty_record = (not _unreadable) and d_record is not None and not d_record.strip()
+    damaged = (not _edit) and (_unreadable or _empty_record
                                or (bool(d_record) and (not selfrec or flen != 3)))
     try:
         _mine = (_norm(d.metadata['Name']), d.version)
