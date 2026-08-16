@@ -918,6 +918,30 @@ def _is_stream(dataset):
 
 _SCAN_ROWS = 1024
 
+# A producer that truncates every row itself can say so, and be believed without
+# a scan. Reading every row of a lazily-tokenizing split (`with_transform`) to
+# check its widths runs the whole tokenization pass this scan's caller is trying
+# to avoid, and does it in the trainer's `__init__` where nothing is overlapped.
+# Only a cap AT OR BELOW the one being enforced counts: a split truncated to
+# 4096 proves nothing about a 2048 cap.
+_TRUNCATION_ATTESTATION_ATTR = "_unsloth_truncated_to"
+
+
+def _attested_within_cap(dataset, cap):
+    """The split's own claim about its truncation width, or None if it makes none.
+
+    Read out of `__dict__` rather than with `getattr`: `_CappedBase.__getattr__`
+    forwards unknown names to the split inside, so an attestation on an inner
+    split would otherwise answer for a wrapper that carries no such guarantee.
+    """
+    own = getattr(dataset, "__dict__", None)
+    if not isinstance(own, dict):
+        return None
+    claimed = own.get(_TRUNCATION_ATTESTATION_ATTR)
+    if not isinstance(claimed, int) or isinstance(claimed, bool):
+        return None
+    return claimed <= cap
+
 
 def pretokenized_within_cap(dataset, cap):
     """Whether every pre-tokenized row in `dataset` already fits `cap`.
@@ -936,6 +960,9 @@ def pretokenized_within_cap(dataset, cap):
     """
     if dataset is None:
         return True
+    attested = _attested_within_cap(dataset, cap)
+    if attested is not None:
+        return attested
     try:
         try:
             n = len(dataset)
@@ -2716,6 +2743,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
+                    # A producer that truncates every row itself may say so and be
+                    # believed. Scanning a lazily-tokenizing split (`with_transform`)
+                    # reads -- and therefore tokenizes -- every row, right here in
+                    # `__init__` where nothing overlaps it: the whole eager pass the
+                    # lazy split exists to avoid, paid to confirm a width its own
+                    # transform already enforced. Out of `__dict__`, so a wrapper does
+                    # not inherit the claim of the split inside it, and only a cap at
+                    # or below this one counts.
+                    "        _unsloth_own = getattr(_ds, '__dict__', None)\n"
+                    "        if isinstance(_unsloth_own, dict):\n"
+                    "            _unsloth_claim = _unsloth_own.get('_unsloth_truncated_to')\n"
+                    "            if isinstance(_unsloth_claim, int) and not isinstance(_unsloth_claim, bool):\n"
+                    "                return _unsloth_claim <= _unsloth_cap\n"
                     "        try:\n"
                     "            try:    _n = len(_ds)\n"
                     "            except Exception: _n = None\n"
@@ -3042,6 +3082,27 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # as a bare `StopIteration` naming nothing at all.
                     "        if _unsloth_emptied:\n"
                     "            raise ValueError('Unsloth: truncating to `max_length = ' + str(args.max_length) + '` left every row with no supervised token, so there is nothing to train on. The supervised part of your rows starts past that length: raise `max_length`, or set `truncation_mode = \"keep_end\"` if the completion sits at the end of each row.')\n"
+                    # A split whose producer truncates every row itself enforces the cap
+                    # just as `truncate_dataset` would, so the run keeps padding-free
+                    # instead of paying the fallback's price for a guarantee it already
+                    # has. This is the shape Studio's online tokenization produces: a
+                    # `with_transform` view that tokenizes with `max_length` on read, so
+                    # its rows are capped but nothing here can see it without reading --
+                    # and reading them all IS the eager tokenize pass the view avoids.
+                    # Not under `eval_packing`: that split is meant to be overlength, and
+                    # the packer needs `max_length` this branch would clear.
+                    "    if not _unsloth_prep_truncates and not _unsloth_eval_packing:\n"
+                    "        def _unsloth_attests(_ds):\n"
+                    "            if _ds is None: return True\n"
+                    "            _own = getattr(_ds, '__dict__', None)\n"
+                    "            if not isinstance(_own, dict): return False\n"
+                    "            _claim = _own.get('_unsloth_truncated_to')\n"
+                    "            if not isinstance(_claim, int) or isinstance(_claim, bool): return False\n"
+                    "            return _claim <= _unsloth_cap\n"
+                    "        _unsloth_attest_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
+                    "        _unsloth_attest_splits = list(_unsloth_attest_eval.values()) if isinstance(_unsloth_attest_eval, dict) else [_unsloth_attest_eval]\n"
+                    "        if _unsloth_attests(train_dataset) and all(_unsloth_attests(_s) for _s in _unsloth_attest_splits):\n"
+                    "            _unsloth_prep_truncates = True\n"
                     "    if _unsloth_prep_truncates:\n"
                     "        args.max_seq_length = args.max_length\n"
                     "        args.max_length = None\n"
