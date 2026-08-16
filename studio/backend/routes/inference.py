@@ -1400,6 +1400,32 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
 
 
+_CHAT_PREFILL_CANCEL_LOCK = threading.Lock()
+_CHAT_PREFILL_CANCEL_EVENTS: dict[str, set[threading.Event]] = {}
+
+
+def _register_chat_prefill_cancel(key: str, cancel_event: threading.Event) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        _CHAT_PREFILL_CANCEL_EVENTS.setdefault(key, set()).add(cancel_event)
+
+
+def _unregister_chat_prefill_cancel(key: str, cancel_event: threading.Event) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        events = _CHAT_PREFILL_CANCEL_EVENTS.get(key)
+        if events is None:
+            return
+        events.discard(cancel_event)
+        if not events:
+            _CHAT_PREFILL_CANCEL_EVENTS.pop(key, None)
+
+
+def _cancel_active_chat_prefills(key: str) -> None:
+    with _CHAT_PREFILL_CANCEL_LOCK:
+        events = tuple(_CHAT_PREFILL_CANCEL_EVENTS.get(key, ()))
+    for cancel_event in events:
+        cancel_event.set()
+
+
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
     """Serving slots available for one local llama-server backend.
 
@@ -1419,11 +1445,16 @@ def _openai_llama_admission_capacity(request: Optional[Request], llama_backend =
 
 
 def _openai_llama_admission_reserve(
-    *, request: Optional[Request], llama_backend
+    *,
+    request: Optional[Request],
+    llama_backend,
+    preempt_chat_prefill: bool = True,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
+    if preempt_chat_prefill:
+        _cancel_active_chat_prefills(key)
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
@@ -23086,6 +23117,200 @@ async def _openai_passthrough_non_streaming_upstream(
         # redundant parse + re-serialize round-trip.
         return Response(content = resp.content, media_type = "application/json")
     return JSONResponse(content = data)
+
+
+async def _build_chat_prefill_body(payload, llama_backend) -> dict:
+    """Build the no-output llama-server request used to warm its prompt cache."""
+    body = await _build_openai_passthrough_body_async(
+        payload,
+        backend_ctx = llama_backend.context_length,
+        llama_backend = llama_backend,
+    )
+
+    messages, _ = await _openai_messages_for_gguf_chat_async(
+        payload,
+        llama_backend.is_vision,
+    )
+    system_prompt, _, _ = _extract_content_parts(payload.messages)
+    messages = _set_or_prepend_system_message(messages, system_prompt)
+    body["messages"] = messages
+
+    # Studio's managed tool loop renders a different first prompt than the plain
+    # passthrough: it selects server tools, adds the tool/RAG system nudge, and
+    # sanitizes tool markup. Reproduce that prompt so the warmed prefix is reusable.
+    client_disabled_tools = getattr(payload, "tool_choice", None) == "none" and not (
+        _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
+    )
+    tools_on = False if client_disabled_tools else _effective_enable_tools(payload)
+    from state.tool_policy import get_tool_policy
+
+    mcp_allowed = (
+        not client_disabled_tools
+        and bool(getattr(payload, "mcp_enabled", False))
+        and get_tool_policy() is not False
+    )
+    if (tools_on or mcp_allowed) and llama_backend.supports_tools:
+        tools = await _select_request_tools(
+            payload,
+            tools_on = tools_on,
+            mcp_allowed = mcp_allowed,
+        )
+        if tools:
+            messages = _append_to_system_message(
+                messages,
+                _apply_rag_nudge(
+                    _build_tool_action_nudge(
+                        tools = tools,
+                        model_name = _llama_public_model_id(llama_backend, payload.model),
+                        full_access = bool(payload.bypass_permissions),
+                    ),
+                    tools,
+                    rag_scope = payload.rag_scope,
+                ),
+            )
+            auto_heal = (
+                payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
+            )
+            enabled_tool_names = _display_tool_name_gate(tools)
+            for message in messages:
+                if message.get("role") == "assistant" and isinstance(message.get("content"), str):
+                    message["content"] = _strip_tool_xml_for_display(
+                        message["content"],
+                        auto_heal_tool_calls = auto_heal,
+                        enabled_tool_names = enabled_tool_names,
+                    ).strip()
+
+            from core.inference.chat_template_helpers import (
+                neutralize_control_markup_in_messages,
+                neutralize_tool_descriptions,
+                sweep_cache,
+            )
+
+            markup_cache = sweep_cache()
+            tools = neutralize_tool_descriptions(tools, markup_cache, llama_backend.markup_profile)
+            body["messages"] = neutralize_control_markup_in_messages(
+                messages,
+                markup_cache,
+                llama_backend.markup_profile,
+            )
+            if tools:
+                body["tools"] = tools
+                body["tool_choice"] = "auto"
+            else:
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
+
+    body["stream"] = False
+    body.pop("stream_options", None)
+    # llama.cpp's web UI uses n_predict=0: evaluate the complete chat template
+    # into a slot's KV cache without sampling even one response token.
+    body.pop("max_tokens", None)
+    body["n_predict"] = 0
+    return body
+
+
+@studio_router.post("/chat/prefill")
+async def prefill_chat_cache(
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Best-effort prompt-cache warmup for the currently loaded GGUF model.
+
+    This is intentionally a Studio-only endpoint rather than an OpenAI-compatible
+    generation mode: it never auto-switches models, reaches an external provider,
+    queues behind user work, or creates a completion that could enter chat history.
+    """
+    if payload.provider_id or payload.provider_type:
+        return {"prefilled": False, "reason": "unsupported"}
+
+    llama_backend = get_llama_cpp_backend()
+    if (
+        not llama_backend.is_loaded
+        or llama_backend.is_diffusion
+        or getattr(llama_backend, "_is_audio", False)
+        or llama_backend._prompt_cache_off()
+    ):
+        return {"prefilled": False, "reason": "unsupported"}
+
+    if payload.model != _llama_status_checkpoint_id(llama_backend):
+        return {"prefilled": False, "reason": "stale_model"}
+
+    cancel_event = threading.Event()
+    prefill_key = str(getattr(llama_backend, "base_url", "llama-server"))
+    _register_chat_prefill_cancel(prefill_key, cancel_event)
+    try:
+        reservation, _ = _openai_llama_admission_reserve(
+            request = request,
+            llama_backend = llama_backend,
+            preempt_chat_prefill = False,
+        )
+    except LlamaAdmissionQueueFull:
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
+        return {"prefilled": False, "reason": "busy"}
+
+    lease = reservation.lease_nowait()
+    if lease is None:
+        # Warming is opportunistic. Never leave a waiter behind that could run a
+        # stale conversation after the user request that occupied the slot.
+        reservation.cancel()
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
+        return {"prefilled": False, "reason": "busy"}
+
+    if cancel_event.is_set():
+        lease.release()
+        _unregister_chat_prefill_cancel(prefill_key, cancel_event)
+        return {"prefilled": False, "reason": "cancelled"}
+    client = _cancelable_nonstreaming_client()
+    watcher = asyncio.create_task(
+        _await_cancel_or_disconnect_then_close_client(
+            cancel_event = cancel_event,
+            request = request,
+            client = client,
+        )
+    )
+    try:
+        body = await _build_chat_prefill_body(payload, llama_backend)
+
+        if cancel_event.is_set():
+            return {"prefilled": False, "reason": "cancelled"}
+        if payload.model != _llama_status_checkpoint_id(llama_backend):
+            return {"prefilled": False, "reason": "stale_model"}
+        response = await client.post(
+            f"{llama_backend.base_url}/v1/chat/completions",
+            json = body,
+            headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+            timeout = _llama_non_streaming_generation_timeout(),
+        )
+        if cancel_event.is_set():
+            return {"prefilled": False, "reason": "cancelled"}
+        if response.status_code != 200:
+            logger.warning(
+                "llama-server chat prefill failed: status=%s body=%s",
+                response.status_code,
+                response.text[:500],
+            )
+            return {"prefilled": False, "reason": "upstream_error"}
+        return {"prefilled": True}
+    except asyncio.CancelledError:
+        cancel_event.set()
+        raise
+    except httpx.RequestError as exc:
+        if not cancel_event.is_set():
+            logger.warning("llama-server chat prefill failed: %s", exc)
+        return {
+            "prefilled": False,
+            "reason": "cancelled" if cancel_event.is_set() else "upstream_error",
+        }
+    finally:
+        try:
+            await _stop_local_disconnect_cancel_watcher(watcher)
+        finally:
+            try:
+                await client.aclose()
+            finally:
+                lease.release()
+                _unregister_chat_prefill_cancel(prefill_key, cancel_event)
 
 
 # ──────────────────────────────────────────────────────────────────────────

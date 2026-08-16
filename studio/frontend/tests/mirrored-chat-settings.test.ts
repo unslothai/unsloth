@@ -25,6 +25,7 @@ function sanitized(value: Record<string, unknown>): PersistedChatSettings {
 
 test("a full set of mirrored settings survives the round trip", () => {
   const settings = sanitized({
+    preEncodeConversation: true,
     toolsEnabled: true,
     deepResearchEnabled: false,
     permissionMode: "ask",
@@ -43,6 +44,7 @@ test("a full set of mirrored settings survives the round trip", () => {
   });
 
   assert.deepEqual(settings, {
+    preEncodeConversation: true,
     toolsEnabled: true,
     deepResearchEnabled: false,
     permissionMode: "ask",

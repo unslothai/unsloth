@@ -10,6 +10,7 @@
 import type { PersistedChatSettings } from "../api/chat-settings-api";
 
 const MIRRORED_BOOLEAN_KEYS = [
+  "preEncodeConversation",
   "reasoningEnabled",
   "toolsEnabled",
   "codeToolsEnabled",

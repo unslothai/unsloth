@@ -60,6 +60,7 @@ async def _unload_gate():
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
 _INFERENCE_SUFFIXES = (
     "/chat/completions",
+    "/chat/prefill",
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages

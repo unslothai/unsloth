@@ -29,6 +29,7 @@ from storage.studio_db import (  # noqa: E402
 def test_mirrored_settings_round_trip():
     payload = ChatSettingsPayload.model_validate(
         {
+            "preEncodeConversation": True,
             "toolsEnabled": True,
             "deepResearchEnabled": False,
             "permissionMode": "ask",
@@ -48,6 +49,7 @@ def test_mirrored_settings_round_trip():
     )
 
     assert payload.model_dump(exclude_unset = True) == {
+        "preEncodeConversation": True,
         "toolsEnabled": True,
         "deepResearchEnabled": False,
         "permissionMode": "ask",

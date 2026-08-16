@@ -128,6 +128,82 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+def exercise_kv_prefill_setting(page, shoot):
+    """Rendered GGUF-only control: default, persistence, and webview-safe flow."""
+    step("KV-cache prefill: rendered visibility and persistence")
+    storage_key = "unsloth_chat_pre_encode_conversation"
+    reset = evaluate_fetch(
+        page,
+        f"{BASE}/api/chat/settings",
+        method = "PUT",
+        headers = {"Content-Type": "application/json"},
+        body = {"preEncodeConversation": False},
+        timeout_ms = FETCH_TIMEOUT_MS,
+    )
+    if reset.get("error") or reset.get("status") != 200:
+        fail(f"could not reset KV-prefill setting: {reset!r}")
+    page.evaluate("(key) => localStorage.removeItem(key)", storage_key)
+    page.reload(wait_until = "domcontentloaded")
+    page.locator('textarea[aria-label="Message input"]').wait_for(
+        state = "visible",
+        timeout = 60_000,
+    )
+
+    page.get_by_role("button", name = "Open run settings").click()
+    performance = page.get_by_role("button", name = "Performance", exact = True)
+    expect(performance).to_be_visible()
+    performance.click()
+    toggle = page.get_by_role(
+        "switch",
+        name = "Pre-fill KV cache after response",
+    )
+    expect(toggle).to_be_visible()
+    expect(toggle).not_to_be_checked()
+    shoot("03c-kv-prefill-setting")
+
+    status, error = click_and_wait_for_response(
+        page,
+        url_substr = "/api/chat/settings",
+        method = "PUT",
+        do_click = toggle.click,
+        timeout_ms = FETCH_TIMEOUT_MS,
+        info = info,
+    )
+    if error or status != 200:
+        fail(f"KV-prefill setting PUT failed: status={status}, error={error!r}")
+    expect(toggle).to_be_checked()
+    if page.evaluate("(key) => localStorage.getItem(key)", storage_key) != "true":
+        fail("KV-prefill switch did not persist true in the webview storage")
+
+    page.get_by_role("button", name = "Close run settings").click()
+    page.reload(wait_until = "domcontentloaded")
+    page.locator('textarea[aria-label="Message input"]').wait_for(
+        state = "visible",
+        timeout = 60_000,
+    )
+    page.get_by_role("button", name = "Open run settings").click()
+    page.get_by_role("button", name = "Performance", exact = True).click()
+    toggle = page.get_by_role(
+        "switch",
+        name = "Pre-fill KV cache after response",
+    )
+    expect(toggle).to_be_checked()
+
+    # Leave the shared Studio installation at the feature's default-off state.
+    status, error = click_and_wait_for_response(
+        page,
+        url_substr = "/api/chat/settings",
+        method = "PUT",
+        do_click = toggle.click,
+        timeout_ms = FETCH_TIMEOUT_MS,
+        info = info,
+    )
+    if error or status != 200:
+        fail(f"KV-prefill reset PUT failed: status={status}, error={error!r}")
+    expect(toggle).not_to_be_checked()
+    page.get_by_role("button", name = "Close run settings").click()
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
@@ -933,6 +1009,9 @@ with sync_playwright() as p:
     page.reload()
     composer = page.locator('textarea[aria-label="Message input"]')
     composer.wait_for(state = "visible", timeout = 60_000)
+
+    exercise_kv_prefill_setting(page, shoot)
+    composer = page.locator('textarea[aria-label="Message input"]')
 
     # ─────────────────────────────────────────────────────
     # 3b. Model picker search bar -- exercise the typeahead filter.
