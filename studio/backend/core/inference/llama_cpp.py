@@ -6051,11 +6051,20 @@ class LlamaCppBackend:
 
     @classmethod
     def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
-        """Error message when the installed CUDA bundle covers no GPU on this host
-        (typically installed on a machine with a different GPU, e.g. a cloud image
-        baked on another card), or None to proceed. The crash this prevents is
-        deterministic -- no launch flag can help -- so failing fast with the fix
-        beats letting llama-server abort. Fails open on unknown coverage or caps."""
+        """Error message when every visible GPU is OLDER than the oldest arch the
+        installed CUDA bundle was built for, or None to proceed. Fails open on
+        unknown coverage or caps.
+
+        Only the too-old direction is broken. The bundles compile plain arch
+        numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
+        that PTX forward onto a newer card; ggml_cuda_highest_compiled_arch picks
+        the highest compiled arch <= the device and only aborts ("not compiled with
+        any CUDA arch <= N") when the device is below every one of them. So an
+        exact-SM test would refuse working installs: the legacy PTX-only bundle
+        (sm_50-61) drives an sm_86/sm_89 host at full speed. Missing native cubins
+        cost a one-time JIT, not a launch. The installer's exact-membership check
+        is a different question -- which bundle is BEST to install -- not whether
+        the installed one can run."""
         # Resolved once so the marker read and the remedy below describe the same
         # binary.
         binary = binary or cls._find_llama_server_binary()
@@ -6063,17 +6072,17 @@ class LlamaCppBackend:
         if supported is None:
             return None
         caps = cls._cuda_compute_caps()
-        if not caps or any(sm in supported for sm in caps.values()):
+        oldest = min(supported)
+        if not caps or any(sm >= oldest for sm in caps.values()):
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
         # The remedy has to follow the binary's provenance: the updater cannot
         # replace a pinned LLAMA_SERVER_PATH or a llama-server found on PATH, so
         # telling its owner to update would loop them through the same gate.
         return (
-            f"The installed llama.cpp build only has GPU code for "
-            f"sm_{min(supported)}-sm_{max(supported)}, but {present} -- it was "
-            f"likely installed on a machine with a different GPU, so "
-            f"{cls._runtime_remedy(binary)}."
+            f"The installed llama.cpp build only has GPU code for sm_{oldest} and "
+            f"newer, but {present} -- it was likely installed on a machine with a "
+            f"newer GPU, so {cls._runtime_remedy(binary)}."
         )
 
     @classmethod

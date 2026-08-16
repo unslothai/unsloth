@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The CUDA SM gate: a prebuilt installed on one GPU (e.g. a cloud image baked
-on a T4) must fail fast when run on a GPU its bundle has no kernels for,
-instead of llama-server aborting on every launch attempt."""
+"""The CUDA SM gate: a prebuilt whose oldest compiled arch is newer than every
+GPU on this host (e.g. a cloud image baked on an H100, run on a T4) must fail
+fast instead of llama-server aborting on every launch attempt. The reverse,
+a bundle older than the card, JITs its PTX forward and must still run."""
 
 import json
 import os
@@ -111,27 +112,30 @@ class TestCudaSmGateError:
             LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: managed)
         )
 
-    def test_uncovered_gpu_errors_with_the_fix(self, tmp_path, monkeypatch):
-        # The incident shape: a cuda13-older bundle (75-89) baked on a T4, run on an H100.
-        self._caps(monkeypatch, {0: 90})
+    def test_a_gpu_older_than_every_compiled_arch_errors(self, tmp_path, monkeypatch):
+        # The shape that really aborts: a cuda13-newer bundle (lowest image
+        # compute_86) on an sm_75 host, where there is neither a cubin nor
+        # back-compatible PTX, so ggml_cuda_highest_compiled_arch finds no arch
+        # <= 75 and llama-server dies on every launch.
+        self._caps(monkeypatch, {0: 75})
         self._managed(monkeypatch, True)
-        binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80", "86", "89"]})
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["86", "89", "120"]})
         error = LlamaCppBackend._cuda_sm_gate_error(binary)
         assert error is not None
-        assert "sm_75-sm_89" in error
-        assert "GPU 0 is sm_90" in error
+        assert "sm_86 and newer" in error
+        assert "GPU 0 is sm_75" in error
         assert "unsloth studio update" in error
 
     def test_a_custom_binary_is_told_to_rebuild_not_to_update(self, tmp_path, monkeypatch):
         # An extracted prebuilt tree reached through LLAMA_SERVER_PATH or PATH still
         # carries the marker, but the updater cannot replace it, so the update
         # instruction would send its owner back through this same gate.
-        self._caps(monkeypatch, {0: 90})
+        self._caps(monkeypatch, {0: 75})
         self._managed(monkeypatch, False)
-        binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80", "86", "89"]})
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["86", "89", "120"]})
         error = LlamaCppBackend._cuda_sm_gate_error(binary)
         assert error is not None
-        assert "GPU 0 is sm_90" in error
+        assert "GPU 0 is sm_75" in error
         assert "reinstall or rebuild that custom llama.cpp" in error
         assert "unsloth studio update" not in error
 
@@ -151,7 +155,24 @@ class TestCudaSmGateError:
         binary = _binary_with_marker(tmp_path, {"supported_sms": ["90"]})
         assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
 
-    def test_any_covered_gpu_passes_a_mixed_host(self, tmp_path, monkeypatch):
+    def test_a_newer_gpu_jits_the_bundles_ptx(self, tmp_path, monkeypatch):
+        # The upgrade direction the first cut of this gate refused: a cuda13-older
+        # bundle (75-89) on an sm_90 host. Plain arch numbers ship PTX beside the
+        # cubins, so compute_89 JITs forward onto sm_90 and the load runs.
+        self._caps(monkeypatch, {0: 90})
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["75", "80", "86", "89"]})
+        assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
+
+    def test_a_ptx_only_legacy_bundle_runs_on_modern_cards(self, tmp_path, monkeypatch):
+        # Measured: the cuda12-legacy bundle (0 cubins, PTX for compute_50/61,
+        # marker sm_50-61) drives an RTX 6000 Ada + RTX 3090 host at full speed
+        # despite zero exact overlap with either card.
+        self._caps(monkeypatch, {0: 89, 1: 86})
+        binary = _binary_with_marker(tmp_path, {"supported_sms": ["50", "52", "60", "61"]})
+        assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
+
+    def test_any_gpu_at_or_above_the_floor_passes_a_mixed_host(self, tmp_path, monkeypatch):
+        # GPU 1 is below the floor, but GPU 0 can run, so the launch is viable.
         self._caps(monkeypatch, {0: 90, 1: 61})
         binary = _binary_with_marker(tmp_path, {"supported_sms": ["86", "89", "90"]})
         assert LlamaCppBackend._cuda_sm_gate_error(binary) is None
@@ -171,11 +192,12 @@ def _gated_backend(
     tmp_path,
     monkeypatch,
     *,
-    supported_sms = ("75", "80", "86", "89"),
+    supported_sms = ("86", "89", "120"),
 ):
-    """A load on the incident host: the installed bundle covers sm_75-sm_89 and the
-    only GPU is an sm_90 H100, so the gate wants to refuse. Everything below the
-    placement decision is faked -- Popen never runs and health answers True."""
+    """A load on the incident host: the installed bundle's oldest image is
+    compute_86 and the only GPU is an sm_75 T4, so no cubin and no back-compatible
+    PTX exists and the gate wants to refuse. Everything below the placement
+    decision is faked -- Popen never runs and health answers True."""
     install = tmp_path / "llama.cpp"
     (install / "build" / "bin").mkdir(parents = True)
     binary = _binary_with_marker(install, {"supported_sms": list(supported_sms)})
@@ -195,7 +217,7 @@ def _gated_backend(
         + _string("llama")
     )
 
-    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 90}))
+    monkeypatch.setattr(LlamaCppBackend, "_cuda_compute_caps", staticmethod(lambda: {0: 75}))
     monkeypatch.setattr(
         LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda *_a, **_kw: False)
     )
