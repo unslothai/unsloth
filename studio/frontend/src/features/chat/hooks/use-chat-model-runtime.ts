@@ -772,6 +772,9 @@ export function useChatModelRuntime() {
             status,
             normalizeSpeculativeType(pendingConfig?.speculativeType) ??
               readPersistedSpeculativeType(),
+            // The route derives gguf_path from the identifier alone, and the
+            // drafter_not_found retry is guarded on its absence.
+            (loadPath ?? modelId).toLowerCase().endsWith(".gguf"),
           ) &&
           // The id names the weights, not how the server was invoked. A remembered context
           // length, drafter, placement or extra arg the resident load does not run is a real

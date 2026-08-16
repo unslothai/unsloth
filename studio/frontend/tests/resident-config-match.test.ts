@@ -761,6 +761,39 @@ test("a hidden MoE count under Auto layers is not a reload", () => {
   );
 });
 
+test("a standalone .gguf never reaches the drafter retry arm", () => {
+  // The arm is guarded on `intent.gguf_path is None`, and the route sets that field from
+  // the identifier alone, so a directly loaded file dedupes rather than retrying the
+  // fetch. Recorded as a note when the rest of this arm was mirrored, closed now.
+  const status = {
+    spec_fallback_reason: "drafter_not_found",
+    spec_drafter_kind: "mtp",
+  };
+  assert.equal(residentSpeculativeNeedsRepair(status, "auto", true), false);
+  // A repo id sends no path, so the retry still applies there.
+  assert.equal(residentSpeculativeNeedsRepair(status, "auto", false), true);
+  // It only excuses this arm: a binary stand-down repairs whatever the pick names.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "binary_no_mtp",
+        spec_fallback_binary_changed: true,
+      },
+      "auto",
+      true,
+    ),
+    true,
+  );
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: null, spec_probe_retry_pending: true },
+      "auto",
+      true,
+    ),
+    true,
+  );
+});
+
 test("a permanently absent drafter does not decline the shortcut", () => {
   // The drafter_not_found arm reloads so the next Apply retries the fetch, and excludes
   // the two kinds whose absence is not transient. Retrying either relaunches forever.
@@ -1443,6 +1476,13 @@ test("an outstanding audio probe keeps the shortcut from skipping the load", () 
   );
   const identity = source.search(/residentModelMatchesPick\(\s*status/);
   const probe = source.indexOf("status.audio_probe_pending !== true", identity);
+  // The caller tells the repair check whether the load carries a gguf_path, since the
+  // route derives that from the identifier and the drafter retry is guarded on it.
+  assert.match(
+    source,
+    /\(loadPath \?\? modelId\)\.toLowerCase\(\)\.endsWith\("\.gguf"\)/,
+    "the repair check no longer knows whether the pick sends a path",
+  );
   assert.ok(
     probe > identity,
     "the shortcut adopts a model whose audio probe never finished",

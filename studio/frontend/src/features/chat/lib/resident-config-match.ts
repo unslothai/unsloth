@@ -199,6 +199,11 @@ export function residentSpeculativeNeedsRepair(
     | "spec_drafter_kind"
   >,
   resolvedSpeculativeType: string | null,
+  /**
+   * Whether the load carries a `gguf_path`, which the route sets from the identifier
+   * alone: `source.gguf_path if model_identifier.lower().endswith(".gguf") else None`.
+   */
+  sendsGgufPath = false,
 ): boolean {
   const mode = resolvedSpeculativeType ?? "auto";
   // Two arms that record no fallback reason, so the reason check below cannot see them.
@@ -223,6 +228,11 @@ export function residentSpeculativeNeedsRepair(
   // above, and an absent DSpark sidecar is the permanent state of every repo but one, so
   // retrying either would relaunch an identical server forever.
   if (status.spec_fallback_reason === "drafter_not_found") {
+    // The arm is guarded on `intent.gguf_path is None`, so a standalone file never
+    // reaches it and an identical load dedupes rather than retrying the fetch.
+    if (sendsGgufPath) {
+      return false;
+    }
     if (status.spec_drafter_kind === "dflash") {
       return false;
     }
