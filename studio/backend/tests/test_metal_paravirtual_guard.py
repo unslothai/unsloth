@@ -535,6 +535,7 @@ def _mmproj_gate(
     caps: dict,
     is_vision: bool = True,
     mmproj = "/p.gguf",
+    disable_vision: bool = False,
 ):
     """Run load_model's real projector-resolution statements and report what the launch
     would see: (mmproj path, vision flag, warnings)."""
@@ -573,6 +574,10 @@ def _mmproj_gate(
         "_paravirtual_cpu_forced": paravirtual,
         "server_caps": caps,
         "is_vision": is_vision,
+        # A load_model local the block now reads, seeded as a real parameter so the
+        # toggle's own cases below drive these production statements rather than a
+        # copy of them.
+        "disable_vision": disable_vision,
         "logger": log,
     }
     exec(ast.unparse(ast.Module(body = body, type_ignores = [])), scope)
@@ -2033,3 +2038,41 @@ def test_the_route_really_can_deliver_a_manual_cpu_request_carrying_an_override(
         )
         == extras
     )
+
+
+# ── the Disable Vision toggle, driven through the same real gate ──────
+
+
+def test_the_toggle_drops_the_projector_on_ordinary_hardware():
+    """The toggle is not a Metal workaround: it must take effect on a normal host,
+    where nothing else would drop the projector."""
+    path, vision, _warnings = _mmproj_gate(paravirtual = False, caps = {}, disable_vision = True)
+    assert path is None
+    assert vision is False
+
+
+def test_the_toggle_does_not_warn_about_a_missing_projector():
+    """The user asked for this. Reporting it as a fault ("loaded without a usable
+    mmproj") would send them hunting for a problem that does not exist, so the only
+    line the block emits here is the info one the harness swallows."""
+    _path, _vision, warnings = _mmproj_gate(
+        paravirtual = False, caps = {}, disable_vision = True
+    )
+    assert warnings == [], warnings
+
+
+def test_vision_survives_by_default_on_ordinary_hardware():
+    """The control case for the two above: same host, toggle off, projector kept."""
+    path, vision, warnings = _mmproj_gate(paravirtual = False, caps = {}, disable_vision = False)
+    assert path == "/p.gguf"
+    assert vision is True
+    assert warnings == []
+
+
+def test_the_toggle_beats_a_text_only_model_to_the_same_answer():
+    """A text-only GGUF has no projector either way, so the toggle changes nothing."""
+    _path, vision, warnings = _mmproj_gate(
+        paravirtual = False, caps = {}, is_vision = False, disable_vision = True
+    )
+    assert vision is False
+    assert warnings == []

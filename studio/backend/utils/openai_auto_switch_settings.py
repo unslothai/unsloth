@@ -540,6 +540,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("tensor_parallel")):
         entry["tensor_parallel"] = True
 
+    if _coerce_bool(payload.get("disable_vision")):
+        entry["disable_vision"] = True
+
     template = payload.get("chat_template_override")
     if isinstance(template, str) and template.strip():
         # A lone surrogate from JSON breaks encode() and can never render, so drop it.
@@ -641,6 +644,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("speculative_type", "speculative_type"),
         ("spec_draft_n_max", "spec_draft_n_max"),
         ("tensor_parallel", "tensor_parallel"),
+        ("disable_vision", "disable_vision"),
         ("chat_template_override", "chat_template_override"),
     ):
         if override.get(source) is not None:

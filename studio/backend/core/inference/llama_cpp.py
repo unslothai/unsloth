@@ -162,6 +162,7 @@ class GgufLoadIntent:
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
     is_vision: bool = False
+    disable_vision: bool = False
     n_ctx: int = 4096
     chat_template_override: Optional[str] = None
     cache_type_kv: Optional[str] = None
@@ -3693,6 +3694,16 @@ class LlamaCppBackend:
         self._pending_cpu_fallback_cleanups: list = []
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
+        # Vision deliberately left unloaded by the caller, and the projector pinned
+        # to CPU because it did not fit on the GPU. Echoed to the UI so a greyed-out
+        # attach button and a slow first image both have a stated reason.
+        self._disable_vision: bool = False
+        # Image input is off because the user asked, not because the projector is
+        # missing. Kept apart from _disable_vision, which is the raw request: only
+        # a model that HAS a projector can have had it switched off, and the client
+        # needs that distinction to point at the toggle rather than at a missing file.
+        self._vision_disabled_by_user: bool = False
+        self._vision_on_cpu: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
         # runner, not llama-server. Set from the GGUF architecture at load.
         self._architecture: Optional[str] = None
@@ -3936,6 +3947,17 @@ class LlamaCppBackend:
         """Whether this model takes image input; ``_is_vision`` only records that a
         projector was attached, which happens for audio input too."""
         return self._is_vision and self._mmproj_accepts_image
+
+    @property
+    def vision_disabled_by_user(self) -> bool:
+        """Image input is off because it was asked for, not because it is missing."""
+        return self._vision_disabled_by_user
+
+    @property
+    def vision_on_cpu(self) -> bool:
+        """Whether the attached projector runs on the CPU. Only meaningful while
+        ``is_vision`` is set; image encoding is slower, text generation is not."""
+        return self._vision_on_cpu and self.is_vision
 
     @property
     def is_diffusion(self) -> bool:
@@ -4490,6 +4512,11 @@ class LlamaCppBackend:
             return value
 
         if _norm(self._cache_type_kv) != _norm(intent.cache_type_kv):
+            return False
+
+        # Toggling vision changes which files the child opens, so it cannot be
+        # satisfied by a live server that was launched the other way.
+        if bool(self._disable_vision) != bool(intent.disable_vision):
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
@@ -9332,6 +9359,12 @@ class LlamaCppBackend:
         self._gguf_path = model_path
         self._hf_repo = hf_repo
         self._is_vision = False
+        # Clear any prior GGUF's vision placement too, or a diffusion model would
+        # report the last model's projector state and grey out an attach button
+        # that has nothing to do with it.
+        self._disable_vision = False
+        self._vision_disabled_by_user = False
+        self._vision_on_cpu = False
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
@@ -12819,6 +12852,7 @@ class LlamaCppBackend:
         hf_token = intent.hf_token
         model_identifier = intent.model_identifier
         is_vision = intent.is_vision
+        disable_vision = intent.disable_vision
         n_ctx = intent.n_ctx
         chat_template_override = intent.chat_template_override
         cache_type_kv = intent.cache_type_kv
@@ -13252,8 +13286,15 @@ class LlamaCppBackend:
                             hf_variant = hf_variant,
                             hf_token = hf_token,
                         )
-                    # Auto-download mmproj for vision models unless opted out.
-                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
+                    # Auto-download mmproj for vision models unless opted out. The
+                    # Advanced Settings toggle opts out here too: fetching a projector
+                    # this load will never attach wastes the bandwidth and the disk.
+                    if (
+                        is_vision
+                        and not disable_vision
+                        and not mmproj_path
+                        and not extra_args_disable_mmproj(extra_args)
+                    ):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
@@ -13667,7 +13708,7 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
-                if not extra_args_disable_mmproj(extra_args):
+                if not disable_vision and not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
@@ -13701,7 +13742,24 @@ class LlamaCppBackend:
                 # mmproj passing the family-name heuristic must not flip a non-VLM
                 # GGUF into vision mode.
                 effective_is_vision = bool(launch_mmproj_path) and bool(is_vision)
-                if is_vision and not effective_is_vision and not _pv_mmproj_unpinnable:
+                if is_vision and disable_vision:
+                    logger.info(
+                        "Loading this vision GGUF as text-only: image input is "
+                        "disabled for this session by request, and the projector's "
+                        "VRAM is left for the model."
+                    )
+                # A sibling rather than an elif: the requested-text-only case above is
+                # not a missing projector, and the warning below carries the generic
+                # explanation whose absence would otherwise blame one.
+                if (
+                    is_vision
+                    and not effective_is_vision
+                    and not _pv_mmproj_unpinnable
+                    # Asking for no projector is not the same as failing to find one,
+                    # and the "no usable mmproj" line would send the user looking for
+                    # a file that is sitting right there.
+                    and not disable_vision
+                ):
                     logger.warning(
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
@@ -16750,6 +16808,12 @@ class LlamaCppBackend:
                 else:
                     self._hf_variant = None
                 self._is_vision = effective_is_vision
+                self._disable_vision = bool(disable_vision)
+                # Only a model that HAS a projector can have had it switched off; a
+                # text-only GGUF carrying a stale toggle must fall through to the
+                # generic "cannot accept images", not to "turn Vision back on".
+                self._vision_disabled_by_user = bool(is_vision and disable_vision)
+                self._vision_on_cpu = bool(effective_is_vision and _mmproj_cpu_pinned)
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do
@@ -17263,6 +17327,9 @@ class LlamaCppBackend:
                         # classification below must not see the stripped --mmproj.
                         _last_spawn_cmd = list(cmd)
                         self._is_vision = False
+                        # The retry drops --mmproj entirely, so there is no projector
+                        # left to be running anywhere.
+                        self._vision_on_cpu = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):
@@ -18259,6 +18326,9 @@ class LlamaCppBackend:
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
+            self._disable_vision = False
+            self._vision_disabled_by_user = False
+            self._vision_on_cpu = False
             self._is_audio = False
             self._audio_type = None
             self._audio_probed = False

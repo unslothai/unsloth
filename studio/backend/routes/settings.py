@@ -692,6 +692,7 @@ class ModelOverridePayload(BaseModel):
     n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False
+    disable_vision: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = None
@@ -1274,9 +1275,19 @@ def update_openai_auto_switch_override(
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            is_removal = not payload.tensor_parallel and not {
-                key: value for key, value in saved_fields.items() if key != "tensor_parallel"
-            }
+            # Both booleans default False, so neither alone is content: a payload
+            # carrying only falsey flags is a removal, same as an empty one. They
+            # have to be named because a False flag is absent from saved_fields,
+            # so an override whose only content is a True flag would read as empty.
+            is_removal = (
+                not payload.tensor_parallel
+                and not payload.disable_vision
+                and not {
+                    key: value
+                    for key, value in saved_fields.items()
+                    if key not in ("tensor_parallel", "disable_vision")
+                }
+            )
         if requested_extra_args is None and not is_removal:
             stored = get_model_override(payload.model_id)
             # A fill keeps the stored flags without echoing them back through validation: one
@@ -1392,6 +1403,7 @@ def update_openai_auto_switch_override(
                 n_batch = payload.n_batch,
                 n_ubatch = payload.n_ubatch,
                 tensor_parallel = payload.tensor_parallel,
+                disable_vision = payload.disable_vision,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,
                 gpu_layers = payload.gpu_layers,

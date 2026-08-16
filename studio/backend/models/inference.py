@@ -183,6 +183,16 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Load a vision-capable GGUF without its multimodal projector, as a "
+            "text-only model. Frees the VRAM the projector would hold, at the "
+            "cost of image input, which the UI disables for the session; text "
+            "generation is unaffected. Ignored for models that have no vision "
+            "projector, and for non-GGUF models."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
@@ -352,6 +362,7 @@ class ValidateModelRequest(BaseModel):
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
+    disable_vision: bool = Field(False)
     gpu_ids: Optional[List[int]] = Field(None)
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
@@ -791,6 +802,26 @@ class _InferenceRuntimeFields(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    disable_vision: bool = Field(
+        False,
+        description = "Whether the vision projector was deliberately left unloaded.",
+    )
+    vision_disabled_by_user: bool = Field(
+        False,
+        description = (
+            "Whether image input is off because the user set disable_vision, rather "
+            "than because the model has no usable mmproj. The two look identical to "
+            "the client otherwise, and they need different guidance."
+        ),
+    )
+    vision_on_cpu: bool = Field(
+        False,
+        description = (
+            "Whether the vision projector is running on the CPU (--no-mmproj-offload) "
+            "rather than the GPU. Image encoding is slower; text generation is "
+            "unaffected."
+        ),
     )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",

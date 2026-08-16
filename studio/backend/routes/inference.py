@@ -6373,6 +6373,7 @@ def _estimate_gguf_required_gb(
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    disable_vision: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -6387,6 +6388,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
         )
+        from core.inference.llama_server_args import extra_args_disable_mmproj
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
         _extra_args_own_spec = _extra_args_set_spec_type(llama_extra_args)
@@ -6590,7 +6592,15 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = bool(has_vision),
+                # Match the launch path's own gate: llama_cpp.py resolves no
+                # projector when either opt-out is set, so the file is never fetched
+                # and never opened. Charging for it here would make the guard refuse
+                # a chat load over bytes the load provably does not take.
+                include_mmproj = (
+                    bool(has_vision)
+                    and not disable_vision
+                    and not extra_args_disable_mmproj(llama_extra_args)
+                ),
                 # Remote, so which sidecar the repo ships is unknown until the
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
@@ -7321,6 +7331,9 @@ def _guard_chat_load_against_training(
             n_devices = guard_n_devices,
             # a confirmed diffusion runner ignores the batch flags, so no reserve for it
             is_diffusion = diffusion_kind is True,
+            # getattr for the same reason as the batch flags above: an older caller
+            # hands this guard a bare request double that does not carry the field.
+            disable_vision = bool(getattr(request, "disable_vision", False)),
         )
         if is_gguf
         else None
