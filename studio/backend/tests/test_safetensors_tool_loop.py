@@ -3739,6 +3739,7 @@ class TestGGUFSafetensorsHealingParity:
             "I need to use web search.\nOne question:\nAre you using Windows or Linux?\n"
             "I'll check once you say.",
             "I'll help.\n- Are you on Windows or Linux?\nTell me and I'll check.",
+            "Why do you need this information? Once you tell me, I'll recommend an option.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3760,6 +3761,9 @@ class TestGGUFSafetensorsHealingParity:
             "Do you want me to run it? I'll go ahead if so.",
             "Here is that file you wanted. I'll open it next.",
             "The path is:\nsrc/main.py\nI'll open it next.",
+            # the question is the lookup the model just promised, not something only the user knows.
+            "I'll search the advisories now. Is this package vulnerable to CVE-2026-1234?",
+            "I'll explain why you should use the pinned version.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 
