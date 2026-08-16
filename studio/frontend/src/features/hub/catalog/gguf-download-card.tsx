@@ -55,7 +55,6 @@ import {
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
-import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
   ggufFilenamesMatch,
@@ -63,7 +62,7 @@ import {
 } from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
-  ggufVariantDownloadSizeBytes,
+  ggufVariantTransferLabel,
   sortDownloadableGgufVariants,
 } from "../lib/gguf-variant-sort";
 import { HUB_GGUF_RUN_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
@@ -258,7 +257,7 @@ function createGgufVariantMenuItems(
     fit: classifyGgufFit(variant.size_bytes, resources),
     downloaded: Boolean(variant.downloaded),
     partial: Boolean(variant.partial),
-    downloadSizeLabel: formatBytes(ggufVariantDownloadSizeBytes(variant)),
+    downloadSizeLabel: ggufVariantTransferLabel(variant),
   }));
 }
 
@@ -739,7 +738,7 @@ export function GgufDownloadCard({
     [gpuGb, selected?.size_bytes, systemRamGb],
   );
   const selectedDownloadSizeLabel = selected
-    ? formatBytes(ggufVariantDownloadSizeBytes(selected))
+    ? ggufVariantTransferLabel(selected)
     : null;
   const updateAvailable =
     selected?.downloaded === true && selected.update_available === true;

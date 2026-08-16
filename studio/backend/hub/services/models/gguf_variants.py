@@ -387,6 +387,30 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
         return None
 
 
+def variant_remaining_bytes(repo_id: str, requirement) -> Optional[int]:
+    """Bytes a resume of this variant still has to fetch, or None when unknown.
+
+    Priced per file, which is what the transfer actually reuses: a finished shard is
+    kept, an unresumable partial is refetched whole. So a one-file quant reads back its
+    full size, and that is the honest number to show.
+
+    Counts the ACTIVE cache root only, so a variant held in another root prices as
+    untouched. That overstates the transfer, which is the safe direction to be wrong in.
+    """
+    if requirement is None or not requirement.required_hashes:
+        return None
+    try:
+        have = download_registry.existing_blob_bytes(
+            "model",
+            repo_id,
+            requirement.required_hashes,
+        )
+    except Exception as e:
+        logger.warning(f"Remaining-bytes lookup failed for {repo_id}: {e}")
+        return None
+    return max(0, requirement.download_size_bytes - have)
+
+
 def _partial_transport_for_variant(
     repo_id: str,
     variant: str,
@@ -1464,6 +1488,10 @@ async def get_gguf_variants_answer(
                 size_bytes = v.size_bytes,
                 download_size_bytes = (
                     requirement.download_size_bytes if requirement is not None else v.size_bytes
+                ),
+                # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
+                download_remaining_bytes = (
+                    variant_remaining_bytes(repo_id, requirement) if is_partial else None
                 ),
                 downloaded = downloaded,
                 update_available = downloaded
