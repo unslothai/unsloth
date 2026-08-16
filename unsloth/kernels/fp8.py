@@ -340,7 +340,8 @@ def torchao_block_matmul(
     return out.to(output_dtype)
 
 
-# fbgemm <=1.3.0 causes NaNs for high X values, so never use it for block FP8.
+# fbgemm <=1.3.0 silently corrupts blockwise GEMM outputs for some output
+# shapes (fixed upstream in 1.4.0), so never use it for block FP8.
 # Preference: fbgemm (>=1.4.0) > torchao > triton (similar outputs/losses).
 # torchao is ~3x faster than the triton kernel but 15-30% slower than fbgemm (H100).
 fp8_block_matmul = (
@@ -559,11 +560,32 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
                     f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {bs_n, bs_k}"
                 )
 
+        # f8f8bf16_blockwise raises on non-128x128x128 blocks ("Only
+        # 128x128x128 block size is supported") and, measured on H800 with
+        # fbgemm 1.4.0, on in_features % 16 != 0 or out_features % 8 != 0
+        # ("cutlass cannot implement"). Dequant + plain matmul for those,
+        # the same fallback FP8BlockQuantLinear uses for unevenly tiled K.
+        kernel_supported = (
+            (bs_m, bs_n, bs_k) == (128, 128, 128)
+            and X.shape[-1] % 16 == 0
+            and m % 8 == 0
+        )
+        if not kernel_supported:
+            W_deq = _blockwise_weight_dequant_any_shape(
+                weight, weight_scale, [bs_n, bs_k], X.dtype
+            )
+            output = torch_matmul(X, W_deq.T)
+            output = output + bias if bias is not None else output
+            output = output.view(*orig_shape[:-1], -1)
+            del W_deq
+            ctx.weight = weight
+            ctx.weight_scale = weight_scale
+            ctx.block_size = [bs_m, bs_n, bs_k]
+            return output
+
         with _fp8_triton_device_context(X):
-            xq, xs = triton_quantize_fp8_block(X, bs_m, bs_n, None)
-        # TODO: WARNING - diverges from baseline for high X values, producing
-        # gibberish / high starting loss. Do not use until resolved; kept for a
-        # future headstart.
+            # X is (tokens, K): its blocks are (bs_m, bs_k), not (bs_m, bs_n).
+            xq, xs = triton_quantize_fp8_block(X, bs_m, bs_k, None)
         output = torch.ops.fbgemm.f8f8bf16_blockwise(
             xq, weight.contiguous(), xs, weight_scale.contiguous(), bs_m, bs_n, bs_k
         )
@@ -581,7 +603,12 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        W_deq = weight_dequant(ctx.weight, ctx.weight_scale)
+        # weight_dequant would fall back to its default 128x128 block here and
+        # silently mis-scale non-default block sizes; expand with the real one.
+        bs_m, bs_n, bs_k = ctx.block_size
+        W_deq = _blockwise_weight_dequant_any_shape(
+            ctx.weight, ctx.weight_scale, [bs_n, bs_k], grad_output.dtype
+        )
         grad_X = torch_matmul(grad_output, W_deq)
         del W_deq
         return grad_X, None, None, None, None
@@ -647,7 +674,8 @@ if "UNSLOTH_HAS_FBGEMM" not in os.environ:
 try:
     import fbgemm_gpu
 
-    # >=1.4.0 is fast and accurate (older versions NaN on high X); ~15% faster
+    # >=1.4.0 is fast and accurate (older versions silently corrupt outputs
+    # for some shapes, independent of the input values); ~15% faster
     # than torchao. Must probe blockwise FBGEMM since consumer GPUs fail.
     if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
         # Suppress CUDA printf during probe: on Blackwell (SM100), FBGEMM's
