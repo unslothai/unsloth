@@ -138,6 +138,7 @@ export {
   type AttachmentText,
   assertDocumentAttachmentSize,
   attachmentAudioSrc,
+  attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
   parseAttachmentText,

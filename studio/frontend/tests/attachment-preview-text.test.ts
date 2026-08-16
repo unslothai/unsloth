@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { strToU8, zipSync } from "fflate";
+import { Unzip, UnzipInflate, strToU8, unzipSync, zipSync } from "fflate";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -12,13 +12,72 @@ registerBundlerResolver();
 
 const {
   attachmentAudioSrc,
+  attachmentTextLanguage,
   countAttachmentTextLines,
+  extractHtmlAttachmentText,
   getDocxAttachmentError,
   isAudioAttachment,
   parseAttachmentText,
   readAttachmentText,
+  repackDocxAttachmentArchive,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
+
+type StubNode = {
+  nodeType: number;
+  nodeValue?: string;
+  tagName?: string;
+  childNodes: StubNode[];
+  parent?: StubNode;
+  remove?: () => void;
+};
+
+function textNode(value: string): StubNode {
+  return { nodeType: 3, nodeValue: value, childNodes: [] };
+}
+
+function element(tagName: string, ...childNodes: StubNode[]): StubNode {
+  const node: StubNode = { nodeType: 1, tagName, childNodes };
+  for (const child of childNodes) {
+    child.parent = node;
+    child.remove = () => {
+      const siblings = node.childNodes;
+      siblings.splice(siblings.indexOf(child), 1);
+    };
+  }
+  return node;
+}
+
+function descendants(node: StubNode): StubNode[] {
+  return node.childNodes.flatMap((child) => [child, ...descendants(child)]);
+}
+
+/** DOMParser is absent under node, so the extractor is driven over a hand-built tree. */
+async function withStubDom<T>(
+  build: (source: string) => StubNode,
+  run: () => T | Promise<T>,
+): Promise<T> {
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = class {
+    parseFromString(source: string) {
+      const body = build(source);
+      return {
+        body,
+        querySelectorAll: (selector: string) => {
+          const tags = new Set(selector.split(",").map((part) => part.trim()));
+          return descendants(body).filter(
+            (node) => node.tagName && tags.has(node.tagName),
+          );
+        },
+      };
+    }
+  };
+  try {
+    return await run();
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+}
 
 // The preview reads a sent attachment back out of the text the adapter built,
 // so every wrapper the adapters write has to round-trip.
@@ -130,37 +189,55 @@ test("readAttachmentText reads a bounded slice of a large text file", async () =
 
 test("readAttachmentText reads a bounded slice of a large html file", async () => {
   const parsed: number[] = [];
-  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
-  (globalThis as { DOMParser?: unknown }).DOMParser = class {
-    parseFromString(source: string) {
+  const { label, text, truncated } = await withStubDom(
+    (source) => {
       parsed.push(source.length);
-      return {
-        querySelectorAll: () => [],
-        body: { textContent: source },
-      };
-    }
-  };
+      return element("body", element("p", textNode(source)));
+    },
+    () => {
+      const oversized = new File(
+        [`<p>${"b".repeat(2_000_000)}</p>`],
+        "huge.html",
+        { type: "text/html" },
+      );
+      return readAttachmentText(oversized, oversized.name, oversized.type);
+    },
+  );
 
-  try {
-    const oversized = new File(
-      [`<p>${"b".repeat(2_000_000)}</p>`],
-      "huge.html",
-      {
-        type: "text/html",
-      },
-    );
-    const { label, text, truncated } = await readAttachmentText(
-      oversized,
-      oversized.name,
-      oversized.type,
-    );
-    assert.equal(label, "HTML");
-    assert.equal(truncated, true);
-    assert.deepEqual(parsed, [1_000_000]);
-    assert.equal(text.length <= 1_000_000, true);
-  } finally {
-    (globalThis as { DOMParser?: unknown }).DOMParser = original;
-  }
+  assert.equal(label, "HTML");
+  assert.equal(truncated, true);
+  assert.deepEqual(parsed, [1_000_000]);
+  assert.equal(text.length <= 1_000_000, true);
+});
+
+/** textContent runs a whole page onto one line, which is what the model was sent as well as what the preview showed. */
+test("extractHtmlAttachmentText keeps the line structure of the page", async () => {
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("h1", textNode("Solar System Explorer")),
+        element(
+          "p",
+          textNode("Drag  to rotate"),
+          element("br"),
+          textNode("Scroll to zoom"),
+        ),
+        element(
+          "ul",
+          element("li", textNode("Sun")),
+          element("li", textNode("Mercury")),
+        ),
+        element("script", textNode("const planets = 8;")),
+        element("style", textNode("body { margin: 0 }")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Solar System Explorer\n\nDrag to rotate\nScroll to zoom\n\nSun\n\nMercury",
+  );
 });
 
 test("isAudioAttachment matches by MIME and by extension", () => {
@@ -173,32 +250,21 @@ test("isAudioAttachment matches by MIME and by extension", () => {
 // A bounded HTML read can extract almost nothing when the slice ends inside a
 // script block, so the flag, not the text length, is what discloses the cut.
 test("readAttachmentText reports truncation even when the slice extracts no text", async () => {
-  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
-  (globalThis as { DOMParser?: unknown }).DOMParser = class {
-    parseFromString() {
-      return { querySelectorAll: () => [], body: { textContent: "" } };
-    }
-  };
+  const { text, truncated } = await withStubDom(
+    (source) => element("body", element("script", textNode(source))),
+    () => {
+      const oversized = new File(
+        [`<script>${"c".repeat(2_000_000)}`],
+        "big.html",
+        { type: "text/html" },
+      );
+      return readAttachmentText(oversized, oversized.name, oversized.type);
+    },
+  );
 
-  try {
-    const oversized = new File(
-      [`<script>${"c".repeat(2_000_000)}`],
-      "big.html",
-      {
-        type: "text/html",
-      },
-    );
-    const { text, truncated } = await readAttachmentText(
-      oversized,
-      oversized.name,
-      oversized.type,
-    );
-    assert.equal(text, "");
-    assert.equal(truncated, true);
-    assert.equal(truncateAttachmentPreviewText(text).truncated, false);
-  } finally {
-    (globalThis as { DOMParser?: unknown }).DOMParser = original;
-  }
+  assert.equal(text, "");
+  assert.equal(truncated, true);
+  assert.equal(truncateAttachmentPreviewText(text).truncated, false);
 });
 
 // Stored payloads have no size limit, so unwrapping must copy at most the
@@ -543,6 +609,121 @@ test("getDocxAttachmentError refuses an oversized part before the attachment is 
   const okBytes = docxBytes("<w:document><w:body/></w:document>");
   const ok = fakeDocumentFile("notes.docx", okBytes.length, okBytes, []);
   assert.equal(await getDocxAttachmentError(ok), null);
+});
+
+/** Rewrites every field holding `size` down to `declared`, the way a crafted archive lies about a part. */
+function understateDeclaredSizes(
+  archive: Uint8Array,
+  size: number,
+  declared: number,
+): number {
+  const view = new DataView(
+    archive.buffer,
+    archive.byteOffset,
+    archive.byteLength,
+  );
+  let patched = 0;
+  for (let offset = 0; offset + 4 <= archive.length; offset++) {
+    if (view.getUint32(offset, true) === size) {
+      view.setUint32(offset, declared, true);
+      patched++;
+    }
+  }
+  return patched;
+}
+
+/**
+ * Inflated sizes as jszip sees them: the whole stream, whatever the archive
+ * declares. `unzipSync` cannot answer this, since it allocates each entry at
+ * its declared size and stops there, which is why the declared size proves
+ * nothing about what mammoth would decompress.
+ */
+function inflatedSizes(archive: Uint8Array): Map<string, number> {
+  const sizes = new Map<string, number>();
+  const unzip = new Unzip();
+  unzip.register(UnzipInflate);
+  unzip.onfile = (file) => {
+    let size = 0;
+    file.ondata = (error, chunk) => {
+      if (!error) {
+        size += chunk.length;
+        sizes.set(file.name, size);
+      }
+    };
+    file.start();
+  };
+  unzip.push(archive, true);
+  return sizes;
+}
+
+/**
+ * jszip takes each part's size from the central directory and inflates the part
+ * in full before it can be rejected, so a lying header still expands inside
+ * mammoth. fflate allocates the entry at the declared size and stops, so the
+ * repack is what contains the lie.
+ */
+test("repackDocxAttachmentArchive bounds a part that lies about its size", () => {
+  const body = strToU8("a".repeat(30 * 1024 * 1024));
+  const archive = zipSync(
+    {
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": body,
+    },
+    { level: 9 },
+  );
+  assert.equal(understateDeclaredSizes(archive, body.length, 1024), 2);
+  assert.equal(archive.length < 1024 * 1024, true);
+  assert.equal(inflatedSizes(archive).get("word/document.xml"), body.length);
+
+  const repacked = repackDocxAttachmentArchive("lie.docx", archive);
+  assert.equal(inflatedSizes(repacked).get("word/document.xml"), 1024);
+  assert.equal(unzipSync(repacked)["word/document.xml"].length, 1024);
+});
+
+test("repackDocxAttachmentArchive keeps an honest archive intact", () => {
+  const files = {
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/media/photo.png": new Uint8Array(4096),
+  };
+  const repacked = unzipSync(
+    repackDocxAttachmentArchive("notes.docx", zipSync(files, { level: 9 })),
+  );
+
+  assert.deepEqual(Object.keys(repacked).sort(), Object.keys(files).sort());
+  for (const [name, bytes] of Object.entries(files)) {
+    assert.deepEqual(repacked[name], bytes, name);
+  }
+});
+
+/** Every part can sit under the XML ceiling while the archive as a whole still unpacks to more than the webview can hold. */
+test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceiling", () => {
+  const part = new Uint8Array(9 * 1024 * 1024);
+  const files: Record<string, Uint8Array> = {
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+  };
+  for (let index = 0; index < 12; index++) {
+    files[`word/media/photo${index}.bin`] = part;
+  }
+
+  const archive = zipSync(files, { level: 1 });
+  assert.throws(
+    () => repackDocxAttachmentArchive("wide.docx", archive),
+    /DOCX file is too large: wide\.docx/,
+  );
+});
+
+/** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */
+test("attachmentTextLanguage maps source files and leaves prose alone", () => {
+  assert.equal(attachmentTextLanguage("train.py", null), "python");
+  assert.equal(attachmentTextLanguage("Chart.YAML", null), "yaml");
+  assert.equal(attachmentTextLanguage("notes.txt", null), null);
+  assert.equal(attachmentTextLanguage("script.py", "PDF"), null);
+  assert.equal(attachmentTextLanguage(undefined, null), null);
 });
 
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {

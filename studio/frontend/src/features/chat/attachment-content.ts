@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { strFromU8, unzipSync } from "fflate";
+import { type Unzipped, strFromU8, unzipSync, zipSync } from "fflate";
 
 import {
   MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
@@ -75,9 +75,17 @@ const XML_NAMED_ENTITIES: Record<string, string> = {
   quot: '"',
   apos: "'",
 };
-// add() unzips the archive to check its parts, so send() and the preview reuse
-// that verdict instead of unzipping the same File a second time.
-const validatedDocxFiles = new WeakSet<File>();
+/**
+ * Ceiling on everything a DOCX unpacks to, and the reason mammoth never sees
+ * the file the user chose.
+ *
+ * jszip takes each part's size from the central directory and inflates the part
+ * in full before anything can reject it, so an entry declaring 1 KB that
+ * expands to 1 GB exhausts the webview. fflate allocates every entry at its
+ * declared size and stops there, so mammoth is handed a repack of fflate's
+ * output and can only inflate what has already been bounded here.
+ */
+const MAX_DOCX_UNPACKED_BYTES = 2 * MAX_OPEN_DOCUMENT_ARCHIVE_BYTES;
 const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   wav: "audio/wav",
   mp3: "audio/mpeg",
@@ -88,6 +96,122 @@ const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   flac: "audio/flac",
   aac: "audio/aac",
   webm: "audio/webm",
+};
+// Node.TEXT_NODE and Node.ELEMENT_NODE, spelled out so the extractor runs where the DOM globals do not.
+const TEXT_NODE = 3;
+const ELEMENT_NODE = 1;
+/** The elements that end a line of rendered text; everything else stays inline. */
+const HTML_BLOCK_TAGS = new Set([
+  "address",
+  "article",
+  "aside",
+  "blockquote",
+  "dd",
+  "div",
+  "dl",
+  "dt",
+  "fieldset",
+  "figcaption",
+  "figure",
+  "footer",
+  "form",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "header",
+  "hr",
+  "li",
+  "main",
+  "nav",
+  "ol",
+  "p",
+  "pre",
+  "section",
+  "table",
+  "tbody",
+  "td",
+  "tfoot",
+  "th",
+  "thead",
+  "tr",
+  "ul",
+]);
+/** The extensions TextAttachmentAdapter accepts, mapped to shiki ids; one missing here previews unstyled. */
+const CODE_ATTACHMENT_LANGUAGES: Record<string, string> = {
+  astro: "astro",
+  bash: "shellscript",
+  bat: "bat",
+  c: "c",
+  cc: "cpp",
+  cfg: "ini",
+  cjs: "javascript",
+  cmake: "cmake",
+  conf: "ini",
+  cpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  cxx: "cpp",
+  dart: "dart",
+  diff: "diff",
+  dockerfile: "docker",
+  env: "dotenv",
+  fish: "fish",
+  go: "go",
+  gql: "graphql",
+  gradle: "groovy",
+  graphql: "graphql",
+  h: "c",
+  hpp: "cpp",
+  ini: "ini",
+  java: "java",
+  jl: "julia",
+  js: "javascript",
+  json: "json",
+  jsonl: "json",
+  jsx: "jsx",
+  kt: "kotlin",
+  kts: "kotlin",
+  less: "less",
+  lua: "lua",
+  makefile: "make",
+  md: "markdown",
+  markdown: "markdown",
+  mdx: "mdx",
+  mjs: "javascript",
+  ndjson: "json",
+  php: "php",
+  pl: "perl",
+  pm: "perl",
+  properties: "ini",
+  proto: "proto",
+  ps1: "powershell",
+  py: "python",
+  pyi: "python",
+  r: "r",
+  rb: "ruby",
+  rs: "rust",
+  rst: "rst",
+  sass: "sass",
+  scala: "scala",
+  scss: "scss",
+  sh: "shellscript",
+  sql: "sql",
+  svelte: "svelte",
+  svg: "xml",
+  swift: "swift",
+  tf: "terraform",
+  tfvars: "terraform",
+  toml: "toml",
+  ts: "typescript",
+  tsx: "tsx",
+  vue: "vue",
+  xml: "xml",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "shellscript",
 };
 // Long attachments still have to render inside a dialog, so the preview stops
 // well before the point where a single <pre> stalls the webview.
@@ -249,83 +373,119 @@ function docxRelationshipsPath(path: string): string {
   return joinDocxPath(dirname, `_rels/${basename}.rels`);
 }
 
-// mammoth takes no entry filter, so the sizes the archive declares are checked
-// first, for exactly the parts it goes on to inflate: findPartPaths resolves
-// the main document out of "_rels/.rels" and the styles, numbering and note
-// parts out of the document's own .rels, falling back to a fixed name when no
-// target resolves. Only the relationship parts are decompressed here, and only
-// after their own declared size has passed.
-function assertDocxXmlSizes(filename: string, bytes: Uint8Array): void {
-  const sizes = new Map<string, number>();
-  const oversized: string[] = [];
+type DocxArchive = {
+  entries: Unzipped;
+  /** Every name the central directory declares, unpacked entries included, so a target resolves the way findPartPath resolves it. */
+  names: Set<string>;
+  oversized: Set<string>;
+};
+
+/**
+ * Inflates the archive under fflate's declared-size allocation.
+ *
+ * An entry past the XML ceiling is left out rather than refused: mammoth opens
+ * the package parts and whatever the relationships point at, so a large
+ * unreferenced part, custom XML or an embedded image, must still preview.
+ * `assertDocxPartSizes` refuses the ones mammoth would have parsed.
+ */
+function unpackDocxEntries(filename: string, bytes: Uint8Array): DocxArchive {
+  const names = new Set<string>();
+  const oversized = new Set<string>();
+  let unpacked = 0;
+
+  const entries = unzipSync(bytes, {
+    filter: (entry) => {
+      names.add(entry.name);
+      if (entry.originalSize > MAX_OPEN_DOCUMENT_XML_BYTES) {
+        oversized.add(entry.name);
+        return false;
+      }
+      unpacked += entry.originalSize;
+      if (unpacked > MAX_DOCX_UNPACKED_BYTES) {
+        throw new Error(`DOCX file is too large: ${filename}`);
+      }
+      return true;
+    },
+  });
+
+  return { entries, names, oversized };
+}
+
+/**
+ * Refuses the parts mammoth goes on to parse when they exceed the XML ceiling.
+ *
+ * mammoth takes no entry filter, so the set is resolved the way findPartPaths
+ * resolves it: the main document out of "_rels/.rels" and the styles,
+ * numbering and note parts out of the document's own .rels, each falling back
+ * to a fixed name when no target resolves. Both sides read the same bytes,
+ * since mammoth is handed the repack of these entries.
+ */
+function assertDocxPartSizes(filename: string, archive: DocxArchive): void {
+  const { entries, names, oversized } = archive;
   const bound = (path: string) => {
-    const size = sizes.get(path);
-    if (size !== undefined && size > MAX_OPEN_DOCUMENT_XML_BYTES) {
-      oversized.push(path);
+    if (oversized.has(path)) {
+      throw new Error(`DOCX XML file is too large: ${filename}:${path}`);
     }
-  };
-  const read = (path: string): Uint8Array | undefined => {
-    const size = sizes.get(path);
-    if (size === undefined || size > MAX_OPEN_DOCUMENT_XML_BYTES) {
-      return undefined;
-    }
-    return unzipSync(bytes, { filter: (entry) => entry.name === path })[path];
   };
   // findPartPath keeps the first target that exists, and every target it
   // discards is one mammoth never opens.
   const resolve = (targets: string[] | undefined, fallback: string) =>
-    targets?.find((path) => sizes.has(path)) ?? fallback;
+    targets?.find((path) => names.has(path)) ?? fallback;
 
-  try {
-    unzipSync(bytes, {
-      filter: (entry) => {
-        sizes.set(entry.name, entry.originalSize);
-        return false;
-      },
-    });
+  bound(DOCX_CONTENT_TYPES_PART);
+  bound(DOCX_PACKAGE_RELATIONSHIPS);
+  const mainDocument = resolve(
+    readDocxXmlTargets(entries[DOCX_PACKAGE_RELATIONSHIPS], "").get(
+      DOCX_MAIN_DOCUMENT_TYPE,
+    ),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
+  bound(mainDocument);
+  const mainDocumentRels = docxRelationshipsPath(mainDocument);
+  bound(mainDocumentRels);
 
-    bound(DOCX_CONTENT_TYPES_PART);
-    bound(DOCX_PACKAGE_RELATIONSHIPS);
-    const mainDocument = resolve(
-      readDocxXmlTargets(read(DOCX_PACKAGE_RELATIONSHIPS), "").get(
-        DOCX_MAIN_DOCUMENT_TYPE,
-      ),
-      DOCX_MAIN_DOCUMENT_FALLBACK,
+  const cut = mainDocument.lastIndexOf("/");
+  const documentTargets = readDocxXmlTargets(
+    entries[mainDocumentRels],
+    cut === -1 ? "" : mainDocument.slice(0, cut),
+  );
+  for (const name of DOCX_RELATED_PART_NAMES) {
+    const path = resolve(
+      documentTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
+      `word/${name}.xml`,
     );
-    bound(mainDocument);
-    const mainDocumentRels = docxRelationshipsPath(mainDocument);
-    bound(mainDocumentRels);
-
-    const cut = mainDocument.lastIndexOf("/");
-    const documentTargets = readDocxXmlTargets(
-      read(mainDocumentRels),
-      cut === -1 ? "" : mainDocument.slice(0, cut),
-    );
-    for (const name of DOCX_RELATED_PART_NAMES) {
-      const path = resolve(
-        documentTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`),
-        `word/${name}.xml`,
-      );
-      bound(path);
-      if (DOCX_BODY_PART_NAMES.has(name)) {
-        bound(docxRelationshipsPath(path));
-      }
+    bound(path);
+    if (DOCX_BODY_PART_NAMES.has(name)) {
+      bound(docxRelationshipsPath(path));
     }
-  } catch {
-    // A malformed archive is mammoth's to report, not the size guard's.
-    if (oversized.length === 0) {
-      return;
-    }
-  }
-  if (oversized.length > 0) {
-    throw new Error(`DOCX XML file is too large: ${filename}:${oversized[0]}`);
   }
 }
 
-// The composer clears its text and attachments before it awaits send(), so a
-// DOCX whose parts only fail there discards the typed message along with the
-// file. add() calls this instead, the way the audio adapter checks its own
-// ceiling, and the verdict is cached so send() does not unzip the file again.
+/** The archive mammoth is given: fflate's own output, so a part that lies about its size arrives truncated rather than inflated in full. */
+export function repackDocxAttachmentArchive(
+  filename: string,
+  bytes: Uint8Array,
+): Uint8Array {
+  const archive = unpackDocxEntries(filename, bytes);
+  assertDocxPartSizes(filename, archive);
+  return zipSync(archive.entries, { level: 0 });
+}
+
+function isDocxSizeError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.startsWith("DOCX file is too large:") ||
+      error.message.startsWith("DOCX XML file is too large:"))
+  );
+}
+
+/**
+ * The verdict add() needs before the attachment exists.
+ *
+ * The composer clears its text and attachments before it awaits send(), so a
+ * DOCX that only fails there discards the typed message along with the file.
+ * add() calls this instead, the way the audio adapter checks its own ceiling.
+ */
 export async function getDocxAttachmentError(
   file: File,
 ): Promise<string | null> {
@@ -334,11 +494,13 @@ export async function getDocxAttachmentError(
     return sizeError;
   }
   try {
-    assertDocxXmlSizes(file.name, new Uint8Array(await file.arrayBuffer()));
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    assertDocxPartSizes(file.name, unpackDocxEntries(file.name, bytes));
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return isDocxSizeError(error)
+      ? (error as Error).message
+      : `DOCX file could not be read: ${file.name}`;
   }
-  validatedDocxFiles.add(file);
   return null;
 }
 
@@ -349,30 +511,73 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
   const pdf = await getDocumentProxy(buffer);
-  const { text } = await extractText(pdf, { mergePages: true });
-  return text;
+  // per page rather than merged: mergePages folds every newline pdf.js marks into one space
+  const { text } = await extractText(pdf);
+  return normalizeExtractedText(text.join("\n\n"));
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "DOCX");
-  const [{ default: mammoth }, arrayBuffer] = await Promise.all([
+  const [{ default: mammoth }, buffer] = await Promise.all([
     import("mammoth"),
     file.arrayBuffer(),
   ]);
-  if (!validatedDocxFiles.has(file)) {
-    assertDocxXmlSizes(file.name, new Uint8Array(arrayBuffer));
-    validatedDocxFiles.add(file);
-  }
-  const { value } = await mammoth.extractRawText({ arrayBuffer });
+  const repacked = repackDocxAttachmentArchive(
+    file.name,
+    new Uint8Array(buffer),
+  );
+  // zipSync allocates a buffer of its own, so mammoth takes it without a copy.
+  const { value } = await mammoth.extractRawText({
+    arrayBuffer: repacked.buffer as ArrayBuffer,
+  });
   return value;
 }
 
 export function extractHtmlAttachmentText(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  for (const el of doc.querySelectorAll("script, style")) {
+  for (const el of doc.querySelectorAll("script, style, noscript, template")) {
     el.remove();
   }
-  return (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
+  return normalizeExtractedText(collectHtmlBlockText(doc.body));
+}
+
+/**
+ * Text with the line structure the source had.
+ *
+ * `textContent` runs a whole page together, so every block-level element and
+ * every `<br>` contributes a break of its own and the inline runs between them
+ * are joined as written.
+ */
+function collectHtmlBlockText(node: Node | null): string {
+  if (!node) {
+    return "";
+  }
+  if (node.nodeType === TEXT_NODE) {
+    return node.nodeValue ?? "";
+  }
+  if (node.nodeType !== ELEMENT_NODE) {
+    return "";
+  }
+
+  const element = node as Element;
+  const tag = element.tagName.toLowerCase();
+  if (tag === "br") {
+    return "\n";
+  }
+
+  const text = Array.from(element.childNodes)
+    .map(collectHtmlBlockText)
+    .join("");
+  return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
+}
+
+/** Collapses the spaces an extractor leaves between positioned runs while keeping the line breaks the source marked. */
+function normalizeExtractedText(text: string): string {
+  return text
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ ?\n ?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // Reads the same text the matching adapter would send, so a composer preview
@@ -474,6 +679,25 @@ export function truncateAttachmentPreviewText(text: string): {
     return { text, truncated: false };
   }
   return { text: text.slice(0, MAX_PREVIEW_TEXT_LENGTH), truncated: true };
+}
+
+/**
+ * The shiki language a plain-text attachment previews as, or null for prose.
+ *
+ * Only the filename decides. Text pulled out of a PDF, a DOCX or a spreadsheet
+ * is prose whatever the document was called, so callers pass the extracted
+ * label instead of the name in that case.
+ */
+export function attachmentTextLanguage(
+  name: string | undefined,
+  label: AttachmentTextLabel | null,
+): string | null {
+  if (label) {
+    return null;
+  }
+  const lower = name?.toLowerCase() ?? "";
+  const extension = lower.includes(".") ? lower.split(".").pop() : lower;
+  return CODE_ATTACHMENT_LANGUAGES[extension ?? ""] ?? null;
 }
 
 export function countAttachmentTextLines(text: string): number {

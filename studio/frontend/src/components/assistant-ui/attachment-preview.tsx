@@ -20,13 +20,16 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import {
   type AttachmentText,
+  attachmentTextLanguage,
   countAttachmentTextLines,
   parseAttachmentText,
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
+import { MAX_HIGHLIGHT_CHARS, codeFence } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
+import { code as codePlugin } from "@streamdown/code";
 import {
   type FC,
   type PropsWithChildren,
@@ -34,11 +37,17 @@ import {
   useMemo,
   useState,
 } from "react";
+import { Streamdown } from "streamdown";
 
 type TextPreviewState =
   | { status: "loading" }
   | { status: "error" }
   | ({ status: "ready" } & AttachmentText);
+
+const SHIKI_THEME = ["github-light", "github-dark"] as [
+  "github-light",
+  "github-dark",
+];
 
 const AttachmentImage: FC<{ src: string }> = ({ src }) => {
   const [isLoaded, setIsLoaded] = useState(false);
@@ -144,6 +153,47 @@ const useAttachmentTextPreview = (
   return file ? fileState : sentState;
 };
 
+/**
+ * The preview body: a source file keeps its syntax colours, prose stays plain.
+ *
+ * Highlighting is skipped past MAX_HIGHLIGHT_CHARS, the same ceiling the
+ * transcript uses, so a long file still opens without tokenizing on the way in.
+ */
+const AttachmentTextBody: FC<{ text: string; language: string | null }> = ({
+  text,
+  language,
+}) => {
+  const markdown = useMemo(() => {
+    if (!language || text.length > MAX_HIGHLIGHT_CHARS) {
+      return null;
+    }
+    const fence = codeFence(text);
+    return `${fence}${language}\n${text}\n${fence}`;
+  }, [text, language]);
+
+  if (!markdown) {
+    return (
+      <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-relaxed">
+        {text}
+      </pre>
+    );
+  }
+
+  // streamdown draws its own card and language header, flattened here so the dialog panel is the only one
+  return (
+    <div className="[&_[data-streamdown=code-block-header]]:!hidden [&_[data-streamdown=code-block]]:!my-0 [&_[data-streamdown=code-block]]:!gap-0 [&_[data-streamdown=code-block]]:!rounded-none [&_[data-streamdown=code-block]]:!border-0 [&_[data-streamdown=code-block]]:!bg-transparent [&_[data-streamdown=code-block]]:!p-0 [&_[data-streamdown=code-block-body]]:!rounded-none [&_[data-streamdown=code-block-body]]:!border-0 [&_[data-streamdown=code-block-body]]:!bg-transparent [&_[data-streamdown=code-block-body]]:!p-0 [&_pre]:!m-0 [&_pre]:!bg-transparent [&_pre]:!px-4 [&_pre]:!py-3 [&_pre]:!text-xs [&_pre]:!leading-relaxed">
+      <Streamdown
+        mode="static"
+        plugins={{ code: codePlugin }}
+        controls={{ code: false }}
+        shikiTheme={SHIKI_THEME}
+      >
+        {markdown}
+      </Streamdown>
+    </div>
+  );
+};
+
 const AttachmentTextDialog: FC<
   PropsWithChildren<{ source: AttachmentSource }>
 > = ({ children, source }) => {
@@ -161,6 +211,13 @@ const AttachmentTextDialog: FC<
         ? truncateAttachmentPreviewText(state.text)
         : undefined,
     [state],
+  );
+  const language = useMemo(
+    () =>
+      state.status === "ready"
+        ? attachmentTextLanguage(source.name, state.label)
+        : null,
+    [state, source.name],
   );
   const meta = useMemo(() => {
     if (state.status === "error") {
@@ -205,9 +262,7 @@ const AttachmentTextDialog: FC<
             </div>
           ) : preview?.text.trim() ? (
             <div className="overlay-scrollbar-gutter max-h-[60dvh] overflow-y-auto">
-              <pre className="whitespace-pre-wrap break-words px-4 py-3 font-mono text-xs leading-relaxed">
-                {preview.text}
-              </pre>
+              <AttachmentTextBody text={preview.text} language={language} />
             </div>
           ) : (
             <div className="px-4 py-6 text-muted-foreground text-sm">
