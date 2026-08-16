@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { PerModelConfig } from "../src/features/model-picker/model-config/per-model-config.ts";
 import { installLocalStorageFake, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -21,7 +22,6 @@ const { store } = installLocalStorageFake();
 
 const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
   await import("../src/features/model-picker/model-config/per-model-config.ts");
-type PerModelConfig = Record<string, unknown>;
 
 const STORAGE_KEY = "unsloth_model_configs";
 
@@ -33,7 +33,7 @@ function installLocalStorage(): void {
   store.clear();
 }
 
-function config(overrides: Record<string, unknown> = {}): PerModelConfig {
+function config(overrides: Partial<PerModelConfig> = {}): PerModelConfig {
   return { ...DEFAULT_PER_MODEL_CONFIG, ...overrides };
 }
 
