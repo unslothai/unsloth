@@ -98,6 +98,13 @@ def test_harnesses_own_their_dev_server() -> None:
 THREAD_WEIGHT = "playwright_thread_weight.py"
 
 
+def thread_weight_verdict() -> str:
+    """Everything from `def harness_failures(` on. Unlike the harnesses above, this one turns
+    metrics into an exit code there rather than in `main()`."""
+    text = source(THREAD_WEIGHT)
+    return text[text.index("def harness_failures("):]
+
+
 def _dict_keys(node: ast.AST, helpers: dict[str, set[str]]) -> set[str]:
     """String keys of a dict literal, following `**helper(...)` into the helper's return dict."""
     keys: set[str] = set()
@@ -148,8 +155,26 @@ def test_thread_weight_records_the_four_actions() -> None:
     # coverage test below pass by finding nothing to check.
     recorded = _thread_weight_recorded()
     assert {"keystroke", "scroll", "menu", "delete"} <= set(recorded)
+    # Not `assert keys`: _thread_weight_recorded only stores an entry when it found keys, so
+    # that could never fail. Each action records its own timings plus the five CDP counters and
+    # the three long-task fields, so anything under ten means the parser lost a spread.
     for action, keys in recorded.items():
-        assert keys, f"{action} recorded no metrics"
+        assert len(keys) >= 10, f"{action} recorded only {len(keys)} metrics: {sorted(keys)}"
+
+
+def test_thread_weight_row_shapes_stay_distinct() -> None:
+    """TABLE_ROWS is (label, pick) and GROWTH_AXES is (label, pick, floored). They read almost
+    identically, so a bulk edit to one lands in the other and print_table dies at the end of a
+    forty-minute run, after every measurement is taken and before any of it is shown."""
+    import importlib
+    import sys
+
+    sys.path.insert(0, str(STUDIO_TESTS))
+    pytest = importlib.import_module("pytest")
+    pytest.importorskip("playwright")
+    module = importlib.import_module("playwright_thread_weight")
+    assert all(len(row) == 2 for row in module.TABLE_ROWS)
+    assert all(len(row) == 3 for row in module.GROWTH_AXES)
 
 
 def test_thread_weight_prints_every_metric_it_records() -> None:
@@ -170,10 +195,24 @@ def test_thread_weight_prints_every_metric_it_records() -> None:
 def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() -> None:
     # The one thing this harness must fail on. Without it a run where nothing was ever clicked
     # reports four identical columns and exits 0, which reads as "no regression".
-    main = verdict(THREAD_WEIGHT)
-    assert "GROWTH_AXES" in main or "GROWTH_AXES" in source(THREAD_WEIGHT)
-    assert "no measured axis rose with N" in source(THREAD_WEIGHT)
+    # Not `in source(...)`: the verdict is a substring of the source, so an `or` against the
+    # whole file would make this unfailable.
+    # Asserted against the verdict region, not the whole file: a check that only ever appears
+    # in a comment or a table row would otherwise satisfy this.
+    main = thread_weight_verdict()
+    assert "GROWTH_AXES" in main
+    assert "no measured axis rose with N" in main
     # The menu cost is only the reported one if the body really went onto the modal layer.
-    assert 'menu["body_pointer_events_while_open"]' in source(THREAD_WEIGHT)
+    assert 'menu["body_pointer_events_while_open"]' in main
+    # An empty popover satisfies "the menu opened" and costs nothing to render.
+    assert 'menu["items_while_open"]' in main
     # A delete that deleted nothing is a fast delete.
-    assert 'deleted["messages_after"]' in source(THREAD_WEIGHT)
+    assert 'deleted["messages_after"]' in main
+    # A keystroke that never reached the runtime still reports the double-rAF paint floor, so
+    # the floor has to be compared rather than left implicit in the timings.
+    assert 'row["paint_floor_ms"]' in main
+    assert 'keystroke["runtime_text"] != keystroke["dom_text"]' in main
+    # Requests reaching the network and console warnings both cost a CDP round trip per
+    # message, so both would grow with N for reasons the app does not have.
+    assert 'row["stray_api_requests"]' in main
+    assert 'row["console_warnings"]' in main

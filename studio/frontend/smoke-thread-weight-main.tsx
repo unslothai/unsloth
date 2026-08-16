@@ -12,8 +12,7 @@
 //   - The message bodies, which carry prose plus one code fence plus one KaTeX block each, so
 //     Streamdown, Shiki and KaTeX all pay their per-message price.
 // The runtime is synthetic: a local runtime whose model adapter never runs, seeded through
-// `thread.import`. Its thread list item has no remoteId, so the per-message fork-count GET
-// short-circuits and nothing here reaches the network.
+// `thread.import`.
 //
 // useLocalRuntime rather than useExternalStoreRuntime: the delete path under measurement is
 // `thread.export()` -> MessageRepository -> `thread.import()`, which only the local runtime backs.
@@ -28,9 +27,34 @@ import {
   useAui,
   useLocalRuntime,
 } from "@assistant-ui/react";
+import {
+  RouterProvider,
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+} from "@tanstack/react-router";
 import { type ReactElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
+
+// The local runtime's thread list item reports a synthetic `__LOCALID_...` remoteId, which is
+// truthy, so ForkCountBadge really does fire one GET per assistant message. Measured: seeding 20
+// messages issues 10 requests. Answering them here, before anything mounts, keeps that off the
+// wire entirely. Answering them from the Playwright side instead would put a CDP round trip to
+// another process inside a region this harness is timing, once per assistant message.
+const realFetch = window.fetch.bind(window);
+window.fetch = (input, init) => {
+  const url = typeof input === "string" ? input : (input as Request).url ?? String(input);
+  if (url.includes("/api/")) {
+    return Promise.resolve(
+      new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }
+  return realFetch(input, init);
+};
 
 const PROSE =
   "The reception of a long thread is decided by what the renderer does on every " +
@@ -165,6 +189,26 @@ function ThreadWeightApi(): null {
           ".aui-composer-input",
         );
       },
+      /**
+       * What the RUNTIME thinks the composer holds. Reading the textarea back instead would
+       * only echo the value the caller just wrote, so a keystroke that never reached React
+       * would still look like it landed.
+       */
+      composerText(): string {
+        return aui.composer().getState().text;
+      },
+      /** One selector pass, for the seed gate; counts() is far too heavy to poll. */
+      katexCount(): number {
+        return document.querySelectorAll(".katex").length;
+      },
+      /** Highlighted tokens. Shiki runs after the <pre> exists, so counting <pre> gates nothing. */
+      highlightedTokenCount(): number {
+        return document.querySelectorAll("pre code span").length;
+      },
+      /** Items in the open action menu. An empty popover satisfies "the menu opened". */
+      openMenuItemCount(): number {
+        return document.querySelectorAll(".aui-action-bar-more-item").length;
+      },
       lastAssistantMessage(): HTMLElement | null {
         const messages = document.querySelectorAll<HTMLElement>(
           '[data-role="assistant"]',
@@ -211,8 +255,18 @@ function Harness(): ReactElement {
   );
 }
 
+// Thread reaches useNavigate (the fork action, the composer tools menu). Without a router in
+// context tanstack's useRouter still works, but console.warns on every render of every action
+// bar: measured at 12 warnings for 10 assistant messages, which scales with N and is serialised
+// over CDP. A memory router with one route removes that without pulling in the app shell.
+const rootRoute = createRootRoute({ component: Harness });
+const router = createRouter({
+  routeTree: rootRoute,
+  history: createMemoryHistory({ initialEntries: ["/"] }),
+});
+
 const root = document.getElementById("root");
 if (!root) {
   throw new Error("missing #root");
 }
-createRoot(root).render(<Harness />);
+createRoot(root).render(<RouterProvider router={router as unknown as never} />);
