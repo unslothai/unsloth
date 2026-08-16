@@ -215,14 +215,26 @@ def test_fix_is_a_noop_without_xformers(monkeypatch):
 _BROKEN_XFORMERS = textwrap.dedent(
     _LOAD_MODULE
     + """
-    import importlib.util
+    import importlib.machinery, importlib.util
 
     # An xformers whose `ops` submodule explodes on import, standing in for an install the
-    # repair cannot rescue.
+    # repair cannot rescue. The top-level package is stubbed too, because the repair gates on
+    # `find_spec("xformers")` first: without the stub this case would silently become the
+    # no-xformers early return on any machine that has no xformers (the CPU-only CI job).
+    class _StubLoader:
+        def create_module(self, spec):
+            return None
+        def exec_module(self, module):
+            pass
+
     class _Boom:
         def find_spec(self, fullname, path=None, target=None):
             if fullname == "xformers.ops":
                 raise RuntimeError("boom")
+            if fullname == "xformers":
+                spec = importlib.machinery.ModuleSpec("xformers", _StubLoader())
+                spec.submodule_search_locations = []
+                return spec
             return None
     sys.meta_path.insert(0, _Boom())
     for name in [m for m in sys.modules if m == "xformers" or m.startswith("xformers.")]:
