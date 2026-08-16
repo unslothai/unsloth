@@ -3652,7 +3652,6 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
 def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(monkeypatch):
     """Both an ordinary iteration and final synthesis refit without repeating old drops."""
     import httpx
-
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
         backend = _make_backend(
@@ -3743,7 +3742,6 @@ def test_tool_loop_retries_preflight_when_counting_failed_on_the_dead_server(mon
 
 def test_tool_loop_does_not_send_a_stale_payload_when_respawn_refit_fails(monkeypatch):
     import httpx
-
     for max_tool_iterations in (1, 0):
         payloads: list[dict] = []
         backend = _make_backend(monkeypatch, [httpx.ConnectError("server is down")], payloads)
