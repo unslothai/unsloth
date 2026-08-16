@@ -1663,7 +1663,13 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages components={THREAD_MESSAGE_COMPONENTS} />
+            <ThreadPrimitive.Messages
+              components={{
+                UserMessage,
+                EditComposer,
+                AssistantMessage,
+              }}
+            />
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -7146,18 +7152,3 @@ const BranchPicker: FC<BranchPickerPrimitive.Root.Props> = ({
     </BranchPickerPrimitive.Root>
   );
 };
-
-/**
- * Message components for the thread, held at module scope for the same reason
- * as ASSISTANT_PART_COMPONENTS above: an inline literal here hands the
- * primitive a fresh object on every render of the thread.
- *
- * Declared after the three components it names, because a module-scope
- * initializer runs at import time and would otherwise read them in their
- * temporal dead zone.
- */
-const THREAD_MESSAGE_COMPONENTS = {
-  UserMessage,
-  EditComposer,
-  AssistantMessage,
-} as const;

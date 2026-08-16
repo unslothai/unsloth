@@ -27,10 +27,19 @@ const THREAD_SOURCE = readFileSync(
   "utf8",
 );
 
-test("no components map is passed to a primitive as an inline object literal", () => {
+test("the assistant part components are not an inline object literal", () => {
   // `components={{` is the exact shape of the regression: an object literal
   // built inline in JSX, which is a new object on every render.
-  const inline = [...THREAD_SOURCE.matchAll(/components=\{\{/g)];
+  //
+  // Scoped to MessagePrimitive.Parts. ThreadPrimitive.Messages has the same
+  // shape but hoisting cannot fix it: the library turns a components map into
+  // `() => <ThreadMessageComponent components={...} />`, so the per-message
+  // element always carries props and never reaches the propless bail-out in
+  // RenderChildrenWithAccessor. #9042 moves that call to the children form,
+  // which does reach it, and asserts the opposite of what a hoist would.
+  const inline = [
+    ...THREAD_SOURCE.matchAll(/<MessagePrimitive\.Parts[^>]*components=\{\{/gs),
+  ];
   assert.equal(
     inline.length,
     0,
@@ -52,11 +61,6 @@ test("the assistant part components are a single module-scope object", () => {
     THREAD_SOURCE,
     /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>/,
     "MessagePrimitive.Parts must be given the hoisted constant by name",
-  );
-  assert.match(
-    THREAD_SOURCE,
-    /^const THREAD_MESSAGE_COMPONENTS = \{/m,
-    "THREAD_MESSAGE_COMPONENTS must be declared at module scope",
   );
 });
 
