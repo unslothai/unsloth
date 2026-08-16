@@ -336,13 +336,30 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             self.assertEqual(nvidia.resolve_gpu_uuid_mask([self._UUID_B]), [1])
 
     def test_resolves_a_mixed_numeric_and_uuid_mask(self):
-        smi_output = f"0, {self._UUID_A}, 00000000:04:00.0, Disabled"
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             # "0" passes through as-is (same trust level as the pure-numeric
-            # fast path); only the UUID token goes through nvidia-smi.
+            # fast path); only the UUID token goes through nvidia-smi. Distinct
+            # physical IDs here on purpose -- see the duplicate-rejection test
+            # below for what happens when they alias the same card.
             result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
-        self.assertEqual(result, [0, 0])
+        self.assertEqual(result, [0, 1])
+
+    def test_rejects_a_mask_that_resolves_to_duplicate_physical_ids(self):
+        # "0" and UUID_A both name physical GPU 0 -- _visible_ordinal_map()
+        # is keyed by physical ID, so a duplicate would silently collapse one
+        # of the mask's two distinct visible ordinals onto the other.
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
+        self.assertIsNone(result)
 
     def test_caches_a_resolved_mask_and_does_not_requery(self):
         smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
@@ -353,6 +370,36 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             second = nvidia.resolve_gpu_uuid_mask(tokens)
         self.assertEqual(first, [0])
         self.assertEqual(second, [0])
+        mock_run.assert_called_once()
+
+    def test_revalidates_a_resolved_mask_once_its_ttl_expires(self):
+        # GPU topology/MIG mode isn't provably immutable for a whole Studio
+        # session (an admin can enable MIG on a running host) -- a resolution
+        # from before that change must eventually be revalidated rather than
+        # kept forever.
+        tokens = [self._UUID_A]
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            first = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertEqual(first, [0])
+
+        # Simulate the TTL elapsing without a real sleep: back-date the
+        # cached success's timestamp past the expiry window.
+        cache_key = tuple(tokens)
+        _value, cached_at = nvidia._uuid_mask_resolution_cache[cache_key]
+        nvidia._uuid_mask_resolution_cache[cache_key] = (
+            _value,
+            cached_at - nvidia._RESOLVED_MASK_TTL_SECONDS - 1,
+        )
+
+        # UUID_A is now MIG-enabled -- the revalidated resolution must reflect
+        # that instead of trusting the stale cached success.
+        mig_smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Enabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = mig_smi_output)
+            second = nvidia.resolve_gpu_uuid_mask(tokens)
+        self.assertIsNone(second)
         mock_run.assert_called_once()
 
     def test_caches_a_failed_resolution_within_the_ttl_and_does_not_requery(self):

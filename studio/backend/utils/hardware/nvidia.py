@@ -52,9 +52,12 @@ def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[di
 # Failures aren't cached forever: a hung/missing nvidia-smi at Studio startup
 # (driver still initializing, momentary system load) can recover mid-session,
 # and the picker shouldn't stay hidden until a restart on the strength of one
-# bad probe. Successes ARE cached forever -- GPU topology doesn't change
-# mid-process -- so only failure entries carry a timestamp to expire against.
+# bad probe. Successes also expire, just on a much longer horizon -- GPU
+# topology and MIG mode are effectively static, but not provably immutable
+# for a whole Studio session (an admin can toggle MIG on a running host) --
+# so a resolution is revalidated periodically rather than trusted forever.
 _FAILED_RESOLUTION_TTL_SECONDS = 30
+_RESOLVED_MASK_TTL_SECONDS = 300
 _uuid_mask_resolution_cache: dict[tuple[str, ...], tuple[Optional[list[int]], float]] = {}
 
 _GPU_UUID_PREFIX = "GPU-"
@@ -167,18 +170,24 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
     to match the mask, since it defines the visible-ordinal mapping
     downstream. Returns None -- and the caller falls back to relative
     ordinals -- if nvidia-smi is unavailable, its index doesn't match PCI bus
-    order, or any UUID token doesn't match exactly one non-MIG physical
-    device (an actual MIG instance UUID, a MIG-enabled root's UUID, or a
-    UUID/prefix ambiguous across cards). Successes are cached per token tuple
-    for the process lifetime; failures are cached for
-    _FAILED_RESOLUTION_TTL_SECONDS, since a hung or missing nvidia-smi would
-    otherwise cost its full timeout on every caller of
-    _get_parent_visible_gpu_spec() every poll cycle."""
+    order, any UUID token doesn't match exactly one non-MIG physical device
+    (an actual MIG instance UUID, a MIG-enabled root's UUID, or a UUID/prefix
+    ambiguous across cards), or two tokens resolve to the same physical ID
+    (a repeated or aliased UUID/index pair): _visible_ordinal_map() is keyed
+    by physical ID, so a duplicate silently collapses one of the mask's
+    visible ordinals rather than giving it its own device entry. Cached per
+    token tuple -- successes for _RESOLVED_MASK_TTL_SECONDS, since GPU
+    topology/MIG mode can change while Studio keeps running (an admin
+    enabling MIG on a previously plain card, without a restart); failures
+    for the much shorter _FAILED_RESOLUTION_TTL_SECONDS, since a hung or
+    missing nvidia-smi would otherwise cost its full timeout on every caller
+    of _get_parent_visible_gpu_spec() every poll cycle."""
     cache_key = tuple(tokens)
     cached = _uuid_mask_resolution_cache.get(cache_key)
     if cached is not None:
         value, cached_at = cached
-        if value is not None or time.monotonic() - cached_at < _FAILED_RESOLUTION_TTL_SECONDS:
+        ttl = _RESOLVED_MASK_TTL_SECONDS if value is not None else _FAILED_RESOLUTION_TTL_SECONDS
+        if time.monotonic() - cached_at < ttl:
             return value
 
     uuid_to_ordinal = _query_uuid_to_ordinal()
@@ -198,6 +207,16 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
             _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
             return None
         resolved.append(idx)
+
+    if len(set(resolved)) != len(resolved):
+        logger.warning(
+            "GPU mask %r resolved to duplicate physical IDs %r; a physical "
+            "ID mask can't represent this many distinct visible ordinals",
+            tokens,
+            resolved,
+        )
+        _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+        return None
 
     _uuid_mask_resolution_cache[cache_key] = (resolved, time.monotonic())
     return resolved
