@@ -461,19 +461,21 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
     calls = _resolve_calls(source)
     assert calls, "diffusion.py never resolves a device map"
     for call in calls:
-        assert max(built) < call.lineno, (
-            f"diffusion.py:{call.lineno} plans before the quantization config exists"
-        )
+        assert (
+            max(built) < call.lineno
+        ), f"diffusion.py:{call.lineno} plans before the quantization config exists"
         forwarded = [
             unpack
             for unpack in (
-                kw.value for kw in call.keywords if kw.arg is None and isinstance(kw.value, ast.Call)
+                kw.value
+                for kw in call.keywords
+                if kw.arg is None and isinstance(kw.value, ast.Call)
             )
             if getattr(unpack.func, "id", None) == "planner_quantization_kwargs"
         ]
         assert forwarded, f"diffusion.py:{call.lineno} plans without the load's quantization"
         for unpack in forwarded:
             passed = {kw.arg: ast.unparse(kw.value) for kw in unpack.keywords}
-            assert passed.get("quantization_config") == "qcfg", (
-                f"diffusion.py:{call.lineno} plans without the skip list the load applies"
-            )
+            assert (
+                passed.get("quantization_config") == "qcfg"
+            ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
