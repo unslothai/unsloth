@@ -595,6 +595,62 @@ type CommitBoundary = {
   repairBroke: boolean;
 };
 
+// Where one commit left the retained prefix. `advanceContext` only ever adds
+// facts, so a context cannot be undone; keeping the value each commit produced
+// is what lets the prefix be rewound to an earlier boundary.
+type CommitPoint = {
+  blockCount: number;
+  length: number;
+  context: RetainedContext;
+};
+
+function sharedPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) {
+    index += 1;
+  }
+  return index;
+}
+
+// Does `text` end at a blank line, counting the start of the document as one?
+// Unchanged characters are not enough to keep a block across a rewrite: Marked
+// reads `paragraph\n` followed by new text as a lazy continuation, so an edit
+// that closes up a blank line re-segments the paragraph before it even though
+// that paragraph's own characters never moved. A blank line cannot be reopened
+// from the far side, so a boundary that ends at one is safe to keep.
+function endsAtBlankLine(text: string, end: number): boolean {
+  if (end === 0) {
+    return true;
+  }
+  if (text.charCodeAt(end - 1) !== 10) {
+    return false;
+  }
+  let index = end - 2;
+  while (index >= 0) {
+    const code = text.charCodeAt(index);
+    if (code === 32 || code === 9) {
+      index -= 1;
+      continue;
+    }
+    return code === 10;
+  }
+  return true;
+}
+
+// The last blank line at or before `limit`, or 0 for none. A commit boundary
+// does not have to land on the blank line itself: any untouched blank line
+// between the boundary and the rewrite insulates it just as well, and a commit
+// often ends on the block before its separator.
+function lastBlankLineEnd(text: string, limit: number): number {
+  for (let end = limit; end > 0; end -= 1) {
+    if (endsAtBlankLine(text, end)) {
+      return end;
+    }
+  }
+  return 0;
+}
+
 // Remend may synthesize closing syntax at the end of an incomplete tail.
 // Never retain synthetic or mid-string repaired text. Scan forward once,
 // recording the latest exact boundary whose global repair parity is neutral.
@@ -638,10 +694,19 @@ export class IncrementalMarkdownCache {
   private source = "";
   private tail = "";
   private committedBlocks: string[] = [];
+  private committedLength = 0;
+  private commitPoints: CommitPoint[] = [];
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
   private droppedRetainedBlocks = false;
+  // How often a rewrite discarded the whole retained prefix, and how many of
+  // its characters a rewind handed back to the live tail. Both redo work whose
+  // result is identical to what they discarded, and the next update commits the
+  // same boundary again, so time is the only thing that shows either happening.
+  // Tests read these to hold the rewind path in place.
+  private retainedPrefixRebuilds = 0;
+  private rewoundCharacters = 0;
   // Bumped only when the Markdown string alone cannot signal a changed render.
   renderGeneration = 0;
 
@@ -668,6 +733,8 @@ export class IncrementalMarkdownCache {
     this.source = markdown;
     this.tail = markdown;
     this.committedBlocks = [];
+    this.committedLength = 0;
+    this.commitPoints = [];
     this.context = createRetainedContext();
   }
 
@@ -677,10 +744,64 @@ export class IncrementalMarkdownCache {
     return this.render(remend(markdown));
   }
 
+  // The text handed to the cache is not always an extension of the last one.
+  // `preprocessLaTeX` rewrites a span it already emitted whenever a `\(...\)`
+  // closes, a `\[...\]` becomes a `$$` block, or a currency `$` turns out not to
+  // open math; a closing fence rewrites its own body the same way. Each of those
+  // edits one span, so rewind the retained prefix to the last commit the rewrite
+  // can neither reach nor re-segment instead of discarding the whole prefix.
+  // Returns false when nothing survives and the caller has to start over.
+  // Mutates nothing before that answer is known, so the reset fallback never
+  // sees a half-rewound cache. `fullDocumentMode` cannot be set here: it is only
+  // raised by `renderFullDocument`, which clears `commitPoints` first, so the
+  // guard below has already returned.
+  private rewindToRewrite(markdown: string): boolean {
+    if (this.commitPoints.length === 0) {
+      return false;
+    }
+
+    // Characters the rewrite left alone. The usual case is a rewrite inside the
+    // live tail, and `slice` on a long string shares the original's characters,
+    // so that case costs one native comparison plus a scan of the tail, which
+    // is about to be re-lexed anyway, rather than a scan of the reply.
+    const committedPrefix = this.source.slice(0, this.committedLength);
+    const shared = markdown.startsWith(committedPrefix)
+      ? this.committedLength +
+        sharedPrefixLength(markdown.slice(this.committedLength), this.tail)
+      : sharedPrefixLength(markdown, committedPrefix);
+
+    // Unchanged characters alone do not make a boundary safe to keep, so stop
+    // at the last blank line the rewrite left intact.
+    const safeLimit = lastBlankLineEnd(this.source, shared);
+    let index = this.commitPoints.length - 1;
+    while (index >= 0 && this.commitPoints[index].length > safeLimit) {
+      index -= 1;
+    }
+    if (index < 0) {
+      return false;
+    }
+
+    const point = this.commitPoints[index];
+    if (point.length < this.committedLength) {
+      this.rewoundCharacters += this.committedLength - point.length;
+      this.committedBlocks.length = point.blockCount;
+      this.committedLength = point.length;
+      this.commitPoints.length = index + 1;
+      this.droppedRetainedBlocks = true;
+    }
+
+    this.context = point.context;
+    this.tail = markdown.slice(this.committedLength);
+    return true;
+  }
+
   private updateTail(markdown: string): void {
     if (markdown.startsWith(this.source)) {
       this.tail += markdown.slice(this.source.length);
-    } else {
+    } else if (!this.rewindToRewrite(markdown)) {
+      if (this.committedBlocks.length > 0) {
+        this.retainedPrefixRebuilds += 1;
+      }
       this.resetIncrementalState(markdown);
       this.fullDocumentMode = false;
     }
@@ -755,8 +876,14 @@ export class IncrementalMarkdownCache {
     }
 
     this.committedBlocks.push(...blocks.slice(0, commit.count));
+    this.committedLength += commit.length;
     this.context = nextContext;
     this.tail = nextTail;
+    this.commitPoints.push({
+      blockCount: this.committedBlocks.length,
+      length: this.committedLength,
+      context: nextContext,
+    });
 
     return this.render(nextMarkdown);
   }
