@@ -815,6 +815,38 @@ test("attachmentTextLanguage maps source files and leaves prose alone", () => {
   assert.equal(attachmentTextLanguage(undefined, null), null);
 });
 
+/**
+ * Every extension and entity table here is a plain object literal, so a key
+ * that names a member of Object.prototype resolves to a function rather than
+ * missing. The entity case is the one that matters: a resolved target would
+ * carry the source text of that function and bound a path mammoth never reads.
+ */
+test("prototype member names do not resolve as table entries", async () => {
+  assert.equal(attachmentTextLanguage("notes.constructor", null), null);
+  assert.equal(attachmentTextLanguage("notes.toString", null), null);
+  assert.equal(attachmentTextLanguage("notes.py", null), "python");
+
+  assert.equal(
+    attachmentAudioSrc({ data: "AAA", format: "wav" }, "", "clip.constructor"),
+    "data:audio/wav;base64,AAA",
+  );
+
+  const type =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+  const bytes = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${type}" Target="pay&constructor;load.bin"/></Relationships>`,
+    ),
+    "pay&constructor;load.bin": strToU8("a".repeat(11 * 1024 * 1024)),
+  });
+  const bomb = fakeDocumentFile("bomb.docx", bytes.length, bytes, []);
+  await assert.rejects(
+    readAttachmentText(bomb, bomb.name, undefined),
+    /DOCX XML file is too large: bomb\.docx:pay&constructor;load\.bin/,
+  );
+});
+
 test("parseAttachmentText keeps an unterminated tag as plain text", () => {
   const parsed = parseAttachmentText("<attachment name=notes.txt>\nbody");
   assert.deepEqual(parsed, {

@@ -224,6 +224,11 @@ const MAX_PREVIEW_TEXT_LENGTH = 200_000;
 // character cap for any UTF-8 input, so truncation is still detected.
 const MAX_PREVIEW_TEXT_BYTES = MAX_PREVIEW_TEXT_LENGTH * 5;
 
+/** Own-property lookup: an extension or entity named "constructor" would otherwise resolve to a member of Object.prototype. */
+function lookUp(table: Record<string, string>, key: string): string | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 export function isAudioAttachment(
   name: string | undefined,
   contentType: string | undefined,
@@ -245,7 +250,7 @@ export function attachmentAudioSrc(
   const extension = name?.toLowerCase().split(".").pop() ?? "";
   const mime = AUDIO_MIME_RE.test(contentType ?? "")
     ? (contentType as string)
-    : (AUDIO_EXTENSION_MIMES[extension] ??
+    : (lookUp(AUDIO_EXTENSION_MIMES, extension) ??
       (audio.format === "mp3" ? "audio/mpeg" : "audio/wav"));
   return `data:${mime};base64,${audio.data}`;
 }
@@ -326,7 +331,7 @@ function decodeXmlEntities(value: string): string {
         ? Number.parseInt(hex, 16)
         : Number.NaN;
     if (Number.isNaN(code)) {
-      return XML_NAMED_ENTITIES[name] ?? match;
+      return lookUp(XML_NAMED_ENTITIES, name) ?? match;
     }
     return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
   });
@@ -475,6 +480,24 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
+/**
+ * The bytes of a view, as an ArrayBuffer, without copying when it owns one.
+ *
+ * jszip reads the whole buffer it is handed and looks for the end-of-directory
+ * record at its tail, so a view that does not span its buffer would arrive as a
+ * corrupt archive. zipSync happens to return an exact-fit array today, which is
+ * not something its API promises.
+ */
+function toArrayBuffer(view: Uint8Array): ArrayBuffer {
+  const spansBuffer =
+    view.byteOffset === 0 && view.byteLength === view.buffer.byteLength;
+  return (
+    spansBuffer
+      ? view.buffer
+      : view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength)
+  ) as ArrayBuffer;
+}
+
 function isDocxSizeError(error: unknown): boolean {
   return (
     error instanceof Error &&
@@ -530,9 +553,8 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
-  // zipSync allocates a buffer of its own, so mammoth takes it without a copy.
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: repacked.buffer as ArrayBuffer,
+    arrayBuffer: toArrayBuffer(repacked),
   });
   return value;
 }
@@ -701,7 +723,7 @@ export function attachmentTextLanguage(
   }
   const lower = name?.toLowerCase() ?? "";
   const extension = lower.includes(".") ? lower.split(".").pop() : lower;
-  return CODE_ATTACHMENT_LANGUAGES[extension ?? ""] ?? null;
+  return lookUp(CODE_ATTACHMENT_LANGUAGES, extension ?? "") ?? null;
 }
 
 export function countAttachmentTextLines(text: string): number {
