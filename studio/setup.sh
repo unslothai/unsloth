@@ -2137,6 +2137,31 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # A quarantined payload leaves dist-info reporting current while the canonical
+        # import is gone; the metadata compare above cannot see that, so the fast path
+        # stands only after the payload probe answers. The probe's version must also
+        # match the one that took the fast path: INSTALLED_VER above came from the
+        # default sys.path lookup, which an executable .pth can satisfy with a current
+        # external copy while the managed install sits stale -- the probe answers for
+        # the managed one only. A crashed or silent probe says nothing about the venv
+        # and leaves the fast path alone. Deliberately BEFORE the XPU escapes:
+        # tests/sh/test_setup_xpu_fastpath_escape.sh extracts that chain and runs
+        # it directly, and it must stay free of anything that launches an
+        # interpreter (a wedged Intel driver would hang one). Order does not
+        # matter -- every arm just clears the skip flag.
+        if [ "$_SKIP_PYTHON_DEPS" = true ]; then
+            _FAST_VER=$(_bounded_pkg_probe)
+            if [ "$_FAST_VER" = "__MISSING__" ]; then
+                substep "managed $_PKG_NAME is not installed -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ "$_FAST_VER" = "__DAMAGED__" ]; then
+                substep "$_PKG_NAME files are missing or damaged -- forcing dependency pass to repair..."
+                _SKIP_PYTHON_DEPS=false
+            elif [ -n "$_FAST_VER" ] && [ "$_FAST_VER" != "$LATEST_VER" ]; then
+                substep "managed $_PKG_NAME is at $_FAST_VER, not $LATEST_VER -- forcing dependency pass to update..."
+                _SKIP_PYTHON_DEPS=false
+            fi
+        fi
         # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
         # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
         # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
@@ -2223,27 +2248,6 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
-        fi
-        # A quarantined payload leaves dist-info reporting current while the canonical
-        # import is gone; the metadata compare above cannot see that, so the fast path
-        # stands only after the payload probe answers. The probe's version must also
-        # match the one that took the fast path: INSTALLED_VER above came from the
-        # default sys.path lookup, which an executable .pth can satisfy with a current
-        # external copy while the managed install sits stale -- the probe answers for
-        # the managed one only. A crashed or silent probe says nothing about the venv
-        # and leaves the fast path alone.
-        if [ "$_SKIP_PYTHON_DEPS" = true ]; then
-            _FAST_VER=$(_bounded_pkg_probe)
-            if [ "$_FAST_VER" = "__MISSING__" ]; then
-                substep "managed $_PKG_NAME is not installed -- forcing dependency pass to repair..."
-                _SKIP_PYTHON_DEPS=false
-            elif [ "$_FAST_VER" = "__DAMAGED__" ]; then
-                substep "$_PKG_NAME files are missing or damaged -- forcing dependency pass to repair..."
-                _SKIP_PYTHON_DEPS=false
-            elif [ -n "$_FAST_VER" ] && [ "$_FAST_VER" != "$LATEST_VER" ]; then
-                substep "managed $_PKG_NAME is at $_FAST_VER, not $LATEST_VER -- forcing dependency pass to update..."
-                _SKIP_PYTHON_DEPS=false
-            fi
         fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
