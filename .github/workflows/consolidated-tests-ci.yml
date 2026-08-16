@@ -139,6 +139,15 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # Without this, setup-python's default glob resolves to the repo's only
+          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
+          # nothing to do with what this job installs. Every job in the repo therefore
+          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
+          # and the install still downloaded the whole tree. Key on what this job actually
+          # reads instead.
+          cache-dependency-path: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # Node 22 unblocks tests/studio/test_chat_preset_builtin_invariants.py's
       # `node --experimental-strip-types` subprocess. Cheap to install; keeps
@@ -211,6 +220,14 @@ jobs:
           set -euxo pipefail
           python -m pip install --upgrade pip
           pip install -r studio/backend/requirements/studio.txt
+          # CPU torch FIRST, before anything that depends on torch. peft, accelerate and
+          # datasets all declare a torch dependency, so installing them first made pip
+          # resolve it from PyPI: the default CUDA build, plus 14 nvidia_* wheels and
+          # cuda-toolkit, roughly 2.3 GB, which the pinned CPU wheel below then replaced
+          # seconds later. Same end state either way; this just stops paying for the
+          # download. torchvision: unsloth_zoo.vision_utils imports it at module scope.
+          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+            'torch>=2.4,<2.11' 'torchvision<0.26'
           pip install \
             python-multipart aiofiles sqlalchemy cryptography \
             pyyaml jinja2 mammoth unpdf requests typer \
@@ -219,9 +236,6 @@ jobs:
             psutil packaging tqdm safetensors datasets \
             'peft>=0.18,<0.20' 'accelerate>=0.34,<2' \
             ipython
-          # torchvision: unsloth_zoo.vision_utils imports it at module scope.
-          pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
-            'torch>=2.4,<2.11' 'torchvision<0.26'
           # transformers + trl from the matrix combo.
           pip install "$RESOLVED_TRANSFORMERS_SPEC"
           pip install "$RESOLVED_TRL_SPEC"
@@ -2223,6 +2237,15 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # Without this, setup-python's default glob resolves to the repo's only
+          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
+          # nothing to do with what this job installs. Every job in the repo therefore
+          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
+          # and the install still downloaded the whole tree. Key on what this job actually
+          # reads instead.
+          cache-dependency-path: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       - name: Install runtime deps for unsloth_zoo.llama_cpp
         # unsloth_zoo's `__init__` imports `temporary_patches`, which

@@ -370,7 +370,11 @@ export interface InferenceStatusResponse {
    * shrink it (choose the drafter in Settings to force it);
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
-   * (updating won't help; choose MTP in Settings to force it). Null otherwise.
+   * (updating won't help; choose MTP in Settings to force it);
+   * "mtp_partial_offload" -> an Auto-mode policy downgrade for an embedded
+   * Hybrid Mamba MTP head on a partially offloaded placement, whose recurrent
+   * rollback copies cost more layers than the drafting wins back (updating
+   * won't help; choose MTP in Settings to force it). Null otherwise.
    */
   /**
    * Which drafter the resolution was about: "mtp", "dspark" or "dflash". Auto
