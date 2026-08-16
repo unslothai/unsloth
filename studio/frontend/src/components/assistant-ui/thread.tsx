@@ -2634,7 +2634,14 @@ const Composer: FC<{
     // identical draft still restores. Drop it and show this thread's real
     // state, which is empty: returning early would leave whatever the previous
     // thread put in the shared composer on screen under this thread.
-    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
+    if (
+      sentTextGuardBlocksDraft(
+        justSentRef.current,
+        draft,
+        draftKey,
+        composer.getState().text,
+      )
+    ) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
       if (draftSaveTimerRef.current !== null) {

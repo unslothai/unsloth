@@ -113,21 +113,39 @@ test("both the wrapper and the visible text are guarded", () => {
 });
 
 test("a draft holding the sent text is not restored", () => {
-  assert.equal(sentTextGuardBlocksDraft(armed(), PROMPT, KEY), true);
+  assert.equal(sentTextGuardBlocksDraft(armed(), PROMPT, KEY, ""), true);
+});
+
+// The send cleared the composer, so a raced save is a value it does not hold.
+// A saved prompt put back through the menu is one it does, and deleting that
+// draft on the next visit would throw away what the user deliberately picked.
+test("a draft the composer already holds is left alone", () => {
+  assert.equal(sentTextGuardBlocksDraft(armed(), PROMPT, KEY, PROMPT), false);
+});
+
+// Another thread's text on screen is still not this thread's draft.
+test("a raced draft is dropped even with another thread's text on screen", () => {
+  assert.equal(
+    sentTextGuardBlocksDraft(armed(), PROMPT, KEY, "other thread text"),
+    true,
+  );
 });
 
 // The composer outlives a thread switch, so text alone would hide an unrelated
 // thread's identical draft.
 test("another thread's identical draft still restores", () => {
   assert.equal(
-    sentTextGuardBlocksDraft(armed(), PROMPT, "chat-draft:thread-2"),
+    sentTextGuardBlocksDraft(armed(), PROMPT, "chat-draft:thread-2", ""),
     false,
   );
 });
 
 test("an unrelated draft is restored", () => {
-  assert.equal(sentTextGuardBlocksDraft(armed(), "something else", KEY), false);
-  assert.equal(sentTextGuardBlocksDraft(null, PROMPT, KEY), false);
+  assert.equal(
+    sentTextGuardBlocksDraft(armed(), "something else", KEY, ""),
+    false,
+  );
+  assert.equal(sentTextGuardBlocksDraft(null, PROMPT, KEY, ""), false);
 });
 
 // Undo after sending is how a user recovers a prompt to edit and resend. It
@@ -195,7 +213,7 @@ test("a keystroke does not let an autocorrect commit through", () => {
 
 test("a keystroke does not unblock the raced draft", () => {
   const guard = markSentTextGuardUserInput(armed());
-  assert.equal(sentTextGuardBlocksDraft(guard, PROMPT, KEY), true);
+  assert.equal(sentTextGuardBlocksDraft(guard, PROMPT, KEY, ""), true);
 });
 
 // Dictation, handwriting and IMEs insert without a keydown, so the composition
