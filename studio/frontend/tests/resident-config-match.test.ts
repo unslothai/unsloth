@@ -884,6 +884,38 @@ test("a virtualised Metal host cannot disagree about placement", () => {
   );
 });
 
+test("a diffusion resident is not judged on the chat-only invocation fields", () => {
+  // The diffusion runner receives no --parallel, no batch sizes and no pass-through args.
+  // _runtime_matches_intent guards all four on `not self._is_diffusion`, and
+  // _llama_runtime_fields nulls the ones the status publishes at all, so a config that
+  // pins any of them rejected a load the backend would have deduplicated.
+  const diffusion = {
+    ...DEFAULTS,
+    is_diffusion: true,
+    requested_parallel_slots: null,
+    requested_n_batch: null,
+    requested_n_ubatch: null,
+    requested_llama_extra_args: null,
+  };
+  assert.equal(
+    matches(diffusion, {
+      ...BLANK,
+      nParallel: 2,
+      nBatch: 2048,
+      nUbatch: 512,
+      llamaExtraArgs: ["--flash-attn", "on"],
+    }),
+    true,
+  );
+  // A chat resident with the same status is judged on all four.
+  assert.equal(
+    matches({ ...diffusion, is_diffusion: false }, { ...BLANK, nParallel: 2 }),
+    false,
+  );
+  // And a real difference outside those four still reloads on diffusion.
+  assert.equal(matches({ ...diffusion, cache_type_kv: "q8_0" }, BLANK), false);
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.

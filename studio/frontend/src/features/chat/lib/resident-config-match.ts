@@ -26,6 +26,7 @@ type ResidentRuntime = Pick<
   | "requested_gpu_ids"
   | "gpu_ids"
   | "is_gguf"
+  | "is_diffusion"
   | "tensor_parallel_dropped_by_arch_gate"
   | "gpu_placement_paravirtual"
   | "tensor_split"
@@ -115,6 +116,12 @@ export type StandingConfigDefaults = {
 type SettingCheck = {
   /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
   placement?: true;
+  /**
+   * A chat-only invocation setting. `_runtime_matches_intent` guards these on
+   * `not self._is_diffusion`, and the status nulls the ones it publishes at all, so
+   * comparing them against a diffusion runtime rejects a load that would deduplicate.
+   */
+  chatOnly?: true;
   pinned: (config: PerModelConfig) => boolean;
   agrees: (
     config: PerModelConfig,
@@ -278,6 +285,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => c.specDraftNMax === (s.spec_draft_n_max ?? null),
   },
   {
+    chatOnly: true,
     // Unknown default: null against the status's resolved count is a reload, the safe
     // direction. defaultParallelSlots is the EFFECTIVE count, so a build that clamps to one
     // slot reloads rather than adopts, which is the same bias.
@@ -287,10 +295,12 @@ const SETTING_CHECKS: SettingCheck[] = [
       (s.requested_parallel_slots ?? standing.parallelSlots),
   },
   {
+    chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.nBatch ?? null) === (s.requested_n_batch ?? null),
   },
   {
+    chatOnly: true,
     pinned: () => true,
     agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
   },
@@ -317,6 +327,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // undefined: never read the stored value. null: the user cleared the box, which agrees
     // only with a load invoked with no pass-through args.
+    chatOnly: true,
     pinned: (c) => c.llamaExtraArgs !== undefined,
     agrees: (c, s) => sameList(c.llamaExtraArgs, s.requested_llama_extra_args),
   },
@@ -450,8 +461,12 @@ export function residentRuntimeMatchesConfig(
     // comparator runs, so placement cannot tell two requests apart there at all.
     status.gpu_placement_paravirtual === true ||
     cpuFallbackPlacementPreserved(config, status, standing);
+  // The diffusion runner takes no --parallel, no batch sizes and no pass-through args, so
+  // the backend does not compare them and the status nulls what it publishes at all.
+  const diffusion = status.is_diffusion === true;
   return SETTING_CHECKS.every(
     (check) =>
+      (check.chatOnly && diffusion) ||
       (check.placement && placementPreserved) ||
       !check.pinned(config) ||
       check.agrees(config, status, standing),
