@@ -205,13 +205,14 @@ INTENT_SIGNAL = re.compile(
     r")"
 )
 # a turn that asks the user for a missing detail waits on the reply, so no tool call can serve it
-# "let me know if ..." is the optional closing remark instead, and can trail a plan the model never carried out
 _CLARIFICATION_REQUEST = re.compile(
     r"(?i)\b(?:"
-    r"let\s+me\s+know(?!\s+if\b)"
+    r"let\s+me\s+know(?!\s+(?:if|whether)\b)"  # if/whether closes a turn, when waits on the user
     r"|(?:could|can|would)\s+you\s+(?:please\s+)?"
     r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
     r"|what\s+(?:would|do)\s+you\s+(?:like|want|mean)\b"
+    r"|d(?:o|id)\s+you\s+mean\b"
+    r"|which\s+(?:\w+\s+){0,2}?(?:should|would|do)\s+(?:i|you)\b"
     r")"
 )
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3

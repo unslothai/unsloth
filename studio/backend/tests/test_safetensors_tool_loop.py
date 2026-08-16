@@ -3726,14 +3726,20 @@ class TestGGUFSafetensorsHealingParity:
             # the ask can follow the intent too; order carries no meaning here.
             "Let me check I have this right: could you confirm the repo is unslothai/unsloth?",
             "I'll look that up. Let me know your question, and I'll assist you!",
+            # a direct question carries the ask on its own, with no stock opener.
+            "Which repository should I inspect? Once you tell me, I'll check it.",
+            "Do you mean the package or the UI? I'll inspect it.",
+            # "when" waits on the user, unlike the "if"/"whether" closings below.
+            "Let me know when you're ready and I'll start the run.",
         ):
             assert shared_re.search(asks), f"regex missed {asks!r}"
             assert not shared_fn(asks), f"helper wrongly fired on {asks!r}"
 
-        # "let me know if ..." closes a turn rather than blocking it, so the plan behind one still needs the nudge
+        # "let me know if/whether ..." closes a turn, so the plan behind one still needs the nudge
         for closing in (
             "I'll search the web for the current release now. "
             "Let me know if you have any other questions.",
+            "I'll search the web now. Let me know whether you need anything else.",
             "I will run the query now. Let me know if that is not what you wanted.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
