@@ -55,6 +55,11 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # This job installs three linters and nothing else. Without an explicit path it
+          # shared one cache key with every other Python 3.12 job in the repo, and whichever
+          # ran first won the slot: in practice this one, leaving a 9 MB cache that Core then
+          # restored before downloading 3.2 GB. Its pins are inline below, so key on this file.
+          cache-dependency-path: .github/workflows/lint-ci.yml
 
       # Pin ruff to match .pre-commit-config.yaml so a CI-only ruff
       # bump cannot disagree with what pre-commit accepted.
