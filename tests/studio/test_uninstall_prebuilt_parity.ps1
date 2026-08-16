@@ -43,7 +43,22 @@ $shArtifacts = [regex]::Matches($shText, '_remove_path\s+"\$HOME/\.unsloth/([^"/
 Check "found the POSIX artifact list" ($shArtifacts.Count -ge 5)
 
 # WSL-only helpers have no native-Windows counterpart.
-$wslOnly = @("librocdxg", "rocm-smoketest")
+#
+# The Windows-on-ARM + NVIDIA route runs the whole install inside WSL, so these
+# six live at /root/.unsloth/<name> in the distro and are never written to
+# %USERPROFILE%\.unsloth: install.ps1 creates provision_llama_cuda.sh,
+# run_llama_build.sh, llama_cuda_build.log, .skip-wsl-windows-shortcut and
+# unsloth-install.sh through the WSL tunnel, and setup.sh writes .install-ok.
+# uninstall.ps1 already clears them with its `rm -rf /root/.unsloth` inside the
+# distro; a native-Windows removal would be dead code. Two of them (the
+# provision script and its log) match the substring test only because that same
+# WSL command line names them, which is an accident, not parity, so they are
+# listed here too rather than left passing for the wrong reason.
+$wslOnly = @(
+    "librocdxg", "rocm-smoketest",
+    "provision_llama_cuda.sh", "run_llama_build.sh", "llama_cuda_build.log",
+    ".skip-wsl-windows-shortcut", ".install-ok", "unsloth-install.sh"
+)
 foreach ($artifact in $shArtifacts) {
     if ($wslOnly -contains $artifact) { continue }
     Check "uninstall.ps1 removes ~/.unsloth/$artifact" ($ps1Text -match [regex]::Escape($artifact))
