@@ -2137,8 +2137,13 @@ const Composer: FC<{
   // Read by both writers that could put the sent text back, the input handlers
   // and the draft restore. Armed by every path that clears the composer.
   const justSentRef = useRef<SentTextGuard | null>(null);
+  // Thread on screen, tracked in a ref so the guard can tell whether a write
+  // belongs to the thread that sent. Without it the restore effect puts the
+  // sent text back when the runtime rebinds on the first message. Kept in step
+  // by the effect alongside pasteDraftKeyRef below.
+  const draftKeyRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true, justSentRef });
+    useImeComposerInputHandlers({ submitOnEnter: true, justSentRef, draftKeyRef });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
@@ -2721,9 +2726,6 @@ const Composer: FC<{
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Without this the restore effect above puts the sent text back when the
-  // runtime rebinds on the first message.
-  const draftKeyRef = useRef(draftKey);
   const pasteDraftKeyRef = useRef(pasteDraftKey);
   useEffect(() => {
     draftKeyRef.current = draftKey;
@@ -4000,10 +4002,14 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 function useImeComposerInputHandlers({
   submitOnEnter = false,
   justSentRef,
+  draftKeyRef,
 }: {
   submitOnEnter?: boolean;
   // Guard armed by the last send or queue. See setComposerText below.
   justSentRef?: RefObject<SentTextGuard | null>;
+  // Thread on screen. The composer outlives a thread switch, so this is what
+  // says whether the armed guard belongs to the thread being typed into.
+  draftKeyRef?: RefObject<string | null>;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -4055,8 +4061,15 @@ function useImeComposerInputHandlers({
       if (!composer.getState().isEditing) {
         return false;
       }
-      // Refuse a write that is the sent message coming back.
-      if (justSentRef) {
+      // Refuse a write that is the sent message coming back. Only for the
+      // thread that sent: typing in another thread must not retire a guard it
+      // does not own, or returning to the sending thread restores its raced
+      // draft after all.
+      const guardOwnsThread =
+        justSentRef?.current == null ||
+        draftKeyRef === undefined ||
+        justSentRef.current.draftKey === draftKeyRef.current;
+      if (justSentRef && guardOwnsThread) {
         const result = applySentTextGuard(justSentRef.current, {
           value,
           replacesText: isTextReplacement(nativeEvent),
@@ -4074,7 +4087,7 @@ function useImeComposerInputHandlers({
       });
       return true;
     },
-    [aui, justSentRef],
+    [aui, draftKeyRef, justSentRef],
   );
 
   const onCompositionStart = useCallback(() => {
@@ -4119,15 +4132,16 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      // Before the IME return: an IME committing one character is the same
-      // single write, and its keydown reports as composing.
-      if (justSentRef && isGuardRetiringKey(e)) {
-        justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
-      }
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        // Deliberately NOT user input: picking a candidate in a composition the
+        // send left open is that composition continuing. One begun after the
+        // send is marked by compositionstart instead.
         composingRef.current = true;
         refreshStuckTimer();
         return;
+      }
+      if (justSentRef && isGuardRetiringKey(e)) {
+        justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
       }
       if (composingRef.current) {
         // Candidate-confirming Enter can arrive as non-composing; keep it gated.
