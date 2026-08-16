@@ -2605,10 +2605,10 @@ class FastLlamaModel:
         # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
         sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
-        # `num_labels` sends the load below to AutoModelForSequenceClassification, so
-        # LlamaForSequenceClassification's `score` replaces the `lm_head` the planner named
-        # off the repo's own config, and accelerate's `dispatch_model` refuses the map:
-        # "does not give any device for the following parameters: score.weight".
+        # `num_labels` sends the load to AutoModelForSequenceClassification, whose `score`
+        # replaces the `lm_head` the planner named off the repo's own config, so
+        # accelerate's `dispatch_model` refuses the map: "does not give any device for the
+        # following parameters: score.weight".
         _planner_skip_reason = None
         if num_labels is not None:
             _planner_skip_reason = (
@@ -2619,9 +2619,9 @@ class FastLlamaModel:
                 or "num_labels loads a task head the repo config does not describe"
             )
 
-        # Here, not in loader.py: the mapper can still substitute the repo up there (a
-        # -bnb-4bit name resolving to its 16-bit twin), and a plan sized for the repo the
-        # caller named is the wrong plan for the one actually loaded.
+        # Here, not in loader.py: the mapper up there can still substitute the repo (a
+        # -bnb-4bit name resolving to its 16-bit twin), so a plan sized for the name the
+        # caller gave is the wrong plan for the one actually loaded.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
@@ -2631,13 +2631,12 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
-            # The dtype `add_dtype_kwargs` hands the load below, not the checkpoint's own:
-            # `from_pretrained`'s dtype overrides what config.json declares, so planning a
-            # float32 load against a bfloat16 checkpoint halves the weight estimate and the
-            # accepted map OOMs while materializing (and the reverse refuses a load that fits).
+            # The dtype the load gets, not the checkpoint's own: `from_pretrained`'s dtype
+            # overrides config.json, so planning the wrong one mis-sizes weights 2x either
+            # way -- an accepted map that OOMs, or a refusal of a load that would have fit.
             **add_dtype_kwargs(dtype),
             # The caller's own quantization_config, still untouched in kwargs here (ours
-            # is only put there once the skip list below is built), overrides the flags:
+            # lands there only once the skip list below is built), overrides the flags:
             # loader.py clears them whenever it forwards one.
             **planner_quantization_kwargs(
                 load_in_4bit = load_in_4bit,

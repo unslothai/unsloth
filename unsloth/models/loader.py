@@ -221,10 +221,10 @@ def _loaded_skip_modules(model_config):
     """The skip list the load actually used, for the synthetic config stamped after it.
 
     Whatever ended up on the loaded model is the authority: a pre-quantized checkpoint
-    brings its own list and transformers prefers it over any runtime config, and an
-    on-the-fly quantization gets the one Unsloth built. None stays None, since it means
-    transformers picked the output head itself, and [] means it was told to exclude
-    nothing. Those are different instructions on reload.
+    brings its own list and transformers prefers it over any runtime config, while
+    on-the-fly quantization gets the one Unsloth built. None (transformers picked the
+    output head itself) and [] (told to exclude nothing) are different instructions on
+    reload, so neither is normalized away.
     """
     return _config_get(
         getattr(model_config, "quantization_config", None) or {},
@@ -500,7 +500,7 @@ class FastLanguageModel(FastLlamaModel):
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
-                # One whole model per rank. Sharding one across the ranks' GPUs as well
+                # One whole model per rank; sharding one across the ranks' GPUs as well
                 # would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
@@ -1363,7 +1363,7 @@ class FastModel(FastBaseModel):
         if is_quantized and isinstance(device_map, str):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
-                # One whole model per rank. Sharding one across the ranks' GPUs as well
+                # One whole model per rank; sharding one across the ranks' GPUs as well
                 # would have every rank fighting for the same cards.
                 device_map = distributed_device_map
 
@@ -1944,7 +1944,7 @@ class FastModel(FastBaseModel):
                     _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False
-                    # model_config is no longer the repo's config; anything that rebuilds
+                    # model_config is no longer the repo's config, so anything rebuilding
                     # it from model_name (the device-map planner) sees a different model.
                     text_only_decoder = True
             else:

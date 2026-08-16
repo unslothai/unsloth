@@ -206,9 +206,9 @@ class FastDiffusionModel:
 
         # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
         # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
-        # Built before the plan, not at the load below, because the planner has to size the
-        # exact config the load applies: the skip list becomes `modules_to_not_convert`, and
-        # sizing those modules at 4 bits while they load in compute dtype OOMs a tight map.
+        # Built before the plan because the planner must size the exact config the load
+        # applies: the skip list becomes `modules_to_not_convert`, and sizing those at
+        # 4 bits while they load in compute dtype OOMs a tight map.
         qcfg = None
         if load_in_4bit or load_in_8bit:
             from transformers import BitsAndBytesConfig
@@ -229,9 +229,8 @@ class FastDiffusionModel:
             else:
                 qcfg = BitsAndBytesConfig(load_in_8bit = True)
 
-        # Same leaf-level resolution as llama.py and vision.py. Without it an opt-in
-        # "unsloth" reaches transformers, which turns an unknown device_map string into
-        # torch.device("unsloth") and raises instead of loading.
+        # Same leaf-level resolution as llama.py and vision.py: an unresolved "unsloth"
+        # becomes torch.device("unsloth") in transformers and raises instead of loading.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,

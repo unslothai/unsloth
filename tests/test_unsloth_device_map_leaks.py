@@ -3,7 +3,7 @@
 
 """Every leaf loader must resolve `device_map = "unsloth"` before transformers sees it.
 
-`"unsloth"` is not a placement strategy transformers knows. `modeling_utils.py` turns any
+`"unsloth"` is not a placement strategy transformers knows: `modeling_utils.py` turns any
 string outside {auto, balanced, balanced_low_0, sequential} into `torch.device(...)`, so
 an unresolved one raises:
 
@@ -12,9 +12,8 @@ an unresolved one raises:
 
 `FastModel.from_pretrained` converts the default to "unsloth" under
 `UNSLOTH_AUTO_DEVICE_MAP=1` and then returns through `_dispatch_diffusion()` before
-`FastBaseModel` gets a chance to resolve it, so the text-diffusion slow path needs its own
-call. And the planner has to be handed the same repository ref as the real load, or it
-plans against the default branch.
+`FastBaseModel` can resolve it, so the text-diffusion slow path needs its own call. And
+the planner needs the same repository ref as the real load, or it plans the default branch.
 
 Extracted with ast so nothing has to import torch's CUDA stack.
 """
@@ -93,8 +92,7 @@ def test_the_planner_gets_the_same_ref_the_weights_do(name, expected):
 
 def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers():
     """`FastSentenceTransformer.from_pretrained` has its own public `device_map`, and its
-    three `st_device` blocks pass it to `SentenceTransformer(device = ...)`, which ends in
-    `self.to(device)`:
+    `st_device` blocks pass it to `SentenceTransformer(device = ...)` -> `self.to(device)`:
 
         RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
         unsloth
@@ -135,12 +133,11 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
 def test_sentence_transformer_decline_survives_the_env_var():
     """The decline has to outlive the re-entry into `FastModel.from_pretrained`.
 
-    `FastSentenceTransformer` spends the sentinel on its own `device_map` and then hands
-    the resulting "sequential" to `FastModel.from_pretrained`, which runs
-    `requested_device_map` again -- so `UNSLOTH_AUTO_DEVICE_MAP=1` upgrades it straight
-    back to "unsloth" and plans a split map, while the `st_device` blocks still read
-    "sequential" and `SentenceTransformer` pulls the split model onto one card. Without
-    the pin, `device_map = "unsloth"` plus the env var makes the decline a no-op.
+    The sentinel is spent on our own `device_map`, but the resulting "sequential" goes to
+    `FastModel.from_pretrained`, which runs `requested_device_map` again -- so
+    `UNSLOTH_AUTO_DEVICE_MAP=1` upgrades it back to "unsloth" and plans a split map while
+    the `st_device` blocks still read "sequential" and pull that model onto one card.
+    Without the pin, the env var makes the decline a no-op.
     """
     source = _source("sentence_transformer.py")
     tree = ast.parse(source)

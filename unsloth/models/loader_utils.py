@@ -110,10 +110,8 @@ UNSLOTH_DEVICE_MAP = "unsloth"
 
 
 def requested_device_map(device_map):
-    """`UNSLOTH_AUTO_DEVICE_MAP=1` asks for planning without touching any call site.
-
-    Only "sequential" is upgraded. An explicit dict, "auto", or "balanced" is a placement
-    the caller chose, and the env var is not a licence to override it.
+    """`UNSLOTH_AUTO_DEVICE_MAP=1` opts in without touching any call site. Only
+    "sequential" is upgraded: a dict, "auto" or "balanced" is a placement the caller chose.
     """
     if device_map == "sequential" and os.environ.get("UNSLOTH_AUTO_DEVICE_MAP", "0") == "1":
         return UNSLOTH_DEVICE_MAP
@@ -128,19 +126,17 @@ def planner_quantization_kwargs(
 ):
     """The quantization the planner must size for, as the load will really apply it.
 
-    A caller-supplied `quantization_config` reaches transformers through `**kwargs`, and
-    loader.py zeroes `load_in_4bit` / `load_in_8bit` before dispatch precisely because
-    transformers refuses both at once. The booleans alone therefore describe a
-    full-precision load that is about to be quantized, and the planner sizes a 4bit model
-    at bf16 and raises `DeviceMapInfeasible` on a load that would have fit. So the config
-    wins and the booleans go with it, which is the loader's own rule.
+    The config or the flags, never both: transformers refuses both at once, so loader.py
+    clears `load_in_4bit` / `load_in_8bit` whenever it forwards a `quantization_config`.
+    The bare flags would then describe a full-precision load, and the planner sizes a 4bit
+    model at bf16 and raises `DeviceMapInfeasible` on a load that would have fit.
 
-    The skip list has to travel with them. On-the-fly quantization here always keeps
-    SKIP_QUANTIZATION_MODULES in compute dtype (`lm_head`, `vision_tower`, `audio_tower`,
-    the projectors and the MoE routers), and transformers turns that into
-    `modules_to_not_convert`. Sizing those at 4bit understates the head device by GiBs on
-    a large-vocab VLM, which is the one number the head-aware plan exists to get right.
-    A pre-quantized checkpoint needs none of this: its own config.json carries the list.
+    The skip list travels with the flags. On-the-fly quantization keeps
+    SKIP_QUANTIZATION_MODULES (`lm_head`, the towers, projectors and MoE routers) in
+    compute dtype, and transformers reads that as `modules_to_not_convert`; sizing them at
+    4bit understates the head device by GiBs on a large-vocab VLM, the one number this
+    plan exists to get right. A pre-quantized checkpoint needs none of it: its own
+    config.json carries the list.
     """
     if quantization_config is not None:
         return {"quantization_config": quantization_config}
@@ -152,9 +148,12 @@ def planner_quantization_kwargs(
 
 
 def planner_model_class(config, trust_remote_code = False):
-    """The model class unsloth_zoo's planner will build for `config`, or None if unknown.
+    """The model class the planner's own rules pick for `config`, or None if unknown.
 
-    The planner never sees the auto class the load chose: it picks its own off the config.
+    The planner never sees the auto class the load chose; it picks its own off a config.
+    Note `config` is whatever the caller passed, so when a user supplied `config = ...`
+    this answers for that one, while the planner rebuilds the repo's config from
+    `model_name` -- the two can disagree, and only the caller can tell.
     """
     try:
         from unsloth_zoo.device_map_planner import _auto_class_for
@@ -172,10 +171,10 @@ def planner_class_mismatch_reason(loaded_class, planned_class):
 
     A load that overrides the config's own choice gets a map for a module tree it does not
     have: `num_labels` swaps in AutoModelForSequenceClassification, whose `score` replaces
-    the `lm_head` the plan named, and accelerate's dispatch then refuses the map with "does
-    not give any device for the following parameters: score.weight". Compared as model
-    classes, not auto classes -- AutoModelForVision2Seq and AutoModelForImageTextToText are
-    distinct objects that resolve to the same VLM.
+    the planned `lm_head`, and accelerate's dispatch refuses the map with "does not give
+    any device for the following parameters: score.weight". Compared as model classes, not
+    auto classes -- AutoModelForVision2Seq and AutoModelForImageTextToText are distinct
+    objects that resolve to the same VLM.
     """
     if loaded_class is None or planned_class is None or loaded_class is planned_class:
         return None
@@ -194,17 +193,16 @@ def resolve_unsloth_device_map(
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is.
 
-    Opt-in only, so nothing an existing caller passes changes meaning: "sequential" stays
-    "sequential" and "auto" keeps accelerate's. The plan is built on the meta device, so
-    this costs no GPU memory and no weight download.
+    Opt-in only, so nothing an existing caller passes changes meaning. The plan is built
+    on the meta device: no GPU memory, no weight download.
 
     Falls back to "sequential" wherever a plan cannot apply, since a model that loads the
     old way beats one that refuses to load at all. `DeviceMapInfeasible` is the exception:
-    the planner raises it rather than spilling a bitsandbytes model to CPU, and silently
-    undoing that would hand the user an OOM instead of a diagnosis.
+    the planner raises it rather than spilling a bitsandbytes model to CPU, and swallowing
+    it would hand the user an OOM instead of a diagnosis.
 
-    `skip_reason` is the caller's own veto, for when only the caller can tell that the
-    planner would describe a different model than the load builds.
+    `skip_reason` is the caller's veto, for when only the caller can tell the planner
+    would describe a different model than the load builds.
     """
     if device_map != UNSLOTH_DEVICE_MAP:
         return device_map
@@ -220,9 +218,9 @@ def resolve_unsloth_device_map(
     if full_finetuning:
         return _fallback("full finetuning does not use the quantized planner")
     if is_distributed():
-        # torchrun/DDP/FSDP already give every rank the whole model on its own card.
-        # Splitting one model across the cards on top of that puts every rank on every
-        # card at once, which is a different execution model, not a bigger one.
+        # torchrun/DDP/FSDP already give every rank the whole model on its own card;
+        # splitting one across the cards on top puts every rank on every card at once,
+        # which is a different execution model, not a bigger one.
         return _fallback("each rank of a distributed launch owns its own device")
     if DEVICE_TYPE_TORCH != "cuda":
         return _fallback(f"the planner has no memory budgets for {DEVICE_TYPE_TORCH}")
@@ -235,7 +233,7 @@ def resolve_unsloth_device_map(
         return _fallback(f"the planner is unavailable ({error})")
 
     # Free, not total: this process's CUDA context and anything else on the card are
-    # already resident, and planning against total memory overcommits every device.
+    # already resident, so planning against total overcommits every device.
     max_memory = {
         index: torch.cuda.mem_get_info(index)[0] for index in range(torch.cuda.device_count())
     }

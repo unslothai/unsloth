@@ -1494,13 +1494,11 @@ class FastSentenceTransformer(FastModel):
                 "Run `pip install sentence-transformers` to install it."
             )
 
-        # Every other leaf loader resolves the "unsloth" sentinel before it loads; this one
-        # cannot plan at all. The three `st_device` blocks below hand `device_map` straight to
-        # `SentenceTransformer(device = ...)`, which ends in `self.to(device)` and raises
-        # `RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
-        # unsloth`. Planning is no use here either: that same `.to()` would pull a split model
-        # back onto one card. So decline, exactly as resolve_unsloth_device_map does.
-        # Resolve the env-var opt-in too, or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan here
+        # The other leaf loaders resolve the "unsloth" sentinel by planning; this one must
+        # decline. The `st_device` blocks below hand `device_map` to
+        # `SentenceTransformer(device = ...)`, which ends in `self.to(device)`: the sentinel
+        # raises there, and that same `.to()` would pull any split model back onto one card.
+        # Resolve the env-var opt-in too, or `UNSLOTH_AUTO_DEVICE_MAP=1` asks for a plan
         # without ever naming the sentinel.
         device_map = requested_device_map(device_map)
         if device_map == UNSLOTH_DEVICE_MAP:
@@ -1809,11 +1807,10 @@ class FastSentenceTransformer(FastModel):
         old_environ = os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1")
         os.environ["UNSLOTH_WARN_UNINITIALIZED"] = "0"
 
-        # The decline above spends the sentinel on our copy, but FastModel re-reads
-        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it straight back to
-        # "unsloth", so the model is planned across cards while `st_device` below still says
-        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off for the
-        # load, the way UNSLOTH_WARN_UNINITIALIZED already is.
+        # The decline above only spends the sentinel on our copy: FastModel re-reads
+        # UNSLOTH_AUTO_DEVICE_MAP and upgrades the "sequential" we hand it back to
+        # "unsloth", splitting the model across cards while `st_device` below still says
+        # "sequential" and SentenceTransformer pulls it onto one. Pin the switch off.
         old_auto_device_map = os.environ.get("UNSLOTH_AUTO_DEVICE_MAP")
         os.environ["UNSLOTH_AUTO_DEVICE_MAP"] = "0"
 

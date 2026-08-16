@@ -3,24 +3,22 @@
 
 """Pins the two rules a pre-quantized bitsandbytes load depends on. No GPU needed.
 
-Rule one: a pre-quantized checkpoint's own ``llm_int8_skip_modules`` is the authority,
-and Unsloth must not add to it. That list describes how the tensors were actually packed,
-so adding a name means transformers builds a dense ``Linear`` for a module whose weights
-are stored packed, and the load dies in ``load_state_dict``:
+Rule one: a pre-quantized checkpoint's own ``llm_int8_skip_modules`` is the authority and
+Unsloth must not add to it. The list describes how the tensors were actually packed, so
+adding a name makes transformers build a dense ``Linear`` for packed weights and the load
+dies in ``load_state_dict``:
 
     size mismatch for weight: copying a param with shape torch.Size([15728640, 1])
     from checkpoint, the shape in current model is torch.Size([4096, 7680])
 
-That is a real failure, observed on ``unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit``,
-whose config ships ``llm_int8_skip_modules: null`` because it quantized everything. A
-``None`` there is an instruction ("skip nothing"), not an absence, and turning it into
-Unsloth's generic list breaks the two ``test_save_merged_*`` cases for that model.
+A real failure, observed on ``unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit``, whose
+config ships ``llm_int8_skip_modules: null`` because it quantized everything. ``None``
+there is an instruction ("skip nothing"), not an absence, and replacing it with Unsloth's
+generic list broke the two ``test_save_merged_*`` cases for that model.
 
-Rule two: whatever the load used has to be what gets saved. ``loader.py`` used to stamp
-``llm_int8_skip_modules: None`` over the real list, which for a dynamic-quant repo like
-``unsloth/Qwen3-0.6B-unsloth-bnb-4bit`` threw away every per-layer entry
-(``model.layers.27.mlp.up_proj`` and friends) and left a saved config describing a layout
-that never existed.
+Rule two: what the load used is what gets saved. ``loader.py`` used to stamp ``None`` over
+the real list, which for a dynamic-quant repo like ``unsloth/Qwen3-0.6B-unsloth-bnb-4bit``
+threw away every per-layer entry and saved a config describing a layout that never existed.
 
 Extracted with ast so nothing in loader.py has to import.
 """
@@ -72,10 +70,9 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
     """The regression this file exists for.
 
     Transformers already prefers a pre-quantized checkpoint's `quantization_config` over
-    the runtime one and says so ("The `quantization_config` from the model will be used"),
-    so there is nothing for the loader to fix here. Writing into that config is the only
-    way to get it wrong, and it did: on Llama-3.2-11B-Vision-bnb-4bit it turned a `null`
-    skip list into Unsloth's generic one and broke the load outright.
+    the runtime one, so there is nothing for the loader to fix. Writing into that config is
+    the only way to get it wrong, and it did: on Llama-3.2-11B-Vision-bnb-4bit it turned a
+    `null` skip list into Unsloth's generic one and broke the load outright.
     """
     source = open(VISION, encoding = "utf-8").read()
     assert "merge_checkpoint_skip_modules" not in source
@@ -98,17 +95,17 @@ def test_the_vision_loader_does_not_touch_the_checkpoint_skip_list():
 
 def test_the_runtime_skip_list_is_still_built_for_on_the_fly_quantization():
     """The other half: a full-precision checkpoint has no config to defer to, so Unsloth's
-    own list is what keeps heads, routers and towers in compute dtype. That path must
-    keep working, which is why the fix was to remove a write, not to stop building it."""
+    own list keeps heads, routers and towers in compute dtype. Hence the fix was to remove
+    a write, not to stop building the list."""
     source = open(VISION, encoding = "utf-8").read()
     assert "_skip_modules = SKIP_QUANTIZATION_MODULES.copy()" in source
     assert "llm_int8_skip_modules = _skip_modules" in source
 
 
 def test_the_bnb_config_chain_is_still_one_piece():
-    """The merge used to sit inside this four-branch if/elif, and a statement dropped into
-    the middle silently re-parents the last branch: the "Switching to 16bit LoRA" notice
-    would then fire on every 16-bit load, which is not what it means."""
+    """The merge used to sit inside this four-branch if/elif, where a statement dropped in
+    the middle silently re-parents the last branch and the "Switching to 16bit LoRA" notice
+    fires on every 16-bit load."""
     source = open(VISION, encoding = "utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.If) or ast.unparse(node.test) != "load_in_4bit":

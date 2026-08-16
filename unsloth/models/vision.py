@@ -920,8 +920,8 @@ class FastBaseModel:
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
         # True when the caller already swapped a multimodal config for its text sub-config,
-        # so `auto_config` no longer describes the repo. loader.py sets it; the block below
-        # sets it for the direct-call path.
+        # so `auto_config` no longer describes the repo. Set by loader.py, and by the block
+        # below on the direct-call path.
         text_only_decoder = False,
         **kwargs,
     ):
@@ -1171,27 +1171,25 @@ class FastBaseModel:
             load_in_16bit = False
 
         # Check if using forced float32 - we load it in bfloat16, then cast to float16!
-        # Resolved here, not at the load below, because the planner has to size the same
-        # dtype the load will really use.
+        # Resolved here rather than at the load, because the planner below has to size the
+        # same dtype the load will really use.
         torch_dtype = dtype
         if do_forced_float32:
             torch_dtype = torch.bfloat16
 
         # text_only loads the decoder alone, but the planner only gets `model_name` and
-        # rebuilds the repo's own config, which is the whole VLM: it budgets a vision tower
-        # this load never creates and names its modules (`model.language_model.layers.0`),
-        # none of which exist on the standalone decoder (`model.layers.0`), so transformers
-        # raises "doesn't have any device set" on the first decoder weight. Plan nothing
-        # rather than plan the wrong module tree.
+        # rebuilds the repo's own config, the whole VLM: it budgets a vision tower this
+        # load never creates and names `model.language_model.layers.0` where the standalone
+        # decoder has `model.layers.0`, so transformers raises "doesn't have any device
+        # set" on the first decoder weight. Plan nothing over the wrong module tree.
         _planner_skip_reason = (
             "text_only loads a decoder the repo config does not describe"
             if text_only_decoder
             else None
         )
         # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
-        # loads a task head, so LlamaForSequenceClassification's `score` replaces the
-        # `lm_head` the planner named off the repo's config, and accelerate's dispatch
-        # refuses a map that gives `score.weight` no device.
+        # loads a task head, whose `score` replaces the `lm_head` the planner named off the
+        # repo's config, and accelerate's dispatch refuses a map with no `score.weight`.
         if _planner_skip_reason is None:
             _planner_skip_reason = planner_class_mismatch_reason(
                 model_class,
@@ -1199,8 +1197,8 @@ class FastBaseModel:
             )
 
         # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP).
-        # loader.py resolves it too, and returns an already-planned map unchanged, so
-        # calling FastBaseModel directly gets the same behaviour as going through FastModel.
+        # An already-planned map comes back unchanged, so calling FastBaseModel directly
+        # behaves the same as going through FastModel.
         device_map = resolve_unsloth_device_map(
             requested_device_map(device_map),
             model_name,
@@ -1210,12 +1208,12 @@ class FastBaseModel:
             skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
-            # The pin the config and weights below use. Planning against the default
-            # branch would size a different checkpoint than the one being loaded.
+            # The pin the config and weights below use; the default branch would size a
+            # different checkpoint than the one being loaded.
             revision = _revision,
             # The dtype the load below is given. `from_pretrained`'s dtype overrides the
-            # one config.json declares, so planning against the checkpoint's own dtype
-            # mis-sizes every load that changed it, by 2x between float32 and bfloat16.
+            # one config.json declares, so planning against the checkpoint's own mis-sizes
+            # every load that changed it, by 2x between float32 and bfloat16.
             **add_dtype_kwargs(torch_dtype),
             # A caller-supplied config overrides the flags: loader.py clears them whenever
             # it forwards one, so the flags alone would size a 4bit load at full precision.
@@ -1389,8 +1387,7 @@ class FastBaseModel:
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
 
-        # torch_dtype (bfloat16 under forced float32, then cast to float16) is resolved
-        # above, where the device-map planner also needs it.
+        # torch_dtype is resolved above, where the device-map planner also needs it.
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 
         config_attn_impl = kwargs.get("attn_implementation", None)

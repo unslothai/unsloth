@@ -7,9 +7,9 @@
 accelerate's `"sequential"`. The Muse Glimmer GRPO notebook does this by hand today, in
 about 25 lines of mem_get_info arithmetic.
 
-It is opt-in precisely because the alternative is not safe: an existing multi-GPU caller
-who never asked for planning must keep the placement they have. So most of this file is
-about what must NOT change, and only the last group is about planning working.
+It is opt-in because the alternative is not safe: an existing multi-GPU caller who never
+asked for planning must keep the placement they have. So most of this file is about what
+must NOT change, and only the last group is about planning working.
 
 Extracted with ast so nothing has to import torch's CUDA stack.
 """
@@ -158,10 +158,9 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
 
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
-    """`text_only = True` loads a VLM's standalone decoder: `auto_config` becomes the text
-    sub-config and `auto_model` becomes AutoModelForCausalLM, so Gemma 3 loads
+    """`text_only = True` loads a VLM's standalone decoder, so Gemma 3 builds
     Gemma3ForCausalLM (`model.layers.0`). The planner only gets `model_name`, rebuilds the
-    repo's own multimodal config and plans Gemma3ForConditionalGeneration
+    repo's multimodal config and plans Gemma3ForConditionalGeneration
     (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
     decoder weight matches a key of that map, and transformers raises
     "model.embed_tokens.weight doesn't have any device set" for the first of them.
@@ -216,11 +215,11 @@ def test_a_task_head_the_planner_cannot_see_declines_planning():
     replaces `lm_head`. The planner only gets `model_name`, reads the repo's own
     `architectures` (`LlamaForCausalLM`) and emits units ending in `lm_head`, so
     `score.weight` matches no key of the map and accelerate's dispatch refuses it: "does
-    not give any device for the following parameters: score.weight". A checkpoint weight
-    that lands the same way (a text-only decoder) fails earlier still, inside the load.
-    Compared as model classes: AutoModelForVision2Seq and
-    AutoModelForImageTextToText are different objects that build the same VLM, so
-    comparing auto classes would decline planning for every VLM.
+    not give any device for the following parameters: score.weight".
+
+    Compared as model classes: AutoModelForVision2Seq and AutoModelForImageTextToText are
+    different objects that build the same VLM, so comparing auto classes would decline
+    planning for every VLM.
     """
     ns = _load()
     mismatch = ns["planner_class_mismatch_reason"]
@@ -248,9 +247,8 @@ def test_the_optimized_llama_path_also_declines_a_classification_load():
     loader.py delegates to FastModel only for 8bit / full finetuning / QAT, so
     `FastLanguageModel.from_pretrained(..., num_labels = 2, device_map = "unsloth")` on a
     llama/mistral/gemma/qwen repo dispatches to FastLlamaModel, plans the repo's causal LM,
-    and then loads AutoModelForSequenceClassification a few lines later. That model has
-    `score` and no `lm_head`, so accelerate's `dispatch_model` -> `check_device_map` raises
-    "does not give any device for the following parameters: score.weight".
+    then loads AutoModelForSequenceClassification a few lines later. That model has `score`
+    and no `lm_head`, so `dispatch_model` -> `check_device_map` raises.
     """
     llama = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
     tree = ast.parse(llama)
@@ -283,12 +281,12 @@ def test_the_optimized_llama_path_also_declines_a_classification_load():
 
 
 def test_a_distributed_launch_never_gets_an_intra_model_split():
-    """torchrun/DDP/FSDP already put one whole model per rank. Splitting a model across
-    the cards on top of that puts every rank on every card, which OOMs rather than fits.
+    """torchrun/DDP/FSDP already put one whole model per rank; splitting a model across the
+    cards on top of that puts every rank on every card, which OOMs rather than fits.
 
     prepare_device_map() in loader.py converts the string to a rank-local dict first, but
-    only when the load is quantized, so a 16-bit distributed run would still arrive here
-    holding "unsloth". Hence the gate lives here too.
+    only when the load is quantized, so a 16-bit distributed run still arrives here holding
+    "unsloth". Hence the gate lives here too.
     """
     ns = _load(
         distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
@@ -433,9 +431,9 @@ def test_planner_kwargs_reach_the_planner():
 
 def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
     """loader.py forwards a caller's `quantization_config` through `**kwargs` and clears
-    `load_in_4bit` / `load_in_8bit`, because transformers refuses both at once. Handing
-    the planner the cleared flags describes a full-precision load, so a 70B QLoRA gets
-    sized at bf16 and `DeviceMapInfeasible` kills a load that would have fit.
+    `load_in_4bit` / `load_in_8bit`, because transformers refuses both at once. The cleared
+    flags describe a full-precision load, so a 70B QLoRA gets sized at bf16 and
+    `DeviceMapInfeasible` kills a load that would have fit.
     """
     ns = _load()
     config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
@@ -471,10 +469,10 @@ def test_a_16bit_load_is_planned_without_a_skip_list():
 
 
 def test_the_modules_unsloth_keeps_in_compute_dtype_are_sized_that_way():
-    """On-the-fly quantization keeps SKIP_QUANTIZATION_MODULES out of bnb, and
-    transformers reads llm_int8_skip_modules as `modules_to_not_convert`. Planning them
-    at 4bit understates the head device by GiBs on a large-vocab VLM (`lm_head` plus a
-    whole `vision_tower`), and the head is the number this plan exists to get right.
+    """On-the-fly quantization keeps SKIP_QUANTIZATION_MODULES out of bnb, and transformers
+    reads llm_int8_skip_modules as `modules_to_not_convert`. Planning them at 4bit
+    understates the head device by GiBs on a large-vocab VLM (`lm_head` plus a whole
+    `vision_tower`), the number this plan exists to get right.
     """
     seen = {}
     ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
@@ -515,8 +513,7 @@ def test_the_config_is_what_reaches_the_planner():
 
 def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
     """A bare `load_in_4bit = load_in_4bit` at the call site is the bug above: the leaf
-    receives the flag already cleared by loader.py.
-    """
+    receives the flag already cleared by loader.py."""
     models = os.path.join(HERE, "unsloth", "models")
     for name in ("llama.py", "vision.py", "diffusion.py"):
         source = open(os.path.join(models, name), encoding = "utf-8").read()
@@ -552,9 +549,8 @@ def _resolve_calls(source):
 def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
     """`from_pretrained`'s dtype overrides the one config.json declares, and the planner
     only ever sees the config. So a float32 load of a bfloat16 checkpoint is sized at half
-    its real weight bytes, the map is accepted, and materializing it OOMs; the default
-    bfloat16 load of a float32 checkpoint is the same error the other way, and the planner
-    raises DeviceMapInfeasible on a load that would have fit.
+    its real weight bytes, the map is accepted, and materializing it OOMs; the reverse is
+    the same error the other way, raising DeviceMapInfeasible on a load that would have fit.
 
     `add_dtype_kwargs` rather than a literal keyword: transformers renamed `torch_dtype` to
     `dtype`, and the planner hands these straight to AutoConfig, which only honours the
@@ -574,10 +570,9 @@ def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
 
 def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
     """diffusion.py keeps `lm_head`, `embed_tokens`, `experts`, `self_conditioning` and
-    `router` out of bnb, which is most of an MoE checkpoint's parameters. Planning on the
-    bare flags sizes every one of them at 4 bits while the load materializes them in
-    compute dtype, so the one config object has to be built before the plan and reused by
-    the load.
+    `router` out of bnb, most of an MoE checkpoint's parameters. Planning on the bare flags
+    sizes all of them at 4 bits while the load materializes them in compute dtype, so the
+    one config object is built before the plan and reused by the load.
     """
     path = os.path.join(HERE, "unsloth", "models", "diffusion.py")
     source = open(path, encoding = "utf-8").read()
