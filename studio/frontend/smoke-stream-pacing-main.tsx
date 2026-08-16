@@ -177,10 +177,8 @@ function Harness(): ReactElement {
     let settledChars = 0;
     let quietFrames = 0;
     let handle = requestAnimationFrame(function watch(now: number) {
-      // Slow frames only count inside the measurement window, for the same reason long
-      // tasks do: a frame the page dropped while loading is not the renderer's. Measured
-      // at 0 of 286 here, but an external server or a slower box need not be 0, and this
-      // number is meant to be comparable across both.
+      // Windowed like the long tasks: a frame dropped while loading is not the renderer's.
+      // 0 of 286 here, but a slower box need not be 0 and the number must compare across both.
       if (now >= measureFrom && lastFrameAt && now - lastFrameAt > 33) {
         state.framesOver33ms += 1;
       }
@@ -198,12 +196,10 @@ function Harness(): ReactElement {
           state.paintedChars = painted;
           lastGrowthAt = now;
         } else if (state.streamEndedAtMs === null) {
-          // A stall used to be recorded only when a LATER paint closed it, so a freeze
-          // that ran to the end of the stream was never recorded at all: the tail can go
-          // missing inside the 90% floor and the quiet-frame loop then calls it settled.
-          // Measure the stall in progress instead. Only while text is still arriving,
-          // which is what the number means; after the stream ends the quiet frames the
-          // settle check needs would otherwise read as a stall.
+          // Measure the stall in progress: a stall closed only by a LATER paint misses a
+          // freeze that runs to the end of the stream, whose lost tail can hide inside the
+          // 90% floor. Only while text is still arriving; after the stream ends the settle
+          // check's quiet frames would read as a stall.
           const stall = now - lastGrowthAt;
           if (stall > state.longestStallMs) {
             state.longestStallMs = stall;
@@ -222,11 +218,10 @@ function Harness(): ReactElement {
           } else {
             quietFrames += 1;
             if (quietFrames >= SETTLED_FRAMES) {
-              // What is on screen at settlement, not the high-water mark. paintedChars
-              // only ever climbs, so a completion render that truncates the bubble leaves
-              // the peak behind and the workload floor would pass on a DOM that no longer
-              // holds the reply. This is the length the driver checks. Measured equal to
-              // the peak (24,033 both) today, so it is a guard, not a live discrepancy.
+              // On screen at settlement, not the peak: paintedChars only climbs, so a
+              // completion render that truncates the bubble would still pass the workload
+              // floor. This is the length the driver checks. Equal to the peak (24,033
+              // both) today, so it is a guard, not a live discrepancy.
               state.settledChars = painted;
               state.timeToFullyPaintedMs = now - state.startedAt;
               state.done = true;
@@ -274,11 +269,9 @@ function Harness(): ReactElement {
         state.longTaskMs = 0;
         state.longTasks = 0;
         state.framesOver33ms = 0;
-        // Hand the append to a later task. Appending here would put it in the SAME task
-        // that just set measureFrom, and a long task is stamped with the start of its
-        // task, so the whole of runtime startup and the first publish would sort before
-        // the window and be dropped as page load. A fresh task starts after measureFrom,
-        // so the work that begins the stream is measured as the stream's.
+        // Append from a later task. In this same task, a long task is stamped with its
+        // task's start, so runtime startup and the first publish would sort before
+        // measureFrom and be dropped as page load. A fresh task starts after it.
         setTimeout(() => {
           void runtime.thread.append({
             role: "user",

@@ -192,9 +192,8 @@ def main() -> int:
             f"only {results['paintedChars']} characters painted of {TOTAL_CHARS} sent "
             f"(floor {floor}); the budgets below measured no workload"
         )
-    # paintedChars is a high-water mark, so it stays high even if the completion render
-    # truncates the bubble. settledChars is what was actually on screen when the reply
-    # settled, which is the DOM a reader would be left looking at.
+    # paintedChars is a high-water mark and survives a completion render that truncates the
+    # bubble. settledChars is the DOM a reader is actually left looking at.
     if results["settledChars"] < floor:
         failures.append(
             f"the reply settled at {results['settledChars']} characters of {TOTAL_CHARS} "

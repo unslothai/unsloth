@@ -91,9 +91,8 @@ def test_stream_pacing_asserts_the_reply_was_actually_painted() -> None:
     main = verdict("playwright_stream_pacing.py")
     assert 'results["paintedChars"] < floor' in main
     assert 'results["arrivals"]' in main
-    # paintedChars only ever climbs, so it survives a completion render that truncates the
-    # bubble. The length present at settlement has to be checked too, or an empty final DOM
-    # passes on the peak it reached earlier.
+    # paintedChars only climbs, so the length at settlement must be checked too, or an empty
+    # final DOM passes on the peak it reached earlier.
     assert 'results["settledChars"] < floor' in main
 
 
