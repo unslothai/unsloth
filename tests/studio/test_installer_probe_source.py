@@ -74,6 +74,15 @@ def test_probe_avoids_the_escapes_the_shell_rewrites() -> None:
         "these escapes are rewritten by the shell that carries the probe; "
         f"use chr(92): {offenders[:5]}"
     )
+    quoted = [
+        f"{number}: {line.strip()}"
+        for number, line in enumerate(raw.splitlines(), start = 1)
+        if '"' in line
+    ]
+    assert not quoted, (
+        "a double quote ENDS the shell string carrying the probe, comments included; "
+        f"use single quotes: {quoted[:5]}"
+    )
 
 
 def test_powershell_probe_compiles_and_matches() -> None:

@@ -5156,12 +5156,19 @@ def _verdict(d, d_record):
         # so an executable .pth can put a same-named copy on sys.path and answer for a
         # payload that is gone -- for a plain install and an editable one alike. An
         # empty root means nothing can be bound and only presence is checked.
-        _base = os.path.normcase(os.path.abspath(root)) if root else None
+        # realpath, not abspath: an editable checkout reached through a symlink or a
+        # junction is recorded one way in direct_url.json and reported the other way
+        # by the finder, and the two spellings name the same files. Only the
+        # containment test resolves links -- the ownership map is keyed on abspath,
+        # where a miss merely means not-proven-foreign, which is the safe answer.
+        # No double quote anywhere in this program either: it is carried in a
+        # double-quoted shell string that such a quote would end early.
+        _base = os.path.normcase(os.path.realpath(root)) if root else None
         def _inside(p):
             # normcase on both sides: Windows paths are case-insensitive, and a
             # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
             # would otherwise read as living outside itself
-            return _base is None or os.path.normcase(os.path.abspath(p)).startswith(_base + os.sep)
+            return _base is None or os.path.normcase(os.path.realpath(p)).startswith(_base + os.sep)
         if s.origin and s.origin != 'namespace':
             return _inside(s.origin) and not _foreign(s.origin)
         # A namespace spec is not payload on its own: an emptied package directory
