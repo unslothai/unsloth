@@ -1555,6 +1555,8 @@ type ChatRuntimeStore = {
       /** False when the switch only puts back what was on screen before a
        * hidden load, so the model it steps off was never the user's. */
       persist?: boolean;
+      /** The context the model just loaded with, when the caller knows it. */
+      maxTokensCap?: number;
     },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
@@ -2110,18 +2112,34 @@ function getHydratedSettingsState(
 ): Partial<ChatRuntimeStore> {
   const nextState: Partial<ChatRuntimeStore> = {};
   const checkpoint = state.params.checkpoint;
+  const loadedBeforeHydration = modelLoadedBeforeHydration === checkpoint;
+  modelLoadedBeforeHydration = null;
+  // The toggle as it will read once this response lands, under the same fence
+  // the scalar loop below applies.
+  const remembersPerModel =
+    settings.rememberParamsPerModel !== undefined &&
+    scalarSettingMutationVersions.rememberParamsPerModel ===
+      versions.scalarSettings.rememberParamsPerModel
+      ? settings.rememberParamsPerModel
+      : state.rememberParamsPerModel;
   // A model loaded while this request was in flight has no entry to restore its
   // defaults from, so the global set would overwrite them with the last model's.
+  // Only while the memory is on: with it off the global set IS this model's
+  // settings, and suppressing it strands the model on transient load defaults.
   const keepModelDefaults =
-    modelLoadedBeforeHydration === checkpoint &&
+    remembersPerModel &&
+    loadedBeforeHydration &&
     settings.inferenceParamsByModel?.[checkpoint] === undefined;
-  modelLoadedBeforeHydration = null;
   const params = { ...state.params };
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
     if (
       value !== undefined &&
       !keepModelDefaults &&
+      // The context belongs to the load that just happened, not to the global
+      // set, which is the previous model's. No entry ever carries one, so the
+      // replay below cannot put it back once this loop overwrites it.
+      !(loadedBeforeHydration && key === "maxSeqLength") &&
       inferenceParamMutationVersions[key] === versions.inferenceParams[key]
     ) {
       setInferenceParam(params, key, value);
@@ -2157,6 +2175,18 @@ function getHydratedSettingsState(
       }
     }
     nextState.paramsByModel = hydrated;
+  } else if (checkpoint) {
+    // No map in the response: an install upgraded from before per-model memory.
+    // The edit is fenced out of the global set above, but with no entry the next
+    // update that re-applies model defaults has nothing to replay and puts the
+    // recommendation back over it.
+    const edited = pickLocallyEditedParams(params, versions);
+    if (hasKeys(edited)) {
+      nextState.paramsByModel = {
+        ...state.paramsByModel,
+        [checkpoint]: { ...state.paramsByModel[checkpoint], ...edited },
+      };
+    }
   }
   for (const key of SCALAR_SETTING_KEYS) {
     const value = settings[key];
@@ -2759,6 +2789,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.params,
         modelId,
         checkpointChanged,
+        options?.maxTokensCap,
       );
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
