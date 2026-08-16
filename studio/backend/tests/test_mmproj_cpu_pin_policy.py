@@ -153,8 +153,13 @@ def test_no_pin_in_manual_placement(tmp_path):
     assert not _pinned(cmd)
 
 
-@pytest.mark.parametrize("spelling", ["--mmproj-offload", "--no-mmproj-offload"])
-def test_no_automatic_pin_when_the_user_named_the_placement(tmp_path, spelling):
+# Studio's own count, excluding the user's token. `<= 1` cannot tell the
+# --mmproj-offload case apart from Studio adding its own flag exactly once, so
+# it passed with the guard deleted.
+@pytest.mark.parametrize(
+    "spelling, studio_emits", [("--mmproj-offload", 0), ("--no-mmproj-offload", 1)]
+)
+def test_no_automatic_pin_when_the_user_named_the_placement(tmp_path, spelling, studio_emits):
     # llama.cpp is last-wins and Studio appends its own flags first, so racing
     # the user for the flag would either be silently overridden or fight a
     # deliberate choice.
@@ -164,7 +169,9 @@ def test_no_automatic_pin_when_the_user_named_the_placement(tmp_path, spelling):
 
     cmd = _launch(backend, gguf, is_vision = True, extra_args = [spelling])["cmd"]
 
-    assert cmd.count("--no-mmproj-offload") <= 1
+    assert cmd.count("--no-mmproj-offload") == studio_emits
+    # The user's own token survives to the argv either way.
+    assert cmd.count(spelling) == 1
 
 
 def test_no_pin_without_a_projector(tmp_path):
