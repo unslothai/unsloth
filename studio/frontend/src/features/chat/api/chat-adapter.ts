@@ -82,7 +82,11 @@ import {
   type CodexReasoningLedger,
 } from "../codex-reasoning";
 
-import { resolveToolCallPartId } from "../tool-call-id";
+import { toolCallReplayArguments } from "../tool-call-arguments";
+import {
+  findStreamedToolCallPartIndex,
+  resolveToolCallPartId,
+} from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
@@ -976,10 +980,7 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const argumentsStr =
-    typeof tc.argsText === "string" && tc.argsText.length > 0
-      ? tc.argsText
-      : JSON.stringify(tc.args ?? {});
+  const argumentsStr = toolCallReplayArguments(tc.argsText, tc.args);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -4633,6 +4634,7 @@ export function createOpenAIStreamAdapter(
       type PositionedToolCallPart = ToolCallMessagePart & {
         textCursor?: number;
         _delta_index?: number;
+        _has_stable_id?: boolean;
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
@@ -6043,23 +6045,24 @@ export function createOpenAIStreamAdapter(
                   const stablePartId = stableId
                     ? resolveToolPartId(stableId)
                     : undefined;
-                  // Match an existing fragment by resolved id first (canonical), then
-                  // by index slot; fall back to a minted tool_call_<n> id
-                  // for streams that send neither.
-                  let existing = stablePartId
-                    ? toolCallParts.find((p) => p.toolCallId === stablePartId)
-                    : undefined;
+                  // match by resolved id when the fragment carries one, else by
+                  // index slot; streams that send neither get a minted
+                  // tool_call_<n> id.
+                  const existingIndex = findStreamedToolCallPartIndex(
+                    toolCallParts,
+                    stablePartId,
+                    idx,
+                  );
+                  const existing =
+                    existingIndex === -1
+                      ? undefined
+                      : toolCallParts[existingIndex];
 
                   if (
                     stablePartId &&
                     !codexRoundToolCallIds.includes(stablePartId)
                   ) {
                     codexRoundToolCallIds.push(stablePartId);
-                  }
-                  if (!existing && idx !== undefined) {
-                    existing = toolCallParts.find(
-                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
-                    );
                   }
                   const argsFragment = call.function?.arguments ?? "";
                   if (existing) {
@@ -6083,6 +6086,11 @@ export function createOpenAIStreamAdapter(
                       .extra_content;
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
+                      // a late id claims the slot its id-less opening fragment
+                      // created, so tool_start and tool_end find the same card.
+                      ...(stablePartId
+                        ? { toolCallId: stablePartId, _has_stable_id: true }
+                        : {}),
                       toolName: nextName,
                       argsText: merged,
                       args: parsedArgs,
@@ -6093,10 +6101,7 @@ export function createOpenAIStreamAdapter(
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
-                    const replaceIdx = toolCallParts.indexOf(existing);
-                    if (replaceIdx >= 0) {
-                      toolCallParts[replaceIdx] = updated;
-                    }
+                    toolCallParts[existingIndex] = updated;
                   } else {
                     const callId =
                       stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
@@ -6127,6 +6132,7 @@ export function createOpenAIStreamAdapter(
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : {}),
+                      ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
