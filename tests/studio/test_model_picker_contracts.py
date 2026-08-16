@@ -75,7 +75,6 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
         if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
             raise
         import pytest as _pytest
-
         _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
 
 
