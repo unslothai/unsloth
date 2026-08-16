@@ -91,13 +91,16 @@ def world_size_from_rank_files(environ: Any = None) -> int:
     truncated or malformed one, a JSON object, an empty ring hostfile (which is what
     mlx.launch writes for a single host) -- reads as 1, the count of Studio's own
     launch. Never raises: a row bound must not be what fails a run.
+
+    Regular files only. mlx.launch writes a temp file, and opening whatever else a
+    variable happens to name could block a run forever on a fifo.
     """
     source = os.environ if environ is None else environ
     sizes = [1]
     for name in WORLD_SIZE_ENV_FILES:
         try:
             path = source.get(name)
-            if not path:
+            if not path or not os.path.isfile(path):
                 continue
             with open(path, encoding = "utf-8") as handle:
                 payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))

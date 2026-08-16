@@ -718,8 +718,6 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
     rank, so reading only the numeric variables sizes a four-way launch as one process
     and the run re-reads rows it has already trained on.
     """
-    import json
-
     from core.training.dataset_bounds import (
         MAX_STEPS_ROW_SLACK,
         max_steps_dataset_rows,
@@ -775,6 +773,15 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
         _single_process_launch(monkeypatch)
         monkeypatch.setenv("MLX_HOSTFILE", value)
         assert world_size_from_env() == 1
+
+    # A fifo would block open() forever, so only regular files are read at all.
+    fifo = tmp_path / "fifo"
+    try:
+        os.mkfifo(fifo)
+    except (AttributeError, NotImplementedError, OSError):
+        pass  # Windows has no fifos, which is the point.
+    else:
+        assert world_size_from_rank_files({"MLX_HOSTFILE": str(fifo)}) == 1
 
     # A mapping works the same way, and the largest count still wins.
     assert world_size_from_rank_files({"MLX_HOSTFILE": str(ring)}) == 4
