@@ -103,9 +103,13 @@ export function notifyChatHistoryUpdated(options?: {
   coalesce?: boolean;
 }): void {
   if (typeof window !== "undefined") {
-    window.dispatchEvent(new Event(CHAT_HISTORY_UPDATED_EVENT));
+    const coalesce = options?.coalesce === true;
+    // detail lets a listener tell a chunk save from a structural change (isCoalescedHistoryEvent)
+    window.dispatchEvent(
+      new CustomEvent(CHAT_HISTORY_UPDATED_EVENT, { detail: { coalesce } }),
+    );
     // The event above is same-document; a storage write is what crosses.
-    publishChatHistoryRevision(options?.coalesce === true);
+    publishChatHistoryRevision(coalesce);
   }
 }
 

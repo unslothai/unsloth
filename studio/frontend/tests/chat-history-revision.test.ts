@@ -15,6 +15,7 @@ const {
   CHAT_HISTORY_REVISION_KEY,
   CROSS_TAB_REVISION_DEBOUNCE_MS,
   flushChatHistoryRevision,
+  isCoalescedHistoryEvent,
   publishChatHistoryRevision,
 } = await import("../src/features/chat/utils/chat-history-revision.ts");
 
@@ -123,4 +124,26 @@ test("flushing with nothing pending writes nothing", () => {
   store.clear();
   flushChatHistoryRevision();
   assert.equal(revision(), null);
+});
+
+// misreading a chunk save as structural starves a retiring listener for a whole generation
+test("a coalesced streaming update is distinguishable from a structural change", () => {
+  assert.equal(
+    isCoalescedHistoryEvent(
+      new CustomEvent("x", { detail: { coalesce: true } }),
+    ),
+    true,
+  );
+  assert.equal(
+    isCoalescedHistoryEvent(
+      new CustomEvent("x", { detail: { coalesce: false } }),
+    ),
+    false,
+  );
+});
+
+test("an undetailed history event counts as structural", () => {
+  // what the cross-tab listener re-raises, and what any caller that skips the detail sends
+  assert.equal(isCoalescedHistoryEvent(new Event("x")), false);
+  assert.equal(isCoalescedHistoryEvent(new CustomEvent("x")), false);
 });

@@ -11,6 +11,19 @@ export const CROSS_TAB_REVISION_DEBOUNCE_MS = 500;
 
 let revisionWriteTimer: ReturnType<typeof setTimeout> | null = null;
 
+/**
+ * Whether a same-document history event came from the coalesced streaming autosave rather than
+ * a structural change.
+ *
+ * A listener that retires work on a history change needs the difference: chunk saves arrive
+ * faster than any debounce, so treating one as structural starves that work for a whole
+ * generation. Anything without the detail counts as structural, including the event the
+ * cross-tab listener re-raises, since a revision write only lands once changes have settled.
+ */
+export function isCoalescedHistoryEvent(event: Event): boolean {
+  return (event as CustomEvent<{ coalesce?: boolean }>).detail?.coalesce === true;
+}
+
 function storage(): Storage | null {
   // no window under node, and the localStorage getter itself throws in some privacy modes
   try {
