@@ -222,6 +222,15 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
     return _bound_addresses
 
 
+def _release_listener_state() -> None:
+    """Drop the listener references. The caller holds ``_lock``."""
+    global _server, _serve_loop, _sockets, _port
+
+    _server = _serve_loop = None
+    _sockets = ()
+    _port = None
+
+
 def _close_sockets(sockets) -> None:
     for sock in sockets:
         try:
@@ -247,27 +256,30 @@ def stop_lan_listener() -> bool:
     with _lock:
         server, loop, sockets = _server, _serve_loop, _sockets
         port = _port
-        _server = _serve_loop = None
-        _sockets = ()
-        # cleared before the wait so a request landing mid-teardown already reads as off
+        # closed before the wait so a request landing mid-teardown already reads as off
         _bound_addresses = ()
-        _port = None
 
         if server is None:
+            _release_listener_state()
             return True
         server.should_exit = True
         if _running_on_event_loop():
             # /api/shutdown tears down from a task on this very loop; waiting would deadlock
+            _release_listener_state()
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():
             # nothing is left to run uvicorn's shutdown, so release the sockets here
             _close_sockets(sockets)
+            _release_listener_state()
             logger.info("LAN access stopped with its server loop")
             return True
         if _wait_until(lambda: all(sock.fileno() == -1 for sock in sockets), _STOP_TIMEOUT):
+            _release_listener_state()
             logger.info("LAN access stopped")
             return True
+        # ownership is kept so a retry waits on these same sockets, and so a second
+        # stop cannot report success while the port may still be accepting
         _error = "stop_timed_out"
         logger.warning("LAN access did not release port %s within %ss", port, _STOP_TIMEOUT)
         return False

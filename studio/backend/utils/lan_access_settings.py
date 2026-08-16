@@ -179,8 +179,14 @@ def start_lan_access(app) -> dict:
     if not isinstance(port, int) or port <= 0:
         raise RuntimeError("server_port_unavailable")
 
-    addresses = start_lan_listener(app, _server_loop(app.state), port)
+    # set before the socket can accept: a request served in between would still see
+    # the loopback-only trust defaults
     set_lan_connector_active(True)
+    try:
+        addresses = start_lan_listener(app, _server_loop(app.state), port)
+    except Exception:
+        set_lan_connector_active(False)
+        raise
     logger.info("LAN access started on %s", ", ".join(addresses))
     return lan_access_status(app)
 

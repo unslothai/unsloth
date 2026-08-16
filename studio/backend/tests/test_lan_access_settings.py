@@ -523,14 +523,30 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
     host_policy.set_lan_connector_active(True)
 
     try:
-        status = lan_settings.stop_lan_access(_app())
-        assert status["state"] == "error" and status["error"] == "stop_timed_out"
+        app = _app()
+        status = lan_settings.stop_lan_access(app)
+        assert status["error"] == "stop_timed_out"
         assert host_policy.remote_connector_active() is True
+        # ownership is retained, so the stop stays offered and a retry re-waits
+        assert status["can_stop"] is True
+        assert lan_access.lan_listener_status()["running"] is True
+
+        # a second stop must not report success while the port may still accept
+        retried = lan_settings.stop_lan_access(app)
+        assert retried["error"] == "stop_timed_out"
+        assert host_policy.remote_connector_active() is True
+
+        # once the socket really closes, the retry settles and clears the error
+        lingering.close()
+        settled = lan_settings.stop_lan_access(app)
+        assert settled["state"] == "off" and settled["error"] is None
+        assert host_policy.remote_connector_active() is False
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout = 5)
         loop.close()
         lingering.close()
+        host_policy.set_lan_connector_active(False)
 
 
 def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypatch):
