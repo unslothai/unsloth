@@ -2266,9 +2266,9 @@ def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     )
     assert '"run"' in body, "a training run has no sandbox and must stay excluded"
     for kind in ('"chat"', '"project"'):
-        assert f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body, (
-            f"{kind} targets must keep reaching the delete switch"
-        )
+        assert (
+            f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body
+        ), f"{kind} targets must keep reaching the delete switch"
 
 
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
