@@ -941,3 +941,33 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
     "only the queue probe rethrows",
   );
 });
+
+// A knowledge base replaces every other scope in the adapter's rag_scope, project
+// sources included, so a queue scoped to one cannot be affected by a project
+// upload or a folder sync and must not wait for either.
+test("a knowledge-base queue does not wait on project sources", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /const usesKnowledgeBaseAtQueueStart =\s*chatStateAtQueueStart\.ragEnabled &&\s*chatStateAtQueueStart\.ragSource\.type === "kb";/,
+  );
+  assert.match(thread, /usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,/);
+  // Ahead of the project lookup, and after the thread one, which a KB queue
+  // never takes anyway.
+  assert.match(
+    thread,
+    /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,600}?const projectId = threadId/,
+  );
+  // The exclusivity this relies on, in the adapter that builds the scope.
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
+  );
+});

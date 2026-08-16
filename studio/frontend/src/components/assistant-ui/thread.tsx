@@ -293,6 +293,8 @@ type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
   /** The project this queue was started in, for a chat with no row to read. */
   getQueueProjectId: () => string | null;
+  /** A knowledge base replaces every other scope, project sources included. */
+  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: string) => void | Promise<void>;
@@ -494,6 +496,11 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       if (documents.some(indexingDocument)) {
         return true;
       }
+    }
+    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
+    // project's sources cannot reach this run and waiting on them only delays it.
+    if (item.target.usesKnowledgeBase) {
+      return false;
     }
     // The chat's project sources are retrieved whatever the Docs pill says
     // (chat-adapter's rag_scope), and isIndexing() above only answers while the
@@ -2870,6 +2877,9 @@ const Composer: FC<{
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
+    const usesKnowledgeBaseAtQueueStart =
+      chatStateAtQueueStart.ragEnabled &&
+      chatStateAtQueueStart.ragSource.type === "kb";
     const runSettingsAtQueueStart =
       snapshotQueuedChatRunSettings(chatStateAtQueueStart);
     const getThreadListItemState = () => {
@@ -3075,6 +3085,7 @@ const Composer: FC<{
         indexingActiveRef.current,
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
+      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
