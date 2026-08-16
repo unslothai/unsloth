@@ -30,6 +30,10 @@ export interface TrackedDocument extends RagDocument {
   progress?: number | null;
 }
 
+/** Matches the backend's folder scan interval, so a job it starts is counted
+ * within one period of appearing. */
+const FOLDER_RECONCILE_INTERVAL_MS = 30_000;
+
 /** A browser File, or a desktop drop addressed by its native path token. */
 export type RagUploadItem =
   | { kind: "file"; file: File }
@@ -341,10 +345,19 @@ export function useRagDocuments(
     // A sync already running on this project has no watcher here after a
     // reload, and its rows do not exist yet, so nothing else would gate on it.
     void reconcileProjectFolderJobs(workScopeId);
+    // The backend also enqueues a job per auto-syncing folder on its own timer,
+    // with nothing to announce it. Keep asking while the project is open, or a
+    // scan that starts after this mount gates nothing.
+    const reconcile = setInterval(() => {
+      void reconcileProjectFolderJobs(workScopeId);
+    }, FOLDER_RECONCILE_INTERVAL_MS);
     // Work in another tab arrives over the same channel.
     subscribeProjectSourcesBroadcast();
     window.addEventListener(PROJECT_WORK_CHANGED_EVENT, read);
-    return () => window.removeEventListener(PROJECT_WORK_CHANGED_EVENT, read);
+    return () => {
+      clearInterval(reconcile);
+      window.removeEventListener(PROJECT_WORK_CHANGED_EVENT, read);
+    };
   }, [workScopeId]);
 
   const hasIndexing =

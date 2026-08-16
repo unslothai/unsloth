@@ -453,7 +453,7 @@ test("a folder job watcher rides out a failed read", () => {
   // The catch is inside the loop, so a failure does not reach the finally.
   assert.match(
     api,
-    /catch \{\s*consecutiveFailures \+= 1;\s*if \(consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES\) \{\s*break;/,
+    /if \(isRagClientError\(error\)\) break;\s*consecutiveFailures \+= 1;\s*if \(consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES\) \{\s*break;/,
   );
   // A read that comes back clears the streak, so only a run of them gives up.
   assert.match(api, /consecutiveFailures = 0;/);
@@ -742,12 +742,13 @@ test("a project composer picks up a folder sync already running", () => {
     api,
     /if \(folder\.activeJobId\) \{\s*watchProjectFolderJob\(projectId, folder\.activeJobId\);/,
   );
-  // Asked once per project, and a failed look does not count as an answer.
+  // Two bars on one project share a look, and a failed look does not count as
+  // an answer, but the project is never closed to a later one.
   assert.match(
     api,
-    /if \(reconciledFolderProjects\.has\(projectId\)\) return;\s*reconciledFolderProjects\.add\(projectId\);/,
+    /if \(\(folderReconcileNotBefore\.get\(projectId\) \?\? 0\) > now\) return;\s*folderReconcileNotBefore\.set\(projectId, now \+ FOLDER_RECONCILE_MIN_GAP_MS\);/,
   );
-  assert.match(api, /reconciledFolderProjects\.delete\(projectId\);/);
+  assert.match(api, /folderReconcileNotBefore\.delete\(projectId\);/);
 
   const hook = readFileSync(
     new URL(
@@ -757,6 +758,41 @@ test("a project composer picks up a folder sync already running", () => {
     "utf8",
   );
   assert.match(hook, /void reconcileProjectFolderJobs\(workScopeId\);/);
+  // The backend enqueues a job per auto-syncing folder on its own timer, so one
+  // look at mount time misses every scan that starts after it.
+  assert.match(
+    hook,
+    /const reconcile = setInterval\(\(\) => \{\s*void reconcileProjectFolderJobs\(workScopeId\);\s*\}, FOLDER_RECONCILE_INTERVAL_MS\);/,
+  );
+  assert.match(hook, /clearInterval\(reconcile\);/);
+});
+
+// Unlinking a folder deletes its job rows, and so does the history prune, so a
+// detached watcher can be left polling a job id that will never answer again.
+// Riding that out holds the project gate for the whole retry budget.
+test("a folder job watcher stops on an answered 4xx", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  // Read the two constants the loop is bounded by rather than restating them.
+  const retryBudget = Number(
+    /const MAX_FOLDER_JOB_READ_FAILURES = (\d+);/.exec(api)?.[1],
+  );
+  assert.ok(retryBudget > 0);
+
+  // The same loop, run against a job that is deleted mid-sync.
+  const run = (clientError: boolean) => {
+    let failures = 0;
+    for (let tick = 0; tick < 600; tick += 1) {
+      if (clientError) return tick;
+      failures += 1;
+      if (failures >= retryBudget) return tick;
+    }
+    return -1;
+  };
+  assert.equal(run(true), 0, "a 404 releases the gate on the first read");
+  assert.equal(run(false), retryBudget - 1, "a network failure still rides out");
 });
 
 // A queued prompt waiting on a project source outlives the bar that watched it.

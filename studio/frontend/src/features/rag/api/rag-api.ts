@@ -563,7 +563,12 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
           if (job.status === "completed" || job.status === "failed") {
             break;
           }
-        } catch {
+        } catch (error) {
+          // An answered 4xx is the job being gone, not a read that failed:
+          // unlinking a folder deletes its job rows, and so does the history
+          // prune. Waiting out the retries there gates the composer for a
+          // minute on a job that already ended.
+          if (isRagClientError(error)) break;
           consecutiveFailures += 1;
           if (consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES) {
             break;
@@ -582,10 +587,15 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
   })();
 }
 
-/** Projects whose folder jobs this tab has already gone looking for. A reload
- * is the only thing that loses them, and every project composer mounting would
- * otherwise list the folders again. */
-const reconciledFolderProjects = new Set<string>();
+/** When a project may be looked at again. Two bars mount on the same project at
+ * once, so a bare per-call lookup would double every open; a permanent marker
+ * would instead miss every job the backend starts later, and it starts one per
+ * auto-syncing folder on a timer. */
+const folderReconcileNotBefore = new Map<string, number>();
+
+/** Shorter than the backend's own scan interval, so a periodic caller is never
+ * the one skipped. */
+const FOLDER_RECONCILE_MIN_GAP_MS = 5000;
 
 /**
  * Pick up folder syncs already running on a project. Their watchers live in the
@@ -598,8 +608,9 @@ const reconciledFolderProjects = new Set<string>();
 export async function reconcileProjectFolderJobs(
   projectId: string,
 ): Promise<void> {
-  if (reconciledFolderProjects.has(projectId)) return;
-  reconciledFolderProjects.add(projectId);
+  const now = Date.now();
+  if ((folderReconcileNotBefore.get(projectId) ?? 0) > now) return;
+  folderReconcileNotBefore.set(projectId, now + FOLDER_RECONCILE_MIN_GAP_MS);
   try {
     const folders = await listLinkedFolders({ type: "project", id: projectId });
     for (const folder of folders) {
@@ -610,7 +621,7 @@ export async function reconcileProjectFolderJobs(
   } catch {
     // RAG unavailable or a transient failure. Allow another look rather than
     // recording a project as reconciled on an answer that never came.
-    reconciledFolderProjects.delete(projectId);
+    folderReconcileNotBefore.delete(projectId);
   }
 }
 

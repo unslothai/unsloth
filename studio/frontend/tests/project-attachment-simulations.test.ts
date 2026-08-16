@@ -20,6 +20,8 @@ Object.assign(globalThis, {
 registerStoreStubResolver();
 
 const rag = await import("../src/features/rag/api/rag-api.ts");
+// The auth stub fails any unexpected network access; a test opts in per call.
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
 
 // --------------------------------------------------------------- work lease protocol
 
@@ -147,4 +149,77 @@ test("a knowledge base replaces everything, project included", () => {
     ragScope({ ragEnabled: true, kbId: "K", threadId: "T", projectRagEnabled: true, projectId: "P" }),
     { kb_id: "K" },
   );
+});
+
+// ------------------------------------------------------- folder syncs the composer gates on
+
+/** Answer every RAG request from a table, and count what was asked for. */
+function stubFetch(handler: (url: string) => { status: number; body: unknown }) {
+  const urls: string[] = [];
+  setAuthFetchHandler((input: string) => {
+    urls.push(input);
+    const { status, body } = handler(input);
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response;
+  });
+  return { urls, restore: () => setAuthFetchHandler(null) };
+}
+
+// Unlinking a folder deletes its job rows, and so does the terminal-job prune, so a
+// watcher can outlive the job it is polling. Riding a 404 out through the whole retry
+// budget holds the composer gate for about a minute on work that already ended.
+test("a folder job that no longer exists releases the gate at once", async () => {
+  const fetched = stubFetch(() => ({ status: 404, body: { detail: "Job not found" } }));
+  try {
+    rag.watchProjectFolderJob("p-folder-404", "job-gone");
+    assert.equal(rag.projectWorkCount("p-folder-404"), 1, "the lease is taken up front");
+    // The read is answered, so the loop breaks without ever reaching its sleep.
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    assert.equal(rag.projectWorkCount("p-folder-404"), 0, "a send must not wait out the retries");
+    assert.equal(fetched.urls.length, 1, "and it must not keep polling a deleted job");
+  } finally {
+    fetched.restore();
+  }
+});
+
+// The backend enqueues a sync per auto-syncing folder every FOLDER_SYNC_INTERVAL_S, with
+// no frontend event. A project looked at once and then remembered forever would never see
+// one of those, and the composer would send through a scan that is rewriting its sources.
+test("a project can be looked at again for jobs that start later", async () => {
+  const fetched = stubFetch(() => ({ status: 200, body: { linkedFolders: [] } }));
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    await rag.reconcileProjectFolderJobs("p-folder-again");
+    assert.equal(fetched.urls.length, 1);
+    // A second bar mounting on the same project shares the answer.
+    await rag.reconcileProjectFolderJobs("p-folder-again");
+    assert.equal(fetched.urls.length, 1, "two bars must not double every open");
+    // A later scan is not shut out by that.
+    clock += 60_000;
+    await rag.reconcileProjectFolderJobs("p-folder-again");
+    assert.equal(fetched.urls.length, 2, "a periodic look has to reach the backend");
+  } finally {
+    Date.now = realNow;
+    fetched.restore();
+  }
+});
+
+// A look that never came back is not an answer, so it must not close the project either.
+test("a failed look leaves the project open to the next one", async () => {
+  let fail = true;
+  const fetched = stubFetch(() => (fail ? { status: 503, body: null } : { status: 200, body: { linkedFolders: [] } }));
+  try {
+    await rag.reconcileProjectFolderJobs("p-folder-retry");
+    assert.equal(fetched.urls.length, 1);
+    fail = false;
+    await rag.reconcileProjectFolderJobs("p-folder-retry");
+    assert.equal(fetched.urls.length, 2, "the retry must not be rate limited out");
+  } finally {
+    fetched.restore();
+  }
 });
