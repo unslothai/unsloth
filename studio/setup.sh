@@ -2221,15 +2221,25 @@ def _verdict(d, d_record):
             else:
                 damaged = not _has_module(_target)
         elif d_record is None:
-            # Nothing enumerates the payload: no RECORD at all (an interrupted install,
-            # or a distro/conda package that legitimately ships none, which the CLI
-            # mirror declines to judge) and no top_level.txt either. Rather than trust
-            # or condemn the metadata, validate positively through the distribution's
-            # own name as an import: an empty dist-info shell fails it, a package whose
-            # files are really on disk passes. Gated on the RECORD being ABSENT, not on
-            # rows being empty: a CLI-only wheel (py-spy) records just its console
-            # script and ships no importable module, and its RECORD already answered.
-            damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file('')))
+            # Nothing enumerates the payload: no RECORD at all and no top_level.txt.
+            # The distribution's own name is a hint, not a mapping -- acme-unsloth may
+            # legitimately expose unsloth -- so a hit proves health but a MISS proves
+            # nothing and must not be damage on its own.
+            #
+            # What is provable is the shape of the metadata: a wheel install writes
+            # RECORD beside WHEEL, so WHEEL present with RECORD absent is an install
+            # that stopped halfway. A distribution carrying neither (a distro or conda
+            # package, which the CLI mirror also declines to judge) stays unverified.
+            # Gated on the RECORD being ABSENT, not on rows being empty: a CLI-only
+            # wheel (py-spy) records just its console script and ships no importable
+            # module, and its RECORD already answered.
+            if _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), str(d.locate_file(''))):
+                damaged = False
+            else:
+                try:
+                    damaged = d.read_text('WHEEL') is not None
+                except Exception:
+                    damaged = True
     return damaged
 damaged = _verdict(d, d_record)
 if damaged:
