@@ -77,12 +77,25 @@ def _metal_backend(tmp_path: Path, *, mmproj_bytes = PROJECTOR_BYTES, record: di
     return backend, gguf
 
 
-def _launch_metal(tmp_path, *, paravirtual, monkeypatch, mmproj_bytes = PROJECTOR_BYTES):
+def _launch_metal(
+    tmp_path,
+    *,
+    paravirtual,
+    monkeypatch,
+    mmproj_bytes = PROJECTOR_BYTES,
+    extra_args = None,
+):
     tmp_path.mkdir(parents = True, exist_ok = True)
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: paravirtual)
     record: dict = {}
     backend, gguf = _metal_backend(tmp_path, mmproj_bytes = mmproj_bytes, record = record)
-    cmd = [str(a) for a in _launch(backend, gguf, is_vision = True, n_ctx = 0)["cmd"]]
+    cmd = [
+        str(a)
+        for a in _launch(
+            backend, gguf, is_vision = True, n_ctx = 0, extra_args = extra_args
+        )["cmd"]
+    ]
+    record["backend"] = backend
     record["ctx"] = int(cmd[cmd.index("-c") + 1])
     record["cmd"] = cmd
     return record
