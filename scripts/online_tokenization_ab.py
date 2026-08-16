@@ -107,10 +107,18 @@ def main() -> int:
         return 1
     mark("model_ready")
 
+    # `local_datasets` resolves its entries to files and rejects anything without a
+    # supported extension, so a Hub id has to go through `dataset_source` instead.
+    local_split = os.path.exists(args.dataset) or Path(args.dataset).suffix.lower() in (
+        ".json",
+        ".jsonl",
+        ".csv",
+        ".parquet",
+    )
     result = trainer.load_and_format_dataset(
-        dataset_source = None,
+        dataset_source = None if local_split else args.dataset,
         format_type = "auto",
-        local_datasets = [args.dataset],
+        local_datasets = [args.dataset] if local_split else None,
     )
     if result is None:
         print("dataset load failed", file = sys.stderr)
