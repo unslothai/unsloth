@@ -1101,6 +1101,41 @@ jobs:
               return sorted(s.name for s in pkgutil.iter_modules(tm.__path__) if s.ispkg)
 
 
+          def _compile_one(model_type):
+              """Classify one model_type. Top level so `spawn` can pickle it.
+
+              Returns (model_type, outcome, message) with outcome one of
+              "skipped" / "ok" / "fail". The caller, not this function, decides
+              whether a "fail" is known-broken, so the classification rules stay
+              in one place.
+
+              The SIGALRM cap is installed per call, in the worker's own main
+              thread, so it still bounds a single infinite-looping model_type.
+              """
+              import importlib as _il
+              import signal
+              try:
+                  _il.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
+              except (ModuleNotFoundError, ImportError):
+                  return (model_type, "skipped", "no modeling file")
+
+              def _on_timeout(signum, frame):
+                  raise TimeoutError("compile exceeded per-model budget")
+
+              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
+              signal.alarm(60)
+              try:
+                  unsloth_compile_transformers(
+                      model_type=model_type, fast_lora_forwards=False,
+                  )
+                  return (model_type, "ok", "")
+              except Exception as e:
+                  return (model_type, "fail", f"{type(e).__name__}: {str(e)[:200]}")
+              finally:
+                  signal.alarm(0)
+                  signal.signal(signal.SIGALRM, prev_handler)
+
+
           def test_compile_every_transformers_model_type():
               """Run unsloth_compile_transformers across every model_type
               the matrix's transformers ships. Allowed outcomes:
@@ -1110,57 +1145,86 @@ jobs:
                 known   -> in KNOWN_BROKEN_COMPILE; tracked for follow-up.
               Any uncaught failure fails the cell.
 
-              Per-model SIGALRM cap so one infinite-looping model_type
-              cannot wedge the whole sweep + nuke the job timeout
-              (observed on transformers >=5,<6 -- 30+ min hang before
-              this guard landed)."""
-              import importlib as _il
-              import signal
+              Run across a process pool. The models are independent -- each
+              compile reads one transformers modeling module and writes its own
+              cache file -- and compilation, not importing, is essentially all
+              of the cost (measured 359 models: 81.8s compiling against 2.6s
+              importing). Serial, this step was the second most expensive in
+              Core and it ran once per matrix leg.
+
+              `spawn`, not `fork`: these workers come up after torch is already
+              loaded in the parent, and forking a loaded torch is a known
+              hazard. Each worker re-imports this module, which re-runs the
+              hermetic-cache setup at the top, so every worker compiles into a
+              cache directory of its own. Nothing here asserts on the cache
+              path; the per-model file assertions live in
+              test_compile_real_modeling_module, which stays in-process.
+
+              Ordered imap, so the known / new-failure report keeps the same
+              model order it had when this was a serial loop."""
+              import multiprocessing as _mp
+              import os as _os
               ok = 0
               skipped = []
               known = []
               new_failures = []
               models = _all_model_types()
-              def _on_timeout(signum, frame):
-                  raise TimeoutError("compile exceeded per-model budget")
-              prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
-              try:
-                  for i, model_type in enumerate(models):
+              # Matches the runner's 4 vCPUs; more workers would only add
+              # transformers imports and memory without more parallelism.
+              workers = max(1, min(4, _os.cpu_count() or 1))
+              print(f"  sweeping {len(models)} model_types across {workers} workers", flush=True)
+              ctx = _mp.get_context("spawn")
+              with ctx.Pool(workers) as pool:
+                  # next(timeout=...) rather than a plain for loop. A worker that dies
+                  # mid-task (segfault, OOM killer) never sets its result, and
+                  # Pool.imap then blocks forever -- python/cpython#66587, still open.
+                  # The serial loop could not lose a worker: a segfault killed pytest
+                  # outright and turned the leg red in seconds. Without this the same
+                  # crash would sit until the job's 35 minute timeout, which costs far
+                  # more than running the sweep pooled ever saves.
+                  #
+                  # 600s is a "nothing is moving" detector, not a per-model budget:
+                  # the per-model cap is the 60s SIGALRM inside _compile_one.
+                  #
+                  # chunksize=1 is required, not incidental: Pool.imap only returns an
+                  # IMapIterator (the thing with a timeout) when chunksize == 1. For
+                  # chunksize > 1 it returns a bare generator expression over the
+                  # chunks, which has no next(timeout=...) at all. Per-task IPC is
+                  # noise next to a ~1s compile.
+                  results = pool.imap(_compile_one, models, chunksize=1)
+                  i = -1
+                  while True:
+                      try:
+                          model_type, outcome, msg = results.next(timeout=600)
+                      except StopIteration:
+                          break
+                      except _mp.TimeoutError:
+                          raise AssertionError(
+                              f"compile sweep stalled after {i + 1}/{len(models)} "
+                              "model_types with no result for 600s; a pool worker "
+                              "most likely died (segfault or OOM)"
+                          ) from None
+                      i += 1
                       if i % 25 == 0:
                           print(f"  sweep progress: {i}/{len(models)} -> {model_type}", flush=True)
-                      modeling_path = f"transformers.models.{model_type}.modeling_{model_type}"
-                      try:
-                          _il.import_module(modeling_path)
-                      except (ModuleNotFoundError, ImportError):
-                          skipped.append((model_type, "no modeling file"))
-                          continue
-                      signal.alarm(60)
-                      try:
-                          unsloth_compile_transformers(
-                              model_type=model_type, fast_lora_forwards=False,
-                          )
-                      except Exception as e:
-                          signal.alarm(0)
-                          msg = f"{type(e).__name__}: {str(e)[:200]}"
+                      if outcome == "skipped":
+                          skipped.append((model_type, msg))
+                      elif outcome == "fail":
                           if model_type in KNOWN_BROKEN_COMPILE:
                               known.append((model_type, msg))
                           else:
                               new_failures.append((model_type, msg))
-                          continue
-                      signal.alarm(0)
-                      if model_type in KNOWN_BROKEN_COMPILE:
-                          # Came back green unexpectedly -- that's GOOD news,
-                          # the bug was fixed. Surface it so we can drop the
-                          # entry from KNOWN_BROKEN_COMPILE.
-                          print(
-                              f"  UNEXPECTED-OK {model_type}: was in "
-                              "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
-                              "Drop the entry."
-                          )
-                      ok += 1
-              finally:
-                  signal.alarm(0)
-                  signal.signal(signal.SIGALRM, prev_handler)
+                      else:
+                          if model_type in KNOWN_BROKEN_COMPILE:
+                              # Came back green unexpectedly -- that's GOOD news,
+                              # the bug was fixed. Surface it so we can drop the
+                              # entry from KNOWN_BROKEN_COMPILE.
+                              print(
+                                  f"  UNEXPECTED-OK {model_type}: was in "
+                                  "KNOWN_BROKEN_COMPILE, now compiles cleanly. "
+                                  "Drop the entry."
+                              )
+                          ok += 1
               print(f"\nCompile sweep: ok={ok} skipped={len(skipped)} "
                     f"known-broken={len(known)} new-failures={len(new_failures)}")
               for m, r in known:
