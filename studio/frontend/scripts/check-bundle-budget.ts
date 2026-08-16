@@ -14,13 +14,15 @@
  * index.html: the entry `<script type="module">` plus one `<link rel="modulepreload">`
  * per chunk in the entry's STATIC import closure. That is exactly what the browser
  * fetches before the app boots. Chunks reachable only through `import()` carry no
- * preload link and are correctly not counted.
+ * preload link and are correctly not counted. A parser-blocking classic
+ * `<script src>` (public/theme-boot.js) is added to that: it is not Vite's, but it
+ * runs before the module graph and so is part of the same wait.
  *
  * Raising a budget is a normal thing to do. Doing it in the same diff as the import
  * that needed it is the point.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
@@ -43,51 +45,116 @@ export const BUDGET = {
 // raises it while lowering the bytes, which is the behaviour this is trying to
 // reward; capping it would penalise the fix.
 
-/** The entry script and every chunk Vite preloads for it, in document order. */
-export function eagerChunksFromHtml(html: string): string[] {
-  const found: string[] = [];
+/** Reads an attribute off a single tag. HTML attribute names are case-insensitive. */
+function attr(tag: string, name: string): string | undefined {
+  const m = tag.match(
+    new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"),
+  );
+  if (!m) {
+    return undefined;
+  }
+  return m[1] ?? m[2] ?? m[3];
+}
+
+/** True for a valueless attribute like `defer`, which `attr` cannot see. */
+function hasAttr(tag: string, name: string): boolean {
+  return new RegExp(`\\s${name}(?=[\\s/>=])`, "i").test(tag);
+}
+
+/** `rel` is a space-separated token list, and its tokens are case-insensitive. */
+function relTokens(tag: string): string[] {
+  return (attr(tag, "rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * The eager set, in three buckets, as paths relative to `dist/`.
+ *
+ * `entry` and `preloads` are Vite's output and stay apart so the caller can tell
+ * "Vite stopped emitting preload links" from "this page really does load one
+ * chunk": flattened, a build with no preloads reads as a very small app.
+ *
+ * `blocking` is the classic `<script src>` in `<head>`, which is not Vite's and
+ * carries no preload link, but is parser-blocking: it is downloaded and run before
+ * the module graph starts. `public/theme-boot.js` is one, and left out it could
+ * grow without limit inside a gate whose whole subject is startup JavaScript.
+ */
+export type EagerSet = {
+  entry: string[];
+  preloads: string[];
+  blocking: string[];
+};
+
+/** Same-origin, build-relative, and not a traversal out of `dist/`. */
+function distRelative(url: string | undefined): string | undefined {
+  if (!url?.startsWith("/") || url.startsWith("//")) {
+    return undefined; // Absent, external, or protocol-relative: not ours to budget.
+  }
+  const path = url.slice(1).split(/[?#]/)[0];
+  return path && !path.split("/").includes("..") ? path : undefined;
+}
+
+/** What the browser fetches and runs before the app boots, in document order. */
+export function eagerSetFromHtml(html: string): EagerSet {
+  const set: EagerSet = { entry: [], preloads: [], blocking: [] };
   const seen = new Set<string>();
-  const add = (href: string) => {
-    // Only the build's own emitted assets; a copied-in vendor file has no budget.
-    if (!href.startsWith("/assets/") || seen.has(href)) {
+  const add = (into: string[], url: string | undefined, prefix = "") => {
+    const path = distRelative(url);
+    if (!path?.startsWith(prefix) || seen.has(path)) {
       return;
     }
-    seen.add(href);
-    found.push(href.slice("/assets/".length));
+    seen.add(path);
+    into.push(path);
   };
 
-  for (const tag of html.match(/<script\b[^>]*>/g) ?? []) {
-    if (!/\btype\s*=\s*["']module["']/.test(tag)) {
-      continue;
-    }
-    const src = tag.match(/\bsrc\s*=\s*["']([^"']+)["']/);
-    if (src) {
-      add(src[1]);
-    }
-  }
-  for (const tag of html.match(/<link\b[^>]*>/g) ?? []) {
-    if (!/\brel\s*=\s*["']modulepreload["']/.test(tag)) {
-      continue;
-    }
-    const href = tag.match(/\bhref\s*=\s*["']([^"']+)["']/);
-    if (href) {
-      add(href[1]);
+  for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+    const type = attr(tag, "type")?.toLowerCase();
+    if (type === "module") {
+      // Vite's entry, always one of its own hashed assets.
+      add(set.entry, attr(tag, "src"), "assets/");
+    } else if (!type || type === "text/javascript") {
+      // A classic script blocks the parser wherever it sits, so it counts from
+      // anywhere in the build, not just assets/. `defer`/`async` do not: those
+      // do not hold up the first screen.
+      if (!(hasAttr(tag, "defer") || hasAttr(tag, "async"))) {
+        add(set.blocking, attr(tag, "src"));
+      }
     }
   }
-  return found;
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    if (relTokens(tag).includes("modulepreload")) {
+      add(set.preloads, attr(tag, "href"), "assets/");
+    }
+  }
+  return set;
+}
+
+/** Flattened eager set, in the order the browser gets to it. */
+export function eagerChunksFromHtml(html: string): string[] {
+  const { entry, preloads, blocking } = eagerSetFromHtml(html);
+  return [...blocking, ...entry, ...preloads];
 }
 
 type Measured = { name: string; raw: number; gzip: number };
 
-function measure(names: string[]): Measured[] {
-  return names.map((name) => {
-    const bytes = readFileSync(join(DIST, "assets", name));
-    return {
+function measure(names: string[]): Measured[] | string {
+  const out: Measured[] = [];
+  for (const name of names) {
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(join(DIST, name));
+    } catch {
+      // index.html names a file the build did not emit. Reporting it rather than
+      // a stack trace, because the alternative reading -- that the budget is fine
+      // -- is the one that must never be reachable.
+      return `dist/index.html references ${name}, which is not in the build`;
+    }
+    out.push({
       name,
       raw: bytes.byteLength,
       gzip: gzipSync(bytes, { level: 6 }).byteLength,
-    };
-  });
+    });
+  }
+  return out;
 }
 
 function kb(bytes: number): string {
@@ -103,18 +170,39 @@ function main(): number {
     return 2;
   }
 
-  const names = eagerChunksFromHtml(html);
-  if (names.length === 0) {
-    // A build that emits no preload links means the shape this reads has changed,
-    // which would otherwise report a comfortable 0 bytes forever.
+  const { entry, preloads, blocking } = eagerSetFromHtml(html);
+  const names = [...blocking, ...entry, ...preloads];
+
+  // Counting Vite's own output only: a parser-blocking classic script is not
+  // evidence that the module graph was read correctly, so it cannot stand in for
+  // the entry when deciding whether this still understands the build.
+  //
+  // A code-split build of this app is dozens of chunks. One or none means the
+  // shape this reads has changed and the number below would be fiction: with
+  // `build.modulePreload: false` the links disappear and the entry alone measured
+  // 424 KB of a 5,207 KB startup path, reporting 4.8 MB to spare. A comfortable
+  // pass is the one answer this must never give by accident.
+  //
+  // Counting scripts and links together rather than requiring both: when the entry
+  // module is nothing but imports, Vite inlines it into one `<script>` per imported
+  // chunk and emits no preload links at all, which is a complete measurement.
+  const fromVite = entry.length + preloads.length;
+  if (fromVite < 2) {
     console.error(
-      "no eager chunks found in dist/index.html; the entry script or the " +
-        "modulepreload links are no longer where this expects them",
+      `dist/index.html yielded ${fromVite} eager chunk(s) from Vite, so there is nothing trustworthy to measure here.`,
+    );
+    console.error(
+      'A code-split build served from the site root gives a `<script type="module" src="/assets/...">` plus one `<link rel="modulepreload" href="/assets/...">` per statically imported chunk. If the shape changed on purpose -- `build.modulePreload` turned off, a non-root or relative `base`, a different `build.assetsDir`, `renderBuiltUrl` pointing at a CDN -- teach scripts/check-bundle-budget.ts the new shape rather than leaving a gate that measures nothing.',
     );
     return 2;
   }
 
-  const measured = measure(names).sort((a, b) => b.raw - a.raw);
+  const sized = measure(names);
+  if (typeof sized === "string") {
+    console.error(sized);
+    return 2;
+  }
+  const measured = sized.sort((a, b) => b.raw - a.raw);
   const raw = measured.reduce((sum, c) => sum + c.raw, 0);
   const gzip = measured.reduce((sum, c) => sum + c.gzip, 0);
 
@@ -152,9 +240,27 @@ function main(): number {
   return 0;
 }
 
-if (
-  process.argv[1] &&
-  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
-) {
+/**
+ * True when this file was run, rather than imported by the tests.
+ *
+ * Compared through realpath on both sides. `import.meta.url` is already the real
+ * path (node resolves modules through symlinks), while `process.argv[1]` is the
+ * path as typed, so a checkout reached through a symlinked directory made the two
+ * disagree and the whole check became a silent no-op that exited 0.
+ */
+function invokedDirectly(): boolean {
+  const argv = process.argv[1];
+  if (!argv) {
+    return false;
+  }
+  const here = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(argv) === realpathSync(here);
+  } catch {
+    return resolve(argv) === resolve(here);
+  }
+}
+
+if (invokedDirectly()) {
   process.exit(main());
 }
