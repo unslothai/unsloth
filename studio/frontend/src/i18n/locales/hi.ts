@@ -1111,6 +1111,9 @@ export const hi = {
       confirmBeforeDeleting: "हटाने से पहले पुष्टि करें",
       confirmBeforeDeletingDescription:
         "चैट हटाने से पहले पुष्टि मांगता है। तुरंत हटाने के लिए इसे बंद करें।",
+      alwaysDeleteFiles: "फ़ाइलें हमेशा हटाएँ",
+      alwaysDeleteFilesDescription:
+        "चैट हटाने पर उसका अपना सैंडबॉक्स फ़ोल्डर भी डिस्क से हट जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
       filesSection: "फ़ाइलें",
       uploadedFiles: "अपलोड की गई फ़ाइलें",
       uploadedFilesDescription:

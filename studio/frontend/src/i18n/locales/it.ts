@@ -1107,6 +1107,9 @@ export const it = {
       confirmBeforeDeleting: "Chiedi conferma prima di eliminare",
       confirmBeforeDeletingDescription:
         "Richiedi una conferma prima di eliminare una chat. Disattiva l'opzione per eliminarla subito.",
+      alwaysDeleteFiles: "Elimina sempre i file",
+      alwaysDeleteFilesDescription:
+        "L'eliminazione di una chat rimuove dal disco anche la sua cartella sandbox. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       filesSection: "File",
       uploadedFiles: "File caricati",
       uploadedFilesDescription:

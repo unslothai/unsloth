@@ -176,6 +176,12 @@ export function DataTab() {
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
   );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.alwaysDeleteChatFiles,
+  );
+  const setAlwaysDeleteChatFiles = useChatPreferencesStore(
+    (state) => state.setAlwaysDeleteChatFiles,
+  );
   const setConfirmDeleteChats = useChatPreferencesStore(
     (state) => state.setConfirmDeleteChats,
   );
@@ -717,6 +723,16 @@ export function DataTab() {
           <Switch
             checked={confirmDeleteChats}
             onCheckedChange={setConfirmDeleteChats}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label={t("settings.data.alwaysDeleteFiles")}
+          description={t("settings.data.alwaysDeleteFilesDescription")}
+        >
+          <Switch
+            checked={alwaysDeleteChatFiles}
+            onCheckedChange={setAlwaysDeleteChatFiles}
           />
         </SettingsRow>
 

@@ -1115,6 +1115,9 @@ export const ru = {
       confirmBeforeDeleting: "Подтверждать перед удалением",
       confirmBeforeDeletingDescription:
         "Запрашивает подтверждение перед удалением чата. Отключите, чтобы удалять сразу.",
+      alwaysDeleteFiles: "Всегда удалять файлы",
+      alwaysDeleteFilesDescription:
+        "При удалении чата с диска удаляется и его собственная папка песочницы. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
       filesSection: "Файлы",
       uploadedFiles: "Загруженные файлы",
       uploadedFilesDescription:

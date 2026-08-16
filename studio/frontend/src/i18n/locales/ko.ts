@@ -1103,6 +1103,9 @@ export const ko = {
       confirmBeforeDeleting: "삭제 전 확인",
       confirmBeforeDeletingDescription:
         "채팅을 삭제하기 전에 확인을 요청합니다. 끄면 즉시 삭제합니다.",
+      alwaysDeleteFiles: "항상 파일 삭제",
+      alwaysDeleteFilesDescription:
+        "채팅을 삭제하면 해당 채팅 전용 샌드박스 폴더도 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       filesSection: "파일",
       uploadedFiles: "업로드한 파일",
       uploadedFilesDescription:

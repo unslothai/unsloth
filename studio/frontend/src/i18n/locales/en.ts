@@ -1100,6 +1100,9 @@ export const en = {
       confirmBeforeDeleting: "Confirm before deleting",
       confirmBeforeDeletingDescription:
         "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      alwaysDeleteFiles: "Always delete files",
+      alwaysDeleteFilesDescription:
+        "Deleting a chat also removes its own sandbox folder from disk. Files it wrote inside a project stay in that project workspace.",
       filesSection: "Files",
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:

@@ -1256,6 +1256,9 @@ function ProjectLanding({
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const pinnedChatIdSet = useMemo(
     () => new Set(pinnedChatIds),
     [pinnedChatIds],
@@ -1284,14 +1287,16 @@ function ProjectLanding({
   const runDelete = useCallback(
     async (item: SidebarItem) => {
       try {
-        await deleteChatItem(item, activeThreadId ?? undefined, noopView);
+        await deleteChatItem(item, activeThreadId ?? undefined, noopView, {
+          deleteFiles: alwaysDeleteChatFiles,
+        });
       } catch (err) {
         toast.error("Failed to delete chat", {
           description: err instanceof Error ? err.message : undefined,
         });
       }
     },
-    [activeThreadId, noopView],
+    [activeThreadId, noopView, alwaysDeleteChatFiles],
   );
 
   const handleDelete = useCallback(

@@ -1144,6 +1144,9 @@ export const de = {
       confirmBeforeDeleting: "Vor dem Löschen bestätigen",
       confirmBeforeDeletingDescription:
         "Fragt vor dem Löschen eines Chats nach einer Bestätigung. Deaktivieren, um sofort zu löschen.",
+      alwaysDeleteFiles: "Dateien immer löschen",
+      alwaysDeleteFilesDescription:
+        "Beim Löschen eines Chats wird auch dessen eigener Sandbox-Ordner von der Festplatte entfernt. Dateien, die er in einem Projekt erstellt hat, bleiben im Arbeitsbereich dieses Projekts.",
       filesSection: "Dateien",
       uploadedFiles: "Hochgeladene Dateien",
       uploadedFilesDescription:

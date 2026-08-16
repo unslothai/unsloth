@@ -55,6 +55,9 @@ export function ArchivedChatsView() {
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const [confirmingDelete, setConfirmingDelete] = useState<SidebarItem | null>(
     null,
   );
@@ -86,14 +89,19 @@ export function ArchivedChatsView() {
   async function handleDelete(item: SidebarItem) {
     try {
       // Pass the open chat id (single or compare) so deleting it resets nav.
-      await deleteChatItem(item, openChatId, (view) => {
-        navigate({
-          to: "/chat",
-          search: item.projectId
-            ? { project: item.projectId }
-            : { new: view.newThreadNonce },
-        });
-      });
+      await deleteChatItem(
+        item,
+        openChatId,
+        (view) => {
+          navigate({
+            to: "/chat",
+            search: item.projectId
+              ? { project: item.projectId }
+              : { new: view.newThreadNonce },
+          });
+        },
+        { deleteFiles: alwaysDeleteChatFiles },
+      );
       toast.success("Chat deleted");
     } catch (err) {
       toast.error("Failed to delete chat", {

@@ -1105,6 +1105,9 @@ export const ar = {
       confirmBeforeDeleting: "التأكيد قبل الحذف",
       confirmBeforeDeletingDescription:
         "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      alwaysDeleteFiles: "حذف الملفات دائمًا",
+      alwaysDeleteFilesDescription:
+        "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:

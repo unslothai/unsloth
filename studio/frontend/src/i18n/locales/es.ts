@@ -1134,6 +1134,9 @@ export const es = {
       confirmBeforeDeleting: "Confirmar antes de eliminar",
       confirmBeforeDeletingDescription:
         "Pide confirmación antes de eliminar un chat. Desactívalo para eliminar los chats al instante.",
+      alwaysDeleteFiles: "Eliminar siempre los archivos",
+      alwaysDeleteFilesDescription:
+        "Al eliminar un chat también se quita del disco su carpeta de entorno aislado. Los archivos que haya escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       filesSection: "Archivos",
       uploadedFiles: "Archivos subidos",
       uploadedFilesDescription:

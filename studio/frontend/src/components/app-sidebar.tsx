@@ -947,6 +947,9 @@ export function AppSidebar() {
   const confirmDeleteChats = useChatPreferencesStore(
     (s) => s.confirmDeleteChats,
   );
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
   const chatSort = useSidebarOrganizationStore((s) => s.chatSort);
@@ -1336,7 +1339,11 @@ export function AppSidebar() {
     }
     clearSelection();
     void (async () => {
-      for (const item of items) await deleteChatWithCleanup(item);
+      for (const item of items) {
+        await deleteChatWithCleanup(item, {
+          deleteFiles: alwaysDeleteChatFiles,
+        });
+      }
     })();
   }
 
@@ -1951,7 +1958,11 @@ export function AppSidebar() {
 
   /** Always through here: a stale switch would delete an unrelated sandbox. */
   function openDeleteDialog(target: DeleteTarget) {
-    setDeleteFilesOnDelete(false);
+    // Chats follow the preference, so the switch shows what will happen and can
+    // still be turned off for this one delete. A project workspace is a bigger
+    // thing to remove, so it keeps asking from scratch.
+    const chats = target.kind === "chat" || target.kind === "chats";
+    setDeleteFilesOnDelete(chats && alwaysDeleteChatFiles);
     setConfirmingDelete(target);
   }
 
@@ -2625,7 +2636,9 @@ export function AppSidebar() {
                   onSelect={() =>
                     confirmDeleteChats
                       ? openDeleteDialog({ kind: "chat", item })
-                      : void deleteChatWithCleanup(item)
+                      : void deleteChatWithCleanup(item, {
+                          deleteFiles: alwaysDeleteChatFiles,
+                        })
                   }
                 >
                   <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />

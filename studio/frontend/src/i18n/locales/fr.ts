@@ -1142,6 +1142,9 @@ export const fr = {
       confirmBeforeDeleting: "Confirmer avant de supprimer",
       confirmBeforeDeletingDescription:
         "Demande une confirmation avant de supprimer une discussion. Désactivez cette option pour supprimer immédiatement.",
+      alwaysDeleteFiles: "Toujours supprimer les fichiers",
+      alwaysDeleteFilesDescription:
+        "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:
