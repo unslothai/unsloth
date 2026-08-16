@@ -163,7 +163,10 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "livePreStreamRunActive" in submit
     assert "liveThreadIsRunning || livePreStreamRunActive" in submit
     assert "startHydratedPromptQueue(" in submit
-    assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
+    # Read into a local first: the send guard arms on the untrimmed value too,
+    # since that is what a late DOM write carries.
+    assert "const cleared = aui.composer().getState().text" in submit
+    assert "cleared.trim() !== queuedPrompt" in submit
     assert "promptQueueStartPendingRef.current" in THREAD
     assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD

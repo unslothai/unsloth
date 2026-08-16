@@ -174,6 +174,14 @@ import {
   usePlusMenuPrefsStore,
   writeComposerDraft,
 } from "@/features/chat";
+import {
+  applySentTextGuard,
+  armSentTextGuard,
+  isGuardRetiringKey,
+  markSentTextGuardUserInput,
+  sentTextGuardBlocksDraft,
+  type SentTextGuard,
+} from "@/features/chat/utils/composer-send-guard";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
   getStoredChatThread,
@@ -261,6 +269,7 @@ import {
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  type RefObject,
   Fragment,
   createContext,
   memo,
@@ -2125,8 +2134,14 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
+  // Read by both writers that could put the sent text back, the input handlers
+  // and the draft restore. Armed by every path that clears the composer.
+  const justSentRef = useRef<SentTextGuard | null>(null);
+  // Thread on screen, so the guard can tell whether a write belongs to the
+  // thread that sent. Kept in step by the effect alongside pasteDraftKeyRef.
+  const draftKeyRef = useRef<string | null>(null);
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true });
+    useImeComposerInputHandlers({ submitOnEnter: true, justSentRef, draftKeyRef });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
@@ -2177,6 +2192,17 @@ const Composer: FC<{
             description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
+      // A paste is a gesture, so it retires the guard and re-pasting the sent
+      // prompt goes through. Last, and only when the browser will really insert
+      // the text: a payload carrying files is preventDefaulted above, so
+      // retiring for it would just free the next queued write to refill.
+      if (
+        pastedText.length > 0 &&
+        !event.defaultPrevented &&
+        justSentRef.current?.draftKey === draftKeyRef.current
+      ) {
+        justSentRef.current = null;
+      }
     },
     [aui, overlay, pastedTextMinChars],
   );
@@ -2620,10 +2646,36 @@ const Composer: FC<{
   useEffect(() => {
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
-    if (composer.getState().isEditing) {
-      composer.setText(draft);
+    if (!composer.getState().isEditing) return;
+    // A save that raced the send still holds the sent text, so restoring it
+    // would undo the clear. Keyed on the sending thread, so another thread's
+    // identical draft still restores. Clear rather than return early, which
+    // would leave the previous thread's text on screen under this one.
+    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
+      // Written inline rather than via clearStoredDraft, which is declared
+      // below this effect. Cancel the pending save too, or it rewrites the key.
+      if (draftSaveTimerRef.current !== null) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      if (draftKey) writeComposerDraft(draftKey, "");
+      composer.setText("");
+      return;
     }
+    composer.setText(draft);
   }, [draftKey, aui]);
+  // The saved-prompt menu and the prompt storage dialog fill the composer
+  // directly, bypassing the guard. Text appearing while the sending thread is
+  // on screen was put there deliberately, so retire; the draftKey check keeps
+  // another thread's restored draft from doing the same. Read live, or a
+  // pending render retires it on stale text. Must stay after the restore
+  // above, which clears the raced draft this would otherwise retire on.
+  useEffect(() => {
+    const guard = justSentRef.current;
+    if (guard === null || guard.draftKey !== draftKey) return;
+    if (aui.composer().getState().text.length === 0) return;
+    justSentRef.current = null;
+  }, [composerText, draftKey, aui]);
   // Separate from the text restore above, which must stay keyed on the draft
   // alone: this one retries on attachment changes, and rewriting the composer
   // text on those would drop whatever had been typed since the last autosave.
@@ -2675,14 +2727,15 @@ const Composer: FC<{
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
   }, [composerText, draftKey]);
-  // Without this the restore effect above puts the sent text back when the
-  // runtime rebinds on the first message.
-  const draftKeyRef = useRef(draftKey);
   const pasteDraftKeyRef = useRef(pasteDraftKey);
   useEffect(() => {
     draftKeyRef.current = draftKey;
     pasteDraftKeyRef.current = pasteDraftKey;
   }, [draftKey, pasteDraftKey]);
+  // Call wherever the composer is emptied because its text left as a message.
+  const armJustSent = useCallback((...texts: string[]) => {
+    justSentRef.current = armSentTextGuard(texts, draftKeyRef.current);
+  }, []);
   const clearStoredDraft = useCallback(() => {
     if (draftSaveTimerRef.current !== null) {
       clearTimeout(draftSaveTimerRef.current);
@@ -3157,6 +3210,7 @@ const Composer: FC<{
               composer.setText("");
             });
             clearStoredDraft();
+            armJustSent(state.text);
           });
         })
         .catch(() => {
@@ -3166,7 +3220,7 @@ const Composer: FC<{
         });
       return true;
     },
-    [aui, clearStoredDraft, startHydratedPromptQueue],
+    [armJustSent, aui, clearStoredDraft, startHydratedPromptQueue],
   );
 
   const dismissWaitToast = useCallback(() => {
@@ -3254,7 +3308,9 @@ const Composer: FC<{
     ],
   );
 
-  const sendReservedComposer = useCallback(() => {
+  // alsoGuard: text the composer showed before this path rewrote it, so a late
+  // write carrying what the user actually typed is refused too.
+  const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
     const assistantRuntime =
       aui.threads().__internal_getAssistantRuntime?.();
     let reservationToken: symbol | null = null;
@@ -3283,7 +3339,10 @@ const Composer: FC<{
     }
     preStreamRunReservationRef.current = reservationToken;
     try {
+      const sentText = aui.composer().getState().text;
       aui.composer().send();
+      // Empty texts are dropped, so an attachment-only send still clears.
+      armJustSent(sentText, ...alsoGuard);
     } catch (error) {
       if (releasePreStreamRunReservation(reservationToken)) {
         notifyPromptQueueRunFailed(referenceThreadId);
@@ -3294,7 +3353,7 @@ const Composer: FC<{
           error instanceof Error ? error.message : "Please retry the send.",
       });
     }
-  }, [aui, preStreamThreadIds, referenceThreadId]);
+  }, [aui, armJustSent, preStreamThreadIds, referenceThreadId]);
 
   // Gate for both form submit and the Send button. Returns true when it handled
   // the event (blocked or queued) so callers stop.
@@ -3558,13 +3617,16 @@ const Composer: FC<{
           [queuedPrompt],
           liveThreadIsRunning || livePreStreamRunActive,
           () => {
-            if (aui.composer().getState().text.trim() !== queuedPrompt) {
+            // Guard the untrimmed text too: that is what a late write carries.
+            const cleared = aui.composer().getState().text;
+            if (cleared.trim() !== queuedPrompt) {
               return;
             }
             flushResourcesSync(() => {
               aui.composer().setText("");
             });
             clearStoredDraft();
+            armJustSent(queuedPrompt, cleared);
           },
         );
         return;
@@ -3605,6 +3667,9 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
+        // Live, not composerText: a late DOM write carries exactly what the
+        // textarea held, whitespace and all, and that is what must be armed.
+        const visibleBeforeWrap = aui.composer().getState().text;
         flushResourcesSync(() => {
           aui
             .composer()
@@ -3614,7 +3679,8 @@ const Composer: FC<{
         });
         closeOverlay();
         event.preventDefault();
-        sendReservedComposer();
+        // The wrapper replaced what the user typed, so guard that text as well.
+        sendReservedComposer(visibleBeforeWrap, trimmed);
         return;
       }
 
@@ -3629,6 +3695,7 @@ const Composer: FC<{
       sendReservedComposer();
     },
     [
+      armJustSent,
       aui,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,
@@ -3801,15 +3868,15 @@ const Composer: FC<{
                   [queuedPrompt],
                   true,
                   () => {
-                    if (
-                      aui.composer().getState().text.trim() !== queuedPrompt
-                    ) {
+                    const cleared = aui.composer().getState().text;
+                    if (cleared.trim() !== queuedPrompt) {
                       return;
                     }
                     flushResourcesSync(() => {
                       aui.composer().setText("");
                     });
                     clearStoredDraft();
+                    armJustSent(queuedPrompt, cleared);
                   },
                 );
               }}
@@ -3888,6 +3955,44 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
+// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
+// differ from what was sent, so equality alone would let it through.
+function isTextReplacement(event: Event | undefined) {
+  return inputTypeOf(event) === "insertReplacementText";
+}
+
+// An IME composition write. Finalisation converts the text, so equality never
+// matches it, and it is stale only when the composition began before the send:
+// one begun after raises compositionstart, which records user input.
+// compositionend counts because onCompositionEnd applies that value itself and
+// the browser raises no input event for it.
+function isCompositionWrite(event: Event | undefined) {
+  return (
+    inputTypeOf(event) === "insertCompositionText" ||
+    event?.type === "compositionend" ||
+    (event !== undefined && isNativeComposing(event))
+  );
+}
+
+// Input types only a gesture produces, so they apply even when they carry the
+// sent text. Drag and drop and yank have no event to hook the way paste does.
+const DELIBERATE_INPUT_TYPES = new Set([
+  "historyUndo",
+  "historyRedo",
+  "insertFromPaste",
+  "insertFromDrop",
+  "insertFromYank",
+]);
+
+function isDeliberateWrite(event: Event | undefined) {
+  return DELIBERATE_INPUT_TYPES.has(inputTypeOf(event) ?? "");
+}
+
+function inputTypeOf(event: Event | undefined): string | undefined {
+  if (event === undefined || !("inputType" in event)) return undefined;
+  return (event as InputEvent).inputType;
+}
+
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
 // a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
@@ -3898,8 +4003,15 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  justSentRef,
+  draftKeyRef,
 }: {
   submitOnEnter?: boolean;
+  // Guard armed by the last send or queue. See setComposerText below.
+  justSentRef?: RefObject<SentTextGuard | null>;
+  // Thread on screen. The composer outlives a thread switch, so this is what
+  // says whether the armed guard belongs to the thread being typed into.
+  draftKeyRef?: RefObject<string | null>;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -3943,22 +4055,50 @@ function useImeComposerInputHandlers({
 
   useEffect(() => clearStuckTimer, [clearStuckTimer]);
 
+  // False when refused, so the caller can preventDefault and stop
+  // ComposerPrimitive.Input's own handler applying the same value.
   const setComposerText = useCallback(
-    (value: string) => {
+    (value: string, nativeEvent?: Event): boolean => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) {
-        return;
+        return false;
+      }
+      // Refuse a write that is the sent message coming back, but only for the
+      // thread that sent: typing in another thread must not retire a guard it
+      // does not own, or its raced draft returns.
+      const guardOwnsThread =
+        justSentRef?.current == null ||
+        draftKeyRef === undefined ||
+        justSentRef.current.draftKey === draftKeyRef.current;
+      if (justSentRef && guardOwnsThread) {
+        const result = applySentTextGuard(justSentRef.current, {
+          value,
+          replacesText: isTextReplacement(nativeEvent),
+          isDeliberate: isDeliberateWrite(nativeEvent),
+          isComposition: isCompositionWrite(nativeEvent),
+          composerIsEmpty: composer.getState().text.length === 0,
+        });
+        justSentRef.current = result.guard;
+        if (!result.accept) {
+          return false;
+        }
       }
       flushResourcesSync(() => {
         composer.setText(value);
       });
+      return true;
     },
-    [aui],
+    [aui, draftKeyRef, justSentRef],
   );
 
   const onCompositionStart = useCallback(() => {
+    // Dictation and handwriting insert without a keydown, and a composition
+    // starting after the send cannot be a write the send queued.
+    if (justSentRef) {
+      justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
+    }
     setCompositionState(true);
-  }, [setCompositionState]);
+  }, [justSentRef, setCompositionState]);
 
   const onCompositionUpdate = useCallback(() => {
     refreshStuckTimer();
@@ -3967,7 +4107,9 @@ function useImeComposerInputHandlers({
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
       setCompositionState(false);
-      setComposerText(e.currentTarget.value);
+      if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
@@ -3975,7 +4117,9 @@ function useImeComposerInputHandlers({
   const onChange = useCallback(
     (e: ChangeEvent<HTMLTextAreaElement>) => {
       setCompositionState(isNativeComposing(e.nativeEvent));
-      setComposerText(e.target.value);
+      if (!setComposerText(e.target.value, e.nativeEvent)) {
+        e.preventDefault();
+      }
     },
     [setComposerText, setCompositionState],
   );
@@ -3990,9 +4134,15 @@ function useImeComposerInputHandlers({
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || e.keyCode === 229) {
+        // Deliberately NOT user input: picking a candidate in a composition the
+        // send left open is that composition continuing. One begun after the
+        // send is marked by compositionstart instead.
         composingRef.current = true;
         refreshStuckTimer();
         return;
+      }
+      if (justSentRef && isGuardRetiringKey(e)) {
+        justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
       }
       if (composingRef.current) {
         // Candidate-confirming Enter can arrive as non-composing; keep it gated.
@@ -4015,7 +4165,7 @@ function useImeComposerInputHandlers({
         e.currentTarget.form?.requestSubmit();
       }
     },
-    [refreshStuckTimer, setCompositionState, submitOnEnter],
+    [justSentRef, refreshStuckTimer, setCompositionState, submitOnEnter],
   );
 
   // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea
