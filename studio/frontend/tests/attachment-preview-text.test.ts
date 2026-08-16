@@ -553,6 +553,61 @@ test("readAttachmentText refuses a relationship target in any XML attribute form
   }
 });
 
+/**
+ * A commented-out relationship is text to mammoth's parser, so it must not
+ * select the bounded part in either direction: it cannot stand in for the real
+ * target and hide it, and it cannot refuse a document mammoth would have read.
+ */
+test("readAttachmentText ignores a relationship inside a comment", async () => {
+  const huge = strToU8("a".repeat(11 * 1024 * 1024));
+  const type =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument";
+  const rels = (commented: string, live: string) =>
+    strToU8(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><!--<Relationship Id="rId0" Type="${type}" Target="${commented}"/>--><Relationship Id="rId1" Type="${type}" Target="${live}"/></Relationships>`,
+    );
+
+  const hidden = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": rels("word/document.xml", "payload.bin"),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "payload.bin": huge,
+  });
+  const hiddenFile = fakeDocumentFile("bomb.docx", hidden.length, hidden, []);
+  await assert.rejects(
+    readAttachmentText(hiddenFile, hiddenFile.name, undefined),
+    /DOCX XML file is too large: bomb\.docx:payload\.bin/,
+    "a comment stood in for the live relationship",
+  );
+
+  const reads: string[] = [];
+  const refused = zipSync({
+    "[Content_Types].xml": strToU8("<Types/>"),
+    "_rels/.rels": rels("payload.bin", "word/document.xml"),
+    "word/document.xml": strToU8("<w:document><w:body/></w:document>"),
+    "word/_rels/document.xml.rels": relationships([]),
+    "payload.bin": huge,
+  });
+  const refusedFile = fakeDocumentFile(
+    "notes.docx",
+    refused.length,
+    refused,
+    reads,
+  );
+  const error = await readAttachmentText(
+    refusedFile,
+    refusedFile.name,
+    undefined,
+  ).then(
+    () => null,
+    (thrown: Error) => thrown,
+  );
+  assert.deepEqual(reads, ["notes.docx"]);
+  if (error) {
+    assert.doesNotMatch(error.message, /too large/);
+  }
+});
+
 // findPartPaths only opens the package parts and what the relationships point
 // at, so an .xml part nothing references is never inflated. Custom XML data is
 // a standard payload and may be large, so the suffix must not decide.
