@@ -3731,6 +3731,8 @@ class TestGGUFSafetensorsHealingParity:
             "Do you mean the package or the UI? I'll inspect it.",
             "Where should I search? Once you tell me, I'll look it up.",
             "How would you like me to proceed? I'll handle it once you decide.",
+            "What version are you using? Once you tell me, I'll check it.",
+            "Could you clarify whether you mean the package or the UI? I'll check.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3746,6 +3748,8 @@ class TestGGUFSafetensorsHealingParity:
             # advice to the user keeps its own word order, so the interrogative arm stays clear of it.
             "I'll explain what you should do next.",
             "Let me check what I should do here.",
+            "I'll tell you what the results are.",
+            "I'll check what files are in the directory.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 

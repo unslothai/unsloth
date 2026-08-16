@@ -212,7 +212,8 @@ _CLARIFICATION_REQUEST = re.compile(
     r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
     r"|d(?:o|id)\s+you\s+mean\b"
     # an interrogative putting the choice on the user; "what you should do" is advice and keeps its own word order
-    r"|(?:what|which|where|when|who|how)\s+(?:\w+\s+){0,2}?(?:should|would|shall|do|did)\s+(?:i|you)\b"
+    r"|(?:what|which|where|when|who|how)\s+(?:\w+\s+){0,2}?"
+    r"(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+(?:i|you)\b"
     r")"
 )
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
