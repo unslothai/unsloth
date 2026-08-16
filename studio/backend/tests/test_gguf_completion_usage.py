@@ -18,7 +18,11 @@ class _GgufBackend:
     supports_tools = False
     context_length = 8192
 
-    def __init__(self, usage, context_truncation = None):
+    def __init__(
+        self,
+        usage,
+        context_truncation = None,
+    ):
         self.usage = usage
         self.context_truncation = context_truncation
 
@@ -33,7 +37,11 @@ class _GgufBackend:
         }
 
 
-def _request_completion(monkeypatch, usage, context_truncation = None):
+def _request_completion(
+    monkeypatch,
+    usage,
+    context_truncation = None,
+):
     monkeypatch.setattr(
         inference_route,
         "get_llama_cpp_backend",

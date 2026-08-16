@@ -384,9 +384,7 @@ def test_nonstream_completion_serializes_context_truncation():
 
 def test_nonstream_completion_omits_context_field_when_not_truncated():
     response = ChatCompletion(choices = [])
-    body = json.loads(
-        routes_mod._model_json_response_with_context_truncation(response, None).body
-    )
+    body = json.loads(routes_mod._model_json_response_with_context_truncation(response, None).body)
 
     assert "context_truncated" not in body
 
