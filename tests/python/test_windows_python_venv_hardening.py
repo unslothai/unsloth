@@ -434,8 +434,7 @@ def _uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
         source,
     )
     setup = _extract(
-        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{"
-        r".*?\n    \}\n",
+        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{.*?\n    \}\n",
         source,
     )
     restore = _extract(
