@@ -47,6 +47,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
 )
@@ -1176,8 +1177,17 @@ class FastBaseModel:
             # The pin the config and weights below use. Planning against the default
             # branch would size a different checkpoint than the one being loaded.
             revision = _revision,
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+            # A caller-supplied config overrides the flags: loader.py clears them whenever
+            # it forwards one, so the flags alone would size a 4bit load at full precision.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = user_quantization_config,
+                # The same extra _skip_modules below adds.
+                extra_skip_modules = ["out_proj"]
+                if any(mt == "nemotron_h" for mt in (model_types or []))
+                else None,
+            ),
         )
 
         if int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) >= 2:

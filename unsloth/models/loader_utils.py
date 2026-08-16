@@ -120,6 +120,40 @@ def requested_device_map(device_map):
     return device_map
 
 
+def planner_quantization_kwargs(
+    load_in_4bit = False,
+    load_in_8bit = False,
+    quantization_config = None,
+    extra_skip_modules = None,
+):
+    """The quantization the planner must size for, as the load will really apply it.
+
+    A caller-supplied `quantization_config` reaches transformers through `**kwargs`, and
+    loader.py zeroes `load_in_4bit` / `load_in_8bit` before dispatch precisely because
+    transformers refuses both at once. The booleans alone therefore describe a
+    full-precision load that is about to be quantized, and the planner sizes a 4bit model
+    at bf16 and raises `DeviceMapInfeasible` on a load that would have fit. So the config
+    wins and the booleans go with it, which is the loader's own rule.
+
+    The skip list has to travel with them. On-the-fly quantization here always keeps
+    SKIP_QUANTIZATION_MODULES in compute dtype (`lm_head`, `vision_tower`, `audio_tower`,
+    the projectors and the MoE routers), and transformers turns that into
+    `modules_to_not_convert`. Sizing those at 4bit understates the head device by GiBs on
+    a large-vocab VLM, which is the one number the head-aware plan exists to get right.
+    A pre-quantized checkpoint needs none of this: its own config.json carries the list.
+    """
+    if quantization_config is not None:
+        return {"quantization_config": quantization_config}
+    kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
+    if load_in_4bit or load_in_8bit:
+        from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
+
+        kwargs["llm_int8_skip_modules"] = (
+            SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
+        )
+    return kwargs
+
+
 def resolve_unsloth_device_map(
     device_map,
     model_name,

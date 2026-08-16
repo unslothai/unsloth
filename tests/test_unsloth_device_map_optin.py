@@ -24,6 +24,7 @@ import pytest
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
+_SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
 class _FakeCuda:
@@ -62,6 +63,7 @@ def _load(
         if isinstance(node, ast.FunctionDef) and node.name in (
             "requested_device_map",
             "resolve_unsloth_device_map",
+            "planner_quantization_kwargs",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
         elif (
@@ -69,6 +71,12 @@ def _load(
             and getattr(node.targets[0], "id", None) == "UNSLOTH_DEVICE_MAP"
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
+
+    # planner_quantization_kwargs reads the shared skip list; stub it so the test never
+    # imports the real unsloth_zoo (and so the assertions do not track its contents).
+    peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
+    peft_utils.SKIP_QUANTIZATION_MODULES = list(_SKIP_MODULES)
+    sys.modules["unsloth_zoo.peft_utils"] = peft_utils
 
     if planner is not None:
         module = types.ModuleType("unsloth_zoo.device_map_planner")
@@ -286,3 +294,115 @@ def test_planner_kwargs_reach_the_planner():
     assert seen["rows_per_chunk"] == 128
     assert seen["retained_rows"] == 6144
     assert seen["softcapped"] is True
+
+
+def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
+    """loader.py forwards a caller's `quantization_config` through `**kwargs` and clears
+    `load_in_4bit` / `load_in_8bit`, because transformers refuses both at once. Handing
+    the planner the cleared flags describes a full-precision load, so a 70B QLoRA gets
+    sized at bf16 and `DeviceMapInfeasible` kills a load that would have fit.
+    """
+    ns = _load()
+    config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
+    kwargs = ns["planner_quantization_kwargs"](
+        load_in_4bit = False,
+        load_in_8bit = False,
+        quantization_config = config,
+    )
+    assert kwargs == {"quantization_config": config}
+    # Both at once is exactly what transformers and the planner reject.
+    assert "load_in_4bit" not in kwargs
+    assert "load_in_8bit" not in kwargs
+
+
+@pytest.mark.parametrize("four_bit, eight_bit", [(True, False), (False, True)])
+def test_the_flags_are_used_when_no_config_was_given(four_bit, eight_bit):
+    ns = _load()
+    assert ns["planner_quantization_kwargs"](
+        load_in_4bit = four_bit,
+        load_in_8bit = eight_bit,
+    ) == {
+        "load_in_4bit": four_bit,
+        "load_in_8bit": eight_bit,
+        "llm_int8_skip_modules": _SKIP_MODULES,
+    }
+
+
+def test_a_16bit_load_is_planned_without_a_skip_list():
+    """Nothing is being quantized, so there is nothing to keep out of it. A stray
+    llm_int8_skip_modules would reach AutoConfig as an attribute of the model config."""
+    ns = _load()
+    assert ns["planner_quantization_kwargs"]() == {
+        "load_in_4bit": False,
+        "load_in_8bit": False,
+    }
+
+
+def test_the_modules_unsloth_keeps_in_compute_dtype_are_sized_that_way():
+    """On-the-fly quantization keeps SKIP_QUANTIZATION_MODULES out of bnb, and
+    transformers reads llm_int8_skip_modules as `modules_to_not_convert`. Planning them
+    at 4bit understates the head device by GiBs on a large-vocab VLM (`lm_head` plus a
+    whole `vision_tower`), and the head is the number this plan exists to get right.
+    """
+    seen = {}
+    ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "m",
+        **ns["planner_quantization_kwargs"](
+            load_in_4bit = True,
+            extra_skip_modules = ["out_proj"],
+        ),
+    )
+    assert seen["load_in_4bit"] is True
+    assert seen["llm_int8_skip_modules"] == _SKIP_MODULES + ["out_proj"]
+
+
+def test_the_skip_list_is_not_sent_alongside_a_user_config():
+    """The config already carries its own; sending both is what transformers refuses."""
+    ns = _load()
+    kwargs = ns["planner_quantization_kwargs"](
+        quantization_config = types.SimpleNamespace(load_in_4bit = True),
+        extra_skip_modules = ["out_proj"],
+    )
+    assert kwargs == {"quantization_config": kwargs["quantization_config"]}
+
+
+def test_the_config_is_what_reaches_the_planner():
+    seen = {}
+    ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
+    config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
+    ns["resolve_unsloth_device_map"](
+        "unsloth",
+        "m",
+        **ns["planner_quantization_kwargs"](quantization_config = config),
+    )
+    assert seen["quantization_config"] is config
+    assert "load_in_4bit" not in seen
+
+
+def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
+    """A bare `load_in_4bit = load_in_4bit` at the call site is the bug above: the leaf
+    receives the flag already cleared by loader.py.
+    """
+    models = os.path.join(HERE, "unsloth", "models")
+    for name in ("llama.py", "vision.py"):
+        source = open(os.path.join(models, name), encoding = "utf-8").read()
+        for node in ast.walk(ast.parse(source)):
+            if not (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "resolve_unsloth_device_map"
+            ):
+                continue
+            keywords = {kw.arg for kw in node.keywords}
+            assert "load_in_4bit" not in keywords, f"{name}:{node.lineno} plans on the cleared flag"
+            assert "load_in_8bit" not in keywords, f"{name}:{node.lineno} plans on the cleared flag"
+            unpacked = [
+                kw.value
+                for kw in node.keywords
+                if kw.arg is None and isinstance(kw.value, ast.Call)
+            ]
+            assert any(
+                getattr(call.func, "id", None) == "planner_quantization_kwargs"
+                for call in unpacked
+            ), f"{name}:{node.lineno}"

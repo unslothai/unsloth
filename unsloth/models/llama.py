@@ -32,6 +32,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
 )
@@ -2612,8 +2613,16 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+            # The caller's own quantization_config, still untouched in kwargs here (ours
+            # is only put there once the skip list below is built), overrides the flags:
+            # loader.py clears them whenever it forwards one.
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = kwargs.get("quantization_config", None),
+                # The same extra the bnb config below adds.
+                extra_skip_modules = ["out_proj"] if IS_FALCON_H1 else None,
+            ),
         )
 
         bnb_config = None
