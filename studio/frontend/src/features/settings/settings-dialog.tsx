@@ -255,7 +255,11 @@ export function SettingsDialog() {
     if (!open) return;
     return scheduleIdleTask(() => {
       for (const load of Object.values(TAB_LOADERS)) {
-        void load();
+        // The prefetch warms panels nobody has asked for, so a fetch that fails is
+        // not something to report; the boundary above speaks for the panel the user
+        // does open. Swallowed here because an unhandled rejection would otherwise
+        // reach the page for every panel a lost connection could not reach.
+        void load().catch(() => undefined);
       }
     });
   }, [open]);

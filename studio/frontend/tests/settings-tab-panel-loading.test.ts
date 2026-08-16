@@ -179,4 +179,7 @@ test("the panels are prefetched once the dialog opens", async () => {
   const source = await readFile(DIALOG, "utf8");
   assert.match(source, /scheduleIdleTask/);
   assert.match(source, /Object\.values\(TAB_LOADERS\)/);
+  // The prefetch warms panels nobody selected, so a chunk it cannot fetch must not
+  // reach the page as an unhandled rejection.
+  assert.match(source, /load\(\)\.catch\(/);
 });

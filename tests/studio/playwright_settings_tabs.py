@@ -167,6 +167,15 @@ def run_chunk_fail(page) -> None:
     )
     report["chunk_fail_state"] = state
     log(f"after blocking {CHUNK_FAIL}: {state}")
+    # The idle prefetch pulls every panel, so a blocked module must not surface as an
+    # unhandled rejection for a tab the user never opened.
+    errors = page.evaluate("() => window.__settingsSmoke.errors()")
+    report["chunk_fail_window_errors"] = errors
+    unhandled = [e for e in errors if "dynamically imported module" in e or "Importing a module" in e]
+    if unhandled:
+        fail(f"blocking the {CHUNK_FAIL} panel left an unhandled rejection: {unhandled}")
+    else:
+        log("no unhandled rejection from the idle prefetch")
     if state["boundary"]:
         fail(
             f"blocking the {CHUNK_FAIL} panel unmounted the app: the throw reached the "
