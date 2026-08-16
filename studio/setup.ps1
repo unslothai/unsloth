@@ -4910,7 +4910,9 @@ def _pep440_key(v):
     rest, _, loc = v[m.end():].partition('+')
     pre = post = dev = None
     # the implicit post release: a bare -N right after the release (1.0-1)
-    im = re.match(r'-(\d+)(?![a-z])', rest)
+    # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
+    # same version as 1.0-2.dev1 and must not collapse to 1.0's key
+    im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
     if im:
         post, rest = int(im.group(1)), rest[im.end():]
     # scanned from the left, never searched: a substring like the r in preview
@@ -4999,8 +5001,26 @@ if not damaged:
         if _min is not None and f.name not in _rewritten and st.st_size < _min:
             damaged = True
             break
-if not rows and not damaged and tops:
-    damaged = not all(importlib.util.find_spec(t) for t in tops if t)
+def _spec(n):
+    # find_spec raises when a name's parent package is missing: a negative answer,
+    # not an error to propagate
+    try:
+        return bool(n) and importlib.util.find_spec(n) is not None
+    except Exception:
+        return False
+if not rows and not damaged:
+    if tops:
+        damaged = not all(_spec(t) for t in tops if t)
+    elif not d_record:
+        # Nothing enumerates the payload: no RECORD at all (an interrupted install,
+        # or a distro/conda package that legitimately ships none, which the CLI
+        # mirror declines to judge) and no top_level.txt either. Rather than trust
+        # or condemn the metadata, validate positively through the distribution's
+        # own name as an import: an empty dist-info shell fails it, a package whose
+        # files are really on disk passes. Gated on the RECORD being ABSENT, not on
+        # rows being empty: a CLI-only wheel (py-spy) records just its console
+        # script and ships no importable module, and its RECORD already answered.
+        damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower())
 print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 '@
 $SkipPythonDeps = $false
@@ -5792,7 +5812,9 @@ def _pep440_key(v):
     rest, _, loc = v[m.end():].partition('+')
     pre = post = dev = None
     # the implicit post release: a bare -N right after the release (1.0-1)
-    im = re.match(r'-(\d+)(?![a-z])', rest)
+    # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
+    # same version as 1.0-2.dev1 and must not collapse to 1.0's key
+    im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
     if im:
         post, rest = int(im.group(1)), rest[im.end():]
     # scanned from the left, never searched: a substring like the r in preview
