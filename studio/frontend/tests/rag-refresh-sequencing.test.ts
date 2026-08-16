@@ -829,7 +829,7 @@ test("a background prompt queue checks the project it will send to", () => {
     thread,
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
   );
-  assert.match(thread, /\? await resolveProjectId\(threadId\)/);
+  assert.match(thread, /\? await resolveProjectId\(threadId, undefined, \{/);
   // Work in flight counts as well as rows: an upload has no row until it lands.
   assert.match(
     thread,
@@ -860,7 +860,7 @@ test("a queue in a chat with no row still waits on its project", () => {
   // The thread lookup stays the source of truth wherever there is a thread.
   assert.match(
     src,
-    /const projectId = threadId\s*\?\s*await resolveProjectId\(threadId\)\s*:\s*item\.target\.getQueueProjectId\(\);/,
+    /const projectId = threadId\s*\?\s*await resolveProjectId\(threadId, undefined, \{ rethrowReadFailure: true \}\)\s*:\s*item\.target\.getQueueProjectId\(\);/,
   );
   // And the thread-document read is still only made when there is a thread.
   assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
@@ -910,4 +910,34 @@ test("a failed project lookup leaves the scope unresolved", () => {
   // And unresolved still disables the attach controls.
   assert.match(bar, /const projectUnresolved = threadProjectId === undefined;/);
   assert.match(bar, /uploading \|\| projectUploading \|\| projectUnresolved/);
+});
+
+// A row the probe could not read is not a chat with no project. Answering null
+// there reports indexing as finished and dispatches the queued prompt, bypassing
+// the retry the surrounding catch exists for.
+test("a failed row read holds a queued prompt instead of releasing it", () => {
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(adapter, /opts\?: \{ rethrowReadFailure\?: boolean \}/);
+  assert.match(
+    adapter,
+    /\} catch \(error\) \{[\s\S]{0,200}?if \(opts\?\.rethrowReadFailure\) throw error;\s*return null;/,
+  );
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    thread,
+    /await resolveProjectId\(threadId, undefined, \{ rethrowReadFailure: true \}\)/,
+  );
+  // Every other caller keeps failing soft: they run on the send path, where a
+  // read failure must not adopt whichever project is on screen.
+  assert.equal(
+    (thread.match(/rethrowReadFailure/g) ?? []).length,
+    1,
+    "only the queue probe rethrows",
+  );
 });

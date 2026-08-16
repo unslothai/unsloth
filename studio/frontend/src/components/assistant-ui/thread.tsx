@@ -501,8 +501,10 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     // background has neither, so ask for the project directly. A chat still
     // waiting for its own row has no project to resolve, so the queue falls
     // back to the one it was started in.
+    // Rethrowing: a row this probe could not read is not a chat with no project,
+    // and the catch below is what holds the prompt and asks again.
     const projectId = threadId
-      ? await resolveProjectId(threadId)
+      ? await resolveProjectId(threadId, undefined, { rethrowReadFailure: true })
       : item.target.getQueueProjectId();
     if (!projectId) {
       return false;

@@ -1795,6 +1795,10 @@ function rememberComposerProjectForRun(
 export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  // A caller that gates on the answer (the prompt queue's indexing probe) has to
+  // tell "no project" from "could not read the row": the first is a reason to
+  // send, the second is a reason to wait and ask again.
+  opts?: { rethrowReadFailure?: boolean },
 ): Promise<string | null> {
   // Read before the await: a send survives navigation, so consulting the store
   // after the lookup could hand this request whichever project the user moved
@@ -1804,9 +1808,10 @@ export async function resolveProjectId(
     let thread: ThreadRecord | undefined;
     try {
       thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
-    } catch {
+    } catch (error) {
       // A failed lookup is not proof the row is missing, so it must not adopt
       // whichever project the composer last had open.
+      if (opts?.rethrowReadFailure) throw error;
       return null;
     }
     if (thread) {
