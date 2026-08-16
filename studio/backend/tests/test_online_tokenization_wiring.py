@@ -23,6 +23,10 @@ import pytest
 sys.path.insert(0, "studio/backend")
 
 datasets = pytest.importorskip("datasets")
+# These drive the real `UnslothTrainer._configure_online_tokenization`, and
+# importing the trainer imports torch. A runner without it must skip the module,
+# not fail collection and take the rest of the run down with it.
+pytest.importorskip("torch")
 
 from utils.datasets.online_tokenization import MIN_ROWS_FOR_ONLINE  # noqa: E402
 
@@ -144,6 +148,12 @@ def _run(
 ):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("UNSLOTH_STUDIO_ONLINE_TOKENIZATION", raising = False)
+    # Pin the installed TRL's hook, for the reason the gate tests pin it: these
+    # cover the wiring, not which TRL the runner happens to have.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
+        lambda: True,
+    )
     trainer = _fake_self(**(self_overrides or {}))
     config_args = _config_args(**(config_overrides or {}))
     wrapper = {"dataset": _dataset()} if wrapper is None else wrapper

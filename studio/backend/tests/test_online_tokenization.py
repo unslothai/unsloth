@@ -33,6 +33,7 @@ from utils.datasets.online_tokenization import (  # noqa: E402
     prewarm_batch_count,
     resolve_add_special_tokens,
     text_column_defect,
+    trl_supports_skip_prepare_dataset,
 )
 
 datasets = pytest.importorskip("datasets")
@@ -96,6 +97,14 @@ def _no_env_override(monkeypatch):
     # The gate refuses on spawn platforms; these tests describe Linux behaviour
     # and simulate the other platforms explicitly where that is the point.
     monkeypatch.setattr(sys, "platform", "linux")
+    # Same reason for the TRL hook: it is a property of the installed TRL, and
+    # the CPU test job installs none, so leaving it ambient makes every gate
+    # below report "no skip_prepare_dataset hook" instead of what it tests.
+    # The detector itself is covered directly, further down.
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
+        lambda: True,
+    )
 
 
 # ---------------------------------------------------------------- the happy path
@@ -285,6 +294,36 @@ def test_an_unset_start_method_falls_back_to_the_platform_default(monkeypatch):
 
     monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["forkserver"])
     assert not decide_online_tokenization(**_base_kwargs()).enabled
+
+
+def test_a_trl_without_the_hook_keeps_the_eager_path(monkeypatch):
+    """The veto the autouse fixture pins away, exercised on its own: without
+    `skip_prepare_dataset` TRL would run its own tokenizing map over the lazy
+    view, which is the whole pass the online path exists to avoid."""
+    monkeypatch.setattr(
+        "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
+        lambda: False,
+    )
+    decision = decide_online_tokenization(**_base_kwargs())
+    assert not decision.enabled
+    assert "skip_prepare_dataset" in decision.reason
+
+
+def test_the_hook_detector_reads_the_installed_trl(monkeypatch):
+    """No TRL at all means no SFT run, so the detector says no rather than
+    raising. A TRL whose `SFTConfig` has no `dataset_kwargs` field says no too:
+    the key would be silently dropped and TRL would tokenize the view."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_trl(name, *args, **kwargs):
+        if name == "trl" or name.startswith("trl."):
+            raise ImportError("No module named 'trl'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_trl)
+    assert trl_supports_skip_prepare_dataset() is False
 
 
 def test_too_few_workers_is_refused():
