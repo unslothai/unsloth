@@ -84,6 +84,7 @@ type Results = {
   streamEndedAtMs: number | null;
   longTaskMs: number;
   longTasks: number;
+  longTaskSupported: boolean;
   framesOver33ms: number;
   settledChars: number;
   done: boolean;
@@ -111,6 +112,7 @@ const state: Results = {
   streamEndedAtMs: null,
   longTaskMs: 0,
   longTasks: 0,
+  longTaskSupported: false,
   framesOver33ms: 0,
   settledChars: 0,
   done: false,
@@ -221,8 +223,17 @@ function Harness(): ReactElement {
       handle = requestAnimationFrame(watch);
     });
 
+    // `observe({type})` is specified to abort silently on an entry type the engine does not
+    // support, not to throw, so a try/catch around it never fires and the long-task total
+    // stays at its initial 0 -- a perfect score on the budget that matters most. Only
+    // supportedEntryTypes actually answers the question, and the answer is recorded so the
+    // driver can fail the run rather than report the zero. Chromium is the only engine that
+    // ships longtask (Gecko bug 1348405 open, WebKit never shipped it).
     let observer: PerformanceObserver | null = null;
-    try {
+    state.longTaskSupported =
+      typeof PerformanceObserver !== "undefined" &&
+      (PerformanceObserver.supportedEntryTypes ?? []).includes("longtask");
+    if (state.longTaskSupported) {
       observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
           state.longTasks += 1;
@@ -230,8 +241,6 @@ function Harness(): ReactElement {
         }
       });
       observer.observe({ type: "longtask", buffered: true });
-    } catch {
-      // Not supported here; the stall and frame numbers still answer.
     }
 
     window.__stream = {

@@ -29,6 +29,7 @@ HARNESSES = (
     "playwright_chat_autoscroll",
     "playwright_research_freeze",
     "playwright_strip_ansi_smoke",
+    "playwright_stream_pacing",
 )
 
 

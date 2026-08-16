@@ -25,6 +25,15 @@ length, so a comparison across different text says nothing.
 CPU throttling is not decoration. On a developer machine the renderer keeps up with
 any rate this can feed, so an unthrottled run measures nothing on either side.
 
+Chromium only, and deliberately. Both of the two things that make this a measurement are
+Chromium-only: `Emulation.setCPUThrottlingRate` is reached over CDP, which Playwright
+exposes for Chromium alone, and `longtask` PerformanceObserver entries exist in no other
+engine (Gecko bug 1348405 is open; WebKit has never shipped them). Neither one fails
+loudly on firefox or webkit -- `observe({type: "longtask"})` is specified to abort
+silently on an unsupported type rather than throw -- so the budgets would read a perfect
+zero instead of an error. The verdict below therefore refuses to pass a run that saw no
+long tasks at all, and the harness records whether the engine supported them.
+
 Run:
     python tests/studio/playwright_stream_pacing.py
 
@@ -51,9 +60,15 @@ from _playwright_robust import (  # noqa: E402
 )
 
 PORT = int(os.environ.get("SMOKE_PORT", "5186"))
-BASE = os.environ.get("SMOKE_BASE_URL", f"http://127.0.0.1:{PORT}")
-OWNS_SERVER = "SMOKE_BASE_URL" not in os.environ
-OUT = Path(os.environ.get("SMOKE_OUT_DIR", "."))
+# Unset: start and stop our own server. Set: drive that one and leave it running.
+# Exported-but-empty counts as unset, else we skip the server and drive "" as the URL.
+_EXTERNAL = os.environ.get("SMOKE_BASE_URL", "").strip()
+BASE = _EXTERNAL or f"http://127.0.0.1:{PORT}"
+OWNS_SERVER = not _EXTERNAL
+# Under logs/ like every sibling harness, and created up front. A default of "." would
+# drop an untracked stream-pacing.json in the repo root on every run; logs/ is already
+# gitignored, so the tree stays clean whether this runs in CI or on a developer machine.
+OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-stream-pacing"))
 LABEL = "stream-pacing"
 
 # The reply, and the rate it arrives at. Length is what the renderer's cost is
@@ -65,19 +80,29 @@ CHUNK_CHARS = int(os.environ.get("SMOKE_STREAM_CHUNK", "96"))
 GAP_MS = int(os.environ.get("SMOKE_STREAM_GAP_MS", "2"))
 THROTTLE = int(os.environ.get("SMOKE_STREAM_THROTTLE", "6"))
 
-# Budgets, not targets, and chosen against a regression rather than by feel. Reverting
-# #8750 (incremental Markdown parsing) in this harness moves them very differently:
+# Budgets, not targets, and chosen against real regressions rather than by feel. Two
+# merged fixes were reverted in this harness, on two different machines, and they move
+# the two numbers in opposite directions -- which is why there are two budgets and not
+# one headline metric.
 #
-#                          main    #8750 reverted
-#   long tasks           5,901ms          13,059ms
-#   long task count           49               144
-#   fully painted       20,810ms          25,676ms
-#   longest stall        1,050ms             967ms
+#                        main   #8750 reverted   #7892 reverted
+#   long tasks      5.0-8.0s      13.1s/74.4s        6.7-7.9s
+#   long task count    49-71          144/598           14-23
+#   longest stall   1.05-1.23s     0.97-1.40s        5.03-6.35s
 #
-# So the long-task total is the sensitive one and gets a budget that sits between the
-# two, with 1.7x headroom over main. The longest stall did NOT move, which is worth
-# knowing: it is kept as a coarse backstop for the freeze class of regression #7892 and
-# #8845 fixed, not as the number that catches a parse getting slower.
+# Reverting #8750 (incremental Markdown parsing) blows up the long-task total and leaves
+# the longest stall alone. Reverting #7892 (Streamdown's `animated` config, which keeps
+# block updates out of an interruptible transition) does the exact opposite: the stall
+# goes 4-5x while the long-task total stays inside the clean range. Neither budget is
+# decoration, and a single headline metric would have missed one of these two outright.
+#
+# On machine spread: the "main" column above is 5,029/5,901ms on one machine and
+# 6,687-8,003ms on another, so clean readings vary ~60% ACROSS boxes even though a
+# single box repeats to within ~15%. That is what keeps the CI step non-gating. The
+# 10,000ms budget is deliberately NOT raised for the extra headroom, because the same
+# two machines read the #8750 revert as 13,059ms and 74,353ms: a budget loose enough to
+# be comfortable on the slower box would stop catching that regression on the faster
+# one. Tighten or loosen this from observed runner numbers, not from one machine.
 MAX_LONGEST_STALL_MS = int(os.environ.get("SMOKE_STREAM_STALL_BUDGET_MS", "2500"))
 MAX_LONG_TASK_MS = int(os.environ.get("SMOKE_STREAM_LONG_TASK_BUDGET_MS", "10000"))
 
@@ -155,6 +180,7 @@ def main() -> int:
             info("vite stopped")
 
     out = OUT / f"{LABEL}.json"
+    out.parent.mkdir(parents = True, exist_ok = True)
     out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
     info(json.dumps(results, indent = 2))
     info(f"wrote {out}")
@@ -181,6 +207,25 @@ def main() -> int:
         failures.append(
             f"longest stall {results['longestStallMs']:.0f}ms exceeds "
             f"{MAX_LONGEST_STALL_MS}ms (the bubble stopped growing while text arrived)"
+        )
+    # The long-task total is the sensitive metric, so it is also the one that goes false-green
+    # most quietly: an engine without the longtask entry type, or an observer that stopped
+    # delivering, reports 0ms and sails under the budget. Neither raises. Same reasoning as the
+    # painted-characters floor above, and as the research harness asserting its own stall probe.
+    if not results.get("longTaskSupported"):
+        failures.append(
+            "this engine reports no longtask entries, so the long-task budget measured "
+            "nothing; run under Chromium"
+        )
+    elif results["longTasks"] <= 0:
+        failures.append(
+            "no long tasks were observed at all; the observer measured nothing, so the "
+            f"{MAX_LONG_TASK_MS}ms budget below would pass on any tree"
+        )
+    if results["cpu_throttle"] <= 1:
+        failures.append(
+            f"CPU throttling was {results['cpu_throttle']}x; unthrottled, the renderer keeps "
+            "up with any rate this can feed and the budgets measure nothing"
         )
     if results["longTaskMs"] > MAX_LONG_TASK_MS:
         failures.append(
