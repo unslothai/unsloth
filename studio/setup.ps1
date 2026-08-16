@@ -6028,97 +6028,120 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
             # scalar version kept tying compound suffixes (1.0a1.post1.dev1 with
             # 1.0a1.post1). Returns $null for anything that is not a PEP 440 version,
             # which leaves $_updateOk false: the warning outcome below, never a pass.
-            $_pepKey = {
-                param($_v)
-                # "$_v" not $_v ?? '': the null-coalescing operator is PowerShell 7
-                # syntax and this script is parsed by Windows PowerShell 5.1
-                $_s = "$_v".Trim()
-                $_s = ($_s -replace '^[vV]', '').ToLower()
-                $_ep = 0
-                if ($_s -match '^([0-9]+)!') { $_ep = [int]$Matches[1]; $_s = $_s.Substring($Matches[0].Length) }
-                # ASCII [0-9] throughout, never \d: .NET matches Unicode decimal digits
-                # with \d, and a non-version would parse as a release
-                if ($_s -notmatch '^[0-9]+(\.[0-9]+)*') { return $null }
-                $_relStr = $Matches[0]
-                $_s = $_s.Substring($_relStr.Length)
-                $_rel = [System.Collections.ArrayList]@()
-                foreach ($_seg in $_relStr.Split('.')) { [void]$_rel.Add([int]$_seg) }
-                while ($_rel.Count -gt 0 -and $_rel[$_rel.Count - 1] -eq 0) { $_rel.RemoveAt($_rel.Count - 1) }
-                # the local label is split off before the stage scan and never ranked
-                # here: PyPI forbids local versions, so the announced side never has one
-                $_loc = ''
-                $_plus = $_s.IndexOf('+')
-                if ($_plus -ge 0) {
-                    $_loc = $_s.Substring($_plus + 1)
-                    $_s = $_s.Substring(0, $_plus)
-                    if ($_loc -notmatch '^[a-z0-9]+([-._][a-z0-9]+)*$') { return $null }
-                }
-                $_pre = $null; $_post = $null; $_dev = $null; $_seen = 0
-                while ($_s) {
-                    # the implicit post release: a bare -N, valid after the release and
-                    # after a prerelease, with only dev allowed to follow it
-                    if ($_s -match '^-([0-9]+)($|[-._]|dev)') {
-                        if ($_seen -ge 2) { return $null }
-                        $_seen = 2; $_post = [int]$Matches[1]
-                        $_s = $_s.Substring(1 + $Matches[1].Length)
-                        continue
+            # Every number is [bigint]: PEP 440 bounds none of them, and an [int] cast
+            # on a release like 2147483648 would THROW under the script's
+            # ErrorActionPreference Stop -- a last-resort comparator must never be the
+            # thing that fails the update, which is also why the whole block is wrapped.
+            try {
+                $_pepKey = {
+                    param($_v)
+                    # "$_v" not $_v ?? '': the null-coalescing operator is PowerShell 7
+                    # syntax and this script is parsed by Windows PowerShell 5.1
+                    $_s = "$_v".Trim()
+                    $_s = ($_s -replace '^[vV]', '').ToLower()
+                    $_ep = [bigint]::Zero
+                    if ($_s -match '^([0-9]+)!') {
+                        $_ep = [bigint]::Parse($Matches[1])
+                        $_s = $_s.Substring($Matches[0].Length)
                     }
-                    if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)') { break }
-                    $_tok = $Matches[1]
-                    $_num = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
-                    $_rank = if ($_tok -eq 'dev') { 3 } elseif ($_tok -in @('post', 'rev', 'r')) { 2 } else { 1 }
-                    # PEP 440 allows each of pre, post and dev once, in that order
-                    if ($_rank -le $_seen) { return $null }
-                    $_seen = $_rank
-                    if ($_rank -eq 2) { $_post = $_num }
-                    elseif ($_rank -eq 3) { $_dev = $_num }
-                    else {
-                        $_stage = switch ($_tok) {
-                            { $_ -in @('a', 'alpha') } { 0; break }
-                            { $_ -in @('b', 'beta') } { 1; break }
-                            default { 2 }
+                    # ASCII [0-9] throughout, never \d: .NET matches Unicode decimal digits
+                    # with \d, and a non-version would parse as a release
+                    if ($_s -notmatch '^[0-9]+(\.[0-9]+)*') { return $null }
+                    $_relStr = $Matches[0]
+                    $_s = $_s.Substring($_relStr.Length)
+                    $_rel = [System.Collections.ArrayList]@()
+                    foreach ($_seg in $_relStr.Split('.')) { [void]$_rel.Add([bigint]::Parse($_seg)) }
+                    while ($_rel.Count -gt 0 -and $_rel[$_rel.Count - 1] -eq [bigint]::Zero) {
+                        $_rel.RemoveAt($_rel.Count - 1)
+                    }
+                    # the local label is split off before the stage scan and never ranked
+                    # here: PyPI forbids local versions, so the announced side never has one
+                    $_loc = ''
+                    $_plus = $_s.IndexOf('+')
+                    if ($_plus -ge 0) {
+                        $_loc = $_s.Substring($_plus + 1)
+                        $_s = $_s.Substring(0, $_plus)
+                        if ($_loc -notmatch '^[a-z0-9]+([-._][a-z0-9]+)*$') { return $null }
+                    }
+                    $_pre = $null; $_post = $null; $_dev = $null; $_seen = 0
+                    while ($_s) {
+                        # the implicit post release: a bare -N, valid after the release and
+                        # after a prerelease, with only dev allowed to follow it
+                        if ($_s -match '^-([0-9]+)($|[-._]|dev)') {
+                            if ($_seen -ge 2) { return $null }
+                            $_seen = 2; $_post = [bigint]::Parse($Matches[1])
+                            $_s = $_s.Substring(1 + $Matches[1].Length)
+                            continue
                         }
-                        $_pre = @($_stage, $_num)
+                        if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?([0-9]*)') { break }
+                        $_tok = $Matches[1]
+                        $_num = if ($Matches[2]) { [bigint]::Parse($Matches[2]) } else { [bigint]::Zero }
+                        $_rank = if ($_tok -eq 'dev') { 3 } elseif ($_tok -in @('post', 'rev', 'r')) { 2 } else { 1 }
+                        # PEP 440 allows each of pre, post and dev once, in that order
+                        if ($_rank -le $_seen) { return $null }
+                        $_seen = $_rank
+                        if ($_rank -eq 2) { $_post = $_num }
+                        elseif ($_rank -eq 3) { $_dev = $_num }
+                        else {
+                            $_stage = switch ($_tok) {
+                                { $_ -in @('a', 'alpha') } { 0; break }
+                                { $_ -in @('b', 'beta') } { 1; break }
+                                default { 2 }
+                            }
+                            $_pre = @([bigint]::Parse("$_stage"), $_num)
+                        }
+                        $_s = $_s.Substring($Matches[0].Length)
                     }
-                    $_s = $_s.Substring($Matches[0].Length)
-                }
-                # anything left over is not a version at all (999garbage)
-                if ($_s) { return $null }
-                if ($null -eq $_pre) {
-                    # an absent pre sorts ABOVE any pre unless this is a bare dev build
-                    $_pre = if ($null -eq $_post -and $null -ne $_dev) { @(-1, 0) } else { @(9, 0) }
-                }
-                # The release stays variable-length and is padded against the OTHER
-                # version at compare time: padding to a fixed width here would tie
-                # two versions that first differ past that width.
-                return @{
-                    Ep   = $_ep
-                    Rel  = $_rel.ToArray()
-                    Pre  = $_pre
-                    Post = $(if ($null -eq $_post) { -1 } else { $_post })
-                    # dev numbers are unbounded, so an absent dev needs a real infinity
-                    Dev  = $(if ($null -eq $_dev) { [double]::PositiveInfinity } else { [double]$_dev })
-                }
-            }
-            $_pk = & $_pepKey $PostVer
-            $_lk = & $_pepKey $LatestVer
-            if ($null -ne $_pk -and $null -ne $_lk) {
-                $_cmp = 0
-                if ($_pk.Ep -ne $_lk.Ep) { $_cmp = $(if ($_pk.Ep -gt $_lk.Ep) { 1 } else { -1 }) }
-                if ($_cmp -eq 0) {
-                    $_segs = [Math]::Max($_pk.Rel.Count, $_lk.Rel.Count)
-                    for ($_i = 0; $_i -lt $_segs; $_i++) {
-                        $_a = $(if ($_i -lt $_pk.Rel.Count) { $_pk.Rel[$_i] } else { 0 })
-                        $_b = $(if ($_i -lt $_lk.Rel.Count) { $_lk.Rel[$_i] } else { 0 })
-                        if ($_a -ne $_b) { $_cmp = $(if ($_a -gt $_b) { 1 } else { -1 }); break }
+                    # anything left over is not a version at all (999garbage)
+                    if ($_s) { return $null }
+                    if ($null -eq $_pre) {
+                        # an absent pre sorts ABOVE any pre unless this is a bare dev build
+                        $_pre = if ($null -eq $_post -and $null -ne $_dev) {
+                            @([bigint]::Parse("-1"), [bigint]::Zero)
+                        } else {
+                            @([bigint]::Parse("9"), [bigint]::Zero)
+                        }
+                    }
+                    # The release stays variable-length and is padded against the OTHER
+                    # version at compare time: padding to a fixed width here would tie
+                    # two versions that first differ past that width. Presence flags
+                    # instead of numeric sentinels -- an absent post sorts BELOW any
+                    # post, an absent dev ABOVE any dev, and no float has to mix with
+                    # the bigints.
+                    return @{
+                        Ep       = $_ep
+                        Rel      = $_rel.ToArray()
+                        Pre      = $_pre
+                        PostSet  = $(if ($null -eq $_post) { [bigint]::Zero } else { [bigint]::One })
+                        PostNum  = $(if ($null -eq $_post) { [bigint]::Zero } else { $_post })
+                        DevUnset = $(if ($null -eq $_dev) { [bigint]::One } else { [bigint]::Zero })
+                        DevNum   = $(if ($null -eq $_dev) { [bigint]::Zero } else { $_dev })
                     }
                 }
-                foreach ($_pair in @(@($_pk.Pre[0], $_lk.Pre[0]), @($_pk.Pre[1], $_lk.Pre[1]),
-                                     @($_pk.Post, $_lk.Post), @($_pk.Dev, $_lk.Dev))) {
-                    if ($_cmp -ne 0) { break }
-                    if ($_pair[0] -gt $_pair[1]) { $_cmp = 1 } elseif ($_pair[0] -lt $_pair[1]) { $_cmp = -1 }
+                $_pk = & $_pepKey $PostVer
+                $_lk = & $_pepKey $LatestVer
+                if ($null -ne $_pk -and $null -ne $_lk) {
+                    $_cmp = 0
+                    if ($_pk.Ep -ne $_lk.Ep) { $_cmp = $(if ($_pk.Ep -gt $_lk.Ep) { 1 } else { -1 }) }
+                    if ($_cmp -eq 0) {
+                        $_segs = [Math]::Max($_pk.Rel.Count, $_lk.Rel.Count)
+                        for ($_i = 0; $_i -lt $_segs; $_i++) {
+                            $_a = $(if ($_i -lt $_pk.Rel.Count) { $_pk.Rel[$_i] } else { [bigint]::Zero })
+                            $_b = $(if ($_i -lt $_lk.Rel.Count) { $_lk.Rel[$_i] } else { [bigint]::Zero })
+                            if ($_a -ne $_b) { $_cmp = $(if ($_a -gt $_b) { 1 } else { -1 }); break }
+                        }
+                    }
+                    foreach ($_pair in @(@($_pk.Pre[0], $_lk.Pre[0]), @($_pk.Pre[1], $_lk.Pre[1]),
+                                         @($_pk.PostSet, $_lk.PostSet), @($_pk.PostNum, $_lk.PostNum),
+                                         @($_pk.DevUnset, $_lk.DevUnset), @($_pk.DevNum, $_lk.DevNum))) {
+                        if ($_cmp -ne 0) { break }
+                        if ($_pair[0] -gt $_pair[1]) { $_cmp = 1 } elseif ($_pair[0] -lt $_pair[1]) { $_cmp = -1 }
+                    }
+                    $_updateOk = ($_cmp -ge 0)
                 }
-                $_updateOk = ($_cmp -ge 0)
+            } catch {
+                # inconclusive, never fatal
+                $_updateOk = $false
             }
         }
         if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
