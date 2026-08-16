@@ -599,6 +599,30 @@ def reset_long_tasks(page) -> None:
     page.evaluate("window.__longTasks.length = 0")
 
 
+def wait_for_highlighting_settled(page, timeout_ms: int) -> None:
+    """Block until Shiki has stopped adding tokens.
+
+    FIVE stable reads a quarter of a second apart, not two consecutive ones. Two adjacent
+    rAF-polled reads land inside the lull between two async highlight batches all the time:
+    measured on WebKit, a two-read version released the gate at 577 highlighted tokens where the
+    finished thread has 3216, so the whole engine column was measured against a thread that was
+    still building itself.
+    """
+    page.evaluate("() => { window.__hvTokens = undefined; }")
+    page.wait_for_function(
+        """() => {
+            const n = window.__heavyThread.highlightedTokenCount();
+            const state = window.__hvTokens || { value: -1, stable: 0 };
+            if (n === state.value && n > 0) state.stable += 1;
+            else { state.value = n; state.stable = 0; }
+            window.__hvTokens = state;
+            return state.stable >= 5;
+        }""",
+        polling = 250,
+        timeout = timeout_ms,
+    )
+
+
 def run_action(page, cdp, name: str, script: str, arg) -> dict:
     """One action, with the portable recorder inside it and the CDP counters bracketing it."""
     reset_long_tasks(page)
@@ -618,6 +642,12 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
 def one_repetition(page, cdp) -> dict[str, dict]:
     """The five scripted actions, once, in the order a user meets them."""
     rep: dict[str, dict] = {}
+    # The previous repetition ended by re-opening the thread, which throws away every highlighted
+    # fence and starts Shiki again. Without this wait, repetitions 2 and 3 measure a thread that
+    # is still building itself: measured on Chromium at 300K, the scroll gesture read 667ms on
+    # the first repetition and 1100ms on the two that followed, and the difference was the
+    # re-highlighting, not the scroll.
+    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
     # Re-open unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so
     # without this every repetition after the first would run against a thread with no tool
     # result panes in it -- a different, cheaper fixture wearing the same label. Idempotent: on
@@ -760,24 +790,7 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Shiki is async and per block, and a <pre> exists before it is highlighted, so counting
         # code blocks gates nothing. Wait for the token count to stop moving instead: unfinished
         # highlighting would otherwise land in the keystroke window, the first action measured.
-        #
-        # FIVE stable reads a quarter of a second apart, not two consecutive ones. Two adjacent
-        # rAF-polled reads land inside the lull between two async highlight batches all the time:
-        # measured on WebKit, the two-read version released the gate at 577 highlighted tokens
-        # where the finished thread has 3216, so the whole engine column was measured against a
-        # thread that was still building itself.
-        page.wait_for_function(
-            """() => {
-                const n = window.__heavyThread.highlightedTokenCount();
-                const state = window.__hvTokens || { value: -1, stable: 0 };
-                if (n === state.value && n > 0) state.stable += 1;
-                else { state.value = n; state.stable = 0; }
-                window.__hvTokens = state;
-                return state.stable >= 5;
-            }""",
-            polling = 250,
-            timeout = SEED_TIMEOUT_MS,
-        )
+        wait_for_highlighting_settled(page, SEED_TIMEOUT_MS)
         result["counts"] = page.evaluate("window.__heavyThread.counts()")
         result["viewport"] = page.evaluate("window.__heavyThread.viewportMetrics()")
         result["seed_api_requests"] = len(stray_requests)
@@ -1012,6 +1025,10 @@ GROWTH_AXES = tuple(
 # to twelve times the content. That is not a flat curve, it is an axis that is not measuring the
 # thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
+# Constant engine chatter is tolerated up to this many warnings per size; anything above it, or
+# any count that rises with the thread, fails the run. Gecko's two scroll-anchoring notices are
+# what this number exists for.
+CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "2"))
 
 
 def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | None, float | None]:
@@ -1102,10 +1119,26 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     f"{where} let {row['stray_api_requests']} /api/ requests reach the network "
                     "during the measured actions; the timings include a round trip per request"
                 )
-            if row["console_warnings"]:
+            # A warning count that GROWS with the thread is the app talking, once per message,
+            # and it is serialised over the debugging channel from inside a timed region, so it
+            # would forge the curve. A count that is identical at every size is the engine
+            # talking about itself: Firefox 153 emits exactly two "Scroll anchoring was disabled
+            # in a scroll container" notices per run, at 25K and at 300K alike, and failing on
+            # those would mean this harness could never report a Gecko number at all. Both are
+            # printed either way.
+            smallest = results["by_engine"][engine]["by_size"][str(results["sizes"][0])]
+            if row["console_warnings"] > smallest["console_warnings"]:
                 failures.append(
                     f"{where} logged {row['console_warnings']} console warnings during the "
-                    f"measured actions, the first being {row['first_console_warning']!r}"
+                    f"measured actions against {smallest['console_warnings']} at the smallest "
+                    f"size, the first being {row['first_console_warning']!r}; a count that grows "
+                    "with the thread is charged to the app once per message"
+                )
+            elif row["console_warnings"] > CONSOLE_WARNING_ALLOWANCE:
+                failures.append(
+                    f"{where} logged {row['console_warnings']} console warnings during the "
+                    f"measured actions, the first being {row['first_console_warning']!r}; that is "
+                    f"more than the {CONSOLE_WARNING_ALLOWANCE} allowed for engine chatter"
                 )
             if plan["chars"] < size * 0.9:
                 failures.append(
