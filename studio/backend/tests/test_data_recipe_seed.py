@@ -230,7 +230,12 @@ class _BlockPlugin:
         self.name = name
         self.attempts = 0
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname == self.name or fullname.startswith(self.name + "."):
             self.attempts += 1
             raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
