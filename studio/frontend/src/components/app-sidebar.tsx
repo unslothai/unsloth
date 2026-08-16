@@ -1602,6 +1602,11 @@ export function AppSidebar() {
     projectsOpen,
     projectChatRowCount,
     visibleProjectRecords.length,
+    // Pinning a project chat adds a Pinned row while Recents and the folder
+    // counts both stay put, so nothing else here moves.
+    pinnedChatItems.length,
+    // And with no chats in them, folders appear and disappear on their own.
+    organizeBy,
   ]);
 
   // Resizing changes clientHeight without firing onScroll, so the fade would
