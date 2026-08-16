@@ -330,15 +330,23 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     return result
 
 
+def deferred_nudge_text(msgs: Sequence[dict]) -> str:
+    """Join a batch's no-op nudges into one deduped body.
+
+    Callers that keep the feedback inside the tool exchange need the text
+    without the ``role=user`` wrapper, so both forms stay in sync here.
+    """
+    return "\n\n".join(dict.fromkeys(msg["content"] for msg in msgs))
+
+
 def append_deferred_nudges(conversation: list, msgs: Sequence[dict]) -> None:
     """Append a batch's no-op nudges as one deduped ``role=user`` message.
 
     Deferred to after the batch's tool results so a no-op never splits an
     assistant's ``tool_calls`` from their ``role=tool`` results.
     """
-    contents = list(dict.fromkeys(msg["content"] for msg in msgs))
-    if contents:
-        conversation.append({"role": "user", "content": "\n\n".join(contents)})
+    if msgs:
+        conversation.append({"role": "user", "content": deferred_nudge_text(msgs)})
 
 
 def _tool_name_from_schema(tool: Mapping[str, Any]) -> str:
