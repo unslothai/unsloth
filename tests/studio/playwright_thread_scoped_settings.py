@@ -222,8 +222,9 @@ def unload_any_model(page, token):
     loaded = status.get("model_identifier") or (status.get("loaded") or [None])[0]
     if not loaded:
         return
-    print(f"[thread-settings] unloading {loaded!r} so the pills are not capability-gated",
-          flush = True)
+    print(
+        f"[thread-settings] unloading {loaded!r} so the pills are not capability-gated", flush = True
+    )
     page.evaluate(
         """async ({ base, token, modelPath }) => {
             await fetch(base + "/api/inference/unload", {
