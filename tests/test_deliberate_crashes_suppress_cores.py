@@ -160,6 +160,19 @@ def _called_name(node):
     return None
 
 
+_LIBC_NAMES = ("CDLL", "cdll", "ctypes", "libc", "LibC")
+
+
+def _is_libc_handle(node) -> bool:
+    """Whether this expression is a real libc handle, not a stand-in named like one."""
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Name) and inner.id in _LIBC_NAMES:
+            return True
+        if isinstance(inner, ast.Attribute) and inner.attr in _LIBC_NAMES:
+            return True
+    return False
+
+
 def _prctl_dumpable_value(node):
     """The value a prctl(PR_SET_DUMPABLE, v, ...) call sets, else None.
 
@@ -167,6 +180,10 @@ def _prctl_dumpable_value(node):
     PR_SET_DUMPABLE call as suppression would bless a crash that still dumps.
     """
     if _called_name(node) != "prctl" or len(node.args) < 2:
+        return None
+    # The receiver matters: a test's `fake.prctl(4, 1)` mock touches no kernel state, and
+    # crediting it let a mock override the real suppression on the line above.
+    if not isinstance(node.func, ast.Attribute) or not _is_libc_handle(node.func.value):
         return None
     cmd, value = node.args[0], node.args[1]
     cmd_ok = (isinstance(cmd, ast.Constant) and cmd.value == _PR_SET_DUMPABLE) or (
@@ -504,6 +521,7 @@ def _dumpable_writes(
     scope,
     certain = True,
     functions = None,
+    shadowed = (),
 ):
     """`(position, value, certain)` for each prctl dumpability write on this path.
 
@@ -514,7 +532,7 @@ def _dumpable_writes(
     def written(node):
         value = _prctl_dumpable_value(node)
         if value is None and functions is not None:
-            value = _helper_leaves_dumpable(node, scope, functions)
+            value = _helper_leaves_dumpable(node, scope, functions, shadowed)
         return value
 
     for child, child_certain in _child_paths(scope, certain):
@@ -523,16 +541,21 @@ def _dumpable_writes(
             for part in _definition_time(child):
                 if isinstance(part, ast.Call) and written(part) is not None:
                     yield _position(part), written(part), child_certain
-                yield from _dumpable_writes(part, child_certain, functions)
+                yield from _dumpable_writes(part, child_certain, functions, shadowed)
             continue
         if isinstance(child, ast.Call):
             value = written(child)
             if value is not None:
                 yield _position(child), value, child_certain
-        yield from _dumpable_writes(child, child_certain, functions)
+        yield from _dumpable_writes(child, child_certain, functions, shadowed)
 
 
-def _helper_leaves_dumpable(call, scope, functions):
+def _helper_leaves_dumpable(
+    call,
+    scope,
+    functions,
+    shadowed = (),
+):
     """What a bare call to a local helper leaves dumpability at, else None."""
     # Bare calls only, as in _suppressed: `obj.restore()` shares its trailing name with
     # a local `def restore` but need not be it.
@@ -541,10 +564,17 @@ def _helper_leaves_dumpable(call, scope, functions):
     target = functions.get(call.func.id)
     if target is None:
         return None
+    # A local `restore = lambda: None` before the call is not the module-level helper.
+    if call.func.id in shadowed:
+        return None
     # Calling an `async def` builds a coroutine and runs none of its body.
     if isinstance(target, ast.AsyncFunctionDef) and not _is_awaited(call, scope):
         return None
-    writes = [w for w in _dumpable_writes(target) if w[2] or w[1] == 0]
+    # Body only: a default or decorator on the helper ran at definition time, so it is
+    # not something calling the helper does again.
+    writes = [
+        w for statement in target.body for w in _dumpable_writes(statement) if w[2] or w[1] == 0
+    ]
     return writes[-1][1] if writes else None
 
 
@@ -559,7 +589,13 @@ def _clears_dumpable_before(
     Order matters. Suppression placed after the fault does nothing, so accepting it
     anywhere in the scope blessed a child that still dumps.
     """
-    writes = sorted(w for w in _dumpable_writes(scope, functions = functions) if w[0] < position)
+    # A name this scope rebinds itself is not the module-level helper of that name.
+    shadowed = _rebound_names(scope) if hasattr(scope, "body") else ()
+    writes = sorted(
+        w
+        for w in _dumpable_writes(scope, functions = functions, shadowed = shadowed)
+        if w[0] < position
+    )
     # Only a write that certainly runs decides: a conditional restore may never run.
     # A conditional clear still counts: platform-guarded prctl is the documented shape.
     decisive = [w for w in writes if w[2] or w[1] == 0]
@@ -1296,6 +1332,25 @@ _FIXTURES = {
         "    gen = (ctypes.CDLL(None).prctl(4, 1, 0, 0, 0) for _ in range(1))\n"
         "    ctypes.string_at(0)\n",
         False,  # a generator body does not run at construction
+    ),
+    "mocked_prctl_on_an_unrelated_object": (
+        "import ctypes\n"
+        "def child(fake):\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    fake.prctl(4, 1)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # a mock named prctl touches no kernel state
+    ),
+    "local_rebinding_of_a_helper_name": (
+        "import ctypes\n"
+        "def restore():\n"
+        "    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)\n"
+        "def child():\n"
+        "    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n"
+        "    restore = lambda: None\n"
+        "    restore()\n"
+        "    ctypes.string_at(0)\n",
+        False,  # the local binding is not the module-level helper
     ),
 }
 
