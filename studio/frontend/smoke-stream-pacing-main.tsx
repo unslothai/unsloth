@@ -177,7 +177,11 @@ function Harness(): ReactElement {
     let settledChars = 0;
     let quietFrames = 0;
     let handle = requestAnimationFrame(function watch(now: number) {
-      if (lastFrameAt && now - lastFrameAt > 33) {
+      // Slow frames only count inside the measurement window, for the same reason long
+      // tasks do: a frame the page dropped while loading is not the renderer's. Measured
+      // at 0 of 286 here, but an external server or a slower box need not be 0, and this
+      // number is meant to be comparable across both.
+      if (now >= measureFrom && lastFrameAt && now - lastFrameAt > 33) {
         state.framesOver33ms += 1;
       }
       lastFrameAt = now;
@@ -207,7 +211,12 @@ function Harness(): ReactElement {
           } else {
             quietFrames += 1;
             if (quietFrames >= SETTLED_FRAMES) {
-              state.settledChars = settledChars;
+              // What is on screen at settlement, not the high-water mark. paintedChars
+              // only ever climbs, so a completion render that truncates the bubble leaves
+              // the peak behind and the workload floor would pass on a DOM that no longer
+              // holds the reply. This is the length the driver checks. Measured equal to
+              // the peak (24,033 both) today, so it is a guard, not a live discrepancy.
+              state.settledChars = painted;
               state.timeToFullyPaintedMs = now - state.startedAt;
               state.done = true;
             }
@@ -253,6 +262,7 @@ function Harness(): ReactElement {
         measureFrom = performance.now();
         state.longTaskMs = 0;
         state.longTasks = 0;
+        state.framesOver33ms = 0;
         void runtime.thread.append({
           role: "user",
           content: [{ type: "text", text: "stream the fixture" }],

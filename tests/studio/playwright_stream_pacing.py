@@ -192,6 +192,15 @@ def main() -> int:
             f"only {results['paintedChars']} characters painted of {TOTAL_CHARS} sent "
             f"(floor {floor}); the budgets below measured no workload"
         )
+    # paintedChars is a high-water mark, so it stays high even if the completion render
+    # truncates the bubble. settledChars is what was actually on screen when the reply
+    # settled, which is the DOM a reader would be left looking at.
+    if results["settledChars"] < floor:
+        failures.append(
+            f"the reply settled at {results['settledChars']} characters of {TOTAL_CHARS} "
+            f"sent (floor {floor}); it peaked at {results['paintedChars']} and then lost "
+            "content, so the final render is incomplete"
+        )
     if results["arrivals"] < TOTAL_CHARS // CHUNK_CHARS:
         failures.append(
             f"only {results['arrivals']} arrivals for {TOTAL_CHARS} characters; "
