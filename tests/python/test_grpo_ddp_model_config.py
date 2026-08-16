@@ -45,7 +45,15 @@ def test_detect_logit_transforms_reads_the_unwrapped_config():
 
 
 def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
-    """Behavioural counterpart: prove the wrapper really does hide .config."""
+    """Behavioural counterpart: the resolved config must yield the transforms.
+
+    Deliberately does not assert what the helper does with the *bare* wrapper.
+    Older unsloth_zoo only did ``getattr(x, "config", x)`` and reported nothing;
+    newer versions unwrap ``.module`` / ``._orig_mod`` themselves. Both are fine,
+    and pinning either would make this test track the zoo's internals. What must
+    hold on every version is that the config we resolve and pass in is the one
+    the transforms come back from, which is why the call sites pass model_config.
+    """
     torch = __import__("importlib").import_module("torch")
     transformers = __import__("importlib").import_module("transformers")
     planner = __import__("importlib").import_module("unsloth_zoo.device_map_planner")
@@ -67,11 +75,11 @@ def test_detect_logit_transforms_zeroes_out_on_a_wrapped_model():
 
     inner = _Inner()
     wrapped = _Wrapper(inner)
+    # The wrapper itself exposes no .config, which is the whole reason the
+    # call sites have to resolve it before handing it over.
     assert not hasattr(wrapped, "config")
-    # The bare wrapper hides the config, so the helper finds nothing.
-    assert detect(wrapped)["logit_softcapping"] == 0.0
-    # Unwrapped through the helper the real value comes back.
     config = _unsloth_get_model_config_reference(wrapped)
+    assert config is inner.config
     assert detect(config)["logit_softcapping"] == inner.config.final_logit_softcapping
 
 
