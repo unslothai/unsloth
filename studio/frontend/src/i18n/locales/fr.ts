@@ -112,6 +112,14 @@ export const fr = {
       backToChat: "Retour à la discussion",
     },
     selection: {
+      pinProjects: "Épingler les projets",
+      unpinProjects: "Détacher les projets",
+      deleteProjects: "Supprimer les projets",
+      deleteProjectsTitle: "Supprimer les projets",
+      deleteProjectsDescription:
+        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+      deleteProjectsFilesDescription:
+        "Le dossier de travail de chaque projet est retiré du disque.",
       countSelected: "{count} sélectionnés",
       pinChats: "Épingler les discussions",
       unpinChats: "Détacher les discussions",
@@ -749,9 +757,6 @@ export const fr = {
         compactSidebar: "Épingler la barre latérale par défaut",
         compactSidebarDescription:
           "Garder la barre latérale déployée au lieu de la réduire en icônes.",
-        projectsSection: "Afficher la section Projets",
-        projectsSectionDescription:
-          "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       },
       sidebarNav: {
         title: "Navigation de la barre latérale",
@@ -998,6 +1003,9 @@ export const fr = {
       },
     },
     chat: {
+      projectsSection: "Afficher la section Projets",
+      projectsSectionDescription:
+        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {

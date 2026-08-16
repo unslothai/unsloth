@@ -76,6 +76,14 @@ export const it = {
       backToChat: "Torna alla chat",
     },
     selection: {
+      pinProjects: "Fissa i progetti",
+      unpinProjects: "Rimuovi i progetti fissati",
+      deleteProjects: "Elimina i progetti",
+      deleteProjectsTitle: "Elimina i progetti",
+      deleteProjectsDescription:
+        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+      deleteProjectsFilesDescription:
+        "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
       countSelected: "{count} selezionate",
       pinChats: "Fissa le chat",
       unpinChats: "Rimuovi le chat fissate",
@@ -716,9 +724,6 @@ export const it = {
         compactSidebar: "Fissa la barra laterale per impostazione predefinita",
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
-        projectsSection: "Mostra la sezione Progetti",
-        projectsSectionDescription:
-          "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       },
       sidebarNav: {
         title: "Navigazione della barra laterale",
@@ -965,6 +970,9 @@ export const it = {
       },
     },
     chat: {
+      projectsSection: "Mostra la sezione Progetti",
+      projectsSectionDescription:
+        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",

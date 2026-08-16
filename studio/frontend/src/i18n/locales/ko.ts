@@ -109,6 +109,14 @@ export const ko = {
       backToChat: "채팅으로 돌아가기",
     },
     selection: {
+      pinProjects: "프로젝트 고정",
+      unpinProjects: "프로젝트 고정 해제",
+      deleteProjects: "프로젝트 삭제",
+      deleteProjectsTitle: "프로젝트 삭제",
+      deleteProjectsDescription:
+        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+      deleteProjectsFilesDescription:
+        "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
       countSelected: "{count}개 선택됨",
       pinChats: "채팅 고정",
       unpinChats: "채팅 고정 해제",
@@ -724,9 +732,6 @@ export const ko = {
         compactSidebar: "기본적으로 사이드바 고정",
         compactSidebarDescription:
           "사이드바를 아이콘으로 접지 않고 펼친 상태로 유지합니다.",
-        projectsSection: "프로젝트 섹션 표시",
-        projectsSectionDescription:
-          "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       },
       sidebarNav: {
         title: "사이드바 탐색",
@@ -964,6 +969,9 @@ export const ko = {
       },
     },
     chat: {
+      projectsSection: "프로젝트 섹션 표시",
+      projectsSectionDescription:
+        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {

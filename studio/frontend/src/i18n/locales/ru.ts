@@ -111,6 +111,14 @@ export const ru = {
       backToChat: "Вернуться к чату",
     },
     selection: {
+      pinProjects: "Закрепить проекты",
+      unpinProjects: "Открепить проекты",
+      deleteProjects: "Удалить проекты",
+      deleteProjectsTitle: "Удалить проекты",
+      deleteProjectsDescription:
+        "Удалить проекты ({count})? Их чаты будут удалены безвозвратно.",
+      deleteProjectsFilesDescription:
+        "Рабочая папка каждого проекта удаляется с диска.",
       countSelected: "Выбрано: {count}",
       pinChats: "Закрепить чаты",
       unpinChats: "Открепить чаты",
@@ -730,9 +738,6 @@ export const ru = {
         compactSidebar: "Закреплять боковую панель по умолчанию",
         compactSidebarDescription:
           "Держать боковую панель развёрнутой, а не свёрнутой в значки.",
-        projectsSection: "Показывать раздел «Проекты»",
-        projectsSectionDescription:
-          "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",
       },
       sidebarNav: {
         title: "Навигация боковой панели",
@@ -977,6 +982,9 @@ export const ru = {
       },
     },
     chat: {
+      projectsSection: "Показывать раздел «Проекты»",
+      projectsSectionDescription:
+        "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",
       title: "Чат",
       description: "Настройка поведения чата на этом устройстве.",
       modelSelection: {

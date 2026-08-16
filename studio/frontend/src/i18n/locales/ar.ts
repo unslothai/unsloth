@@ -109,6 +109,14 @@ export const ar = {
       backToChat: "العودة إلى المحادثة",
     },
     selection: {
+      pinProjects: "تثبيت المشاريع",
+      unpinProjects: "إلغاء تثبيت المشاريع",
+      deleteProjects: "حذف المشاريع",
+      deleteProjectsTitle: "حذف المشاريع",
+      deleteProjectsDescription:
+        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+      deleteProjectsFilesDescription:
+        "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
       countSelected: "{count} محددة",
       pinChats: "تثبيت المحادثات",
       unpinChats: "إلغاء تثبيت المحادثات",
@@ -727,9 +735,6 @@ export const ar = {
         compactSidebar: "تثبيت الشريط الجانبي افتراضيًا",
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
-        projectsSection: "إظهار قسم المشاريع",
-        projectsSectionDescription:
-          "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       },
       sidebarNav: {
         title: "التنقّل في الشريط الجانبي",
@@ -966,6 +971,9 @@ export const ar = {
       },
     },
     chat: {
+      projectsSection: "إظهار قسم المشاريع",
+      projectsSectionDescription:
+        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {

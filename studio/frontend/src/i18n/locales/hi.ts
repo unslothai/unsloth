@@ -112,6 +112,14 @@ export const hi = {
       backToChat: "चैट पर वापस जाएँ",
     },
     selection: {
+      pinProjects: "प्रोजेक्ट पिन करें",
+      unpinProjects: "प्रोजेक्ट अनपिन करें",
+      deleteProjects: "प्रोजेक्ट हटाएँ",
+      deleteProjectsTitle: "प्रोजेक्ट हटाएँ",
+      deleteProjectsDescription:
+        "{count} प्रोजेक्ट हटाएँ? उनकी चैट स्थायी रूप से हट जाएँगी।",
+      deleteProjectsFilesDescription:
+        "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
       countSelected: "{count} चुने गए",
       pinChats: "चैट पिन करें",
       unpinChats: "चैट अनपिन करें",
@@ -730,9 +738,6 @@ export const hi = {
         compactSidebar: "साइडबार को डिफ़ॉल्ट रूप से पिन करें",
         compactSidebarDescription:
           "साइडबार को आइकन में संक्षिप्त करने के बजाय विस्तारित रखें।",
-        projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
-        projectsSectionDescription:
-          "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       },
       sidebarNav: {
         title: "साइडबार नेविगेशन",
@@ -972,6 +977,9 @@ export const hi = {
       },
     },
     chat: {
+      projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
+      projectsSectionDescription:
+        "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       title: "चैट",
       description: "इस डिवाइस पर चैट के व्यवहार को अपनी पसंद के अनुसार बदलें।",
       modelSelection: {

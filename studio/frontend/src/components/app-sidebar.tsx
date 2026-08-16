@@ -1232,20 +1232,34 @@ export function AppSidebar() {
   );
   const selectionCount = selectedChatItems.length;
 
+  // Projects select separately: a mixed selection has no shared bulk action,
+  // so picking one kind drops the other.
+  const [selectedProjectIds, setSelectedProjectIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const projectAnchorRef = useRef<string | null>(null);
+  const selectedProjectRecords = useMemo(
+    () => projects.filter((project) => selectedProjectIds.has(project.id)),
+    [projects, selectedProjectIds],
+  );
+  const projectSelectionCount = selectedProjectRecords.length;
+
   const clearSelection = useCallback(() => {
     selectionAnchorRef.current = null;
+    projectAnchorRef.current = null;
     setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+    setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
   }, []);
 
   // Escape is the way out of a selection, as it is for the menus.
   useEffect(() => {
-    if (selectionCount === 0) return;
+    if (selectionCount === 0 && projectSelectionCount === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") clearSelection();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectionCount, clearSelection]);
+  }, [selectionCount, projectSelectionCount, clearSelection]);
 
   /** True when the click was a selection gesture, so the row must not navigate. */
   function handleSelectionClick(
@@ -1253,6 +1267,7 @@ export function AppSidebar() {
     item: SidebarItem,
     list: { scope: string; ids: string[] },
   ): boolean {
+    setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
     if (SELECT_WITH_META ? event.metaKey : event.ctrlKey) {
       setSelectedChatIds((prev) => toggleSelected(prev, item.id));
       selectionAnchorRef.current = { scope: list.scope, id: item.id };
@@ -1281,6 +1296,56 @@ export function AppSidebar() {
     if (selectedChatIds.has(item.id)) return;
     selectionAnchorRef.current = { scope: list.scope, id: item.id };
     setSelectedChatIds(new Set([item.id]));
+  }
+
+  /** True when the click selected folders instead of opening one. */
+  function handleProjectSelectionClick(
+    event: React.MouseEvent,
+    projectId: string,
+  ): boolean {
+    const additive = SELECT_WITH_META ? event.metaKey : event.ctrlKey;
+    if (!additive && !event.shiftKey) return false;
+    setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+    if (additive) {
+      setSelectedProjectIds((prev) => toggleSelected(prev, projectId));
+      projectAnchorRef.current = projectId;
+      return true;
+    }
+    const anchorId = projectAnchorRef.current;
+    if (!anchorId) projectAnchorRef.current = projectId;
+    setSelectedProjectIds(
+      new Set(
+        anchorId ? rangeBetween(projectRowIds, anchorId, projectId) : [projectId],
+      ),
+    );
+    return true;
+  }
+
+  function selectProjectForContextMenu(projectId: string) {
+    if (selectedProjectIds.has(projectId)) return;
+    setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+    projectAnchorRef.current = projectId;
+    setSelectedProjectIds(new Set([projectId]));
+  }
+
+  const allSelectedProjectsPinned =
+    projectSelectionCount > 0 &&
+    selectedProjectRecords.every((project) =>
+      pinnedProjectIdSet.has(project.id),
+    );
+
+  function pinSelectedProjects(pinned: boolean) {
+    for (const project of selectedProjectRecords) {
+      if (pinnedProjectIdSet.has(project.id) !== pinned) {
+        toggleProjectPin(project.id);
+      }
+    }
+    clearSelection();
+  }
+
+  function deleteSelectedProjects() {
+    if (projectSelectionCount === 0) return;
+    openDeleteDialog({ kind: "projects", projects: selectedProjectRecords });
   }
 
   const allSelectedPinned =
@@ -1951,6 +2016,7 @@ export function AppSidebar() {
     | { kind: "chat"; item: SidebarItem }
     | { kind: "chats"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
+    | { kind: "projects"; projects: ProjectRecord[] }
     | { kind: "run"; run: TrainingRunSummary };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
@@ -1971,18 +2037,15 @@ export function AppSidebar() {
    *  its own folder, and deletion never touches the project workspace. */
   function deleteTargetHasFiles(target: DeleteTarget | null): boolean {
     if (!target) return false;
-    return (
-      target.kind === "project" ||
-      target.kind === "chat" ||
-      target.kind === "chats"
-    );
+    return target.kind !== "run";
   }
 
   async function commitDelete() {
     const target = confirmingDelete;
     if (!target) return;
     const shouldDeleteProjectFiles =
-      target.kind === "project" && deleteFilesOnDelete;
+      (target.kind === "project" || target.kind === "projects") &&
+      deleteFilesOnDelete;
     const shouldDeleteChatFiles =
       (target.kind === "chat" || target.kind === "chats") && deleteFilesOnDelete;
     setConfirmingDelete(null);
@@ -2001,6 +2064,21 @@ export function AppSidebar() {
         await deleteChatWithCleanup(item, {
           deleteFiles: shouldDeleteChatFiles,
         });
+      }
+      return;
+    }
+    if (target.kind === "projects") {
+      clearSelection();
+      for (const project of target.projects) {
+        try {
+          await deleteChatProject(project.id, {
+            deleteFiles: shouldDeleteProjectFiles,
+          });
+        } catch (err) {
+          toast.error("Failed to delete project", {
+            description: err instanceof Error ? err.message : undefined,
+          });
+        }
       }
       return;
     }
@@ -2168,6 +2246,40 @@ export function AppSidebar() {
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
+    );
+  }
+
+  /** Bulk actions for selected folders, on right-click of any project row. */
+  function renderProjectContextMenu() {
+    if (projectSelectionCount === 0) return null;
+    return (
+      <ContextMenuContent className="unsloth-plus-menu menu-flat-destructive w-52">
+        {projectSelectionCount > 1 && (
+          <ContextMenuLabel>
+            {t("shell.selection.countSelected", {
+              count: projectSelectionCount,
+            })}
+          </ContextMenuLabel>
+        )}
+        <ContextMenuItem
+          onSelect={() => pinSelectedProjects(!allSelectedProjectsPinned)}
+        >
+          <HugeiconsIcon icon={allSelectedProjectsPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+          <span>
+            {allSelectedProjectsPinned
+              ? t("shell.selection.unpinProjects")
+              : t("shell.selection.pinProjects")}
+          </span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          variant="destructive"
+          onSelect={() => deleteSelectedProjects()}
+        >
+          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+          <span>{t("shell.selection.deleteProjects")}</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
     );
   }
 
@@ -3161,111 +3273,131 @@ export function AppSidebar() {
                         return (
                         <Fragment key={project.id}>
                         {/* Folders drag to reorder whatever the chat sort is. */}
-                        <SidebarMenuItem
-                          className={cn(
-                            "group/recent-item relative",
-                            draggingRow?.id === project.id && "opacity-50",
-                            dropCueClass(
-                              PROJECT_ORDER_SCOPE,
-                              projectRowIds,
-                              project.id,
-                            ),
-                          )}
-                          {...rowDragProps(
-                            PROJECT_ORDER_SCOPE,
-                            projectRowIds,
-                            project.id,
-                          )}
-                        >
-                          <SidebarMenuButton
-                            // Highlight the folder only on the project home; with a chat open, only that row is active.
-                            isActive={activeProjectId === project.id && !activeThreadId}
-                            onClick={() => toggleProjectCollapsed(project.id)}
-                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
-                          >
-                            <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
-                            <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
-                          </SidebarMenuButton>
-                          {/* New chat in this project */}
-                          <button
-                            type="button"
-                            aria-label="New chat"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openNewChat(project.id);
-                            }}
-                            className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-                          >
-                            <span className="sidebar-row-action-glyph">
-                              <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-                            </span>
-                          </button>
-                          {/* Project options */}
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <button
-                                type="button"
-                                onClick={(e) => e.stopPropagation()}
-                                aria-label="Project options"
-                                className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
-                              >
-                                <span className="sidebar-row-action-glyph">
-                                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
-                                </span>
-                              </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent
-                              side="bottom"
-                              align="start"
-                              sideOffset={0}
-                              className="unsloth-plus-menu menu-flat-destructive w-56"
-                            >
-                              <DropdownMenuItem onSelect={() => openProject(project.id)}>
-                                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Project home</span>
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
-                                <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>New chat</span>
-                              </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onSelect={() => {
-                                  // Seed the shared draft so the dialog opens with the current name, not stale text.
-                                  setRenameDraft(project.name);
-                                  setRenamingTarget({
-                                    kind: "project",
-                                    project,
-                                    current: project.name,
-                                  });
-                                }}
-                              >
-                                <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Rename project</span>
-                              </DropdownMenuItem>
-                              {renderMoveRowItems(
+                        <ContextMenu>
+                          <ContextMenuTrigger asChild>
+                            <SidebarMenuItem
+                              className={cn(
+                                "group/recent-item relative",
+                                draggingRow?.id === project.id && "opacity-50",
+                                dropCueClass(
+                                  PROJECT_ORDER_SCOPE,
+                                  projectRowIds,
+                                  project.id,
+                                ),
+                              )}
+                              onContextMenu={() =>
+                                selectProjectForContextMenu(project.id)
+                              }
+                              {...rowDragProps(
                                 PROJECT_ORDER_SCOPE,
                                 projectRowIds,
                                 project.id,
-                                projectIndex,
                               )}
-                              <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
-                                <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                                <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onSelect={() => {
-                                  // Start each delete with the file toggle off: Cancel closes programmatically and skips the
-                                  openDeleteDialog({ kind: "project", project });
-                                }}
+                            >
+                              <SidebarMenuButton
+                                // Highlight the folder only on the project home; with a chat open, only that row is active.
+                                isActive={activeProjectId === project.id && !activeThreadId}
+                                data-selected={
+                                selectedProjectIds.has(project.id)
+                                  ? "true"
+                                  : undefined
+                              }
+                              onClick={(event) => {
+                                if (
+                                  handleProjectSelectionClick(event, project.id)
+                                )
+                                  return;
+                                clearSelection();
+                                toggleProjectCollapsed(project.id);
+                              }}
+                                className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
                               >
-                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                                <span>Delete project</span>
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </SidebarMenuItem>
+                                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
+                                <span className="truncate text-ui-14p5 leading-ui-19 tracking-nav">{project.name}</span>
+                              </SidebarMenuButton>
+                              {/* New chat in this project */}
+                              <button
+                                type="button"
+                                aria-label="New chat"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openNewChat(project.id);
+                                }}
+                                className="sidebar-row-action sidebar-touch-reveal is-unpin-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                              >
+                                <span className="sidebar-row-action-glyph">
+                                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                </span>
+                              </button>
+                              {/* Project options */}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => e.stopPropagation()}
+                                    aria-label="Project options"
+                                    className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
+                                  >
+                                    <span className="sidebar-row-action-glyph">
+                                      <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                    </span>
+                                  </button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent
+                                  side="bottom"
+                                  align="start"
+                                  sideOffset={0}
+                                  className="unsloth-plus-menu menu-flat-destructive w-56"
+                                >
+                                  <DropdownMenuItem onSelect={() => openProject(project.id)}>
+                                    <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon" />
+                                    <span>Project home</span>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => openNewChat(project.id)}>
+                                    <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} className="size-icon" />
+                                    <span>New chat</span>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      // Seed the shared draft so the dialog opens with the current name, not stale text.
+                                      setRenameDraft(project.name);
+                                      setRenamingTarget({
+                                        kind: "project",
+                                        project,
+                                        current: project.name,
+                                      });
+                                    }}
+                                  >
+                                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                                    <span>Rename project</span>
+                                  </DropdownMenuItem>
+                                  {renderMoveRowItems(
+                                    PROJECT_ORDER_SCOPE,
+                                    projectRowIds,
+                                    project.id,
+                                    projectIndex,
+                                  )}
+                                  <DropdownMenuItem onSelect={() => toggleProjectPin(project.id)}>
+                                    <HugeiconsIcon icon={isProjectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                                    <span>{isProjectPinned ? "Unpin project" : "Pin project"}</span>
+                                  </DropdownMenuItem>
+                                  <DropdownMenuSeparator />
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onSelect={() => {
+                                      // Start each delete with the file toggle off: Cancel closes programmatically and skips the
+                                      openDeleteDialog({ kind: "project", project });
+                                    }}
+                                  >
+                                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                    <span>Delete project</span>
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </SidebarMenuItem>
+                          </ContextMenuTrigger>
+                          {renderProjectContextMenu()}
+                        </ContextMenu>
                         {expanded &&
                           visibleChats.map((chat, index) =>
                             renderChatSidebarItem(
@@ -3754,7 +3886,9 @@ export function AppSidebar() {
                 ? "Delete project"
                 : confirmingDelete?.kind === "chats"
                   ? t("shell.selection.deleteTitle")
-                  : t("shell.dialog.deleteChat.title")}
+                  : confirmingDelete?.kind === "projects"
+                    ? t("shell.selection.deleteProjectsTitle")
+                    : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
@@ -3772,6 +3906,10 @@ export function AppSidebar() {
             ) : confirmingDelete?.kind === "chats" ? (
               t("shell.selection.deleteDescription", {
                 count: confirmingDelete.items.length,
+              })
+            ) : confirmingDelete?.kind === "projects" ? (
+              t("shell.selection.deleteProjectsDescription", {
+                count: confirmingDelete.projects.length,
               })
             ) : confirmingDelete?.kind === "project" ? (
               <>
@@ -3794,8 +3932,10 @@ export function AppSidebar() {
                 {confirmingDelete?.kind === "project"
                   ? (confirmingDelete.project.rootPath ??
                     "The project workspace folder will be removed from disk.")
-                  : confirmingDelete?.kind === "chats"
-                    ? t("shell.selection.deleteFilesDescription")
+                  : confirmingDelete?.kind === "projects"
+                    ? t("shell.selection.deleteProjectsFilesDescription")
+                    : confirmingDelete?.kind === "chats"
+                      ? t("shell.selection.deleteFilesDescription")
                     : "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace."}
               </span>
             </label>

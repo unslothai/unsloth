@@ -63,7 +63,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
-    "settings.appearance.layout.projectsSection",
     "settings.appearance.sidebarNav.title",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",
@@ -98,6 +97,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.modelDisclaimer",
+    "settings.chat.projectsSection",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [

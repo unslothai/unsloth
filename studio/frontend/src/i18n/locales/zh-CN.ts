@@ -107,6 +107,14 @@ export const zhCN = {
       backToChat: "返回聊天",
     },
     selection: {
+      pinProjects: "置顶项目",
+      unpinProjects: "取消置顶项目",
+      deleteProjects: "删除项目",
+      deleteProjectsTitle: "删除项目",
+      deleteProjectsDescription:
+        "删除 {count} 个项目？其中的对话将被永久删除。",
+      deleteProjectsFilesDescription:
+        "每个项目的工作区文件夹会从磁盘中删除。",
       countSelected: "已选择 {count} 个",
       pinChats: "置顶对话",
       unpinChats: "取消置顶",
@@ -706,9 +714,6 @@ export const zhCN = {
         title: "布局",
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
-        projectsSection: "显示项目分区",
-        projectsSectionDescription:
-          "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       },
       sidebarNav: {
         title: "侧边栏导航",
@@ -942,6 +947,9 @@ export const zhCN = {
       },
     },
     chat: {
+      projectsSection: "显示项目分区",
+      projectsSectionDescription:
+        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {

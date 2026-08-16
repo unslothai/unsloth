@@ -112,6 +112,14 @@ export const de = {
       backToChat: "Zurück zum Chat",
     },
     selection: {
+      pinProjects: "Projekte anheften",
+      unpinProjects: "Projekte lösen",
+      deleteProjects: "Projekte löschen",
+      deleteProjectsTitle: "Projekte löschen",
+      deleteProjectsDescription:
+        "{count} Projekte löschen? Ihre Chats werden dauerhaft gelöscht.",
+      deleteProjectsFilesDescription:
+        "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
       countSelected: "{count} ausgewählt",
       pinChats: "Chats anheften",
       unpinChats: "Chats lösen",
@@ -750,9 +758,6 @@ export const de = {
         compactSidebar: "Seitenleiste standardmäßig anheften",
         compactSidebarDescription:
           "Hält die Seitenleiste ausgeklappt, statt sie zu Symbolen einzuklappen.",
-        projectsSection: "Projektbereich anzeigen",
-        projectsSectionDescription:
-          "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       },
       sidebarNav: {
         title: "Seitenleisten-Navigation",
@@ -1001,6 +1006,9 @@ export const de = {
       },
     },
     chat: {
+      projectsSection: "Projektbereich anzeigen",
+      projectsSectionDescription:
+        "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       title: "Chat",
       description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
       modelSelection: {

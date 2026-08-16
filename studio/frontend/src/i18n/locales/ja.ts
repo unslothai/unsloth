@@ -111,6 +111,14 @@ export const ja = {
       backToChat: "チャットに戻る",
     },
     selection: {
+      pinProjects: "プロジェクトをピン留め",
+      unpinProjects: "ピン留めを解除",
+      deleteProjects: "プロジェクトを削除",
+      deleteProjectsTitle: "プロジェクトを削除",
+      deleteProjectsDescription:
+        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+      deleteProjectsFilesDescription:
+        "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
       countSelected: "{count} 件選択中",
       pinChats: "チャットをピン留め",
       unpinChats: "ピン留めを解除",
@@ -708,9 +716,6 @@ export const ja = {
         title: "レイアウト",
         compactSidebar: "デフォルトでサイドバーを固定",
         compactSidebarDescription: "サイドバーをアイコンに折りたたまず、展開したままにします。",
-        projectsSection: "プロジェクトセクションを表示",
-        projectsSectionDescription:
-          "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       },
       sidebarNav: {
         title: "サイドバーナビゲーション",
@@ -955,6 +960,9 @@ export const ja = {
       },
     },
     chat: {
+      projectsSection: "プロジェクトセクションを表示",
+      projectsSectionDescription:
+        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {

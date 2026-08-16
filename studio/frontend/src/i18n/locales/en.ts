@@ -108,6 +108,14 @@ export const en = {
     },
     // Bulk actions on a multi-row selection.
     selection: {
+      pinProjects: "Pin projects",
+      unpinProjects: "Unpin projects",
+      deleteProjects: "Delete projects",
+      deleteProjectsTitle: "Delete projects",
+      deleteProjectsDescription:
+        "Delete {count} projects? Their chats are permanently deleted.",
+      deleteProjectsFilesDescription:
+        "Each project workspace folder is removed from disk.",
       countSelected: "{count} selected",
       pinChats: "Pin chats",
       unpinChats: "Unpin chats",
@@ -724,9 +732,6 @@ export const en = {
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
-        projectsSection: "Show projects section",
-        projectsSectionDescription:
-          "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       },
       sidebarNav: {
         title: "Sidebar navigation",
@@ -963,6 +968,9 @@ export const en = {
       },
     },
     chat: {
+      projectsSection: "Show projects section",
+      projectsSectionDescription:
+        "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
