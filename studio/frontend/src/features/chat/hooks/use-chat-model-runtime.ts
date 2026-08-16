@@ -1470,6 +1470,12 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              // Repaired from the echo, the way the tensor-parallel knob above is.
+              // loadDisableVision forces the flag off for a diffusion target without
+              // writing the store, so without this a Vision-off GGUF followed by a
+              // diffusion load leaves the switch reading off over a load that never
+              // sent it.
+              disableVision: loadResponse.disable_vision ?? false,
               // Alongside loadedIsMultimodal on every path that sets it, so the
               // composer can say WHY images are unavailable rather than falling
               // back to "load a vision-capable model with a valid mmproj".
@@ -1700,6 +1706,12 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  // The editable knob follows the rolled-back model like
+                  // tensorParallel above. restorePreviousConfig only runs when the
+                  // selection carried a remembered config, so on a bare model id
+                  // this is the only thing that takes the failed target's value off
+                  // the switch.
+                  disableVision: rollbackResponse.disable_vision ?? false,
                   loadedVisionDisabledByUser:
                     rollbackResponse.vision_disabled_by_user ?? false,
                   loadedVisionOnCpu: rollbackResponse.vision_on_cpu ?? false,
