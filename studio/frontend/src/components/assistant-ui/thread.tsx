@@ -2143,9 +2143,6 @@ const Composer: FC<{
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
-      // A paste is a user gesture, unlike a queued stale write, so it retires
-      // the guard and re-pasting the prompt just sent goes through.
-      justSentRef.current = null;
       const pastedText = event.clipboardData?.getData("text/plain") ?? "";
       if (extractYoutubeVideoId(pastedText)) {
         setYoutubeLink(pastedText.trim());
@@ -2179,6 +2176,14 @@ const Composer: FC<{
           }),
         pastedTextMinChars,
       );
+      // A paste is a user gesture, unlike a queued stale write, so it retires
+      // the guard and re-pasting the prompt just sent goes through. Only once
+      // inline text is actually going in: a files-only paste, or long text that
+      // just became an attachment, writes nothing, and dropping the guard for
+      // it would leave the next queued write free to refill the composer.
+      if (pastedText.length > 0 && !attachedPastedText) {
+        justSentRef.current = null;
+      }
       if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
