@@ -1516,6 +1516,10 @@ def _make_stub_causal_lm(
     stub = SimpleNamespace(
         model = model,
         lm_head = lm_head,
+        # Mistral's `elif self.training:` mask branch is reached only when
+        # xformers is absent, so omitting this passes locally and raises
+        # AttributeError on CI. The branch under test is a training path.
+        training = True,
         config = SimpleNamespace(
             output_attentions = False,
             output_hidden_states = False,
