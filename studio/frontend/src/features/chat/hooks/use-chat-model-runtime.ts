@@ -85,7 +85,10 @@ import {
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
-import { invalidateLlamaFlagCatalog } from "@/features/model-picker/api/llama-flags";
+import {
+  invalidateLlamaFlagCatalog,
+  loadManagedLlamaFlags,
+} from "@/features/model-picker/api/llama-flags";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -693,6 +696,11 @@ export function useChatModelRuntime() {
         if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
           await ensureGpuDeviceCache().catch(() => {});
         }
+        // The slot count an unset --parallel resolves to. Session-cached, and 0 is the
+        // catalogue's own "unknown", which the comparison reads as a reload.
+        const managedFlags = residentStatus
+          ? await loadManagedLlamaFlags().catch(() => null)
+          : null;
         if (
           residentStatus &&
           residentModelMatchesPick(residentStatus, {
@@ -745,6 +753,7 @@ export function useChatModelRuntime() {
                   presetSource: live.activePresetSource,
                 });
               },
+              parallelSlots: managedFlags?.defaultParallelSlots || null,
               // Never a config field, so the store is the only place it can come from.
               splitRatio: useChatRuntimeStore.getState().splitRatio,
               // What /load sends: a pick saved in another index namespace, or naming GPUs

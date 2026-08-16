@@ -82,6 +82,13 @@ export type StandingConfigDefaults = {
    */
   resolveContextLength: (customContextLength: number | null) => number;
   /**
+   * The slot count the server resolves an unset `--parallel` to, or null when it could not
+   * be read. `_resolve_parallel_slots` fills an omitted request from the server-wide
+   * default and stores THAT as `requested_parallel_slots`, so an unset ask is never null on
+   * the status side and comparing the two directly reloaded every default pick.
+   */
+  parallelSlots: number | null;
+  /**
    * `splitRatio` as the store holds it now, which is what the load sends. Never a config
    * field: `applyPerModelConfigToRuntime` clears it, so applying any remembered config
    * asks for the default distribution rather than the resident custom one.
@@ -206,9 +213,13 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
+    // Unknown default: null against the status's resolved count is a reload, the safe
+    // direction. defaultParallelSlots is the EFFECTIVE count, so a build that clamps to one
+    // slot reloads rather than adopts, which is the same bias.
     pinned: () => true,
-    agrees: (c, s) =>
-      (c.nParallel ?? null) === (s.requested_parallel_slots ?? null),
+    agrees: (c, s, standing) =>
+      (c.nParallel ?? standing.parallelSlots) ===
+      (s.requested_parallel_slots ?? standing.parallelSlots),
   },
   {
     pinned: () => true,

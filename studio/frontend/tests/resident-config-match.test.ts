@@ -54,6 +54,7 @@ const STANDING = {
   // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
   resolveContextLength: (customContextLength: number | null) =>
     customContextLength ?? 0,
+  parallelSlots: 1,
   splitRatio: null,
   // Enough of normalizeSpeculativeType for these cases; the real mapping is the store's
   // and is tested there. What matters here is that the comparator USES it on both sides.
@@ -364,9 +365,14 @@ test("selectModel weighs the config and the lease before confirming a reload", (
   assert.ok(configCheck < confirmPrompt);
   // A leased native file is named by a label two files can share, and the lease itself is
   // written only by a completed load, so this path must not adopt one.
-  assert.match(
-    source.slice(Math.max(0, identityCheck - 600), identityCheck),
-    /if\s*\(!forceReload\s*&&\s*!nativePathToken\)/,
+  // Widened as the gate's preamble grows: what matters is that the guard opens the block
+  // the identity check sits in, not how many reads it makes first.
+  const guard = source.lastIndexOf(
+    "if (!forceReload && !nativePathToken) {",
+    identityCheck,
+  );
+  assert.ok(
+    guard > 0,
     "the resident short-circuit no longer excludes native-lease picks",
   );
 });
@@ -481,6 +487,47 @@ test("an unset context length is resolved the way the load resolves it", () => {
       { ...DEFAULTS, requested_context_length: 8192 },
       { ...BLANK, customContextLength: 4096 },
     ),
+    false,
+  );
+});
+
+test("an unset slot count is the server default, not null", () => {
+  // _resolve_parallel_slots fills an omitted --parallel from the server-wide default and
+  // stores THAT as requested_parallel_slots, so the status never echoes null. Comparing
+  // null against it reloaded every default pick, which is the common case.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 4 }, BLANK, {
+      ...STANDING,
+      parallelSlots: 4,
+    }),
+    true,
+  );
+  // A pick that names a different count is still a reload.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_parallel_slots: 4 },
+      { ...BLANK, nParallel: 8 },
+      {
+        ...STANDING,
+        parallelSlots: 4,
+      },
+    ),
+    false,
+  );
+  // And a resident load pinned above the default is not adopted by an unset pick.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 8 }, BLANK, {
+      ...STANDING,
+      parallelSlots: 4,
+    }),
+    false,
+  );
+  // Unknown default: reload, the safe direction.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_parallel_slots: 4 }, BLANK, {
+      ...STANDING,
+      parallelSlots: null,
+    }),
     false,
   );
 });

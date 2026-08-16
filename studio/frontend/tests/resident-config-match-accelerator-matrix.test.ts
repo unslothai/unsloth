@@ -49,6 +49,7 @@ const STANDING = {
   // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
   resolveContextLength: (customContextLength: number | null) =>
     customContextLength ?? 0,
+  parallelSlots: 1,
   splitRatio: null,
   normalizeSpeculative: (value: string | null | undefined) =>
     value == null || value === "" || value === "none" ? null : value,
