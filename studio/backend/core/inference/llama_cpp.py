@@ -409,8 +409,13 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
     version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
     The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
-    system HIP/ROCR risks missing symbols. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure
-    bundle (for a host whose system ROCm lacks this arch); no-op on WSL / non-Linux.
+    system HIP/ROCR risks missing symbols. That mix is still what happens when the
+    prebuilt's RPATH binds bundled libamdhip64.so while LD_LIBRARY_PATH supplies
+    system libhsa-runtime64 -- then llama-server dies with
+    ``hsa_amd_queue_create, version ROCR_1`` (#8998). UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1
+    keeps the pure bundle (for a host whose system ROCm lacks this arch); load_model
+    also retries once with that bundle-only path when the mix is what crashed.
+    No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -7194,8 +7199,15 @@ class LlamaCppBackend:
         return path_dirs
 
     @staticmethod
-    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
-        """Build a subprocess env that lets llama-server resolve native libs."""
+    def _llama_server_env_for_binary(
+        binary: str, *, use_system_rocm: bool = True
+    ) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs.
+
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend
+        (#8998). Default True keeps the #7233 amdkfd-matched stack. WSL's
+        librocdxg prepend is independent and is not gated by this flag.
+        """
         env = child_env_without_native_path_secret()
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
         binary_dir = str(_llama_lib_dir(binary))
@@ -7237,8 +7249,10 @@ class LlamaCppBackend:
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
-            # which can be incompatible with the host amdkfd driver.
-            lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
+            # which can be incompatible with the host amdkfd driver (#7233).
+            # The #8998 retry rebuilds this env with use_system_rocm=False.
+            if use_system_rocm:
+                lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
 
@@ -11441,6 +11455,19 @@ class LlamaCppBackend:
         # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
+        if LlamaCppBackend._is_bundled_hip_rocr_mismatch(output or ""):
+            # #8998: glibc "symbol lookup error" is also exit 127, but the
+            # missing symbol is ROCR in a mixed HIP stack, not a vanished
+            # binary. The generic 127 text below would send the user to
+            # reinstall llama-server while Vulkan / a terminal launch already
+            # work. Name the mix and keep it off VRAM.
+            return (
+                "llama-server could not start: bundled libamdhip64.so looked "
+                "up hsa_amd_queue_create in a different ROCm than it was built "
+                "against. That is a HIP/ROCR version mix, not a missing "
+                "binary and not out of VRAM. Try the Vulkan backend, or "
+                f"{LlamaCppBackend._runtime_remedy(binary)}."
+            )
         if returncode == 127:
             # Same provenance split as the library branches: the updater cannot
             # touch a pinned binary, so do not send its owner there.
@@ -12034,6 +12061,22 @@ class LlamaCppBackend:
             return False
         # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
+
+    @staticmethod
+    def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
+        """True for the #8998 HIP/ROCR mix, not a missing .so and not a ggml lookup.
+
+        glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
+        version <v>]``. The object is bundled libamdhip64.so (RPATH still binds
+        the prebuilt HIP); the missing symbol is ROCR from a different-version
+        system libhsa-runtime64 that #7233 prepended on LD_LIBRARY_PATH. Field
+        log: ``libamdhip64.so.7: undefined symbol: hsa_amd_queue_create, version
+        ROCR_1``. A ggml ``undefined symbol: ggml_*`` must not match.
+        """
+        text = (output or "").lower()
+        if "symbol lookup error" not in text or "libamdhip64" not in text:
+            return False
+        return "hsa_amd_queue_create" in text or "rocr_" in text
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -16611,7 +16654,9 @@ class LlamaCppBackend:
 
                     Retries once with --fit off when the first attempt
                     crashes during startup and run_cmd is eligible (see
-                    _fit_off_retry_eligible).
+                    _fit_off_retry_eligible). A HIP/ROCR symbol lookup
+                    (#8998) retries with the bundled HIP only instead:
+                    flipping --fit cannot load a missing ROCr symbol.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
@@ -16680,14 +16725,46 @@ class LlamaCppBackend:
                         )
                         # A split-axis abort (#6415) is fit-independent: skip the
                         # --fit off retry and let the caller latch it.
-                        _split_axis_crash = self._is_tensor_split_assert(
-                            "\n".join(self._stdout_lines[-50:])
+                        _startup_output = "\n".join(self._stdout_lines[-50:])
+                        _split_axis_crash = self._is_tensor_split_assert(_startup_output)
+                        _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(
+                            _startup_output
                         )
+                        if (
+                            _spawn_attempt == 0
+                            and _startup_crashed
+                            and not _split_axis_crash
+                            and _hip_rocr_mismatch
+                        ):
+                            # #7233 prepends system ROCm so bundled HIP matches
+                            # amdkfd. On some hosts that mix leaves bundled
+                            # libamdhip64.so resolving hsa_amd_queue_create
+                            # against a different libhsa-runtime64 (#8998).
+                            # A terminal launch does not prepend those dirs, so
+                            # the same binary works from the shell. Rebuild
+                            # LD_LIBRARY_PATH without them; keep the rest of
+                            # env (pooling / memory scrubs).
+                            _bundle_only = self._llama_server_env_for_binary(
+                                binary, use_system_rocm = False
+                            )
+                            _retry_ld = _bundle_only.get("LD_LIBRARY_PATH", "")
+                            if _retry_ld != env.get("LD_LIBRARY_PATH"):
+                                logger.warning(
+                                    "llama-server crashed during startup (exit code %s) "
+                                    "because bundled libamdhip64 could not resolve a "
+                                    "ROCr symbol against the system ROCm; retrying once "
+                                    "with the bundled HIP only. Crash log: %s",
+                                    self._process.returncode,
+                                    self._llama_log_path,
+                                )
+                                env["LD_LIBRARY_PATH"] = _retry_ld
+                                continue
                         if (
                             _spawn_attempt == 0
                             and fully_gpu_offloaded
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             # We forced --fit off because Unsloth's (conservative) VRAM
                             # math placed the model fully on GPU. A startup crash here
@@ -16737,6 +16814,7 @@ class LlamaCppBackend:
                             and _fit_retry_allowed
                             and _startup_crashed
                             and not _split_axis_crash
+                            and not _hip_rocr_mismatch
                         ):
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "

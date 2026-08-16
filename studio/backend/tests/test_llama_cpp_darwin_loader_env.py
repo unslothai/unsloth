@@ -150,6 +150,39 @@ class TestLinuxUnchanged:
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/wsl/rocm"
         assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
 
+    def test_use_system_rocm_false_skips_native_linux_prepend(self, monkeypatch, binary):
+        # #8998 retry: same CUDA/bundle dirs, no /opt/rocm-style prepend.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
+        monkeypatch.setattr(
+            llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
+        )
+        with_system = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        bundle_only = LlamaCppBackend._llama_server_env_for_binary(
+            str(binary), use_system_rocm = False
+        )
+        assert with_system["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
+        assert "/opt/rocm/lib" not in bundle_only["LD_LIBRARY_PATH"].split(":")
+        assert bundle_only["LD_LIBRARY_PATH"].startswith(str(binary.parent))
+
+    def test_use_system_rocm_false_keeps_the_wsl_prepend(self, monkeypatch, binary):
+        # librocdxg is a different mix (#7233 WSL). Do not drop it on the
+        # native-Linux HIP/ROCR retry flag.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
+        monkeypatch.setattr(
+            llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
+        )
+        env = LlamaCppBackend._llama_server_env_for_binary(
+            str(binary), use_system_rocm = False
+        )
+        parts = env["LD_LIBRARY_PATH"].split(":")
+        assert parts[0] == "/wsl/rocm"
+        assert "/opt/rocm/lib" not in parts
+        assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
+
 
 class TestWindowsUnchanged:
     def test_path_is_semicolon_joined_and_no_unix_vars_appear(self, monkeypatch, binary):

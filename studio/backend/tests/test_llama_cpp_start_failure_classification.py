@@ -293,6 +293,9 @@ class TestMissingSharedLibrary:
         out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
+        # Must not steal the #8998 HIP/ROCR branch (that one names libamdhip64).
+        assert "HIP/ROCR" not in msg
+        assert "hsa_amd_queue_create" not in msg
 
     def test_bundled_runtime_library_points_at_the_installer(self):
         # libggml/libllama/libmtmd ship in build/bin (runtime_payload_health_groups)
@@ -497,6 +500,76 @@ class TestMissingSharedLibrary:
         msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", 127)
         assert "Images page" in msg
         assert "system library" not in msg
+
+
+class TestBundledHipRocrMismatch:
+    """#8998: Studio prepends system ROCm, the prebuilt still binds bundled
+    libamdhip64.so, and glibc exits 127 on hsa_amd_queue_create@ROCR_1.
+
+    That used to be classified as a missing llama-server (generic 127) and
+    retried as a VRAM miss (--fit on). Neither is true.
+    """
+
+    _FIELD_OUT = (
+        "0.00.018.048 I srv    load_model: loading model '/models/x.gguf'\n"
+        "/home/t/.unsloth/llama.cpp/llama-server: symbol lookup error: "
+        "/home/t/.unsloth/llama.cpp/build/bin/libamdhip64.so.7: "
+        "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+    )
+
+    def test_field_log_is_the_hip_rocr_mix(self):
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(self._FIELD_OUT)
+
+    def test_ggml_symbol_lookup_is_not_the_hip_rocr_mix(self):
+        out = (
+            "llama-server: symbol lookup error: llama-server: "
+            "undefined symbol: ggml_backend_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_missing_libamdhip64_is_not_the_hip_rocr_mix(self):
+        # Absent file is the glibc loader line, not a symbol lookup.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "libamdhip64.so.7: cannot open shared object file: "
+            "No such file or directory"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_empty_and_none_are_not_the_mix(self):
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch("")
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(None)
+
+    def test_classify_names_the_mix_not_a_missing_binary(self):
+        msg = _classify(self._FIELD_OUT, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert "hsa_amd_queue_create" in msg
+        assert "Vulkan" in msg
+        assert "could not be found or run" not in msg
+        assert "not out of VRAM" in msg
+        assert "GGUF file is valid" not in msg
+        assert "enough memory" not in msg.lower()
+
+    def test_classify_on_a_pinned_binary_does_not_send_it_to_the_updater(self, monkeypatch):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        msg = _classify(
+            self._FIELD_OUT, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server"
+        )
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+    def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
+        # load_model's _spawn_and_wait used the one retry slot on --fit on
+        # for this 127, which cannot load a missing ROCr symbol.
+        src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
+        text = src.read_text(encoding = "utf-8")
+        spawn_start = text.index("def _spawn_and_wait(")
+        spawn_end = text.index("def _raise_terminal_load_failure", spawn_start)
+        body = text[spawn_start:spawn_end]
+        assert body.index("_is_bundled_hip_rocr_mismatch") < body.index(
+            "retrying once with --fit on so it can offload"
+        )
+        assert "use_system_rocm = False" in body
 
 
 # Real dyld output. macOS says none of the things glibc says, so before #8566
