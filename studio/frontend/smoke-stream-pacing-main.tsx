@@ -229,6 +229,9 @@ function Harness(): ReactElement {
     // supportedEntryTypes actually answers the question, and the answer is recorded so the
     // driver can fail the run rather than report the zero. Chromium is the only engine that
     // ships longtask (Gecko bug 1348405 open, WebKit never shipped it).
+    // Long tasks are only counted from here on. run() moves it to the moment the stream is
+    // asked for, so nothing the page did while loading lands in the budget.
+    let measureFrom = Number.POSITIVE_INFINITY;
     let observer: PerformanceObserver | null = null;
     state.longTaskSupported =
       typeof PerformanceObserver !== "undefined" &&
@@ -236,6 +239,12 @@ function Harness(): ReactElement {
     if (state.longTaskSupported) {
       observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
+          // Only tasks belonging to the stream. `buffered: true` replays whatever the
+          // timeline already held, which on a dev server is module evaluation and the
+          // first React render: measured at ~140ms in one entry, ~2.6% of the total,
+          // and larger on a cold or loaded runner. That is page startup, not the render
+          // under test, and budgeting it makes a cold run look like a slow renderer.
+          if (entry.startTime < measureFrom) continue;
           state.longTasks += 1;
           state.longTaskMs += entry.duration;
         }
@@ -247,6 +256,12 @@ function Harness(): ReactElement {
       ready: true,
       run(options: RunOptions = {}) {
         config = { ...config, ...options };
+        // Open the window here, and drop anything the buffered replay already banked.
+        // A straddling entry is discarded rather than prorated: it began before the
+        // stream did, so it is not the renderer's.
+        measureFrom = performance.now();
+        state.longTaskMs = 0;
+        state.longTasks = 0;
         void runtime.thread.append({
           role: "user",
           content: [{ type: "text", text: "stream the fixture" }],
