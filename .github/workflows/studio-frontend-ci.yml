@@ -211,6 +211,12 @@ jobs:
             exit 1
           fi
 
+      # The 75 MB above is the whole artifact, which a lazily loaded page does not
+      # make worse. This is the part the user waits through: the entry chunk plus
+      # everything Vite preloads for it, fetched and executed before first paint.
+      - name: Startup bundle budget
+        run: npm run bundle:check
+
       - name: Biome (non-blocking until accumulated drift is cleared)
         continue-on-error: true
         run: npm run biome:check
