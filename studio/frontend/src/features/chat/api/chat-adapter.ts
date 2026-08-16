@@ -161,6 +161,7 @@ import {
 } from "../utils/last-local-model-load";
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
+import { mergeContextTruncation } from "../utils/context-truncation";
 import {
   extractDeltaText,
   hasUnclosedThinkTag,
@@ -5435,7 +5436,10 @@ export function createOpenAIStreamAdapter(
               }
 
               if (chunk.context_truncated) {
-                contextTruncation = chunk.context_truncated;
+                contextTruncation = mergeContextTruncation(
+                  contextTruncation,
+                  chunk.context_truncated,
+                );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 if (
                   resolvedThreadId &&

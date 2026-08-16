@@ -3649,6 +3649,106 @@ def test_connect_error_before_tool_stream_respawns_and_retries(monkeypatch):
     assert any(e.get("type") == "content" and e.get("text") == "Recovered." for e in events)
 
 
+def test_connect_error_retry_reuses_rolling_preflight_without_duplicate_notice(monkeypatch):
+    """A respawn retries the fitted request without reporting its dropped turns twice."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            httpx.ConnectError("server is down"),
+            [_sse({"content": "Recovered."}), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 100
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+    respawn_calls = _patch_successful_respawn(monkeypatch, backend)
+    messages = [
+        {"role": "user", "content": "o" * 40},
+        {"role": "assistant", "content": "a" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    events = list(
+        backend.generate_chat_completion(
+            messages = messages,
+            max_tokens = 20,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert respawn_calls == [True]
+    assert len(notices) == 1
+    assert notices[0]["dropped_messages"] == 2
+    assert len(payloads) == 2
+    assert payloads[0]["messages"] == payloads[1]["messages"] == [messages[-1]]
+
+
+def test_rolling_respawn_retry_preserves_resolved_default_max_tokens(monkeypatch):
+    """A changed post-respawn context does not alter the request already preflighted."""
+    import httpx
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 100
+    preflight_calls: list[int] = []
+
+    def fake_fit(messages, *, context_length, max_tokens, **_kwargs):
+        preflight_calls.append(max_tokens)
+        return [messages[-1]], {
+            "dropped_messages": len(messages) - 1,
+            "prompt_tokens_before": 90,
+            "prompt_tokens_after": 10,
+            "context_length": context_length,
+            "fits": True,
+        }
+
+    monkeypatch.setattr("core.inference.llama_cpp.fit_rolling_context", fake_fit)
+
+    def fake_respawn():
+        backend._effective_context_length = 60
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    events = list(
+        backend.generate_chat_completion(
+            messages = [
+                {"role": "user", "content": "old"},
+                {"role": "assistant", "content": "answer"},
+                {"role": "user", "content": "latest"},
+            ],
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("type") == "context_truncated"
+    ]
+    assert preflight_calls == [100]
+    assert len(notices) == 1
+    assert [payload["max_tokens"] for payload in payloads] == [100, 100]
+    assert payloads[0]["messages"] == payloads[1]["messages"]
+
+
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):
     """Recover either post-tool generation path without rerunning the tool."""
     import httpx

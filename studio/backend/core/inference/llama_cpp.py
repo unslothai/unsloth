@@ -19673,6 +19673,10 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
+        retry_messages = messages
+        retry_image_b64 = image_b64
+        retry_max_tokens = max_tokens
+        retry_context_overflow = context_overflow
         if perf_callback is not None:
             payload["return_progress"] = True
             payload["timings_per_token"] = True
@@ -19715,6 +19719,12 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
+                # Reuse the exact fitted request after a respawn. Re-running this
+                # preflight would emit the same truncation event a second time.
+                retry_messages = openai_messages
+                retry_image_b64 = None
+                retry_max_tokens = payload["max_tokens"]
+                retry_context_overflow = None
                 if truncation and truncation["fits"]:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
@@ -19852,13 +19862,13 @@ class LlamaCppBackend:
                     "llama-server was unreachable; respawned it and retrying the generation"
                 )
                 yield from self.generate_chat_completion(
-                    messages,
-                    image_b64 = image_b64,
+                    retry_messages,
+                    image_b64 = retry_image_b64,
                     temperature = temperature,
                     top_p = top_p,
                     top_k = top_k,
                     min_p = min_p,
-                    max_tokens = max_tokens,
+                    max_tokens = retry_max_tokens,
                     repetition_penalty = repetition_penalty,
                     presence_penalty = presence_penalty,
                     stop = stop,
@@ -19870,7 +19880,7 @@ class LlamaCppBackend:
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
-                    context_overflow = context_overflow,
+                    context_overflow = retry_context_overflow,
                     _allow_respawn_retry = False,
                 )
                 return
