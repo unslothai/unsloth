@@ -162,16 +162,35 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "usePromptQueueUI.getState()" in submit
     assert "livePreStreamRunActive" in submit
     assert "liveThreadIsRunning || livePreStreamRunActive" in submit
-    assert "startHydratedPromptQueue(" in submit
+    # The submit path decides whether to queue; the queueing itself lives in
+    # queueComposerText, which #8952 extracted so the Cmd/Ctrl+Enter path could
+    # share it. Assert the delegation here and the queueing there, rather than
+    # expecting the call inline, so this stays a contract on behaviour instead
+    # of on where the code happens to sit.
+    assert "queueComposerText(liveThreadIsRunning || livePreStreamRunActive)" in submit
+
+    queue_composer_text = _between(
+        THREAD,
+        "const queueComposerText = useCallback(",
+        "const dismissWaitToast = useCallback(",
+    )
+    assert "startHydratedPromptQueue(" in queue_composer_text
     # Read into a local first: the send guard arms on the untrimmed value too,
     # since that is what a late DOM write carries.
-    assert "const cleared = aui.composer().getState().text" in submit
-    assert "cleared.trim() !== queuedPrompt" in submit
+    assert "const cleared = aui.composer().getState().text" in queue_composer_text
+    assert "cleared.trim() !== queuedPrompt" in queue_composer_text
     assert "promptQueueStartPendingRef.current" in THREAD
-    assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
+    # Identity, not mere presence: a reservation can be replaced between the
+    # start and the callback, and acting on the successor would dispatch the
+    # wrong prompt. `.has` only asked whether the key was occupied.
+    assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in THREAD
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
-    assert "temporary: useChatRuntimeStore.getState().incognito" in THREAD
+    # Captured when the queue starts, not read live when it dispatches: a chat
+    # toggled out of temporary mid-queue must not have its queued prompts
+    # persisted, and reading the store at dispatch time would do exactly that.
+    assert "const incognitoAtQueueStart = chatStateAtQueueStart.incognito" in THREAD
+    assert "temporary: incognitoAtQueueStart" in THREAD
     assert "localPromptQueueModelBoundary.capture()" in THREAD
     assert "shouldAbortPendingQueueForModelBoundary" in THREAD
     assert "queuedSettingsEpoch:" in THREAD
