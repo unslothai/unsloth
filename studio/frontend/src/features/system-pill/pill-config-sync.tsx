@@ -50,29 +50,29 @@ async function syncConfigToNative(): Promise<void> {
         await syncNativePillConfig(settings);
         lastSyncSucceededAt = Date.now();
       } catch {
-        // Nothing here renders native status, so a backend left saying enabled
-        // would keep the settings switch claiming a bar with no shortcut behind
-        // it. Undo it, exactly as the settings tab does on the same failure.
-        if (!settings.enabled) return;
+        // Native status is the only party that knows what is actually
+        // registered, so make the backend agree with IT rather than with the
+        // snapshot we tried to apply. Both directions happen here, the same as
+        // in the settings tab: a refused enable registered nothing, and a
+        // refused disable leaves the previous hotkey live, because Rust puts it
+        // back when its own save fails.
         try {
-          const reverted = await updatePillSettings({ enabled: false });
-          // Write the disabled config to disk. Rust reports disabled after a
-          // failed registration but selection-pill.json still says enabled, and
-          // that file is what init reads: left alone it would re-register the
-          // shortcut on a later launch, against a UI and backend now saying
-          // disabled. syncNativePillConfig cannot do this, because the managed
-          // status is already disabled and its equality check would skip the
-          // write that is the entire point, so call the command directly.
           const status = await pillStatus();
-          if (status.supported) {
-            await pillSetConfig({
-              enabled: false,
-              hotkey: status.hotkey,
-              excludedApps: reverted.excludedApps,
-            });
-          }
+          if (!status.supported || status.enabled === settings.enabled) return;
+          const corrected = await updatePillSettings({
+            enabled: status.enabled,
+          });
+          // Bring selection-pill.json into line too. syncNativePillConfig
+          // would skip this, since the managed status already equals what we
+          // are writing, but init reads the file, and startup may have loaded
+          // an enabled one whose registration has just failed.
+          await pillSetConfig({
+            enabled: status.enabled,
+            hotkey: status.hotkey,
+            excludedApps: corrected.excludedApps,
+          });
         } catch {
-          // Could not undo it either; the next open reads the backend.
+          // Could not correct it either; the next open reads the backend.
         }
       }
     });
