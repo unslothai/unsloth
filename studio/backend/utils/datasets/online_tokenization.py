@@ -31,6 +31,15 @@ tokenize step exactly -- same truncation, same ``max_length``, same double-BOS
 rule -- so the rows the model sees are byte-identical to the eager path.  Any
 configuration where that equivalence is not provable takes the eager path
 unchanged; see :func:`decide_online_tokenization`.
+
+Two costs are worth stating rather than discovering.  The pass gate counts
+passes over the TRAIN split only: an eval split is re-tokenized on every
+evaluation, because a lazy view tokenizes on each ``__getitem__``, where the
+eager map tokenized it once.  Studio's eval splits are small enough that this
+has not been worth a gate of its own, but it is a real cost that scales with
+``eval_steps``.  And the worker processes are persistent by design -- the
+barrier's workers have to survive into ``train()`` -- so they must be shut down
+explicitly when training ends; see :func:`release_train_dataloader`.
 """
 
 from __future__ import annotations
@@ -118,12 +127,41 @@ def env_override() -> Optional[bool]:
     return None
 
 
-def platform_supports_dataloader_workers() -> bool:
-    """Windows and macOS spawn DataLoader workers, and Studio's modified
-    ``sys.path`` does not survive the spawn (the same reason ``trainer.py``
-    already forces ``dataloader_num_workers = 0`` there).  Linux-first feature.
+def dataloader_worker_start_method() -> Optional[str]:
+    """How DataLoader workers will actually start, read without fixing it.
+
+    ``multiprocessing.get_start_method()`` with no argument RESOLVES the default
+    and pins the context, after which a later ``set_start_method()`` raises --
+    unsloth's own ``dataset_num_proc`` avoids it for that reason.  So: the
+    explicitly set method if there is one, else the platform default, which is
+    the first entry of ``get_all_start_methods()`` and costs nothing to read.
     """
-    return sys.platform not in ("win32", "darwin")
+    try:
+        import multiprocessing
+
+        explicit = multiprocessing.get_start_method(allow_none = True)
+        if explicit:
+            return explicit
+        methods = multiprocessing.get_all_start_methods()
+        return methods[0] if methods else None
+    except Exception:  # noqa: BLE001 - unreadable reads as "not fork"
+        return None
+
+
+def platform_supports_dataloader_workers() -> bool:
+    """Fork, and only fork.
+
+    The hazard is not the operating system, it is ``spawn``: a spawned worker
+    re-imports the entry point against a fresh ``sys.path``, and Studio's is
+    modified in-process, so the import fails (the same reason ``trainer.py``
+    already forces ``dataloader_num_workers = 0`` on Windows and macOS).  Those
+    two platforms default to spawn, which is why they named this gate, but a
+    Linux process whose start method has been set to ``spawn`` or
+    ``forkserver`` is the identical hazard and a platform check cannot see it.
+    """
+    if sys.platform in ("win32", "darwin"):
+        return False
+    return dataloader_worker_start_method() == "fork"
 
 
 def trl_supports_skip_prepare_dataset() -> bool:
@@ -235,6 +273,44 @@ def dataset_column_names(dataset: Any) -> tuple:
     return tuple(names)
 
 
+def text_column_defect(dataset: Any, text_field: str) -> Optional[str]:
+    """Why ``text_field`` cannot be tokenized lazily, or None when it can.
+
+    The eager map reads every row inside the trainer constructor, so a null or a
+    non-string row fails there, in seconds, before anything else has happened.
+    The lazy view reads a row only when the sampler draws it, so the same data
+    fails at whatever step that turns out to be -- possibly hours in, with the
+    run's checkpoints and its optimizer state behind it.  That is the one way
+    this feature can make a failing run worse rather than slower, so the shapes
+    that cause it are refused up front.
+
+    Both checks are metadata, not rows.  The dtype comes off the schema, and
+    Arrow tracks ``null_count`` per chunk, so neither one reads or tokenizes
+    anything.  A ``select``ed split keeps the full backing table, so its null
+    count covers rows the view does not contain: that over-reports, which vetoes
+    a split that might have been fine, and never the other way round.
+    """
+    try:
+        from datasets import Value
+
+        features = getattr(dataset, "features", None) or {}
+        feature = features.get(text_field)
+    except Exception:  # noqa: BLE001 - unreadable schema stays eager
+        return f"the type of '{text_field}' could not be read"
+
+    if not isinstance(feature, Value) or feature.dtype not in ("string", "large_string"):
+        described = getattr(feature, "dtype", None) or type(feature).__name__
+        return f"'{text_field}' holds {described}, not strings"
+
+    try:
+        nulls = int(dataset.data.column(text_field).null_count)
+    except Exception:  # noqa: BLE001
+        return f"'{text_field}' could not be checked for null rows"
+    if nulls > 0:
+        return f"'{text_field}' has {nulls:,} null row{'' if nulls == 1 else 's'}"
+    return None
+
+
 def resolve_worker_count(desired: Optional[int] = None) -> int:
     """How many DataLoader workers this host can spare, 0 for "do not".
 
@@ -322,7 +398,12 @@ def decide_online_tokenization(
 
     # ---- correctness gates: never overridable ----
     if not platform_supports_dataloader_workers():
-        return veto(f"{sys.platform} spawns DataLoader workers")
+        if sys.platform in ("win32", "darwin"):
+            return veto(f"{sys.platform} spawns DataLoader workers")
+        return veto(
+            f"DataLoader workers would start by "
+            f"{dataloader_worker_start_method() or 'an unknown method'}, not fork"
+        )
     if not trl_supports_skip_prepare_dataset():
         return veto("this TRL has no skip_prepare_dataset hook")
     if is_vlm or is_audio_vlm or is_deepseek_ocr:
@@ -356,6 +437,9 @@ def decide_online_tokenization(
     already = [c for c in _PRETOKENIZED_COLUMNS if c in columns]
     if already:
         return veto(f"dataset already carries {already[0]}")
+    defect = text_column_defect(dataset, text_field)
+    if defect is not None:
+        return veto(defect)
 
     if eval_dataset is not None:
         if not dataset_supports_with_transform(eval_dataset):
@@ -365,6 +449,9 @@ def decide_online_tokenization(
             return veto(f"eval split has no '{text_field}' column")
         if any(c in eval_columns for c in _PRETOKENIZED_COLUMNS):
             return veto("eval split is already tokenized")
+        eval_defect = text_column_defect(eval_dataset, text_field)
+        if eval_defect is not None:
+            return veto(f"eval split: {eval_defect}")
 
     resolved_workers = resolve_worker_count() if workers is None else int(workers)
     if resolved_workers < MIN_ONLINE_WORKERS:
@@ -547,6 +634,10 @@ def memoize_train_dataloader(trainer: Any) -> bool:
     ``_inner_training_loop`` calls ``get_train_dataloader()`` exactly once, so a
     one-shot memo changes no semantics; it also avoids handing the same dataset
     to ``accelerator.prepare`` twice.  Returns whether the memo was installed.
+
+    The cache is parked on the trainer rather than closed over alone, so
+    :func:`release_train_dataloader` can reach the loader it holds; a memo only
+    reachable through the closure is a loader nothing can ever shut down.
     """
     getter = getattr(trainer, "get_train_dataloader", None)
     if getter is None or getattr(trainer, "_unsloth_online_memoized", False):
@@ -561,41 +652,78 @@ def memoize_train_dataloader(trainer: Any) -> bool:
 
     try:
         trainer.get_train_dataloader = _memoized
+        trainer._unsloth_online_loader_cache = cache
         trainer._unsloth_online_memoized = True
     except Exception:  # noqa: BLE001 - a trainer that refuses attributes keeps today's behaviour
         return False
     return True
 
 
-def prewarm_dataloader(trainer: Any, batches: int) -> int:
-    """Pull ``batches`` microbatches through the pipeline before ``train()``.
+def _nested_loaders(loader: Any):
+    """``loader`` and whatever it wraps, outermost first.
 
-    DataLoader prefetch alone does not promise that the first ``__next__`` is
-    ready; it only promises that work has been queued.  Draining the queue here
-    means step 1 does not sit behind a cold tokenizer.
-
-    The loader and its iterator are dropped afterwards so the persistent workers
-    they own are torn down: ``train()`` builds its own loader, and leaking this
-    one would double the worker set for the whole run.  Returns how many
-    microbatches were actually pulled; a short dataset simply yields fewer.
+    ``accelerator.prepare`` hands back a ``DataLoaderShard`` in some accelerate
+    versions and a wrapper holding ``base_dataloader`` in others; the worker
+    processes belong to whichever object owns ``_iterator``.
     """
-    pulled = 0
-    loader = None
-    iterator = None
+    seen: list = []
+    current = loader
+    for _ in range(4):  # a wrapper chain, not a graph: bounded on purpose
+        if current is None or any(current is item for item in seen):
+            break
+        seen.append(current)
+        current = getattr(current, "base_dataloader", None) or getattr(
+            current, "dataloader", None
+        )
+    return seen
+
+
+def release_train_dataloader(trainer: Any) -> int:
+    """Shut down the prewarmed loader's persistent workers.  Returns how many.
+
+    ``dataloader_persistent_workers = True`` is what lets the barrier's workers
+    survive into ``train()``, and it is equally what keeps them alive after
+    ``train()`` returns: the memo holds the loader, the loader holds its
+    iterator, and the iterator owns the worker processes, so nothing ever drops
+    the last reference.  Studio then merges, quantizes and exports in that
+    state -- the most memory-hungry part of a run -- with four forked children
+    still resident, each one holding the parent's CUDA file descriptors because
+    it was forked after the context was initialised.
+
+    Idempotent, and never raises: it is called from a ``finally``, including on
+    the paths where training never started.
+    """
+    released = 0
+    cache = getattr(trainer, "_unsloth_online_loader_cache", None)
+    loader = cache.pop("loader", None) if isinstance(cache, dict) else None
+
+    # Put the real bound method back, so a trainer reused after this rebuilds a
+    # loader instead of handing out the one whose workers just went away.
     try:
-        loader = trainer.get_train_dataloader()
-        iterator = iter(loader)
-        for _ in range(max(0, int(batches))):
-            next(iterator)
-            pulled += 1
-    except StopIteration:
+        trainer.__dict__.pop("get_train_dataloader", None)
+        trainer._unsloth_online_memoized = False
+        trainer._unsloth_online_loader_cache = None
+    except Exception:  # noqa: BLE001
         pass
-    except Exception as exc:  # noqa: BLE001 - a prewarm failure must never fail a run
-        logger.warning(f"Online tokenization prewarm stopped early: {exc}")
-    finally:
-        del iterator
-        del loader
-    return pulled
+
+    # An accelerate wrapper and the loader inside it hold the SAME iterator, so
+    # the walk visits one worker set twice; count it once, and still clear the
+    # reference on every level that holds it.
+    shut: list = []
+    for candidate in _nested_loaders(loader):
+        iterator = getattr(candidate, "_iterator", None)
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if not callable(shutdown):
+            continue
+        try:
+            if not any(iterator is seen for seen in shut):
+                shut.append(iterator)
+                released += len(getattr(iterator, "_workers", ()) or ())
+                shutdown()
+            candidate._iterator = None
+        except Exception as exc:  # noqa: BLE001 - a wedged worker must not fail the run
+            logger.warning(f"Online tokenization worker shutdown failed: {exc}")
+    return released
 
 
 def quiet_tokenizer_fork_warning() -> None:
@@ -621,6 +749,7 @@ __all__ = [
     "OnlineTokenizationDecision",
     "attach_online_tokenization",
     "build_tokenizing_transform",
+    "dataloader_worker_start_method",
     "dataset_column_names",
     "dataset_supports_with_transform",
     "decide_online_tokenization",
@@ -632,9 +761,10 @@ __all__ = [
     "online_config_args",
     "platform_supports_dataloader_workers",
     "prewarm_batch_count",
-    "prewarm_dataloader",
     "quiet_tokenizer_fork_warning",
+    "release_train_dataloader",
     "resolve_add_special_tokens",
     "resolve_worker_count",
+    "text_column_defect",
     "trl_supports_skip_prepare_dataset",
 ]

@@ -32,6 +32,7 @@ from utils.datasets.online_tokenization import (  # noqa: E402
     online_config_args,
     prewarm_batch_count,
     resolve_add_special_tokens,
+    text_column_defect,
 )
 
 datasets = pytest.importorskip("datasets")
@@ -204,6 +205,86 @@ def test_missing_text_column_is_refused():
     decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
     assert not decision.enabled
     assert "text" in decision.reason
+
+
+def test_a_null_text_row_is_refused():
+    """The reproduction that motivated this gate.
+
+    The eager map reads every row inside the trainer constructor, so one None
+    kills the run in seconds. The lazy view reads a row only when the sampler
+    draws it: without this gate the same dataset trained happily past step 20
+    and would have died at whatever step drew row 137, hours in.
+    """
+    texts = [f"row {i}" for i in range(ROWS)]
+    texts[137] = None
+    dataset = datasets.Dataset.from_dict({"text": texts})
+    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    assert not decision.enabled
+    assert "null" in decision.reason
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        [7] * ROWS,
+        [[f"row {i}"] for i in range(ROWS)],
+        [{"content": "x"}] * ROWS,
+    ],
+    ids = ["ints", "lists", "structs"],
+)
+def test_a_text_column_that_is_not_strings_is_refused(column):
+    dataset = datasets.Dataset.from_dict({"text": column})
+    decision = decide_online_tokenization(**_base_kwargs(dataset = dataset))
+    assert not decision.enabled
+    assert "not strings" in decision.reason
+
+
+def test_a_null_text_row_in_the_eval_split_is_refused():
+    texts = [f"row {i}" for i in range(64)]
+    texts[7] = None
+    eval_dataset = datasets.Dataset.from_dict({"text": texts})
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = eval_dataset))
+    assert not decision.enabled
+    assert "eval split" in decision.reason and "null" in decision.reason
+
+
+def test_the_text_column_check_reads_metadata_and_never_a_row():
+    """Both halves come off the schema and Arrow's per-chunk null count, so the
+    gate must reach its answer on a split whose rows refuse to be read at all --
+    otherwise it is the eager pass it exists to avoid, in miniature."""
+
+    class _Unreadable(type(_text_dataset(16))):
+        def __getitem__(self, key):
+            raise AssertionError("the gate read a row")
+
+    dataset = _text_dataset()
+    unreadable = _Unreadable(dataset.data, info = dataset.info)
+    assert text_column_defect(unreadable, "text") is None
+
+
+def test_a_spawn_start_method_keeps_the_eager_path_on_linux(monkeypatch):
+    """The gate is named for Windows and macOS, but the hazard it describes is
+    `spawn` re-importing the entry point against a `sys.path` Studio modified in
+    process. A Linux host set to spawn is the same hazard."""
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = False: "spawn")
+    decision = decide_online_tokenization(**_base_kwargs())
+    assert not decision.enabled
+    assert "spawn" in decision.reason and "fork" in decision.reason
+
+
+def test_an_unset_start_method_falls_back_to_the_platform_default(monkeypatch):
+    """`get_start_method()` with no argument pins the context and makes a later
+    `set_start_method()` raise, so the default is read off the method list."""
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_start_method", lambda allow_none = False: None)
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["fork", "spawn"])
+    assert decide_online_tokenization(**_base_kwargs()).enabled
+
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["forkserver"])
+    assert not decide_online_tokenization(**_base_kwargs()).enabled
 
 
 def test_too_few_workers_is_refused():

@@ -10,8 +10,8 @@ whatever the integrated gating decides is what gets measured.
 
 The two arms differ only by ``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``:
 
-    python scripts/online_tokenization_ab.py --arm eager  --out outputs/ab_eager.json
-    python scripts/online_tokenization_ab.py --arm online --out outputs/ab_online.json
+    python scripts/online_tokenization_ab.py --arm eager  --dataset <split> --out ab_eager.json
+    python scripts/online_tokenization_ab.py --arm online --dataset <split> --out ab_online.json
 
 Loss parity is the point of the pair: same seed, same rows, same order, so the
 per-step losses must match. Anything else means the lazy transform is not
@@ -24,11 +24,15 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-WORKSPACE = Path(os.environ.get("UNSLOTH_WORKSPACE", "/mnt/disks/unslothai/daniel3/workspace_43"))
 REPO = Path(__file__).resolve().parents[1]
+# Scratch root for the per-arm `datasets` cache. `UNSLOTH_WORKSPACE` if the
+# caller sets one, else a temp directory: nothing here may assume a layout that
+# only exists on the machine the numbers were first measured on.
+WORKSPACE = Path(os.environ.get("UNSLOTH_WORKSPACE") or tempfile.gettempdir())
 
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
 os.environ.setdefault("UNSLOTH_DISABLE_STATISTICS", "1")
@@ -40,11 +44,16 @@ sys.path.insert(0, str(REPO))
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", choices = ("eager", "online"), required = True)
+    # No defaults for either: a path that happens to exist on one machine reads
+    # as a working default everywhere else right up until it does not.
     parser.add_argument(
         "--dataset",
-        default = str(WORKSPACE / "temp" / "w3_online_bench" / "openmath_chatml_100k.parquet"),
+        required = True,
+        help = "Parquet/JSONL split, or a Hugging Face dataset id, carrying a text column",
     )
-    parser.add_argument("--model", default = str(WORKSPACE / "hf_data" / "Qwen3-0.6B"))
+    parser.add_argument(
+        "--model", default = "unsloth/Qwen3-0.6B", help = "Model id or local path"
+    )
     parser.add_argument("--max-steps", type = int, default = 30)
     parser.add_argument("--batch-size", type = int, default = 2)
     parser.add_argument("--grad-accum", type = int, default = 4)
@@ -59,7 +68,7 @@ def main() -> int:
     # `datasets` fingerprints `.map()` -- and the eager arm measures a cache hit
     # no first-time Studio user will ever get.
     if args.fresh_cache:
-        cache = WORKSPACE / "temp" / "ab_cache" / f"{args.arm}_{int(time.time())}"
+        cache = WORKSPACE / "unsloth_ab_cache" / f"{args.arm}_{int(time.time())}"
         cache.mkdir(parents = True, exist_ok = True)
         os.environ["HF_DATASETS_CACHE"] = str(cache)
 

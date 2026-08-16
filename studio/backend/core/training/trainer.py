@@ -3529,6 +3529,23 @@ class UnslothTrainer:
         try:
             text_field = config_args.get("dataset_text_field", "text") or "text"
             max_length = int(config_args.get("max_seq_length") or 2048)
+            # The generated `__init__` reduces `max_seq_length` to the model's own
+            # cap and only then derives `max_length` from it, and that runs after
+            # this does. Read the same cap here: without it the transform truncates
+            # to the number the user asked for while the eager map it is standing in
+            # for would have truncated to the model's, and the two paths stop
+            # producing the same rows. The attestation must claim the width really
+            # enforced, too, or it claims a cap nothing applied.
+            model_cap = getattr(self.model, "max_seq_length", None)
+            try:
+                if model_cap is not None and 0 < int(model_cap) < max_length:
+                    logger.info(
+                        f"Online tokenization: max_length {max_length} exceeds the "
+                        f"model's {int(model_cap)}, using the model's\n"
+                    )
+                    max_length = int(model_cap)
+            except (TypeError, ValueError):
+                pass
             add_special_tokens = resolve_add_special_tokens(
                 self.tokenizer, first_sample_text(train_dataset, text_field)
             )
@@ -3565,6 +3582,35 @@ class UnslothTrainer:
             self._online_eval_dataset = eval_dataset
             self._online_prewarm_batches = 0
             return OnlineTokenizationDecision(enabled = False, reason = f"setup error: {exc}")
+
+    def _release_online_dataloader(self) -> None:
+        """Shut down the online path's persistent DataLoader workers.
+
+        They are persistent so the prewarm barrier's workers survive into
+        train(); nothing else ever drops them, so they would otherwise stay
+        resident through merging, quantization and GGUF export -- the most
+        memory-hungry part of a run -- each one a fork of a process that had
+        already initialised CUDA. Called from a finally, so it also covers the
+        preflight-error return and a train() that raised, and it is idempotent
+        because both of those paths reach it twice.
+        """
+        if not getattr(self, "_online_prewarm_batches", 0):
+            return
+        trainer = getattr(self, "trainer", None)
+        if trainer is None:
+            return
+        try:
+            from utils.datasets.online_tokenization import release_train_dataloader
+
+            released = release_train_dataloader(trainer)
+        except Exception as exc:  # noqa: BLE001 - cleanup must never fail a finished run
+            logger.warning(f"Online tokenization worker shutdown failed: {exc}")
+            return
+        # `_online_prewarm_batches` is left alone: it records how this run was
+        # configured, and the A/B harness reads it back afterwards. The second
+        # call is a no-op because the memo it drops is already gone.
+        if released:
+            logger.info(f"Online tokenization: shut down {released} DataLoader workers\n")
 
     def _preflight_first_batch(self) -> Optional[str]:
         """Validate the first real batch before train(). A base model whose chat
@@ -4353,7 +4399,15 @@ class UnslothTrainer:
 
             self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
-            self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
+            try:
+                self.trainer.train(
+                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                )
+            finally:
+                # Before _finalize_training, not after: merging and exporting are
+                # where the memory goes, and the online path's workers are still
+                # holding a fork of this process until something says otherwise.
+                self._release_online_dataloader()
 
             # ========== SAVE MODEL ==========
             self._finalize_training(output_dir)
@@ -4366,6 +4420,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, error = str(e))
 
         finally:
+            # Backstop for the returns that never reach train(), notably the
+            # preflight error: that path has already forked the workers.
+            self._release_online_dataloader()
             self.is_training = False
 
     def _patch_adapter_config(self, output_dir: str) -> None:
