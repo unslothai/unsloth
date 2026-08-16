@@ -68,7 +68,39 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
     assert project_workspaces_root() == tmp_path / "projects"
 
 
-def test_creating_a_project_says_where_it_failed(tmp_path, monkeypatch):
+def _probe_payload():
+    from routes import chat_history
+
+    return chat_history.ChatProject(
+        id = "11111111-2222-3333-4444-555555555555",
+        name = "Probe",
+        instructions = "",
+        archived = False,
+        createdAt = 1,
+        updatedAt = 1,
+    )
+
+
+def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monkeypatch):
+    """The failing path, not the root it was derived from.
+
+    An existing project keeps a recorded rootPath that can sit anywhere, so the
+    configured projects root is not always the folder that failed.
+    """
+    from storage.studio_db import ProjectWorkspaceError, _ensure_project_workspace
+
+    blocked = tmp_path / "read-only"
+    blocked.mkdir()
+    blocked.chmod(0o555)
+    try:
+        with pytest.raises(ProjectWorkspaceError) as caught:
+            _ensure_project_workspace(str(blocked / "child"))
+    finally:
+        blocked.chmod(0o755)
+    assert caught.value.path == str(blocked / "child")
+
+
+def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     """A folder Studio cannot create is the one failure this route has.
 
     It used to surface as a bare 500, which says nothing about which folder or
@@ -77,25 +109,19 @@ def test_creating_a_project_says_where_it_failed(tmp_path, monkeypatch):
     from fastapi import HTTPException
 
     from routes import chat_history
+    from storage.studio_db import ProjectWorkspaceError
 
     blocked = tmp_path / "no-entry"
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(blocked))
     monkeypatch.setattr(
         chat_history,
         "upsert_chat_project",
-        lambda payload: (_ for _ in ()).throw(PermissionError(13, "Permission denied")),
+        lambda payload: (_ for _ in ()).throw(
+            ProjectWorkspaceError(str(blocked), PermissionError(13, "Permission denied"))
+        ),
     )
 
-    payload = chat_history.ChatProject(
-        id = "11111111-2222-3333-4444-555555555555",
-        name = "Probe",
-        instructions = "",
-        archived = False,
-        createdAt = 1,
-        updatedAt = 1,
-    )
     with pytest.raises(HTTPException) as caught:
-        chat_history.save_project(payload, current_subject = "tester")
+        chat_history.save_project(_probe_payload(), current_subject = "tester")
 
     assert caught.value.status_code == 500
     detail = str(caught.value.detail)
@@ -103,3 +129,21 @@ def test_creating_a_project_says_where_it_failed(tmp_path, monkeypatch):
     assert "UNSLOTH_STUDIO_PROJECTS_HOME" in detail
     # The raw OSError text stays in the log, not in the response.
     assert "Permission denied" not in detail
+
+
+def test_a_database_folder_failure_is_not_blamed_on_the_projects_folder(monkeypatch):
+    """The same upsert opens studio.db before it picks a workspace.
+
+    That folder is UNSLOTH_STUDIO_HOME's, so answering it with "set
+    UNSLOTH_STUDIO_PROJECTS_HOME" sends the user to fix the wrong path.
+    """
+    from routes import chat_history
+
+    monkeypatch.setattr(
+        chat_history,
+        "upsert_chat_project",
+        lambda payload: (_ for _ in ()).throw(PermissionError(13, "studio.db")),
+    )
+
+    with pytest.raises(PermissionError):
+        chat_history.save_project(_probe_payload(), current_subject = "tester")
