@@ -4,12 +4,12 @@
 "use client";
 
 import {
+  type AttachmentAudioPart,
   type AttachmentPreviewKind,
   selectAttachmentSource,
 } from "@/components/assistant-ui/attachment-selection";
-import { attachmentAudioSrc } from "@/features/chat/attachment-content";
 import { useAuiState } from "@assistant-ui/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useShallow } from "zustand/shallow";
 
 export type { AttachmentPreviewKind };
@@ -20,6 +20,7 @@ export type AttachmentSource = {
   contentType: string | undefined;
   file: File | undefined;
   src: string | undefined;
+  audio: AttachmentAudioPart | undefined;
   text: string | undefined;
 };
 
@@ -45,21 +46,15 @@ export const useAttachmentSource = (): AttachmentSource => {
   const source = useAuiState(useShallow(selectAttachmentSource));
 
   const fileSrc = useFileSrc(source.kind === "text" ? undefined : source.file);
-  // Keyed on the part, so a 30 MB clip is joined once rather than per render.
-  const contentSrc = useMemo(
-    () =>
-      source.audio
-        ? attachmentAudioSrc(source.audio, source.contentType, source.name)
-        : source.image,
-    [source.audio, source.image, source.contentType, source.name],
-  );
 
+  // audio passes through unjoined: the payload is MAX_AUDIO_SIZE of base64 and every tile mounts this hook
   return {
     kind: source.kind,
     name: source.name,
     contentType: source.contentType,
     file: source.file,
-    src: fileSrc ?? contentSrc,
+    src: fileSrc ?? source.image,
+    audio: source.audio,
     text: source.text,
   };
 };

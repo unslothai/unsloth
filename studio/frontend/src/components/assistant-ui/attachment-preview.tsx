@@ -20,6 +20,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import {
   type AttachmentText,
+  attachmentAudioSrc,
   attachmentTextLanguage,
   countAttachmentTextLines,
   parseAttachmentText,
@@ -279,9 +280,32 @@ const AttachmentTextDialog: FC<
   );
 };
 
+/**
+ * The player, and the only place a sent clip's data URL is built.
+ *
+ * Joining the header onto the base64 payload copies up to MAX_AUDIO_SIZE of
+ * it, and a transcript mounts `useAttachmentSource` once per tile and again
+ * per dialog, so the join waits until DialogContent renders, which Radix only
+ * does once the dialog is open.
+ */
+const AttachmentAudioBody: FC<{ source: AttachmentSource }> = ({ source }) => {
+  const src = useMemo(() => {
+    if (source.src) {
+      return source.src;
+    }
+    return source.audio
+      ? attachmentAudioSrc(source.audio, source.contentType, source.name)
+      : undefined;
+  }, [source.src, source.audio, source.contentType, source.name]);
+
+  return src ? (
+    <AudioPlayer src={src} filename={source.name || "attachment.wav"} />
+  ) : null;
+};
+
 const AttachmentAudioDialog: FC<
-  PropsWithChildren<{ source: AttachmentSource; src: string }>
-> = ({ children, source, src }) => {
+  PropsWithChildren<{ source: AttachmentSource }>
+> = ({ children, source }) => {
   return (
     <Dialog>
       <AttachmentPreviewTrigger>{children}</AttachmentPreviewTrigger>
@@ -299,7 +323,7 @@ const AttachmentAudioDialog: FC<
               .join(" · ")}
           </DialogDescription>
         </DialogHeader>
-        <AudioPlayer src={src} filename={source.name || "attachment.wav"} />
+        <AttachmentAudioBody source={source} />
       </DialogContent>
     </Dialog>
   );
@@ -319,10 +343,8 @@ export const AttachmentPreviewDialog: FC<PropsWithChildren> = ({
   }
 
   if (source.kind === "audio") {
-    return source.src ? (
-      <AttachmentAudioDialog source={source} src={source.src}>
-        {children}
-      </AttachmentAudioDialog>
+    return source.src || source.audio ? (
+      <AttachmentAudioDialog source={source}>{children}</AttachmentAudioDialog>
     ) : (
       children
     );

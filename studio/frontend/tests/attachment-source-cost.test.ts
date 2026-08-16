@@ -59,6 +59,34 @@ test("the attachment selector does not rebuild the audio payload per run", () =>
   assert.equal(Object.is(first.audio, state.attachment.content[0].audio), true);
 });
 
+/**
+ * The selector hands the part through, so the hook must not join it either.
+ *
+ * Every tile in a transcript mounts `useAttachmentSource`, and the dialog
+ * mounts it again, so a data URL built there copies MAX_AUDIO_SIZE of base64
+ * twice per sent clip with the dialog still closed. Radix only renders
+ * DialogContent once the dialog opens, which is where the join belongs.
+ */
+test("the audio data URL is built in the dialog, not on every attachment tile", () => {
+  const hook = source("components/assistant-ui/use-attachment-source.ts");
+  assert.doesNotMatch(
+    hook,
+    /attachmentAudioSrc/,
+    "useAttachmentSource joins the audio payload before the preview opens",
+  );
+  assert.match(hook, /audio: source\.audio/);
+
+  const preview = source("components/assistant-ui/attachment-preview.tsx");
+  const body = preview.indexOf("const AttachmentAudioBody");
+  assert.notEqual(body, -1, "no component owns the audio data URL");
+  assert.equal(
+    preview.indexOf("attachmentAudioSrc(") > body,
+    true,
+    "the audio data URL is built outside AttachmentAudioBody",
+  );
+  assert.match(preview, /<DialogContent[\s\S]*<AttachmentAudioBody/);
+});
+
 // A plain text/document attachment must keep working: the control that has to
 // pass with and without the fix.
 test("the attachment selector still resolves text and image attachments", () => {
