@@ -53,7 +53,31 @@
 name: Security audit
 
 on:
+  # PRs run this only when they touch something it actually reads. Every job here is a
+  # function of the dependency manifests, the lockfiles, or the scanner sources: the pip
+  # shards build their input entirely from pyproject.toml + studio/backend/requirements/**,
+  # the npm jobs read studio/frontend/package*.json, and advisory-audit adds
+  # studio/src-tauri/Cargo.lock. A PR touching none of those cannot change any verdict, and
+  # over a 198 PR sample only 3.5% touched them, so the other 96.5% were re-scanning an
+  # unchanged dependency tree for roughly 40 minutes each.
+  #
+  # The floating pins that CAN change a verdict without a diff (a version range resolving to
+  # a new release, a fresh advisory) are covered by the daily cron below, which is
+  # deliberately left unfiltered, as is every push to main. So the worst case a filter
+  # introduces is that a newly published malicious version is caught by the nightly run or at
+  # merge instead of on the PR that did not touch dependencies.
   pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'studio/src-tauri/Cargo.toml'
+      - 'scripts/scan_packages.py'
+      - 'scripts/scan_packages_baseline.json'
+      - 'tests/security/**'
+      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
   schedule:
