@@ -251,9 +251,25 @@ test("the project composer's choice survives the swap to a thread", () => {
     /adoptPendingProjectAttachmentTarget\(\s*activeThreadId,\s*captured\?\.nonce === newThreadNonce \? captured\.claim : NO_SUCH_CLAIM,\s*\);\s*setPendingNewThreadId\(activeThreadId\);/,
   );
   assert.match(page, /const NO_SUCH_CLAIM = -1;/);
+  // Captured by claim, so re-picking the same destination is still this
+  // composer's choice rather than an unrecognised one.
+  assert.match(page, /const claim = readPendingAttachmentTargetClaim\(\);/);
   assert.match(
     page,
-    /claim: readPendingAttachmentTargetClaim\(\),/,
+    /if \(captured\?\.nonce === newThreadNonce && captured\.claim === claim\) \{\s*return;/,
+  );
+
+  // The claim the store hands out changes on every pending write, value or not.
+  const store = readFileSync(
+    new URL(
+      "../src/features/chat/stores/chat-runtime-store.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(
+    store,
+    /if \(threadId === null\) \{\s*pendingAttachmentTargetClaim \+= 1;/,
   );
 
   // Why the bar cannot cover it: the Thread's bar starts with an id, so the

@@ -1366,20 +1366,19 @@ function ProjectLanding({
     claim: number;
   } | null>(null);
   useEffect(() => {
-    return useChatRuntimeStore.subscribe((state, previous) => {
+    return useChatRuntimeStore.subscribe((state) => {
       const pending =
         state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
-      if (
-        pending === undefined ||
-        pending ===
-          previous.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY]
-      ) {
+      if (pending === undefined) return;
+      // By claim, not by the stored value: picking the same destination twice
+      // writes the same string under a new claim, and a capture that skipped it
+      // would then be refused as somebody else's.
+      const claim = readPendingAttachmentTargetClaim();
+      const captured = pendingTargetClaimRef.current;
+      if (captured?.nonce === newThreadNonce && captured.claim === claim) {
         return;
       }
-      pendingTargetClaimRef.current = {
-        nonce: newThreadNonce,
-        claim: readPendingAttachmentTargetClaim(),
-      };
+      pendingTargetClaimRef.current = { nonce: newThreadNonce, claim };
     });
   }, [newThreadNonce]);
 
