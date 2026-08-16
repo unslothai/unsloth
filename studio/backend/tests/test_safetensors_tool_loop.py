@@ -3735,6 +3735,10 @@ class TestGGUFSafetensorsHealingParity:
             "Could you clarify whether you mean the package or the UI? I'll check.",
             "Are you using Windows or Linux? Once you tell me, I'll check the steps.",
             "Is this about the package or the UI? I'll inspect it once you confirm.",
+            # a heading or list marker opens the line instead of a full stop.
+            "I need to use web search.\nOne question:\nAre you using Windows or Linux?\n"
+            "I'll check once you say.",
+            "I'll help.\n- Are you on Windows or Linux?\nTell me and I'll check.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3755,6 +3759,7 @@ class TestGGUFSafetensorsHealingParity:
             # asking to act is the stall the nudge exists for, unlike asking for a detail.
             "Do you want me to run it? I'll go ahead if so.",
             "Here is that file you wanted. I'll open it next.",
+            "The path is:\nsrc/main.py\nI'll open it next.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 

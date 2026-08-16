@@ -206,16 +206,17 @@ INTENT_SIGNAL = re.compile(
 )
 # a turn that asks the user for a missing detail waits on the reply, so no tool call can serve it
 _CLARIFICATION_REQUEST = re.compile(
-    r"(?i)\b(?:"
-    r"let\s+me\s+know(?!\s+(?:if|whether)\b)"  # if/whether closes a turn, when waits on the user
-    r"|(?:could|can|would)\s+you\s+(?:please\s+)?"
+    # each arm carries its own \b, since a leading one would never match the newline anchor below
+    r"(?i)(?:"
+    r"\blet\s+me\s+know(?!\s+(?:if|whether)\b)"  # if/whether closes a turn, when waits on the user
+    r"|\b(?:could|can|would)\s+you\s+(?:please\s+)?"
     r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
-    r"|d(?:o|id)\s+you\s+mean\b"
+    r"|\bd(?:o|id)\s+you\s+mean\b"
     # an interrogative putting the choice on the user; "what you should do" is advice and keeps its own word order
-    r"|(?:what|which|where|when|who|how)\s+(?:\w+\s+){0,2}?"
+    r"|\b(?:what|which|where|when|who|how)\s+(?:\w+\s+){0,2}?"
     r"(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+(?:i|you)\b"
-    # copular question opening a sentence; "do you want me to ..." stays out, it asks to act rather than for a detail
-    r"|(?:^|[.!?]\s+)(?:is|are|was|were)\s+(?:this|that|it|you)\b"
+    # copular question opening a line, heading or sentence; "do you want me to ..." asks to act and stays out
+    r"|(?:^|[.!?:]\s+|\n\s*[-*]?\s*)(?:is|are|was|were)\s+(?:this|that|it|you)\b"
     r")"
 )
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
