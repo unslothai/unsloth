@@ -3024,6 +3024,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          // Repaired from the echo alongside tensorParallel, not left as the
+          // previous model's value: this load picked its own model and its own
+          // config, so a stale true would show Vision off in Advanced Settings
+          // over a projector that is loaded, and the next Apply would send it.
+          disableVision: loadResp.disable_vision ?? false,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           loadedVisionOnCpu: loadResp.vision_on_cpu ?? false,
           ...loadedGpuMemoryFields(loadResp),
@@ -3065,6 +3070,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          // GGUF-only like the knobs cleared above, so it is cleared rather than
+          // carried: a safetensors load has no projector to skip, and leaving the
+          // previous GGUF's true would stage it for the next model that can.
+          disableVision: false,
           loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
           loadedVisionOnCpu: loadResp.vision_on_cpu ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -3379,6 +3388,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedNUbatch: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        // The request above omits disable_vision, so the echo is what the load
+        // actually ran with; adopting it stops a previous model's Vision-off
+        // showing over this one and being re-sent by the next Apply.
+        disableVision: loadResp.disable_vision ?? false,
         loadedVisionDisabledByUser: loadResp.vision_disabled_by_user ?? false,
         loadedVisionOnCpu: loadResp.vision_on_cpu ?? false,
         ...loadedGpuMemoryFields(loadResp),

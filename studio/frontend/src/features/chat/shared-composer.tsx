@@ -1613,6 +1613,11 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          // Adopted from the echo, the way the tensor-parallel knob above is.
+          // This pane loaded its own model with its own config, so the editable
+          // value has to follow it or Advanced Settings shows the other pane's
+          // Vision state.
+          disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
