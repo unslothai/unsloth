@@ -3,17 +3,15 @@
 
 // A janked window may not paint for a while, so do not wait on frames alone.
 // A scheduled fallback, not a deadline: a hidden page pauses frames and
-// throttles this timer (>=1s, ~1/min under Chrome's intensive throttling), so
-// there the cap below paces publishes. Hence a cap in arrivals, not in time.
+// throttles this timer too, which is why the cap below is in arrivals.
 export const UNPAINTED_REOPEN_MS = 500;
 
 /**
  * Text a closed gate may hold before it publishes regardless.
  *
  * assistant-ui drops whatever a run yields after an abort, so Stop keeps only the
- * last published text, and frames bound that hold in time rather than in volume:
- * the fallback above reopens a starved window, which is where the stream runs
- * fastest. Several frames' worth, so it binds only once frames are far apart.
+ * last published text. Frames bound that hold in time, not in volume, so this
+ * bounds it in volume. Several frames' worth, to bind only when frames are far apart.
  */
 export const MAX_HELD_CHARS = 256;
 
@@ -37,8 +35,8 @@ export function createStreamPublishGate(): (streamed: number) => boolean {
       open = false;
       // Per cycle, so the loser of the previous race cannot reopen this one.
       let reopened = false;
-      // Initialised before reopen closes over them, so a scheduler that calls
-      // back synchronously cannot hit the temporal dead zone and throw.
+      // Assigned before reopen closes over them, so a synchronous scheduler
+      // cannot hit the temporal dead zone.
       const handles: {
         frame?: number;
         timer?: ReturnType<typeof setTimeout>;

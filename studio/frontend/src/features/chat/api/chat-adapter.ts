@@ -5497,7 +5497,7 @@ export function createOpenAIStreamAdapter(
                         argsText: partial.argsText,
                       };
                       // A preview: it repeats per argument delta and
-                      // tool_start replaces it. The tool events carry state, so
+                      // tool_start replaces it. Tool events carry state, so
                       // they stay ungated.
                       if (canPublish(streamedChars)) {
                         yield {
@@ -6127,8 +6127,7 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
-              // So the strip below can be told from a chunk that added
-              // nothing.
+              // So the strip below can be told from a chunk that added nothing.
               const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
