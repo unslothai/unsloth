@@ -675,8 +675,37 @@ def _nested_loaders(loader: Any):
     return seen
 
 
+def _shutdown_loader_workers(loader: Any, shut: list) -> int:
+    """Shut down every worker set ``loader`` (or a wrapper of it) still holds.
+
+    ``shut`` carries the iterators already stopped across calls: an accelerate
+    wrapper and the loader inside it hold the SAME iterator, so the walk visits
+    one worker set twice; count it once, and still clear the reference on every
+    level that holds it.
+    """
+    released = 0
+    for candidate in _nested_loaders(loader):
+        iterator = getattr(candidate, "_iterator", None)
+        shutdown = getattr(iterator, "_shutdown_workers", None)
+        if not callable(shutdown):
+            continue
+        try:
+            if not any(iterator is seen for seen in shut):
+                shut.append(iterator)
+                released += len(getattr(iterator, "_workers", ()) or ())
+                shutdown()
+            candidate._iterator = None
+        except Exception as exc:  # noqa: BLE001 - a wedged worker must not fail the run
+            logger.warning(f"Online tokenization worker shutdown failed: {exc}")
+    return released
+
+
 def release_train_dataloader(trainer: Any) -> int:
-    """Shut down the prewarmed loader's persistent workers.  Returns how many.
+    """Shut down the online run's persistent DataLoader workers.  Returns how many.
+
+    The prewarmed train loader and, when the run evaluates, the eval loaders
+    transformers memoized in ``_eval_dataloaders``: both were built from the
+    same ``dataloader_num_workers`` / ``dataloader_persistent_workers``.
 
     ``dataloader_persistent_workers = True`` is what lets the barrier's workers
     survive into ``train()``, and it is equally what keeps them alive after
@@ -703,23 +732,22 @@ def release_train_dataloader(trainer: Any) -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    # An accelerate wrapper and the loader inside it hold the SAME iterator, so
-    # the walk visits one worker set twice; count it once, and still clear the
-    # reference on every level that holds it.
     shut: list = []
-    for candidate in _nested_loaders(loader):
-        iterator = getattr(candidate, "_iterator", None)
-        shutdown = getattr(iterator, "_shutdown_workers", None)
-        if not callable(shutdown):
-            continue
-        try:
-            if not any(iterator is seen for seen in shut):
-                shut.append(iterator)
-                released += len(getattr(iterator, "_workers", ()) or ())
-                shutdown()
-            candidate._iterator = None
-        except Exception as exc:  # noqa: BLE001 - a wedged worker must not fail the run
-            logger.warning(f"Online tokenization worker shutdown failed: {exc}")
+    released += _shutdown_loader_workers(loader, shut)
+
+    # The worker count is a TrainingArguments setting, so an online run with
+    # evaluation on gives the EVAL loader the same workers and the same
+    # `persistent_workers = True`; transformers then keeps that prepared loader
+    # in `_eval_dataloaders` (`Trainer._get_dataloader`, unchanged from 4.51.3
+    # through 5.5.0), and torch keeps `_iterator` alive on a persistent-workers
+    # loader once the eval loop has iterated it.  Nothing drops either, so the
+    # eval workers outlive train() exactly as the train ones do.  Drop the memo
+    # too: a trainer that evaluates after this rebuilds instead of iterating a
+    # loader whose workers just went away.
+    memo = getattr(trainer, "_eval_dataloaders", None)
+    if isinstance(memo, dict):
+        for key in list(memo.keys()):
+            released += _shutdown_loader_workers(memo.pop(key, None), shut)
     return released
 
 

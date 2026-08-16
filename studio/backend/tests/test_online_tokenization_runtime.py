@@ -250,6 +250,39 @@ def test_a_wrapped_loader_reports_its_workers_once():
     assert inner._iterator is None and wrapper._iterator is None
 
 
+def test_the_memoized_eval_workers_are_released_too():
+    """`dataloader_num_workers` is a TrainingArguments setting, so an online run
+    with evaluation on forks the same workers for the eval loader, and
+    transformers parks that loader in `_eval_dataloaders`. torch keeps
+    `_iterator` alive on a persistent-workers loader after the eval loop has
+    drained it, so those workers outlive train() exactly as the train ones do.
+    """
+    before = len(multiprocessing.active_children())
+    trainer = _FakeTrainer(_view())
+    _prewarm(trainer, PREWARM)
+
+    eval_loader = DataLoader(
+        _view(),
+        batch_size = BATCH,
+        num_workers = WORKERS,
+        prefetch_factor = PREFETCH,
+        persistent_workers = True,
+        collate_fn = _collate,
+    )
+    list(eval_loader)  # the eval loop drains it; torch retains the iterator
+    trainer._eval_dataloaders = {"eval": eval_loader}
+
+    assert eval_loader._iterator is not None, "torch dropped the persistent iterator"
+    assert len(multiprocessing.active_children()) == before + 2 * WORKERS
+
+    released = release_train_dataloader(trainer)
+
+    assert released == 2 * WORKERS, "the eval loader's workers were left running"
+    assert eval_loader._iterator is None
+    assert trainer._eval_dataloaders == {}, "the dead loader is still memoized"
+    assert len(multiprocessing.active_children()) == before
+
+
 def test_releasing_a_trainer_that_never_went_online_does_nothing():
     trainer = _FakeTrainer(_view())
     assert release_train_dataloader(trainer) == 0
