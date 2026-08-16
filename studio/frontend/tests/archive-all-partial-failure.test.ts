@@ -38,6 +38,20 @@ test("a partially failed Archive All still announces what did archive", async ()
   );
 });
 
+test("a partially failed Archive All announces only after every write settles", async () => {
+  // "b" rejects straight away while "c" is still writing, which is what Promise.all cannot wait for.
+  resetRecorder(threads, ["b"], ["c"]);
+
+  await assert.rejects(() => archiveAllChatItems(), /PATCH failed for b/);
+
+  assert.deepEqual(recorder.patched.sort(), ["a", "c"]);
+  assert.deepEqual(
+    recorder.events,
+    ["patch:a", "fail:b", "patch:c", "notify"],
+    "a silent write landing after the notification is never published to this or any other tab",
+  );
+});
+
 test("a fully successful Archive All announces exactly once", async () => {
   resetRecorder(threads);
 
