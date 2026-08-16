@@ -43,6 +43,9 @@ const STANDING = {
   gpuMemoryMode: "auto" as const,
   gpuLayers: -1,
   nCpuMoe: 0,
+  // Identity: the sweep is about the fields, not about a stale pick. The reconciler's own
+  // effect is covered in resident-config-match.test.ts.
+  reconcileGpuIds: (ids: number[] | null) => ids,
   normalizeSpeculative: (value: string | null | undefined) =>
     value == null || value === "" || value === "none" ? null : value,
 };
@@ -389,8 +392,8 @@ test("every PerModelConfig field is either compared or deliberately excluded", (
   const excluded = new Set([
     // A client-side generation cap: no status echoes it, so it cannot force a reload.
     "maxSeqLength",
-    // Qualifies selectedGpuIds rather than adding a dimension: the running llama.cpp build
-    // decides the kind, so a resident server and any pick share it, and /status omits it.
+    // Qualifies selectedGpuIds rather than adding a dimension of its own: it is read, as
+    // the reconciler's namespace argument, but /status has no field to compare it against.
     "selectedGpuIndexKind",
   ]);
   const unclassified = [...declared].filter(

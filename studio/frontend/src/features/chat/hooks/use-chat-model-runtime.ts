@@ -6,6 +6,9 @@ import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { serverWideReloadRequired } from "../lib/server-wide-reload";
+import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
+import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -118,6 +121,17 @@ export type SelectedModelInput = {
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
 // the pinned approval the worker requires instead of being blocked.
+/** The two settings reads `serverWideReloadRequired` judges, fetched together. */
+async function readServerWideReloadHints(): Promise<boolean> {
+  const [modelMemory, vramBudget] = await Promise.all([
+    loadModelMemorySettings().catch(() => null),
+    // Forced: a shared read that started before the last load answers about the child
+    // being replaced, not about the one resident now.
+    loadVramBudgetSettings({ force: true }).catch(() => null),
+  ]);
+  return serverWideReloadRequired({ modelMemory, vramBudget });
+}
+
 const approvedRemoteCodeFingerprints = new Map<string, string>();
 function rememberApprovedRemoteCode(
   checkpoint: string,
@@ -671,6 +685,12 @@ export function useChatModelRuntime() {
       // and only a completed load writes the lease, so adopting would keep a stale token.
       if (!forceReload && !nativePathToken) {
         const residentStatus = await getInferenceStatus().catch(() => null);
+        // Warm before reconciling the remembered GPU pick below: load-on-selection can run
+        // before any GPU hook mounted, and a cold cache passes the pick through unvalidated
+        // while performLoad, which warms it first, would have dropped it.
+        if (residentStatus && pendingConfig?.selectedGpuIds !== undefined) {
+          await ensureGpuDeviceCache().catch(() => {});
+        }
         if (
           residentStatus &&
           residentModelMatchesPick(residentStatus, {
@@ -697,8 +717,20 @@ export function useChatModelRuntime() {
             gpuMemoryMode: readPersistedGpuMemoryMode(),
             gpuLayers: GPU_LAYERS_AUTO,
             nCpuMoe: 0,
+            // What /load sends: a pick saved in another index namespace, or naming GPUs
+            // that are gone, is reconciled to Automatic before it leaves.
+            reconcileGpuIds: (ids, savedIndexKind) =>
+              reconcilePersistedGpuIds(
+                ids,
+                savedIndexKind,
+                residentStatus.is_diffusion ?? false,
+              ),
             normalizeSpeculative: normalizeSpeculativeType,
-          })
+          }) &&
+          // Both are server-wide, so a save leaves the pick and its config identical while
+          // adopt_load_intent_if_matched forces a reload anyway. Without them a policy or
+          // budget change made between two picks of one model would never reach the child.
+          !(await readServerWideReloadHints())
         ) {
           // Same window as the confirm below: a rival load may have started during that GET,
           // and it owns the resident model now.

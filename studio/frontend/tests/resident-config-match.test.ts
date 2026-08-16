@@ -49,6 +49,8 @@ const STANDING = {
   gpuMemoryMode: "auto" as const,
   gpuLayers: -1,
   nCpuMoe: 0,
+  // Identity by default: reconciliation is exercised on its own below.
+  reconcileGpuIds: (ids: number[] | null) => ids,
   // Enough of normalizeSpeculativeType for these cases; the real mapping is the store's
   // and is tested there. What matters here is that the comparator USES it on both sides.
   normalizeSpeculative: (v: string | null | undefined) =>
@@ -407,6 +409,45 @@ test("the speculative mode is normalized on both sides", () => {
     matches({ ...DEFAULTS, speculative_type: "default" }, BLANK),
     true,
   );
+});
+
+test("the GPU pick is compared after reconciliation, not as saved", () => {
+  // performLoad sends reconcilePersistedGpuIds(ids, kind): a pick saved in another index
+  // namespace, or naming GPUs that are gone, leaves as Automatic. Comparing the saved ids
+  // let a physical [1] adopt a server pinned to Vulkan device 1.
+  const dropped = { ...STANDING, reconcileGpuIds: () => null };
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: [1] },
+      { ...BLANK, selectedGpuIds: [1], selectedGpuIndexKind: "physical" },
+      dropped,
+    ),
+    false,
+  );
+  // The reverse, so the reconciler is not merely refusing everything: once the pick is
+  // Automatic it agrees with a server that was placed automatically.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_gpu_ids: null },
+      { ...BLANK, selectedGpuIds: [1], selectedGpuIndexKind: "physical" },
+      dropped,
+    ),
+    true,
+  );
+  // And the kind reaches the reconciler, which is the only thing that can use it.
+  const kinds: (string | null | undefined)[] = [];
+  matches(
+    DEFAULTS,
+    { ...BLANK, selectedGpuIds: [0], selectedGpuIndexKind: "vulkan" },
+    {
+      ...STANDING,
+      reconcileGpuIds: (ids, kind) => {
+        kinds.push(kind);
+        return ids;
+      },
+    },
+  );
+  assert.deepEqual(kinds, ["vulkan"]);
 });
 
 test("an unset GPU memory mode is the standing preference, not silence", () => {

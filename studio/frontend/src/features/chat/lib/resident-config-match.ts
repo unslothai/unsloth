@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+import type { GpuIndexKind } from "@/hooks/gpu-selection";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -61,6 +62,17 @@ export type StandingConfigDefaults = {
   gpuLayers: number;
   /** The applier's own constant, 0. */
   nCpuMoe: number;
+  /**
+   * `reconcilePersistedGpuIds`, with the device cache already warm and the resident model's
+   * diffusion flag bound. `performLoad` sends the reconciled pick, not the saved one: a
+   * selection saved in another index namespace, or naming GPUs that are gone, becomes
+   * Automatic before `/load`. Comparing the raw ids would let a saved physical `[1]` adopt a
+   * server pinned to Vulkan device 1.
+   */
+  reconcileGpuIds: (
+    ids: number[] | null,
+    savedIndexKind: GpuIndexKind | null | undefined,
+  ) => number[] | null;
   /**
    * `normalizeSpeculativeType`, passed rather than imported. It lives on the chat runtime
    * store, which reaches React, and this module is deliberately a leaf so the node suite
@@ -226,9 +238,16 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Absent resolves to a null selection in the applier, and a null selection is sent as
     // Automatic, so this is pinned like the rest: an unset pick does not adopt a server
-    // that was placed on a chosen GPU.
+    // that was placed on a chosen GPU. Reconciled first, since that is what /load sends.
     pinned: () => true,
-    agrees: (c, s) => sameGpuSet(c.selectedGpuIds, s.requested_gpu_ids),
+    agrees: (c, s, standing) =>
+      sameGpuSet(
+        standing.reconcileGpuIds(
+          c.selectedGpuIds ?? null,
+          c.selectedGpuIndexKind,
+        ),
+        s.requested_gpu_ids,
+      ),
   },
 ];
 
