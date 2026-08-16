@@ -28,11 +28,13 @@ def _has_blockwise_fbgemm():
         return False
     try:
         import fbgemm_gpu
+
         try:
             import fbgemm_gpu.experimental.gen_ai  # noqa: F401
         except Exception:
             pass
         from packaging.version import Version
+
         if Version(fbgemm_gpu.__version__) < Version("1.4.0"):
             return False  # <=1.3.0 corrupts some shapes; unsloth gates it off
     except Exception:
@@ -54,11 +56,11 @@ def _block_quantize_weight(W, block):
     Wq = torch.empty(n, k, device = W.device, dtype = torch.float8_e4m3fn)
     for i in range(p):
         for j in range(q):
-            blk = W[i * block[0]:(i + 1) * block[0], j * block[1]:(j + 1) * block[1]].float()
+            blk = W[i * block[0] : (i + 1) * block[0], j * block[1] : (j + 1) * block[1]].float()
             s = blk.abs().amax() / 448.0
             s = torch.tensor(1.0, device = W.device) if s == 0 else s
             scale[i, j] = s
-            Wq[i * block[0]:(i + 1) * block[0], j * block[1]:(j + 1) * block[1]] = (blk / s).to(
+            Wq[i * block[0] : (i + 1) * block[0], j * block[1] : (j + 1) * block[1]] = (blk / s).to(
                 torch.float8_e4m3fn
             )
     return Wq, scale

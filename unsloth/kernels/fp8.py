@@ -566,14 +566,10 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         # ("cutlass cannot implement"). Dequant + plain matmul for those,
         # the same fallback FP8BlockQuantLinear uses for unevenly tiled K.
         kernel_supported = (
-            (bs_m, bs_n, bs_k) == (128, 128, 128)
-            and X.shape[-1] % 16 == 0
-            and m % 8 == 0
+            (bs_m, bs_n, bs_k) == (128, 128, 128) and X.shape[-1] % 16 == 0 and m % 8 == 0
         )
         if not kernel_supported:
-            W_deq = _blockwise_weight_dequant_any_shape(
-                weight, weight_scale, [bs_n, bs_k], X.dtype
-            )
+            W_deq = _blockwise_weight_dequant_any_shape(weight, weight_scale, [bs_n, bs_k], X.dtype)
             output = torch_matmul(X, W_deq.T)
             output = output + bias if bias is not None else output
             output = output.view(*orig_shape[:-1], -1)
