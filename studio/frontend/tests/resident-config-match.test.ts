@@ -1065,6 +1065,83 @@ test("a model switch is judged on the defaults it resets to, not the outgoing se
   );
 });
 
+test("a pass-through split mode decides the tensor-parallel comparison", () => {
+  // resolve_tensor_parallel lets an explicit --split-mode last-win over the toggle before
+  // the comparator sees it, so comparing the raw toggle judged a request the server never
+  // received.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: true,
+        requested_llama_extra_args: ["--split-mode", "tensor"],
+      },
+      {
+        ...BLANK,
+        tensorParallel: false,
+        llamaExtraArgs: ["--split-mode", "tensor"],
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: false,
+        requested_llama_extra_args: ["-sm", "layer"],
+      },
+      { ...BLANK, tensorParallel: true, llamaExtraArgs: ["-sm", "layer"] },
+    ),
+    true,
+  );
+  // Without an override the toggle still answers for itself.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, tensor_parallel: true },
+      { ...BLANK, tensorParallel: false },
+    ),
+    false,
+  );
+});
+
+test("a manual pass-through layer count is compared as the field it becomes", () => {
+  // The route copies the last -ngl into request.gpu_layers and strips the flag before the
+  // already-loaded comparator runs, so the resident status reports 20 and a stripped list
+  // while the config still carries the raw form.
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
+  const running = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 20,
+    requested_llama_extra_args: ["--flash-attn", "on"],
+  };
+  assert.equal(
+    matches(running, {
+      ...manual,
+      llamaExtraArgs: ["-ngl", "20", "--flash-attn", "on"],
+    }),
+    true,
+  );
+  // A different count is still a reload.
+  assert.equal(
+    matches(running, {
+      ...manual,
+      llamaExtraArgs: ["-ngl", "8", "--flash-attn", "on"],
+    }),
+    false,
+  );
+  // Auto does not own the offload flags, so an inherited -ngl reaches the child and the
+  // list is compared as written.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_llama_extra_args: ["--flash-attn", "on"] },
+      { ...BLANK, llamaExtraArgs: ["-ngl", "20", "--flash-attn", "on"] },
+    ),
+    false,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.

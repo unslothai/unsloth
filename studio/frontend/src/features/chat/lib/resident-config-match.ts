@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { PerModelConfig } from "@/features/model-picker";
+
+import {
+  parseGpuLayersOverride,
+  resolveTensorParallel,
+  stripManagedOffloadFlags,
+} from "./llama-extra-args-normalize";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
 
 import type { InferenceStatusResponse } from "../types/api";
@@ -321,7 +327,10 @@ const SETTING_CHECKS: SettingCheck[] = [
     // Not nullable, so it always has an opinion; a status omitting it ran without.
     pinned: () => true,
     agrees: (c, s) =>
-      c.tensorParallel === (s.tensor_parallel ?? false) ||
+      // The toggle after a pass-through --split-mode has last-won over it, which is what
+      // resolve_tensor_parallel hands the comparator.
+      resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) ===
+        (s.tensor_parallel ?? false) ||
       // Rewritten away with the rest of the placement on a virtualised Metal device.
       s.gpu_placement_paravirtual === true ||
       // A split the architecture gate normalized away: that layer-mode runtime IS this
@@ -343,7 +352,13 @@ const SETTING_CHECKS: SettingCheck[] = [
     // only with a load invoked with no pass-through args.
     chatOnly: true,
     pinned: (c) => c.llamaExtraArgs !== undefined,
-    agrees: (c, s) => sameList(c.llamaExtraArgs, s.requested_llama_extra_args),
+    agrees: (c, s, standing) =>
+      sameList(
+        requestedGpuMemoryMode(c, standing) === "manual"
+          ? stripManagedOffloadFlags(c.llamaExtraArgs)
+          : c.llamaExtraArgs,
+        s.requested_llama_extra_args,
+      ),
   },
   {
     // Standing preference, like the speculative mode above.
@@ -363,8 +378,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s, standing) =>
       requestedGpuMemoryMode(c, standing) !== "manual" ||
-      (c.gpuLayers ?? standing.gpuLayers) ===
-        (s.gpu_layers ?? standing.gpuLayers),
+      requestedGpuLayers(c, standing) === (s.gpu_layers ?? standing.gpuLayers),
   },
   {
     // Manual with a non-negative pin, the same guard the backend uses. A config keeps a
@@ -375,7 +389,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s, standing) =>
       requestedGpuMemoryMode(c, standing) !== "manual" ||
-      (c.gpuLayers ?? standing.gpuLayers) < 0 ||
+      requestedGpuLayers(c, standing) < 0 ||
       (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
   },
   {
@@ -429,12 +443,28 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
 ];
 
+/**
+ * The layer count `/load` ends up with. Under manual a pass-through `-ngl` is copied into
+ * the first-class field before the comparator runs, so the raw toggle is not what was
+ * requested.
+ */
+function requestedGpuLayers(
+  config: PerModelConfig,
+  standing: StandingConfigDefaults,
+): number {
+  const override =
+    requestedGpuMemoryMode(config, standing) === "manual"
+      ? parseGpuLayersOverride(config.llamaExtraArgs)
+      : null;
+  return override ?? config.gpuLayers ?? standing.gpuLayers;
+}
+
 /** `_diffusion_manual_ngl`: only an explicit manual count reaches the child. */
 function diffusionManualNgl(
   config: PerModelConfig,
   standing: StandingConfigDefaults,
 ): number | null {
-  const layers = config.gpuLayers ?? standing.gpuLayers;
+  const layers = requestedGpuLayers(config, standing);
   return requestedGpuMemoryMode(config, standing) === "manual" && layers >= 0
     ? layers
     : null;
