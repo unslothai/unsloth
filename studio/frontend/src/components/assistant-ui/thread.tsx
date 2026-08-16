@@ -4796,7 +4796,17 @@ const ComposerToolsMenu: FC<{
       const files = (event.target as HTMLInputElement).files;
       if (files) {
         for (const file of files) {
-          void aui.composer().addAttachment(file);
+          aui
+            .composer()
+            .addAttachment(file)
+            .catch(() => {
+              // The adapter shows its own toast for every refusal it raises (no
+              // model loaded, Vision switched off, unsupported type), so there is
+              // nothing to add here. Without the catch the rejection escapes as an
+              // unhandled promise rejection -- a red console error next to a toast
+              // that already said everything. Same contract as the page-wide drop
+              // handler above.
+            });
         }
       }
       document.body.removeChild(input);
