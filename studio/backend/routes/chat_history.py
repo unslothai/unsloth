@@ -26,6 +26,7 @@ from storage.studio_db import (
     ChatThreadDeletedError,
     ChatThreadPreconditionFailed,
     CorruptSettingsError,
+    ProjectWorkspaceError,
     build_chat_history_export,
     clear_chat_history,
     count_chat_threads,
@@ -753,7 +754,22 @@ def list_projects(
 
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
-    return ChatProject(**upsert_chat_project(payload.model_dump()))
+    try:
+        return ChatProject(**upsert_chat_project(payload.model_dump()))
+    except ProjectWorkspaceError as exc:
+        # A project is the only thing Studio writes to Documents, so a folder it
+        # cannot create there fails here and nowhere else. Only this error, and
+        # only its own path: the same upsert also opens the database, which
+        # lives somewhere else entirely.
+        raise log_and_http_error(
+            exc,
+            500,
+            f"Could not create the project folder {exc.path}. Check that the "
+            "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
+            "location.",
+            event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
 
 
 @router.get("/projects/{project_id}", response_model = ChatProject)
