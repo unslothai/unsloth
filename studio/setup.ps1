@@ -5038,6 +5038,16 @@ def _verdict(d, d_record):
     # counts on every platform; __pycache__ does not, being what a quarantine leaves.
     _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
                  + importlib.machinery.EXTENSION_SUFFIXES)
+    def _foreign(p):
+        # Claimed by a DIFFERENT distribution's RECORD. Being inside the managed root
+        # is not ownership: another package installed there can provide the same
+        # import name, and after our payload is deleted its copy would answer for us.
+        # A path no RECORD claims is not foreign -- that is the RECORD-less case this
+        # check exists alongside, not evidence against us. Defined HERE, beside
+        # _has_module rather than inside _spec: _has_module calls it too, and Python's
+        # lexical scoping does not reach a sibling function.
+        _o = owners.get(os.path.normcase(os.path.abspath(p)))
+        return bool(_o) and _me not in _o
     def _has_module(_p, _depth):
         try:
             _entries = os.listdir(_p)
@@ -5144,14 +5154,6 @@ def _verdict(d, d_record):
         # payload that is gone -- for a plain install and an editable one alike. An
         # empty root means nothing can be bound and only presence is checked.
         _base = os.path.normcase(os.path.abspath(root)) if root else None
-        def _foreign(p):
-            # Claimed by a DIFFERENT distribution's RECORD. Being inside the managed
-            # root is not ownership: another package installed there can provide the
-            # same import name, and after our payload is deleted its copy would
-            # answer for us. A path no RECORD claims is not foreign -- that is the
-            # RECORD-less case this check exists alongside, not evidence against us.
-            _o = owners.get(os.path.normcase(os.path.abspath(p)))
-            return bool(_o) and _me not in _o
         def _inside(p):
             # normcase on both sides: Windows paths are case-insensitive, and a
             # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
