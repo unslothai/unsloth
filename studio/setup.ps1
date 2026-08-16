@@ -5097,23 +5097,33 @@ def _verdict(d, d_record):
         # lexical scoping does not reach a sibling function.
         _o = owners.get(os.path.normcase(os.path.abspath(p)))
         return bool(_o) and _mine not in _o
-    def _has_module(_p, _depth):
-        try:
-            _entries = os.listdir(_p)
-        except OSError:
-            return False
-        _subs = []
-        for _e in _entries:
-            if _e == '__pycache__':
+    def _has_module(_p):
+        # Walked to the bottom, with no depth cap: a namespace package may nest as
+        # deep as it likes, and cutting the walk short would report a healthy install
+        # as damaged. Cycles are the real hazard, not depth, so realpaths already
+        # visited are skipped -- a symlink loop cannot spin here. The first module
+        # found answers, so only a tree that has none is walked in full.
+        _stack = [_p]
+        _seen = set()
+        while _stack:
+            _dir = _stack.pop()
+            _real = os.path.normcase(os.path.realpath(_dir))
+            if _real in _seen:
                 continue
-            _f = os.path.join(_p, _e)
-            if os.path.isdir(_f):
-                _subs.append(_f)
-            elif _e.endswith(_imp) and not _foreign(_f):
-                return True
-        # nested namespaces are legitimate, so recurse -- bounded, since the first
-        # module found answers and only a module-less tree walks to the bottom
-        return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
+            _seen.add(_real)
+            try:
+                _entries = os.listdir(_dir)
+            except OSError:
+                continue
+            for _e in _entries:
+                if _e == '__pycache__':
+                    continue
+                _f = os.path.join(_dir, _e)
+                if os.path.isdir(_f):
+                    _stack.append(_f)
+                elif _e.endswith(_imp) and not _foreign(_f):
+                    return True
+        return False
     rows = []
     selfrec = False
     flen = 3
@@ -5222,13 +5232,18 @@ def _verdict(d, d_record):
             # normcase on both sides: Windows paths are case-insensitive, and a
             # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
             # would otherwise read as living outside itself
-            return _base is None or os.path.normcase(os.path.realpath(p)).startswith(_base + os.sep)
+            if _base is None:
+                return True
+            # rstrip first: a checkout at a filesystem root already ends in the
+            # separator, and '/' + '/' would reject every path under it
+            _pp = os.path.normcase(os.path.realpath(p))
+            return _pp == _base or _pp.startswith(_base.rstrip(os.sep) + os.sep)
         if s.origin and s.origin != 'namespace':
             return _inside(s.origin) and not _foreign(s.origin)
         # A namespace spec is not payload on its own: an emptied package directory
         # still answers find_spec with its own path, so require an importable module.
         for _p in list(getattr(s, 'submodule_search_locations', None) or []):
-            if _p and _inside(_p) and _has_module(_p, 6):
+            if _p and _inside(_p) and _has_module(_p):
                 return True
         return False
     def _tops():
