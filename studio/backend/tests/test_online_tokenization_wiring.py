@@ -476,16 +476,24 @@ def test_an_mpirun_launch_scales_the_rows_a_step_consumes(monkeypatch):
 
 
 def test_a_per_node_torchrun_scales_the_rows_a_step_consumes(monkeypatch):
-    """LOCAL_WORLD_SIZE is the only count torchrun sets per node, so a single-node
-    launch that lost WORLD_SIZE still has to be counted."""
+    """torchrun sets WORLD_SIZE and LOCAL_WORLD_SIZE both, so this is the defensive
+    case: an environment that kept the per-node count and lost the global one still
+    has to be counted rather than read as a single process."""
     _eight_ranks(monkeypatch, LOCAL_WORLD_SIZE = "8")
 
 
 def test_an_mlx_hostfile_scales_the_rows_a_step_consumes(monkeypatch, tmp_path):
     """mlx.launch's ring backend advertises its ranks as a JSON file rather than a
-    number; its NCCL backend is CUDA-only, so this path is reachable."""
+    number; its NCCL backend is CUDA-only, so this path is reachable.
+
+    Written in the shape the ring backend really uses: the outer list has one entry
+    per rank, and each entry is that rank's own list of addresses, because a pair of
+    peers may hold several connections."""
     hostfile = tmp_path / "hosts.json"
-    hostfile.write_text(json.dumps([f"10.0.0.{i}:9000" for i in range(8)]), encoding = "utf-8")
+    hostfile.write_text(
+        json.dumps([[f"10.0.0.{i}:9000", f"10.0.0.{i}:9001"] for i in range(8)]),
+        encoding = "utf-8",
+    )
     _eight_ranks(monkeypatch, MLX_HOSTFILE = str(hostfile))
 
 
@@ -542,6 +550,44 @@ def test_the_resolved_pass_count_handed_to_the_gate_is_the_arithmetic(monkeypatc
     expected = (_EIGHT_RANK_STEPS * 2 * 4 * 8) / ROWS
     assert seen["resolved_max_steps_epochs"] == pytest.approx(expected)
     assert seen["resolved_max_steps_epochs"] > 1.0
+
+
+def _captured_logger(monkeypatch):
+    """Record what the trainer logs, without depending on the logging config."""
+    lines: list = []
+
+    class _Recorder:
+        def info(self, message, *args, **kwargs):
+            lines.append(str(message))
+
+        warning = error = debug = info
+
+    import core.training.trainer as trainer_mod
+
+    monkeypatch.setattr(trainer_mod, "logger", _Recorder())
+    return lines
+
+
+def test_a_multi_rank_launch_names_the_variable_that_claimed_the_ranks(monkeypatch):
+    """A size variable left behind by an earlier mpirun, or inherited from an
+    interactive srun, reads here as a multi-rank launch on a machine running one
+    process, and its whole visible effect is this run being told it makes several
+    passes. Name the variable so that verdict is not silent. The merged row bound
+    reads the same variables, so the environment is trusted either way."""
+    lines = _captured_logger(monkeypatch)
+    _eight_ranks(monkeypatch, OMPI_COMM_WORLD_SIZE = "8")
+    reported = [line for line in lines if "data-parallel processes" in line]
+    assert len(reported) == 1, lines
+    assert "8 data-parallel processes" in reported[0]
+    assert "OMPI_COMM_WORLD_SIZE=8" in reported[0]
+
+
+def test_a_single_process_launch_says_nothing_about_launchers(monkeypatch):
+    """The report is for the surprising case only; a normal run must not grow a
+    line about a world size of one."""
+    lines = _captured_logger(monkeypatch)
+    _eight_ranks(monkeypatch, expect_enabled = True)
+    assert not [line for line in lines if "data-parallel processes" in line], lines
 
 
 def test_a_single_process_launch_still_qualifies(monkeypatch):

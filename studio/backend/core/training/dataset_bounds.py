@@ -29,28 +29,31 @@ MIN_MAX_STEPS_ROWS = 1024
 # Launchers that advertise a data-parallel process count. Read as env because this
 # module is torch-free and the bound is computed before any process group exists, so
 # torch.distributed cannot be asked: at bound time it is almost never initialised.
-# MLX_WORLD_SIZE and the MPI pairs mirror the set routes/inference.py already trusts
-# to detect an mlx.launch, so both loaders learn their rank count the same way.
+# The same names routes/inference.py reads, but not the same test: that one pairs each
+# size with its rank partner and requires size > 1, because it is deciding whether to
+# refuse a request. This is sizing a row bound, so a bare size is enough and an absent
+# one costs nothing. Annotated with what actually sets each, since several of these are
+# widely miscited.
 WORLD_SIZE_ENV_VARS = (
-    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed
-    "LOCAL_WORLD_SIZE",  # torchrun, and the only one it sets per node
+    "WORLD_SIZE",  # torchrun, accelerate launch, deepspeed. NOT set by any MPI
+    "LOCAL_WORLD_SIZE",  # torchrun's --nproc-per-node; it sets WORLD_SIZE too
     "MLX_WORLD_SIZE",  # only mlx.launch's NCCL backend, which is CUDA-only
-    "OMPI_COMM_WORLD_SIZE",
-    "PMI_SIZE",
-    "PMIX_SIZE",
-    "MPI_WORLD_SIZE",
-    "MV2_COMM_WORLD_SIZE",
+    "OMPI_COMM_WORLD_SIZE",  # Open MPI / prterun, alongside OMPI_COMM_WORLD_RANK
+    "PMI_SIZE",  # MPICH and Intel MPI via Hydra; srun only under --mpi=pmi2
+    "PMIX_SIZE",  # nothing sets this: PMIx answers job size through PMIx_Get
+    "MPI_WORLD_SIZE",  # likewise undocumented in every MPI checked
+    "MV2_COMM_WORLD_SIZE",  # MVAPICH2, and only under its mpirun_rsh launcher
 )
-# The count an mlx.launch on Apple silicon advertises, which is not a number in the
-# env: of its four backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and JACCL
-# export a path to a JSON file with one entry per rank instead, and MLX documents the
-# world size as exactly the length of that list. Without these two an mlx.launch reads
-# as one process and the MLX loader under-counts, which is the direction that recycles
-# rows, so the Apple path -- the only one MLX training actually runs on -- would keep
-# the bug this module's world size exists to fix.
+# The count an mlx.launch advertises when it is not a number in the env: of its five
+# backends only NCCL (CUDA) exports MLX_WORLD_SIZE. Ring and JACCL export a path to a
+# JSON file with one entry per rank instead, and the world size is exactly the length
+# of that outer list. Without these two an mlx.launch reads as one process and the MLX
+# loader under-counts, which is the direction that recycles rows, so the Apple path --
+# the only one MLX training actually runs on -- would keep the bug this module's world
+# size exists to fix.
 WORLD_SIZE_ENV_FILES = (
-    "MLX_HOSTFILE",  # ring backend: one "ip:port" list per rank
-    "MLX_IBV_DEVICES",  # jaccl backend: the RDMA matrix, one row per rank
+    "MLX_HOSTFILE",  # ring backend: a path to [["ip:port", ...], ...], one per rank
+    "MLX_IBV_DEVICES",  # jaccl backend: a path to the N x N RDMA matrix, one row per rank
 )
 # A hostfile is a few hundred bytes per rank. Read a bounded prefix so a wrong path
 # (an env var pointed at something enormous) cannot pull a file into memory; a
@@ -111,7 +114,11 @@ def world_size_from_rank_files(environ: Any = None) -> int:
             if value.lstrip()[:1] in ("[", "{"):
                 payload = json.loads(value[:MAX_WORLD_SIZE_FILE_BYTES])
             elif os.path.isfile(value):
-                with open(value, encoding = "utf-8") as handle:
+                # Binary, so the cap is the bytes it says it is. A text handle's
+                # read() counts CHARACTERS, and a file of 4-byte codepoints would
+                # pull four times the cap off disk. json.loads takes bytes and
+                # raises UnicodeDecodeError, a ValueError, on anything not UTF-8.
+                with open(value, "rb") as handle:
                     payload = json.loads(handle.read(MAX_WORLD_SIZE_FILE_BYTES))
             else:
                 continue
@@ -138,6 +145,28 @@ def world_size_from_env(environ: Any = None) -> int:
     source = os.environ if environ is None else environ
     numbers = max(_positive_int(source.get(name), 1) for name in WORLD_SIZE_ENV_VARS)
     return max(numbers, world_size_from_rank_files(source))
+
+
+def world_size_env_report(environ: Any = None) -> str:
+    """The launcher variables that are set, for a log line. Never raises.
+
+    Which variable claimed the rank count is the only thing a user can act on when
+    a run on one machine is told it makes several passes. mpirun, srun and some
+    container images leave a size variable behind, and a stale one reads as a
+    multi-rank launch here exactly as it does in the row bound.
+
+    Values are truncated: MLX_HOSTFILE legitimately carries a whole JSON payload.
+    """
+    source = os.environ if environ is None else environ
+    parts = []
+    for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
+        try:
+            value = source.get(name)
+        except Exception:  # noqa: BLE001 - a log line must not be what fails a run
+            continue
+        if value:
+            parts.append(f"{name}={str(value)[:64]}")
+    return ", ".join(parts) or "no launcher variable set"
 
 
 def max_steps_dataset_rows(
