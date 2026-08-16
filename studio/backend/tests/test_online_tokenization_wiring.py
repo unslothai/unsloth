@@ -84,7 +84,13 @@ class _Tokenizer:
     bos_token = "<s>"
     chat_template = "{{ messages }}"
 
-    def __call__(self, texts, truncation = True, max_length = 8, add_special_tokens = True):
+    def __call__(
+        self,
+        texts,
+        truncation = True,
+        max_length = 8,
+        add_special_tokens = True,
+    ):
         if isinstance(texts, str):
             texts = [texts]
         return {"input_ids": [[7] * min(len(t), max_length) for t in texts]}
@@ -127,8 +133,15 @@ def _config_args(**overrides):
     return args
 
 
-def _run(monkeypatch, *, self_overrides = None, config_overrides = None,
-         wrapper = None, eval_dataset = None, **call_overrides):
+def _run(
+    monkeypatch,
+    *,
+    self_overrides = None,
+    config_overrides = None,
+    wrapper = None,
+    eval_dataset = None,
+    **call_overrides,
+):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("UNSLOTH_STUDIO_ONLINE_TOKENIZATION", raising = False)
     trainer = _fake_self(**(self_overrides or {}))
@@ -212,9 +225,7 @@ def test_packing_on_takes_the_old_path(monkeypatch):
 
 def test_a_streaming_split_takes_the_old_path(monkeypatch):
     stream = _dataset(64).to_iterable_dataset()
-    decision, config_args, wrapper, trainer = _run(
-        monkeypatch, wrapper = {"dataset": stream}
-    )
+    decision, config_args, wrapper, trainer = _run(monkeypatch, wrapper = {"dataset": stream})
     assert not decision.enabled
     _assert_untouched(config_args, wrapper, trainer, stream)
 
@@ -230,9 +241,7 @@ def test_a_vlm_takes_the_old_path(monkeypatch):
 
 def test_an_already_tokenized_split_takes_the_old_path(monkeypatch):
     original = _dataset(columns = {"input_ids": [[1, 2]] * ROWS})
-    decision, config_args, wrapper, trainer = _run(
-        monkeypatch, wrapper = {"dataset": original}
-    )
+    decision, config_args, wrapper, trainer = _run(monkeypatch, wrapper = {"dataset": original})
     assert not decision.enabled and "input_ids" in decision.reason
     _assert_untouched(config_args, wrapper, trainer, original)
 
@@ -301,12 +310,8 @@ def test_a_broken_gate_degrades_instead_of_failing_the_run(monkeypatch):
     def _explode(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        "utils.datasets.online_tokenization.decide_online_tokenization", _explode
-    )
-    decision, config_args, wrapper, trainer = _run(
-        monkeypatch, wrapper = {"dataset": original}
-    )
+    monkeypatch.setattr("utils.datasets.online_tokenization.decide_online_tokenization", _explode)
+    decision, config_args, wrapper, trainer = _run(monkeypatch, wrapper = {"dataset": original})
     assert not decision.enabled and "boom" in decision.reason
     _assert_untouched(config_args, wrapper, trainer, original)
 
@@ -317,12 +322,8 @@ def test_a_failure_while_attaching_rolls_the_dataset_back(monkeypatch):
     def _explode(dataset, **kwargs):
         raise RuntimeError("attach failed")
 
-    monkeypatch.setattr(
-        "utils.datasets.online_tokenization.attach_online_tokenization", _explode
-    )
-    decision, config_args, wrapper, trainer = _run(
-        monkeypatch, wrapper = {"dataset": original}
-    )
+    monkeypatch.setattr("utils.datasets.online_tokenization.attach_online_tokenization", _explode)
+    decision, config_args, wrapper, trainer = _run(monkeypatch, wrapper = {"dataset": original})
     assert not decision.enabled and "attach failed" in decision.reason
     _assert_untouched(config_args, wrapper, trainer, original)
 
@@ -333,9 +334,7 @@ def test_a_failure_while_attaching_rolls_the_dataset_back(monkeypatch):
 def test_a_step_cap_is_resolved_into_passes_rather_than_guessed(monkeypatch):
     """`max_steps` alone reads as "unknown length" in the gate; Studio knows the
     row count and the microbatch size, so it answers the question here."""
-    decision, _, _, _ = _run(
-        monkeypatch, config_overrides = {"max_steps": 30, "num_train_epochs": 1}
-    )
+    decision, _, _, _ = _run(monkeypatch, config_overrides = {"max_steps": 30, "num_train_epochs": 1})
     assert decision.enabled, decision.reason
 
 
@@ -394,8 +393,8 @@ def _preflight_self(loader_calls, batches):
         _online_prewarm_batches = 0,
     )
     trainer._preflight_first_batch = UnslothTrainer._preflight_first_batch.__get__(trainer)
-    trainer._chat_template_renders_empty = (
-        UnslothTrainer._chat_template_renders_empty.__get__(trainer)
+    trainer._chat_template_renders_empty = UnslothTrainer._chat_template_renders_empty.__get__(
+        trainer
     )
     return trainer
 

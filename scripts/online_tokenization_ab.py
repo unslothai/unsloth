@@ -40,9 +40,10 @@ sys.path.insert(0, str(REPO))
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arm", choices = ("eager", "online"), required = True)
-    parser.add_argument("--dataset", default = str(
-        WORKSPACE / "temp" / "w3_online_bench" / "openmath_chatml_100k.parquet"
-    ))
+    parser.add_argument(
+        "--dataset",
+        default = str(WORKSPACE / "temp" / "w3_online_bench" / "openmath_chatml_100k.parquet"),
+    )
     parser.add_argument("--model", default = str(WORKSPACE / "hf_data" / "Qwen3-0.6B"))
     parser.add_argument("--max-steps", type = int, default = 30)
     parser.add_argument("--batch-size", type = int, default = 2)
@@ -94,8 +95,13 @@ def main() -> int:
         lora_alpha = 16,
         lora_dropout = 0.0,
         target_modules = [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
         ],
         use_gradient_checkpointing = "unsloth",
     ):
@@ -129,7 +135,14 @@ def main() -> int:
             if len(self.step_times) == 1:
                 mark("first_step_end")
 
-        def on_log(self, targs, state, control, logs = None, **kwargs):
+        def on_log(
+            self,
+            targs,
+            state,
+            control,
+            logs = None,
+            **kwargs,
+        ):
             if logs and "loss" in logs:
                 self.losses.append(logs["loss"])
 
@@ -186,9 +199,7 @@ def main() -> int:
         fmt = getattr(split, "format", None)
         observed = {
             "dataloader_num_workers": getattr(targs, "dataloader_num_workers", None),
-            "dataloader_persistent_workers": getattr(
-                targs, "dataloader_persistent_workers", None
-            ),
+            "dataloader_persistent_workers": getattr(targs, "dataloader_persistent_workers", None),
             "dataloader_prefetch_factor": getattr(targs, "dataloader_prefetch_factor", None),
             "dataset_kwargs": getattr(targs, "dataset_kwargs", None),
             "remove_unused_columns": getattr(targs, "remove_unused_columns", None),

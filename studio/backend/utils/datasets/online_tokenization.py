@@ -151,7 +151,6 @@ def trl_supports_skip_prepare_dataset() -> bool:
 
     try:
         import inspect
-
         source = inspect.getsource(SFTTrainer.__init__)
     except Exception:  # noqa: BLE001
         return True
@@ -185,7 +184,6 @@ def is_processor(processing_class: Any) -> bool:
     """
     try:
         from transformers import ProcessorMixin
-
         if isinstance(processing_class, ProcessorMixin):
             return True
     except Exception:  # noqa: BLE001
@@ -248,7 +246,6 @@ def resolve_worker_count(desired: Optional[int] = None) -> int:
         return 0
     try:
         from utils.hardware import dataset_map_num_proc
-
         available = dataset_map_num_proc(desired, serial_as_none = True)
     except Exception:  # noqa: BLE001
         available = None
@@ -317,9 +314,7 @@ def decide_online_tokenization(
 
     def veto(reason: str) -> OnlineTokenizationDecision:
         checks.append((reason, False))
-        return OnlineTokenizationDecision(
-            enabled = False, reason = reason, checks = tuple(checks)
-        )
+        return OnlineTokenizationDecision(enabled = False, reason = reason, checks = tuple(checks))
 
     override = env_override()
     if override is False:
@@ -398,8 +393,10 @@ def decide_online_tokenization(
     # against a 97s tokenize map; a multi-epoch run pays it again per epoch
     # while the saving stays fixed, so anything past a single pass keeps Arrow.
     if not forced and epochs > 1.0:
-        detail = "step-capped run of unknown length" if epochs == float("inf") else (
-            f"{epochs:g} epochs"
+        detail = (
+            "step-capped run of unknown length"
+            if epochs == float("inf")
+            else (f"{epochs:g} epochs")
         )
         return veto(f"more than one pass over the data ({detail})")
 
@@ -444,10 +441,7 @@ def resolve_add_special_tokens(processing_class: Any, sample_text: Optional[str]
 
 
 def build_tokenizing_transform(
-    tokenizer: Any,
-    text_field: str,
-    max_length: int,
-    add_special_tokens: bool,
+    tokenizer: Any, text_field: str, max_length: int, add_special_tokens: bool
 ):
     """A batched ``with_transform`` callable equivalent to the zoo's ``_tokenize``.
 
@@ -477,12 +471,7 @@ def build_tokenizing_transform(
 
 
 def attach_online_tokenization(
-    dataset: Any,
-    *,
-    tokenizer: Any,
-    text_field: str,
-    max_length: int,
-    add_special_tokens: bool,
+    dataset: Any, *, tokenizer: Any, text_field: str, max_length: int, add_special_tokens: bool
 ):
     """Return an immutable lazily-tokenizing view of ``dataset``.
 
@@ -499,9 +488,7 @@ def attach_online_tokenization(
     every row to check it -- which on a lazy split is the eager tokenize pass
     all over again.
     """
-    transform = build_tokenizing_transform(
-        tokenizer, text_field, max_length, add_special_tokens
-    )
+    transform = build_tokenizing_transform(tokenizer, text_field, max_length, add_special_tokens)
     try:
         view = dataset.with_transform(transform, columns = [text_field])
     except TypeError:

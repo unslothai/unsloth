@@ -55,7 +55,13 @@ class _Tokenizer:
     bos_token = "<s>"
     chat_template = "{{ messages }}"
 
-    def __call__(self, texts, truncation = True, max_length = 8, add_special_tokens = True):
+    def __call__(
+        self,
+        texts,
+        truncation = True,
+        max_length = 8,
+        add_special_tokens = True,
+    ):
         if isinstance(texts, str):
             texts = [texts]
         ids = [[len(t)] * min(len(t), max_length if truncation else len(t)) for t in texts]
@@ -240,9 +246,7 @@ def test_a_resolved_sub_epoch_step_cap_may_go_online():
 
 
 def test_a_raw_eval_split_is_transformed_alongside_the_train_split():
-    decision = decide_online_tokenization(
-        **_base_kwargs(eval_dataset = _text_dataset(64))
-    )
+    decision = decide_online_tokenization(**_base_kwargs(eval_dataset = _text_dataset(64)))
     assert decision.enabled, decision.reason
 
 
@@ -256,9 +260,7 @@ def test_an_eval_split_the_transform_cannot_serve_disables_the_feature():
 
 
 def test_an_already_tokenized_eval_split_disables_the_feature():
-    tokenized_eval = datasets.Dataset.from_dict(
-        {"text": ["x"] * 8, "input_ids": [[1, 2]] * 8}
-    )
+    tokenized_eval = datasets.Dataset.from_dict({"text": ["x"] * 8, "input_ids": [[1, 2]] * 8})
     decision = decide_online_tokenization(**_base_kwargs(eval_dataset = tokenized_eval))
     assert not decision.enabled
     assert "eval" in decision.reason
@@ -322,8 +324,11 @@ def test_the_view_is_immutable_and_leaves_the_original_alone():
     by the preview and the row-count checks."""
     dataset = _text_dataset(32)
     view = attach_online_tokenization(
-        dataset, tokenizer = _Tokenizer(), text_field = "text",
-        max_length = 8, add_special_tokens = True,
+        dataset,
+        tokenizer = _Tokenizer(),
+        text_field = "text",
+        max_length = 8,
+        add_special_tokens = True,
     )
     assert view is not dataset
     assert "input_ids" in view[0]
@@ -334,8 +339,11 @@ def test_the_view_is_immutable_and_leaves_the_original_alone():
 def test_the_view_yields_the_same_row_count_and_order():
     dataset = _text_dataset(32)
     view = attach_online_tokenization(
-        dataset, tokenizer = _Tokenizer(), text_field = "text",
-        max_length = 8, add_special_tokens = True,
+        dataset,
+        tokenizer = _Tokenizer(),
+        text_field = "text",
+        max_length = 8,
+        add_special_tokens = True,
     )
     assert len(view) == len(dataset)
     assert view[5]["input_ids"] == _Tokenizer()(["row 5"], max_length = 8)["input_ids"][0]
@@ -345,8 +353,11 @@ def test_the_view_attests_its_truncation_width():
     """unsloth's `max_length` enforcement reads this instead of scanning every
     row -- and scanning a lazy split is the eager tokenize pass all over again."""
     view = attach_online_tokenization(
-        _text_dataset(32), tokenizer = _Tokenizer(), text_field = "text",
-        max_length = 1234, add_special_tokens = True,
+        _text_dataset(32),
+        tokenizer = _Tokenizer(),
+        text_field = "text",
+        max_length = 1234,
+        add_special_tokens = True,
     )
     assert view.__dict__[TRUNCATION_ATTESTATION_ATTR] == 1234
 
@@ -356,8 +367,11 @@ def test_the_transformed_view_still_reports_its_backing_columns():
     (hence `remove_unused_columns = False`) and unsloth's tokenized-split probe,
     which is why that probe reads a row rather than the metadata."""
     view = attach_online_tokenization(
-        _text_dataset(32), tokenizer = _Tokenizer(), text_field = "text",
-        max_length = 8, add_special_tokens = True,
+        _text_dataset(32),
+        tokenizer = _Tokenizer(),
+        text_field = "text",
+        max_length = 8,
+        add_special_tokens = True,
     )
     assert "text" in dataset_column_names(view)
     assert "input_ids" not in dataset_column_names(view)
@@ -393,9 +407,7 @@ def test_no_bos_token_means_add_special_tokens_stays_on():
     "grad_accum, workers, prefetch, expected",
     [(4, 4, 4, 16), (32, 2, 2, 32), (1, 0, 0, 1), (0, 0, 0, 1)],
 )
-def test_prewarm_depth_covers_the_first_step_and_the_queue(
-    grad_accum, workers, prefetch, expected
-):
+def test_prewarm_depth_covers_the_first_step_and_the_queue(grad_accum, workers, prefetch, expected):
     assert prewarm_batch_count(grad_accum, workers, prefetch) == expected
 
 

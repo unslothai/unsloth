@@ -55,9 +55,7 @@ def _load_rl_module():
         if (isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in wanted)
         or (
             isinstance(node, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id in wanted for t in node.targets
-            )
+            and any(isinstance(t, ast.Name) and t.id in wanted for t in node.targets)
         )
     ]
     module = types.ModuleType("rl_helpers_under_test")
@@ -75,7 +73,12 @@ class _Lazy:
     can prove the scan did not happen.
     """
 
-    def __init__(self, n, width, attest = None):
+    def __init__(
+        self,
+        n,
+        width,
+        attest = None,
+    ):
         self.n = n
         self.width = width
         self.reads = 0
@@ -178,9 +181,7 @@ def _inlined_within_cap(cap):
     source = RL_PATH.read_text(encoding = "utf-8")
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
-    body = "".join(
-        re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
-    )
+    body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
     # The literals carry the indentation they will have inside the generated
     # `__init__`; strip it so the block can stand on its own here.
     body = textwrap.dedent(body.encode().decode("unicode_escape"))
@@ -199,9 +200,7 @@ def _inlined_within_cap(cap):
         (None, 9000, 2048, False, 1),
     ],
 )
-def test_the_inlined_copy_gives_the_same_verdict(
-    attest, width, cap, expected, expected_reads
-):
+def test_the_inlined_copy_gives_the_same_verdict(attest, width, cap, expected, expected_reads):
     inlined = _inlined_within_cap(cap)
     split = _Lazy(4, width = width, attest = attest)
     assert inlined(split) is expected
@@ -216,9 +215,9 @@ def test_the_codegen_and_the_module_agree_on_the_attribute_name():
     the scan would simply never see an attestation again."""
     source = RL_PATH.read_text(encoding = "utf-8")
     assert rl._TRUNCATION_ATTESTATION_ATTR == "_unsloth_truncated_to"
-    assert source.count("'_unsloth_truncated_to'") >= 2, (
-        "the codegen no longer reads the attribute the module writes"
-    )
+    assert (
+        source.count("'_unsloth_truncated_to'") >= 2
+    ), "the codegen no longer reads the attribute the module writes"
 
 
 def test_studio_stamps_the_attribute_this_scan_reads():
@@ -251,9 +250,7 @@ def test_the_generated_max_length_block_is_valid_python():
     source = RL_PATH.read_text(encoding = "utf-8")
     start = source.index("            max_length_check = (")
     end = source.index("            extra_args += max_length_check")
-    literals = re.findall(
-        r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE
-    )
+    literals = re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE)
     block = "".join(literals).encode().decode("unicode_escape")
     # The generator emits this at one indent level inside the trainer's __init__.
     ast.parse(textwrap.dedent(block))
