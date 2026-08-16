@@ -33,19 +33,20 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
     regions.push([match.index, match.index + match[0].length]);
   }
 
-  // Inline code: `...` (skip spans inside fenced blocks, filtered below)
+  // Inline code: `...`, skipped when inside a fenced block. Both loops yield
+  // ascending matches, so walk the fenced list with a cursor rather than
+  // rescanning it per match (was quadratic on code-heavy text).
+  const fencedCount = regions.length;
   const inlineRe = /`[^`\n]+`/g;
+  let fencedIndex = 0;
   while ((match = inlineRe.exec(content)) !== null) {
     const start = match.index;
     const end = start + match[0].length;
-    let inside = false;
-    for (const [rs, re] of regions) {
-      if (start >= rs && end <= re) {
-        inside = true;
-        break;
-      }
+    while (fencedIndex < fencedCount && regions[fencedIndex][1] <= start) {
+      fencedIndex += 1;
     }
-    if (!inside) {
+    const fenced = fencedIndex < fencedCount ? regions[fencedIndex] : null;
+    if (!(fenced && start >= fenced[0] && end <= fenced[1])) {
       regions.push([start, end]);
     }
   }

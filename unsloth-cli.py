@@ -12,7 +12,7 @@ Usage (most options have sensible defaults; this is an extended example):
     --random_state 3407 --use_rslora --per_device_train_batch_size 4 --gradient_accumulation_steps 8 \
     --warmup_steps 5 --max_steps 400 --learning_rate 2e-6 --logging_steps 1 --optim "adamw_8bit" \
     --weight_decay 0.005 --lr_scheduler_type "linear" --seed 3407 --output_dir "outputs" \
-    --report_to "tensorboard" --save_model --save_path "model" --quantization_method "f16" \
+    --report_to "tensorboard" --save_model --save_path "model" --quantization "f16" \
     --push_model --hub_path "hf/model" --hub_token "your_hf_token"
 
 Run `python unsloth-cli.py --help` for the full list of options.

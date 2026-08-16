@@ -209,14 +209,20 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
 
 
 def test_gate_runs_before_server_bind_in_source():
+    app_state = type("State", (), {})()
+    run._publish_cloudflare_url(app_state, "https://live.trycloudflare.com")
+    assert app_state.cloudflare_url == run._cloudflare_url == "https://live.trycloudflare.com"
+    run._publish_cloudflare_url(app_state, None)
     # The gate must run before the uvicorn socket binds: on a wildcard bind
     # the served HTML injects the bootstrap credential for first login, so a
     # pre-gate listener would hand out the default password mid-prompt.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     gate_call = src.index("_pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(")
     thread_start = src.index("thread.start()")
-    tunnel_start = src.index("_cloudflare_url = start_studio_tunnel(port)")
-    assert gate_call < thread_start < tunnel_start
+    tunnel_start = src.index('start_studio_tunnel(port, managed_by = "launch")')
+    callback_bind = src.index("set_studio_tunnel_url_callback(")
+    assert gate_call < thread_start < callback_bind < tunnel_start
+    assert "_cloudflare_url = start_studio_tunnel" not in src
     # The fail-closed branch exits before any server exists.
     refusal = src[gate_call:thread_start]
     assert "sys.exit(1)" in refusal
@@ -247,8 +253,8 @@ def test_lifespan_honors_bootstrap_suppression_in_source():
 def test_clear_bootstrap_password_truncates_when_unlink_fails(monkeypatch, tmp_path):
     # If the file cannot be unlinked (Windows AV / read-only auth dir), clear must
     # truncate it so its stale plaintext cannot be re-seeded by
-    # generate_bootstrap_password() after a later reset-password deletes auth.db,
-    # which would re-validate the revoked bootstrap password.
+    # generate_bootstrap_password() if auth.db is ever recreated, which would
+    # re-validate the revoked bootstrap password.
     import pathlib
 
     pw_path = tmp_path / ".bootstrap_password"

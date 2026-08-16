@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { consumeNativePathToken } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -11,16 +12,47 @@ import {
   uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
-import type { DocumentStatus, RagDocument } from "../types/rag";
+import {
+  type RagDocument,
+  type TerminalJobStatus,
+  terminalJobStatus,
+} from "../types/rag";
 import { resolveVisionOverrides } from "./vision-overrides";
 
 export interface TrackedDocument extends RagDocument {
   progress?: number | null;
 }
 
-// Client-side dedup key; backend dedups authoritatively by content hash.
-function fileSignature(file: File): string {
-  return `${file.name}|${file.size}|${file.lastModified}`;
+/** A browser File, or a desktop drop addressed by its native path token. */
+export type RagUploadItem =
+  | { kind: "file"; file: File }
+  | {
+      kind: "native";
+      token: string;
+      name: string;
+      sizeBytes?: number | null;
+      modifiedMs?: number | null;
+    };
+
+export function fileItems(files: FileList | File[]): RagUploadItem[] {
+  return Array.from(files).map((file) => ({ kind: "file" as const, file }));
+}
+
+function itemName(item: RagUploadItem): string {
+  return item.kind === "file" ? item.file.name : item.name;
+}
+
+// Client-side dedup key; backend dedups authoritatively by content hash. Native drops
+// carry the size/mtime Rust stat'd, so same-named files from different folders are
+// still distinct; without them the drop is never blocked client-side.
+function itemSignature(item: RagUploadItem): string {
+  if (item.kind === "file") {
+    return `${item.file.name}|${item.file.size}|${item.file.lastModified}`;
+  }
+  if (item.sizeBytes == null || item.modifiedMs == null) {
+    return `${item.name}|native|${item.token}`;
+  }
+  return `${item.name}|${item.sizeBytes}|${item.modifiedMs}`;
 }
 
 export type RagDocumentScope =
@@ -86,11 +118,14 @@ export function useRagDocuments(
       trackedJobs.current.set(jobId, controller);
 
       const finish = (
-        status: DocumentStatus,
+        status: TerminalJobStatus,
         error?: string | null,
         numChunks?: number | null,
       ) => {
-        if (status === "failed") {
+        if (status === "cancelled") {
+          sigByDocId.current.delete(documentId);
+          setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+        } else if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
           sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
@@ -122,21 +157,17 @@ export function useRagDocuments(
               finish("completed", null, ev.num_chunks);
               return;
             } else if (ev.type === "error") {
-              finish("failed", ev.error ?? "Indexing failed");
+              finish(
+                ev.stage === "cancelled" ? "cancelled" : "failed",
+                ev.error ?? "Indexing failed",
+              );
               return;
             }
           }
           // Stream ended with no terminal frame: reconcile.
           const job = await getJob(jobId);
-          finish(
-            job.status === "completed"
-              ? "completed"
-              : job.status === "failed"
-                ? "failed"
-                : "completed",
-            job.error,
-            job.numChunks,
-          );
+          const terminal = terminalJobStatus(job.status);
+          finish(terminal ?? "completed", job.error, job.numChunks);
         } catch {
           if (controller.signal.aborted) {
             trackedJobs.current.delete(jobId);
@@ -147,10 +178,15 @@ export function useRagDocuments(
             for (let i = 0; i < 600; i++) {
               if (controller.signal.aborted) break;
               const job = await getJob(jobId);
-              if (job.status === "completed")
-                return finish("completed", null, job.numChunks);
-              if (job.status === "failed") {
-                return finish("failed", job.error ?? "Indexing failed");
+              const terminal = terminalJobStatus(job.status);
+              if (terminal) {
+                return finish(
+                  terminal,
+                  terminal === "failed"
+                    ? (job.error ?? "Indexing failed")
+                    : job.error,
+                  job.numChunks,
+                );
               }
               patchDoc(documentId, {
                 status: job.status === "running" ? "running" : "pending",
@@ -169,7 +205,7 @@ export function useRagDocuments(
 
   const refresh = useCallback(
     async (opts?: { quiet?: boolean }) => {
-      if (!scope) return;
+      if (!scopeKey) return;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
@@ -200,7 +236,7 @@ export function useRagDocuments(
         if (!opts?.quiet) setLoading(false);
       }
     },
-    [scope, lister],
+    [scopeKey, lister],
   );
 
   // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
@@ -253,13 +289,23 @@ export function useRagDocuments(
   // the chip if the backend deduped. `seenIds` holds ids present/added this batch.
   const uploadOne = useCallback(
     async (
-      file: File,
+      item: RagUploadItem,
       seenIds: Set<string>,
       activeScope: RagDocumentScope,
       tempId: string,
     ) => {
+      const name = itemName(item);
       try {
-        const { ocr, caption } = resolveVisionOverrides();
+        const { ocr, caption } = await resolveVisionOverrides();
+        // Leases are short-lived, so mint one per upload rather than at drop time.
+        const file =
+          item.kind === "file"
+            ? item.file
+            : {
+                nativePathLease: (
+                  await consumeNativePathToken(item.token, "attach")
+                ).nativePathLease,
+              };
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(
@@ -281,11 +327,11 @@ export function useRagDocuments(
                   ocr,
                   caption,
                 );
-        sigByDocId.current.set(result.documentId, fileSignature(file));
+        sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
           toast.info(
-            `${result.filename || file.name} is already indexed - skipping`,
+            `${result.filename || name} is already indexed - skipping`,
           );
           return;
         }
@@ -302,12 +348,12 @@ export function useRagDocuments(
               : row,
           ),
         );
-        trackJob(result.jobId, result.documentId, result.filename || file.name);
+        trackJob(result.jobId, result.documentId, result.filename || name);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         // Drop the chip rather than show "Failed"; warn via toast.
         setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-        toast.error(`Couldn't upload ${file.name}`, { description: message });
+        toast.error(`Couldn't upload ${name}`, { description: message });
       }
     },
     [trackJob],
@@ -318,7 +364,7 @@ export function useRagDocuments(
   // the hook scope.
   const upload = useCallback(
     async (
-      files: FileList | File[],
+      files: FileList | File[] | RagUploadItem[],
       overrideScope?: RagDocumentScope | Promise<RagDocumentScope | null>,
     ) => {
       // Flip the in-flight guard synchronously, before awaiting a thread id that
@@ -330,24 +376,30 @@ export function useRagDocuments(
         // Show an optimistic chip per file before awaiting the thread id;
         // materialization is a round-trip and gating chips behind it makes a slow
         // one look like nothing happened. Dedup re-selections up front.
-        const fresh: Array<{ tempId: string; file: File }> = [];
-        for (const file of Array.from(files)) {
-          if (sigBlocksReupload(fileSignature(file))) {
-            toast.info(`${file.name} is already indexed - skipping`);
+        const fresh: Array<{ tempId: string; item: RagUploadItem }> = [];
+        const entries: Array<File | RagUploadItem> = Array.isArray(files)
+          ? files
+          : Array.from(files);
+        for (const entry of entries) {
+          const item: RagUploadItem =
+            entry instanceof File ? { kind: "file", file: entry } : entry;
+          if (sigBlocksReupload(itemSignature(item))) {
+            toast.info(`${itemName(item)} is already indexed - skipping`);
             continue;
           }
           fresh.push({
             tempId: `pending_${Math.random().toString(36).slice(2)}`,
-            file,
+            item,
           });
         }
         if (fresh.length === 0) return;
         setDocuments((rows) => [
           ...rows,
-          ...fresh.map(({ tempId, file }) => ({
+          ...fresh.map(({ tempId, item }) => ({
             id: tempId,
-            filename: file.name,
+            filename: itemName(item),
             status: "pending" as const,
+            managed: false,
             progress: null,
           })),
         ]);
@@ -372,8 +424,8 @@ export function useRagDocuments(
             .filter((d) => !d.id.startsWith("pending_"))
             .map((d) => d.id),
         );
-        for (const { tempId, file } of fresh) {
-          await uploadOne(file, seenIds, activeScope, tempId);
+        for (const { tempId, item } of fresh) {
+          await uploadOne(item, seenIds, activeScope, tempId);
         }
       } finally {
         setUploading(false);

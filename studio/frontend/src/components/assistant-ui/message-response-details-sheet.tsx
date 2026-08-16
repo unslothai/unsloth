@@ -5,6 +5,7 @@
 
 import {
   Sheet,
+  SheetCloseButton,
   SheetContent,
   SheetDescription,
   SheetHeader,
@@ -18,9 +19,9 @@ import {
   useExternalProvidersStore,
 } from "@/features/chat";
 import { cn } from "@/lib/utils";
+import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { HelpCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import type { FC, ReactNode } from "react";
 
 type ResponseDetailsMetadata = {
@@ -322,6 +323,12 @@ export const MessageResponseDetailsSheet: FC<{
     (promptTokens != null && completionTokens != null
       ? promptTokens + completionTokens
       : undefined);
+  // Same gate as the timing tooltip: a one-token prompt or a missing rate has no speed to show.
+  const promptRate = asNumber(serverTimings?.prompt_per_second);
+  const promptSpeed =
+    (asNumber(serverTimings?.prompt_n) ?? 0) > 1 && (promptRate ?? 0) > 0
+      ? promptRate
+      : undefined;
   const totalTime =
     responseDetails?.durationMs ?? timing?.totalStreamTime ?? undefined;
   const summaryLabel =
@@ -337,16 +344,20 @@ export const MessageResponseDetailsSheet: FC<{
       <SheetContent
         side="right"
         className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
+        showCloseButton={false}
       >
         <SheetHeader className="border-b p-4">
-          <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
-            <HugeiconsIcon
-              icon={HelpCircleIcon}
-              strokeWidth={1.75}
-              className="size-icon text-chat-icon-fg"
-            />
-            Response details
-          </SheetTitle>
+          <div className="relative">
+            <SheetTitle className="flex items-center gap-2 pr-10 font-heading text-base">
+              <HugeiconsIcon
+                icon={HelpCircleIcon}
+                strokeWidth={1.75}
+                className="size-icon text-chat-icon-fg"
+              />
+              Response details
+            </SheetTitle>
+            <SheetCloseButton className="absolute top-1/2 right-0 -translate-y-1/2" />
+          </div>
           <SheetDescription className="sr-only">
             Timing, model, token, and tool details for this response.
           </SheetDescription>
@@ -420,6 +431,11 @@ export const MessageResponseDetailsSheet: FC<{
             <DetailRow
               label="Prompt eval"
               value={formatMs(asNumber(serverTimings?.prompt_ms))}
+              mono
+            />
+            <DetailRow
+              label="Prompt speed"
+              value={formatRate(promptSpeed)}
               mono
             />
             <DetailRow

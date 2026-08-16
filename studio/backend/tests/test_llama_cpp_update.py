@@ -45,8 +45,12 @@ class _FakeInstallerPopen:
             captured_kwargs.update(kwargs)
         if on_start is not None:
             on_start(list(cmd))
+        self.pid = 515151  # a real Popen has one; the lifetime record needs it
         self.returncode = returncode
         self.stdout = iter(lines or [])
+
+    def poll(self):
+        return self.returncode
 
     def wait(self):
         return self.returncode
@@ -84,6 +88,8 @@ def _write_install(
     asset: str | None = None,
     release_tag: str | None = None,
     force_cpu: bool | None = None,
+    llama_backend: str | None = None,
+    include_llama_backend: bool = False,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -102,6 +108,8 @@ def _write_install(
         marker["asset"] = asset
     if force_cpu is not None:
         marker["force_cpu"] = force_cpu
+    if include_llama_backend or llama_backend is not None:
+        marker["llama_backend"] = llama_backend
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -457,30 +465,65 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
-def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
-    # A Vulkan install (marker asset carries 'vulkan') must re-assert
-    # UNSLOTH_FORCE_VULKAN on update, or detect_host on a GPU box re-routes to
-    # CUDA/ROCm and silently replaces the Vulkan build.
+@pytest.mark.parametrize(
+    "marker_fields, expected_choice",
+    [
+        # A legacy markerless Vulkan asset was an explicit selection, so the bundle
+        # is kept rather than re-detected.
+        ({"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz"}, "vulkan"),
+        # New automatic Intel / Windows AMD installs carry llama_backend (None or
+        # "auto") and rerun hardware detection, staying eligible for CPU recovery.
+        (
+            {
+                "asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
+                "llama_backend": None,
+                "include_llama_backend": True,
+            },
+            "auto",
+        ),
+        (
+            {"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", "llama_backend": "auto"},
+            "auto",
+        ),
+        (
+            {"asset": "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz", "llama_backend": "vulkan"},
+            "vulkan",
+        ),
+        # A deliberate CPU install must not be re-routed onto a GPU bundle (#7213);
+        # a transient fallback (or a legacy marker without the flag) heals (#6097).
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": True}, "cpu"),
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz", "force_cpu": False}, "auto"),
+        ({"asset": "llama-b9493-bin-ubuntu-x64.tar.gz"}, "auto"),
+    ],
+)
+def test_update_leaves_the_recorded_choice_to_the_installer(
+    monkeypatch, tmp_path, marker_fields, expected_choice
+):
+    """An update names no backend: install_llama_prebuilt.py reads the choice back
+    out of the marker it wrote.
+
+    That is what makes the choice survive every other entry point too (setup.sh,
+    `unsloth studio update`, the desktop updater), none of which could forward an
+    env var they were never given. Both halves are asserted here -- the command
+    carries no override, and the installer resolves the marker to the choice -- so
+    the handoff cannot silently break on one side.
+    """
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     install_dir = tmp_path / "llama.cpp"
-    binary = _write_install(
-        install_dir,
-        "b9493",
-        repo = "ggml-org/llama.cpp",
-        asset = "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
-    )
+    fields = dict(marker_fields)
+    binary = _write_install(install_dir, "b9493", repo = "ggml-org/llama.cpp", **fields)
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
-    def _on_start(cmd):
-        _write_install(
-            install_dir,
-            "b9518",
-            repo = "ggml-org/llama.cpp",
-            asset = "llama-b9518-bin-ubuntu-vulkan-x64.tar.gz",
-        )
-
+    captured: dict = {}
     popen_kwargs: dict = {}
+
+    def _on_start(cmd):
+        captured["cmd"] = cmd
+        _write_install(install_dir, "b9518", repo = "ggml-org/llama.cpp", **fields)
+
     _patch_installer_popen(
         monkeypatch,
         lines = ["installed\n"],
@@ -496,48 +539,22 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
-    assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
 
-
-@pytest.mark.parametrize(
-    "force_cpu, expect_flag",
-    [
-        # A deliberate CPU install (marker force_cpu=True) re-asserts --force-cpu on
-        # update so detect_host on a GPU host cannot re-route and revive the crash
-        # (#7213); --force-cpu also re-persists the flag for the next update.
-        (True, True),
-        # A transient fallback (or a legacy marker without the flag) stays free to
-        # heal to a GPU bundle (#6097).
-        (False, False),
-        (None, False),
-    ],
-)
-def test_start_update_cpu_fallback_preserved_by_flag(monkeypatch, tmp_path, force_cpu, expect_flag):
-    asset = "llama-b9493-bin-ubuntu-x64.tar.gz"
-    install_dir = tmp_path / "llama.cpp"
-    binary = _write_install(install_dir, "b9493", asset = asset, force_cpu = force_cpu)
-    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
-    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
-
-    captured: dict = {}
-
-    def _on_start(cmd):
-        captured["cmd"] = cmd
-        _write_install(install_dir, "b9518", asset = asset, force_cpu = force_cpu)
-
-    _patch_installer_popen(monkeypatch, lines = ["installed\n"], on_start = _on_start)
-
-    assert upd.start_update()["started"] is True
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        job = upd.get_update_status()["job"]
-        if job["state"] in ("success", "error"):
-            break
-        time.sleep(0.05)
-    assert job["state"] == "success", job
-    assert ("--force-cpu" in captured["cmd"]) is expect_flag
+    assert "--llama-backend" not in captured["cmd"]
+    assert "--force-cpu" not in captured["cmd"]
     assert "--cpu-fallback" not in captured["cmd"]
+    assert "UNSLOTH_LLAMA_CPP_BACKEND" not in popen_kwargs["env"]
+    assert "UNSLOTH_FORCE_VULKAN" not in popen_kwargs["env"]
+
+    _studio = _BACKEND.parent
+    if str(_studio) not in sys.path:
+        sys.path.insert(0, str(_studio))
+    import install_llama_prebuilt as ilp
+
+    assert ilp.effective_backend_request(None, install_dir = install_dir) == (
+        expected_choice,
+        False,
+    )
 
 
 def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
@@ -803,6 +820,7 @@ def test_start_update_already_running_refuses(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "already_running"
+    assert res["message"] == "Another llama.cpp install is already running."
 
 
 def test_start_update_installer_missing_refuses(monkeypatch, tmp_path):
@@ -890,6 +908,7 @@ def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_pa
             break
         time.sleep(0.05)
     assert upd.get_update_status()["job"]["state"] == "error"
+    assert upd.get_update_status()["job"]["reload_required"] is True
     assert backend._llama_update_in_progress is False
 
 

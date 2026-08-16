@@ -7,10 +7,17 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_credential,
+    require_ui_session_for_local_commands,
+)
+from auth.storage import CredentialRotated
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
@@ -19,6 +26,7 @@ from core.data_recipe.huggingface import (
     publish_recipe_dataset,
 )
 from core.data_recipe.jobs import get_job_manager
+from core.data_recipe.service import recipe_has_stdio_mcp
 from loggers import get_logger
 from models.data_recipe import (
     JobCreateResponse,
@@ -30,6 +38,10 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# A stdio provider is a command this host would run, so only a UI session may
+# supply one. Annotated, not a Depends default, so a direct call gets False.
+ViaApiKey = Annotated[bool, Depends(authenticated_via_api_key)]
 
 
 def _resolve_local_v1_endpoint(request: Request) -> str:
@@ -257,7 +269,11 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
-def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optional[int]:
+def _inject_local_providers(
+    recipe: dict[str, Any],
+    request: Request,
+    expect_gen: Optional[str] = None,
+) -> Optional[int]:
     """Mutate recipe in-place: point is_local providers at this server and mint
     a short-lived internal sk-unsloth-* key for workflow auth.
 
@@ -313,6 +329,7 @@ def _inject_local_providers(recipe: dict[str, Any], request: Request) -> Optiona
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
+            expect_gen = expect_gen,
         )
         internal_key_id = int(row["id"])
 
@@ -375,10 +392,17 @@ def _normalize_run_name(value: Any) -> str | None:
 
 
 @router.post("/jobs", response_class = JSONResponse, response_model = JobCreateResponse)
-def create_job(payload: RecipePayload, request: Request):
+def create_job(
+    payload: RecipePayload,
+    request: Request,
+    credential: tuple = Depends(get_current_credential),
+    via_api_key: ViaApiKey = False,
+):
     recipe = payload.recipe
     if not recipe.get("columns"):
         raise HTTPException(status_code = 400, detail = "Recipe must include columns.")
+    if recipe_has_stdio_mcp(recipe):
+        require_ui_session_for_local_commands(via_api_key)
 
     run: dict[str, Any] = payload.run or {}
     run.pop("artifact_path", None)
@@ -406,7 +430,11 @@ def create_job(payload: RecipePayload, request: Request):
             ) from exc
 
     try:
-        internal_api_key_id = _inject_local_providers(recipe, request)
+        internal_api_key_id = _inject_local_providers(recipe, request, credential[1])
+    except CredentialRotated as exc:
+        # A reset-password landed after this request authenticated; the workflow key
+        # is refused, so answer like any other revoked credential rather than 500.
+        raise HTTPException(status_code = 401, detail = "Invalid or expired token") from exc
     except ValueError as exc:
         raise log_and_http_error(
             exc,

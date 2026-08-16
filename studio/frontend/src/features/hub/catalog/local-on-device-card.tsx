@@ -38,6 +38,11 @@ import {
   deleteCachedModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
+
+import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
   sortLocalGgufVariants,
@@ -53,12 +58,14 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardSettingsButton,
   CardUpdateButton,
   DeleteConfirmDialog,
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
 
@@ -87,6 +94,9 @@ interface LocalOnDeviceCardProps {
   activeGgufVariant?: string | null;
   isLoading: boolean;
   loadingPhase?: "downloading" | "starting";
+  preferredFile?: string | null;
+  preferredFileIntent?: number;
+
   gpuGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
@@ -96,6 +106,12 @@ interface LocalOnDeviceCardProps {
   onEject?: () => void;
   onTrain?: () => void;
   onChange?: () => void;
+  /**
+   * Open settings for the quant this card is showing. ``quantIsUserPicked`` says whether
+   * it came from this card's selector or was derived from the resident model, which
+   * decides whether a fresher status read may override it.
+   */
+  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
 }
 
 function formatAdapterLabel(
@@ -207,6 +223,9 @@ export function LocalOnDeviceCard({
   activeGgufVariant = null,
   isLoading,
   loadingPhase,
+  preferredFile = null,
+  preferredFileIntent = 0,
+
   gpuGb,
   systemRamGb,
   unsupportedReason,
@@ -214,6 +233,7 @@ export function LocalOnDeviceCard({
   onEject,
   onTrain,
   onChange,
+  onOpenSettings,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -244,6 +264,7 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(deleteOpen && Boolean(repoId), repoId ?? "");
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
@@ -281,6 +302,8 @@ export function LocalOnDeviceCard({
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
     quant: string | null;
+    preferredFile?: string | null;
+    preferredFileIntent?: number;
   }>(() => ({
     key: variantKey,
     quant: null,
@@ -324,8 +347,21 @@ export function LocalOnDeviceCard({
       systemRamGb,
     ],
   );
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedVariantOverride =
-    selectedVariantState.key === variantKey ? selectedVariantState.quant : null;
+    selectedVariantState.key === variantKey &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedVariantState.preferredFile,
+      selectedVariantState.preferredFileIntent,
+    )
+      ? selectedVariantState.quant
+      : preferredQuant;
   const selectedQuant =
     selectedVariantOverride &&
     sortedVariants?.some((variant) =>
@@ -341,6 +377,13 @@ export function LocalOnDeviceCard({
         )?.quant ??
         sortedVariants?.[0]?.quant ??
         null);
+  // Only the first branch is a choice; the rest read the store, which can be stale.
+  const quantIsUserPicked = Boolean(
+    selectedVariantOverride &&
+      sortedVariants?.some((variant) =>
+        ggufVariantsMatch(variant.quant, selectedVariantOverride),
+      ),
+  );
   const selectedVariant =
     sortedVariants?.find((variant) =>
       ggufVariantsMatch(variant.quant, selectedQuant),
@@ -502,6 +545,9 @@ export function LocalOnDeviceCard({
                               setSelectedVariantState({
                                 key: variantKey,
                                 quant: variant.quant,
+
+                                preferredFile,
+                                preferredFileIntent,
                               });
                               setVariantOpen(false);
                             }}
@@ -549,6 +595,15 @@ export function LocalOnDeviceCard({
               )}
             </span>
             <div className="ml-auto flex items-center gap-0.5">
+              {onOpenSettings && (
+                <CardSettingsButton
+                  label={`Settings for ${repoId}`}
+                  // The quant this card resolved, so settings edits what is on screen.
+                  onClick={() =>
+                    onOpenSettings(selectedQuant ?? null, quantIsUserPicked)
+                  }
+                />
+              )}
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
@@ -661,12 +716,16 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />

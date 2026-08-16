@@ -5,18 +5,20 @@ from typing import Dict
 import pytest
 import torch
 
-try:
-    from torchao.quantization.qat import FakeQuantizedLinear
-    from torchao.quantization.qat.fake_quantizer import (
-        FakeQuantizerBase,
-        Float8FakeQuantizer,
-        Int4WeightFakeQuantizer,
-        IntxFakeQuantizer,
-    )
-except ImportError:
-    print(
-        "Missing torchao import, please install or upgrade torchao with: pip install 'torchao>=0.15.0'"
-    )
+# torchao is an optional extra. Skip the module instead of printing and then failing
+# every test on NameError once the import did not land.
+pytest.importorskip(
+    "torchao.quantization.qat",
+    reason = "install or upgrade with: pip install 'torchao>=0.15.0'",
+)
+
+from torchao.quantization.qat import FakeQuantizedLinear
+from torchao.quantization.qat.fake_quantizer import (
+    FakeQuantizerBase,
+    Float8FakeQuantizer,
+    Int4WeightFakeQuantizer,
+    IntxFakeQuantizer,
+)
 
 
 class _CountingFakeQuantizer(torch.nn.Module):
@@ -130,8 +132,14 @@ def _test_fake_quantizers_are_called(
                     # Weight fake quantizers must always be called.
                     assert child.weight_fake_quantizer.count == 1
 
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        pytest.skip("No GPU available")
     for k, v in example_inputs.items():
-        example_inputs[k] = v.cuda()
+        example_inputs[k] = v.to(device)
     model.apply(_swap_fake_quantizers)
     model(**example_inputs)
     model.apply(_assert_fake_quantizers_are_called)

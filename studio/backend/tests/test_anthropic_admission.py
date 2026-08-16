@@ -641,12 +641,13 @@ def test_every_dispatch_site_goes_through_admission():
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "anthropic_messages"
     )
-    # The wrappers themselves call _monitored_anthropic; only the dispatch sites count.
+    # The wrappers themselves call _monitored_anthropic (the non-streaming one
+    # through the swap-gate tracker); only the dispatch sites count.
     nested = {
         node
         for node in ast.walk(handler)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name.startswith("_admitted_anthropic")
+        and node.name.startswith(("_admitted_anthropic", "_tracked_anthropic"))
     }
     inner = {id(n) for wrapper in nested for n in ast.walk(wrapper)}
 
@@ -763,12 +764,13 @@ def _passthrough_payload(**fields):
     return _payload(tools = _CLIENT_TOOLS, enable_tools = False, **fields)
 
 
-def test_response_pre_start_cleanup_exits_the_passthrough_tracker(monkeypatch):
-    """A disconnect before the body starts must still exit the cancel tracker.
+def test_response_pre_start_cleanup_leaves_no_passthrough_tracker(monkeypatch):
+    """A disconnect before the body starts must leave no tracker and no slot.
 
-    The wrapper replaces the response's own pre-start hook, so it has to chain to
-    it. Asserting through _CANCEL_REGISTRY rather than the wiring, because the
-    hook can be present and still be a no-op.
+    The passthrough registers from inside its body rather than eagerly, so a
+    generator that never runs registers nothing; the hook still has to hand the
+    admission slot back. Asserting through _CANCEL_REGISTRY and the pool rather
+    than the wiring, because the hook can be present and still be a no-op.
     """
     backend = _install_backend(monkeypatch, slots = 1)
     backend.supports_tool_passthrough = True
@@ -778,7 +780,7 @@ def test_response_pre_start_cleanup_exits_the_passthrough_tracker(monkeypatch):
         response = await anthropic_messages(
             _passthrough_payload(stream = True), request = _Request(), current_subject = "t"
         )
-        assert inf_mod._CANCEL_REGISTRY, "passthrough should have registered a tracker"
+        assert inf_mod._CANCEL_REGISTRY == {}, "nothing runs the body's exit for it yet"
 
         cleanup = getattr(response, "_unstarted_cleanup", None)
         assert cleanup is not None
