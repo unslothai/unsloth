@@ -262,7 +262,12 @@ def test_the_diffusion_split_support_is_reported_for_diffusion_only():
     helper = _load_helper("_diffusion_split_supported")
 
     class _Runner:
-        def __init__(self, diffusion, supported = True, raises = False):
+        def __init__(
+            self,
+            diffusion,
+            supported = True,
+            raises = False,
+        ):
             self._is_diffusion = diffusion
             self._supported = supported
             self._raises = raises
