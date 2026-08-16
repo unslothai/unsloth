@@ -968,6 +968,9 @@ export const ru = {
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
       },
+      pastedTextThreshold: "Сворачивать длинные вставки",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",

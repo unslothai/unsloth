@@ -955,6 +955,9 @@ export const ko = {
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
       },
+      pastedTextThreshold: "긴 붙여넣기 압축",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",

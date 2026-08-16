@@ -2119,6 +2119,9 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  const pastedTextMinChars = useChatPreferencesStore(
+    (state) => state.pastedTextMinChars,
+  );
   const { inputProps, isComposing, isComposingRef } =
     useImeComposerInputHandlers({ submitOnEnter: true });
   // A pasted YouTube link offers a transcript attachment above the composer.
@@ -2156,6 +2159,7 @@ const Composer: FC<{
           toast.error("Could not attach the pasted text.", {
             description: "Paste it again, or paste it in smaller pieces.",
           }),
+        pastedTextMinChars,
       );
       if (attachedPastedText) return;
       pasteClipboardFiles(
@@ -2171,7 +2175,7 @@ const Composer: FC<{
           }),
       );
     },
-    [aui, overlay],
+    [aui, overlay, pastedTextMinChars],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);

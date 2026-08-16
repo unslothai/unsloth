@@ -957,6 +957,9 @@ export const ar = {
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
       },
+      pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة.",
+      pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
