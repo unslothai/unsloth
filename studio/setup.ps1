@@ -1083,11 +1083,28 @@ function Invoke-BoundedPythonProbe {
         # probe run past a minute. An abandoned reader leaves the field empty, which
         # every caller already treats as "no answer".
         $_readLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
-        $result.Output = if ($outTask.Wait($_readLeft)) { $outTask.Result } else { "" }
+        $_leaked = $false
+        if ($outTask.Wait($_readLeft)) { $result.Output = $outTask.Result } else { $_leaked = $true }
         # Kept, not discarded: the only place a failed probe's OSError / WinError text exists, and
         # the caller decides what to do with the venv based on it.
         $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
-        $result.Error = if ($errTask.Wait($_errLeft)) { $errTask.Result } else { "" }
+        if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
+        if ($_leaked) {
+            # python exited but something it spawned still holds the inherited handle,
+            # so the pipe never reached EOF and the teardown branches above never ran.
+            # Windows does not reparent an orphan: the descendant still records this
+            # (now dead) pid as its parent, so it can still be found and reaped. CIM
+            # rather than a kill-on-close job object -- that needs a native P/Invoke,
+            # which tests/studio/test_installer_av_shapes.py keeps out of these
+            # scripts. Best effort: off Windows there is no CIM and nothing to reap,
+            # because the shell probe writes to a file and never waits on a pipe.
+            try {
+                foreach ($_kid in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($proc.Id)" -ErrorAction SilentlyContinue)) {
+                    & taskkill.exe /PID $_kid.ProcessId /T /F 2>&1 | Out-Null
+                }
+            } catch {}
+        }
+
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
     } catch {
@@ -1174,9 +1191,26 @@ function Invoke-BoundedPythonStdinProbe {
         # the pipe open after python exits, and an unbounded read would hang past
         # TimeoutSec. An abandoned reader leaves the field empty = "no answer".
         $_readLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
-        $result.Output = if ($outTask.Wait($_readLeft)) { $outTask.Result } else { "" }
+        $_leaked = $false
+        if ($outTask.Wait($_readLeft)) { $result.Output = $outTask.Result } else { $_leaked = $true }
         $_errLeft = [Math]::Max(0, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
-        $result.Error = if ($errTask.Wait($_errLeft)) { $errTask.Result } else { "" }
+        if ($errTask.Wait($_errLeft)) { $result.Error = $errTask.Result } else { $_leaked = $true }
+        if ($_leaked) {
+            # python exited but something it spawned still holds the inherited handle,
+            # so the pipe never reached EOF and the teardown branches above never ran.
+            # Windows does not reparent an orphan: the descendant still records this
+            # (now dead) pid as its parent, so it can still be found and reaped. CIM
+            # rather than a kill-on-close job object -- that needs a native P/Invoke,
+            # which tests/studio/test_installer_av_shapes.py keeps out of these
+            # scripts. Best effort: off Windows there is no CIM and nothing to reap,
+            # because the shell probe writes to a file and never waits on a pipe.
+            try {
+                foreach ($_kid in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($proc.Id)" -ErrorAction SilentlyContinue)) {
+                    & taskkill.exe /PID $_kid.ProcessId /T /F 2>&1 | Out-Null
+                }
+            } catch {}
+        }
+
         $result.Ok = ($proc.ExitCode -eq 0)
         return $result
     } catch {
