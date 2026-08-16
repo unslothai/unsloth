@@ -4501,9 +4501,8 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
-      // What the gate's cap is measured against. Only grows, unlike
-      // cumulativeText, which the ${...} strip can shorten, and it counts
-      // tool-argument deltas, which never reach cumulativeText at all.
+      // What the cap is measured against: only grows, unlike cumulativeText,
+      // and counts tool-argument deltas, which never reach it.
       let streamedChars = 0;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
@@ -5497,10 +5496,9 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      // Paced like the text path: this preview repeats per
-                      // argument delta and tool_start replaces it with the
-                      // authoritative parse. The tool events themselves are
-                      // rare and carry the card's state, so those stay ungated.
+                      // A preview: it repeats per argument delta and
+                      // tool_start replaces it. The tool events carry state, so
+                      // they stay ungated.
                       if (canPublish(streamedChars)) {
                         yield {
                           content: liveAssistantContent(),
@@ -5898,11 +5896,9 @@ export function createOpenAIStreamAdapter(
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
-              // Replay state, not a preview: a Gemini thought signature or a
-              // Codex reasoning ledger reaches the message only through a yield,
-              // and a Stop while the gate holds one persists a turn that then
-              // replays without it. Pace the previews, never a publish that
-              // carries state.
+              // Replay state reaches the message only through a yield, so a
+              // Stop while the gate holds one persists a turn that cannot
+              // replay. Pace previews, never state.
               let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<string, unknown>;
@@ -5967,10 +5963,8 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
-                // A fragment extending an existing call's arguments is the same
-                // per-delta preview as tool_args, so it is paced the same way.
-                // One that introduces a call always publishes: that is state an
-                // aborted turn would otherwise lose.
+                // Extending a call's arguments is a preview; introducing one
+                // is state, so it always publishes.
                 let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
@@ -6035,9 +6029,8 @@ export function createOpenAIStreamAdapter(
                       JSON.stringify(call.extra_content) !==
                         JSON.stringify(prevExtra)
                     ) {
-                      // Gemini carries the thought signature on the call
-                      // itself, and the next turn is rejected outright without
-                      // it, so this is state rather than a preview.
+                      // Gemini puts the thought signature on the call, and
+                      // the next turn is rejected without it.
                       replayStateChanged = true;
                     }
                     const updated: PositionedToolCallPart = {
@@ -6111,11 +6104,9 @@ export function createOpenAIStreamAdapter(
                 }
                 continue;
               }
-              // A chunk whose ONLY payload is extra_content: Gemini ships a
-              // content-free thoughtSignature fragment, and the Codex client
-              // puts its reasoning ledger on a text-free terminal delta. The
-              // skip below would drop both, so the metadata would reach the
-              // message only if some later chunk happened to publish.
+              // extra_content can arrive with no content at all: a Gemini
+              // thoughtSignature fragment, or the codex reasoning ledger on a
+              // terminal delta. The skip below would drop both.
               if (replayStateChanged && !delta && !reasoning) {
                 const replayContent = liveAssistantContent();
                 if (replayContent.length > 0) {
@@ -6136,8 +6127,8 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
-              // Where this chunk's text starts, so the strip below can be
-              // told from a chunk that genuinely added nothing.
+              // So the strip below can be told from a chunk that added
+              // nothing.
               const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
@@ -6202,16 +6193,14 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.finishGroup();
               }
 
-              // Everything above runs on every arrival. Only the publish is
-              // coalesced, because the cost this is here to remove is what
-              // happens AFTER the yield -- assistant-ui, React, markdown and
-              // paint -- not the rebuild above, which measures in tens of
-              // milliseconds across a whole reply.
+              // Everything above runs on every arrival; only the publish is
+              // coalesced. The cost being removed is downstream of the yield
+              // (assistant-ui, React, markdown, paint), not the rebuild, which
+              // is tens of milliseconds across a whole reply.
               //
-              // A chunk the strip left with nothing new to show is skipped
-              // outright rather than paced: asking the gate would spend this
-              // cycle's publish on an identical rebuild and hold the next real
-              // chunk until a frame, the timer or the cap.
+              // A chunk with nothing new is skipped rather than paced: the gate
+              // would spend this cycle on an identical publish and hold the
+              // next real one.
               if (
                 !replayStateChanged &&
                 (assistantContent.length === 0 ||
