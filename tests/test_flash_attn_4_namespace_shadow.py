@@ -175,9 +175,7 @@ def test_find_spec_is_restored_even_when_xformers_import_fails():
     """The repair patches `importlib.util.find_spec` for exactly one import. If that import
     raises, the patch must still come off, or every later find_spec in the process lies --
     and the unrepairable state must warn rather than degrade in silence."""
-    out = subprocess.run(
-        [sys.executable, "-c", _BROKEN_XFORMERS], capture_output = True, text = True
-    )
+    out = subprocess.run([sys.executable, "-c", _BROKEN_XFORMERS], capture_output = True, text = True)
     assert "RESTORED=True" in out.stdout, out.stdout + out.stderr
     assert "WARNED=True" in out.stdout, out.stdout + out.stderr
 

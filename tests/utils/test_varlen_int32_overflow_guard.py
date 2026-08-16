@@ -47,6 +47,7 @@ _MEASURED = [
 def test_guard_matches_the_measured_crash_threshold(n_heads, head_dim, doc_len, last_ok):
     """The predicted limit must sit within one document of the observed one, and must never
     sit ABOVE it -- a guard that trips late is a guard that does not exist."""
+
     def trips(n_docs):
         return ad._varlen_backward_overflows_int32(n_docs, n_docs * doc_len, n_heads, head_dim)
 
@@ -70,7 +71,13 @@ def test_empty_partition_never_trips():
     assert not ad._varlen_backward_overflows_int32(0, 0, 16, 128)
 
 
-def _context(n_docs, total_q, requires_grad, n_heads = 16, head_dim = 128):
+def _context(
+    n_docs,
+    total_q,
+    requires_grad,
+    n_heads = 16,
+    head_dim = 128,
+):
     lengths = torch.zeros(n_docs, dtype = torch.int32)
     return ad.AttentionContext(
         bsz = 1,
@@ -85,7 +92,13 @@ def _context(n_docs, total_q, requires_grad, n_heads = 16, head_dim = 128):
     )
 
 
-def _run(monkeypatch, backend, n_docs, requires_grad, guard_disabled = False):
+def _run(
+    monkeypatch,
+    backend,
+    n_docs,
+    requires_grad,
+    guard_disabled = False,
+):
     """Drive run_attention with every real kernel stubbed, and report which branch it took."""
     taken = {}
 
@@ -139,6 +152,7 @@ def test_gradient_checkpointing_picks_the_same_backend_in_both_passes(monkeypatc
     """torch.utils.checkpoint runs its first forward under no_grad and recomputes with grad on.
     If the guard keyed only on the tensors, the two passes would take different backends and
     the backward would see activations the reported loss never came from."""
+
     def go(grad_enabled):
         with torch.set_grad_enabled(grad_enabled):
             taken = {}

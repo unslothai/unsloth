@@ -125,7 +125,9 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 # Forward-only never allocates dq_accum and never faults (20000 documents ran clean), so the
 # guard is conditioned on a backward actually being possible. Plain SDPA is unaffected.
 _INT32_ELEMENTS = 2**31
-_VARLEN_INT32_GUARD_DISABLED = os.environ.get("UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0").lower() in (
+_VARLEN_INT32_GUARD_DISABLED = os.environ.get(
+    "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
+).lower() in (
     "1",
     "true",
     "yes",
@@ -134,18 +136,20 @@ _VARLEN_INT32_GUARD_DISABLED = os.environ.get("UNSLOTH_DISABLE_VARLEN_INT32_GUAR
 _VARLEN_INT32_WARNED = [False]
 
 
-def _varlen_backward_dq_accum_elements(n_seqs: int, total_q: int, n_heads: int, head_dim: int) -> int:
+def _varlen_backward_dq_accum_elements(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> int:
     """Element count of flash-attn 2's varlen-backward ``dq_accum`` for these shapes."""
     head_dim_rounded = ((head_dim + 31) // 32) * 32
     return (total_q + 128 * n_seqs) * n_heads * head_dim_rounded
 
 
-def _varlen_backward_overflows_int32(n_seqs: int, total_q: int, n_heads: int, head_dim: int) -> bool:
+def _varlen_backward_overflows_int32(
+    n_seqs: int, total_q: int, n_heads: int, head_dim: int
+) -> bool:
     if n_seqs <= 0:
         return False
-    return (
-        _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
-    )
+    return _varlen_backward_dq_accum_elements(n_seqs, total_q, n_heads, head_dim) >= _INT32_ELEMENTS
 
 
 def _warn_varlen_int32_overflow_once(backend: str, n_seqs: int, total_q: int, elements: int):
@@ -339,9 +343,7 @@ def run_attention(
             # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
             n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
-            if _varlen_backward_overflows_int32(
-                n_seqs, total_q, context.n_heads, context.head_dim
-            ):
+            if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
                 _warn_varlen_int32_overflow_once(
                     backend,
                     n_seqs,
