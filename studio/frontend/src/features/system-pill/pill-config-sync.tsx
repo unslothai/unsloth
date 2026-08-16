@@ -11,7 +11,7 @@ import {
   syncNativePillConfig,
   updatePillSettings,
 } from "./api";
-import { isMacPlatform } from "@/lib/pill-native";
+import { isMacPlatform, pillSetConfig, pillStatus } from "@/lib/pill-native";
 
 // server-port re-announcements can arrive in bursts; one sync per window. The
 // throttle keys on the last SUCCESS, not the last attempt: a failed startup
@@ -51,13 +51,21 @@ async function syncConfigToNative(): Promise<void> {
       if (!settings.enabled) return;
       try {
         const reverted = await updatePillSettings({ enabled: false });
-        // Push the disabled config down as well. Rust reports disabled after a
+        // Write the disabled config to disk. Rust reports disabled after a
         // failed registration but selection-pill.json still says enabled, and
         // that file is what init reads: left alone it would re-register the
         // shortcut on a later launch, against a UI and backend now saying
-        // disabled. Disabling only unregisters, so this apply cannot fail the
-        // way the enable just did.
-        await syncNativePillConfig(reverted);
+        // disabled. syncNativePillConfig cannot do this, because the managed
+        // status is already disabled and its equality check would skip the
+        // write that is the entire point, so call the command directly.
+        const status = await pillStatus();
+        if (status.supported) {
+          await pillSetConfig({
+            enabled: false,
+            hotkey: status.hotkey,
+            excludedApps: reverted.excludedApps,
+          });
+        }
       } catch {
         // Could not undo it either; the next open reads the backend.
       }
