@@ -173,6 +173,10 @@ import {
 } from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import {
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
+} from "@/features/chat/utils/prompt-queue-reorder";
+import {
   getStoredChatThread,
   updateStoredChatThread,
 } from "@/features/chat/utils/chat-history-storage";
@@ -888,6 +892,54 @@ function removePromptQueueItem(itemId: string) {
     if (next) {
       scheduleQueuedPromptDispatch(run, next, 50);
     }
+  }
+  return true;
+}
+
+/**
+ * Move a queued prompt into another's slot. Both must still be pending: a
+ * dispatched item is already on its way out, and a run mid-dispatch would race
+ * the pump. Insert index is read off the pre-splice array, so a downward drag
+ * lands after the target and an upward drag lands before it.
+ */
+function movePromptQueueItem(itemId: string, targetItemId: string) {
+  if (itemId === targetItemId) {
+    return false;
+  }
+  const match = findPromptQueueRunByItemId(itemId);
+  const target = findPromptQueueRunByItemId(targetItemId);
+  if (!match || !target || match.run !== target.run) {
+    return false;
+  }
+  const { run, itemIndex, item } = match;
+  if (item.dispatched || target.item.dispatched) {
+    return false;
+  }
+  if (promptQueueDispatchingRunIds.has(run.id)) {
+    return false;
+  }
+  const activeIndex = Math.max(run.index, 0);
+  const before = run.items;
+  const after = reorderPromptQueueItems(
+    before,
+    itemIndex,
+    target.itemIndex,
+    activeIndex,
+  );
+  if (!after) {
+    return false;
+  }
+  const activeChanged = promptQueueActiveItemChanged(before, after, run.index);
+  run.items = after;
+  syncPromptQueueUI();
+
+  // A move across the active slot changes what dispatches next, so retarget the
+  // pending send the way a removal does.
+  const nowActive = run.items[run.index];
+  if (run.index >= 0 && !run.waitingForTargetIdle && nowActive && activeChanged) {
+    clearPromptQueueRetryTimer(run);
+    run.prevStoreRunning = false;
+    scheduleQueuedPromptDispatch(run, nowActive, 50);
   }
   return true;
 }
@@ -2119,8 +2171,21 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  // Set by Cmd/Ctrl+Enter and read once by handleSubmit, which the requestSubmit
+  // below reaches synchronously.
+  const forceQueueRef = useRef(false);
+  const queueOnModEnter = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      forceQueueRef.current = true;
+      event.currentTarget.form?.requestSubmit();
+    },
+    [],
+  );
   const { inputProps, isComposing, isComposingRef } =
-    useImeComposerInputHandlers({ submitOnEnter: true });
+    useImeComposerInputHandlers({
+      submitOnEnter: true,
+      onModEnter: queueOnModEnter,
+    });
   // A pasted YouTube link offers a transcript attachment above the composer.
   const [youtubeLink, setYoutubeLink] = useState<string | null>(null);
   const handleFilePaste = useCallback(
@@ -3462,6 +3527,9 @@ const Composer: FC<{
       preventDefault: () => void;
       stopPropagation?: () => void;
     }) => {
+      // Read once per submit: a rejected send must not leave it armed.
+      const forceQueue = forceQueueRef.current;
+      forceQueueRef.current = false;
       if (isResearchActive) {
         event.preventDefault();
         return;
@@ -3487,6 +3555,19 @@ const Composer: FC<{
         );
       const livePreStreamRunActive =
         hasPreStreamRunReservation(preStreamThreadIds);
+
+      const queueComposerText = (waitForCurrentRun: boolean) => {
+        const queuedPrompt = composerText.trim();
+        startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
+          if (aui.composer().getState().text.trim() !== queuedPrompt) {
+            return;
+          }
+          flushResourcesSync(() => {
+            aui.composer().setText("");
+          });
+          clearStoredDraft();
+        });
+      };
 
       if (
         liveThreadIsRunning ||
@@ -3519,21 +3600,25 @@ const Composer: FC<{
           }
           return;
         }
-        const queuedPrompt = composerText.trim();
-        startHydratedPromptQueue(
-          [queuedPrompt],
-          liveThreadIsRunning || livePreStreamRunActive,
-          () => {
-            if (aui.composer().getState().text.trim() !== queuedPrompt) {
-              return;
-            }
-            flushResourcesSync(() => {
-              aui.composer().setText("");
-            });
-            clearStoredDraft();
-          },
-        );
+        queueComposerText(liveThreadIsRunning || livePreStreamRunActive);
         return;
+      }
+
+      // Cmd/Ctrl+Enter queues even with nothing running, so prompts can be
+      // stacked up front. The queue dispatches this one immediately; the next
+      // Cmd/Ctrl+Enter lands behind it.
+      if (forceQueue && !disableQueue) {
+        if (canQueueCurrentPrompt) {
+          event.preventDefault();
+          queueComposerText(false);
+          return;
+        }
+        if (canQueuePastedTextPrompt) {
+          event.preventDefault();
+          if (queuePastedTextPrompt(false)) {
+            return;
+          }
+        }
       }
 
       if (interceptSend(event)) return;
@@ -3862,8 +3947,11 @@ const IME_STUCK_TIMEOUT_MS = 2500;
 
 function useImeComposerInputHandlers({
   submitOnEnter = false,
+  onModEnter,
 }: {
   submitOnEnter?: boolean;
+  /** Cmd/Ctrl+Enter, claimed before the plain-Enter submit below. */
+  onModEnter?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
@@ -3974,12 +4062,17 @@ function useImeComposerInputHandlers({
         // rather than waiting for the 2500ms watchdog.
         setCompositionState(false);
       }
+      if (onModEnter && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        onModEnter(e);
+        return;
+      }
       if (submitOnEnter && e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         e.currentTarget.form?.requestSubmit();
       }
     },
-    [refreshStuckTimer, setCompositionState, submitOnEnter],
+    [onModEnter, refreshStuckTimer, setCompositionState, submitOnEnter],
   );
 
   // On macOS, switching input methods (e.g. ABC → Pinyin) while the textarea
@@ -5144,6 +5237,8 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   const items = usePromptQueueUI((s) => s.items);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
+  const [draggingItemId, setDraggingItemId] = useState<string | null>(null);
+  const [dragOverItemId, setDragOverItemId] = useState<string | null>(null);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
   const visibleItems = queueEntry
     ? items.filter((item) => item.runId === queueEntry.runId)
@@ -5185,6 +5280,19 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
     setEditingItemId(null);
     setDraftPrompt("");
   };
+  const endDrag = () => {
+    setDraggingItemId(null);
+    setDragOverItemId(null);
+  };
+  // Keyboard equivalent of a drag, since HTML5 drag events never fire for keys.
+  const moveByOffset = (index: number, offset: number) => {
+    const target = visibleItems[index + offset];
+    if (!target) {
+      return;
+    }
+    movePromptQueueItem(visibleItems[index].id, target.id);
+  };
+  const reorderable = visibleItems.length > 1;
 
   return (
     <div
@@ -5198,7 +5306,43 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
           return (
             <div
               key={item.id}
-              className={cn("min-h-10", isEditing ? "h-auto" : "h-10")}
+              className={cn(
+                "min-h-10",
+                isEditing ? "h-auto" : "h-10",
+                draggingItemId === item.id && "opacity-40",
+                dragOverItemId === item.id &&
+                  draggingItemId !== item.id &&
+                  "rounded-md ring-1 ring-ring/60",
+              )}
+              draggable={reorderable && !isEditing}
+              onDragStart={(event) => {
+                setDraggingItemId(item.id);
+                event.dataTransfer.effectAllowed = "move";
+                // Payload keeps the drop working if React state lags; "Files" is
+                // deliberately absent so the page dropzone ignores this drag.
+                event.dataTransfer.setData("text/plain", item.id);
+              }}
+              onDragEnd={endDrag}
+              onDragOver={(event) => {
+                if (!draggingItemId || draggingItemId === item.id) {
+                  return;
+                }
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                setDragOverItemId(item.id);
+              }}
+              onDragLeave={() => {
+                setDragOverItemId((id) => (id === item.id ? null : id));
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const sourceId =
+                  draggingItemId || event.dataTransfer.getData("text/plain");
+                if (sourceId) {
+                  movePromptQueueItem(sourceId, item.id);
+                }
+                endDrag();
+              }}
               aria-label={`${promptQueueStatusLabel(item.status)} prompt ${visiblePosition} of ${visibleItems.length}: ${item.prompt}`}
             >
               {isEditing ? (
@@ -5247,7 +5391,27 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
               ) : (
                 <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_2rem] items-center gap-2.5">
                   <div className="flex min-w-0 items-center gap-2.5">
-                    <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
+                    {reorderable ? (
+                      <button
+                        type="button"
+                        className="shrink-0 cursor-grab text-muted-foreground/50 outline-none hover:text-muted-foreground focus-visible:text-foreground active:cursor-grabbing"
+                        aria-label={`Reorder queued prompt ${visiblePosition} of ${visibleItems.length}`}
+                        onKeyDown={(event) => {
+                          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") {
+                            return;
+                          }
+                          event.preventDefault();
+                          moveByOffset(
+                            visibleIndex,
+                            event.key === "ArrowUp" ? -1 : 1,
+                          );
+                        }}
+                      >
+                        <CornerDownRightIcon className="size-4" />
+                      </button>
+                    ) : (
+                      <CornerDownRightIcon className="size-4 shrink-0 text-muted-foreground/50" />
+                    )}
                     <div className="truncate text-sm text-muted-foreground">
                       {item.prompt}
                     </div>
