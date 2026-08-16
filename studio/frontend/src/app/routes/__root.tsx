@@ -94,6 +94,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/",
   "/chat",
   "/projects",
+  "/agents",
   "/hub",
   "/login",
   "/signup",

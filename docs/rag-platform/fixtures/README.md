@@ -12,25 +12,29 @@ The capture covers the eight flows the plan requires — login, dataset, documen
 chunk, retrieval, chat, session, stream — plus a cleanup flow that removes what
 the run created.
 
-| File | Interactions | Flow |
-| --- | --- | --- |
-| `auth.json` | 6 | register, login, whoami, login channels, unauthorized, logout |
-| `dataset.json` | 5 | create, list, get, update, not-found |
-| `document.json` | 6 | upload, list, parse, status polls |
-| `chunk.json` | 2 | list, list retry |
-| `retrieval.json` | 1 | `POST /api/v1/retrieval` |
-| `chat.json` | 4 | create with dataset, create, list, get |
-| `session.json` | 3 | create, list, get |
-| `stream.json` | 1 | completion with `stream: true` |
-| `cleanup.json` | 2 | delete chat, delete dataset |
+| File             | Interactions | Flow                                                          |
+| ---------------- | ------------ | ------------------------------------------------------------- |
+| `auth.json`      | 6            | register, login, whoami, login channels, unauthorized, logout |
+| `dataset.json`   | 5            | create, list, get, update, not-found                          |
+| `document.json`  | 6            | upload, list, parse, status polls                             |
+| `chunk.json`     | 2            | list, list retry                                              |
+| `retrieval.json` | 1            | `POST /api/v1/retrieval`                                      |
+| `chat.json`      | 4            | create with dataset, create, list, get                        |
+| `session.json`   | 3            | create, list, get                                             |
+| `stream.json`    | 1            | completion with `stream: true`                                |
+| `cleanup.json`   | 2            | delete chat, delete dataset                                   |
 
 `phase-6-chunk-retrieval-contract.json` and
-`phase-8-chat-contract.json` are deliberately separate from these live capture
+`phase-8-chat-contract.json` and `phase-11-agent-contract.json` are deliberately
+separate from these live capture
 files. They are source-verified deterministic protocol fixtures used where the
 local runtime has no configured embedding/chat/audio provider. Phase 8 records
 its exact backend source locations in the fixture and tests fragmentation,
 reasoning, references, usage, cumulative prefixes, terminal frames and business
 errors. It is not presented as a live provider-success capture.
+Phase 11 likewise pins the source-verified Agent DSL, component-debug and native
+Agent SSE shapes. Its password and MCP authorization fields are redacted policy
+assertions, never captured secret values.
 
 ## Provenance
 
@@ -66,15 +70,15 @@ and is only ever used against the local stack.
 
 ## Caveat 1 — three success shapes are not captured
 
-`chunk`, `retrieval` and `stream` recorded the backend's *rejection* contract,
+`chunk`, `retrieval` and `stream` recorded the backend's _rejection_ contract,
 not its success contract:
 
-| Fixture | What was recorded |
-| --- | --- |
-| `chunk.list`, `chunk.list.retry1` | `code: 0`, `chunks: []`, `doc.chunk_count: 0` |
-| `retrieval.search` | `code: 100`, `LookupError('Provider  not found for model .')` |
-| `stream.completion` | `code: 100`, `LookupError('No default chat model for tenant.')` |
-| `chat.create_with_dataset` | `code: 102`, `The dataset … doesn't own parsed file` |
+| Fixture                           | What was recorded                                               |
+| --------------------------------- | --------------------------------------------------------------- |
+| `chunk.list`, `chunk.list.retry1` | `code: 0`, `chunks: []`, `doc.chunk_count: 0`                   |
+| `retrieval.search`                | `code: 100`, `LookupError('Provider  not found for model .')`   |
+| `stream.completion`               | `code: 100`, `LookupError('No default chat model for tenant.')` |
+| `chat.create_with_dataset`        | `code: 102`, `The dataset … doesn't own parsed file`            |
 
 All four are the same root cause, and the parse-status poll names it:
 
@@ -88,7 +92,7 @@ document.parse_status.retry1 →
 The test deployment has no embedding model and no default chat model
 configured, so the document never parses, so there are no chunks to list, no
 vectors to retrieve against, and no model to complete with. The upload and the
-parse *request* both succeeded (`code: 0`) — the failure is in the async parse
+parse _request_ both succeeded (`code: 0`) — the failure is in the async parse
 task, which is why `document.json` holds a valid contract while `chunk.json`
 does not.
 
@@ -97,7 +101,7 @@ does not.
 both answered on the first try; they are reachable and their error envelopes are
 real. What is missing is deployment configuration, not a route. The routes
 therefore stay classified as reachable in
-`docs/rag-platform/endpoint-coverage-matrix.md`, and only the *success* payload
+`docs/rag-platform/endpoint-coverage-matrix.md`, and only the _success_ payload
 shape for these three flows remains uncaptured.
 
 `stream.json` additionally notes `Response was not text/event-stream; recorded
@@ -126,4 +130,4 @@ registers.
 
 Re-verify every fixture against a container built from local HEAD before any
 phase treats a path in these files as the contract. Until then, take the field
-*shapes* from the fixtures and the *paths* from the route inventory.
+_shapes_ from the fixtures and the _paths_ from the route inventory.

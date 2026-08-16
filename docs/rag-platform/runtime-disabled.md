@@ -17,11 +17,11 @@ running in the active scheme.
 
 | Metric | Count |
 | --- | --- |
-| routes discovered | 745 |
+| routes discovered | 746 |
 | reachable | 516 |
-| runtime-disabled | 224 |
+| runtime-disabled | 225 |
 | — no reachable equivalent (capability lost) | 36 |
-| — same concrete request served elsewhere (no capability lost) | 188 |
+| — same concrete request served elsewhere (no capability lost) | 189 |
 | not proxied by nginx | 5 |
 
 ## Why these routes are closed
@@ -34,7 +34,7 @@ deduplication, not a lost capability. The Go executable provenance and the
 four direct service smoke probes are recorded in ADR 0005 and the Faz 0
 result report.
 
-45 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and 34 Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.
+46 route(s) are separate forward-source cases: they are declared only at backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`, and are absent from deployed `v0.26.4`. Nine auth handlers return `CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; GitHub and Lark callback URLs return 302 through the active parameterised callback. The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and 34 Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.
 
 ## Phase 5 functional runtime gaps (reachable route, unusable browser contract)
 
@@ -304,6 +304,7 @@ serving implementation shown below keeps the surface available.
 | POST | `/api/v1/searches/<search_id>/completion` | python-api@9380 | go-api (`/api/v1/searches/:search_id/completion`) | `api/apps/restful_apis/search_api.py:193` |
 | POST | `/api/v1/searches/<search_id>/completions` | python-api@9380 | go-api (`/api/v1/searches/:search_id/completions`) | `api/apps/restful_apis/search_api.py:194` |
 | DELETE | `/api/v1/system/tokens/<token>` | python-api@9380 | go-api (`/api/v1/system/tokens/:key`) | `api/apps/restful_apis/system_api.py:333` |
+| POST | `/api/v1/tasks/:session_id/cancel` | go-api@9384 | python-api (`/api/v1/tasks/<task_id>/cancel`) | `internal/router/agent_routes.go:110` |
 | PATCH | `/api/v1/tenants/<tenant_id>` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id`) | `api/apps/restful_apis/tenant_api.py:167` |
 | DELETE | `/api/v1/tenants/<tenant_id>/users` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id/users`) | `api/apps/restful_apis/tenant_api.py:135` |
 | GET | `/api/v1/tenants/<tenant_id>/users` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id/users`) | `api/apps/restful_apis/tenant_api.py:41` |

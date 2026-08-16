@@ -184,9 +184,15 @@ const PHASE_OVERRIDES = [
   [/^\/api\/v1\/system\/(variables|environments|oceanbase)/, 14],
   [/^\/api\/v1\/system\/config\/log/, 14],
   // datasets is split across five phases by the plan §4 rows.
-  [/^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}\/(chunks|structure\/graph)/, 6],
+  [
+    /^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}\/(chunks|structure\/graph)/,
+    6,
+  ],
   [/^\/api\/v1\/datasets\/\{p\}\/documents\/\{p\}\/metadata\/config$/, 10],
-  [/^\/api\/v1\/datasets\/\{p\}\/documents\/(metadatas|batch-update-status)$/, 10],
+  [
+    /^\/api\/v1\/datasets\/\{p\}\/documents\/(metadatas|batch-update-status)$/,
+    10,
+  ],
   [/^\/api\/v1\/datasets\/\{p\}\/documents/, 5],
   [/^\/api\/v1\/datasets\/\{p\}\/(chunks|search)/, 6],
   [/^\/api\/v1\/datasets\/search$/, 10],
@@ -207,6 +213,7 @@ const PHASE_OVERRIDES = [
   [/\/feedback$/, 8],
   // agents: the whole family is phase 11 including the webhook pair.
   [/^\/api\/v1\/agents\//, 11],
+  [/^\/api\/v1\/tasks\/\{p\}\/cancel$/, 11],
 ];
 
 function phaseOf(route, canonical) {
@@ -430,6 +437,14 @@ const CLASS_RULES = [
       "MCP wire transport on its own port (9382), opt-in via --enable-mcpserver and not proxied by nginx. Consumed by MCP clients, never by our UI; contract + api-key auth tests only.",
   },
   {
+    id: "proxied-mcp-transport",
+    when: { path: /^\/api\/v1\/mcp$/, runtimeEnabled: true },
+    class: API_ONLY,
+    consumer: "external MCP client",
+    justification:
+      "MCP wire-protocol gateway consumed by MCP clients. The Rag Platform UI manages /mcp/servers records and plugin tools, but does not emulate protocol frames; contract and auth tests cover this transport.",
+  },
+  {
     id: "openai-compat",
     when: { path: /^\/api\/v1\/(openai|dify)\// },
     class: API_ONLY,
@@ -572,6 +587,18 @@ const CLASS_RULES = [
     consumer: "ingestion worker / trusted API client",
     justification:
       "The v0.26.4 GET handler requires a JSON body, which browser Fetch forbids, while dataset document stop is safely available through POST /datasets/{id}/documents/stop. Task list/stop/remove remain typed protocol contracts and are not duplicated as unsafe browser controls.",
+  },
+  {
+    id: "phase11-agent-session-cancel",
+    when: {
+      method: /^POST$/,
+      path: /^\/api\/v1\/tasks\/\{p\}\/cancel$/,
+      runtimeEnabled: true,
+    },
+    class: ACTION,
+    consumer: FRONTEND,
+    justification:
+      "The normative Agent source binds this path to session-scoped run cancellation. The Phase 11 runtime panel calls it only with a selected Agent session id and requires confirmation.",
   },
   {
     id: "phase5-task-cancel-protocol",
@@ -1593,8 +1620,7 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "python-api|POST /api/v1/datasets": {
     status: "implemented",
-    uiPath:
-      "Chat composer → RAG → Manage knowledge bases → Yeni → Oluştur",
+    uiPath: "Chat composer → RAG → Manage knowledge bases → Yeni → Oluştur",
     typedService:
       "src/integrations/platform-backend/dataset-api.ts#createPlatformDataset",
     evidence: PHASE4_TEST_EVIDENCE,
@@ -1733,7 +1759,8 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "go-api|GET /api/v1/documents/{p}": {
     status: "runtime-disabled",
-    uiPath: "Sidebar → Documents → Genel belgeler → explicit security-disabled notice",
+    uiPath:
+      "Sidebar → Documents → Genel belgeler → explicit security-disabled notice",
     typedService:
       "src/integrations/platform-backend/document-api.ts#getGenericDocument",
     evidence: [
@@ -1744,28 +1771,32 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "go-api|PUT /api/v1/documents/{p}": {
     status: "implemented",
-    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Kaydet",
+    uiPath:
+      "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Kaydet",
     typedService:
       "src/integrations/platform-backend/document-api.ts#updateGenericDocument",
     evidence: PHASE5_TEST_EVIDENCE,
   },
   "go-api|DELETE /api/v1/documents/{p}": {
     status: "implemented",
-    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Sil",
+    uiPath:
+      "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Sil",
     typedService:
       "src/integrations/platform-backend/document-api.ts#deleteGenericDocument",
     evidence: PHASE5_TEST_EVIDENCE,
   },
   "python-api|POST /api/v1/documents/ingest": {
     status: "implemented",
-    uiPath: "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Ingest",
+    uiPath:
+      "Sidebar → Documents → Genel belgeler → Belge kimliğiyle yönetim → Ingest",
     typedService:
       "src/integrations/platform-backend/document-api.ts#ingestGenericDocuments",
     evidence: PHASE5_TEST_EVIDENCE,
   },
   "go-api|GET /api/v1/documents": {
     status: "runtime-disabled",
-    uiPath: "Sidebar → Documents → Genel belgeler → explicit runtime-disabled notice",
+    uiPath:
+      "Sidebar → Documents → Genel belgeler → explicit runtime-disabled notice",
     typedService:
       "src/integrations/platform-backend/document-api.ts#listGenericDocuments",
     evidence: [
@@ -1775,14 +1806,16 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "go-api|POST /api/v1/documents": {
     status: "contract-verified",
-    uiPath: "— (trusted service contract; caller-supplied created_by is not exposed)",
+    uiPath:
+      "— (trusted service contract; caller-supplied created_by is not exposed)",
     typedService:
       "src/integrations/platform-backend/document-api.ts#createGenericDocument",
     evidence: PHASE5_TEST_EVIDENCE,
   },
   "go-api|GET /api/v1/datasets/ingestion/tasks": {
     status: "runtime-disabled",
-    uiPath: "— (browser GET-body contract is unusable; dataset stop route is used)",
+    uiPath:
+      "— (browser GET-body contract is unusable; dataset stop route is used)",
     typedService:
       "src/integrations/platform-backend/document-api.ts#listDatasetIngestionTasks",
     evidence: [
@@ -1885,8 +1918,7 @@ const PHASE6_TEST_EVIDENCE = [
   "src/features/documents/document-library-page.test.tsx",
   "src/features/documents/document-asset-dialog.test.tsx",
 ];
-const PHASE6_CHUNK_UI =
-  "Sidebar → Documents → Dataset belgeleri → Chunks";
+const PHASE6_CHUNK_UI = "Sidebar → Documents → Dataset belgeleri → Chunks";
 const PHASE6_RETRIEVAL_UI =
   "Sidebar → Documents → Dataset belgeleri → Retrieval";
 
@@ -2161,7 +2193,8 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "python-api|POST /api/v1/chat/recommendation": {
     status: "implemented",
-    uiPath: "Chat → assistant yanıtı → Takip önerileri → composer taslağına ekle",
+    uiPath:
+      "Chat → assistant yanıtı → Takip önerileri → composer taslağına ekle",
     typedService:
       "src/integrations/platform-backend/chat-completion-api.ts#getPlatformRecommendations",
     evidence: PHASE8_TEST_EVIDENCE,
@@ -2377,6 +2410,78 @@ for (const inventoryRoute of inventory.routes.flatMap((route) => [
   }
 }
 
+const PHASE11_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/agent-api.test.ts",
+  "src/integrations/platform-backend/__tests__/agent-stream.test.ts",
+  "src/features/agents/agents-page.test.tsx",
+  "src/features/agents/agents-page.tsx (confirmation, permission, abort and object-URL cleanup states)",
+  "docs/rag-platform/fixtures/phase-11-agent-contract.json",
+  "docs/adr/0012-phase-11-agent-editor-and-runtime-boundary.md",
+  "scripts/rag-platform/phase-11-runtime-smoke.mjs (authenticated hybrid route/contract probes)",
+];
+
+function phase11UiPath(canonical) {
+  if (/^\/api\/v1\/mcp\/servers/.test(canonical))
+    return "Agents → Araçlar → MCP sunucuları";
+  if (/^\/api\/v1\/plugin\/tools/.test(canonical))
+    return "Agents → Araçlar → Plugin tools";
+  if (/^\/api\/v1\/components/.test(canonical))
+    return "Agents → Canvas → Component kataloğu";
+  if (/attachments|download|upload/.test(canonical))
+    return "Agents → Araçlar → Dosyalar ve attachment";
+  if (/webhook/.test(canonical)) return "Agents → Araçlar → Webhook test/log";
+  if (/sessions/.test(canonical)) return "Agents → Oturumlar";
+  if (/versions/.test(canonical)) return "Agents → Sürümler";
+  if (/components|templates|prompts|tags/.test(canonical))
+    return "Agents → Canvas → Component/şablon/prompt/tag kataloğu";
+  if (/run|completions|rerun|logs/.test(canonical))
+    return "Agents → Çalıştırma";
+  if (/test_db_connection/.test(canonical))
+    return "Agents → Araçlar → Veritabanı bağlantı testi";
+  return "Agents → Genel";
+}
+
+for (const inventoryRoute of inventory.routes.flatMap((route) => [
+  route,
+  ...(route.alternates ?? []),
+])) {
+  if (inventoryRoute.runtime_enabled !== true) continue;
+  const canonical = canonicalPath(inventoryRoute.path);
+  if (phaseOf(inventoryRoute, canonical) !== 11) continue;
+  const classification = classifyRecord(inventoryRoute, canonical);
+  const key = `${inventoryRoute.service}|${inventoryRoute.method} ${canonical}`;
+  if (
+    classification.class === "frontend-action" ||
+    classification.class === "frontend-screen"
+  ) {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "implemented",
+      uiPath: phase11UiPath(canonical),
+      typedService:
+        (inventoryRoute.method === "POST" && canonical.endsWith("/run")) ||
+        canonical.includes("/completions")
+          ? "src/integrations/platform-backend/agent-stream.ts (typed SSE adapter)"
+          : "src/integrations/platform-backend/agent-api.ts (typed route function)",
+      evidence: PHASE11_TEST_EVIDENCE,
+    };
+  } else if (classification.class === "external-callback") {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath:
+        "— (external webhook callback; authenticated test sibling is exposed)",
+      typedService: null,
+      evidence: PHASE11_TEST_EVIDENCE,
+    };
+  } else if (classification.class === "api-only") {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath: "— (protocol or deprecated compatibility contract)",
+      typedService: null,
+      evidence: PHASE11_TEST_EVIDENCE,
+    };
+  }
+}
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.
@@ -2401,10 +2506,10 @@ const ROUTE_FINDINGS = {
     "`dataset_api.delete_knowledge_graph`, which the route module does not define " +
     "(the implementation lives at `api/apps/services/dataset_api_service.py:537`), " +
     "so every call raises AttributeError before any ownership check. Use the " +
-      "forward route `DELETE /api/v1/datasets/{dataset_id}/index?type=graph`.",
+    "forward route `DELETE /api/v1/datasets/{dataset_id}/index?type=graph`.",
   "GET /api/v1/documents":
     "Phase 5 functional runtime gap: the active v0.26.4 Go route reuses ListDocuments, " +
-    "which reads c.Param(\"dataset_id\") on the flat /documents group and therefore " +
+    'which reads c.Param("dataset_id") on the flat /documents group and therefore ' +
     "runs dataset ownership against an empty id. Hybrid routes the request to 9384; " +
     "the UI renders an explicit runtime-disabled notice instead of an empty list.",
   "GET /api/v1/documents/{p}":

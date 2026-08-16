@@ -29,8 +29,6 @@ interface BackendModeEnv {
 
 const PLATFORM_UNAVAILABLE_REASON =
   "Bu özellik Rag Platform backend tarafından desteklenmiyor.";
-const AGENTS_PENDING_REASON =
-  "Agents alanı henüz bu sürümde kullanıma açık değil.";
 
 export function getBackendMode(
   env: BackendModeEnv = import.meta.env as BackendModeEnv,
@@ -80,9 +78,10 @@ export function createCapabilityRegistry(
     projects: supported("projects", true),
     knowledge: supported("knowledge", true),
     settings: supported("settings", true),
-    agents: platformOnly
-      ? unavailable("agents", true, AGENTS_PENDING_REASON)
-      : unavailable("agents"),
+    agents:
+      getBackendMode(env) === "legacy"
+        ? unavailable("agents")
+        : supported("agents", true),
     "local-model-lifecycle": legacyOnly("local-model-lifecycle"),
     training: legacyOnly("training"),
     recipes: legacyOnly("recipes"),

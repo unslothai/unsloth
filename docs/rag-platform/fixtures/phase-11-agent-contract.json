@@ -1,0 +1,68 @@
+{
+  "phase": 11,
+  "kind": "source-verified-deterministic-contract",
+  "source_evidence": [
+    "rag-backend/api/apps/restful_apis/agent_api.py",
+    "rag-backend/internal/router/agent_routes.go",
+    "rag-backend/internal/handler/agent.go",
+    "rag-backend/internal/handler/agent_component.go",
+    "rag-backend/internal/handler/agent_attachment.go",
+    "rag-backend/internal/handler/mcp.go",
+    "rag-backend/internal/service/agent.go"
+  ],
+  "create_request": {
+    "title": "Phase 11 fixture agent",
+    "dsl": {
+      "components": {
+        "begin": {
+          "obj": { "component_name": "Begin", "params": {} },
+          "downstream": ["message"],
+          "upstream": []
+        },
+        "message": {
+          "obj": {
+            "component_name": "Message",
+            "params": { "content": ["{sys.query}"] }
+          },
+          "downstream": [],
+          "upstream": ["begin"]
+        }
+      },
+      "history": [],
+      "retrieval": [],
+      "path": [],
+      "globals": {
+        "sys.query": "",
+        "sys.user_id": "",
+        "sys.conversation_turns": 0,
+        "sys.files": []
+      },
+      "variables": {}
+    }
+  },
+  "component_debug_request": {
+    "params": { "sys.query": { "value": "Merhaba" } }
+  },
+  "completion_request": {
+    "agent_id": "agent-1",
+    "query": "Merhaba",
+    "session_id": "session-1",
+    "stream": true,
+    "return_trace": true
+  },
+  "stream_frames": [
+    {
+      "event": "message",
+      "data": "Merhaba",
+      "message_id": "message-1",
+      "session_id": "session-1"
+    },
+    "[DONE]"
+  ],
+  "redaction_policy": {
+    "database_password": "<redacted:password>",
+    "mcp_authorization": "<redacted:authorization>",
+    "persist_secrets": false,
+    "log_secrets": false
+  }
+}

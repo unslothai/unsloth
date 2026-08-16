@@ -1118,12 +1118,18 @@ export function AppSidebar() {
     agents: {
       icon: BotIcon,
       label: t("shell.navigation.agents"),
-      active: false,
+      active: pathname === "/agents" || pathname.startsWith("/agents/"),
       disabled: !getProductCapability("agents").available,
       tooltip:
         getProductCapability("agents").reason ??
         t("shell.navigation.agentsUnavailable"),
-      onClick: () => {},
+      onClick: () => {
+        navigate({ to: "/agents" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/agents" }));
+      },
     },
     images: {
       icon: Image03Icon,

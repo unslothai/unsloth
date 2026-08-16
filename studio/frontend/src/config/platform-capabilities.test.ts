@@ -22,7 +22,7 @@ describe("Rag Platform capability registry", () => {
     expect(registry.export.available).toBe(false);
     expect(registry["api-monitor"].available).toBe(false);
     expect(registry.agents).toMatchObject({
-      available: false,
+      available: true,
       visibleInNavigation: true,
     });
   });
@@ -34,6 +34,12 @@ describe("Rag Platform capability registry", () => {
     expect(registry["image-generation"].available).toBe(true);
     expect(registry["video-generation"].available).toBe(true);
     expect(registry["api-monitor"].available).toBe(true);
+    expect(registry.agents.available).toBe(false);
+    const hybrid = createCapabilityRegistry({ VITE_BACKEND_MODE: "hybrid" });
+    expect(hybrid.agents).toMatchObject({
+      available: true,
+      visibleInNavigation: true,
+    });
   });
 
   it("uses an explicit backend mode and safe defaults", () => {

@@ -28,3 +28,6 @@ export * from "./chat-completion-types";
 export * from "./operations-api";
 export * from "./operations-types";
 export * from "./error-policy";
+export * from "./agent-api";
+export * from "./agent-stream";
+export * from "./agent-types";

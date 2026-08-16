@@ -76,7 +76,9 @@ if (BACKEND_REF !== "worktree") {
       ["-C", BACKEND_REPO_ROOT, "rev-parse", `${BACKEND_REF}^{commit}`],
       { encoding: "utf8" },
     ).trim();
-    disposableBackendRoot = mkdtempSync(join(tmpdir(), "rag-platform-route-inventory-"));
+    disposableBackendRoot = mkdtempSync(
+      join(tmpdir(), "rag-platform-route-inventory-"),
+    );
     const archive = execFileSync(
       "git",
       ["-C", BACKEND_REPO_ROOT, "archive", "--format=tar", BACKEND_REF],
@@ -88,7 +90,9 @@ if (BACKEND_REF !== "worktree") {
     });
     BACKEND_ROOT = disposableBackendRoot;
   } catch (error) {
-    console.error(`cannot materialize backend ref ${BACKEND_REF}: ${error.message}`);
+    console.error(
+      `cannot materialize backend ref ${BACKEND_REF}: ${error.message}`,
+    );
     process.exit(2);
   }
   process.on("exit", () => {
@@ -123,23 +127,35 @@ function readEnvValue(file, key) {
     const match = trimmed.match(new RegExp(`^${key}\\s*=\\s*(.+)$`));
     // Upstream docker/.env keeps trailing `# ...` notes on the same line
     // (e.g. `API_PROXY_SCHEME=python # use pure python server deployment`).
-    if (match) found = match[1].replace(/\s+#.*$/, "").trim().replace(/^["']|["']$/g, "");
+    if (match)
+      found = match[1]
+        .replace(/\s+#.*$/, "")
+        .trim()
+        .replace(/^["']|["']$/g, "");
   }
   return found;
 }
 
 function resolveProxyScheme() {
-  const ownedEnv = join(FRONTEND_ROOT, "infra", "rag-platform", ".env.rag-platform");
+  const ownedEnv = join(
+    FRONTEND_ROOT,
+    "infra",
+    "rag-platform",
+    ".env.rag-platform",
+  );
   const upstreamEnv = join(BACKEND_ROOT, "docker", ".env");
   const owned = readEnvValue(ownedEnv, "API_PROXY_SCHEME");
-  if (owned) return { scheme: owned, source: relative(FRONTEND_ROOT, ownedEnv) };
+  if (owned)
+    return { scheme: owned, source: relative(FRONTEND_ROOT, ownedEnv) };
   const upstream = readEnvValue(upstreamEnv, "API_PROXY_SCHEME");
-  if (upstream) return { scheme: upstream, source: `${BACKEND_ROOT}/docker/.env` };
+  if (upstream)
+    return { scheme: upstream, source: `${BACKEND_ROOT}/docker/.env` };
   // entrypoint.sh falls back to the python config when the variable is unset.
   return { scheme: "python", source: "docker/entrypoint.sh default" };
 }
 
-const { scheme: PROXY_SCHEME, source: PROXY_SCHEME_SOURCE } = resolveProxyScheme();
+const { scheme: PROXY_SCHEME, source: PROXY_SCHEME_SOURCE } =
+  resolveProxyScheme();
 
 const NGINX_FILE_BY_SCHEME = {
   hybrid: "ragflow.conf.hybrid",
@@ -199,7 +215,8 @@ function parseNginxLocations(nginxPath) {
   return locations;
 }
 
-const nginxFile = NGINX_FILE_BY_SCHEME[PROXY_SCHEME] ?? NGINX_FILE_BY_SCHEME.python;
+const nginxFile =
+  NGINX_FILE_BY_SCHEME[PROXY_SCHEME] ?? NGINX_FILE_BY_SCHEME.python;
 const NGINX_PATH =
   PROXY_SCHEME === "hybrid"
     ? join(FRONTEND_ROOT, "infra", "rag-platform", "rag-platform.hybrid.conf")
@@ -267,7 +284,9 @@ function resolveProxy(route) {
       // nginx sends this path somewhere else entirely. Report where it lands
       // and whether that destination is even alive, because a route shadowed
       // onto a dead service returns 502 rather than another service's answer.
-      const owner = Object.entries(SERVICES).find(([, meta]) => meta.port === port)?.[0] ?? "unknown";
+      const owner =
+        Object.entries(SERVICES).find(([, meta]) => meta.port === port)?.[0] ??
+        "unknown";
       const ownerStarted = owner === "unknown" ? null : serviceStarted(owner);
       reason =
         ownerStarted === false
@@ -334,7 +353,8 @@ function serviceStarted(service) {
   const isGo = service === "go-api" || service === "go-admin";
   if (isGo && !GO_BINARY_IN_IMAGE) return false;
   if (PROXY_SCHEME === "hybrid") return true;
-  if (PROXY_SCHEME === "python") return service === "python-api" || service === "python-admin";
+  if (PROXY_SCHEME === "python")
+    return service === "python-api" || service === "python-admin";
   if (PROXY_SCHEME === "go") return isGo;
   return null;
 }
@@ -343,7 +363,15 @@ function serviceStarted(service) {
 // Python route sources
 // ---------------------------------------------------------------------------
 
-const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+const HTTP_METHODS = [
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+];
 
 function normalizePath(prefix, path) {
   const joined = `${prefix.replace(/\/$/, "")}/${path.replace(/^\//, "")}`;
@@ -363,11 +391,17 @@ function parseMethodsList(raw) {
  * decorator and the handler's `def`.
  */
 function pythonAuthFor(lines, decoratorIndex) {
-  for (let i = decoratorIndex; i < Math.min(decoratorIndex + 8, lines.length); i += 1) {
+  for (
+    let i = decoratorIndex;
+    i < Math.min(decoratorIndex + 8, lines.length);
+    i += 1
+  ) {
     const line = lines[i];
     if (/@login_required/.test(line)) {
       const types = line.match(/auth_types\s*=\s*\[([^\]]*)\]/);
-      return types ? `login_required(${types[1].replace(/["'\s]/g, "")})` : "login_required";
+      return types
+        ? `login_required(${types[1].replace(/["'\s]/g, "")})`
+        : "login_required";
     }
     if (/@token_required/.test(line)) return "token_required";
     if (/^(async\s+)?def\s/.test(line)) break;
@@ -397,9 +431,11 @@ function resolveInterpolatedPaths(rawPath, lines) {
   // Find the enclosing registration helper and the literals passed to it.
   const helper = source.match(new RegExp(`def\\s+(\\w+)\\s*\\(\\s*${name}\\b`));
   if (!helper) return null;
-  const calls = [...source.matchAll(new RegExp(`^${helper[1]}\\(\\s*["']([^"']+)["']`, "gm"))].map(
-    (m) => m[1],
-  );
+  const calls = [
+    ...source.matchAll(
+      new RegExp(`^${helper[1]}\\(\\s*["']([^"']+)["']`, "gm"),
+    ),
+  ].map((m) => m[1]);
   if (calls.length === 0) return null;
   return calls.map((prefix) => rawPath.replace(`{${name}}`, prefix));
 }
@@ -517,7 +553,8 @@ function scanGinFile(absFile, relFile, service, options = {}) {
   // varName -> accumulated prefix. Seeded with the engine and, for helper
   // functions, with the prefix the caller passes in (options.seed).
   const groups = new Map([["engine", ""]]);
-  for (const [name, prefix] of Object.entries(options.seed || {})) groups.set(name, prefix);
+  for (const [name, prefix] of Object.entries(options.seed || {}))
+    groups.set(name, prefix);
   const authByVar = options.authByVar || {};
 
   lines.forEach((line, index) => {
@@ -538,7 +575,9 @@ function scanGinFile(absFile, relFile, service, options = {}) {
       if (!groups.has(varName)) return;
       const prefix = groups.get(varName);
       const fullPath = normalizePath(prefix || "/", rawPath) || "/";
-      const comment = line.includes("//") ? line.slice(line.indexOf("//") + 2).trim() : "";
+      const comment = line.includes("//")
+        ? line.slice(line.indexOf("//") + 2).trim()
+        : "";
       const methods = verb === "Any" ? HTTP_METHODS : [verb];
       for (const method of methods) {
         routes.push({
@@ -631,7 +670,11 @@ function scanGoAdmin() {
     "go-admin",
     {
       defaultAuth: "admin-session",
-      authByVar: { engine: "public", admin: "public", protected: "admin-session" },
+      authByVar: {
+        engine: "public",
+        admin: "public",
+        protected: "admin-session",
+      },
     },
   );
 }
@@ -646,7 +689,9 @@ function scanMcp() {
   const lines = readFileSync(file, "utf8").split("\n");
   const routes = [];
   lines.forEach((line, index) => {
-    const routeMatch = line.match(/Route\(\s*["']([^"']+)["'][^)]*methods\s*=\s*(\[[^\]]*\])/);
+    const routeMatch = line.match(
+      /Route\(\s*["']([^"']+)["'][^)]*methods\s*=\s*(\[[^\]]*\])/,
+    );
     if (routeMatch) {
       const [, path, methodsRaw] = routeMatch;
       for (const method of parseMethodsList(methodsRaw)) {
@@ -656,7 +701,8 @@ function scanMcp() {
           service: "mcp",
           auth: "mcp-api-key",
           source: `mcp/server/server.py:${index + 1}`,
-          notes: "MCP transport endpoint; own port, opt-in via --enable-mcpserver",
+          notes:
+            "MCP transport endpoint; own port, opt-in via --enable-mcpserver",
         });
       }
       return;
@@ -669,7 +715,8 @@ function scanMcp() {
         service: "mcp",
         auth: "mcp-api-key",
         source: `mcp/server/server.py:${index + 1}`,
-        notes: "starlette Mount (sub-application), opt-in via --enable-mcpserver",
+        notes:
+          "starlette Mount (sub-application), opt-in via --enable-mcpserver",
       });
     }
   });
@@ -700,8 +747,18 @@ const rawRoutes = [
  */
 function scanForwardAuthSourceOnly() {
   if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
-  const routerPath = join(BACKEND_REPO_ROOT, "internal", "router", "router_ee.go");
-  const handlerPath = join(BACKEND_REPO_ROOT, "internal", "handler", "user_auth_ee.go");
+  const routerPath = join(
+    BACKEND_REPO_ROOT,
+    "internal",
+    "router",
+    "router_ee.go",
+  );
+  const handlerPath = join(
+    BACKEND_REPO_ROOT,
+    "internal",
+    "handler",
+    "user_auth_ee.go",
+  );
   if (!existsSync(routerPath) || !existsSync(handlerPath)) {
     return { commit: "unavailable", routes: [] };
   }
@@ -710,7 +767,9 @@ function scanForwardAuthSourceOnly() {
     ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
     { encoding: "utf8" },
   ).trim();
-  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const known = new Set(
+    rawRoutes.map((route) => `${route.method} ${route.path}`),
+  );
   const handlerLines = readFileSync(handlerPath, "utf8").split("\n");
   const routes = [];
   readFileSync(routerPath, "utf8")
@@ -725,10 +784,14 @@ function scanForwardAuthSourceOnly() {
       if (known.has(`${method} ${path}`)) return;
       const handler = match[3];
       const handlerStart = handlerLines.findIndex((candidate) =>
-        new RegExp(`^func \\(h \\*UserHandler\\) ${handler}\\(`).test(candidate),
+        new RegExp(`^func \\(h \\*UserHandler\\) ${handler}\\(`).test(
+          candidate,
+        ),
       );
       const handlerBody =
-        handlerStart < 0 ? "" : handlerLines.slice(handlerStart, handlerStart + 5).join("\n");
+        handlerStart < 0
+          ? ""
+          : handlerLines.slice(handlerStart, handlerStart + 5).join("\n");
       if (!handlerBody.includes("CodeNotImplemented")) {
         throw new Error(
           `forward auth route ${method} ${path} is not a verified CodeNotImplemented stub`,
@@ -772,7 +835,12 @@ const forwardAuthSource = scanForwardAuthSourceOnly();
 function scanForwardPipelineSourceOnly() {
   if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
   const routerPath = join(BACKEND_REPO_ROOT, "internal", "router", "router.go");
-  const handlerPath = join(BACKEND_REPO_ROOT, "internal", "handler", "pipeline.go");
+  const handlerPath = join(
+    BACKEND_REPO_ROOT,
+    "internal",
+    "handler",
+    "pipeline.go",
+  );
   if (!existsSync(routerPath) || !existsSync(handlerPath)) {
     return { commit: "unavailable", routes: [] };
   }
@@ -781,7 +849,9 @@ function scanForwardPipelineSourceOnly() {
     ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
     { encoding: "utf8" },
   ).trim();
-  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const known = new Set(
+    rawRoutes.map((route) => `${route.method} ${route.path}`),
+  );
   const handlerText = readFileSync(handlerPath, "utf8");
   const routes = [];
   readFileSync(routerPath, "utf8")
@@ -795,7 +865,11 @@ function scanForwardPipelineSourceOnly() {
       const path = `/api/v1${match[2]}`;
       if (known.has(`${method} ${path}`)) return;
       const handler = match[3];
-      if (!new RegExp(`func \\(h \\*PipelineHandler\\) ${handler}\\(`).test(handlerText)) {
+      if (
+        !new RegExp(`func \\(h \\*PipelineHandler\\) ${handler}\\(`).test(
+          handlerText,
+        )
+      ) {
         throw new Error(`forward pipeline handler ${handler} was not found`);
       }
       const base = {
@@ -843,7 +917,9 @@ function scanForwardPhase10SourceOnly() {
     ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
     { encoding: "utf8" },
   ).trim();
-  const known = new Set(rawRoutes.map((route) => `${route.method} ${route.path}`));
+  const known = new Set(
+    rawRoutes.map((route) => `${route.method} ${route.path}`),
+  );
   const deployedRoot = BACKEND_ROOT;
   let currentRoutes;
   try {
@@ -887,10 +963,69 @@ function scanForwardPhase10SourceOnly() {
 }
 
 const forwardPhase10Source = scanForwardPhase10SourceOnly();
+
+/**
+ * The normative worktree moved Agent cancellation from the deployed
+ * DELETE /agents/:canvas_id/run route to a session-scoped task route. Keep the
+ * new declaration visible while the pinned image is still running.
+ */
+function scanForwardPhase11SourceOnly() {
+  if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
+  const commit = execFileSync(
+    "git",
+    ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+    { encoding: "utf8" },
+  ).trim();
+  const routerPath = join(
+    BACKEND_REPO_ROOT,
+    "internal",
+    "router",
+    "agent_routes.go",
+  );
+  if (!existsSync(routerPath)) return { commit, routes: [] };
+  const known = new Set(
+    rawRoutes.map((route) => `${route.method} ${route.path}`),
+  );
+  const currentRoutes = scanGinFile(
+    routerPath,
+    "internal/router/agent_routes.go",
+    "go-api",
+    { seed: { g: "/api/v1/tasks" }, defaultAuth: "session" },
+  ).filter((route) => route.path.endsWith("/cancel"));
+  return {
+    commit,
+    routes: currentRoutes
+      .filter((route) => !known.has(`${route.method} ${route.path}`))
+      .map((route) => {
+        const base = {
+          ...route,
+          notes:
+            `Phase 11 backend worktree-only Agent session cancellation contract at ${commit.slice(0, 12)}; ` +
+            `absent from deployed ${BACKEND_REF}`,
+        };
+        return {
+          ...base,
+          service_port: SERVICES[base.service].port,
+          service_started: serviceStarted(base.service),
+          ...resolveProxy(base),
+          runtime_enabled: false,
+          runtime_disabled_reason:
+            `declared only in backend worktree ${commit.slice(0, 12)}; absent from deployed ` +
+            `${BACKEND_REF} (${BACKEND_COMMIT.slice(0, 12)}); authenticated hybrid/direct smoke verifies the deployed route boundary`,
+          source_scope: "backend-worktree-only",
+          source_commit: commit,
+          alternates: [],
+        };
+      }),
+  };
+}
+
+const forwardPhase11Source = scanForwardPhase11SourceOnly();
 const forwardSourceRoutes = [
   ...forwardAuthSource.routes,
   ...forwardPipelineSource.routes,
   ...forwardPhase10Source.routes,
+  ...forwardPhase11Source.routes,
 ];
 
 /**
@@ -912,7 +1047,8 @@ for (const route of rawRoutes) {
     continue;
   }
   const existing = byKey.get(key);
-  if (existing.service === entry.service && existing.source === entry.source) continue;
+  if (existing.service === entry.service && existing.source === entry.source)
+    continue;
   if (!existing.runtime_enabled && entry.runtime_enabled) {
     const demoted = { ...existing };
     delete demoted.alternates;
@@ -923,7 +1059,9 @@ for (const route of rawRoutes) {
 }
 
 const routes = [...byKey.values(), ...forwardSourceRoutes].sort((a, b) =>
-  a.path === b.path ? a.method.localeCompare(b.method) : a.path.localeCompare(b.path),
+  a.path === b.path
+    ? a.method.localeCompare(b.method)
+    : a.path.localeCompare(b.path),
 );
 
 /**
@@ -975,12 +1113,20 @@ for (const route of routes) {
         parameterRouteServesConcrete(other.path, route.path)),
   );
   route.equivalent_reachable_route = equivalent
-    ? { method: equivalent.method, path: equivalent.path, service: equivalent.service }
+    ? {
+        method: equivalent.method,
+        path: equivalent.path,
+        service: equivalent.service,
+      }
     : null;
 }
 
-const disabledRoutes = routes.filter((route) => route.runtime_enabled === false);
-const goExclusiveRoutes = disabledRoutes.filter((route) => !route.equivalent_reachable_route);
+const disabledRoutes = routes.filter(
+  (route) => route.runtime_enabled === false,
+);
+const goExclusiveRoutes = disabledRoutes.filter(
+  (route) => !route.equivalent_reachable_route,
+);
 
 const byService = {};
 for (const route of routes) {
@@ -993,9 +1139,12 @@ const inventory = {
   backend: {
     source_ref: BACKEND_REF,
     source_commit: BACKEND_COMMIT,
-    source_image: readEnvValue(join(BACKEND_ROOT, "docker", ".env"), "RAGFLOW_IMAGE") || "unknown",
+    source_image:
+      readEnvValue(join(BACKEND_ROOT, "docker", ".env"), "RAGFLOW_IMAGE") ||
+      "unknown",
     api_version: "v1",
-    forward_source_commit: forwardPhase10Source.commit || forwardAuthSource.commit,
+    forward_source_commit:
+      forwardPhase10Source.commit || forwardAuthSource.commit,
   },
   proxy: {
     scheme: PROXY_SCHEME,
@@ -1025,7 +1174,8 @@ const inventory = {
     not_proxied: routes.filter((r) => r.runtime_enabled === null).length,
     with_alternates: routes.filter((r) => r.alternates.length > 0).length,
     runtime_disabled_breakdown: {
-      with_reachable_equivalent: disabledRoutes.length - goExclusiveRoutes.length,
+      with_reachable_equivalent:
+        disabledRoutes.length - goExclusiveRoutes.length,
       no_reachable_equivalent: goExclusiveRoutes.length,
     },
   },
@@ -1037,7 +1187,9 @@ function renderMarkdown(data) {
   lines.push("# Rag Platform — backend route inventory");
   lines.push("");
   lines.push("<!-- GENERATED FILE. Do not edit by hand.");
-  lines.push("     Regenerate: node scripts/rag-platform/route-inventory.mjs -->");
+  lines.push(
+    "     Regenerate: node scripts/rag-platform/route-inventory.mjs -->",
+  );
   lines.push("");
   lines.push(
     `- Backend source: \`${data.backend_path}\` at \`${data.backend.source_ref}\` ` +
@@ -1050,7 +1202,9 @@ function renderMarkdown(data) {
     `- Forward source audit: backend worktree \`${data.backend.forward_source_commit}\`; ` +
       `${data.totals.source_only_runtime_disabled} source-only runtime-disabled route(s)`,
   );
-  lines.push(`- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`);
+  lines.push(
+    `- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`,
+  );
   lines.push(`- Proxy config: \`${data.proxy.nginx_config}\``);
   lines.push("");
   lines.push("## Totals");
@@ -1059,20 +1213,28 @@ function renderMarkdown(data) {
   lines.push("| --- | --- |");
   lines.push(`| routes | ${data.totals.routes} |`);
   for (const [service, count] of Object.entries(data.totals.by_service)) {
-    lines.push(`| ${service} (port ${data.services[service].port}) | ${count} |`);
+    lines.push(
+      `| ${service} (port ${data.services[service].port}) | ${count} |`,
+    );
   }
   lines.push(`| runtime-enabled | ${data.totals.runtime_enabled} |`);
   lines.push(`| runtime-disabled | ${data.totals.runtime_disabled} |`);
-  lines.push(`| — source-only forward declarations | ${data.totals.source_only_runtime_disabled} |`);
+  lines.push(
+    `| — source-only forward declarations | ${data.totals.source_only_runtime_disabled} |`,
+  );
   lines.push(`| not proxied by nginx | ${data.totals.not_proxied} |`);
-  lines.push(`| method+path with alternate implementations | ${data.totals.with_alternates} |`);
+  lines.push(
+    `| method+path with alternate implementations | ${data.totals.with_alternates} |`,
+  );
   lines.push("");
   lines.push("## Proxy location map (nginx evaluation order)");
   lines.push("");
   lines.push("| Order | Location | Upstream |");
   lines.push("| --- | --- | --- |");
   data.proxy.locations.forEach((location, index) => {
-    lines.push(`| ${index + 1} | \`${location.match}\` | ${location.upstream} |`);
+    lines.push(
+      `| ${index + 1} | \`${location.match}\` | ${location.upstream} |`,
+    );
   });
   lines.push("");
   lines.push("## Routes");
@@ -1080,7 +1242,9 @@ function renderMarkdown(data) {
   lines.push(
     "| Method | Path | Service | Port | Proxy mode | Proxy destination | Auth / role | Runtime | Source | Alternates | Notes |",
   );
-  lines.push("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+  lines.push(
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+  );
   for (const route of data.routes) {
     const runtime =
       route.runtime_enabled === true
@@ -1089,7 +1253,9 @@ function renderMarkdown(data) {
           ? "**runtime-disabled**"
           : "not-proxied";
     const alternates = route.alternates.length
-      ? route.alternates.map((a) => `${a.service}@${a.service_port} (\`${a.source}\`)`).join("<br>")
+      ? route.alternates
+          .map((a) => `${a.service}@${a.service_port} (\`${a.source}\`)`)
+          .join("<br>")
       : "—";
     lines.push(
       `| ${route.method} | \`${route.path}\` | ${route.service} | ${route.service_port} | ${route.proxy_mode} | ${
@@ -1108,14 +1274,20 @@ function renderMarkdown(data) {
  * never disagree with it.
  */
 function renderRuntimeDisabled(data) {
-  const disabled = data.routes.filter((route) => route.runtime_enabled === false);
-  const exclusive = disabled.filter((route) => !route.equivalent_reachable_route);
+  const disabled = data.routes.filter(
+    (route) => route.runtime_enabled === false,
+  );
+  const exclusive = disabled.filter(
+    (route) => !route.equivalent_reachable_route,
+  );
   const shadowed = disabled.filter((route) => route.equivalent_reachable_route);
 
   const areaOf = (path) => {
     const segments = path.split("/").filter(Boolean);
     const versionIndex = segments.indexOf("v1");
-    return (versionIndex >= 0 ? segments[versionIndex + 1] : segments[0]) || "(root)";
+    return (
+      (versionIndex >= 0 ? segments[versionIndex + 1] : segments[0]) || "(root)"
+    );
   };
   const groupByArea = (list) => {
     const groups = new Map();
@@ -1133,7 +1305,9 @@ function renderRuntimeDisabled(data) {
   lines.push("# Rag Platform — runtime-disabled backend routes");
   lines.push("");
   lines.push("<!-- GENERATED FILE. Do not edit by hand.");
-  lines.push("     Regenerate: node scripts/rag-platform/route-inventory.mjs -->");
+  lines.push(
+    "     Regenerate: node scripts/rag-platform/route-inventory.mjs -->",
+  );
   lines.push("");
   lines.push(
     "Every backend route that the deployed stack cannot serve, with the reason it",
@@ -1142,7 +1316,9 @@ function renderRuntimeDisabled(data) {
     "running in the active scheme.",
   );
   lines.push("");
-  lines.push(`- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`);
+  lines.push(
+    `- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`,
+  );
   lines.push(`- Proxy config: \`${data.proxy.nginx_config}\``);
   lines.push(`- Source image: \`${data.backend.source_image}\``);
   lines.push("- Decision record: `docs/adr/0005-backend-proxy-scheme.md`");
@@ -1154,8 +1330,12 @@ function renderRuntimeDisabled(data) {
   lines.push(`| routes discovered | ${data.totals.routes} |`);
   lines.push(`| reachable | ${data.totals.runtime_enabled} |`);
   lines.push(`| runtime-disabled | ${disabled.length} |`);
-  lines.push(`| — no reachable equivalent (capability lost) | ${exclusive.length} |`);
-  lines.push(`| — same concrete request served elsewhere (no capability lost) | ${shadowed.length} |`);
+  lines.push(
+    `| — no reachable equivalent (capability lost) | ${exclusive.length} |`,
+  );
+  lines.push(
+    `| — same concrete request served elsewhere (no capability lost) | ${shadowed.length} |`,
+  );
   lines.push(`| not proxied by nginx | ${data.totals.not_proxied} |`);
   lines.push("");
   lines.push("## Why these routes are closed");
@@ -1182,7 +1362,9 @@ function renderRuntimeDisabled(data) {
     );
   }
   lines.push("");
-  lines.push("## Phase 5 functional runtime gaps (reachable route, unusable browser contract)");
+  lines.push(
+    "## Phase 5 functional runtime gaps (reachable route, unusable browser contract)",
+  );
   lines.push("");
   lines.push(
     "These two routes are reachable at the proxy and therefore are not included in the",
@@ -1191,7 +1373,9 @@ function renderRuntimeDisabled(data) {
     "`runtime-disabled` in the endpoint coverage matrix rather than presented as empty UI.",
   );
   lines.push("");
-  lines.push("| Route | Source evidence | Proxy evidence | Smoke / product result |");
+  lines.push(
+    "| Route | Source evidence | Proxy evidence | Smoke / product result |",
+  );
   lines.push("| --- | --- | --- | --- |");
   lines.push(
     "| `GET /api/v1/documents` | `internal/router/router.go:291` binds the flat route to `ListDocuments`; `internal/handler/document.go:520` reads the absent `dataset_id` path param and runs dataset ownership against it. | Generated hybrid map sends GET `/api/v1/documents` to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. The authenticated handler is source-provably unable to supply a flat collection; the UI shows `runtime-disabled` and uses dataset-scoped listing. |",
@@ -1203,7 +1387,9 @@ function renderRuntimeDisabled(data) {
     "| `GET /api/v1/datasets/ingestion/tasks` | `internal/handler/document.go:1460` calls `ShouldBindJSON` for `dataset_id` on GET and never reads the query string. Browser Fetch forbids GET request bodies. | Generated hybrid map sends the route to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. Browser contract test uses no GET body; document polling plus Python `POST /datasets/{id}/documents/stop` is the safe product path. |",
   );
   lines.push("");
-  lines.push("## Phase 10 functional runtime gaps (registered route, unavailable prerequisites)");
+  lines.push(
+    "## Phase 10 functional runtime gaps (registered route, unavailable prerequisites)",
+  );
   lines.push("");
   lines.push(
     "The global skill routes are registered and selected by hybrid nginx, but the",
@@ -1212,14 +1398,18 @@ function renderRuntimeDisabled(data) {
     "notice; no create/update/delete/index action is offered.",
   );
   lines.push("");
-  lines.push("| Route family | Source / proxy evidence | Authenticated smoke result | Product result |");
+  lines.push(
+    "| Route family | Source / proxy evidence | Authenticated smoke result | Product result |",
+  );
   lines.push("| --- | --- | --- | --- |");
   lines.push(
     "| `/api/v1/skills/spaces*`, `/skills/space/by-folder` | `internal/router/router.go` registers Go skill-space handlers; hybrid sends `/api/v1/skills/*` to Go `9384`. | `GET /skills/spaces` reaches the handler but returns HTTP 200/code 103, MySQL 1146: `rag_platform.skill_spaces` does not exist. | Global space CRUD and folder lookup controls are hidden behind a retryable runtime-disabled notice. |",
     "| `/api/v1/skills/config`, `/skills/search`, `/skills/index`, `/skills/reindex` | `internal/handler/skill_search.go` registers config/search/index lifecycle; hybrid selects Go `9384`. | Authenticated search reaches the handler but returns code 103 because Elasticsearch `172.19.0.3:9200` refuses connections; write/index lifecycle also depends on the missing skill schema/search service. | Config/search/index/reindex/delete-index controls are hidden; dataset-owned compiled skill reads remain available separately. |",
   );
   lines.push("");
-  lines.push("## Capability lost — no reachable route serves this method and path");
+  lines.push(
+    "## Capability lost — no reachable route serves this method and path",
+  );
   lines.push("");
   lines.push(
     "Compared after canonicalising parameter syntax (`<id>`, `:id`, `*path` all",
@@ -1240,7 +1430,9 @@ function renderRuntimeDisabled(data) {
     }
     lines.push("");
   }
-  lines.push("## No capability lost — same method and path is served by a reachable route");
+  lines.push(
+    "## No capability lost — same method and path is served by a reachable route",
+  );
   lines.push("");
   lines.push(
     "Duplicate implementations of one contract, or a static source-only route",

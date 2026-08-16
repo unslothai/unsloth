@@ -1595,22 +1595,22 @@
     }
   },
   "totals": {
-    "routes": 745,
+    "routes": 746,
     "by_service": {
       "go-admin": 114,
       "python-admin": 34,
       "python-api": 318,
-      "go-api": 274,
+      "go-api": 275,
       "mcp": 5
     },
     "runtime_enabled": 516,
-    "runtime_disabled": 224,
-    "source_only_runtime_disabled": 45,
+    "runtime_disabled": 225,
+    "source_only_runtime_disabled": 46,
     "phase10_source_only_runtime_disabled": 34,
     "not_proxied": 5,
     "with_alternates": 110,
     "runtime_disabled_breakdown": {
-      "with_reachable_equivalent": 188,
+      "with_reachable_equivalent": 189,
       "no_reachable_equivalent": 36
     }
   },
@@ -15880,6 +15880,30 @@
           "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)"
         }
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tasks/:session_id/cancel",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/agent_routes.go:110",
+      "notes": "Phase 11 backend worktree-only Agent session cancellation contract at a0e091e75051; absent from deployed v0.26.4",
+      "service_port": 9384,
+      "service_started": true,
+      "proxy_mode": "hybrid",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke verifies the deployed route boundary",
+      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "source_scope": "backend-worktree-only",
+      "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/tasks/<task_id>/cancel",
+        "service": "python-api"
+      }
     },
     {
       "method": "PATCH",

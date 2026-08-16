@@ -5,7 +5,7 @@
 
 - Backend source: `/Users/baran/Desktop/rag-backend` at `v0.26.4` (`cb93883f3f8c975eecb2fed81210effeb3bdb06f`)
 - Source image: `infiniflow/ragflow:v0.26.4` (API version `v1`)
-- Forward source audit: backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`; 45 source-only runtime-disabled route(s)
+- Forward source audit: backend worktree `a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2`; 46 source-only runtime-disabled route(s)
 - Active proxy scheme: `hybrid` (from infra/rag-platform/.env.rag-platform)
 - Proxy config: `infra/rag-platform/rag-platform.hybrid.conf`
 
@@ -13,15 +13,15 @@
 
 | Metric | Count |
 | --- | --- |
-| routes | 745 |
+| routes | 746 |
 | go-admin (port 9383) | 114 |
 | python-admin (port 9381) | 34 |
 | python-api (port 9380) | 318 |
-| go-api (port 9384) | 274 |
+| go-api (port 9384) | 275 |
 | mcp (port 9382) | 5 |
 | runtime-enabled | 516 |
-| runtime-disabled | 224 |
-| — source-only forward declarations | 45 |
+| runtime-disabled | 225 |
+| — source-only forward declarations | 46 |
 | not proxied by nginx | 5 |
 | method+path with alternate implementations | 110 |
 
@@ -1101,6 +1101,7 @@
 | PUT | `/api/v1/system/variables` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:629` | — | — |
 | GET | `/api/v1/system/variables/:var_name` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:630` | — | — |
 | GET | `/api/v1/system/version` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/system_api.py:43` | go-api@9384 (`internal/router/router.go:157`) | — |
+| POST | `/api/v1/tasks/:session_id/cancel` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/agent_routes.go:110` | — | Phase 11 backend worktree-only Agent session cancellation contract at a0e091e75051; absent from deployed v0.26.4 |
 | PATCH | `/api/v1/tasks/<task_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/task_api.py:37` | — | — |
 | POST | `/api/v1/tasks/<task_id>/cancel` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/task_api.py:30` | — | — |
 | DELETE | `/api/v1/tenant/chunk_store` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:279` | — | Internal API only for GO |
