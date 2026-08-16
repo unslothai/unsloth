@@ -2894,6 +2894,11 @@ const Composer: FC<{
   }, [aui, referenceThreadId]);
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
+  // Whether the parked send is a queue gesture. A chord pressed while this
+  // chat's own settings are still loading parks like any other send, and
+  // without this the release path sends it, quietly turning the one shortcut
+  // whose whole point is stacking into an ordinary send.
+  const pendingSendForceQueueRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
   // This chat's own settings are still on their way; a send now would run on the
   // installation defaults showing in their place.
@@ -3382,6 +3387,30 @@ const Composer: FC<{
     ],
   );
 
+  // Queue whatever the composer holds. Hoisted out of handleSubmit because the
+  // parked-send release needs the same action and cannot reach into its
+  // closure. Reads the live composer rather than the rendered text: at release
+  // time this runs from an effect, where the rendered copy may be a commit
+  // behind.
+  const queueComposerText = useCallback(
+    (waitForCurrentRun: boolean) => {
+      const queuedPrompt = aui.composer().getState().text.trim();
+      if (!queuedPrompt) {
+        return;
+      }
+      startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
+        if (aui.composer().getState().text.trim() !== queuedPrompt) {
+          return;
+        }
+        flushResourcesSync(() => {
+          aui.composer().setText("");
+        });
+        clearStoredDraft();
+      });
+    },
+    [aui, clearStoredDraft, startHydratedPromptQueue],
+  );
+
   const dismissWaitToast = useCallback(() => {
     if (waitToastRef.current !== null) {
       toast.dismiss(waitToastRef.current);
@@ -3396,6 +3425,7 @@ const Composer: FC<{
 
   const cancelQueuedSend = useCallback(() => {
     pendingSendRef.current = false;
+    pendingSendForceQueueRef.current = false;
     setPendingSend(false);
     // A dictation send held behind the same block would otherwise fire alone.
     sendAfterDictationRef.current = false;
@@ -3563,11 +3593,20 @@ const Composer: FC<{
       return;
     }
     const { text, attachments } = aui.composer().getState();
+    const forceQueue = pendingSendForceQueueRef.current;
     pendingSendRef.current = false;
+    pendingSendForceQueueRef.current = false;
     setPendingSend(false);
     dismissWaitToast();
     if (text.trim().length > 0 || attachments.length > 0) {
       clearStoredDraft();
+      if (forceQueue) {
+        // Wait mode read here rather than carried from the parked submit: a
+        // run can start while the settings load, and a queue that ignored it
+        // would dispatch on top of the response already streaming.
+        queueComposerText(aui.thread().getState().isRunning);
+        return;
+      }
       sendReservedComposer();
     }
   }, [
@@ -3579,6 +3618,7 @@ const Composer: FC<{
     aui,
     clearStoredDraft,
     dismissWaitToast,
+    queueComposerText,
     sendReservedComposer,
   ]);
 
@@ -3586,6 +3626,7 @@ const Composer: FC<{
   useEffect(
     () => () => {
       pendingSendRef.current = false;
+      pendingSendForceQueueRef.current = false;
       if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
     },
     [],
@@ -3718,6 +3759,11 @@ const Composer: FC<{
       // defaults on screen, so a chat stored as "ask" would queue as "off".
       if (threadScopedSettingsPending && !overlay) {
         event.preventDefault();
+        // The chord's intent rides along with the parked send, or the release
+        // above sends a prompt the user asked to stack.
+        if (forceQueue) {
+          pendingSendForceQueueRef.current = true;
+        }
         enqueueSend("settings");
         return;
       }
@@ -3745,19 +3791,6 @@ const Composer: FC<{
         );
       const livePreStreamRunActive =
         hasPreStreamRunReservation(preStreamThreadIds);
-
-      const queueComposerText = (waitForCurrentRun: boolean) => {
-        const queuedPrompt = composerText.trim();
-        startHydratedPromptQueue([queuedPrompt], waitForCurrentRun, () => {
-          if (aui.composer().getState().text.trim() !== queuedPrompt) {
-            return;
-          }
-          flushResourcesSync(() => {
-            aui.composer().setText("");
-          });
-          clearStoredDraft();
-        });
-      };
 
       if (
         liveThreadIsRunning ||
@@ -3873,11 +3906,11 @@ const Composer: FC<{
       aui,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,
+      queueComposerText,
       queuePastedTextPrompt,
       clearStoredDraft,
       closeOverlay,
       composerText,
-      startHydratedPromptQueue,
       disabled,
       disableQueue,
       hasAttachments,
