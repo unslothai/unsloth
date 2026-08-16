@@ -52,3 +52,22 @@ export function hasPendingPromptQueueStart(
   }
   return false;
 }
+
+/**
+ * Identity of a pasted-text queue start, held for the length of the file read
+ * that precedes it. A submit during the read is routed to the queue branch, so
+ * without this it would start a second read of the same attachment and queue a
+ * duplicate once the first read's reservation had been released.
+ *
+ * The wait mode is deliberately not part of it. It is recomputed per submit and
+ * can flip if a run starts or ends mid-read, which would split one prompt
+ * across two keys and reintroduce the duplicate. What identifies the prompt is
+ * the thread, the text and the attachments it is assembled from.
+ */
+export function pastedTextQueueKey(
+  threadId: string | null,
+  text: string,
+  attachmentIds: readonly string[],
+): string {
+  return JSON.stringify([threadId, text, attachmentIds]);
+}

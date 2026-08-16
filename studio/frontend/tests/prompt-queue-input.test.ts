@@ -9,6 +9,7 @@ import {
   hasPendingPromptQueueStart,
   isPromptQueueChord,
   isPromptQueueDragTypes,
+  pastedTextQueueKey,
 } from "../src/features/chat/utils/prompt-queue-input.ts";
 
 function key(
@@ -133,4 +134,34 @@ test("concurrent pasted-text reads are tracked per thread", () => {
   reads.splice(0, 1);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-1"), false);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-2"), true);
+});
+
+// A submit during the file read is routed to the queue branch, so the read has
+// to be recognisable or it starts a second one and queues a duplicate.
+test("the same pasted prompt reads under one key", () => {
+  const key = () => pastedTextQueueKey("t1", "notes", ["a1", "a2"]);
+  assert.equal(key(), key());
+});
+
+test("a different thread, text or attachment is a different read", () => {
+  const base = pastedTextQueueKey("t1", "notes", ["a1"]);
+  assert.notEqual(base, pastedTextQueueKey("t2", "notes", ["a1"]));
+  assert.notEqual(base, pastedTextQueueKey("t1", "other", ["a1"]));
+  assert.notEqual(base, pastedTextQueueKey("t1", "notes", ["a2"]));
+});
+
+// Attachment order is part of the prompt, since the texts are joined in order.
+test("reordered attachments are a different read", () => {
+  assert.notEqual(
+    pastedTextQueueKey("t1", "notes", ["a1", "a2"]),
+    pastedTextQueueKey("t1", "notes", ["a2", "a1"]),
+  );
+});
+
+// A new chat has no id yet, and the composer survives thread switches.
+test("a null thread does not collide with a named one", () => {
+  assert.notEqual(
+    pastedTextQueueKey(null, "notes", []),
+    pastedTextQueueKey("t1", "notes", []),
+  );
 });

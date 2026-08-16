@@ -181,6 +181,7 @@ import {
   hasPendingPromptQueueStart,
   isPromptQueueChord,
   isPromptQueueDragTypes,
+  pastedTextQueueKey,
 } from "@/features/chat/utils/prompt-queue-input";
 import {
   getStoredChatThread,
@@ -2822,9 +2823,20 @@ const Composer: FC<{
   );
   // Reading a pasted-text attachment happens before the queue start is
   // registered, so the intent is recorded here for the length of the read.
-  const pastedTextQueuePendingRef = useRef<
-    Array<{ cancelled: boolean; threadId: string | null }>
-  >([]);
+  // Keyed like a reservation so a submit during the read cannot start a second
+  // read of the same attachment, and carrying the boundaries the read predates.
+  const pastedTextQueuePendingRef = useRef(
+    new Map<
+      string,
+      {
+        temporary: boolean;
+        cancelled: boolean;
+        threadId: string | null;
+        localModelBoundaryGeneration: number;
+        historyClearGeneration: number;
+      }
+    >(),
+  );
   useEffect(() => {
     promptQueueTargetMountedRef.current = true;
     return () => {
@@ -2836,9 +2848,17 @@ const Composer: FC<{
       const detail =
         (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
       const state = aui.threadListItem().getState();
+      const aliases = compactIds([state.id, state.remoteId, referenceThreadId]);
       cancelPendingPromptQueueFactoriesForStop(
         promptQueueStartPendingRef.current,
-        compactIds([state.id, state.remoteId, referenceThreadId]),
+        aliases,
+        detail,
+      );
+      // A read in flight has no reservation yet, so it needs cancelling here
+      // too or Clear all lets it queue a prompt and recreate the chat.
+      cancelPendingPromptQueueFactoriesForStop(
+        pastedTextQueuePendingRef.current,
+        aliases,
         detail,
       );
     };
@@ -3113,6 +3133,9 @@ const Composer: FC<{
       waitForCurrentRun = false,
       onStarted?: () => void,
       onAborted?: () => void,
+      // Generation captured before an awaited step that precedes this call, so
+      // a boundary advanced during that step still invalidates the queue.
+      capturedLocalModelBoundary?: number,
     ) => {
       const reservationKey = JSON.stringify([
         referenceThreadId,
@@ -3127,7 +3150,7 @@ const Composer: FC<{
         cancelled: false,
         threadId: referenceThreadId,
         localModelBoundaryGeneration:
-          localPromptQueueModelBoundary.capture(),
+          capturedLocalModelBoundary ?? localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch:
           useChatRuntimeStore.getState().queuedSettingsEpoch,
       };
@@ -3202,10 +3225,33 @@ const Composer: FC<{
       const textAtQueue = composer.getState().text.trim();
       // Registered before the read, or a submit during it takes the send path
       // and this queues the same text again once the read finishes.
-      const pendingRead = { cancelled: false, threadId: referenceThreadId };
-      pastedTextQueuePendingRef.current.push(pendingRead);
+      const pendingKey = pastedTextQueueKey(
+        referenceThreadId,
+        textAtQueue,
+        attachmentIds,
+      );
+      // Already reading this exact prompt: the submit is the same intent, so
+      // report it handled rather than starting a second read that would queue
+      // a duplicate once the first reservation has been released.
+      if (pastedTextQueuePendingRef.current.has(pendingKey)) return true;
+      const pendingRead = {
+        temporary: useChatRuntimeStore.getState().incognito,
+        cancelled: false,
+        threadId: referenceThreadId,
+        localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
+        historyClearGeneration: chatHistoryClearBoundary.capture(),
+      };
+      pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
       void Promise.all(files.map((file) => file.text()))
         .then((texts) => {
+          // Stopped or cleared while the read was in flight.
+          if (
+            pendingRead.cancelled ||
+            chatHistoryClearBoundary.capture() !==
+              pendingRead.historyClearGeneration
+          ) {
+            return;
+          }
           const queuedPrompt = [textAtQueue, ...texts]
             .filter((part) => part.trim().length > 0)
             .join("\n\n");
@@ -3227,7 +3273,9 @@ const Composer: FC<{
               composer.setText("");
             });
             clearStoredDraft();
-          });
+          },
+          undefined,
+          pendingRead.localModelBoundaryGeneration);
         })
         .catch(() => {
           toast.error("Could not queue the pasted text.", {
@@ -3235,9 +3283,9 @@ const Composer: FC<{
           });
         })
         .finally(() => {
-          const pendingReads = pastedTextQueuePendingRef.current;
-          const index = pendingReads.indexOf(pendingRead);
-          if (index !== -1) pendingReads.splice(index, 1);
+          if (pastedTextQueuePendingRef.current.get(pendingKey) === pendingRead) {
+            pastedTextQueuePendingRef.current.delete(pendingKey);
+          }
         });
       return true;
     },
@@ -3574,7 +3622,7 @@ const Composer: FC<{
           referenceThreadId,
         ) ||
         hasPendingPromptQueueStart(
-          pastedTextQueuePendingRef.current,
+          pastedTextQueuePendingRef.current.values(),
           referenceThreadId,
         ) ||
         Boolean(
