@@ -3215,6 +3215,33 @@ const Composer: FC<{
     [createPromptQueueTarget, referenceThreadId],
   );
 
+  // Whether a read in flight is already going to be refused when it resolves.
+  // Only the checks that need no queue target are here; the model boundary is
+  // one of them and stays with the reservation, where the target is known.
+  const pendingPastedTextReadIsStale = useCallback(
+    (read: {
+      cancelled: boolean;
+      temporary: boolean;
+      queuedSettingsEpoch: number;
+      historyClearGeneration: number;
+    }): boolean => {
+      if (read.cancelled) return true;
+      if (
+        chatHistoryClearBoundary.capture() !== read.historyClearGeneration
+      ) {
+        return true;
+      }
+      const chatState = useChatRuntimeStore.getState();
+      return shouldAbortPendingQueueForSettingsChange({
+        capturedEpoch: read.queuedSettingsEpoch,
+        currentEpoch: chatState.queuedSettingsEpoch,
+        capturedTemporary: read.temporary,
+        currentTemporary: chatState.incognito,
+      });
+    },
+    [],
+  );
+
   // The queue carries text, and a long paste is text the composer parked in a
   // chip, so fold it back in rather than refusing to queue it as a file.
   const queuePastedTextPrompt = useCallback(
@@ -3240,8 +3267,11 @@ const Composer: FC<{
       );
       // Already reading this exact prompt: the submit is the same intent, so
       // report it handled rather than starting a second read that would queue
-      // a duplicate once the first reservation has been released.
-      if (pastedTextQueuePendingRef.current.has(pendingKey)) return true;
+      // a duplicate once the first reservation has been released. A read whose
+      // baselines have already gone stale is going to abort, so it must not
+      // absorb the retry as well, or neither gesture queues anything.
+      const inFlight = pastedTextQueuePendingRef.current.get(pendingKey);
+      if (inFlight && !pendingPastedTextReadIsStale(inFlight)) return true;
       // Every baseline the reservation would otherwise take after the read, so
       // a setting or boundary changed during it still aborts the queue.
       const chatState = useChatRuntimeStore.getState();
@@ -3253,14 +3283,16 @@ const Composer: FC<{
         queuedSettingsEpoch: chatState.queuedSettingsEpoch,
         historyClearGeneration: chatHistoryClearBoundary.capture(),
       };
+      // Replaces a stale read under the same key. That read still resolves, but
+      // it no longer owns the key, so its own start is skipped and only this
+      // one can queue.
       pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
       void Promise.all(files.map((file) => file.text()))
         .then((texts) => {
-          // Stopped or cleared while the read was in flight.
+          // Stopped, cleared, or replaced while the read was in flight.
           if (
-            pendingRead.cancelled ||
-            chatHistoryClearBoundary.capture() !==
-              pendingRead.historyClearGeneration
+            pendingPastedTextReadIsStale(pendingRead) ||
+            pastedTextQueuePendingRef.current.get(pendingKey) !== pendingRead
           ) {
             return;
           }
@@ -3286,7 +3318,11 @@ const Composer: FC<{
             });
             clearStoredDraft();
           },
-          undefined,
+          () => {
+            toast.info("Pasted text was not queued", {
+              description: "The chat settings changed. Send it again.",
+            });
+          },
           pendingRead,
         );
         })
@@ -3302,7 +3338,13 @@ const Composer: FC<{
         });
       return true;
     },
-    [aui, clearStoredDraft, referenceThreadId, startHydratedPromptQueue],
+    [
+      aui,
+      clearStoredDraft,
+      pendingPastedTextReadIsStale,
+      referenceThreadId,
+      startHydratedPromptQueue,
+    ],
   );
 
   const dismissWaitToast = useCallback(() => {
