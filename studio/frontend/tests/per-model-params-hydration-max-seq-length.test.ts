@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The hydration replay is a second, independent copy of the replay rules, so it
-// needs its own guard for the one key the memory deliberately does not keep.
+// The hydration replay is a second copy of the replay rules, so it needs its own
+// guard. Its own file: per-model-params-hydration.test.ts shares store state
+// across its tests, and an appended case picks up an earlier one's temperature.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -22,12 +23,8 @@ const { useChatRuntimeStore } = await import(
 const QWEN = "unsloth/Qwen3.5-9B-GGUF";
 
 test("hydration does not replay a maxSeqLength an entry happens to carry", async () => {
-  // maxSeqLength is persisted but never remembered: the context a model loads
-  // with is owned by its load config, and replaying a second copy would leave
-  // the runtime advertising a context the backend never loaded. This app never
-  // writes one into an entry -- but the settings row accepts one, from an older
-  // client, a hand-written payload or a future key set, so the read side has to
-  // hold the rule too, not just the write side.
+  // maxSeqLength is persisted but never remembered: the context belongs to the
+  // load config. This app writes none into an entry, but the row accepts one.
   settingsHttp.settings = {
     inferenceParamsByModel: {
       [QWEN]: { temperature: 0.2, maxSeqLength: 131072 },

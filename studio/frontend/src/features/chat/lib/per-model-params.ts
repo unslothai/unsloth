@@ -127,14 +127,9 @@ export function getReplayedParams(
   if (!remembered) {
     return current;
   }
-  // Key by key over the remembered set, not a spread of the entry. An entry is
-  // whatever is in the settings row, and this app is not its only possible
-  // writer: the backend's ChatInferenceSettings accepts every persisted key
-  // inside a per-model dict, maxSeqLength included, and the client sanitiser
-  // keeps them. Spreading such an entry would replay a context the backend
-  // never loaded -- the exact thing REMEMBERED_INFERENCE_PARAM_KEYS exists to
-  // prevent on the way in -- and would carry any stale key straight into the
-  // live params.
+  // Key by key, not a spread: the row accepts every persisted key (maxSeqLength
+  // included) from any writer, and spreading one would replay a context the
+  // backend never loaded, plus any stale key, into the live params.
   const replayed = { ...current };
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     const value = remembered[key];
