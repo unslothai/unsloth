@@ -4,11 +4,17 @@
 """
 Standalone speech-to-text (STT) sidecar for dictation.
 
-Loads a Whisper model (via Transformers) in the backend process, separate from
-the chat model's inference subprocess, so dictation works with any chat model
-without evicting it. Curated defaults plus any Transformers-compatible Whisper
-repo; weights come through Studio's Model Hub and stay warm briefly between
-dictations. CUDA runs float16; MPS and CPU run float32.
+Loads a Whisper model (via Transformers) in a spawn child of its own, separate
+from the chat model's inference subprocess, so dictation works with any chat
+model without evicting it. Curated defaults plus any Transformers-compatible
+Whisper repo; weights come through Studio's Model Hub and stay warm briefly
+between dictations. CUDA runs float16; MPS and CPU run float32.
+
+Everything except the model itself stays here: device choice, the Hub cache,
+audio decoding, windowing and the idle timer. Only the load and the generate
+happen in core/inference/stt_transformers_worker.py, because an accelerator
+context is never returned while the process holding it lives and the backend
+must not be the process that takes one.
 """
 
 from __future__ import annotations
@@ -190,7 +196,7 @@ class SttModelNotDownloadedError(RuntimeError):
 
 
 class SttModelBusyError(RuntimeError):
-    """A switch was asked for while the current model is mid-transcription."""
+    """The current model cannot make way yet, so the switch has to be retried."""
 
 
 class SttModelIdError(ValueError):
@@ -988,6 +994,69 @@ def _pick_device():
         return "cpu", torch.float32
 
 
+def _dtype_name(dtype) -> str:
+    """Name a dtype for the worker command: torch.float16 becomes float16.
+
+    Takes the plain strings tests use as readily as a real torch dtype, so the
+    command carries no torch object across the process boundary.
+    """
+    return str(dtype).rsplit(".", 1)[-1]
+
+
+def _engine_is_alive(engine) -> bool:
+    """False only for a worker whose process is confirmed dead.
+
+    Anything without a liveness check counts as live, so a caller holding a
+    plain object (tests, or a future in-process engine) is unaffected. So does
+    a probe that cannot answer: absence of liveness evidence is not evidence
+    that the accelerator context was released, and reporting nothing resident
+    is what lets training be admitted against memory that is not free.
+    """
+    is_alive = getattr(engine, "is_alive", None)
+    if is_alive is None:
+        return True
+    try:
+        return bool(is_alive())
+    except Exception as exc:  # noqa: BLE001 - an unanswerable probe must not fail a status read
+        logger.warning("Could not check whether the STT worker is alive: %s", exc)
+        return True
+
+
+def _engine_survived_kill(engine) -> bool:
+    """Whether a handle says its own child outlived terminate and kill.
+
+    close() reports that to its caller, but a cancelled or timed-out command
+    closes the worker from inside the handle and raises over the answer, so the
+    only record that reaches here is the one the handle keeps on itself.
+    """
+    return bool(getattr(engine, "survived_kill", False))
+
+
+def _close_engine(engine) -> bool:
+    """End the worker behind an engine handle, if it has one.
+
+    Ending the worker is what returns its accelerator context; dropping the
+    handle and emptying the cache cannot. A plain object (tests, or a future
+    in-process engine) has no close and needs none.
+
+    False when the engine says so itself, which WhisperWorker does for a child
+    that outlived terminate and kill and is therefore still holding the memory
+    this call was made to release, and False when close() raises out of a
+    process operation: nothing was confirmed dead, so the handle has to be kept
+    rather than the memory advertised as free. A close that raised over a child
+    already gone still counts as released, so bookkeeping that failed after the
+    death cannot wedge every later load.
+    """
+    close = getattr(engine, "close", None)
+    if close is None:
+        return True
+    try:
+        return close() is not False
+    except Exception as exc:  # noqa: BLE001 - a stuck worker must not block the unload
+        logger.warning("Could not stop the STT worker: %s", exc)
+        return not _engine_is_alive(engine)
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1085,9 +1154,20 @@ class WhisperSttSidecar:
         self._keep_alive_seconds = max(0.0, keep_alive_seconds)
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
+        # Held only to keep its memory accounted: a worker that outlived its own
+        # kill answers nothing, so a later dictation cannot be handed it.
+        self._survivor = False
+        # A child that outlived the kill start() gave it, handed from _build_model
+        # to the load that called it. Written and read under _lock.
+        self._start_survivor = None
 
     @property
     def loaded_model(self) -> Optional[str]:
+        # A worker that died holds nothing, so reporting its model would make
+        # training admission reserve memory for a model that is not there.
+        engine = self._engine
+        if engine is not None and not _engine_is_alive(engine):
+            return None
         return self._model_id
 
     @property
@@ -1180,56 +1260,155 @@ class WhisperSttSidecar:
             logger.info("Unloading idle STT model %s", self._model_id)
             self._release_engine_locked()
 
-    def _release_engine_locked(self) -> None:
+    def _release_engine_locked(self) -> bool:
+        """Release the resident engine. False if its child outlived the kill.
+
+        Such a child still holds its accelerator memory, so forgetting it here
+        would report the model unloaded and let training be admitted against
+        memory that is not free. Keep it resident instead and rearm the idle
+        timer, so the release is tried again rather than stranded.
+
+        The fields are cleared only once the worker is confirmed dead. close()
+        can take the full shutdown wait, and loaded_model reads the fields
+        without this lock, so clearing them first would report nothing resident
+        for that whole window.
+
+        A worker kept this way is flagged a survivor: it was asked to shut down,
+        terminated and killed, so it is held for its memory and not for its
+        answers, and a later dictation must load one of its own rather than be
+        handed this one and wait out the command timeout on it.
+        """
         self._cancel_idle_unload_locked()
         engine = self._engine
         device = self._device
-        self._engine = None
-        self._model_id = None
-        self._device = None
+        released = _close_engine(engine)
+        if released:
+            self._engine = None
+            self._model_id = None
+            self._device = None
+            self._survivor = False
+        else:
+            self._survivor = True
         del engine
         _clear_device_cache(device)
+        if not released:
+            self._schedule_idle_unload_locked()
+        return released
+
+    def _keep_survivor_locked(
+        self,
+        engine,
+        model_id: str,
+        device: Optional[str] = None,
+    ) -> None:
+        """Hold an engine whose child outlived its close, so it stays accounted.
+
+        Its device is the one the child reports, which after a CPU retry is not
+        the one this load started on; a child that never finished its load
+        reports none, so the device the attempt was made on stands in. The idle
+        timer is rearmed, so the release is tried again rather than the survivor
+        being stranded here.
+
+        Held for its memory, not for its answers: it is flagged so a later
+        dictation loads a worker of its own instead of being handed one that is
+        wedged, which would cost the caller the whole command timeout.
+        """
+        self._engine = engine
+        self._model_id = model_id
+        self._survivor = True
+        self._device = getattr(engine, "device", None) or device
+        logger.error(
+            "The dictation worker for %s outlived the kill and still holds its memory; "
+            "keeping it resident so it is not reported unloaded",
+            model_id,
+        )
+        self._schedule_idle_unload_locked()
+
+    def _is_survivor_locked(self) -> bool:
+        """Whether the resident engine is held for its memory, not its answers.
+
+        Folds in the flag the handle raised on itself: a command that was
+        cancelled or timed out closes the worker from inside the handle, so
+        close()'s False never reaches the sidecar and this is the only way it
+        learns the child outlived both signals. Handing such a worker to the
+        next dictation would spend the whole command timeout on it under the
+        model lock; refusing lets the idle timer retry the kill instead.
+        """
+        if self._survivor:
+            return True
+        if self._engine is not None and _engine_survived_kill(self._engine):
+            self._survivor = True
+            return True
+        return False
+
+    def _release_dead_engine_locked(self) -> None:
+        """Drop a worker whose process is gone, so the next use loads a fresh one."""
+        if self._engine is not None and not _engine_is_alive(self._engine):
+            logger.warning("STT worker for %s exited; it will be reloaded", self._model_id)
+            self._release_engine_locked()
 
     def _build_model(self, snapshot_path: str, device: str, dtype, cancel_event: threading.Event):
-        """Load a Whisper model + processor from the local Hub cache.
+        """Start a worker process holding this model and return its handle.
 
-        local_files_only keeps the Model Hub the only download path; a cache
-        miss raises so the caller can surface SttModelNotDownloadedError.
+        Out of process because an accelerator context is never given back while
+        the process holding it lives, so an in-process load made the backend
+        permanently heavier even after unload.
+
+        A host that cannot create a child at all (a sandbox, or a frozen POSIX
+        build) falls back to loading here instead, on the CPU: this move may
+        take work out of the backend, never take dictation away from someone
+        who had it. The fallback waits for the CPU attempt, so a spawn failure
+        on an accelerator still goes through the caller's own CPU retry rather
+        than downgrading the user here.
+
+        A child that outlived start()'s own kill is left in ``_start_survivor``
+        for the caller. start() ends its child on every failure, so a handle
+        still reporting a live process is one holding memory that nothing else
+        knows about: dropping it here is what would let this failed load read as
+        nothing resident.
         """
-        import torch
-        from transformers import WhisperForConditionalGeneration, WhisperProcessor
+        from core.inference.stt_transformers_worker import (
+            InProcessWhisperEngine,
+            SttWorkerSpawnError,
+            WhisperWorker,
+        )
 
-        processor = None
-        model = None
+        worker = WhisperWorker()
         try:
-            processor = WhisperProcessor.from_pretrained(snapshot_path, local_files_only = True)
-            self._raise_if_load_cancelled(cancel_event)
-            # use_safetensors forces the pickle-free load path even if a
-            # pytorch_model.bin somehow reached the cache; the selector and the
-            # completeness check already exclude pickle weights upstream.
-            model = WhisperForConditionalGeneration.from_pretrained(
-                snapshot_path, torch_dtype = dtype, local_files_only = True, use_safetensors = True
+            # start() kills its own child on any failure, including cancellation.
+            worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
+        except SttWorkerSpawnError as exc:
+            if device != "cpu":
+                raise
+            logger.warning(
+                "No dictation worker process could be started (%s); "
+                "loading the model in the backend on the CPU instead",
+                exc,
             )
-            self._raise_if_load_cancelled(cancel_event)
-            model.to(torch.device(device))
-            self._raise_if_load_cancelled(cancel_event)
-            model.eval()
-            return model, processor
-        except SttLoadCancelledError:
-            model = None
-            processor = None
-            _clear_device_cache(device)
+            engine = InProcessWhisperEngine()
+            engine.start(str(snapshot_path), "cpu", _dtype_name(dtype), cancel_event)
+            return engine
+        except BaseException:
+            if _engine_is_alive(worker):
+                self._start_survivor = worker
             raise
+        return worker
 
     def _ensure_model_downloaded(self, model_id: str) -> _CachedSttSnapshot:
         """Validate the local snapshot before decode or model replacement.
 
         Returns the checkpoint's multilingual flag when local metadata provides
         it. Curated defaults are known multilingual.
+
+        A survivor is held for its memory alone, so it does not answer for the
+        model the way a resident one does: the snapshot is looked up on disk, or
+        the load it precedes would be turned away as a checkpoint that is not
+        downloaded.
         """
         model_id = resolve_model_id(model_id)
         with self._lock:
-            if self._engine is not None and self._model_id == model_id:
+            reusable = self._engine is not None and self._model_id == model_id
+            if reusable and not self._is_survivor_locked():
                 resident_model = (
                     self._engine[0] if isinstance(self._engine, (tuple, list)) else self._engine
                 )
@@ -1277,7 +1456,9 @@ class WhisperSttSidecar:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             ensure_stt_available()
-            if self._engine is not None and self._model_id == model_id:
+            self._release_dead_engine_locked()
+            reusable = self._engine is not None and self._model_id == model_id
+            if reusable and not self._is_survivor_locked():
                 self._schedule_idle_unload_locked()
                 return self._engine
             import torch
@@ -1286,6 +1467,7 @@ class WhisperSttSidecar:
             candidate = None
             device: Optional[str] = None
             resident_released = False
+            self._start_survivor = None
             try:
                 self._raise_if_load_cancelled(cancel_event)
                 cached = self._ensure_model_downloaded(model_id)
@@ -1297,7 +1479,13 @@ class WhisperSttSidecar:
                     )
                 self._raise_if_load_cancelled(cancel_event)
                 device, dtype = _pick_device()
-                self._release_engine_locked()
+                if not self._release_engine_locked():
+                    # Starting a second child over one that never exited doubles
+                    # the memory this release was meant to give back.
+                    raise SttModelBusyError(
+                        "The previous dictation worker did not exit and still holds its "
+                        "memory. Try again shortly."
+                    )
                 resident_released = True
                 logger.info("Loading STT model %s (%s) on %s", model_id, snapshot_path, device)
 
@@ -1314,10 +1502,23 @@ class WhisperSttSidecar:
                 except SttLoadCancelledError:
                     raise
                 except Exception as exc:
-                    if _is_missing_local_model_error(exc):
+                    # The worker classifies a cache miss; the exception cannot cross processes.
+                    if isinstance(exc, SttModelNotDownloadedError) or _is_missing_local_model_error(
+                        exc
+                    ):
                         raise not_downloaded(exc) from exc
                     if device == "cpu":
                         raise
+                    if self._start_survivor is not None:
+                        # The attempt left a child that outlived its own kill and still
+                        # holds the device. A second child would sit beside it, and
+                        # installing that one would forget this one, which is what lets
+                        # training be admitted against memory that is not free. Refuse as
+                        # a release that could not kill its worker does; the timer retries.
+                        raise SttModelBusyError(
+                            "The previous dictation worker did not exit and still holds its "
+                            "memory. Try again shortly."
+                        ) from exc
                     logger.warning("STT load on %s failed (%s); retrying on CPU", device, exc)
                     retry_on_cpu = True
                 if retry_on_cpu:
@@ -1336,7 +1537,9 @@ class WhisperSttSidecar:
                     except SttLoadCancelledError:
                         raise
                     except Exception as cpu_exc:
-                        if _is_missing_local_model_error(cpu_exc):
+                        if isinstance(
+                            cpu_exc, SttModelNotDownloadedError
+                        ) or _is_missing_local_model_error(cpu_exc):
                             raise not_downloaded(cpu_exc) from cpu_exc
                         raise
                     device = "cpu"
@@ -1345,6 +1548,7 @@ class WhisperSttSidecar:
                     self._engine = candidate
                     self._model_id = model_id
                     self._device = device
+                    self._survivor = False
                     self._load_cancel_event = None
                     self._load_owner_cancel_event = None
                     self._loading = False
@@ -1352,6 +1556,29 @@ class WhisperSttSidecar:
                 logger.info("STT model %s ready on %s", model_id, device)
                 return self._engine
             except SttLoadCancelledError:
+                # cancel_pending_load() does not wait for the model lock, so the cancel
+                # can land after start() came back with a live child. Nothing installed
+                # the candidate, and dropping the handle does not end the process holding
+                # the context training is waiting for, so close it here.
+                if self._start_survivor is not None:
+                    # start() ends its own child, so this one outlived terminate and kill
+                    # inside it and never became a candidate. It holds its memory all the
+                    # same and this is the only handle on the process, so keep it rather
+                    # than let the cancel report the memory given back; the timer retries.
+                    self._keep_survivor_locked(self._start_survivor, model_id, device)
+                    _clear_device_cache(device)
+                    raise
+                if not _close_engine(candidate):
+                    # It outlived terminate and kill, so it still holds the memory this
+                    # cancel was made to free. Keep it, for the same reason
+                    # _release_engine_locked keeps its own survivor: reporting nothing
+                    # resident is what lets training be admitted against memory that is
+                    # not free. Nothing is installed over, since a candidate exists only
+                    # after the resident was released.
+                    self._keep_survivor_locked(candidate, model_id)
+                    candidate = None
+                    _clear_device_cache(device)
+                    raise
                 candidate = None
                 if resident_released:
                     # _release_engine_locked already collected, and the candidate was dropped
@@ -1363,7 +1590,16 @@ class WhisperSttSidecar:
                 else:
                     _clear_device_cache(device)
                 raise
+            except BaseException:
+                # Same reasoning for any other failed load: this is the only handle on a
+                # child that outlived start()'s own kill and still holds its memory, and
+                # reporting nothing resident lets training be admitted against it.
+                if self._start_survivor is not None and self._engine is None:
+                    self._keep_survivor_locked(self._start_survivor, model_id, device)
+                    _clear_device_cache(device)
+                raise
             finally:
+                self._start_survivor = None
                 self._end_load(cancel_event)
 
     def _transcribe_decoded(
@@ -1375,57 +1611,38 @@ class WhisperSttSidecar:
     ) -> str:
         """Run Whisper on already-decoded 16 kHz mono PCM and return text.
 
-        Feeds a pre-decoded array so nothing here touches the Transformers audio
-        path (torchcodec/ffmpeg). Splits into 30s windows (Whisper's receptive
-        field); short clips take one pass.
+        Splits into 30s windows (Whisper's receptive field) and sends one window
+        at a time to the worker; short clips take one pass. Windowing stays here
+        so a cancelled dictation stops between windows even while the worker is
+        busy, and so no single message carries more than 30 seconds of audio.
         """
-        import torch
+        import numpy as np
 
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         if cancel_event is None:
-            model, processor = self.load(model_id)
+            engine = self.load(model_id)
         else:
-            model, processor = self.load(model_id, request_cancel_event = cancel_event)
+            engine = self.load(model_id, request_cancel_event = cancel_event)
         effective_generate_kwargs = dict(generate_kwargs)
-        if cancel_event is not None:
-            from transformers import StoppingCriteriaList
-            class _CancelCriteria:
-                def __call__(self, *_args, **_kwargs):
-                    return cancel_event.is_set()
-
-            effective_generate_kwargs["stopping_criteria"] = StoppingCriteriaList(
-                [_CancelCriteria()]
-            )
-        generation_config = getattr(model, "generation_config", None)
+        generation_config = getattr(engine, "generation_config", None)
         if getattr(generation_config, "is_multilingual", None) is False:
             # English-only checkpoints fix language and task in their generation
             # config, and Transformers rejects passing them here.
             effective_generate_kwargs.pop("task", None)
             effective_generate_kwargs.pop("language", None)
         window = 30 * _TARGET_SAMPLE_RATE
-        target_dtype = getattr(model, "dtype", None)
         parts: list[str] = []
-        with torch.no_grad():
-            for start in range(0, max(len(decoded_audio), 1), window):
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                segment = decoded_audio[start : start + window]
-                if segment.size == 0:
-                    continue
-                inputs = processor(
-                    segment,
-                    sampling_rate = _TARGET_SAMPLE_RATE,
-                    return_tensors = "pt",
-                )
-                features = inputs.input_features.to(model.device)
-                if target_dtype is not None:
-                    features = features.to(target_dtype)
-                generated = model.generate(features, **effective_generate_kwargs)
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                text = processor.batch_decode(generated, skip_special_tokens = True)
-                parts.append(text[0] if text else "")
+        for start in range(0, max(len(decoded_audio), 1), window):
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            segment = decoded_audio[start : start + window]
+            if segment.size == 0:
+                continue
+            pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
+            parts.append(engine.transcribe_window(pcm, effective_generate_kwargs, cancel_event))
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
         return " ".join(part.strip() for part in parts if part.strip()).strip()
 
     def transcribe(
@@ -1499,7 +1716,12 @@ class WhisperSttSidecar:
         }
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
-        """Ask this request's Transformers generation or load to stop."""
+        """Ask this request's Transformers generation or load to stop.
+
+        Only this request's own event is set. The thread waiting on the worker
+        mirrors it into the child within a poll, so a cancel never reaches a
+        window belonging to a different request.
+        """
         already_cancelled = cancel_event.is_set()
         cancel_event.set()
         return self._cancel_owned_load(cancel_event) or not already_cancelled

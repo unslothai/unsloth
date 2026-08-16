@@ -3625,8 +3625,18 @@ class TestGgufVisionToolRouting:
 
         calls = {"count": 0}
 
-        def _generate(**_kwargs):
+        def _generate(**kwargs):
             calls["count"] += 1
+            callback = kwargs.get("perf_callback")
+            if callback is not None:
+                callback(
+                    {
+                        "prompt_ms": 100.0,
+                        "prompt_per_second": 30.0,
+                        "predicted_ms": 20.0,
+                        "predicted_per_second": 50.0,
+                    }
+                )
             text = f"reply {calls['count']}"
             yield text
             yield {
@@ -3671,6 +3681,49 @@ class TestGgufVisionToolRouting:
         assert entry["reply"] == "Choice 1:\nreply 1\n\nChoice 2:\nreply 2"
         assert entry["completion_tokens"] == 3
         assert monitor.active_count() == 0
+
+        assert entry["prompt_tok_per_sec"] is None
+        assert entry["tok_per_sec"] is None
+        assert entry["decode_ms"] is None
+
+    def test_disabled_monitor_does_not_install_gguf_perf_callback(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def _generate(**kwargs):
+            captured.update(kwargs)
+            yield "reply"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monkeypatch.setattr(inf_mod, "api_monitor", ApiMonitor(max_entries = 3, enabled = False))
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        response = self._drive(
+            openai_chat_completions(
+                ChatCompletionRequest(
+                    model = "default",
+                    messages = [{"role": "user", "content": "hi"}],
+                ),
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+
+        assert json.loads(response.body)["choices"][0]["message"]["content"] == "reply"
+        assert captured["perf_callback"] is None
 
     def test_non_streaming_gguf_cancel_drains_worker(self, monkeypatch):
         async def _run():
