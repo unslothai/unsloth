@@ -12,6 +12,7 @@ real method, because "silently takes the old path" is a claim about side effects
 """
 
 import contextlib
+import json
 import sys
 from types import SimpleNamespace
 
@@ -78,6 +79,32 @@ _configure = UnslothTrainer._configure_online_tokenization
 
 
 ROWS = MIN_ROWS_FOR_ONLINE + 5
+
+
+def _single_process_launch(monkeypatch):
+    """Clear every launcher variable, so a run reads as Studio's own launch.
+
+    Same helper and same constant tuples as ``test_training_preflight.py``: the
+    two must not disagree about what counts as a launcher, or one file starts
+    passing on a set of variables the other never clears.
+    """
+    from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
+
+    for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
+        monkeypatch.delenv(name, raising = False)
+
+
+@pytest.fixture(autouse = True)
+def _no_ambient_launcher(monkeypatch):
+    """Every case in this file starts from a single-process launch.
+
+    The pass count is read out of the environment, so without this a case's
+    result depends on whatever the runner's shell happens to export, and on
+    whichever earlier test last set one of these. Both were live here: the file
+    already sets ``WORLD_SIZE`` in one test, and pytest's monkeypatch undo only
+    covers variables a test itself touched.
+    """
+    _single_process_launch(monkeypatch)
 
 
 class _Tokenizer:
@@ -412,6 +439,113 @@ def test_world_size_scales_the_rows_a_step_consumes(monkeypatch):
     )
     assert not decision.enabled and "one pass" in decision.reason
     _assert_untouched(config_args, wrapper, trainer, original)
+
+
+# 200 steps x 2 x 4 = 1600 rows per replica over a 10_005-row split: 0.16 passes on
+# one process, 1.28 on eight. Every launcher below advertises the same eight, so the
+# only thing separating these cases from the control at the bottom is whether the
+# variable is read at all.
+_EIGHT_RANK_STEPS = 200
+
+
+def _eight_ranks(monkeypatch, expect_enabled = False, **env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        config_overrides = {"max_steps": _EIGHT_RANK_STEPS},
+    )
+    if expect_enabled:
+        assert decision.enabled, decision.reason
+        return decision
+    assert not decision.enabled and "one pass" in decision.reason, decision.reason
+    _assert_untouched(config_args, wrapper, trainer, original)
+    return decision
+
+
+def test_an_mpirun_launch_scales_the_rows_a_step_consumes(monkeypatch):
+    """mpirun never sets WORLD_SIZE. Reading that one variable alone calls an
+    eight-rank run single-process and engages a view that re-tokenizes on every
+    extra pass."""
+    _eight_ranks(monkeypatch, OMPI_COMM_WORLD_SIZE = "8")
+
+
+def test_a_per_node_torchrun_scales_the_rows_a_step_consumes(monkeypatch):
+    """LOCAL_WORLD_SIZE is the only count torchrun sets per node, so a single-node
+    launch that lost WORLD_SIZE still has to be counted."""
+    _eight_ranks(monkeypatch, LOCAL_WORLD_SIZE = "8")
+
+
+def test_an_mlx_hostfile_scales_the_rows_a_step_consumes(monkeypatch, tmp_path):
+    """mlx.launch's ring backend advertises its ranks as a JSON file rather than a
+    number; its NCCL backend is CUDA-only, so this path is reachable."""
+    hostfile = tmp_path / "hosts.json"
+    hostfile.write_text(json.dumps([f"10.0.0.{i}:9000" for i in range(8)]), encoding = "utf-8")
+    _eight_ranks(monkeypatch, MLX_HOSTFILE = str(hostfile))
+
+
+def test_an_inline_hosts_payload_scales_the_rows_a_step_consumes(monkeypatch):
+    """The same variable also carries the payload inline, in the {"hosts": [...]}
+    object form `unsloth_cli/_inference.py` accepts."""
+    payload = json.dumps({"hosts": [f"10.0.0.{i}:9000" for i in range(8)]})
+    _eight_ranks(monkeypatch, MLX_HOSTFILE = payload)
+
+
+# Only values that RAISE. "0" and "-4" also read as one process, but the old
+# expression's max(1, int(...)) already answered 1 for those, so they would pass
+# against the bug and belong with dataset_bounds' own coercion tests, not here.
+@pytest.mark.parametrize("junk", ["auto", "", "eight"])
+def test_a_junk_world_size_no_longer_disables_online_tokenization(monkeypatch, junk):
+    """The direction this used to fail in was not the obvious one.
+
+    `int("auto")` raises, the enclosing `except` leaves the pass count unresolved,
+    and an unresolved step-capped run reads as infinite passes, so a launcher that
+    exported a non-numeric WORLD_SIZE silently turned the feature OFF on a run that
+    qualifies. Unusable values are a single process, which is what this host is.
+    """
+    monkeypatch.setenv("WORLD_SIZE", junk)
+    original = _dataset()
+    decision, config_args, wrapper, trainer = _run(
+        monkeypatch,
+        wrapper = {"dataset": original},
+        config_overrides = {"max_steps": 30},
+    )
+    assert decision.enabled, decision.reason
+    assert wrapper["dataset"] is not original
+    assert config_args["dataset_kwargs"] == {"skip_prepare_dataset": True}
+
+
+def test_the_resolved_pass_count_handed_to_the_gate_is_the_arithmetic(monkeypatch):
+    """The veto only sees a number, so assert the number rather than its verdict:
+    a wrong world size that still lands on the same side of 1.0 is a bug that has
+    not surfaced yet."""
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "8")
+    seen: dict = {}
+    import utils.datasets.online_tokenization as online_mod
+
+    real = online_mod.decide_online_tokenization
+
+    def _record(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(online_mod, "decide_online_tokenization", _record)
+    _run(
+        monkeypatch,
+        config_overrides = {"max_steps": _EIGHT_RANK_STEPS},
+    )
+    expected = (_EIGHT_RANK_STEPS * 2 * 4 * 8) / ROWS
+    assert seen["resolved_max_steps_epochs"] == pytest.approx(expected)
+    assert seen["resolved_max_steps_epochs"] > 1.0
+
+
+def test_a_single_process_launch_still_qualifies(monkeypatch):
+    """The control for every case above: same steps, same split, no launcher
+    variable at all. Counting a rank that is not there would veto this run."""
+    decision = _eight_ranks(monkeypatch, expect_enabled = True)
+    assert decision.prewarm_batches > 0
 
 
 # ------------------------------------------------------------- the prewarm barrier

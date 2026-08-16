@@ -87,7 +87,6 @@ def _seed_int(value: Any, default: int) -> int:
 def world_size_from_rank_files(environ: Any = None) -> int:
     """Ranks an mlx.launch listed in a hostfile, or 1 when there is no readable one.
 
-    Only a list counts, and its length is the count. Anything else -- no such file, a
     Either representation the rest of the repo accepts: the payload inline in the
     variable, or a path to a file holding it. `unsloth_cli/_inference.py`'s
     `_json_rank_count_from_env` reads the same two variables the same way, down to the

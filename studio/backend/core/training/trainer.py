@@ -89,7 +89,7 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
-from .dataset_bounds import bound_dataset_rows
+from .dataset_bounds import bound_dataset_rows, world_size_from_env
 
 logger = get_logger(__name__)
 
@@ -3479,7 +3479,25 @@ class UnslothTrainer:
         if max_steps > 0:
             try:
                 rows = len(train_dataset)
-                world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+                # Every launcher variable, not WORLD_SIZE alone: mpirun sets only
+                # OMPI_COMM_WORLD_SIZE, a per-node torchrun sets only
+                # LOCAL_WORLD_SIZE, and mlx.launch's NCCL backend (CUDA-only, so it
+                # does reach this path) sets MLX_WORLD_SIZE or a rank file. Reading
+                # one variable calls those runs single-process and engages a lazy
+                # view that re-tokenizes on every extra pass. It also coerces junk:
+                # int("auto") raises, the except below leaves resolved_epochs None,
+                # and the gate then reads inf and disables the feature outright.
+                #
+                # Deliberately env-only, and NOT worker.py's
+                # _data_parallel_world_size, which also counts visible CUDA devices.
+                # That one bounds a row subset, where over-counting costs nothing.
+                # This one feeds a veto, where both directions are wrong, and
+                # Studio's own multi-GPU load is device_map="balanced", which
+                # transformers treats as model-parallel and pins to _n_gpu = 1: a
+                # balanced 4-GPU run draws the same rows per step as one GPU, so
+                # counting devices here would report 4x the passes and veto a
+                # qualifying run with a fabricated reason.
+                world_size = world_size_from_env()
                 per_step = (
                     int(config_args.get("per_device_train_batch_size", 1))
                     * int(config_args.get("gradient_accumulation_steps", 1))
