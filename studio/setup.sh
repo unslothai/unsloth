@@ -1884,7 +1884,9 @@ def _pep440_key(v):
     # unless the version is a bare dev build, an absent post BELOW any post, and
     # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
     # fuzzes it against packaging.
-    v = (v or '').strip().lstrip('vV').lower()
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
     em = re.match(r'(\d+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
@@ -1937,7 +1939,9 @@ def _pep440_key(v):
     if pre is None:
         pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
     lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
-    return (epoch, rel, pre, -1 if post is None else post, 10 ** 9 if dev is None else dev, lk)
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
 def _vkey(c):
     v = c[0].version or ''
     try:
@@ -2275,7 +2279,9 @@ def _pep440_key(v):
     # unless the version is a bare dev build, an absent post BELOW any post, and
     # an absent dev ABOVE any dev. tests/studio/test_installer_version_fallback.py
     # fuzzes it against packaging.
-    v = (v or '').strip().lstrip('vV').lower()
+    # exactly one optional v, not lstrip: vv999 is not a version, and eating both
+    # would parse it as 999 and let it outrank a real release
+    v = re.sub(r'^[vV]', '', (v or '').strip()).lower()
     em = re.match(r'(\d+)!', v)
     epoch = int(em.group(1)) if em else 0
     v = v[em.end():] if em else v
@@ -2328,7 +2334,9 @@ def _pep440_key(v):
     if pre is None:
         pre = (-1, 0) if (post is None and dev is not None) else (9, 0)
     lk = [(1, int(s), '') if s.isdigit() else (0, 0, s) for s in re.split(r'[-._]', loc) if s]
-    return (epoch, rel, pre, -1 if post is None else post, 10 ** 9 if dev is None else dev, lk)
+    # dev numbers are unbounded, so an absent dev needs a real infinity, not a big
+    # integer a .dev1000000001 could climb past
+    return (epoch, rel, pre, -1 if post is None else post, float('inf') if dev is None else dev, lk)
 try:
     from packaging.version import Version
     ok = Version(sys.argv[1]) >= Version(sys.argv[2])
