@@ -167,6 +167,8 @@ import {
   type PromptQueueUIState,
   usePromptQueueUI,
   forkCountFor,
+  getResearchRunId,
+  researchOwnerIds,
   subscribeForkCounts,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
@@ -6044,21 +6046,6 @@ const ForkMessageButton: FC = () => {
   );
 };
 
-const getResearchRunId = (metadata: unknown): string | null => {
-  const custom = (
-    metadata as
-      | {
-          custom?: {
-            researchRunId?: unknown;
-            researchRun?: { id?: unknown };
-          };
-        }
-      | undefined
-  )?.custom;
-  const runId = custom?.researchRunId ?? custom?.researchRun?.id;
-  return typeof runId === "string" ? runId : null;
-};
-
 const useResearchMessageRunId = () => {
   return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
@@ -6070,13 +6057,11 @@ const useOwnsResearchMessage = () => {
   if (messages.length === 0) {
     return false;
   }
-  return aui
-    .thread()
-    .export()
-    .messages.some(
-      ({ parentId, message }) =>
-        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
-    );
+  // One export per thread revision, shared by every message in the render pass.
+  return researchOwnerIds(
+    messages,
+    () => aui.thread().export().messages,
+  ).has(messageId);
 };
 
 // Whether the active thread has a non-terminal durable research run. After a reload the

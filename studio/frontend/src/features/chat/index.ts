@@ -198,6 +198,10 @@ export {
   forkCountFor,
   subscribeForkCounts,
 } from "./utils/fork-count-store";
+export {
+  getResearchRunId,
+  researchOwnerIds,
+} from "./utils/research-ownership";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,
