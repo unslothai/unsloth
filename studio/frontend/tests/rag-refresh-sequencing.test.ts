@@ -443,7 +443,7 @@ test("the refresh an invalidation triggers is counted as work", () => {
   );
   assert.match(
     hook,
-    /noteProjectWork\(projectId, 1\);\s*try \{[\s\S]{0,600}?\} finally \{\s*noteProjectWork\(projectId, -1\);/,
+    /noteProjectWork\(projectId, 1\);\s*try \{[\s\S]{0,900}?\} finally \{\s*noteProjectWork\(projectId, -1\);/,
   );
 });
 
@@ -969,5 +969,30 @@ test("a knowledge-base queue does not wait on project sources", () => {
   assert.match(
     adapter,
     /ragEnabled && ragSource\.type === "kb"\s*\? \{ kb_id: ragSource\.kbId \}/,
+  );
+});
+
+// A retry sleeps for a second or more, and the closure it resumes into still
+// holds the lister and the ticket of the project it started for. Retrying after
+// the user has moved on publishes that project's documents into the composer
+// showing another one, chips, remove actions and all.
+test("a retry stops when the scope it started for is gone", () => {
+  const hook = readFileSync(
+    new URL(
+      "../src/features/rag/components/use-rag-documents.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(hook, /const startedFor = `project:\$\{projectId\}`;/);
+  assert.match(
+    hook,
+    /liveScopeKeyRef\.current = scopeKey;\s*\}, \[scopeKey\]\);/,
+  );
+  // Checked after the delay, not before the first attempt: the scope effect that
+  // starts this load runs before the one that records the live scope.
+  assert.match(
+    hook,
+    /await new Promise\(\(resolve\) =>\s*setTimeout\(resolve, 1000 \* \(attempt \+ 1\)\),\s*\);[\s\S]{0,400}?if \(liveScopeKeyRef\.current !== startedFor\) return;/,
   );
 });

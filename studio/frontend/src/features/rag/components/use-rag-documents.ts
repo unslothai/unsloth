@@ -122,6 +122,11 @@ export function useRagDocuments(
         : `thread:${scope.threadId}`
     : null;
   const prevScopeKeyRef = useRef<string | null>(null);
+  // The scope on screen now, read by the async loops that outlive a navigation.
+  const liveScopeKeyRef = useRef<string | null>(scopeKey);
+  useEffect(() => {
+    liveScopeKeyRef.current = scopeKey;
+  }, [scopeKey]);
 
   const patchDoc = useCallback(
     (documentId: string, patch: Partial<TrackedDocument>) => {
@@ -289,6 +294,7 @@ export function useRagDocuments(
   // work throughout, so a send waits for the answer rather than for the toast.
   const loadProjectSources = useCallback(
     async (projectId: string, opts?: { quiet?: boolean }) => {
+      const startedFor = `project:${projectId}`;
       noteProjectWork(projectId, 1);
       try {
         for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
@@ -296,11 +302,15 @@ export function useRagDocuments(
           // True for a request that published, and for one a newer request has
           // already outranked.
           if (await refresh({ quiet: opts?.quiet, silentErrors: !last })) return;
-          if (!last) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, 1000 * (attempt + 1)),
-            );
-          }
+          if (last) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, 1000 * (attempt + 1)),
+          );
+          // This closure keeps the lister and the ticket of the scope it started
+          // for. Retrying after the user has moved on would take a ticket behind
+          // the new scope's request and publish this project's documents into
+          // the composer showing another one.
+          if (liveScopeKeyRef.current !== startedFor) return;
         }
       } finally {
         noteProjectWork(projectId, -1);
