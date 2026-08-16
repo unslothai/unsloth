@@ -259,14 +259,22 @@ export function AskApp(): ReactElement {
         { model: used, messages, stream: true },
         abort.signal,
       )) {
+        // Clear and a re-summon both empty turns while a delta can still be in
+        // flight, and the updater runs against that emptied state: without the
+        // guard below it reads .answer off undefined and throws inside render.
+        if (!isCurrentRun()) break;
         sawToken = true;
         setTurns((current) => {
+          const last = current[current.length - 1];
+          if (!last) return current;
           const next = current.slice();
-          const last = next[next.length - 1];
           next[next.length - 1] = { ...last, answer: last.answer + delta };
           return next;
         });
       }
+      // Reached either normally or via the supersession break above; in the
+      // latter case the completion writes belong to a session that is gone.
+      if (!isCurrentRun()) return;
       if (!sawToken) throw new PillRunError("failed");
       setTurns((current) => {
         const next = current.slice();
