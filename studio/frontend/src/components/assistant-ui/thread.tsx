@@ -2185,12 +2185,23 @@ const Composer: FC<{
     (state) => state.pastedTextMinChars,
   );
   // Set by Cmd/Ctrl+Enter and read once by handleSubmit, which the requestSubmit
-  // below reaches synchronously.
+  // below reaches synchronously. Armed only when there is a submit to reach: a
+  // textarea outside a form, or a browser without requestSubmit, would leave it
+  // armed for whatever submit came next, turning an ordinary Enter into a queue
+  // long after the chord was pressed.
   const forceQueueRef = useRef(false);
   const queueOnModEnter = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      const form = event.currentTarget.form;
+      if (typeof form?.requestSubmit !== "function") {
+        return;
+      }
       forceQueueRef.current = true;
-      event.currentTarget.form?.requestSubmit();
+      try {
+        form.requestSubmit();
+      } catch {
+        forceQueueRef.current = false;
+      }
     },
     [],
   );

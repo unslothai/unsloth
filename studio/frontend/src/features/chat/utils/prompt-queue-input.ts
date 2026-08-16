@@ -24,14 +24,22 @@ export function isPromptQueueDragTypes(
 /**
  * Cmd/Ctrl+Enter, the queue chord. Shift+Enter is a newline whatever else is
  * held, so Shift disqualifies it.
+ *
+ * Alt disqualifies it too, because Windows reports AltGr as Ctrl+Alt on any
+ * layout the browser does not recognise as having a real AltGraph. Layouts that
+ * need AltGr for everyday characters would otherwise queue on a keypress the
+ * user meant as something else, and there is no Ctrl+Alt+Enter binding here
+ * worth keeping. `key` rather than `code`, so the numeric keypad's Enter is the
+ * same chord.
  */
 export function isPromptQueueChord(event: {
   key: string;
   shiftKey: boolean;
   metaKey: boolean;
   ctrlKey: boolean;
+  altKey?: boolean;
 }): boolean {
-  if (event.key !== "Enter" || event.shiftKey) return false;
+  if (event.key !== "Enter" || event.shiftKey || event.altKey) return false;
   return event.metaKey || event.ctrlKey;
 }
 
