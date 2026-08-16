@@ -4909,22 +4909,34 @@ def _pep440_key(v):
         rel.pop()
     rest, _plus, loc = v[m.end():].partition('+')
     pre = post = dev = None
-    # the implicit post release: a bare -N right after the release (1.0-1)
-    # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
-    # same version as 1.0-2.dev1 and must not collapse to 1.0's key
-    im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
-    if im:
-        post, rest = int(im.group(1)), rest[im.end():]
     # scanned from the left, never searched: a substring like the r in preview
     # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
     while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
         mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)
-        if _t in ('post', 'rev', 'r'):
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
             post = _n
-        elif _t == 'dev':
+        elif _rank == 3:
             dev = _n
         else:
             pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
@@ -5831,22 +5843,34 @@ def _pep440_key(v):
         rel.pop()
     rest, _plus, loc = v[m.end():].partition('+')
     pre = post = dev = None
-    # the implicit post release: a bare -N right after the release (1.0-1)
-    # only dev may follow a post, so the lookahead admits it: 1.0-2dev1 is the
-    # same version as 1.0-2.dev1 and must not collapse to 1.0's key
-    im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
-    if im:
-        post, rest = int(im.group(1)), rest[im.end():]
     # scanned from the left, never searched: a substring like the r in preview
     # must not read as the r that spells post
+    # PEP 440 allows each of pre, post and dev at most once and only in that
+    # order, so the rank must strictly increase: 1.0.post1-2 and 1.0.post1a1 are
+    # not versions at all and must not out-key a real release
+    _seen = 0
     while rest:
+        # the implicit post release: a bare -N, valid right after the release
+        # (1.0-1) and equally after a prerelease (1.0a1-2 == 1.0a1.post2), so it
+        # is matched every pass rather than once up front. Only dev may follow a
+        # post, so the lookahead admits it: 1.0-2dev1 == 1.0-2.dev1.
+        im = re.match(r'-(\d+)(?=$|[-._]|dev)', rest)
+        if im:
+            if _seen >= 2:
+                return None
+            _seen, post, rest = 2, int(im.group(1)), rest[im.end():]
+            continue
         mm = re.match(r'[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)', rest)
         if not mm:
             break
         _t, _n = mm.group(1), int(mm.group(2) or 0)
-        if _t in ('post', 'rev', 'r'):
+        _rank = 3 if _t == 'dev' else (2 if _t in ('post', 'rev', 'r') else 1)
+        if _rank <= _seen:
+            return None
+        _seen = _rank
+        if _rank == 2:
             post = _n
-        elif _t == 'dev':
+        elif _rank == 3:
             dev = _n
         else:
             pre = ({'a': 0, 'alpha': 0, 'b': 1, 'beta': 1}.get(_t, 2), _n)
