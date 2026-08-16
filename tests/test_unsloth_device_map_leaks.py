@@ -152,8 +152,7 @@ def test_sentence_transformer_decline_survives_the_env_var():
 
     # The decline itself must read the env var, not the raw argument.
     assert any(
-        isinstance(node, ast.Call)
-        and getattr(node.func, "id", None) == "requested_device_map"
+        isinstance(node, ast.Call) and getattr(node.func, "id", None) == "requested_device_map"
         for node in ast.walk(function)
     ), "the decline reads device_map raw, so UNSLOTH_AUTO_DEVICE_MAP=1 walks past it"
 
@@ -173,17 +172,15 @@ def test_sentence_transformer_decline_survives_the_env_var():
         for node in ast.walk(function)
         if isinstance(node, ast.Call) and ast.unparse(node.func) == "FastModel.from_pretrained"
     )
-    assert min(node.lineno for node in pins) < fastmodel_call, (
-        "the pin lands after FastModel has already planned"
-    )
+    assert (
+        min(node.lineno for node in pins) < fastmodel_call
+    ), "the pin lands after FastModel has already planned"
 
     # The pin is restored, so one embedding load does not disable planning process-wide.
     restores = [
         node
         for node in ast.walk(function)
         if isinstance(node, ast.Try)
-        and any(
-            "UNSLOTH_AUTO_DEVICE_MAP" in ast.unparse(stmt) for stmt in node.finalbody
-        )
+        and any("UNSLOTH_AUTO_DEVICE_MAP" in ast.unparse(stmt) for stmt in node.finalbody)
     ]
     assert restores, "UNSLOTH_AUTO_DEVICE_MAP is never restored"
