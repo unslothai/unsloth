@@ -261,6 +261,52 @@ def test_a_shared_memory_pool_gets_no_automatic_pin_either(monkeypatch, tmp_path
         _plan(guarded, gguf2)
 
 
+# The guard refuses when weights > avail - 2048 MiB. At 7000 MiB available, a
+# 4500 MiB model alone passes (4500 <= 4952) and the same model plus its 900 MiB
+# projector does not (5400 > 4952), so this number is exactly the window in which
+# the pinned projector's bytes decide the verdict.
+_APU_DECIDING_AVAIL_MIB = 7_000
+
+
+@pytest.mark.parametrize("extras", [None, [_PIN]], ids = ["automatic", "hand"])
+def test_the_apu_refusal_weighs_a_projector_either_pin_moved(monkeypatch, tmp_path, extras):
+    """The refusal prices SYSTEM RAM, and a CPU-pinned projector is still in it.
+
+    Both pins decline on a device that REPORTS a shared pool, which covers the
+    ordinary APU. But "the probe reported a total" and "ROCm classifies this as an
+    APU" are answers from unrelated code paths, and only the first gates the pins.
+    This card reports a real total, so both pins fire -- and the guard must still
+    weigh the bytes they took out of ``model_size``, or a load that cannot fit in
+    RAM is launched and killed mid-read.
+    """
+    backend, gguf = _pin_backend(
+        monkeypatch,
+        tmp_path,
+        apu_guard = True,
+        apu_avail_mib = _APU_DECIDING_AVAIL_MIB,
+    )
+
+    with pytest.raises(RuntimeError, match = "unified-memory"):
+        _plan(backend, gguf, extra_args = extras)
+
+
+def test_the_apu_refusal_still_lets_the_model_alone_through(monkeypatch, tmp_path):
+    """The control: without a projector the same model on the same RAM loads. So
+    the refusal above is the projector's bytes doing the deciding, not a guard
+    that refuses everything."""
+    backend, gguf = _pin_backend(
+        monkeypatch,
+        tmp_path,
+        apu_guard = True,
+        apu_avail_mib = _APU_DECIDING_AVAIL_MIB,
+    )
+    backend._resolve_launch_mmproj_path = lambda **kwargs: None
+
+    got = _plan(backend, gguf)
+
+    assert got["pins"] == 0
+
+
 def test_a_real_kv_estimate_lets_the_pin_hand_out_context_too(monkeypatch, tmp_path):
     """The control, and the reason the clamp test is not just asserting "always
     4096". Given an estimate the context question can actually be answered, so the
