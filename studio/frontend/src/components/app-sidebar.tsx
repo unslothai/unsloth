@@ -3469,7 +3469,11 @@ export function AppSidebar() {
                                 className="sidebar-nav-btn h-[30px] rounded-full pl-9 pr-4 font-medium text-nav-fg-muted!"
                               >
                                 <span className="text-ui-13 leading-ui-18 tracking-nav">
-                                  {showAll ? "Show less" : "Show more"}
+                                  {t(
+                                    showAll
+                                      ? "shell.navigation.showLess"
+                                      : "shell.navigation.showMore",
+                                  )}
                                 </span>
                               </SidebarMenuButton>
                             </SidebarMenuItem>
@@ -3485,7 +3489,11 @@ export function AppSidebar() {
                             className="sidebar-nav-btn h-[30px] rounded-full pl-3 pr-4 font-medium text-nav-fg-muted!"
                           >
                             <span className="text-ui-13 leading-ui-18 tracking-nav">
-                              {showAllProjects ? "Show less" : "Show more"}
+                              {t(
+                                showAllProjects
+                                  ? "shell.navigation.showLess"
+                                  : "shell.navigation.showMore",
+                              )}
                             </span>
                           </SidebarMenuButton>
                         </SidebarMenuItem>

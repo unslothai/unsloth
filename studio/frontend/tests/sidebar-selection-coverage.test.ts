@@ -145,3 +145,17 @@ test("deleting folders in bulk cleans up like deleting one", async () => {
     "deletedIds is built from the requested projects, not the deleted ones",
   );
 });
+
+test("both sidebar expanders read translated labels", async () => {
+  // The two sit one control apart, so an English literal next to a translated
+  // twin is the visible half of the omission.
+  // Comments name the control too, so match the rendered ternary, not the words.
+  const source = await sidebarSource();
+  assert.equal(
+    /\?\s*"Show less"\s*:\s*"Show more"/.test(source),
+    false,
+    "a sidebar expander still hard-codes its label",
+  );
+  const uses = source.match(/shell\.navigation\.show(More|Less)/g) ?? [];
+  assert.equal(uses.length, 4, "both expanders read both keys");
+});

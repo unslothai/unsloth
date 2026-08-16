@@ -94,6 +94,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
       lightMode: "الوضع الفاتح",

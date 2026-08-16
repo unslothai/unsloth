@@ -92,6 +92,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      showMore: "Show more",
+      showLess: "Show less",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",

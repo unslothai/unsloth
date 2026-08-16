@@ -97,6 +97,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      showMore: "Mehr anzeigen",
+      showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
       lightMode: "Heller Modus",

@@ -96,6 +96,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
+      showMore: "Показать больше",
+      showLess: "Показать меньше",
       settings: "Настройки",
       api: "API",
       lightMode: "Светлая тема",

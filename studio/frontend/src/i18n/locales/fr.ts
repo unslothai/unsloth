@@ -97,6 +97,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      showMore: "Afficher plus",
+      showLess: "Afficher moins",
       settings: "Paramètres",
       api: "API",
       lightMode: "Mode clair",

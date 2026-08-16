@@ -61,6 +61,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      showMore: "Mostra altro",
+      showLess: "Mostra meno",
       settings: "Impostazioni",
       api: "API",
       lightMode: "Tema chiaro",
