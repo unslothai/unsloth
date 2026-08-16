@@ -167,7 +167,6 @@ def _server_loop(app_state):
 def start_lan_access(app) -> dict:
     """Bring the LAN listener up for this launch. Repeated requests are idempotent."""
     from lan_access import start_lan_listener
-    from utils.host_policy import set_lan_connector_active
 
     status = lan_access_status(app)
     if status["state"] == "online":
@@ -179,14 +178,7 @@ def start_lan_access(app) -> dict:
     if not isinstance(port, int) or port <= 0:
         raise RuntimeError("server_port_unavailable")
 
-    # set before the socket can accept: a request served in between would still see
-    # the loopback-only trust defaults
-    set_lan_connector_active(True)
-    try:
-        addresses = start_lan_listener(app, _server_loop(app.state), port)
-    except Exception:
-        set_lan_connector_active(False)
-        raise
+    addresses = start_lan_listener(app, _server_loop(app.state), port)
     logger.info("LAN access started on %s", ", ".join(addresses))
     return lan_access_status(app)
 
@@ -194,16 +186,15 @@ def start_lan_access(app) -> dict:
 def stop_lan_access(app) -> dict:
     """Take the LAN listener down without changing the auto-start preference."""
     from lan_access import clear_lan_listener_error, stop_lan_listener
-    from utils.host_policy import set_lan_connector_active
 
     status = lan_access_status(app)
     if status["managed_by"] == "launch":
         raise RuntimeError("launch_managed")
     # a stop that could not confirm the port is closed leaves the host reachable
-    # a stop that could not confirm the port is closed leaves the host reachable
+    # a stop that could not confirm the port is closed leaves the host reachable,
+    # and lan_access keeps the trust flag with the listener state it describes
     if stop_lan_listener():
         clear_lan_listener_error()
-        set_lan_connector_active(False)
     return lan_access_status(app)
 
 

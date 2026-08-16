@@ -620,6 +620,25 @@ def test_auto_start_brings_the_listener_up_at_boot(live_server, stored_settings)
     assert lan_settings.get_lan_access_auto_start() is True
 
 
+def test_the_trust_flag_moves_with_the_listener_under_one_lock():
+    """A start and a stop can run in separate FastAPI worker threads, so the flag
+    cannot be published by the callers: it has to change where the state does."""
+    settings_source = (_BACKEND / "utils" / "lan_access_settings.py").read_text(encoding = "utf-8")
+    assert "set_lan_connector_active" not in settings_source
+
+    listener_source = (_BACKEND / "lan_access.py").read_text(encoding = "utf-8")
+    tree = ast.parse(listener_source)
+    holders = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        body = ast.unparse(node)
+        if "set_lan_connector_active" in body:
+            holders.add(node.name)
+    # only the two helpers that run under _lock may touch it
+    assert holders == {"start_lan_listener", "_release_listener_state"}, holders
+
+
 def test_start_refuses_while_a_block_is_in_force():
     with pytest.raises(RuntimeError, match = "server_starting"):
         lan_settings.start_lan_access(_app(lan_access_ready = False))
@@ -698,9 +717,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

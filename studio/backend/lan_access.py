@@ -33,6 +33,7 @@ from typing import Any, Optional
 import uvicorn
 
 from loggers import get_logger
+from utils.host_policy import set_lan_connector_active
 
 logger = get_logger(__name__)
 
@@ -200,6 +201,9 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
             logger.info("LAN access skipped unbindable addresses: %s", "; ".join(failures))
 
         server = uvicorn.Server(_listener_config(app, bound[0], port))
+        # published before the socket can accept: a request served in between would
+        # still read the loopback-only trust defaults
+        set_lan_connector_active(True)
         future = asyncio.run_coroutine_threadsafe(server.serve(sockets = sockets), loop)
         started = _wait_until(lambda: server.started or future.done(), _START_TIMEOUT)
         if not started or not server.started:
@@ -207,6 +211,7 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
             cause = future.exception(timeout = 0) if future.done() else None
             future.cancel()
             _close_sockets(sockets)
+            set_lan_connector_active(False)
             _error = "listener_start_failed"
             logger.warning(
                 "LAN access listener did not start on port %s: %s",
@@ -223,12 +228,18 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
 
 
 def _release_listener_state() -> None:
-    """Drop the listener references. The caller holds ``_lock``."""
+    """Drop the listener references and the trust flag. The caller holds ``_lock``.
+
+    The beyond-loopback flag moves with the listener state under the same lock:
+    updating it from a caller let a concurrent start and stop interleave into a
+    live listener that ``remote_connector_active()`` reported as absent.
+    """
     global _server, _serve_loop, _sockets, _port
 
     _server = _serve_loop = None
     _sockets = ()
     _port = None
+    set_lan_connector_active(False)
 
 
 def _close_sockets(sockets) -> None:
