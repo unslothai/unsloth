@@ -732,9 +732,7 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
 
     # The ring backend writes one "ip:port" list per rank; mlx.launch --hostfile ring-4.
     ring = tmp_path / "ring.json"
-    ring.write_text(
-        json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(4)]), encoding = "utf-8"
-    )
+    ring.write_text(json.dumps([[f"10.0.0.{rank}:5000"] for rank in range(4)]), encoding = "utf-8")
     _single_process_launch(monkeypatch)
     monkeypatch.setenv("MLX_RANK", "0")
     monkeypatch.setenv("MLX_HOSTFILE", str(ring))
@@ -760,7 +758,7 @@ def test_world_size_comes_from_an_mlx_launch_hostfile(tmp_path, monkeypatch):
 
     # Nothing about a hostfile may fail a run: unreadable, not JSON, not a list.
     bad_json = tmp_path / "bad.json"
-    bad_json.write_text("[[\"10.0.0.1:5000\"],", encoding = "utf-8")
+    bad_json.write_text('[["10.0.0.1:5000"],', encoding = "utf-8")
     not_a_list = tmp_path / "object.json"
     not_a_list.write_text(json.dumps({"hosts": 4}), encoding = "utf-8")
     a_directory = tmp_path / "adir"
