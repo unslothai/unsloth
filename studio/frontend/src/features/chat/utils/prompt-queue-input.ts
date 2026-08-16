@@ -22,15 +22,11 @@ export function isPromptQueueDragTypes(
 }
 
 /**
- * Cmd/Ctrl+Enter, the queue chord. Shift+Enter is a newline whatever else is
- * held, so Shift disqualifies it.
- *
- * Alt disqualifies it too, because Windows reports AltGr as Ctrl+Alt on any
- * layout the browser does not recognise as having a real AltGraph. Layouts that
- * need AltGr for everyday characters would otherwise queue on a keypress the
- * user meant as something else, and there is no Ctrl+Alt+Enter binding here
- * worth keeping. `key` rather than `code`, so the numeric keypad's Enter is the
- * same chord.
+ * Cmd/Ctrl+Enter, the queue chord. Shift+Enter stays a newline whatever else is
+ * held, and Alt disqualifies it too: Windows reports AltGr as Ctrl+Alt on any
+ * layout the browser does not read as having a real AltGraph, and those layouts
+ * hold AltGr for everyday characters. `key`, not `code`, so the keypad's Enter
+ * is the same chord.
  */
 export function isPromptQueueChord(event: {
   key: string;
@@ -44,11 +40,10 @@ export function isPromptQueueChord(event: {
 }
 
 /**
- * Whether a queue start for this thread is already registered but has not yet
- * reached the queue store. Starting one awaits settings hydration, and during
- * that gap nothing else marks the thread as queueing, so a plain Enter would
- * take the send path and the pending queue would then dispatch its own copy of
- * the same prompt. Treat the thread as queueing until the start resolves.
+ * Whether a queue start for this thread is registered but has not reached the
+ * queue store yet. Starting one awaits settings hydration, and nothing else
+ * marks the thread as queueing during that gap, so a plain Enter would send the
+ * same text the pending queue is about to dispatch.
  */
 export function hasPendingPromptQueueStart(
   reservations: Iterable<{ cancelled: boolean; threadId: string | null }>,
@@ -63,14 +58,11 @@ export function hasPendingPromptQueueStart(
 
 /**
  * Identity of a pasted-text queue start, held for the length of the file read
- * that precedes it. A submit during the read is routed to the queue branch, so
- * without this it would start a second read of the same attachment and queue a
- * duplicate once the first read's reservation had been released.
+ * before it, so a submit during that read joins it instead of starting a second
+ * read of the same attachment.
  *
- * The wait mode is deliberately not part of it. It is recomputed per submit and
- * can flip if a run starts or ends mid-read, which would split one prompt
- * across two keys and reintroduce the duplicate. What identifies the prompt is
- * the thread, the text and the attachments it is assembled from.
+ * The wait mode is deliberately out: it is recomputed per submit and flips if a
+ * run starts mid-read, which would split one prompt across two keys.
  */
 export function pastedTextQueueKey(
   threadId: string | null,

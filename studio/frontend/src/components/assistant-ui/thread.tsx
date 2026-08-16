@@ -2184,11 +2184,10 @@ const Composer: FC<{
   const pastedTextMinChars = useChatPreferencesStore(
     (state) => state.pastedTextMinChars,
   );
-  // Set by Cmd/Ctrl+Enter and read once by handleSubmit, which the requestSubmit
-  // below reaches synchronously. Armed only when there is a submit to reach: a
-  // textarea outside a form, or a browser without requestSubmit, would leave it
-  // armed for whatever submit came next, turning an ordinary Enter into a queue
-  // long after the chord was pressed.
+  // Set by Cmd/Ctrl+Enter and read once by the handleSubmit that requestSubmit
+  // reaches synchronously. Armed only when that call will happen: with no form,
+  // or no requestSubmit, it would stay armed and queue whatever submit came
+  // next.
   const forceQueueRef = useRef(false);
   const queueOnModEnter = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2895,9 +2894,8 @@ const Composer: FC<{
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   // Whether the parked send is a queue gesture. A chord pressed while this
-  // chat's own settings are still loading parks like any other send, and
-  // without this the release path sends it, quietly turning the one shortcut
-  // whose whole point is stacking into an ordinary send.
+  // chat's settings load parks like any other send, and the release path would
+  // otherwise send the prompt the user asked to stack.
   const pendingSendForceQueueRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
   // This chat's own settings are still on their way; a send now would run on the
@@ -3319,10 +3317,9 @@ const Composer: FC<{
         temporary: chatState.incognito,
         cancelled: false,
         threadId: referenceThreadId,
-        // Which chat the composer was showing when the read began. The queue
-        // target is anchored where createPromptQueueTarget is CALLED, and on
-        // this path that is after the read, so a switch mid-read would aim the
-        // target at the chat now on screen and dispatch this prompt there.
+        // Which chat the composer showed when the read began. The target is
+        // anchored where createPromptQueueTarget is CALLED, which here is after
+        // the read, so a switch mid-read would dispatch into the new chat.
         composerIdentity: composerIdentityRef.current,
         localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch: chatState.queuedSettingsEpoch,
@@ -3395,9 +3392,8 @@ const Composer: FC<{
   );
 
   // Queue whatever the composer holds. Hoisted out of handleSubmit because the
-  // parked-send release needs the same action and cannot reach into its
-  // closure. Reads the live composer rather than the rendered text: at release
-  // time this runs from an effect, where the rendered copy may be a commit
+  // parked-send release needs it too and cannot reach that closure. Reads the
+  // live composer, not the rendered text, which at release time can be a commit
   // behind.
   const queueComposerText = useCallback(
     (waitForCurrentRun: boolean) => {
@@ -3608,14 +3604,13 @@ const Composer: FC<{
     if (text.trim().length > 0 || attachments.length > 0) {
       clearStoredDraft();
       if (forceQueue) {
-        // Wait mode read here rather than carried from the parked submit: a
-        // run can start while the settings load, and a queue that ignored it
-        // would dispatch on top of the response already streaming.
+        // Wait mode read now, not carried from the parked submit: a run can
+        // start while the settings load, and ignoring it would dispatch on top
+        // of the response already streaming.
         const waitForCurrentRun = aui.thread().getState().isRunning;
-        // The same two branches the chord takes in handleSubmit, in the same
-        // order. A long paste lives in an attachment rather than in the text,
-        // so queueing the text alone would queue nothing at all for an
-        // attachment-only prompt and drop the paste from one that has both.
+        // The chord's own two branches from handleSubmit, in the same order. A
+        // long paste lives in an attachment, so queueing the text alone queues
+        // nothing at all when that is all there is.
         if (canQueueCurrentPrompt) {
           queueComposerText(waitForCurrentRun);
           return;
@@ -3623,8 +3618,7 @@ const Composer: FC<{
         if (canQueuePastedTextPrompt && queuePastedTextPrompt(waitForCurrentRun)) {
           return;
         }
-        // Nothing queueable: send it, which is what this path did before the
-        // queue intent was carried at all.
+        // Nothing queueable: send, as this path did before it carried intent.
       }
       sendReservedComposer();
     }
@@ -3781,8 +3775,7 @@ const Composer: FC<{
       // defaults on screen, so a chat stored as "ask" would queue as "off".
       if (threadScopedSettingsPending && !overlay) {
         event.preventDefault();
-        // The chord's intent rides along with the parked send, or the release
-        // above sends a prompt the user asked to stack.
+        // The intent rides with the parked send; the release reads it back.
         if (forceQueue) {
           pendingSendForceQueueRef.current = true;
         }

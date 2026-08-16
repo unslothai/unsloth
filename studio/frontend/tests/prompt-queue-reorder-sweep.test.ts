@@ -3,14 +3,10 @@
 
 /**
  * An exhaustive sweep of the reorder math, on top of the named cases in
- * `prompt-queue-reorder.test.ts`.
- *
- * The named cases say what a drag should do; this file says what a drag may
- * never do, over every queue length, every from/to pair and every active slot
- * the UI can present. The invariants are the ones a queue engine depends on:
- * nothing is lost or duplicated, nothing at or before the dispatching slot
- * moves, the caller's array is never mutated, and the reported "the next
- * dispatch changed" flag agrees with what actually changed.
+ * `prompt-queue-reorder.test.ts`. Those say what a drag should do; this says
+ * what a drag may never do, over every queue length, from/to pair and active
+ * slot: nothing lost or duplicated, nothing at or before the dispatching slot
+ * moved, the caller's array untouched, and the dispatch-changed flag honest.
  */
 
 import assert from "node:assert/strict";

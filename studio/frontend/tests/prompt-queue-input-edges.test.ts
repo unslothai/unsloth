@@ -2,17 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Edge cases for the queue's keyboard and drag predicates, on top of the
- * behaviour `prompt-queue-input.test.ts` already pins.
+ * Edge cases for the queue's keyboard and drag predicates, on top of what
+ * `prompt-queue-input.test.ts` already pins: the shapes the DOM hands us on
+ * platforms this box cannot run, a keypad Enter, a Windows AltGr chord, and a
+ * `DOMStringList` rather than Chromium's array.
  *
- * These are the shapes the DOM hands us on platforms this box cannot run: a
- * numeric-keypad Enter, a Windows AltGr chord, and a `DOMStringList` rather
- * than the array Chromium returns.
- *
- * The drag type itself was measured rather than assumed. Driven through a real
- * DataTransfer in Chromium 151, Firefox 153 and WebKit 26.5, all three report
- * the type back exactly as it was set, lowercase, in `types` during dragover
- * and through `getData` on drop -- so the predicate can match it literally.
+ * The drag type is matched literally because it was measured, not assumed:
+ * driven through a real DataTransfer, Chromium 151, Firefox 153 and WebKit 26.5
+ * all report it back lowercase and unchanged.
  */
 
 import assert from "node:assert/strict";
