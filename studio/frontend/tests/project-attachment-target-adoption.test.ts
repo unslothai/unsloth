@@ -10,6 +10,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "../src/features/chat/utils/project-attachment-target.ts";
+
 const PENDING = "__pending__";
 type Target = "project" | "chat";
 
@@ -282,4 +284,22 @@ test("the project composer's choice survives the swap to a thread", () => {
     "utf8",
   );
   assert.match(bar, /const hadThreadIdRef = useRef\(threadId !== null\);/);
+});
+
+// A browser-local preference that a reset leaves behind outlives the reset: new
+// attachments keep going to the scope the user just asked to forget.
+test("the attach-target preference is cleared by the preferences reset", () => {
+  const tab = readFileSync(
+    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const start = tab.indexOf("const PREFS_KEYS");
+  const keys = tab.slice(start, tab.indexOf("];", start));
+  assert.ok(start >= 0, "PREFS_KEYS moved");
+  assert.match(keys, /CHAT_PROJECT_ATTACHMENT_TARGET_KEY,/);
+  // By the constant the store writes under, so the two cannot drift apart.
+  assert.equal(
+    CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+    "unsloth_chat_project_attachment_target",
+  );
 });
