@@ -115,9 +115,7 @@ test("storage missing entirely reads as a fresh session", () => {
 });
 
 test("the marker key belongs to nothing else in the app", async () => {
-  // Kept as URLs. A file: URL's pathname is "/D:/..." on Windows, and readFile treats that
-  // as drive-relative, so it opened "D:\D:\..." and the walk found no owner at all.
-  const files: URL[] = [];
+  const files: string[] = [];
   async function walk(dir: URL) {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const child = new URL(
@@ -127,7 +125,7 @@ test("the marker key belongs to nothing else in the app", async () => {
       if (entry.isDirectory()) {
         await walk(child);
       } else if (/\.tsx?$/.test(entry.name)) {
-        files.push(child);
+        files.push(child.pathname);
       }
     }
   }
@@ -136,9 +134,7 @@ test("the marker key belongs to nothing else in the app", async () => {
   const owners: string[] = [];
   for (const file of files) {
     if ((await readFile(file, "utf8")).includes(`"${USER_STOPPED_KEY}"`)) {
-      // pathname, not fileURLToPath: it is "/" separated on every platform, which is what
-      // the assertion below slices on.
-      owners.push(file.pathname);
+      owners.push(file);
     }
   }
 

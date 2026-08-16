@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { register } from "node:module";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 // lib/api-base derives `isTauri` once, at module evaluation, from globals that must
 // already be in place. clipboard-resolver.mjs copies a "?bust=N" key down the import
@@ -11,11 +12,9 @@ import test from "node:test";
 // swaps @tauri-apps/plugin-clipboard-manager for a stub.
 register("./helpers/clipboard-resolver.mjs", import.meta.url);
 
-// A file:// URL, not a native path. `import()` takes a URL or a relative
-// specifier, and on Windows fileURLToPath gives a "D:\..." path, which the default
-// ESM loader rejects with ERR_UNSUPPORTED_ESM_URL_SCHEME. The "?bust=N" suffix
-// below also only means anything on a URL.
-const MODULE = new URL("../src/lib/copy-to-clipboard.ts", import.meta.url).href;
+const MODULE = fileURLToPath(
+  new URL("../src/lib/copy-to-clipboard.ts", import.meta.url),
+);
 
 type StubMode = "ok" | "write-fails" | "module-missing";
 
@@ -126,7 +125,7 @@ async function load(options: EnvOptions) {
     copyToClipboard: (text: string) => Promise<boolean>;
   };
   const api = (await import(
-    `${new URL("../src/lib/api-base.ts", import.meta.url).href}?bust=${generation}`
+    `${fileURLToPath(new URL("../src/lib/api-base.ts", import.meta.url))}?bust=${generation}`
   )) as { isTauri: boolean };
 
   assert.equal(api.isTauri, tauri, "isTauri did not match the staged environment");
