@@ -82,9 +82,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 2x the median this workflow has measured, rounded up to the next 0.5s, floored
-        # at 1.4x the slowest median in 33 runs. median / slowest median observed:
-        # ubuntu 3.24s / 3.52s, macos 3.02s / 5.52s, windows 5.11s / 5.55s.
+        # Per the header rule. Slowest median seen in 33 runs, which is what the 1.4x
+        # floor is taken from: ubuntu 3.52s, macos 5.52s, windows 5.55s.
         include:
           - os: ubuntu-latest
             max_healthz_seconds: '6.5'
