@@ -102,7 +102,7 @@ def thread_weight_verdict() -> str:
     """Everything from `def harness_failures(` on. Unlike the harnesses above, this one turns
     metrics into an exit code there rather than in `main()`."""
     text = source(THREAD_WEIGHT)
-    return text[text.index("def harness_failures("):]
+    return text[text.index("def harness_failures(") :]
 
 
 def _dict_keys(node: ast.AST, helpers: dict[str, set[str]]) -> set[str]:
@@ -179,7 +179,7 @@ def test_thread_weight_row_shapes_stay_distinct() -> None:
 
 def test_thread_weight_prints_every_metric_it_records() -> None:
     text = source(THREAD_WEIGHT)
-    table = text[text.index("TABLE_ROWS = ("):text.index("def print_table")]
+    table = text[text.index("TABLE_ROWS = (") : text.index("def print_table")]
     missing = [
         f'{action}["{metric}"]'
         for action, metrics in _thread_weight_recorded().items()

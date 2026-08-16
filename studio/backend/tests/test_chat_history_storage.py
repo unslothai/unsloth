@@ -845,9 +845,7 @@ def test_fork_counts_for_thread(tmp_path, monkeypatch):
         counter["i"] += 1
         return f"id-{counter['i']}"
 
-    for index, (branch, new_id) in enumerate(
-        [("m1", "f1"), ("m1", "f2"), ("m2", "f3")]
-    ):
+    for index, (branch, new_id) in enumerate([("m1", "f1"), ("m1", "f2"), ("m2", "f3")]):
         studio_db.fork_chat_thread(
             source_thread_id = "src",
             branch_message_id = branch,
@@ -861,9 +859,7 @@ def test_fork_counts_for_thread(tmp_path, monkeypatch):
     assert counts == {"m1": 2, "m2": 1}
     # Same answer as the per-message read it replaces, message for message.
     for message_id in ["m1", "m2", "m3"]:
-        assert counts.get(message_id, 0) == studio_db.count_forks_for_message(
-            "src", message_id
-        )
+        assert counts.get(message_id, 0) == studio_db.count_forks_for_message("src", message_id)
     # Another thread's forks never leak in.
     assert studio_db.fork_counts_for_thread("f1") == {}
 

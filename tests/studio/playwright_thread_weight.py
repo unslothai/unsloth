@@ -385,9 +385,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
     )
     page.on(
         "console",
-        lambda m: console_warnings.append(m.text[:200])
-        if m.type in ("warning", "error")
-        else None,
+        lambda m: console_warnings.append(m.text[:200]) if m.type in ("warning", "error") else None,
     )
     try:
         page.goto(f"{BASE}/smoke-thread-weight.html", wait_until = "domcontentloaded")
@@ -558,9 +556,7 @@ def run() -> dict:
         # src/features/**/api/ and would otherwise match a bare "/api/" pattern.
         context.route(
             re.compile(rf"^{re.escape(BASE)}/api/"),
-            lambda route: route.fulfill(
-                status = 200, content_type = "application/json", body = "{}"
-            ),
+            lambda route: route.fulfill(status = 200, content_type = "application/json", body = "{}"),
         )
         for size in SIZES:
             info(f"measuring N={size}")
@@ -815,8 +811,10 @@ def harness_failures(results: dict) -> list[str]:
                 continue
             ratio = large / small
             suffix = " (paint floor removed)" if floored else ""
-            info(f"growth {name}: N={results['sizes'][0]} {small} -> "
-                 f"N={results['sizes'][-1]} {large} ({ratio:.2f}x){suffix}")
+            info(
+                f"growth {name}: N={results['sizes'][0]} {small} -> "
+                f"N={results['sizes'][-1]} {large} ({ratio:.2f}x){suffix}"
+            )
             if ratio > 1.5:
                 rising.append(f"{name} {ratio:.2f}x")
         if rising:

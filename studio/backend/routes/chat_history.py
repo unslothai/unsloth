@@ -1427,10 +1427,7 @@ def get_fork_count(
     "/threads/{thread_id}/forks",
     response_model = ChatThreadForkCountsResponse,
 )
-def get_thread_fork_counts(
-    thread_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
     """Every fork count of a thread in one read, so a rendered thread costs one request."""
     return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
 
