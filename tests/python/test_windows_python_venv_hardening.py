@@ -425,3 +425,55 @@ def test_readiness_gate_precedes_installs_and_names_both_interpreters():
     assert 'Write-StudioLine "        Managed Python: $VenvPython"' in source
     assert 'Write-StudioLine "        Recorded base Python home: $recordedBaseHome"' in source
     assert 'return (Exit-InstallFailure "Managed Python is unavailable' in source
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("mode", ["default", "override"])
+def test_uv_cache_defaults_to_studio_root_and_preserves_override(
+    tmp_path: Path, shell: str, mode: str
+):
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    cache_setup = _extract(
+        r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{"
+        r".*?\n    \}\n\n"
+        r"    # When bytecode compilation is enabled",
+        source,
+    )
+    cache_setup = cache_setup.rsplit(
+        "\n\n    # When bytecode compilation is enabled",
+        1,
+    )[0]
+
+    studio_home = tmp_path / "studio"
+    default_cache = studio_home / "cache" / "uv"
+    env = os.environ.copy()
+    env["TEST_STUDIO_HOME"] = str(studio_home)
+
+    if mode == "default":
+        default_cache.parent.mkdir(parents = True)
+        default_cache.write_text("blocking file", encoding = "utf-8")
+        env.pop("UV_CACHE_DIR", None)
+        expected = default_cache
+    else:
+        expected = tmp_path / "explicit-uv-cache"
+        expected.mkdir()
+        env["UV_CACHE_DIR"] = str(expected)
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+$StudioHome = $env:TEST_STUDIO_HOME
+function substep {{ param([string]$Text, [string]$Color) }}
+{cache_setup}
+Write-Output $env:UV_CACHE_DIR
+"""
+    configured = Path(_run_powershell(shell, script, env))
+    assert configured.resolve() == expected.resolve()
+
+    if mode == "default":
+        assert default_cache.is_dir()
+        moved = list(default_cache.parent.glob("uv.invalid.*"))
+        assert len(moved) == 1
+        assert moved[0].read_text(encoding = "utf-8") == "blocking file"
+    else:
+        assert not default_cache.exists()
