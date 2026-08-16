@@ -22,6 +22,7 @@ import {
   isPromptQueueDragTypes,
   pastedTextQueueKey,
 } from "../src/features/chat/utils/prompt-queue-input.ts";
+import { isGuardRetiringKey } from "../src/features/chat/utils/composer-send-guard.ts";
 
 type ChordEvent = {
   key: string;
@@ -204,4 +205,46 @@ test("the pasted-text key handles unicode and long prompts", () => {
     pastedTextQueueKey("t1", composed, []),
     pastedTextQueueKey("t1", decomposed, []),
   );
+});
+
+/**
+ * Where this branch meets main's composer send guard (#8849): one `onKeyDown`
+ * now consults both predicates, so a key the chord claims must not also be read
+ * as the typing that retires the guard, and vice versa. Both sides handle AltGr
+ * separately, so pin that they agree on it.
+ */
+test("no key is both a queue chord and a guard-retiring keystroke", () => {
+  const keys = ["Enter", "a", "1", "é", "Escape", "Tab", "Shift", "Control",
+    "Alt", "Meta", "CapsLock", "ArrowUp", "Backspace", "F5"];
+  for (const k of keys) {
+    for (const ctrlKey of [false, true]) {
+      for (const metaKey of [false, true]) {
+        for (const altKey of [false, true]) {
+          for (const shiftKey of [false, true]) {
+            const event = { key: k, ctrlKey, metaKey, altKey, shiftKey };
+            const chord = isPromptQueueChord(event);
+            const retires = isGuardRetiringKey(event);
+            assert.equal(
+              chord && retires,
+              false,
+              `${k} ctrl=${ctrlKey} meta=${metaKey} alt=${altKey} shift=${shiftKey}`,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+test("AltGr reads the same way to the chord and to the guard", () => {
+  // Windows reports AltGr as Ctrl+Alt, so it must type a character rather than
+  // queue: not a chord, and deliberate enough to retire the guard.
+  const altGrChar = { key: "é", ctrlKey: true, altKey: true, metaKey: false,
+    shiftKey: false };
+  assert.equal(isPromptQueueChord(altGrChar), false);
+  assert.equal(isGuardRetiringKey(altGrChar), true);
+  // AltGr+Enter is not a character, and neither side claims it.
+  const altGrEnter = { ...altGrChar, key: "Enter" };
+  assert.equal(isPromptQueueChord(altGrEnter), false);
+  assert.equal(isGuardRetiringKey(altGrEnter), false);
 });
