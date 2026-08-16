@@ -39,6 +39,7 @@ import {
 } from "@assistant-ui/react";
 import { type ReactElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import { stallInProgress } from "./smoke-stream-pacing-stall.ts";
 import "./src/index.css";
 
 /**
@@ -195,12 +196,18 @@ function Harness(): ReactElement {
           }
           state.paintedChars = painted;
           lastGrowthAt = now;
-        } else if (state.streamEndedAtMs === null) {
+        } else {
           // Measure the stall in progress: a stall closed only by a LATER paint misses a
           // freeze that runs to the end of the stream, whose lost tail can hide inside the
-          // 90% floor. Only while text is still arriving; after the stream ends the settle
-          // check's quiet frames would read as a stall.
-          const stall = now - lastGrowthAt;
+          // 90% floor. stallInProgress caps it at stream end, so a freeze spanning that
+          // moment is still recorded in full while the settle check's own quiet frames are
+          // not counted as one.
+          const stall = stallInProgress(
+            lastGrowthAt,
+            now,
+            state.startedAt,
+            state.streamEndedAtMs,
+          );
           if (stall > state.longestStallMs) {
             state.longestStallMs = stall;
           }
