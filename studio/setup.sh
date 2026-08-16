@@ -1842,7 +1842,7 @@ _PKG_NAME="${STUDIO_PACKAGE_NAME:-unsloth}"
 # printing sitecustomize or .pth hook out of the caller's exact compares: -I
 # implies -E/-P/-s only, so site hooks still run.
 _PKG_PROBE_PY="
-import csv, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
+import csv, importlib.machinery, importlib.metadata, importlib.util, json, os, re, stat, sys, sysconfig
 from pathlib import PurePosixPath
 _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get_path('platlib')]) if p]
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
@@ -2031,14 +2031,32 @@ def _spec(n, bind):
         return _inside(s.origin)
     # A namespace spec is not payload on its own: an emptied package directory
     # still answers find_spec with its own path. A real PEP 420 namespace holds
-    # modules, so require the directory to contain something that is not just the
-    # bytecode cache left behind when the sources were quarantined.
-    for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+    # importable modules, so look for one -- data left behind by a quarantine
+    # (py.typed, a README, the bytecode cache) is not an importable payload.
+    # Suffixes come from importlib itself rather than a hardcoded list, so an
+    # extension module counts on every platform.
+    _imp = tuple(importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.BYTECODE_SUFFIXES
+                 + importlib.machinery.EXTENSION_SUFFIXES)
+    def _has_module(_p, _depth):
         try:
-            if _p and _inside(_p) and [_e for _e in os.listdir(_p) if _e != '__pycache__']:
-                return True
+            _entries = os.listdir(_p)
         except OSError:
-            continue
+            return False
+        _subs = []
+        for _e in _entries:
+            if _e == '__pycache__':
+                continue
+            _f = os.path.join(_p, _e)
+            if os.path.isdir(_f):
+                _subs.append(_f)
+            elif _e.endswith(_imp):
+                return True
+        # nested namespaces are legitimate, so recurse -- bounded, since the first
+        # module found answers and only a module-less tree walks to the bottom
+        return _depth > 0 and any(_has_module(_s, _depth - 1) for _s in _subs)
+    for _p in list(getattr(s, 'submodule_search_locations', None) or []):
+        if _p and _inside(_p) and _has_module(_p, 6):
+            return True
     return False
 if not rows and not damaged:
     if tops:
