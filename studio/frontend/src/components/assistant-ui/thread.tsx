@@ -125,7 +125,10 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  settleThreadScopedSettingsForCopy,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
@@ -2178,6 +2181,9 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  const pastedTextMinChars = useChatPreferencesStore(
+    (state) => state.pastedTextMinChars,
+  );
   // Set by Cmd/Ctrl+Enter and read once by handleSubmit, which the requestSubmit
   // below reaches synchronously.
   const forceQueueRef = useRef(false);
@@ -2228,6 +2234,7 @@ const Composer: FC<{
           toast.error("Could not attach the pasted text.", {
             description: "Paste it again, or paste it in smaller pieces.",
           }),
+        pastedTextMinChars,
       );
       if (attachedPastedText) return;
       pasteClipboardFiles(
@@ -2243,7 +2250,7 @@ const Composer: FC<{
           }),
       );
     },
-    [aui, overlay],
+    [aui, overlay, pastedTextMinChars],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -2877,6 +2884,11 @@ const Composer: FC<{
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
+  // This chat's own settings are still on their way; a send now would run on the
+  // installation defaults showing in their place.
+  const threadScopedSettingsPending = useChatRuntimeStore(
+    (s) => s.threadScopedSettingsPending,
+  );
 
   const handleIndexingChange = useCallback((active: boolean) => {
     indexingActiveRef.current = active;
@@ -3382,7 +3394,7 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" = "indexing") => {
+    (waitingOn: "indexing" | "images" | "audio" | "settings" = "indexing") => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
@@ -3391,7 +3403,9 @@ const Composer: FC<{
           ? "Waiting for dropped images"
           : waitingOn === "audio"
             ? "Waiting for dropped audio"
-            : "Waiting for documents to finish indexing";
+            : waitingOn === "settings"
+              ? "Loading this chat's settings"
+              : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -3498,6 +3512,15 @@ const Composer: FC<{
         enqueueSend();
         return true;
       }
+      // This chat's own settings have been asked for and have not arrived, so the store
+      // is showing the installation defaults and the run would be captured with them:
+      // a chat stored as "ask" could run tools without asking. Park it like any other
+      // wait, so the click still counts and the send fires once the snapshot lands.
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
+        return true;
+      }
       return false;
     },
     [
@@ -3505,6 +3528,7 @@ const Composer: FC<{
       shouldBlockSend,
       indexingActive,
       overlay,
+      threadScopedSettingsPending,
       enqueueSend,
       parkIfWaitingOnAttachments,
     ],
@@ -3521,6 +3545,7 @@ const Composer: FC<{
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
+      threadScopedSettingsPending ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments
     ) {
@@ -3537,6 +3562,7 @@ const Composer: FC<{
   }, [
     pendingSend,
     indexingActive,
+    threadScopedSettingsPending,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
     aui,
@@ -3674,6 +3700,14 @@ const Composer: FC<{
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
+        return;
+      }
+      // Before the queue branch below, not after it: a prompt queued while this chat's
+      // own settings are still on their way is snapshotted from the installation
+      // defaults on screen, so a chat stored as "ask" would queue as "off".
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
         return;
       }
 
@@ -3837,10 +3871,12 @@ const Composer: FC<{
       disableQueue,
       hasAttachments,
       hasPendingAudio,
+      enqueueSend,
       interceptSend,
       isResearchActive,
       overlay,
       parkIfWaitingOnAttachments,
+      threadScopedSettingsPending,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,
@@ -6278,6 +6314,22 @@ const useForkMessageAction = () => {
     }
     setPending(true);
     try {
+      // The fork copies settings_json inside its own transaction, so anything not yet
+      // in the row is not in the copy: a pill toggled moments ago and still in the
+      // 400ms debounce, or one held because this chat's own read has not landed. The
+      // fork would otherwise open on the modes the chat had before, not the ones on
+      // screen when it was made.
+      try {
+        await settleThreadScopedSettingsForCopy(remoteId);
+      } catch {
+        // The row does not hold what is on screen, so a fork made now would carry the
+        // pre-edit modes and look like it had lost the change. Better to say so.
+        toast.error("Could not fork this chat", {
+          description:
+            "Its settings could not be saved, so the fork would not match. Please retry.",
+        });
+        return;
+      }
       const result = await forkChatThread(remoteId, {
         messageId,
         newThreadId: crypto.randomUUID(),

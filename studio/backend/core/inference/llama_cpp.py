@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
+    Any,
     Callable,
     Collection,
     Generator,
@@ -151,6 +152,8 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # A cached file and every shard's byte count, already verified for this repo and variant.
+    verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
     dspark_draft_path: Optional[str] = None
@@ -1498,6 +1501,31 @@ def _cached_variant_candidates(
             yield str(main_path), main, shards, snap
     except Exception as e:
         logger.debug(f"Cache lookup for variant failed: {e}")
+
+
+def _cached_variant_sizes(
+    repo_id: str, hf_variant: str, main_path: str
+) -> Optional[tuple[tuple[str, int], ...]]:
+    """Sorted ``(filename, size)`` pairs for the cached variant copy at ``main_path``.
+
+    None when no complete cached copy resolves to that path. ``_cached_variant_candidates``
+    owns the shard set and every read is local, so recording this and comparing it later
+    catches a truncated, resized or dropped file without a Hub lookup.
+    """
+    target = os.path.abspath(main_path)
+    for cached_main, main, shards, snap in _cached_variant_candidates(repo_id, hf_variant):
+        if os.path.abspath(cached_main) != target:
+            continue
+        try:
+            return tuple(
+                sorted(
+                    (name, os.path.getsize(snap.joinpath(*name.replace("\\", "/").split("/"))))
+                    for name in (main, *shards)
+                )
+            )
+        except OSError:
+            return None
+    return None
 
 
 def _cached_candidate_matches_revision_size(
@@ -8320,6 +8348,44 @@ class LlamaCppBackend:
         return probe._non_chat_gguf_refusal(gguf_path)
 
     @classmethod
+    def _verified_cached_gguf(cls, intent, hf_repo, hf_variant) -> Optional[str]:
+        """Return a carried file only if it still matches the load and active cache."""
+        verified = getattr(intent, "verified_gguf", None)
+        if not verified:
+            return None
+        try:
+            repo, variant, path, sizes = verified
+        except (TypeError, ValueError):
+            return None
+        if (repo or "").lower() != (hf_repo or "").lower():
+            return None
+        if (variant or "").lower() != (hf_variant or "").lower():
+            return None
+        if not path:
+            return None
+        try:
+            if not Path(path).is_file():
+                return None
+            from utils.hf_cache_settings import get_hf_cache_paths
+            hub_cache = Path(os.path.abspath(get_hf_cache_paths().hub_cache))
+        except Exception:  # noqa: BLE001 -- an unreadable cache setting is not a reusable path
+            return None
+        # Cache settings can change while a load is in flight.
+        try:
+            if not Path(os.path.abspath(path)).is_relative_to(hub_cache):
+                return None
+        except (OSError, ValueError):
+            return None
+        # Recheck the recorded byte count of every shard against the set this
+        # snapshot still holds. Both are local, so reuse still avoids Hub calls.
+        try:
+            if _cached_variant_sizes(_resolve_repo_id_casing(repo), variant, path) != sizes:
+                return None
+        except OSError:
+            return None
+        return path
+
+    @classmethod
     def non_chat_gguf_refusal_for_intent(cls, intent) -> Optional[str]:
         """The header verdict for a resolved load intent, or None.
 
@@ -8335,6 +8401,11 @@ class LlamaCppBackend:
                 return cls._non_chat_gguf_refusal_for_path(gguf_path, identifier)
             if hf_repo:
                 hf_variant = getattr(intent, "hf_variant", None)
+                verified = cls._verified_cached_gguf(intent, hf_repo, hf_variant)
+                if verified:
+                    verdict = cls._non_chat_gguf_refusal_for_path(verified, identifier)
+                    cls._hand_over_route_verdict(hf_repo, hf_variant, verdict)
+                    return verdict
                 # Same offline window as the download: the probe asks the Hub before reading
                 # any local header, and those calls would otherwise wait out their retry
                 # backoff on an unreachable Hub.
@@ -12948,11 +13019,18 @@ class LlamaCppBackend:
                     )
                     hf_repo = _resolved_repo
                 with _hf_offline_if_unreachable():
-                    model_path = _preflight_model_path or self._download_gguf(
-                        hf_repo = hf_repo,
-                        hf_variant = hf_variant,
-                        hf_token = hf_token,
-                    )
+                    model_path = _preflight_model_path
+                    if model_path is None:
+                        # Revalidate the carried file before skipping download resolution.
+                        model_path = self._verified_cached_gguf(intent, hf_repo, hf_variant)
+                        if model_path:
+                            logger.info("Reusing verified cached GGUF: %s", model_path)
+                    if model_path is None:
+                        model_path = self._download_gguf(
+                            hf_repo = hf_repo,
+                            hf_variant = hf_variant,
+                            hf_token = hf_token,
+                        )
                     # Auto-download mmproj for vision models unless opted out.
                     if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
@@ -16936,8 +17014,10 @@ class LlamaCppBackend:
                 self._requested_n_batch = intent.n_batch
                 self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
-                # watch this load for a mid-generation crash.
-                self._last_load_intent = intent
+                # watch this load for a mid-generation crash. The verified-cache hint is
+                # dropped: a respawn replays this snapshot arbitrarily later, so recovery
+                # re-resolves the file instead of trusting a path this request verified.
+                self._last_load_intent = replace(intent, verified_gguf = None)
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -20151,6 +20231,9 @@ class LlamaCppBackend:
                 in_thinking = False
                 has_content_tokens = False
                 tool_calls_acc = {}  # Structured delta.tool_calls fragments
+                # accumulator key each index maps to now, (index, call_id) after a fork
+                tool_calls_open_key: dict[Any, Any] = {}
+                tool_calls_synthetic_ids: set[Any] = set()  # slots still on a placeholder id
                 has_structured_tc = False
                 _iter_usage = None
                 _iter_timings = None
@@ -20253,31 +20336,53 @@ class LlamaCppBackend:
                                         yield {"type": "content", "text": cumulative_display}
                                     for tc_d in tc_deltas:
                                         idx = tc_d.get("index", 0)
-                                        if idx not in tool_calls_acc:
-                                            tool_calls_acc[idx] = {
-                                                "id": tc_d.get("id", f"call_{idx}"),
+                                        tc_id = tc_d.get("id")
+                                        # a second call at a reused index forks its own slot; bare fragments follow whichever call owns the index now
+                                        acc_key = tool_calls_open_key.get(idx, idx)
+                                        if isinstance(tc_id, str) and tc_id:
+                                            open_id = tool_calls_acc.get(acc_key, {}).get("id")
+                                            # a synthetic placeholder is not a rival call, so a first real id still lands on the slot that is open
+                                            if (
+                                                open_id
+                                                and acc_key not in tool_calls_synthetic_ids
+                                                and open_id != tc_id
+                                            ):
+                                                first_id = tool_calls_acc.get(idx, {}).get("id")
+                                                acc_key = idx if first_id == tc_id else (idx, tc_id)
+                                        tool_calls_open_key[idx] = acc_key
+                                        if acc_key not in tool_calls_acc:
+                                            tool_calls_acc[acc_key] = {
+                                                "id": tc_id or f"call_{idx}",
                                                 "type": "function",
                                                 "function": {
                                                     "name": "",
                                                     "arguments": "",
                                                 },
                                             }
-                                        elif tc_d.get("id"):
+                                            if not tc_id:
+                                                tool_calls_synthetic_ids.add(acc_key)
+                                        elif tc_id:
                                             # Update ID if a real one
                                             # arrives on a later delta.
-                                            tool_calls_acc[idx]["id"] = tc_d["id"]
+                                            tool_calls_acc[acc_key]["id"] = tc_id
+                                            tool_calls_synthetic_ids.discard(acc_key)
                                         func = tc_d.get("function", {})
                                         if func.get("name"):
-                                            tool_calls_acc[idx]["function"]["name"] += func["name"]
-                                        if func.get("arguments"):
-                                            tool_calls_acc[idx]["function"]["arguments"] += func[
-                                                "arguments"
+                                            tool_calls_acc[acc_key]["function"]["name"] += func[
+                                                "name"
                                             ]
-                                        current_name = tool_calls_acc[idx]["function"].get(
+                                        if func.get("arguments"):
+                                            tool_calls_acc[acc_key]["function"]["arguments"] += (
+                                                func["arguments"]
+                                            )
+                                        current_name = tool_calls_acc[acc_key]["function"].get(
                                             "name", ""
                                         )
                                         fallback_id = f"call_{idx}"
-                                        current_id = tool_calls_acc[idx].get("id", fallback_id)
+                                        current_id = tool_calls_acc[acc_key].get("id", fallback_id)
+                                        is_first_accumulated_call = (
+                                            next(iter(tool_calls_acc)) == acc_key
+                                        )
                                         already_started = (
                                             current_id in provisional_started_tool_calls
                                         )
@@ -20311,7 +20416,7 @@ class LlamaCppBackend:
                                         )
                                         # Keep small-argument tools on the normal path.
                                         _args_len = len(
-                                            tool_calls_acc[idx]["function"].get("arguments", "")
+                                            tool_calls_acc[acc_key]["function"].get("arguments", "")
                                         )
                                         _payload_is_large = (
                                             current_name == "render_html"
@@ -20319,7 +20424,10 @@ class LlamaCppBackend:
                                         )
                                         if (
                                             current_name
-                                            and (idx == 0 or not disable_parallel_tool_use)
+                                            and (
+                                                is_first_accumulated_call
+                                                or not disable_parallel_tool_use
+                                            )
                                             and has_real_id
                                             and not already_started
                                             and not _is_completed_one_shot
@@ -20350,9 +20458,9 @@ class LlamaCppBackend:
                                         if current_id in provisional_started_tool_calls:
                                             if current_id not in arg_streamed_tool_call_ids:
                                                 arg_streamed_tool_call_ids.add(current_id)
-                                                _args_backlog = tool_calls_acc[idx]["function"].get(
-                                                    "arguments", ""
-                                                )
+                                                _args_backlog = tool_calls_acc[acc_key][
+                                                    "function"
+                                                ].get("arguments", "")
                                                 if _args_backlog:
                                                     yield {
                                                         "type": "tool_args",
@@ -20861,10 +20969,11 @@ class LlamaCppBackend:
                     if has_structured_tc:
                         # Drop incomplete fragments (e.g. from max_tokens
                         # truncation or disconnect).
+                        # first-seen order: a call forked onto a reused index arrived after every call already open, so it must execute and replay last
                         tool_calls = [
-                            tool_calls_acc[i]
-                            for i in sorted(tool_calls_acc)
-                            if (tool_calls_acc[i].get("function", {}).get("name", "").strip())
+                            call
+                            for call in tool_calls_acc.values()
+                            if (call.get("function", {}).get("name", "").strip())
                         ] or None
                     if not tool_calls:
                         # Unconditional re-parse: we only reach DRAINING when the buffer looked like a

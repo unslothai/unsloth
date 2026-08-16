@@ -115,14 +115,6 @@
       "evidence_hash": "73a7a72013e9f800627ea07e6dbc3beeb8c905a6a5480c8fd896f0063173d25c"
     },
     {
-      "package": "fastmcp-slim",
-      "file": "fastmcp/cli/apps_dev.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L637:     history.replaceState(null, \"\", url); sha256:17068ba5bfed62c3a3007ec8bf3e0ea41ef6529b9e6112064d9afb3be9231436\nNetwork: L1304:     with httpx.Client(timeout=30.0) as client: | L1318:     with httpx.Client(timeout=30.0) as client: | L1348:     with httpx.Client(timeout=30.0) as client: | L1549:         client = httpx.AsyncClient(\nL1550:             timeout=httpx.Timeout(60.0, read=None), trust_env=False\nL1551:         ) | L1713:     async with httpx.AsyncClient(trust_env=False) as client: | L1781:                     with socket.socket(family, socket.SOCK_STREAM) as s:",
-      "evidence_hash": "e5325edfada6499540e6f0c24a0868979d275522e2b6a180aa9b5dd3280681b4"
-    },
-    {
       "package": "fonttools",
       "file": "fontTools/diff/__init__.py",
       "check": "Reverse shell / bind shell pattern",
@@ -145,14 +137,6 @@
       "severity": "CRITICAL",
       "evidence": "Env: L268:         if os.environ.get(\"HF_TOKEN\"): | L269:             headers[\"Authorization\"] = f\"Bearer {os.environ['HF_TOKEN']}\"\nNetwork: L236:         response = requests.get(url, allow_redirects=True, headers=headers) | L258:             response = requests.head(url, allow_redirects=True, headers=headers)",
       "evidence_hash": "231235fe72f6c47331494b67dd0cba2bdb7b75b901f4fe59b434ce9a1ffbd50e"
-    },
-    {
-      "package": "httpx",
-      "file": "httpx/_models.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L528:         history: list[Response] | None = None, sha256:f56272dccd651b2644aa41ef6e688e211462427aad07fef5150240ec7347446e\nNetwork: L9: import urllib.request | L1243:     class _CookieCompatRequest(urllib.request.Request):",
-      "evidence_hash": "b32f79e58c938680d89efa74113eeba76c9fc5aedf5de18086f93bef274c4bda"
     },
     {
       "package": "huggingface-hub",
@@ -217,14 +201,6 @@
       "severity": "CRITICAL",
       "evidence": "L461:     while True: sha256:0c9641548adea74be4a8b0e86e8b75cc937a2b0f833b57dfa3d30d3e24d2537a",
       "evidence_hash": "70d25136ca2a91d192bd816706db7113a2ad0f96bc1b2381d0d4747a5ff1925d"
-    },
-    {
-      "package": "ipython",
-      "file": "IPython/core/interactiveshell.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:b644ca2db22c393a1d3302e855a013215446f5aae5eceb7a9fdab4a6d0610b14\nNetwork: L4048:                 from urllib.request import urlopen | L4049:                 response = urlopen(target)",
-      "evidence_hash": "c332f54f5b94641a417958be0a9be7446f25c65dc007dedd3cb5f01d83076cb3"
     },
     {
       "package": "ipython",
@@ -465,14 +441,6 @@
       "severity": "CRITICAL",
       "evidence": "L154:             exec(f.read(), custom_namespace)",
       "evidence_hash": "b767963474babbcfef5652eb7528d34dd9e17efa2aa0d2cef63d809ea4ad0f83"
-    },
-    {
-      "package": "pygments",
-      "file": "pygments/lexers/_mysql_builtins.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L792:     'history', sha256:7c4e519af214f72bf45d4dcfa6a90aa96d2ffd5d1b76b244998110077a946fd2\nNetwork: L1285:     from urllib.request import urlopen | L1297:         lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303:         item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')",
-      "evidence_hash": "b379f7d1fc3d64911722a7082237ed225c874240cf388c07120b8cdaace16114"
     },
     {
       "package": "pygments",
@@ -724,14 +692,6 @@
     },
     {
       "package": "torch",
-      "file": "torch/cuda/_memory_viz.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L74:     if \"history\" in b: sha256:8537d03f5cf112e0dd4afd03d7928fce66a1b24456ee5b9cf3cd776d1b756c34\nNetwork: L97:         import urllib.request | L101:             urllib.request.urlretrieve(\nL102:                 \"https://raw.githubusercontent.com/brendangregg/FlameGraph/master/flamegraph.pl\",\nL103:                 f.name,\nL104:             )",
-      "evidence_hash": "ee54e444a087560402a5ec3b1412e11c95d44f086108664b74cafb7ebc990d85"
-    },
-    {
-      "package": "torch",
       "file": "torch/distributed/elastic/multiprocessing/redirects.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
@@ -785,14 +745,6 @@
       "severity": "CRITICAL",
       "evidence": "L82:         exec(compile(f.read(), fname, \"exec\"), glob, glob) | L655:             exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)",
       "evidence_hash": "9e87a409b6486719d3c85dbdbc63bebbd01ca59f3bf6c7b5061bcc744dfba470"
-    },
-    {
-      "package": "transformers",
-      "file": "transformers/integrations/integration_utils.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L2125:                 \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \" sha256:e8d462221be344624d83eea5e696f898835c89de17020fee72f03b5bb79ada56\nNetwork: L2530:         import urllib.request | L2561:             req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2562:             with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
-      "evidence_hash": "7c999f55312c7485cb0d5dd40134dc6aabb1c718fd3a3efe5cc48e0d5a8f26ca"
     },
     {
       "package": "transformers",
@@ -1031,16 +983,8 @@
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L683:     token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L691:             response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1699:                     response = requests.get(\nL1700:                         LLAMA_CPP_CONVERT_FILE, timeout = (10, 120)\nL1701:                     ) | L2873:     check = requests.get(llama_cpp_chat_file, timeout = 5)",
-      "evidence_hash": "9cd0b1bb59c7eb1d814d7636dfd167c34f265eb7c4521a9d88b2bdcfd535b926"
-    },
-    {
-      "package": "urllib3",
-      "file": "urllib3/response.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L557:         if retries is not None and retries.history: sha256:d86f44510dc7ac496a064865e943d7a1bc338be3eeb85192022c686761cde610\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403:                 \"Body should be http.client.HTTPResponse like. \"",
-      "evidence_hash": "0216928616fa39e508ee9495c136d5da53771b6b1bf44ba9857e40d4f9c3a839"
+      "evidence": "Env: L705:     token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L713:             response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1721:                     response = requests.get(\nL1722:                         LLAMA_CPP_CONVERT_FILE, timeout = (10, 120)\nL1723:                     ) | L3227:     check = requests.get(llama_cpp_chat_file, timeout = 5)",
+      "evidence_hash": "edc8fe3789a3596f458bb345b7bce4ad0e8752b3f4aba0bdfe9a70e41b60a658"
     },
     {
       "package": "urllib3",
@@ -1603,14 +1547,6 @@
       "evidence_hash": "99dbd9b2cf5ede37fe3123e0789439bd3f82648a5443482e451ec04105be3c12"
     },
     {
-      "package": "ipython",
-      "file": "IPython/core/interactiveshell.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:d8df7b3aead9d1fc528b62f68a017797cc6ce9184746338eba1586eab9d52174\nNetwork: L4075:                 from urllib.request import urlopen | L4076:                 response = urlopen(target)",
-      "evidence_hash": "11831b523706de852722b6d342d38e1f5367dd1ad6e6c4d44fccf638eaec7361"
-    },
-    {
       "package": "openai",
       "file": "openai/_base_client.py",
       "check": "C2 polling/beaconing loop detected",
@@ -1714,14 +1650,6 @@
       "severity": "CRITICAL",
       "evidence": "L747:         os.dup2(good_fd, closed_fd)",
       "evidence_hash": "7eb34f0b046a377f38f3d1a66daadce492c43cda85b7967f66c7ad62f0ca4169"
-    },
-    {
-      "package": "httpx2",
-      "file": "httpx2/_models.py",
-      "check": "Enumerates filesystem AND makes network calls",
-      "severity": "CRITICAL",
-      "evidence": "FS: L534:         history: list[Response] | None = None, sha256:934ed9b3eb1a374f2ff77800fa760232842538d1d487e87e1411d764314bf086\nNetwork: L9: import urllib.request | L1228:     class _CookieCompatRequest(urllib.request.Request):",
-      "evidence_hash": "c1faa319a4a8b53e133819b90be51fb12aae77477ae5ceda22d0f9930e646130"
     },
     {
       "package": "openai",
