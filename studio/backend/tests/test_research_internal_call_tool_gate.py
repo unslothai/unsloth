@@ -112,6 +112,12 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     # to carry llama.cpp timings back for the tok/s readout. Comparing either by identity would
     # fail for every pair of requests, opt-out or not.
     drop = {"cancel_event", "perf_callback"}
+    # Identity is what differs, not presence: dropping the key outright would also pass if the
+    # opt-out stopped supplying the callback on one of the two requests, which would silently
+    # cost that path its tok/s readout. Compare presence first, then exclude.
+    assert callable(before_kwargs.get("perf_callback")) == callable(
+        after_kwargs.get("perf_callback")
+    ), "the opt-out must not decide whether llama.cpp timings are collected"
     assert {k: v for k, v in before_kwargs.items() if k not in drop} == {
         k: v for k, v in after_kwargs.items() if k not in drop
     }

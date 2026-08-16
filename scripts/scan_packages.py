@@ -287,7 +287,11 @@ RE_FS_ENUM = re.compile(
     # alternative, and each had to be allowlisted, which suppresses the whole file for
     # the check. Name the files instead: a stealer reading history reads a history
     # FILE, and the two literals below were already the precise half of this pattern.
-    r"|\.(?:bash|zsh|ksh|sh|fish|python|node_repl|psql|mysql|rediscli)_history\b"
+    r"|\.(?:bash|zsh|ksh|sh|python|node_repl|psql|mysql|rediscli)_history\b"
+    # fish is the exception: it writes $XDG_DATA_HOME/fish/fish_history, with no leading dot
+    # (https://fishshell.com/docs/current/cmds/history.html), so the dotted form above would
+    # never match the real path.
+    r"|(?:^|[/\\])fish_history\b"
     r"|['\"~/]\.history\b"
     r"|\bHISTFILE\b"
     r"|/etc/shadow"

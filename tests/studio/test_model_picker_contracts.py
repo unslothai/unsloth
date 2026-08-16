@@ -64,7 +64,19 @@ def _override_lookup_candidates(*args, **kwargs) -> list[str]:
         sys.path.insert(0, backend)
     from utils.openai_auto_switch_settings import override_lookup_candidates
 
-    return override_lookup_candidates(*args, **kwargs)
+    try:
+        return override_lookup_candidates(*args, **kwargs)
+    except ModuleNotFoundError as missing:
+        # The standalone-.gguf branch lazily imports hub.utils.gguf, which pulls in loggers and
+        # then structlog. CI installs studio.txt so this runs there; a bare `pytest
+        # tests/studio/...` does not, and the rest of this file is source-only by design. Skip
+        # on a missing THIRD-PARTY package only -- a missing first-party module is a real break
+        # and must still fail.
+        if (missing.name or "").split(".")[0] in {"hub", "loggers", "utils", "core", "models"}:
+            raise
+        import pytest as _pytest
+
+        _pytest.skip(f"needs the studio backend environment: {missing.name} is not installed")
 
 
 def test_models_api_sends_token_via_header_not_query():
@@ -2017,16 +2029,24 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     assert runtime.index("const previousNParallel") < runtime.index(
         "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
-    picker = " ".join(_read("features/chat/chat-page.tsx").split())
     # Ordering, not adjacency, exactly as the use-chat-model-runtime.ts check above does it. The
     # concatenated form demanded the two statements be neighbours, so #8702 broke it by inserting
     # `const remembered = rememberedConfigFor(selection);` between them -- which changes nothing
     # about the contract, since the snapshot is still taken first.
+    #
+    # Scoped to selectWithConfig, not the whole file. chat-page.tsx takes the same snapshot in the
+    # hub auto-load path, and that one sits ABOVE the only applyModelLoadConfigToRuntime call, so
+    # a whole-file index comparison is satisfied by the unrelated occurrence and stays green even
+    # if the snapshot this test is about is deleted outright.
+    picker = " ".join(_read("features/chat/chat-page.tsx").split())
+    handoff = picker.split("const selectWithConfig = async (", 1)
+    assert len(handoff) == 2, "selectWithConfig is the handoff this test is about"
+    handoff = handoff[1]
     assert (
         "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });"
-        in picker
+        in handoff
     )
-    assert picker.index("const previousConfig = currentRuntimePerModelConfig(") < picker.index(
+    assert handoff.index("const previousConfig = currentRuntimePerModelConfig(") < handoff.index(
         "applyModelLoadConfigToRuntime("
     ), "the snapshot must be taken before the target's config is applied"
     rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
