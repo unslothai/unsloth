@@ -24,6 +24,44 @@ from pathlib import Path
 import pytest
 
 
+_FRONTEND_SRC = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
+def _frontend_src_text() -> str:
+    """Every frontend source file concatenated, for copy that must exist somewhere.
+
+    User-visible strings migrate between the component that shows them and the locale
+    file that holds them, and a test that greps one file reads that migration as the
+    copy being deleted. The promise is what matters, not its address.
+    """
+    return "\n".join(
+        p.read_text(encoding = "utf-8")
+        for p in sorted(_FRONTEND_SRC.rglob("*"))
+        if p.suffix in (".ts", ".tsx") and p.is_file()
+    )
+
+
+def _sidebar_function_body(name: str) -> str:
+    """The body of a top-level `function <name>(...) {...}` in app-sidebar.tsx.
+
+    Brace-matched rather than regexed to a closing line, so reformatting and added
+    branches do not change what is read. Asserting against the body keeps a test
+    about one decision from failing when an unrelated part of the file moves.
+    """
+    sidebar = (_FRONTEND_SRC / "components" / "app-sidebar.tsx").read_text(encoding = "utf-8")
+    start = sidebar.index(f"function {name}(")
+    open_brace = sidebar.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(sidebar)):
+        if sidebar[i] == "{":
+            depth += 1
+        elif sidebar[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return sidebar[open_brace : i + 1]
+    raise AssertionError(f"unbalanced braces reading {name} out of app-sidebar.tsx")
+
+
 # ---------------------------------------------------------------------------
 # 1. Sandbox location
 # ---------------------------------------------------------------------------
@@ -1928,11 +1966,13 @@ def test_a_case_variant_chat_gets_its_own_directory(tmp_path, monkeypatch):
 def test_the_delete_switch_does_not_promise_project_files():
     """A chat moved back to Recents wrote its earlier files into the project
     workspace, which chat deletion does not touch."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert "This chat's own sandbox folder is removed from disk." in sidebar
-    assert "Anything this chat's tools wrote is removed from disk." not in sidebar
+    # The copy itself is the contract, not where it is stored. #8932 extracted the
+    # sidebar strings into the locale file, which broke a grep of app-sidebar.tsx
+    # while the wording was carried over unchanged. Search the frontend source, so
+    # a later move costs nothing and a reworded promise still fails.
+    src = _frontend_src_text()
+    assert "This chat's own sandbox folder is removed from disk." in src
+    assert "Anything this chat's tools wrote is removed from disk." not in src
 
 
 def test_a_tool_cannot_forge_its_way_into_owning_a_folder(tmp_path, monkeypatch):
@@ -2213,11 +2253,22 @@ def test_an_unowned_cache_of_trainers_is_not_put_on_sys_path(tmp_path, monkeypat
 def test_the_delete_switch_reaches_a_chat_moved_into_a_project():
     """Anything it wrote before the move is in its own folder, and the backend
     never touches the project workspace."""
-    sidebar = (
-        Path(__file__).resolve().parents[2] / "frontend" / "src" / "components" / "app-sidebar.tsx"
-    ).read_text(encoding = "utf-8")
-    assert 'return target.kind === "project" || target.kind === "chat";' in sidebar
-    assert "!target.item.projectId" not in sidebar
+    # Read the decision out of deleteTargetHasFiles rather than pinning one spelling of
+    # it. #8932 added bulk "chats" / "projects" targets and rewrote the body from
+    # `target.kind === "project" || target.kind === "chat"` to `target.kind !== "run"`,
+    # which is the same answer for a chat and a project plus the new bulk kinds. The
+    # contract is that a run has no sandbox and that project membership is never
+    # consulted, so assert exactly that.
+    body = _sidebar_function_body("deleteTargetHasFiles")
+    assert "projectId" not in body, (
+        "a chat moved into a project still owns the sandbox it wrote before the move, "
+        "so the switch must not be gated on project membership"
+    )
+    assert '"run"' in body, "a training run has no sandbox and must stay excluded"
+    for kind in ('"chat"', '"project"'):
+        assert f"kind !== {kind}" not in body and f"kind === {kind} ? false" not in body, (
+            f"{kind} targets must keep reaching the delete switch"
+        )
 
 
 def test_a_persisted_files_value_that_is_not_a_list_is_not_a_wrapper():
