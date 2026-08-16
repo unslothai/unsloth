@@ -197,6 +197,17 @@ function Harness(): ReactElement {
           }
           state.paintedChars = painted;
           lastGrowthAt = now;
+        } else if (state.streamEndedAtMs === null) {
+          // A stall used to be recorded only when a LATER paint closed it, so a freeze
+          // that ran to the end of the stream was never recorded at all: the tail can go
+          // missing inside the 90% floor and the quiet-frame loop then calls it settled.
+          // Measure the stall in progress instead. Only while text is still arriving,
+          // which is what the number means; after the stream ends the quiet frames the
+          // settle check needs would otherwise read as a stall.
+          const stall = now - lastGrowthAt;
+          if (stall > state.longestStallMs) {
+            state.longestStallMs = stall;
+          }
         }
         // Settled is counted in FRAMES without growth, not wall clock: #8845's last
         // failed attempt used a 1.5s quiet window and called a reply finished mid
@@ -263,10 +274,17 @@ function Harness(): ReactElement {
         state.longTaskMs = 0;
         state.longTasks = 0;
         state.framesOver33ms = 0;
-        void runtime.thread.append({
-          role: "user",
-          content: [{ type: "text", text: "stream the fixture" }],
-        });
+        // Hand the append to a later task. Appending here would put it in the SAME task
+        // that just set measureFrom, and a long task is stamped with the start of its
+        // task, so the whole of runtime startup and the first publish would sort before
+        // the window and be dropped as page load. A fresh task starts after measureFrom,
+        // so the work that begins the stream is measured as the stream's.
+        setTimeout(() => {
+          void runtime.thread.append({
+            role: "user",
+            content: [{ type: "text", text: "stream the fixture" }],
+          });
+        }, 0);
       },
       results: () => ({ ...state }),
     };
