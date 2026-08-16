@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   DEFAULT_CUSTOMIZATION,
@@ -135,4 +136,32 @@ test("a shipped-looking layout chosen after migration is preserved", () => {
     migrateShippedSidebarNavDefault(customization, 7, 7),
     customization,
   );
+});
+
+/** The sync module uses path aliases, so read its constant rather than import it. */
+async function personalizationVersion(): Promise<number> {
+  const source = await readFile(
+    new URL(
+      "../src/features/profile/hooks/use-personalization-sync.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const match = /PERSONALIZATION_VERSION = (\d+)/.exec(source);
+  assert.ok(match, "no PERSONALIZATION_VERSION in the sync module");
+  return Number(match[1]);
+}
+
+test("a synced profile picks the layout change up too", async () => {
+  // Remote hydration replaces the local store wholesale, so a nav default that
+  // only migrates locally is overwritten by the stored layout on every login.
+  // PERSONALIZATION_VERSION has to move with the layout for that migration to
+  // run against the remote record.
+  const stored = sanitizeCustomization({ sidebarNav: shippedLayouts[4] });
+  const migrated = migrateShippedSidebarNavDefault(
+    stored,
+    3,
+    await personalizationVersion(),
+  );
+  assert.deepEqual(migrated.sidebarNav, DEFAULT_CUSTOMIZATION.sidebarNav);
 });

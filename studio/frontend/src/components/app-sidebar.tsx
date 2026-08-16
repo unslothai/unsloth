@@ -2085,6 +2085,19 @@ export function AppSidebar() {
           });
         }
       }
+      // The same cleanup one delete does, once for the batch: refresh history so
+      // member chats do not linger as rows, and leave a deleted project's page.
+      notifyChatHistoryUpdated();
+      const deletedIds = new Set(target.projects.map((project) => project.id));
+      const runtimeProjectId = useChatRuntimeStore.getState().activeProjectId;
+      if (
+        isChatRoute &&
+        ((activeProjectId !== null && deletedIds.has(activeProjectId)) ||
+          (runtimeProjectId !== null && deletedIds.has(runtimeProjectId)))
+      ) {
+        useChatRuntimeStore.getState().setActiveProjectId(null);
+        navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+      }
       return;
     }
     if (target.kind === "project") {

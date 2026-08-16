@@ -50,3 +50,16 @@ test("picking one kind of row drops the other", async () => {
   assert.ok(projectClick, "no handleProjectSelectionClick");
   assert.match(projectClick[1], /setSelectedChatIds/);
 });
+
+test("deleting folders in bulk cleans up like deleting one", async () => {
+  // Both branches end the same way, or a batch leaves stale chat rows behind
+  // and strands the user on a page whose project is gone.
+  const source = await sidebarSource();
+  const branch = /if \(target\.kind === "projects"\) \{([\s\S]*?)\n      return;/.exec(
+    source,
+  );
+  assert.ok(branch, "no bulk project delete branch");
+  assert.match(branch[1], /notifyChatHistoryUpdated\(\)/);
+  assert.match(branch[1], /setActiveProjectId\(null\)/);
+  assert.match(branch[1], /navigate\(\{ to: "\/chat"/);
+});
