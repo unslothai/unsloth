@@ -32,6 +32,18 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
+/** The message a caller shows, plus the status one has to branch on. A 404 for a
+ * project that no longer exists is an answer; a network failure is not. */
+export function ragError(status: number, body: unknown): Error & { status: number } {
+  return Object.assign(new Error(parseErrorText(status, body)), { status });
+}
+
+/** True for a failure the server answered definitively, so retrying cannot help. */
+export function isRagClientError(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 429;
+}
+
 async function ragRequest<T>(
   path: string,
   init?: { method?: string; body?: object },
@@ -49,7 +61,7 @@ async function ragRequest<T>(
   // Every RAG endpoint but the list gates on the extension loading, so its status is
   // also an availability answer. See api/rag-availability.
   noteRagResponse(response.status, json);
-  if (!response.ok) throw new Error(parseErrorText(response.status, json));
+  if (!response.ok) throw ragError(response.status, json);
   return json as T;
 }
 
@@ -80,7 +92,7 @@ async function ragUpload(
   const json = await response.json().catch(() => null);
   // Uploads bypass ragRequest, so they have to report availability themselves.
   noteRagResponse(response.status, json);
-  if (!response.ok) throw new Error(parseErrorText(response.status, json));
+  if (!response.ok) throw ragError(response.status, json);
   return json as DocumentUploadResult;
 }
 
@@ -708,7 +720,7 @@ async function openEventStream(
     const body = await response.json().catch(() => null);
     // also gated on the extension, and also not routed through ragRequest
     noteRagResponse(response.status, body);
-    throw new Error(parseErrorText(response.status, body));
+    throw ragError(response.status, body);
   }
   if (!response.body) throw new Error("Stream response missing body");
   return response.body;

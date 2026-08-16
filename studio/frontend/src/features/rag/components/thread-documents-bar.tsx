@@ -14,9 +14,9 @@ import { cn } from "@/lib/utils";
 import {
   PENDING_CHAT_ATTACHMENT_KEY,
   readPendingAttachmentTargetClaim,
-  type ProjectAttachmentTarget,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import type { ProjectAttachmentTarget } from "@/features/chat/utils/project-attachment-target";
 import {
   chatHistoryClearBoundary,
   ChatThreadDeletedError,
@@ -389,11 +389,13 @@ export function ThreadDocumentsBar({
   // Until the chat's row has been read, which project it belongs to is unknown.
   // Attaching in that window would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
-  const projectId =
-    ragEnabled && ragSource.type === "kb" ? null : (threadProjectId ?? null);
   // A host where the vector extension cannot load answers 503 to every project
   // source request, so do not open a scope it can only fail.
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
+  const projectId =
+    (ragEnabled && ragSource.type === "kb") || ragUnavailable
+      ? null
+      : (threadProjectId ?? null);
   // This chat's own choice if it made one, otherwise the saved default. Keeps a
   // pick in one chat from redirecting every other chat in the project.
   const projectAttachmentTarget =
@@ -439,7 +441,7 @@ export function ThreadDocumentsBar({
     upload: uploadToProject,
     remove: removeFromProject,
   } = useRagDocuments(
-    projectId && !ragUnavailable ? { type: "project", projectId } : null,
+    projectId ? { type: "project", projectId } : null,
     projectLister,
   );
 

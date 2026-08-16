@@ -141,7 +141,9 @@ test("a failure is only reported for the request still being awaited", () => {
 });
 
 // The composer mounts a project scope for every project chat, so a host that
-// cannot run RAG would issue and fail one request per chat opened.
+// cannot run RAG would issue and fail one request per chat opened. The check is
+// on projectId itself, not just the hook's scope, so the attach controls and the
+// target menu go with it rather than offering an upload that can only 503.
 test("no project scope is opened where RAG cannot run", () => {
   const source = readFileSync(
     new URL(
@@ -152,8 +154,9 @@ test("no project scope is opened where RAG cannot run", () => {
   );
   assert.match(
     source,
-    /projectId && !ragUnavailable \? \{ type: "project", projectId \} : null/,
+    /const projectId =\s*\(ragEnabled && ragSource\.type === "kb"\) \|\| ragUnavailable\s*\? null\s*: \(threadProjectId \?\? null\);/,
   );
+  assert.match(source, /projectId \? \{ type: "project", projectId \} : null/);
 });
 
 // A project's sources change from the Sources panel as well as the composer:

@@ -28,6 +28,12 @@ import {
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
+import {
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+  DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  normalizeProjectAttachmentTarget,
+  type ProjectAttachmentTarget,
+} from "../utils/project-attachment-target";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
@@ -102,8 +108,6 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
-export const CHAT_PROJECT_ATTACHMENT_TARGET_KEY =
-  "unsloth_chat_project_attachment_target";
 export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
 export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
@@ -123,9 +127,6 @@ const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
 /** Where the composer files an attachment in a project chat. `project` indexes
- * into the project's shared sources; `thread` keeps the file to the one chat.
- * Ignored outside a project. */
-export type ProjectAttachmentTarget = "project" | "thread";
 
 /** Key a choice made in a chat that has no id yet lives under until it gets one. */
 export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
@@ -141,9 +142,6 @@ export function readPendingAttachmentTargetClaim(): number {
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
-// A project exists to share context, so its chats default to the whole project.
-export const DEFAULT_PROJECT_ATTACHMENT_TARGET: ProjectAttachmentTarget =
-  "project";
 export const DEFAULT_RAG_MODE: RagMode = "hybrid";
 export const DEFAULT_RAG_TOP_K = 5;
 // `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
@@ -209,11 +207,9 @@ function saveRagSource(value: RagSource): void {
 }
 
 function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
-  const raw = loadString(
-    CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
-    DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  return normalizeProjectAttachmentTarget(
+    loadString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, DEFAULT_PROJECT_ATTACHMENT_TARGET),
   );
-  return raw === "thread" ? "thread" : DEFAULT_PROJECT_ATTACHMENT_TARGET;
 }
 
 function loadRagMode(): RagMode {

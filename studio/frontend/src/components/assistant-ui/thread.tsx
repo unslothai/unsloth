@@ -185,6 +185,7 @@ import {
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
 import {
+  isRagClientError,
   listProjectDocuments,
   listThreadDocuments,
   projectWorkCount,
@@ -506,8 +507,18 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     if (projectWorkCount(projectId) > 0) {
       return true;
     }
-    const projectDocuments = await listProjectDocuments(projectId);
-    return projectDocuments.some(indexingDocument);
+    try {
+      const projectDocuments = await listProjectDocuments(projectId);
+      return projectDocuments.some(indexingDocument);
+    } catch (error) {
+      // A project the server will not list is not a project this send can wait
+      // for: a deleted project, or a server that predates the route. The retry
+      // below would hold the prompt for the rest of the session.
+      if (isRagClientError(error)) {
+        return false;
+      }
+      throw error;
+    }
   } catch {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching
