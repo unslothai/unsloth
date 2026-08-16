@@ -15052,6 +15052,7 @@ async def openai_chat_completions(
                         full_text = ""
                         completion_usage = None
                         completion_finish = None
+                        _choice_context_truncation = None
                         for token in gguf_generate(_idx):
                             if isinstance(token, dict):
                                 if token.get("type") == "metadata":
@@ -15059,12 +15060,21 @@ async def openai_chat_completions(
                                     completion_finish = token.get("finish_reason")
                                     _last_timings = token.get("timings")
                                     _last_finish = completion_finish
-                                elif token.get("type") == "context_truncated" and _idx == 0:
-                                    _context_truncation = _accumulate_context_truncation(
-                                        _context_truncation, token
+                                elif token.get("type") == "context_truncated":
+                                    _choice_context_truncation = _accumulate_context_truncation(
+                                        _choice_context_truncation, token
                                     )
                                 continue
                             full_text = token
+
+                        if _choice_context_truncation is not None and (
+                            _context_truncation is None
+                            or int(_choice_context_truncation.get("dropped_messages") or 0)
+                            >= int(_context_truncation.get("dropped_messages") or 0)
+                        ):
+                            # Choices share the original prompt. Keep the shortest
+                            # choice's cumulative fit instead of summing choices.
+                            _context_truncation = _choice_context_truncation
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,

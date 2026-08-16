@@ -19,10 +19,17 @@ class _GgufBackend(FakeLlamaCppBackend):
     ):
         self.usage = usage
         self.context_truncation = context_truncation
+        self.generation_index = 0
 
     def generate_chat_completion(self, **kwargs):
-        if self.context_truncation:
-            yield {"type": "context_truncated", **self.context_truncation}
+        truncations = self.context_truncation
+        if isinstance(truncations, list):
+            truncations = truncations[self.generation_index]
+        self.generation_index += 1
+        if isinstance(truncations, dict):
+            truncations = [truncations]
+        for truncation in truncations or []:
+            yield {"type": "context_truncated", **truncation}
         yield "answer"
         yield {
             "type": "metadata",
@@ -35,6 +42,7 @@ def _request_completion(
     monkeypatch,
     usage,
     context_truncation = None,
+    n = None,
 ):
     monkeypatch.setattr(
         inference_route,
@@ -52,6 +60,7 @@ def _request_completion(
         json = {
             "messages": [{"role": "user", "content": "Why is the sky blue?"}],
             "stream": False,
+            **({"n": n} if n is not None else {}),
         },
     )
 
@@ -112,3 +121,44 @@ def test_non_streaming_gguf_completion_includes_context_truncation(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["context_truncated"] == truncation
+
+
+def test_non_streaming_choices_keep_distinct_later_truncation_stages(monkeypatch):
+    base = {
+        "dropped_messages": 4,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 7000,
+        "context_length": 8192,
+        "fits": True,
+    }
+    additional = {
+        "dropped_messages": 2,
+        "prompt_tokens_before": 7000,
+        "prompt_tokens_after": 3500,
+        "context_length": 4096,
+        "fits": True,
+    }
+    cumulative = {
+        "dropped_messages": 6,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 3500,
+        "context_length": 4096,
+        "fits": True,
+    }
+
+    response = _request_completion(
+        monkeypatch,
+        {"prompt_tokens": 3500, "completion_tokens": 20, "total_tokens": 3520},
+        [[base], [base, additional], [cumulative]],
+        n = 3,
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["choices"]) == 3
+    assert response.json()["context_truncated"] == {
+        "dropped_messages": 6,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 3500,
+        "context_length": 4096,
+        "fits": True,
+    }
