@@ -2047,7 +2047,6 @@ def _verdict(d, d_record):
                 continue
             rows.append((f, (r[2] if len(r) > 2 else '').strip(),
                          os.path.normcase(str(d.locate_file(f)))))
-    tops = (d.read_text('top_level.txt') or '').split()
     # a truncated RECORD can keep its self-entry when the writer ordered entries
     # lexicographically (dist-info sorts before the payload), so the final parsed
     # row must also carry RECORD's three fields: a mid-line cut leaves a short row,
@@ -2135,6 +2134,16 @@ def _verdict(d, d_record):
             if _p and _inside(_p) and _has_module(_p, 6):
                 return True
         return False
+    def _tops():
+        # top_level.txt is OPTIONAL metadata and may be unreadable or not even valid
+        # UTF-8 after a partial write or a quarantine. Letting that raise would end
+        # the probe with no sentinel, which every caller reads as inconclusive -- so
+        # a broken file must degrade to no-top-levels, not to no-answer. Read here
+        # rather than up front so the recorded-payload checks run first regardless.
+        try:
+            return (d.read_text('top_level.txt') or '').split()
+        except Exception:
+            return []
     if not rows and not damaged:
         if _edit and not _target:
             # An editable install whose direct_url.json no longer says where it
@@ -2143,8 +2152,9 @@ def _verdict(d, d_record):
             # be gone. Unusable metadata for an editable install is itself the
             # damage, and it is what the no-tops branch below has always reported.
             damaged = True
-        elif tops:
-            damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
+        elif _tops():
+            damaged = not all(_spec(t, _target if _edit else str(d.locate_file('')))
+                              for t in _tops() if t)
         elif _edit:
             # An editable install with no top_level.txt: its RECORD lists only the
             # site-packages shims, so nothing above can speak for the checkout. Resolve
