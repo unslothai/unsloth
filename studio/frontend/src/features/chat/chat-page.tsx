@@ -172,6 +172,7 @@ import {
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
+  providerSupportsLocalToolRuntime,
 } from "./provider-capabilities";
 import {
   ChatActiveContext,
@@ -2226,6 +2227,9 @@ export function ChatPage({
       selection.modelId,
       provider?.baseUrl,
     );
+    const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+      provider?.providerType,
+    );
     const supportsBuiltinImageGeneration =
       providerSupportsBuiltinImageGeneration(
         provider?.providerType,
@@ -2258,30 +2262,29 @@ export function ChatPage({
     const storedWebFetchToolsEnabled = loadOptionalBool(
       CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
     );
-    // Studio runs Search and Code itself for any provider that advertises the
-    // capability, so a self-hosted connection has no hosted builtin to key off.
-    // Keying the pill state on the hosted flags alone discarded the user's saved
-    // preference on every reload and sent enable_tools: false, even though the
-    // composer left both pills clickable.
+    // A Connection points at someone else's endpoint, and the local tool runtime runs
+    // Search / Code / MCP on this machine and feeds the output back to that endpoint.
+    // Studio also runs Search and Code for providers that advertise the capability.
     const supportsStudioToolsHere =
       providerModelSupportsStudioTools(
         provider?.providerType,
         selection.modelId,
       ) === true;
     const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-    // Read out of the placement rule, not off the Studio-tools flag: a model on
-    // a sandbox-owning provider that cannot use it runs nothing either way, and
-    // offering the pill there restored a preference that sent no tools at all.
     const canRunCode = codeToolCanRun({
       hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
       providerHostsCodeExecution: providerHostsCodeExecution(provider?.providerType),
       supportsStudioTools: supportsStudioToolsHere,
     });
-    const nextToolsEnabled = canSearch
-      ? isKimi
-        ? false
-        : (storedToolsEnabled ?? searchOnByDefault)
-      : false;
+    // Local-runtime Connections opt in per model: don't inherit shared toggles a
+    // local GGUF chat may have set, or tool output leaves the box silently.
+    const nextToolsEnabled = supportsLocalToolRuntime
+      ? false
+      : canSearch
+        ? isKimi
+          ? false
+          : (storedToolsEnabled ?? searchOnByDefault)
+        : false;
     useChatRuntimeStore.setState({
       supportsReasoning: reasoningCaps.supportsReasoning,
       reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -2297,7 +2300,7 @@ export function ChatPage({
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      supportsTools: supportsStudioToolsHere,
+      supportsTools: supportsLocalToolRuntime || supportsStudioToolsHere,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
       supportsBuiltinImageGeneration,
@@ -2311,6 +2314,10 @@ export function ChatPage({
       webFetchToolsEnabled: supportsBuiltinWebFetch
         ? (storedWebFetchToolsEnabled ?? false)
         : false,
+      // MCP persists in localStorage, so without this a Connection inherits a
+      // local model's opt-in and can invoke local MCP tools on its first turn.
+      // In-memory only: a reload restores the user's local-model preference.
+      ...(supportsLocalToolRuntime ? { mcpEnabledForChat: false } : {}),
     });
     // Reruns once settings hydrate: this normalization reads the stored pills
     // and clamps them to the model, and hydration refreshes what it reads, so
@@ -2768,6 +2775,9 @@ export function ChatPage({
             selectedExternal?.modelId,
             selectedProvider?.baseUrl,
           );
+        const supportsLocalToolRuntime = providerSupportsLocalToolRuntime(
+          selectedProvider?.providerType,
+        );
         const supportsBuiltinImageGeneration =
           providerSupportsBuiltinImageGeneration(
             selectedProvider?.providerType,
@@ -2797,16 +2807,15 @@ export function ChatPage({
         const storedWebFetchToolsEnabled = loadOptionalBool(
           CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
         );
-        // Same rule as the selection handler above: a self-hosted connection has
-        // no hosted builtin, so keying the pills on those flags threw away the
-        // user's saved preference every time this ran.
+        // Same opt-in rule as the initial-selection block above: a Connection never
+        // inherits the shared tool toggles, because its local tool output leaves the
+        // machine. See the comment there.
         const supportsStudioToolsHere =
           providerModelSupportsStudioTools(
             selectedProvider?.providerType,
             selectedExternal?.modelId,
           ) === true;
         const canSearch = supportsBuiltinWebSearch || supportsStudioToolsHere;
-        // Same placement rule as the selection handler above.
         const canRunCode = codeToolCanRun({
           hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
           providerHostsCodeExecution: providerHostsCodeExecution(
@@ -2814,11 +2823,13 @@ export function ChatPage({
           ),
           supportsStudioTools: supportsStudioToolsHere,
         });
-        const nextToolsEnabled = canSearch
-          ? isKimi
-            ? false
-            : (storedToolsEnabled ?? searchOnByDefault)
-          : false;
+        const nextToolsEnabled = supportsLocalToolRuntime
+          ? false
+          : canSearch
+            ? isKimi
+              ? false
+              : (storedToolsEnabled ?? searchOnByDefault)
+            : false;
         useChatRuntimeStore.setState({
           activeGgufVariant: null,
           ggufContextLength: null,
@@ -2844,7 +2855,7 @@ export function ChatPage({
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          supportsTools: supportsStudioToolsHere,
+          supportsTools: supportsLocalToolRuntime || supportsStudioToolsHere,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,
@@ -2859,6 +2870,9 @@ export function ChatPage({
           webFetchToolsEnabled: supportsBuiltinWebFetch
             ? (storedWebFetchToolsEnabled ?? false)
             : false,
+          // See the mount-time block: MCP is persisted, so it must not carry a
+          // local model's opt-in into an OAI-compat Connection.
+          ...(supportsLocalToolRuntime ? { mcpEnabledForChat: false } : {}),
           ...(stillOnOpenRouterFree ? {} : { lastOpenRouterChosenModel: null }),
         });
         return;
