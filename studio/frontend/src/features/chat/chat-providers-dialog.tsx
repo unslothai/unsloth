@@ -1330,8 +1330,8 @@ export function ChatProvidersSettings({
                       className="text-xs leading-snug text-muted-foreground"
                     >
                       Caps Max Tokens for this connection. Never raises it past a
-                      model's documented limit. Leave blank for the 32,768-token
-                      default.
+                      model's documented limit. Leave blank to use that limit, or
+                      32,768 for a model without one.
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">
