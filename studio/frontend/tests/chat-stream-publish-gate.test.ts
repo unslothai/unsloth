@@ -551,6 +551,41 @@ test("a cap-forced publish resets the baseline for the next one", () => {
   });
 });
 
+test("the backend tool events publish ungated", () => {
+  const loop = regionOf(
+    "for await (const chunk of stream) {",
+    "} catch (streamError) {",
+  );
+
+  // tool_start / tool_end carry the card's state -- name, result, approval,
+  // provenance -- not a preview of it, and they are rare. Pacing them would
+  // let a Stop persist a card that never got its result. Only the per-delta
+  // argument preview above them is paced.
+  const preview = loop.indexOf('if (toolEvent.type === "tool_args") {');
+  const events = loop.indexOf("const toolProvenance = parseToolProvenance(");
+  assert.ok(preview !== -1 && events > preview, "the tool-event branch moved");
+
+  const between = loop.slice(preview, events);
+  const previewGate = between.indexOf("if (canPublish(streamedChars)) {");
+  assert.notEqual(previewGate, -1, "the argument preview is not paced");
+
+  // Exactly one gate call between the preview and the events: the preview's.
+  const gates = between.match(/canPublish\(/g) ?? [];
+  assert.equal(
+    gates.length,
+    1,
+    "a state-bearing tool event is being paced along with the preview",
+  );
+
+  // And none after them either, up to the publish they share.
+  const publish = loop.indexOf("yield {", events);
+  const after = loop.slice(events, publish);
+  assert.ok(
+    !after.includes("canPublish("),
+    "the tool-event publish itself is paced",
+  );
+});
+
 test("a state-bearing provider delta is never held by the gate", () => {
   const loop = regionOf(
     "for await (const chunk of stream) {",
