@@ -12,7 +12,11 @@ from .llama_backend_double import FakeLlamaCppBackend
 
 
 class _GgufBackend(FakeLlamaCppBackend):
-    def __init__(self, usage, context_truncation = None):
+    def __init__(
+        self,
+        usage,
+        context_truncation = None,
+    ):
         self.usage = usage
         self.context_truncation = context_truncation
 
