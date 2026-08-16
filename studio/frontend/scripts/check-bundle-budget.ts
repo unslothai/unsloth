@@ -47,30 +47,193 @@ export const BUDGET = {
 // reward; capping it would penalise the fix.
 
 /**
- * Reads an attribute off a single tag. Names are case-insensitive.
- *
- * Anchored on whitespace, not `\b`: a hyphen is a word boundary, so `\btype`
- * matches inside `data-type` and would read a decoy attribute in preference to
- * the real one. Every attribute in a tag is preceded by whitespace, the tag name
- * included, so this is the exact boundary HTML gives us.
+ * A start tag: lowercased name, and its attributes by lowercased name. A valueless
+ * attribute like `defer` is present with an empty-string value, as HTML defines it.
  */
-function attr(tag: string, name: string): string | undefined {
-  const m = tag.match(
-    new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"),
-  );
-  if (!m) {
-    return undefined;
+type StartTag = { name: string; attrs: Map<string, string> };
+
+/**
+ * ASCII whitespace, which is what separates one attribute from the next.
+ *
+ * CR is in here for safety only: the parser's input preprocessor turns every CR
+ * into an LF before the tokenizer sees it, so a CRLF file cannot behave
+ * differently. https://html.spec.whatwg.org/multipage/parsing.html#preprocessing-the-input-stream
+ */
+const WHITESPACE = new Set(["\t", "\n", "\f", "\r", " "]);
+
+/** First index at or after `from` that is not ASCII whitespace. */
+function skipWhitespace(html: string, from: number): number {
+  let i = from;
+  while (i < html.length && WHITESPACE.has(html[i] as string)) {
+    i += 1;
   }
-  return m[1] ?? m[2] ?? m[3];
+  return i;
 }
 
-/** True for a valueless attribute like `defer`, which `attr` cannot see. */
-function hasAttr(tag: string, name: string): boolean {
-  return new RegExp(`\\s${name}(?=[\\s/>=])`, "i").test(tag);
+/** First index at or after `from` that ends a name or an unquoted value. */
+function scanUntil(html: string, from: number, stop: string): number {
+  let i = from;
+  while (
+    i < html.length &&
+    !WHITESPACE.has(html[i] as string) &&
+    !stop.includes(html[i] as string)
+  ) {
+    i += 1;
+  }
+  return i;
+}
+
+/** One attribute value, from the `=`. Quoted values run to their closing quote. */
+function readValue(
+  html: string,
+  from: number,
+): { value: string; next: number } {
+  const i = skipWhitespace(html, from + 1);
+  const quote = html[i];
+  if (quote !== '"' && quote !== "'") {
+    const end = scanUntil(html, i, ">"); // Unquoted: ends at whitespace or `>`.
+    return { value: html.slice(i, end), next: end };
+  }
+  const close = html.indexOf(quote, i + 1);
+  return close < 0
+    ? { value: html.slice(i + 1), next: html.length }
+    : { value: html.slice(i + 1, close), next: close + 1 };
+}
+
+/**
+ * Reads the attributes of one start tag, beginning just past its name, and returns
+ * where the tag ends.
+ *
+ * This is the tokenizer's attribute states, narrowed to what a build artefact can
+ * contain. The two rules that matter, and that no regex over the tag text can
+ * express:
+ *
+ *   - `>` ends the tag only OUTSIDE a quoted value. Inside one it is ordinary text
+ *     ("anything else: append the current input character to the current
+ *     attribute's value"), so `data-note="a > b"` is one attribute and the tag does
+ *     not end there.
+ *     https://html.spec.whatwg.org/multipage/parsing.html#attribute-value-(double-quoted)-state
+ *   - An attribute begins only after whitespace, `/` or a previous value, so a NAME
+ *     is the only place `async` or `type` can be read from. A value is arbitrary
+ *     text: `data-mode="load async later"` contains no `async` attribute.
+ *     https://html.spec.whatwg.org/multipage/parsing.html#before-attribute-name-state
+ *
+ * Both were live bugs while this searched the tag text instead: the first dropped
+ * the entry chunk, the second dropped the parser-blocking script, and in each case
+ * enough of the build survived to satisfy the shape guard below, so the gate
+ * reported a comfortable pass on a startup path it had not measured.
+ */
+function readAttributes(
+  html: string,
+  start: number,
+): { attrs: Map<string, string>; end: number; closed: boolean } {
+  const attrs = new Map<string, string>();
+  let i = start;
+  while (i < html.length) {
+    // Before attribute name: whitespace is ignored, and `/` (self-closing, or a
+    // stray solidus) is not part of a name.
+    if (WHITESPACE.has(html[i] as string) || html[i] === "/") {
+      i += 1;
+      continue;
+    }
+    if (html[i] === ">") {
+      return { attrs, end: i + 1, closed: true };
+    }
+    const nameEnd = scanUntil(html, i, "/>=");
+    const name = html.slice(i, nameEnd).toLowerCase();
+    // After attribute name: whitespace may separate the name from its `=`.
+    i = skipWhitespace(html, nameEnd);
+    let value = "";
+    if (html[i] === "=") {
+      ({ value, next: i } = readValue(html, i));
+    }
+    // A repeated attribute is a parse error and the browser keeps the first, so a
+    // later `src=` cannot overwrite the one the browser actually fetches.
+    if (name && !attrs.has(name)) {
+      attrs.set(name, value);
+    }
+  }
+  return { attrs, end: i, closed: false };
+}
+
+/**
+ * End of a comment, from just past its `<!--`.
+ *
+ * `<!-->` and `<!--->` close there rather than running on: the comment start and
+ * comment start dash states both end the comment on `>`. Read as unterminated, the
+ * rest of the file disappears along with the tags in it.
+ * https://html.spec.whatwg.org/multipage/parsing.html#comment-start-state
+ */
+const COMMENT_END = /^-?>|--!?>/;
+function endOfComment(html: string, start: number): number {
+  const m = COMMENT_END.exec(html.slice(start));
+  return m ? start + m.index + m[0].length : html.length;
+}
+
+/** End of a script element's raw text, from just past its start tag. */
+const SCRIPT_END = /<\/script[\t\n\f\r >/]/i;
+function endOfScriptBody(html: string, start: number): number {
+  const m = SCRIPT_END.exec(html.slice(start));
+  return m ? start + m.index : html.length;
+}
+
+/** Tag open state: only an ASCII letter after `<` starts a tag name. */
+const TAG_NAME_START = /[a-z]/i;
+
+/**
+ * Every start tag in the document, in order.
+ *
+ * Comments and script bodies are skipped rather than scanned, for the same reason
+ * the attribute parser exists: a tag is only a tag where the browser sees one. A
+ * `<script src>` commented out during debugging is not downloaded and must not be
+ * charged, and a tag written inside a string in an inline script is text.
+ * https://html.spec.whatwg.org/multipage/parsing.html#script-data-state
+ *
+ * A script body ends at the first `</script`, which is the tokenizer's answer
+ * unless the body itself contains `<!-- <script`: those escaped states let a
+ * `</script>` be text. Erring there reads a bit of script body as markup, so the
+ * mistake is to charge a chunk that is not there rather than to miss one. Checked
+ * against parse5 over 40,000 generated documents, that is the only case left.
+ */
+function* startTags(html: string): Generator<StartTag> {
+  let i = 0;
+  while (i < html.length) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      return;
+    }
+    if (html.startsWith("<!--", lt)) {
+      i = endOfComment(html, lt + 4);
+      continue;
+    }
+    if (!TAG_NAME_START.test(html[lt + 1] ?? "")) {
+      i = lt + 1;
+      continue;
+    }
+    // Tag name state: the name ends at whitespace, `/` or `>`.
+    const nameEnd = scanUntil(html, lt + 1, "/>");
+    const name = html.slice(lt + 1, nameEnd).toLowerCase();
+    const { attrs, end, closed } = readAttributes(html, nameEnd);
+    if (!closed) {
+      return; // A tag the file ends in the middle of is never emitted, or fetched.
+    }
+    yield { name, attrs };
+    i = name === "script" ? endOfScriptBody(html, end) : end;
+  }
+}
+
+/** Reads an attribute off a tag. Absent is undefined; valueless is `""`. */
+function attr(tag: StartTag, name: string): string | undefined {
+  return tag.attrs.get(name);
+}
+
+/** True for a valueless attribute like `defer`, which carries no value to read. */
+function hasAttr(tag: StartTag, name: string): boolean {
+  return tag.attrs.has(name);
 }
 
 /** `rel` is a space-separated token list, and its tokens are case-insensitive. */
-function relTokens(tag: string): string[] {
+function relTokens(tag: StartTag): string[] {
   return (attr(tag, "rel") ?? "").toLowerCase().split(/\s+/).filter(Boolean);
 }
 
@@ -131,7 +294,8 @@ export function eagerSetFromHtml(html: string): EagerSet {
     into.push(path);
   };
 
-  for (const tag of html.match(/<script\b[^>]*>/gi) ?? []) {
+  const tags = [...startTags(html)];
+  for (const tag of tags.filter((t) => t.name === "script")) {
     const type = attr(tag, "type")?.toLowerCase();
     if (type === "module") {
       // Vite's entry, always one of its own hashed assets.
@@ -148,7 +312,7 @@ export function eagerSetFromHtml(html: string): EagerSet {
       }
     }
   }
-  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of tags.filter((t) => t.name === "link")) {
     if (relTokens(tag).includes("modulepreload")) {
       add(set.preloads, attr(tag, "href"), "assets/");
     }

@@ -95,6 +95,77 @@ test("a decoy data- attribute cannot shadow the real one", () => {
   });
 });
 
+test("`async` inside a value is not an async attribute", () => {
+  // An attribute begins only after whitespace, so `async` can only be read from a
+  // NAME. Searching the tag text found it in this value, dropped the only
+  // parser-blocking script, and left the entry and preloads to pass the shape
+  // guard -- so theme-boot.js could grow without ever showing up.
+  const html =
+    '<script data-mode="load async later" src="/theme-boot.js"></script>' +
+    '<script data-flags="async defer" src="/also-blocking.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, [
+    "theme-boot.js",
+    "also-blocking.js",
+  ]);
+});
+
+test("an attribute whose name ends in async is not async", () => {
+  const html = '<script data-async src="/theme-boot.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, ["theme-boot.js"]);
+});
+
+test("a quoted value containing `>` does not end the tag", () => {
+  // `>` is ordinary text inside a quoted value; the tag really does continue. Read
+  // as the end of the tag, `type` and `src` fall off the entry, and the preloads
+  // alone still satisfy the shape guard -- a pass measured without the entry chunk.
+  const html =
+    '<script data-note="a > b" type="module" src="/assets/entry.js"></script>' +
+    "<script data-note='b > c' src='/theme-boot.js'></script>" +
+    '<link data-note="x > y" rel="modulepreload" href="/assets/react-x.js">';
+  assert.deepEqual(eagerSetFromHtml(html), {
+    entry: ["assets/entry.js"],
+    preloads: ["assets/react-x.js"],
+    blocking: ["theme-boot.js"],
+  });
+});
+
+test("an unquoted value ends at whitespace, not at the first likely-looking token", () => {
+  const html =
+    "<script type=module src=/assets/entry.js></script>" +
+    "<link rel=modulepreload href=/assets/react-x.js>";
+  assert.deepEqual(eagerSetFromHtml(html), {
+    entry: ["assets/entry.js"],
+    preloads: ["assets/react-x.js"],
+    blocking: [],
+  });
+});
+
+test("a tag name is matched whole, so scriptx is not a script", () => {
+  const html =
+    '<scriptx src="/nope.js"></scriptx><linkx rel="modulepreload" href="/assets/nope.js">';
+  assert.deepEqual(eagerChunksFromHtml(html), []);
+});
+
+test("a commented-out tag is not downloaded, so it is not charged", () => {
+  const html =
+    '<!-- <script src="/disabled.js"></script> -->' +
+    '<script src="/theme-boot.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, ["theme-boot.js"]);
+});
+
+test("a tag written inside an inline script is text, not a tag", () => {
+  const html =
+    '<script>document.write(\'<link rel="modulepreload" href="/assets/nope.js">\')</script>' +
+    '<link rel="modulepreload" href="/assets/react-x.js">';
+  assert.deepEqual(eagerSetFromHtml(html).preloads, ["assets/react-x.js"]);
+});
+
+test("a truncated file does not invent a tag out of its last line", () => {
+  // EOF inside a tag is a parse error and the tag token is never emitted, so the
+  // browser does not fetch it either.
+  assert.deepEqual(eagerChunksFromHtml('<script src="/half-written.js'), []);
+});
+
 test("a cross-origin classic script is not ours to budget", () => {
   const html =
     '<script src="https://cdn.example/x.js"></script>' +
