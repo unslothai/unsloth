@@ -19579,7 +19579,12 @@ class LlamaCppBackend:
                 return started
 
     @contextlib.contextmanager
-    def _open_chat_stream_with_respawn_retry(self, payload: dict, cancel_event):
+    def _open_chat_stream_with_respawn_retry(
+        self,
+        payload: dict,
+        cancel_event,
+        on_respawn: Optional[Callable[[], None]] = None,
+    ):
         """Open a chat stream, respawning a dead llama-server once before streaming.
 
         Retry only when opening the response fails: once it is open a consumer may
@@ -19613,6 +19618,8 @@ class LlamaCppBackend:
                     logger.warning(
                         "llama-server was unreachable; respawned it and retrying the generation"
                     )
+                    if on_respawn is not None:
+                        on_respawn()
                     continue
                 raise
 
@@ -20224,11 +20231,14 @@ class LlamaCppBackend:
             _reasoning_kw = self._request_reasoning_kwargs(
                 enable_thinking, reasoning_effort, preserve_thinking
             )
+            _preflight_context_length = None
+            _preflight_succeeded = False
             if (
                 context_overflow == "truncate_oldest"
                 and self._effective_context_length
                 and not messages_have_media(conversation)
             ):
+                _preflight_context_length = self._effective_context_length
                 try:
                     conversation, truncation = fit_rolling_context(
                         conversation,
@@ -20251,6 +20261,7 @@ class LlamaCppBackend:
                     )
                     if truncation and truncation["fits"]:
                         yield {"type": "context_truncated", **truncation}
+                    _preflight_succeeded = True
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
@@ -20294,6 +20305,50 @@ class LlamaCppBackend:
                 payload["stop"] = stop
             if seed is not None:
                 payload["seed"] = seed
+
+            _respawn_truncations: list[dict] = []
+
+            def _refit_iteration_after_respawn() -> None:
+                nonlocal conversation
+                if (
+                    _preflight_context_length is None
+                    or not self._effective_context_length
+                    or (
+                        _preflight_succeeded
+                        and _preflight_context_length == self._effective_context_length
+                    )
+                ):
+                    return
+                if max_tokens is None:
+                    payload["max_tokens"] = self._effective_context_length
+                try:
+                    conversation, truncation = fit_rolling_context(
+                        conversation,
+                        context_length = self._effective_context_length,
+                        max_tokens = max_tokens,
+                        count_tokens = lambda fitted: self.count_chat_tokens(
+                            neutralize_control_markup_in_messages(
+                                fitted, _markup_cache, self.markup_profile
+                            ),
+                            None,
+                            safe_tools,
+                            strict = True,
+                            chat_template_kwargs = _reasoning_kw,
+                            continue_final_message = bool(
+                                continue_final_message and trailing_assistant_text(fitted)
+                            ),
+                            should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                        ),
+                        protected_message_ids = _rolling_anchor_ids,
+                    )
+                    payload["messages"] = neutralize_control_markup_in_messages(
+                        conversation, _markup_cache, self.markup_profile
+                    )
+                    if truncation and truncation["fits"]:
+                        _respawn_truncations.append(truncation)
+                except Exception as exc:
+                    logger.warning("Could not refit rolling context after respawn: %s", exc)
+                    raise
 
             try:
                 # ── Speculative buffer state machine ──────────────────
@@ -20343,10 +20398,16 @@ class LlamaCppBackend:
                 _text_args_name = ""
                 _confirm_gated_iteration = bool(confirm_tool_calls) and not bypass_permissions
 
-                with self._open_chat_stream_with_respawn_retry(payload, cancel_event) as (
+                with self._open_chat_stream_with_respawn_retry(
+                    payload,
+                    cancel_event,
+                    on_respawn = _refit_iteration_after_respawn,
+                ) as (
                     response,
                     first_token_deadline,
                 ):
+                    for truncation in _respawn_truncations:
+                        yield {"type": "context_truncated", **truncation}
                     raw_buf = ""
                     for raw_chunk in self._iter_text_cancellable(
                         response,
@@ -21483,11 +21544,14 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
+        _final_preflight_context_length = None
+        _final_preflight_succeeded = False
         if (
             context_overflow == "truncate_oldest"
             and self._effective_context_length
             and not messages_have_media(conversation)
         ):
+            _final_preflight_context_length = self._effective_context_length
             try:
                 conversation, truncation = fit_rolling_context(
                     conversation,
@@ -21505,6 +21569,7 @@ class LlamaCppBackend:
                 )
                 if truncation and truncation["fits"]:
                     yield {"type": "context_truncated", **truncation}
+                _final_preflight_succeeded = True
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
@@ -21533,6 +21598,47 @@ class LlamaCppBackend:
             stream_payload["return_progress"] = True
             stream_payload["timings_per_token"] = True
 
+        _final_respawn_truncations: list[dict] = []
+
+        def _refit_final_after_respawn() -> None:
+            nonlocal conversation
+            if (
+                _final_preflight_context_length is None
+                or not self._effective_context_length
+                or (
+                    _final_preflight_succeeded
+                    and _final_preflight_context_length == self._effective_context_length
+                )
+            ):
+                return
+            if max_tokens is None:
+                stream_payload["max_tokens"] = self._effective_context_length
+            try:
+                conversation, truncation = fit_rolling_context(
+                    conversation,
+                    context_length = self._effective_context_length,
+                    max_tokens = max_tokens,
+                    count_tokens = lambda fitted: self.count_chat_tokens(
+                        neutralize_control_markup_in_messages(
+                            fitted, None, self.markup_profile
+                        ),
+                        None,
+                        None,
+                        strict = True,
+                        chat_template_kwargs = _reasoning_kw,
+                        should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                    ),
+                    protected_message_ids = _rolling_anchor_ids,
+                )
+                stream_payload["messages"] = neutralize_control_markup_in_messages(
+                    conversation, None, self.markup_profile
+                )
+                if truncation and truncation["fits"]:
+                    _final_respawn_truncations.append(truncation)
+            except Exception as exc:
+                logger.warning("Could not refit rolling context after respawn: %s", exc)
+                raise
+
         cumulative = ""
         _last_emitted = ""
         in_thinking = False
@@ -21546,10 +21652,16 @@ class LlamaCppBackend:
         _stream_done = False
 
         try:
-            with self._open_chat_stream_with_respawn_retry(stream_payload, cancel_event) as (
+            with self._open_chat_stream_with_respawn_retry(
+                stream_payload,
+                cancel_event,
+                on_respawn = _refit_final_after_respawn,
+            ) as (
                 response,
                 first_token_deadline,
             ):
+                for truncation in _final_respawn_truncations:
+                    yield {"type": "context_truncated", **truncation}
                 buffer = ""
                 for raw_chunk in self._iter_text_cancellable(
                     response,
