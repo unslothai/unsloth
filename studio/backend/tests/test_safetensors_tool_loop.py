@@ -3716,6 +3716,7 @@ class TestGGUFSafetensorsHealingParity:
             INTENT_SIGNAL as shared_re,
             is_short_intent_without_action as shared_fn,
         )
+
         for asks in (
             # the reported turn: a clarification request closing on an intent clause.
             '"balls" is pretty broad, so what would you like to know or do? '
