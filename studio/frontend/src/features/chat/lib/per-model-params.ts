@@ -120,12 +120,20 @@ export function getReplayedParams(
   checkpointChanged: boolean,
   maxTokensCap?: number,
 ): InferenceParams {
+  // The cap describes the load, not the memory, so it applies even when nothing
+  // replays: a budget carried over from a larger model does not fit this one
+  // whether or not it has an entry. Identity is preserved when it already fits,
+  // which is how callers tell "replayed" from "untouched".
+  const capped = (params: InferenceParams): InferenceParams =>
+    maxTokensCap !== undefined && params.maxTokens > maxTokensCap
+      ? { ...params, maxTokens: maxTokensCap }
+      : params;
   if (!(enabled && checkpointChanged)) {
-    return current;
+    return capped(current);
   }
   const remembered = paramsByModel[modelId];
   if (!remembered) {
-    return current;
+    return capped(current);
   }
   // Key by key, not a spread: the row accepts every persisted key (maxSeqLength
   // included) from any writer, and spreading one would replay a context the

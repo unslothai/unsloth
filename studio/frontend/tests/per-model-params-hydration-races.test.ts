@@ -153,3 +153,32 @@ test("setCheckpoint clamps a replayed budget to the context it is given", () => 
     .setCheckpoint("big", null, { maxTokensCap: 4096 });
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 4096);
 });
+
+test("the loaded context caps the budget even with nothing remembered", () => {
+  // The cap describes the load, so it cannot be conditional on a replay: compare
+  // loading a fresh 8K model after a 32K one has no entry to replay and would
+  // otherwise send the 32K budget.
+  reset(
+    { checkpoint: "small", maxTokens: 32768 },
+    { settingsHydrated: true, paramsByModel: {} },
+  );
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint("fresh", null, { maxTokensCap: 8192 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
+
+test("the memory being off does not disable the loaded-context cap", () => {
+  reset(
+    { checkpoint: "small", maxTokens: 32768 },
+    {
+      settingsHydrated: true,
+      rememberParamsPerModel: false,
+      paramsByModel: {},
+    },
+  );
+  useChatRuntimeStore
+    .getState()
+    .setCheckpoint("fresh", null, { maxTokensCap: 8192 });
+  assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
+});
