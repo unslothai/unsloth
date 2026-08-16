@@ -71,23 +71,13 @@ export function markSentTextGuardUserInput(
   return { ...guard, userInputSince: true };
 }
 
-/**
- * Whether a draft restore is the sent text coming back under the same key.
- *
- * A draft the composer already holds is not a raced save. Code outside the
- * composer fills it directly, the saved-prompt menu being the case in hand, and
- * that write never passes the guard, so the draft it autosaves would otherwise
- * be read as raced and deleted. A raced save is only ever a value the composer
- * does not have: the send cleared it, or another thread's text is on screen.
- */
+/** Whether a draft restore is the sent text coming back under the same key. */
 export function sentTextGuardBlocksDraft(
   guard: SentTextGuard | null,
   draft: string,
   draftKey: string | null,
-  composerText: string,
 ): boolean {
   if (guard === null) return false;
-  if (composerText === draft) return false;
   return guard.draftKey === draftKey && guard.texts.includes(draft);
 }
 

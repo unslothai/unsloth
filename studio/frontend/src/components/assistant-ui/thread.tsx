@@ -2634,14 +2634,7 @@ const Composer: FC<{
     // identical draft still restores. Drop it and show this thread's real
     // state, which is empty: returning early would leave whatever the previous
     // thread put in the shared composer on screen under this thread.
-    if (
-      sentTextGuardBlocksDraft(
-        justSentRef.current,
-        draft,
-        draftKey,
-        composer.getState().text,
-      )
-    ) {
+    if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
       if (draftSaveTimerRef.current !== null) {
@@ -2654,6 +2647,22 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftKey, aui]);
+  // Code outside the composer fills it directly, the saved-prompt menu and the
+  // prompt storage dialog being the two, and those writes never pass the guard.
+  // Text appearing while the sending thread is still on screen was put there
+  // deliberately, so the guard retires and the draft it autosaves survives. The
+  // thread check is what makes this safe: another thread's restored draft
+  // arrives under its own key and leaves the guard armed. Read live rather than
+  // from the render, so a pending render cannot retire it on stale text.
+  // Must stay declared after the restore above. Coming back to the sending
+  // thread runs both, and the restore has to clear the raced draft first, or
+  // this one would see the previous thread's text and retire on it.
+  useEffect(() => {
+    const guard = justSentRef.current;
+    if (guard === null || guard.draftKey !== draftKey) return;
+    if (aui.composer().getState().text.length === 0) return;
+    justSentRef.current = null;
+  }, [composerText, draftKey, aui]);
   // Separate from the text restore above, which must stay keyed on the draft
   // alone: this one retries on attachment changes, and rewriting the composer
   // text on those would drop whatever had been typed since the last autosave.
@@ -3197,7 +3206,7 @@ const Composer: FC<{
         });
       return true;
     },
-    [aui, clearStoredDraft, startHydratedPromptQueue],
+    [armJustSent, aui, clearStoredDraft, startHydratedPromptQueue],
   );
 
   const dismissWaitToast = useCallback(() => {
@@ -3651,6 +3660,7 @@ const Composer: FC<{
       sendReservedComposer();
     },
     [
+      armJustSent,
       aui,
       canQueueCurrentPrompt,
       canQueuePastedTextPrompt,
