@@ -70,7 +70,6 @@ def test_the_projects_override_wins_outright(tmp_path, monkeypatch):
 
 def _probe_payload():
     from routes import chat_history
-
     return chat_history.ChatProject(
         id = "11111111-2222-3333-4444-555555555555",
         name = "Probe",
