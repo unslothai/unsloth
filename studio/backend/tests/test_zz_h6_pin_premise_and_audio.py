@@ -66,7 +66,15 @@ def test_disable_vision_is_inert_for_a_model_with_no_projector(tmp_path):
     off = _launch(off_backend, off_gguf)["cmd"]
 
     def _scrub(cmd):
-        return ["<X>" if ("/" in str(a) or str(a).isdigit()) else a for a in cmd]
+        # Both separators, not just POSIX's. The two launches differ only in the
+        # tmp directory their GGUF sits in, so on Windows -- where the argv
+        # carries ``...\\on\\model.gguf`` against ``...\\off\\model.gguf`` -- a
+        # forward-slash-only scrub leaves the paths in and this compares the tmp
+        # layout instead of the argv, which is a failure on the runner and
+        # invisible here.
+        return [
+            "<X>" if ("/" in str(a) or "\\" in str(a) or str(a).isdigit()) else a for a in cmd
+        ]
 
     assert _scrub(on) == _scrub(off)
     assert on_backend.vision_disabled_by_user is False
