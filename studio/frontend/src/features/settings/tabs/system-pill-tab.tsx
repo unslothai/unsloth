@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import {
   fetchPillModelOptions,
   fetchPillSettings,
+  noteInteractiveSave,
   syncNativePillConfig,
   updatePillSettings,
   type PillModelOption,
@@ -60,6 +61,8 @@ export function SystemPillTab(): ReactElement {
 
   const applySettings = (update: Partial<PillSettings>): Promise<void> => {
     const seq = ++saveSeqRef.current;
+    // Tells the startup sync that any snapshot it is holding is now stale.
+    noteInteractiveSave();
     saveChainRef.current = saveChainRef.current.then(async () => {
       // The write and the native apply fail for different reasons and need
       // different recoveries, so they are handled separately rather than in
@@ -100,18 +103,25 @@ export function SystemPillTab(): ReactElement {
         await syncNativePillConfig(saved);
       } catch {
         toast.error(t("systemPill.settings.saveError"));
-        // The backend took the value but the native layer refused it, which
-        // for an enable means the shortcut could not be registered. Leaving
-        // the backend enabled would keep the switch claiming a bar that does
-        // not exist, now and on every later launch, so undo it: the toggle
-        // falling back is the honest signal that it did not take.
-        if (!saved.enabled || seq !== saveSeqRef.current) return;
+        // The backend took the value but the native layer refused it, so the
+        // two now disagree about whether a shortcut exists. Native status is
+        // the only one that knows what is actually registered, so make the
+        // backend and the switch agree with IT rather than with what we asked
+        // for. This covers both directions: a refused enable (nothing
+        // registered, so back to disabled) and a refused disable, where Rust
+        // restores the previous hotkey when its save fails and the bar is
+        // therefore still live despite the request to turn it off.
+        if (seq !== saveSeqRef.current) return;
         try {
-          const reverted = await updatePillSettings({ enabled: false });
+          const status = await pillStatus();
+          if (!status.supported || status.enabled === saved.enabled) return;
+          const corrected = await updatePillSettings({
+            enabled: status.enabled,
+          });
           if (seq !== saveSeqRef.current) return;
-          setSettings(reverted);
+          setSettings(corrected);
         } catch {
-          // Could not undo it either; the next open reads the backend.
+          // Could not correct it either; the next open reads the backend.
         }
       }
     });
