@@ -938,7 +938,17 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    setMaxOutputTokensDraft(provider.maxOutputTokens?.toString() ?? "");
+    // Seeded at the floor, not below it: parseMaxOutputTokens throws under the floor, so
+    // a row stored below one (a direct REST write, or a floor added later) would fail
+    // every unrelated edit. The resolver already reads such a value as the floor.
+    setMaxOutputTokensDraft(
+      provider.maxOutputTokens == null
+        ? ""
+        : Math.max(
+            provider.maxOutputTokens,
+            getExternalMinOutputTokens(provider.providerType),
+          ).toString(),
+    );
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(

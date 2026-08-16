@@ -330,6 +330,19 @@ def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
     assert error.value.status_code == 400
     assert _raw_override(provider_routes, "openai_codex-1") is None
 
+    # Create takes the same contract, and reaches it before the auth contract, so the
+    # caller is told which rule stopped them.
+    with pytest.raises(HTTPException) as created:
+        _create(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT",
+                max_output_tokens = 65536,
+            )
+        )
+    assert created.value.status_code == 400
+    assert "fixed Max Tokens limit" in created.value.detail
+
 
 def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_routes: Path):
     """The whole lifecycle, asserted against the stored row rather than the response."""

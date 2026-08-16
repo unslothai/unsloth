@@ -79,6 +79,13 @@ test("the connection editor exposes a bounded optional cap and warning", () => {
   );
   assert.match(dialog, /Number\.isSafeInteger\(value\)/);
   assert.match(dialog, /\/\^\\d\+\$\/\.test\(trimmed\)/);
+
+  // Seeding the draft raw would wedge every edit of a row stored below the floor,
+  // since the parse above throws on it and the field is submitted untouched.
+  assert.match(
+    dialog,
+    /setMaxOutputTokensDraft\(\s*provider\.maxOutputTokens == null\s*\? ""\s*: Math\.max\(\s*provider\.maxOutputTokens,\s*getExternalMinOutputTokens\(provider\.providerType\),\s*\)\.toString\(\),\s*\);/,
+  );
 });
 
 test("preset application clamps live Max Tokens to the active external cap", () => {
