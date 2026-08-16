@@ -2074,11 +2074,15 @@ export function AppSidebar() {
     }
     if (target.kind === "projects") {
       clearSelection();
+      // Only what actually went: a failed delete leaves that project in place,
+      // and redirecting off it would strand the user for nothing.
+      const deletedIds = new Set<string>();
       for (const project of target.projects) {
         try {
           await deleteChatProject(project.id, {
             deleteFiles: shouldDeleteProjectFiles,
           });
+          deletedIds.add(project.id);
         } catch (err) {
           toast.error("Failed to delete project", {
             description: err instanceof Error ? err.message : undefined,
@@ -2087,8 +2091,8 @@ export function AppSidebar() {
       }
       // The same cleanup one delete does, once for the batch: refresh history so
       // member chats do not linger as rows, and leave a deleted project's page.
+      // Unconditional, since a delete that threw may still have removed chats.
       notifyChatHistoryUpdated();
-      const deletedIds = new Set(target.projects.map((project) => project.id));
       const runtimeProjectId = useChatRuntimeStore.getState().activeProjectId;
       if (
         isChatRoute &&

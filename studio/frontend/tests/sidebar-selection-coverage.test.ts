@@ -62,4 +62,14 @@ test("deleting folders in bulk cleans up like deleting one", async () => {
   assert.match(branch[1], /notifyChatHistoryUpdated\(\)/);
   assert.match(branch[1], /setActiveProjectId\(null\)/);
   assert.match(branch[1], /navigate\(\{ to: "\/chat"/);
+
+  // The redirect reads what was actually deleted. Built from the requested
+  // list instead, a delete that failed would still throw the user off a
+  // project that is still there.
+  assert.match(branch[1], /deletedIds\.add\(project\.id\)/);
+  assert.equal(
+    /new Set\(target\.projects\.map/.test(branch[1]),
+    false,
+    "deletedIds is built from the requested projects, not the deleted ones",
+  );
 });
