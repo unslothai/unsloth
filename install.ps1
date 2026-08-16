@@ -3225,20 +3225,6 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
-    # Keep uv's install cache with Studio's managed cache tree rather than the
-    # user-wide LOCALAPPDATA default. A regular file left at this managed path
-    # would otherwise make uv fail before it can create the virtual environment.
-    # The outer install finally restores the caller's value after every exit path.
-    if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
-        $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
-        if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
-            $invalidUvCache = "$($env:UV_CACHE_DIR).invalid.$(Get-Date -Format 'yyyyMMddHHmmss').$PID"
-            Move-Item -LiteralPath $env:UV_CACHE_DIR -Destination $invalidUvCache
-            substep "moved conflicting uv cache file aside to $invalidUvCache" "Yellow"
-        }
-        [System.IO.Directory]::CreateDirectory($env:UV_CACHE_DIR) | Out-Null
-    }
-
     # When bytecode compilation is enabled, large installs can exceed uv's 60s
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
@@ -3593,6 +3579,21 @@ exit 0
         Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
         substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
         $_Migrated = $true
+    }
+
+    # Keep uv's install cache with Studio's managed cache tree rather than the
+    # user-wide LOCALAPPDATA default. A regular file left at this managed path
+    # would otherwise make uv fail before it can create the virtual environment.
+    # Defer mutating the cache path until any existing venv passes its ownership
+    # guard. The outer install finally restores the caller's value on every exit.
+    if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
+        $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
+        if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
+            $invalidUvCache = "$($env:UV_CACHE_DIR).invalid.$(Get-Date -Format 'yyyyMMddHHmmss').$PID"
+            Move-Item -LiteralPath $env:UV_CACHE_DIR -Destination $invalidUvCache
+            substep "moved conflicting uv cache file aside to $invalidUvCache" "Yellow"
+        }
+        [System.IO.Directory]::CreateDirectory($env:UV_CACHE_DIR) | Out-Null
     }
 
     if (-not (Test-Path -LiteralPath $VenvPython)) {

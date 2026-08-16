@@ -435,14 +435,9 @@ def _uv_cache_lifecycle_blocks(source: str) -> tuple[str, str, str]:
     )
     setup = _extract(
         r"    if \(\[string\]::IsNullOrWhiteSpace\(\$env:UV_CACHE_DIR\)\) \{"
-        r".*?\n    \}\n\n"
-        r"    # When bytecode compilation is enabled",
+        r".*?\n    \}\n",
         source,
     )
-    setup = setup.rsplit(
-        "\n\n    # When bytecode compilation is enabled",
-        1,
-    )[0]
     restore = _extract(
         r"        if \(\$hadPreviousUvCacheDir\) \{.*?\n        \}\n"
         r"(?=        for \(\$i = \$studioRuntimeMutexes.Count)",
@@ -466,6 +461,19 @@ def test_uv_cache_lifecycle_wraps_outer_install_try():
     assert capture_at < outer_try_at < setup_at < restore_at < lock_release_at
     assert "$env:UV_CACHE_DIR = $previousUvCacheDir" in restore
     assert "Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue" in restore
+
+
+def test_uv_cache_recovery_follows_existing_venv_ownership_guard():
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    _, cache_setup, _ = _uv_cache_lifecycle_blocks(source)
+    ownership_rejection_at = source.index('throw "Refusing to delete non-Unsloth venv at $VenvDir"')
+    cache_setup_at = source.index(cache_setup)
+    uv_venv_at = source.index(
+        'Invoke-InstallCommand -Label "create virtual environment"',
+        cache_setup_at,
+    )
+
+    assert ownership_rejection_at < cache_setup_at < uv_venv_at
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
