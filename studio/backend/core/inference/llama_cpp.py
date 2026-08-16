@@ -12137,7 +12137,69 @@ class LlamaCppBackend:
         return out if found else None
 
     @staticmethod
-    def _reset_quantized_v_cache(cmd: list[str], reason: str) -> list[str]:
+    def _requires_symmetric_kv(kv_lora_rank, architecture) -> bool:
+        """Whether llama.cpp rejects K != V for a model with this metadata.
+
+        Mirrors ``is_mla() || arch == LLM_ARCH_DEEPSEEK4``: kv_lora_rank stands in
+        for is_mla() (the MLA archs' converter writes it alongside the MLA head
+        dims), and deepseek4 is checked by name because it sets neither.
+        """
+        if kv_lora_rank is not None:
+            return True
+        return (architecture or "").strip().lower() == "deepseek4"
+
+    def _target_kv_symmetry(self) -> bool:
+        """Whether the TARGET model requires K == V."""
+        return self._requires_symmetric_kv(self._kv_lora_rank, getattr(self, "_architecture", None))
+
+    def _draft_kv_symmetry(
+        self,
+        cmd: Optional[Iterable[str]] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[bool]:
+        """Whether the DRAFTER requires K == V; None when it cannot be determined.
+
+        Derived from the drafter the launch actually resolves to, which is the one
+        named on the command being launched. The stored ``_mtp_draft_path`` is the
+        wrong source twice over: it only ever holds the managed sidecar, so an
+        ``extra_args`` ``--model-draft``/``--hf-repo-draft`` (the drafter llama.cpp
+        would really load) is invisible to it, and it is not assigned until after
+        the launch-site reset has already run, so it is stale there anyway. The
+        managed path emits ``--model-draft <sidecar>`` into the same command, so
+        reading the command covers both.
+
+        None only when no drafter is named at all, in which case there are no draft
+        flags to reset and the value cannot matter. A drafter that IS named but
+        whose metadata cannot be read (a Hugging Face repo id rather than a local
+        file, or an unreadable GGUF) resolves to True rather than to the target's
+        answer: the two mistakes are not symmetric. Resetting a non-MLA drafter's K
+        needlessly costs memory, whereas failing to reset an MLA drafter's K leaves
+        it quantized against an f16 draft V and aborts the draft context outright,
+        which is the failure this whole path exists to avoid.
+        """
+        path, is_remote = _extra_args_mtp_draft_source(list(cmd or []), env)
+        if not path:
+            return None
+        if is_remote:  # a repo id is not a local file whose metadata can be read
+            return True
+        try:
+            db = self._draft_backend_for(path)
+        except Exception:
+            db = None
+        if db is None:  # named but unreadable -> conservative, not the target
+            return True
+        return self._requires_symmetric_kv(
+            getattr(db, "_kv_lora_rank", None), getattr(db, "_architecture", None)
+        )
+
+    @staticmethod
+    def _reset_quantized_v_cache(
+        cmd: list[str],
+        reason: str,
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> list[str]:
         """Return cmd with any quantized V cache reset to f16, for a launch that
         runs without flash attention.
 
@@ -12145,11 +12207,36 @@ class LlamaCppBackend:
         with "V cache quantization requires flash_attn". A quantized K cache has no
         such requirement and runs fine without FA, so it is left untouched --
         resetting it would needlessly enlarge the K cache and can OOM a
-        memory-constrained config. Main and draft are both reset (the draft context
-        shares the global --flash-attn flag, so its V cache aborts too) to f16 (the
-        llama.cpp default); non-quantized types -- f16/bf16/f32 -- run fine without
-        FA and are left untouched. The value is rewritten in place so the list
-        length is preserved for downstream slices.
+        memory-constrained config.
+
+        ``mla`` overrides that on the models where leaving K alone is now itself
+        fatal. llama-context.cpp gained this in #25871, and it sits ABOVE the
+        V-quantization check, so it decides first:
+
+            if ((model->hparams.is_mla() || model->arch == LLM_ARCH_DEEPSEEK4)
+                    && params.type_k != params.type_v) {
+                LLAMA_LOG_ERROR("model does not support different K (%s) and V
+                                 (%s) cache types");
+                return nullptr;
+            }
+
+        is_mla() is n_embd_head_k_mla_impl and n_embd_head_v_mla_impl both being
+        set, which covers DeepSeek V2/V3/R1, Kimi K2 and GLM-4.7/5.x. DeepSeek4 is
+        the separate arch term in that condition rather than a second is_mla()
+        model: it has its own KV cache (llama-kv-cache-dsv4.cpp), never sets the
+        MLA head dims, and its converter writes q_lora_rank but no kv_lora_rank, so
+        a kv_lora_rank probe alone does not see it. Resetting V
+        alone on one of those turns a quantized KV into K=q8_0 V=f16, which is a
+        hard abort for a DIFFERENT reason than the one being avoided: the retry
+        that exists to recover from a flash-attention crash fails on the K/V
+        mismatch instead. Both axes go to f16 together there, since equal is what
+        the rule asks for and f16 is the only value guaranteed to satisfy the V
+        rule as well. Main and draft V are both reset (the draft context shares the
+        global --flash-attn flag, so its V cache aborts too) to f16 (the llama.cpp
+        default); K follows per model, ``mla`` for the target flags and
+        ``draft_mla`` for the draft pair. Non-quantized types -- f16/bf16/f32 --
+        run fine without FA and are left untouched. The value is rewritten in place
+        so the list length is preserved for downstream slices.
         """
         out = list(cmd)
         _v_cache_flags = (
@@ -12179,17 +12266,64 @@ class LlamaCppBackend:
                 if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                     out[i + 1] = "f16"
                     _cache_reset = True
-        if _cache_reset:
+        # Symmetry, not size: an MLA model rejects K != V outright, so the K cache
+        # has to follow V down rather than stay quantized. This is not conditional
+        # on having just reset V here: on this flash-attn-off path V always ends up
+        # f16 anyway (reset above when it was quantized on argv, dropped by
+        # _drop_env_quantized_v_cache when it was quantized in the environment,
+        # otherwise already f16/bf16/f32), so a quantized K left on argv is a
+        # guaranteed K != V abort. The asymmetric case that motivates this is
+        # -ctk q8_0 on argv with LLAMA_ARG_CACHE_TYPE_V in the environment: nothing
+        # quantized appears on argv for V, so a V-triggered reset would never fire.
+        #
+        # The target and the drafter are separate models with separate contexts, and
+        # llama.cpp applies the restriction per context, so each side is gated on its
+        # OWN model. Mixing them is wrong in both directions: an MLA target with a
+        # non-MLA drafter would needlessly double the drafter's K cache (the very OOM
+        # the size argument above warns about), and a non-MLA target with an MLA
+        # drafter would leave the draft K quantized against an f16 draft V and abort
+        # the draft context. ``draft_mla`` defaults to ``mla`` when the caller cannot
+        # read the drafter's metadata, which is the safe direction: an unnecessary
+        # reset only costs memory, a missing one aborts.
+        _main_k_flags = ("--cache-type-k", "-ctk")
+        _draft_k_flags = ("--cache-type-k-draft", "--spec-draft-type-k", "-ctkd")
+        if draft_mla is None:
+            draft_mla = mla
+        _k_cache_flags = (_main_k_flags if mla else ()) + (_draft_k_flags if draft_mla else ())
+        _k_reset = False
+        for i, tok in enumerate(out):
+            if _flag_name(tok) not in _k_cache_flags:
+                continue
+            if "=" in tok:
+                flag, _, value = tok.partition("=")
+                if value.strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i] = f"{flag}=f16"
+                    _k_reset = True
+            elif i + 1 < len(out):
+                if out[i + 1].strip().lower() not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
+                    out[i + 1] = "f16"
+                    _k_reset = True
+        if _cache_reset or _k_reset:
             logger.info(
-                "V cache dtype reset to f16 because flash attention is off (%s): a "
-                "quantized V cache requires flash attention in llama.cpp. The K "
-                "cache is left untouched.",
+                "KV cache dtype reset to f16 because flash attention is off (%s): a "
+                "quantized V cache requires flash attention in llama.cpp. %s",
                 reason,
+                (
+                    "The K cache went down with it: this model uses MLA, which "
+                    "rejects different K and V cache types."
+                    if _k_reset
+                    else "The K cache is left untouched."
+                ),
             )
         return out
 
     @staticmethod
-    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+    def _with_flash_attn_off(
+        cmd: list[str],
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
         kernels hard-crash at startup on some ROCm builds; disabling FA keeps
@@ -12237,11 +12371,19 @@ class LlamaCppBackend:
         # launch but would make THIS FA-off retry crash on init instead of
         # recovering.
         return LlamaCppBackend._reset_quantized_v_cache(
-            out, "disabled by the crash-recovery fallback"
+            out,
+            "disabled by the crash-recovery fallback",
+            mla = mla,
+            draft_mla = draft_mla,
         )
 
     @staticmethod
-    def _drop_env_quantized_v_cache(env: MutableMapping[str, str]) -> bool:
+    def _drop_env_quantized_v_cache(
+        env: MutableMapping[str, str],
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
+    ) -> bool:
         """Drop an inherited quantized V-cache env var (main or draft) in place
         before a flash-attn-off retry, returning True if anything was removed.
 
@@ -12251,11 +12393,28 @@ class LlamaCppBackend:
         cache set purely through ``LLAMA_ARG_CACHE_TYPE_V`` (or the draft
         ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V``) would still abort the FA-off retry
         with "V cache quantization requires flash_attn". Dropping it lets
-        llama.cpp fall back to the f16 default. Only V is dropped: a quantized K
-        cache runs fine without flash attention, so its env var is preserved.
+        llama.cpp fall back to the f16 default.
+
+        On a non-MLA model only V is dropped: a quantized K cache runs fine
+        without flash attention, so its env var is preserved. On an MLA model
+        (DeepSeek V2/V3/R1, Kimi K2, GLM-4.7/5.x) llama.cpp rejects K != V
+        outright, and it checks that *before* the V/flash-attn rule, so the
+        quantized K env vars have to go too, each gated on its own model
+        (``mla`` for the target var, ``draft_mla`` for the draft one, since the
+        drafter is a separate model with its own context). Every caller runs this after the
+        argv reset has already forced V to f16, so a surviving quantized K env
+        is a guaranteed "model does not support different K and V cache types"
+        abort rather than the recovery the retry is trying to perform.
         """
         dropped = False
-        for var in ("LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"):
+        variables = ["LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V"]
+        if draft_mla is None:
+            draft_mla = mla
+        if mla:
+            variables.append("LLAMA_ARG_CACHE_TYPE_K")
+        if draft_mla:
+            variables.append("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K")
+        for var in variables:
             value = (env.get(var) or "").strip().lower()
             if value and value not in LlamaCppBackend._NON_QUANTIZED_KV_TYPES:
                 env.pop(var, None)
@@ -16059,7 +16218,16 @@ class LlamaCppBackend:
                 # logged is what launches; length is preserved, so _spec_start
                 # still indexes the same tokens.
                 if _flash_attn_known_off:
-                    cmd = self._reset_quantized_v_cache(cmd, "this build has no --flash-attn")
+                    cmd = self._reset_quantized_v_cache(
+                        cmd,
+                        "this build has no --flash-attn",
+                        mla = self._target_kv_symmetry(),
+                        # No env argument: the child environment is not built until
+                        # below, and reading it here is an UnboundLocalError. The
+                        # inherited os.environ is the right source anyway, since
+                        # Studio never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
+                        draft_mla = self._draft_kv_symmetry(cmd),
+                    )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
@@ -16152,7 +16320,11 @@ class LlamaCppBackend:
                     )
                 # Same for an env-only quantized V cache, which the argv reset
                 # above cannot reach.
-                if _flash_attn_known_off and self._drop_env_quantized_v_cache(env):
+                if _flash_attn_known_off and self._drop_env_quantized_v_cache(
+                    env,
+                    mla = self._target_kv_symmetry(),
+                    draft_mla = self._draft_kv_symmetry(cmd, env),
+                ):
                     logger.info(
                         "Dropped inherited quantized V-cache env: this build has no --flash-attn."
                     )
@@ -16985,7 +17157,11 @@ class LlamaCppBackend:
                 if not healthy and not _load_cancelled():
                     _fa_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        )
                         if self._is_signal_crash(_fa_rc)
                         else None
                     )
@@ -16999,7 +17175,11 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
@@ -17049,7 +17229,11 @@ class LlamaCppBackend:
                     # FA-off (keeps MTP) before dropping speculative decoding below.
                     _probe_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
-                        self._with_flash_attn_off(_last_spawn_cmd)
+                        self._with_flash_attn_off(
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        )
                         if self._is_signal_crash(_probe_rc)
                         else None
                     )
@@ -17063,7 +17247,11 @@ class LlamaCppBackend:
                         self._kill_process()
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
-                        if self._drop_env_quantized_v_cache(env):
+                        if self._drop_env_quantized_v_cache(
+                            env,
+                            mla = self._target_kv_symmetry(),
+                            draft_mla = self._draft_kv_symmetry(_last_spawn_cmd, env),
+                        ):
                             logger.info(
                                 "Dropped inherited quantized V-cache env for the "
                                 "--flash-attn off retry (requires flash attention)."
