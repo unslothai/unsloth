@@ -153,7 +153,13 @@ def _called_name(node):
     return None
 
 
-_LIBC_NAMES = ("CDLL", "cdll", "ctypes", "libc", "LibC")
+# Matched after stripping underscores and case, so `_libc`, `LibC` and `libc` are one
+# name. `tools._libc.prctl(...)` is the convention in test_bypass_permissions.py.
+_LIBC_NAMES = ("cdll", "ctypes", "libc")
+
+
+def _names_libc(name) -> bool:
+    return name.strip("_").lower() in _LIBC_NAMES
 
 
 def _libc_aliases(tree):
@@ -172,9 +178,9 @@ def _libc_aliases(tree):
 def _is_libc_handle(node, aliases = ()) -> bool:
     """Whether this expression is a real libc handle, not a stand-in named like one."""
     for inner in ast.walk(node):
-        if isinstance(inner, ast.Name) and (inner.id in _LIBC_NAMES or inner.id in aliases):
+        if isinstance(inner, ast.Name) and (_names_libc(inner.id) or inner.id in aliases):
             return True
-        if isinstance(inner, ast.Attribute) and inner.attr in _LIBC_NAMES:
+        if isinstance(inner, ast.Attribute) and _names_libc(inner.attr):
             return True
     return False
 
@@ -1381,6 +1387,13 @@ _FIXTURES = {
         "    xs = [i for i in [ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)]]\n"
         "    ctypes.string_at(0)\n",
         True,  # the outermost iterable is evaluated immediately
+    ),
+    "imported_libc_handle_attribute": (
+        "import ctypes, tools\n"
+        "def child():\n"
+        "    tools._libc.prctl(4, 0, 0, 0, 0)\n"
+        "    ctypes.string_at(0)\n",
+        False,  # tools._libc.prctl is the convention in test_bypass_permissions.py
     ),
 }
 
