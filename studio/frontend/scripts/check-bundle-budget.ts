@@ -290,12 +290,32 @@ export type EagerSet = {
  * type ESSENCE, so a parameter makes it match nothing: `text/javascript;
  * charset=utf-8` is not evaluated, and Chromium, Firefox and WebKit do not even
  * fetch such a script. Bytes the browser never requests are not startup cost.
+ *
+ * The whole essence list, not the four anyone would write today. The legacy
+ * spellings are not historical trivia: every one of them still executes. Measured
+ * in Chromium 151, a script tagged `application/x-javascript`, `text/jscript`,
+ * `text/javascript1.5`, `text/livescript`, `application/x-ecmascript` or
+ * `text/x-javascript` runs, while `text/javascript; charset=utf-8` and
+ * `application/json` do not. The list is frozen, so this does not grow.
+ * https://mimesniff.spec.whatwg.org/#javascript-mime-type
  */
 const CLASSIC_TYPES = new Set([
-  "text/javascript",
-  "application/javascript",
   "application/ecmascript",
+  "application/javascript",
+  "application/x-ecmascript",
+  "application/x-javascript",
   "text/ecmascript",
+  "text/javascript",
+  "text/javascript1.0",
+  "text/javascript1.1",
+  "text/javascript1.2",
+  "text/javascript1.3",
+  "text/javascript1.4",
+  "text/javascript1.5",
+  "text/jscript",
+  "text/livescript",
+  "text/x-ecmascript",
+  "text/x-javascript",
 ]);
 
 /** Same-origin, build-relative, and not a traversal out of `dist/`. */

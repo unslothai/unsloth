@@ -120,6 +120,60 @@ test("a MIME type with parameters is not a script the browser runs", () => {
   assert.deepEqual(eagerChunksFromHtml(html), []);
 });
 
+test("every JavaScript MIME essence the browser still runs is counted", () => {
+  // The legacy spellings are not dead letters: measured in Chromium 151, every one
+  // of these executes. Counting only the four anyone writes today dropped the rest
+  // while the entry and preloads kept the shape guard satisfied.
+  const essences = [
+    "application/ecmascript",
+    "application/javascript",
+    "application/x-ecmascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "text/javascript",
+    "text/javascript1.0",
+    "text/javascript1.1",
+    "text/javascript1.2",
+    "text/javascript1.3",
+    "text/javascript1.4",
+    "text/javascript1.5",
+    "text/jscript",
+    "text/livescript",
+    "text/x-ecmascript",
+    "text/x-javascript",
+  ];
+  for (const [i, essence] of essences.entries()) {
+    const html = `<script type="${essence}" src="/boot-${i}.js"></script>`;
+    assert.deepEqual(
+      eagerChunksFromHtml(html),
+      [`boot-${i}.js`],
+      `${essence} should be counted`,
+    );
+    assert.deepEqual(
+      eagerChunksFromHtml(html.replace(essence, essence.toUpperCase())),
+      [`boot-${i}.js`],
+      `${essence} should match case-insensitively`,
+    );
+  }
+});
+
+test("a type that only looks like JavaScript is not counted", () => {
+  // The guard against the list above turning into "anything with `script` in it".
+  for (const type of [
+    "text/javascript1.6",
+    "application/javascript-ish",
+    "text/jscript.encode",
+    "application/json",
+    "importmap",
+  ]) {
+    assert.deepEqual(
+      eagerChunksFromHtml(`<script type="${type}" src="/nope.js"></script>`),
+      [],
+      `${type} should not be counted`,
+    );
+  }
+});
+
 test("a decoy data- attribute cannot shadow the real one", () => {
   // A hyphen is a word boundary, so a `\b`-anchored `type` reads `data-type`
   // first, drops the entry, and leaves the preloads to satisfy the shape guard.
