@@ -81,6 +81,9 @@ export function SystemPillTab(): ReactElement {
         try {
           const actual = await fetchPillSettings();
           if (seq !== saveSeqRef.current) return;
+          // Armed here too: this is persisted state, so the initial load must
+          // not later commit its older snapshot over it.
+          editedRef.current = true;
           setSettings(actual);
           await syncNativePillConfig(actual);
         } catch {
