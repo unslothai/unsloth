@@ -13877,6 +13877,13 @@ class LlamaCppBackend:
                 # given back on any arm that does not deliver the residency.
                 _mmproj_auto_pinned = False
                 _mmproj_auto_pin_bytes = 0
+                # The automatic pin was taken on the drafter alone: both sides of the
+                # choice place every layer on the GPU and the projector's bytes cost
+                # only the drafter's reserve. That half of the trade is a bet on a
+                # decision the pin does not make -- the drop probe below does, at a
+                # context the pin cannot reproduce without running the probe twice --
+                # so it is verified afterwards like the fit's own premise.
+                _mmproj_pin_only_bought_drafter = False
                 # What either pin took out of model_size, for the one consumer that
                 # must not have it back: _apu_ram_shortfall_message. That guard prices
                 # SYSTEM RAM, and a projector pinned to the CPU is still in system RAM,
@@ -14802,9 +14809,16 @@ class LlamaCppBackend:
                         # on a stack that is mostly on the CPU already that is a couple
                         # of percent per token bought with a silent 3.6x on every
                         # image, and being wrong in that direction is expensive.
-                        if _mm_rank(False) > _mm_rank(True):
+                        _mm_rank_charged = _mm_rank(True)
+                        if _mm_rank(False) > _mm_rank_charged:
                             _mmproj_cpu_pinned = True
                             _mmproj_auto_pinned = True
+                            # Rank 0 is the only side that loses layers. Anything above
+                            # it places every layer whatever this decides, so what the
+                            # projector's bytes were costing there was the drafter --
+                            # and the probe below, not this, is what decides whether the
+                            # drafter survives. Recorded so that bet can be settled.
+                            _mmproj_pin_only_bought_drafter = _mm_rank_charged >= 1
                             # Kept so the two arms that must not spend this refund can
                             # put it back: the no-KV-estimate placement below, and the
                             # fit's own except arm.
@@ -14815,10 +14829,13 @@ class LlamaCppBackend:
                             model_size = gguf_size
                             logger.info(
                                 "Auto: running the vision projector on the CPU "
-                                "(--no-mmproj-offload) so every model layer fits in "
-                                "VRAM. Image encoding gets slower; text generation is "
-                                "unaffected. Pass --mmproj-offload in the advanced "
-                                "arguments to keep it on the GPU."
+                                "(--no-mmproj-offload) so %s. Image encoding gets "
+                                "slower; text generation is unaffected. Pass "
+                                "--mmproj-offload in the advanced arguments to keep it "
+                                "on the GPU.",
+                                "speculative decoding keeps its draft VRAM"
+                                if _mmproj_pin_only_bought_drafter
+                                else "every model layer fits in VRAM",
                             )
 
                     # Target pins but the drafter's reserve tips it over: Auto drops the
@@ -15050,6 +15067,36 @@ class LlamaCppBackend:
                                 _probe_need / 1024,
                                 _probe_have / 1024,
                             )
+
+                    # The pin above was taken on the rank-1 / rank-2 difference alone:
+                    # both sides place every layer on the GPU, and what the projector's
+                    # bytes were costing was the drafter. The probe has just taken the
+                    # drafter anyway -- it prices the reserve at the context the target
+                    # alone reaches, which _mmproj_fits cannot reproduce without running
+                    # the probe a second time -- so the trade bought nothing: a ~3.6x
+                    # image encode paid for a drafter that does not launch. Hand it back
+                    # while the numbers still feed the fit, exactly as the two arms below
+                    # do for a placement that did not deliver.
+                    #
+                    # Not gated on the fit, which has not run: this is settled on the
+                    # drafter, and a rank >= 1 already said the layers are safe either
+                    # way. If the placement disagrees, the backstop below still fires.
+                    if _mmproj_auto_pinned and _mmproj_pin_only_bought_drafter and (
+                        _spec_dropped_no_vram
+                    ):
+                        _mmproj_cpu_pinned = False
+                        _mmproj_auto_pinned = False
+                        _mmproj_pin_only_bought_drafter = False
+                        mmproj_size = _mmproj_auto_pin_bytes
+                        model_size = gguf_size + _mmproj_auto_pin_bytes
+                        _mmproj_auto_pin_bytes = 0
+                        _mmproj_pinned_bytes = 0
+                        logger.info(
+                            "Keeping the vision projector on the GPU after all: the "
+                            "drafter it was moved to make room for does not fit at this "
+                            "context either, so the slower image encode would buy "
+                            "nothing."
+                        )
 
                     if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
                         # Nothing speculative is GPU-resident: the drafter that launches
