@@ -13868,6 +13868,15 @@ class LlamaCppBackend:
                     and _paravirtual_cpu_forced
                     and _paravirtual_mmproj_pinnable(server_caps)
                 )
+                # Which reason pinned it, and what it cost, tracked apart from the
+                # boolean above. The three reasons are not interchangeable downstream:
+                # the paravirtual pin is about a device whose output is corrupt and the
+                # user's own flag is their instruction, so both hold whatever the
+                # placement turns out to be, while the AUTOMATIC pin is a trade -- a
+                # slower image encode bought with full GPU residency -- and has to be
+                # given back on any arm that does not deliver the residency.
+                _mmproj_auto_pinned = False
+                _mmproj_auto_pin_bytes = 0
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825). Charged
@@ -14592,6 +14601,18 @@ class LlamaCppBackend:
                         and not _mmproj_cpu_pinned
                         and gpu_memory_mode != "manual"
                         and _paravirtual_mmproj_pinnable(server_caps)
+                        # Same exclusion, and for the same reason, as the MTP-drop probe
+                        # below: tensor parallelism replicates a per-device buffer whose
+                        # geometry none of the numbers here model, so _mmproj_fits cannot
+                        # answer for it. It prices a layer split (_pool_budget_mib over
+                        # ranked subsets, _pipeline_overhead_bytes per extra device), and
+                        # a verdict from the wrong geometry would also reach the pooled
+                        # TP weight-budget check below and talk it out of a downgrade it
+                        # should make. A request that ENDS UP layer-split is still probed:
+                        # the two tensor downgrades that need nothing from this block
+                        # already ran above, so `tensor_parallel` here is the mode the
+                        # load will actually use.
+                        and not tensor_parallel
                         # llama.cpp is last-wins and Studio appends its own flags before
                         # the extras, so a user who named either spelling owns the
                         # placement; do not race them for it.
@@ -14640,6 +14661,11 @@ class LlamaCppBackend:
                         )
                         if not _mm_fits_on_gpu and _mm_fits_pinned:
                             _mmproj_cpu_pinned = True
+                            _mmproj_auto_pinned = True
+                            # Kept so the two arms that must not spend this refund can
+                            # put it back: the no-KV-estimate placement below, and the
+                            # fit's own except arm.
+                            _mmproj_auto_pin_bytes = mmproj_size
                             # Everything downstream prices the projector off this.
                             mmproj_size = 0
                             model_size = gguf_size
@@ -15278,6 +15304,25 @@ class LlamaCppBackend:
                             # Weights don't fit on any subset; default UI to 4096
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                        elif _mmproj_auto_pin_bytes > 0 and not explicit_ctx:
+                            # The automatic pin is what made the weights fit here, and
+                            # this is the arm where KV cannot be estimated -- _kv_bytes
+                            # answers 0 for EVERY context, so the probe that decided to
+                            # pin priced the native context's cache at nothing. Keep the
+                            # same 4096 the branch above uses.
+                            #
+                            # The two halves of that decision are not equally trustworthy
+                            # and are treated differently on purpose. Whether the WEIGHTS
+                            # fit is arithmetic over exact file sizes, so the pin's
+                            # residency is honoured: --fit off with every layer on the
+                            # GPU, which is the whole point of the trade. Whether a
+                            # NATIVE context also fits is a question about the KV cache,
+                            # and there is no estimate to answer it with -- so it does
+                            # not also get to hand out 32768 tokens on the strength of a
+                            # zero. Without this the pin promoted the deliberately
+                            # conservative `-c 4096 --fit on` straight to
+                            # `-c 32768 -ngl -1 --fit off`.
+                            effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
@@ -15424,6 +15469,31 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+                    if _mmproj_auto_pinned:
+                        # The automatic pin's entire justification is that it buys full
+                        # GPU residency: a bounded per-image cost traded for a per-token
+                        # one. This arm hands that back -- `--fit on` with no layer plan
+                        # is llama-server free to spill layers again -- so the trade
+                        # would be paid for and not received: every image encoded ~3.6x
+                        # slower to buy a residency the load no longer has.
+                        #
+                        # Only the automatic reason stands down. The paravirtual pin is
+                        # about a device whose vision output is corrupt, and the user's
+                        # own --no-mmproj-offload is an instruction, not a bet on the
+                        # placement; neither is contingent on the fit succeeding, and
+                        # neither sets this flag.
+                        _mmproj_cpu_pinned = False
+                        _mmproj_auto_pinned = False
+                        # Put the bytes back: `model_size` outlives the try and prices
+                        # the APU RAM refusal below, and the projector is on the device
+                        # again.
+                        model_size = gguf_size + _mmproj_auto_pin_bytes
+                        _mmproj_auto_pin_bytes = 0
+                        logger.info(
+                            "Keeping the vision projector on the GPU after all: the fit "
+                            "failed, so the launch falls back to --fit on and the pin "
+                            "would no longer buy full residency."
+                        )
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
                 # instead of fitting onto an unselected device. Clear the raw selection
