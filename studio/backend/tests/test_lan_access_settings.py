@@ -237,19 +237,16 @@ def test_a_failed_start_is_reported_as_an_error_state(monkeypatch):
 
 def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
     monkeypatch.setattr(
-        lan_access.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [
-            (None, None, None, None, (address, 0))
-            for address in (
-                "127.0.0.1",
-                "169.254.10.1",
-                "224.0.0.1",
-                "0.0.0.0",
-                "not-an-ip",
-                "10.0.0.7",
-                "10.0.0.7",
-            )
+        lan_access,
+        "_interface_addresses",
+        lambda: [
+            "127.0.0.1",
+            "169.254.10.1",
+            "224.0.0.1",
+            "0.0.0.0",
+            "not-an-ip",
+            "10.0.0.7",
+            "10.0.0.7",
         ],
     )
     addresses = lan_access.detect_lan_addresses()
@@ -262,22 +259,55 @@ def test_detection_drops_addresses_no_other_device_can_open(monkeypatch):
 @pytest.mark.allow_network
 def test_the_default_route_address_leads_so_it_becomes_the_shown_url(monkeypatch):
     routed = _require_lan_address()
-    monkeypatch.setattr(
-        lan_access.socket,
-        "getaddrinfo",
-        lambda *_args, **_kwargs: [(None, None, None, None, ("203.0.113.9", 0))],
-    )
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["203.0.113.9"])
     assert lan_access.detect_lan_addresses() == [routed, "203.0.113.9"]
 
 
 def test_detection_survives_a_host_that_resolves_to_nothing(monkeypatch):
+    """The hostname fallback only runs without psutil, and a Linux host mapping its
+    name to 127.0.1.1 is exactly why it cannot be the source of truth."""
+
     def _boom(*_args, **_kwargs):
         raise OSError("no such host")
 
+    monkeypatch.setitem(sys.modules, "psutil", None)
     monkeypatch.setattr(lan_access.socket, "getaddrinfo", _boom)
     # under the suite's outbound-network guard the UDP probe is refused too, so
     # a failed lookup must contribute nothing rather than raise
     assert lan_access.detect_lan_addresses() == []
+
+
+@pytest.mark.allow_network
+def test_detection_enumerates_interfaces_rather_than_the_default_route(monkeypatch):
+    """An isolated LAN has no route to 8.8.8.8 and a multihomed host has more than
+    one interface, so neither the probe nor the hostname finds every address."""
+    routed = _require_lan_address()
+    assert routed in lan_access._interface_addresses()
+
+    # with the probe unavailable, enumeration alone still finds the address
+    def _no_route(*_args, **_kwargs):
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(lan_access.socket.socket, "connect", _no_route)
+    assert routed in lan_access.detect_lan_addresses()
+
+
+def test_interface_enumeration_skips_adapters_that_are_down(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(
+        net_if_stats = lambda: {
+            "en0": types.SimpleNamespace(isup = True),
+            "en1": types.SimpleNamespace(isup = False),
+        },
+        net_if_addrs = lambda: {
+            "en0": [types.SimpleNamespace(family = socket.AF_INET, address = "10.0.0.7")],
+            "en1": [types.SimpleNamespace(family = socket.AF_INET, address = "10.9.9.9")],
+            "en2": [types.SimpleNamespace(family = socket.AF_INET6, address = "fe80::1")],
+        },
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    assert lan_access._interface_addresses() == ["10.0.0.7"]
 
 
 # ── live listener ──
@@ -453,7 +483,11 @@ def test_stop_from_inside_the_event_loop_does_not_wait_on_itself(live_server):
         timeout = 5
     )
     assert elapsed < lan_access._STOP_TIMEOUT
-    assert lan_access.lan_listener_status()["running"] is False
+    # the gate closes at once, but ownership and the trust flag stay until uvicorn
+    # closes the sockets, which it cannot do while _graceful_shutdown holds the loop
+    assert lan_access._bound_addresses == ()
+    assert lan_access.lan_listener_status()["running"] is True
+    assert host_policy.remote_connector_active() is True
 
 
 @pytest.mark.allow_network
@@ -717,9 +751,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

@@ -91,13 +91,41 @@ def detect_lan_addresses() -> list[str]:
         if probe is not None:
             probe.close()
 
-    # a host on both Wi-Fi and ethernet answers at either, and only one is the default route
-    try:
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            _add(info[4][0])
-    except OSError:
-        pass
+    # every other adapter that is up: the route to 8.8.8.8 picks one source address, and
+    # an isolated LAN has no route at all, so neither it nor the hostname enumerates them
+    for address in _interface_addresses():
+        _add(address)
     return addresses
+
+
+def _interface_addresses() -> list[str]:
+    """IPv4 addresses on every interface that is up.
+
+    Falls back to resolving the hostname where psutil is unavailable. That
+    fallback is not an enumeration: a Linux host mapping its name to 127.0.1.1
+    reports nothing, which is why it is the last resort rather than the source.
+    """
+    try:
+        import psutil
+    except ImportError:
+        try:
+            return [
+                info[4][0]
+                for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+            ]
+        except OSError:
+            return []
+    try:
+        stats = psutil.net_if_stats()
+        addresses = []
+        for name, entries in psutil.net_if_addrs().items():
+            interface = stats.get(name)
+            if interface is not None and not interface.isup:
+                continue
+            addresses.extend(e.address for e in entries if e.family == socket.AF_INET)
+        return addresses
+    except Exception:
+        return []
 
 
 def is_public_address(address: str) -> bool:
@@ -275,8 +303,9 @@ def stop_lan_listener() -> bool:
             return True
         server.should_exit = True
         if _running_on_event_loop():
-            # /api/shutdown tears down from a task on this very loop; waiting would deadlock
-            _release_listener_state()
+            # /api/shutdown tears down from a task on this very loop; waiting would deadlock.
+            # ownership is kept because uvicorn cannot close the sockets until the loop is
+            # free again, and _graceful_shutdown blocks it for seconds stopping subprocesses
             logger.info("LAN access stopping")
             return True
         if loop is None or loop.is_closed() or not loop.is_running():
