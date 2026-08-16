@@ -2304,8 +2304,13 @@ _bounded_pkg_probe() {
         sleep 0.1
         _bpp_i=$((_bpp_i + 1))
     done
-    wait "$_bpp_pid" 2>/dev/null || true
-    sed -n 's/^POSTVER=//p' "$_bpp_out" | tail -n 1
+    # The exit status gates the parse: a probe that dies before printing its own
+    # sentinel must not have a printing site hook's POSTVER= line read in its
+    # place. An unsuccessful exit yields the empty, inconclusive answer instead;
+    # setup.ps1 keys the same way on ExitCode.
+    if wait "$_bpp_pid" 2>/dev/null; then
+        sed -n 's/^POSTVER=//p' "$_bpp_out" | tail -n 1
+    fi
     rm -f "$_bpp_out"
 }
 # Never inherited from the caller's environment: the post-update check below keys on
