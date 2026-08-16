@@ -9,10 +9,20 @@
 # the server can bind, dominated by eager module-level imports pulled in by routes:
 # torch ~1.9s self, unsloth_zoo ~0.8s, routes ~0.6s, transformers ~0.5s.
 #
-# Now a gate. The budgets below come from observed medians on this workflow rather
-# than a guess, set loose enough that runner noise cannot fail a PR and tight enough
-# to catch a regression of the size the ones already found were: the pandas edge in
-# routes.data_recipe.seed was 2.2s of 7.3s on Windows, torch was about 5s before that.
+# Now a gate. The budgets below come from this workflow's own history rather than a
+# guess: 33 completed runs, 99 profiles, 297 launches, no failed launch. Median time to
+# a healthy port was 3.24s on ubuntu, 3.02s on macos, 5.11s on windows.
+#
+# Sized for a slow runner, not for the median one. A hosted runner can be slow for a
+# whole run: macos-15 in run 31932608086 came in at 5.03/5.52/5.66s, 1.8x its own
+# median, on a PR that changed nothing here. So each budget is 2x the observed median
+# rounded up to the next half second, floored at 1.4x the slowest median seen. Anything
+# tighter fails unrelated PRs on runner luck.
+#
+# What that catches is a torch-sized regression, about 5s, not a 1-2s one. A 2.2s
+# regression of the pandas kind shows up in the import table in the job summary, which
+# is what found it; the gate is here to stop the catastrophic case, not to measure.
+#
 # Raise a budget in the same PR as the import that needed it, with the run that shows
 # it, exactly as with the frontend startup budget.
 
@@ -67,16 +77,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Budgets are medians observed on this workflow, rounded up with room for
-        # runner variance. Observed at 17363f8a2: ubuntu 2.99s, macos 3.33s,
-        # windows 5.21s.
+        # 2x the median this workflow has measured, rounded up to the next 0.5s, floored
+        # at 1.4x the slowest median in 33 runs. median / slowest median observed:
+        # ubuntu 3.24s / 3.52s, macos 3.02s / 5.52s, windows 5.11s / 5.55s.
         include:
           - os: ubuntu-latest
-            max_healthz_seconds: '5.0'
+            max_healthz_seconds: '6.5'
           - os: macos-15
-            max_healthz_seconds: '6.0'
+            max_healthz_seconds: '8.0'
           - os: windows-latest
-            max_healthz_seconds: '9.0'
+            max_healthz_seconds: '10.5'
 
     env:
       UNSLOTH_STUDIO_HOME: ${{ github.workspace }}/.studio-home
@@ -106,8 +116,10 @@ jobs:
       - name: Profile startup
         shell: bash
         run: |
-          # Load-bearing now that the budget is a gate: the profiler's exit code
-          # reaches this step only through the pipe into tee.
+          # Explicit rather than load-bearing: `shell: bash` already runs
+          # `bash --noprofile --norc -eo pipefail {0}`. Written out because the gate's
+          # exit code reaches this step only through the pipe into tee, so it has to
+          # survive the shell key being dropped or changed to `bash {0}`.
           set -o pipefail
           BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/bin/unsloth"
           [ -x "$BIN" ] || BIN="$UNSLOTH_STUDIO_HOME/unsloth_studio/Scripts/unsloth.exe"

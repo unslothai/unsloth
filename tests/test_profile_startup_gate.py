@@ -275,8 +275,9 @@ def test_the_profile_step_passes_the_budget():
 
 
 def test_the_profile_step_sets_pipefail():
-    """The profiler pipes into tee, so without pipefail the step reports tee's 0
-    and a blown budget passes silently."""
+    """`shell: bash` already implies -o pipefail, so this is belt and braces: the
+    gate's exit code only reaches the step through the pipe into tee, and it has to
+    survive that shell key being dropped or changed to `bash {0}`."""
     run = _profile_step()["run"]
     assert "| tee" in run, "no pipe left; this guard can go"
     assert "set -o pipefail" in run
