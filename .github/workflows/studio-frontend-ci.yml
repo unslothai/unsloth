@@ -21,6 +21,7 @@ on:
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_stream_pacing.py'
       # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -185,6 +186,16 @@ jobs:
       - name: Browser smoke for research freeze
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
+
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
+      - name: Browser smoke for chat stream pacing
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+        run: python3 tests/studio/playwright_stream_pacing.py
 
       - name: Build
         run: npm run build
