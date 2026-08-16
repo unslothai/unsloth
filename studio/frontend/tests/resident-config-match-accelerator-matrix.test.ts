@@ -122,6 +122,17 @@ type FieldCase = {
   statusKey: string;
   same: unknown;
   different: unknown;
+  /**
+   * What must hold on both sides for the field to be live at all. The backend compares
+   * the offload knobs only under Manual, and the MoE count only with a layer pin beside
+   * it, so sweeping them under Auto would assert a comparison that does not happen.
+   */
+  live?: { config: Record<string, unknown>; status: Record<string, unknown> };
+};
+
+const MANUAL_MODE = {
+  config: { gpuMemoryMode: "manual" },
+  status: { gpu_memory_mode: "manual" },
 };
 
 const FIELDS: FieldCase[] = [
@@ -191,8 +202,23 @@ const FIELDS: FieldCase[] = [
     same: "manual",
     different: "auto",
   },
-  { key: "gpuLayers", statusKey: "gpu_layers", same: 20, different: 10 },
-  { key: "nCpuMoe", statusKey: "n_cpu_moe", same: 8, different: 4 },
+  {
+    key: "gpuLayers",
+    statusKey: "gpu_layers",
+    same: 20,
+    different: 10,
+    live: MANUAL_MODE,
+  },
+  {
+    key: "nCpuMoe",
+    statusKey: "n_cpu_moe",
+    same: 8,
+    different: 4,
+    live: {
+      config: { ...MANUAL_MODE.config, gpuLayers: 20 },
+      status: { ...MANUAL_MODE.status, gpu_layers: 20 },
+    },
+  },
   {
     key: "selectedGpuIds",
     statusKey: "requested_gpu_ids",
@@ -217,8 +243,8 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load already runs is adopted`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, [field.statusKey]: field.same },
-          { ...BLANK, [field.key]: field.same },
+          { ...base, ...field.live?.status, [field.statusKey]: field.same },
+          { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         true,
       );
@@ -227,8 +253,8 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
     test(`[${accelerator}] ${field.key} the resident load does not run is a reload`, () => {
       assert.equal(
         residentRuntimeMatchesConfig(
-          { ...base, [field.statusKey]: field.different },
-          { ...BLANK, [field.key]: field.same },
+          { ...base, ...field.live?.status, [field.statusKey]: field.different },
+          { ...BLANK, ...field.live?.config, [field.key]: field.same },
         ),
         false,
       );
@@ -236,11 +262,15 @@ for (const [accelerator, base] of Object.entries(ACCELERATORS)) {
 
     test(`[${accelerator}] ${field.key} pinned against a status that omits it is a reload`, () => {
       // Never agreement: a field the server cannot report is one this cannot verify.
-      const status = { ...base } as Record<string, unknown>;
+      const status = { ...base, ...field.live?.status } as Record<
+        string,
+        unknown
+      >;
       delete status[field.statusKey];
       assert.equal(
         residentRuntimeMatchesConfig(status, {
           ...BLANK,
+          ...field.live?.config,
           [field.key]: field.same,
         }),
         // tensorParallel has no unset state: false is a real request for a layer split,

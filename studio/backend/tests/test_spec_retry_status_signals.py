@@ -18,6 +18,10 @@ degraded runtime and nothing ever retries it: a retryable DFlash sidecar fetch, 
 capability probe that has started answering since a launch it degraded.
 ``_spec_dflash_retry_pending`` and ``_spec_probe_retry_pending`` publish those.
 
+The ``drafter_not_found`` arm excludes the kinds whose absence is not transient, so
+``_spec_dspark_sidecar_absent`` publishes that too: retrying a DSpark drafter no repo but
+one publishes would relaunch an identical server forever.
+
 The helper is extracted from the route module's source rather than imported, so the test
 costs nothing and does not drag FastAPI in behind it.
 """
@@ -165,6 +169,23 @@ def test_a_backend_without_the_dflash_flag_is_unknown():
     class _Bare:
         # Attribute access raises rather than returning a default, so the helper's
         # try/except is what keeps the status route answering at all.
+        def __getattr__(self, name):
+            raise AttributeError(name)
+
+    assert helper(_Bare()) is None
+
+
+def test_the_dspark_arm_reports_permanent_absence():
+    helper = _load_helper("_spec_dspark_sidecar_absent")
+
+    class _Dspark:
+        def __init__(self, absent):
+            self._dspark_sidecar_absent = absent
+
+    assert helper(_Dspark(True)) is True
+    assert helper(_Dspark(False)) is False
+
+    class _Bare:
         def __getattr__(self, name):
             raise AttributeError(name)
 

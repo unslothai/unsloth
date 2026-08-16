@@ -183,16 +183,18 @@ const FIELDS: {
     differs: { gpu_memory_mode: "auto" },
   },
   {
+    // Manual on both sides: the backend compares the offload knobs only there, and the
+    // MoE count only with a layer pin beside it, so Auto would assert nothing.
     name: "GPU layers",
-    config: { gpuLayers: 20 },
-    same: { gpu_layers: 20 },
-    differs: { gpu_layers: 99 },
+    config: { gpuMemoryMode: "manual", gpuLayers: 20 },
+    same: { gpu_memory_mode: "manual", gpu_layers: 20 },
+    differs: { gpu_memory_mode: "manual", gpu_layers: 99 },
   },
   {
     name: "CPU MoE layers",
-    config: { nCpuMoe: 12 },
-    same: { n_cpu_moe: 12 },
-    differs: { n_cpu_moe: 0 },
+    config: { gpuMemoryMode: "manual", gpuLayers: 20, nCpuMoe: 12 },
+    same: { gpu_memory_mode: "manual", gpu_layers: 20, n_cpu_moe: 12 },
+    differs: { gpu_memory_mode: "manual", gpu_layers: 20, n_cpu_moe: 0 },
   },
   {
     name: "GPU placement",
@@ -299,8 +301,21 @@ test("a generation cap alone still adopts the resident model", () => {
 
 /** Zero is a real value in this API (0 = Auto for context, 0 layers = CPU only). */
 test("zero is a pinned value, not an absent one", () => {
-  assert.equal(matches({ gpu_layers: 40 }, { ...BLANK, gpuLayers: 0 }), false);
-  assert.equal(matches({ gpu_layers: 0 }, { ...BLANK, gpuLayers: 0 }), true);
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "manual", gpu_layers: 40 },
+      { ...manual, gpuLayers: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { gpu_memory_mode: "manual", gpu_layers: 0 },
+      { ...manual, gpuLayers: 0 },
+    ),
+    true,
+  );
   assert.equal(
     matches(
       { requested_context_length: 0 },
@@ -698,6 +713,103 @@ test("a non-GGUF resident is not judged on a GGUF invocation field", () => {
   );
 });
 
+test("a hidden MoE count under Auto layers is not a reload", () => {
+  // The panel keeps nCpuMoe after the layer slider goes back to Auto, and llama.cpp
+  // records n_cpu_moe 0, so comparing it there rejected an identical runtime.
+  // _runtime_matches_intent compares it only under Manual with a non-negative pin.
+  assert.equal(
+    matches({ ...DEFAULTS, n_cpu_moe: 0 }, { ...BLANK, nCpuMoe: 8 }),
+    true,
+  );
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
+  const running = { ...DEFAULTS, gpu_memory_mode: "manual" as const };
+  // Manual with the layers themselves on Auto: still not compared, same as the backend.
+  assert.equal(
+    matches(
+      { ...running, gpu_layers: -1, n_cpu_moe: 0 },
+      { ...manual, gpuLayers: -1, nCpuMoe: 8 },
+    ),
+    true,
+  );
+  // Manual with a real pin: compared, and a difference is a reload.
+  assert.equal(
+    matches(
+      { ...running, gpu_layers: 4, n_cpu_moe: 0 },
+      { ...manual, gpuLayers: 4, nCpuMoe: 8 },
+    ),
+    false,
+  );
+});
+
+test("a permanently absent drafter does not decline the shortcut", () => {
+  // The drafter_not_found arm reloads so the next Apply retries the fetch, and excludes
+  // the two kinds whose absence is not transient. Retrying either relaunches forever.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_drafter_kind: "dspark",
+        spec_dspark_sidecar_absent: true,
+      },
+      "auto",
+    ),
+    false,
+  );
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_drafter_kind: "dflash",
+      },
+      "auto",
+    ),
+    false,
+  );
+  // A DSpark fetch that merely failed is still worth retrying.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_drafter_kind: "dspark",
+        spec_dspark_sidecar_absent: false,
+      },
+      "auto",
+    ),
+    true,
+  );
+  // As is an MTP drafter, which the arm never excluded.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_not_found", spec_drafter_kind: "mtp" },
+      "auto",
+    ),
+    true,
+  );
+  // A backend too old to report the sidecar keeps the coarser answer.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_drafter_kind: "dspark",
+      },
+      "auto",
+    ),
+    true,
+  );
+  // DFlash still declines through its own retry flag, which is the arm that owns it.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: "drafter_not_found",
+        spec_drafter_kind: "dflash",
+        spec_dflash_retry_pending: true,
+      },
+      "auto",
+    ),
+    true,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.
@@ -758,11 +870,31 @@ test("an unset GPU memory mode is the standing preference, not silence", () => {
 });
 
 test("unset GPU layers and CPU MoE layers resolve to Auto and 0", () => {
-  // GPU_LAYERS_AUTO is -1; a resident manual pin is a real reload.
-  assert.equal(matches({ ...DEFAULTS, gpu_layers: 20 }, BLANK), false);
-  assert.equal(matches({ ...DEFAULTS, gpu_layers: -1 }, BLANK), true);
-  assert.equal(matches({ ...DEFAULTS, n_cpu_moe: 12 }, BLANK), false);
-  assert.equal(matches({ ...DEFAULTS, n_cpu_moe: 0 }, BLANK), true);
+  // GPU_LAYERS_AUTO is -1; a resident manual pin is a real reload. Under Manual, since
+  // that is the only mode the backend compares either knob in.
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const };
+  const running = { ...DEFAULTS, gpu_memory_mode: "manual" as const };
+  assert.equal(matches({ ...running, gpu_layers: 20 }, manual), false);
+  assert.equal(matches({ ...running, gpu_layers: -1 }, manual), true);
+  assert.equal(
+    matches(
+      { ...running, gpu_layers: 4, n_cpu_moe: 12 },
+      { ...manual, gpuLayers: 4 },
+    ),
+    false,
+  );
+  assert.equal(
+    matches(
+      { ...running, gpu_layers: 4, n_cpu_moe: 0 },
+      { ...manual, gpuLayers: 4 },
+    ),
+    true,
+  );
+  // And under Auto neither is compared: the fitter chooses the offload.
+  assert.equal(
+    matches({ ...DEFAULTS, gpu_layers: 20, n_cpu_moe: 12 }, BLANK),
+    true,
+  );
 });
 
 test("no config at all still adopts, whatever the resident runtime is", () => {

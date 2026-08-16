@@ -166,6 +166,8 @@ export function residentSpeculativeNeedsRepair(
     | "spec_fallback_binary_changed"
     | "spec_probe_retry_pending"
     | "spec_dflash_retry_pending"
+    | "spec_dspark_sidecar_absent"
+    | "spec_drafter_kind"
   >,
   resolvedSpeculativeType: string | null,
 ): boolean {
@@ -187,6 +189,21 @@ export function residentSpeculativeNeedsRepair(
   ) {
     return false;
   }
+  // The drafter_not_found arm reloads so the next Apply retries the fetch, but excludes
+  // the two kinds whose absence is not transient: DFlash asks through its retry flag
+  // above, and an absent DSpark sidecar is the permanent state of every repo but one, so
+  // retrying either would relaunch an identical server forever.
+  if (status.spec_fallback_reason === "drafter_not_found") {
+    if (status.spec_drafter_kind === "dflash") {
+      return false;
+    }
+    if (
+      status.spec_drafter_kind === "dspark" &&
+      status.spec_dspark_sidecar_absent === true
+    ) {
+      return false;
+    }
+  }
   // A binary stand-down repairs only once a different llama-server is installed, which is
   // the necessary condition in spec_binary_fallback_can_retry. Without that the reload
   // dedupes and the prompt was for nothing. Only an explicit false settles it: a backend
@@ -197,6 +214,12 @@ export function residentSpeculativeNeedsRepair(
     status.spec_fallback_binary_changed === false
   );
 }
+
+/** The mode the load sends, which is what the backend gates its placement arms on. */
+const requestedGpuMemoryMode = (
+  config: PerModelConfig,
+  standing: StandingConfigDefaults,
+): "auto" | "manual" => config.gpuMemoryMode ?? standing.gpuMemoryMode;
 
 const cleanTemplate = (value: string | null | undefined): string | null =>
   value?.trim() ? value : null;
@@ -295,16 +318,24 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     // Resolves to GPU_LAYERS_AUTO rather than to a preference, but the load still sends it.
+    // Only under Manual, as _runtime_matches_intent compares it: under Auto the fitter
+    // chooses the offload, so the layer count the load carries decides nothing.
     placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
+      requestedGpuMemoryMode(c, standing) !== "manual" ||
       (c.gpuLayers ?? standing.gpuLayers) ===
-      (s.gpu_layers ?? standing.gpuLayers),
+        (s.gpu_layers ?? standing.gpuLayers),
   },
   {
+    // Manual with a non-negative pin, the same guard the backend uses. A config keeps a
+    // hidden nCpuMoe after the layer slider goes back to Auto, and llama.cpp records 0,
+    // so comparing it there rejected an otherwise identical runtime.
     placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
+      requestedGpuMemoryMode(c, standing) !== "manual" ||
+      (c.gpuLayers ?? standing.gpuLayers) < 0 ||
       (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
   },
   {

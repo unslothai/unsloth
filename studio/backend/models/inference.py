@@ -1089,6 +1089,15 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "to report it."
         ),
     )
+    spec_dspark_sidecar_absent: Optional[bool] = Field(
+        None,
+        description = (
+            "The DSpark drafter is absent rather than transiently unfetchable, which is "
+            "the permanent state of every repo but one. _runtime_matches_intent excludes "
+            "it from the drafter_not_found retry arm, so an identical /load dedupes and a "
+            "client need not reload for it. None on a backend too old to report it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

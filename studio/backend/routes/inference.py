@@ -7038,6 +7038,21 @@ def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
         return None
 
 
+def _spec_dspark_sidecar_absent(llama_backend) -> Optional[bool]:
+    """Whether the DSpark drafter is missing permanently rather than transiently.
+
+    The ``drafter_not_found`` arm of ``_runtime_matches_intent`` reloads so the next
+    Apply retries the fetch, but excludes an absent DSpark sidecar: that is the permanent
+    state of every repo but one, and retrying it would relaunch an identical server
+    forever. A client reading only the reason cannot tell the two apart and prompts to
+    stop running chats for a load that dedupes.
+    """
+    try:
+        return bool(llama_backend._dspark_sidecar_absent)
+    except Exception:
+        return None
+
+
 def _spec_dflash_retry_pending(llama_backend) -> Optional[bool]:
     """Whether a DFlash sidecar fetch failed in a way the next identical load retries.
 
@@ -10568,6 +10583,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
                 spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
+                spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,

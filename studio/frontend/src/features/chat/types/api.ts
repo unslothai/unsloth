@@ -385,6 +385,8 @@ export interface InferenceStatusResponse {
   spec_probe_retry_pending?: boolean | null;
   /** A DFlash sidecar fetch failed retryably, which records no fallback reason. */
   spec_dflash_retry_pending?: boolean | null;
+  /** The DSpark drafter is absent for good, not transiently unfetchable. */
+  spec_dspark_sidecar_absent?: boolean | null;
 }
 
 export interface ApiMonitorEntry {
