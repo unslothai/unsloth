@@ -4559,17 +4559,22 @@ export function createOpenAIStreamAdapter(
         adoptGatedReasoningGroups(content, firstSeenAt);
         const groups = countReasoningGroups(content);
         if (groups > 0) {
-          // Dropped here rather than at the call sites, because a publish can
-          // land between the opening tag and any reasoning body: a provider
-          // that emits a bare "<think>" as its own delta parses to no parts at
-          // all. Clearing the stamp on that publish would start the group at
-          // whatever later publish first sees the body, and a pass that ran for
-          // 30s would measure 0.
-          gateHeldSince = undefined;
           reasoningDurationTracker.resumeGroup(
             groups - 1,
             lastReasoningGroupTextLength(content),
           );
+          // The stamp is dropped here rather than at the call sites, and only
+          // once the pass it marks is actually being timed. A publish can land
+          // between an opening tag and any reasoning body -- a provider that
+          // emits a bare "<think>" as its own delta parses to no parts at all
+          // -- and an EARLIER pass leaves groups > 0 on that publish, so the
+          // count alone cannot tell the two apart. An active group can only be
+          // one the adopt or resume above just took the stamp for. Between
+          // them, a pass whose body the gate held would start at whatever later
+          // publish first saw it and measure 0.
+          if (reasoningDurationTracker.hasActiveGroup) {
+            gateHeldSince = undefined;
+          }
           if (final || !hasUnclosedThinkTag(cumulativeText)) {
             reasoningDurationTracker.finishGroup(gateReasoningEndedAt);
           }

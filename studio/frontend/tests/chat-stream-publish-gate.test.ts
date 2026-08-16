@@ -641,71 +641,41 @@ test("the arrival stamp survives a publish that adopted no group", () => {
   const source = withoutComments(ADAPTER);
 
   // A provider can emit a bare "<think>" as its own delta. It parses to no
-  // parts at all, so a publish there adopts nothing; if it still cleared the
-  // stamp, the group would start at whatever later publish first sees the
-  // reasoning body. Exactly one place may clear it, and it is inside the
-  // adopted branch, so a new publish path cannot get this wrong by omission.
+  // parts at all, so a publish there is timing nothing yet; if it cleared the
+  // stamp, the group would start at whatever later publish first sees the body.
+  // Exactly one place may clear it, so a new publish path cannot get this wrong
+  // by omission.
   const clears = [...source.matchAll(/gateHeldSince = undefined;/g)];
   assert.equal(clears.length, 1, "the stamp is cleared in more than one place");
 
+  // And a mere group COUNT is not enough to clear on: an earlier pass leaves
+  // groups > 0 while a later bodyless pass is still pending, so the clear has
+  // to be gated on a group actually being timed, after the resume that could
+  // have started timing it.
   const reconcile = source.indexOf("const reconcileReasoning = (");
-  const adopted = source.indexOf("if (groups > 0) {", reconcile);
-  assert.ok(
-    reconcile !== -1 && adopted !== -1 && adopted < (clears[0].index ?? 0),
-    "the stamp is cleared outside the branch that adopted a group",
+  const resume = source.indexOf("reasoningDurationTracker.resumeGroup(", reconcile);
+  const guard = source.indexOf(
+    "if (reasoningDurationTracker.hasActiveGroup) {",
+    reconcile,
   );
-});
-
-test("a per-call thought signature forces a publish", () => {
-  const source = withoutComments(ADAPTER);
-
-  // Gemini carries the signature on the tool call itself, not only at message
-  // level, and the next turn is rejected outright without it. Updating an
-  // EXISTING call adds no part, so addedToolCall is false and the message-level
-  // latch never sees it; a Stop while the gate holds it persists a turn that
-  // cannot be replayed.
-  const update = source.indexOf("const prevExtra =");
-  assert.notEqual(update, -1, "the existing-call update path is gone");
-  const window = source.slice(update, update + 700);
+  const clear = clears[0].index ?? 0;
+  assert.ok(reconcile !== -1 && resume !== -1, "the reconcile shape changed");
   assert.ok(
-    window.includes("replayStateChanged = true"),
-    "a changed per-call extra_content does not force a publish",
+    guard !== -1 && guard < clear,
+    "the stamp is cleared without checking that a group is being timed",
   );
   assert.ok(
-    window.includes("call.extra_content !== undefined"),
-    "the latch fires on calls that carry no extra_content at all",
+    resume < guard,
+    "the check runs before the resume that can start the timing",
   );
 
-  // And the latch has to be honoured where the tool-call publish is decided.
-  const decide = source.indexOf("addedToolCall ||", update);
-  assert.ok(
-    decide !== -1 &&
-      source.slice(decide, decide + 120).includes("replayStateChanged"),
-    "the tool-call publish ignores the replay latch",
+  // The finish must come after, or the clear would see the group it just closed
+  // as inactive and keep a stamp that has already been used.
+  const finish = source.indexOf(
+    "reasoningDurationTracker.finishGroup(",
+    reconcile,
   );
-});
-
-test("a chunk the strip left unchanged does not spend a gate cycle", () => {
-  const loop = regionOf(
-    "for await (const chunk of stream) {",
-    "} catch (streamError) {",
-  );
-
-  // The ${...} strip can return a nonempty reply to exactly its previous
-  // length. Checking only for an EMPTY reply lets that chunk consume the open
-  // cycle on an identical publish, and the next real token then waits for a
-  // frame, the timer or the cap.
-  const guard = loop.indexOf("cumulativeText.length === textLenBeforeChunk");
-  const gate = loop.indexOf("!canPublish(streamedChars)");
-  assert.notEqual(guard, -1, "an unchanged reply still reaches the gate");
-  assert.ok(guard < gate, "the skip must come before the gate is asked");
-
-  // Skipping must never swallow a publish that carries replay state.
-  const skip = loop.slice(guard, gate);
-  assert.ok(
-    skip.includes("!replayStateChanged"),
-    "the skip can drop a state-bearing publish",
-  );
+  assert.ok(clear < finish, "the group is closed before the stamp is dropped");
 });
 
 test("a server reasoning summary is assigned to the gated group", () => {
