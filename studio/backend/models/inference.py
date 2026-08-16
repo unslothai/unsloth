@@ -1427,7 +1427,12 @@ class AnthropicTool(BaseModel):
 
 
 class AnthropicThinkingConfig(BaseModel):
-    type: Literal["enabled", "disabled"] = "enabled"
+    # Deliberately `str`, not a Literal. Anthropic ships thinking types beyond
+    # enabled/disabled (adaptive tiers), and Claude Code sends them -- a strict
+    # Literal turns an unrecognized value into a hard 400, which is worse than
+    # the silent drop this replaced. Only "disabled" means off; treat anything
+    # else as a request to think.
+    type: str = "enabled"
     # Accepted for wire compatibility; llama-server has no thinking budget.
     budget_tokens: Optional[int] = None
     model_config = {"extra": "allow"}
@@ -1478,7 +1483,7 @@ class AnthropicMessagesRequest(BaseModel):
         if self.enable_thinking is not None:
             return self.enable_thinking
         if self.thinking is not None:
-            return self.thinking.type == "enabled"
+            return self.thinking.type != "disabled"
         return None
 
     @model_validator(mode = "before")

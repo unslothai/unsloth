@@ -1322,6 +1322,9 @@ class TestAnthropicReasoningArgs:
             ({}, None),
             ({"thinking": {"type": "enabled", "budget_tokens": 600}}, True),
             ({"thinking": {"type": "disabled"}}, False),
+            # Anthropic's adaptive tiers: unknown types must mean "think", never 400.
+            ({"thinking": {"type": "adaptive"}}, True),
+            ({"thinking": {"type": "auto"}}, True),
             ({"enable_thinking": True}, True),
             ({"enable_thinking": False}, False),
             # x-unsloth field wins, mirroring enable_tools precedence.
@@ -1344,6 +1347,13 @@ class TestAnthropicReasoningArgs:
             "reasoning_effort": "high",
             "preserve_thinking": True,
         }
+
+    @pytest.mark.parametrize("thinking_type", ["adaptive", "auto", "high", "future_tier"])
+    def test_unknown_thinking_type_never_400s(self, thinking_type):
+        """A strict Literal here regressed real Claude Code traffic to a 400:
+        `thinking.type: Input should be 'enabled' or 'disabled'`."""
+        payload = self._payload(thinking = {"type": thinking_type})
+        assert payload.resolved_enable_thinking() is True
 
     def test_budget_tokens_accepted_not_rejected(self):
         """Claude Code always sends budget_tokens; llama-server has no budget,
