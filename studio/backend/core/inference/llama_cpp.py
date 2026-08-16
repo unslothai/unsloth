@@ -11874,19 +11874,26 @@ class LlamaCppBackend:
         managed path emits ``--model-draft <sidecar>`` into the same command, so
         reading the command covers both.
 
-        None (falling the caller back to the target) when no drafter is named, or
-        when it is a Hugging Face repo id rather than a local file whose metadata
-        can be read.
+        None only when no drafter is named at all, in which case there are no draft
+        flags to reset and the value cannot matter. A drafter that IS named but
+        whose metadata cannot be read (a Hugging Face repo id rather than a local
+        file, or an unreadable GGUF) resolves to True rather than to the target's
+        answer: the two mistakes are not symmetric. Resetting a non-MLA drafter's K
+        needlessly costs memory, whereas failing to reset an MLA drafter's K leaves
+        it quantized against an f16 draft V and aborts the draft context outright,
+        which is the failure this whole path exists to avoid.
         """
         path, is_remote = _extra_args_mtp_draft_source(list(cmd or []), env)
-        if not path or is_remote:
+        if not path:
             return None
+        if is_remote:  # a repo id is not a local file whose metadata can be read
+            return True
         try:
             db = self._draft_backend_for(path)
-        except Exception:  # unreadable drafter -> fall back to the target
+        except Exception:
             db = None
-        if db is None:
-            return None
+        if db is None:  # named but unreadable -> conservative, not the target
+            return True
         return self._requires_symmetric_kv(
             getattr(db, "_kv_lora_rank", None), getattr(db, "_architecture", None)
         )
@@ -15748,7 +15755,11 @@ class LlamaCppBackend:
                         cmd,
                         "this build has no --flash-attn",
                         mla = self._target_kv_symmetry(),
-                        draft_mla = self._draft_kv_symmetry(cmd, env),
+                        # No env argument: the child environment is not built until
+                        # below, and reading it here is an UnboundLocalError. The
+                        # inherited os.environ is the right source anyway, since
+                        # Studio never rewrites LLAMA_ARG_SPEC_DRAFT_MODEL.
+                        draft_mla = self._draft_kv_symmetry(cmd),
                     )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)

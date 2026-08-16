@@ -327,12 +327,13 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         ]
         assert b._draft_kv_symmetry(cmd, {}) is False
 
-    def test_an_hf_repo_drafter_is_undeterminable(self):
-        """A repo id is not a local file, so its metadata cannot be read; None
-        falls the caller back to the target rather than guessing."""
+    def test_an_hf_repo_drafter_takes_the_conservative_path(self):
+        """A repo id is not a local file, so its metadata cannot be read. Falling
+        back to the target would leave an MLA drafter's K quantized against an f16
+        draft V and abort; resetting a non-MLA drafter's K only costs memory."""
         b = self._backend({})
         cmd = ["llama-server", "--hf-repo-draft", "org/drafter-GGUF"]
-        assert b._draft_kv_symmetry(cmd, {}) is None
+        assert b._draft_kv_symmetry(cmd, {}) is True
 
     def test_an_env_supplied_drafter_is_seen(self):
         b = self._backend({"/d/mla.gguf": (512, "deepseek2")})
@@ -343,10 +344,26 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         b = self._backend({})
         assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
 
-    def test_an_unreadable_drafter_is_none(self):
+    def test_an_unreadable_drafter_takes_the_conservative_path(self):
+        """Named but unreadable is still a drafter that will launch."""
         b = self._backend({})
         cmd = ["llama-server", "--model-draft", "/d/missing.gguf"]
-        assert b._draft_kv_symmetry(cmd, {}) is None
+        assert b._draft_kv_symmetry(cmd, {}) is True
+
+    def test_a_raising_metadata_read_takes_the_conservative_path(self):
+        b = self._backend({})
+
+        def _boom(path):
+            raise OSError("unreadable")
+
+        b._draft_backend_for = _boom
+        cmd = ["llama-server", "--model-draft", "/d/broken.gguf"]
+        assert b._draft_kv_symmetry(cmd, {}) is True
+
+    def test_only_the_absence_of_a_drafter_is_none(self):
+        """None means "no draft flags exist", so the value cannot matter."""
+        b = self._backend({})
+        assert b._draft_kv_symmetry(["llama-server", "-m", "t.gguf"], {}) is None
 
     def test_every_call_site_passes_a_command(self):
         """A bare _draft_kv_symmetry() would silently read no drafter at all."""
@@ -355,3 +372,35 @@ class TestTheDraftSignalComesFromTheLaunchCommand:
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._draft_kv_symmetry()" not in src
         assert src.count("self._draft_kv_symmetry(") == src.count("self._target_kv_symmetry()")
+
+
+class TestLoadModelNeverReadsEnvBeforeItExists:
+    """A launch-site fixup that reads the child environment raises
+    UnboundLocalError and kills every load through that path.
+
+    This is a static check on purpose. The block-extraction harness used by the
+    flagless tests seeds ``env`` into the exec scope, so it would happily pass
+    while the real function raised, which is exactly what happened once.
+    """
+
+    def test_env_is_never_loaded_before_it_is_assigned(self):
+        import ast
+        import inspect
+        import textwrap
+
+        fn = ast.parse(
+            textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+        )
+        stores = [
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Name) and n.id == "env" and isinstance(n.ctx, ast.Store)
+        ]
+        loads = [
+            n.lineno
+            for n in ast.walk(fn)
+            if isinstance(n, ast.Name) and n.id == "env" and isinstance(n.ctx, ast.Load)
+        ]
+        assert stores, "load_model no longer builds a child env; update this test"
+        early = [line for line in loads if line < min(stores)]
+        assert not early, f"env read before assignment at offsets {early}"
