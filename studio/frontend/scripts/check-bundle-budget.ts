@@ -34,11 +34,14 @@ const DIST = resolve(HERE, "..", "dist");
  * the part that shows up as a slow launch on a weak machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB gzip / 5,207.2 KB raw over 44 chunks at 17363f8a2.
+  // Measured 1,496.2 KB gzip / 5,207.2 KB raw at 17363f8a2.
   gzipBytes: 1_600_000,
   rawBytes: 5_500_000,
-  chunks: 48,
 };
+
+// The chunk count is reported but not budgeted. Splitting a page out of the entry
+// raises it while lowering the bytes, which is the behaviour this is trying to
+// reward; capping it would penalise the fix.
 
 /** The entry script and every chunk Vite preloads for it, in document order. */
 export function eagerChunksFromHtml(html: string): string[] {
@@ -131,9 +134,6 @@ function main(): number {
   }
   if (raw > BUDGET.rawBytes) {
     over.push(`raw ${kb(raw)} > ${kb(BUDGET.rawBytes)}`);
-  }
-  if (measured.length > BUDGET.chunks) {
-    over.push(`${measured.length} chunks > ${BUDGET.chunks}`);
   }
 
   if (over.length > 0) {

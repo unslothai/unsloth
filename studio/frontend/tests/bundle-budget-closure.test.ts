@@ -62,5 +62,10 @@ test("an unrecognisable document yields nothing, so the gate reports a shape cha
 
 test("the budget is a real number, not a placeholder", () => {
   assert.ok(BUDGET.gzipBytes > 0 && BUDGET.rawBytes > BUDGET.gzipBytes);
-  assert.ok(BUDGET.chunks > 0);
+});
+
+test("the chunk count is not budgeted", () => {
+  // Splitting a page out of the entry raises the count while lowering the bytes.
+  // A cap here would fail the very change the gate exists to encourage.
+  assert.ok(!("chunks" in BUDGET));
 });
