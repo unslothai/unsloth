@@ -2215,8 +2215,12 @@ function getHydratedSettingsState(
   ) {
     // Same fence as the global set above: a key the user moved while this
     // request was in flight is their edit, and the memory does not outrank it.
+    // REMEMBERED, not PERSISTED: the same distinction getReplayedParams draws.
+    // maxSeqLength is persisted but never remembered, and an entry that carries
+    // one anyway -- the row accepts it -- must not replace the context the model
+    // actually loaded with.
     const replayed = { ...params };
-    for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
       const value = remembered[key];
       if (
         value !== undefined &&

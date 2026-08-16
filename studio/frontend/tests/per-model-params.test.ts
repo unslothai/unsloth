@@ -361,3 +361,76 @@ test("the snapshot drops params the current model never set", () => {
   );
   assert.equal("topK" in picked, false);
 });
+
+// An entry is whatever the settings row holds, and this app is not its only
+// possible writer: the backend's ChatInferenceSettings accepts every persisted
+// key inside a per-model dict, so the read side has to hold the same rules the
+// write side does rather than trusting the shape.
+test("a maxSeqLength in a stored entry is not replayed over the loaded context", () => {
+  const replayed = getReplayedParams(
+    true,
+    { [QWEN]: { temperature: 0.2, maxSeqLength: 131072 } },
+    params({ checkpoint: QWEN, maxSeqLength: 4096 }),
+    QWEN,
+    true,
+  );
+  assert.equal(replayed.temperature, 0.2, "the remembered value still replays");
+  // The same rule pickRememberedParams follows on the way in: a second copy of
+  // the context would leave the runtime advertising one the backend never loaded.
+  assert.equal(replayed.maxSeqLength, 4096);
+});
+
+test("a key that is not an inference param cannot reach the live params", () => {
+  const replayed = getReplayedParams(
+    true,
+    { [QWEN]: { temperature: 0.2, notAParam: 9 } as never },
+    params({ checkpoint: QWEN }),
+    QWEN,
+    true,
+  );
+  assert.equal(replayed.temperature, 0.2);
+  // params flows on into request bodies and into the settings write, where the
+  // payload is extra="forbid".
+  assert.equal("notAParam" in replayed, false);
+});
+
+// Model ids are not sanitised identifiers. A Hub repo is slash-separated, a
+// custom folder is an absolute path -- a drive path on Windows, a UNC path from
+// a share or WSL, a spaced path under ~/Library on macOS -- and an external
+// model is provider-qualified. All of them are opaque keys here, and an id that
+// did not survive the round trip would mean that platform silently cannot
+// remember settings at all.
+for (const [label, id] of [
+  ["a Windows drive path", "C:\\Users\\Daniel\\models\\Qwen3-8B"],
+  ["a UNC share path", "\\\\fileserver\\models\\gemma-3-270m-it"],
+  ["a WSL UNC path", "\\\\wsl$\\Ubuntu\\home\\d\\models\\llama"],
+  [
+    "a macOS path with spaces",
+    "/Users/d/Library/Application Support/unsloth/gemma",
+  ],
+  [
+    "a Linux cache path",
+    "/home/d/.cache/huggingface/hub/models--unsloth--Qwen3-0.6B",
+  ],
+  ["a provider-qualified id", "external::anthropic::claude-opus-5"],
+  ["a non-ASCII repo id", "unsloth/通義千問-7B"],
+] as const) {
+  test(`${label} is remembered and replayed unchanged`, () => {
+    const recorded = record(
+      {},
+      id,
+      { temperature: 0.2 },
+      params({ checkpoint: id, temperature: 0.2 }),
+    );
+    assert.ok(recorded, "nothing was recorded");
+    assert.equal(recorded[id].temperature, 0.2);
+    const replayed = getReplayedParams(
+      true,
+      recorded,
+      params({ temperature: 1 }),
+      id,
+      true,
+    );
+    assert.equal(replayed.temperature, 0.2);
+  });
+}
