@@ -13877,6 +13877,15 @@ class LlamaCppBackend:
                 # given back on any arm that does not deliver the residency.
                 _mmproj_auto_pinned = False
                 _mmproj_auto_pin_bytes = 0
+                # What either pin took out of model_size, for the one consumer that
+                # must not have it back: _apu_ram_shortfall_message. That guard prices
+                # SYSTEM RAM, and a projector pinned to the CPU is still in system RAM,
+                # so on a unified-memory APU the refusal has to weigh it whichever side
+                # of the pin it is on. Both pins already decline on a device that
+                # REPORTS a shared pool (total 0), but "ROCm classifies this as an APU"
+                # and "the probe reported a total" are independent answers from
+                # unrelated code paths, and only the second one gates the pins.
+                _mmproj_pinned_bytes = 0
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825). Charged
@@ -14525,6 +14534,29 @@ class LlamaCppBackend:
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
 
+                    # Is there memory here that a projector leaving would actually free
+                    # for something else? Only if every device in play has a budget of
+                    # its own. A unified-memory APU and an integrated Vulkan GPU both
+                    # enumerate a device and both report free SYSTEM RAM as its free
+                    # "VRAM", so pinning the encoder moves it inside one pool exactly as
+                    # on Metal. Their marker is a total of 0, which _get_gpu_memory and
+                    # _vulkan_auto_gpu_memory set deliberately for a shared pool; the same
+                    # 0 also stands for a total the probe could not read (MIG/vGPU/N/A),
+                    # where the honest answer is likewise "do not hand bytes back".
+                    # Required of EVERY device, since a mixed pool splits weights onto the
+                    # shared one too.
+                    #
+                    # Both pins below zero the same model_size, and model_size outlives
+                    # this try to price _apu_ram_shortfall_message -- the guard that
+                    # refuses a load whose weights will not fit in system RAM because the
+                    # alternative is the OS killing it mid-read. Measured on a shared pool
+                    # reported the way the probes report one, handing back the projector's
+                    # ~1.26 GB took the load under that threshold and turned a deliberate
+                    # refusal into the launch it exists to prevent.
+                    _discrete_vram = bool(gpus) and all(
+                        total_by_idx.get(_idx, 0) > 0 for _idx, _free in gpus
+                    )
+
                     # The user pinned the projector themselves, and there IS a discrete
                     # device for it to have left. Charging its bytes anyway priced ~1.4x
                     # the file (the projector plus the _MMPROJ_VRAM_SAFETY surcharge)
@@ -14540,32 +14572,21 @@ class LlamaCppBackend:
                     # An empty `gpus` is the obvious half -- Metal, whose budget
                     # (_apple_metal_memory_budget_bytes) this same model_size feeds, and a
                     # CPU-only box where the projector is in host RAM either way -- but it
-                    # is NOT the whole of it. A unified-memory APU and an integrated Vulkan
-                    # GPU both enumerate a device, and both report system RAM as its free
-                    # "VRAM". Their marker is a total of 0, which _get_gpu_memory and
-                    # _vulkan_auto_gpu_memory set deliberately for a shared pool; the same
-                    # 0 also stands for a total the probe could not read (MIG/vGPU/N/A),
-                    # where the honest answer is likewise "do not hand bytes back".
-                    # Required of EVERY device in play, since a mixed pool splits weights
-                    # onto the shared one too.
-                    #
-                    # Without that, typing the flag on an APU cut ~1.26 GB off a budget
-                    # that is host RAM and, worse, took the load under the
-                    # _apu_ram_shortfall_message refusal threshold -- turning a deliberate
-                    # "this will be OOM-killed mid-load" into a launch. Read last-wins, so
-                    # a trailing --mmproj-offload takes the placement back; and gated on
-                    # the capability like the automatic pin, since a build that
-                    # conclusively lacks the flag cannot honor the request.
+                    # is NOT the whole of it, which is what _discrete_vram just above is
+                    # for. Read last-wins, so a trailing --mmproj-offload takes the
+                    # placement back; and gated on the capability like the automatic pin,
+                    # since a build that conclusively lacks the flag cannot honor the
+                    # request.
                     if (
                         effective_is_vision
                         and mmproj_size > 0
-                        and gpus
-                        and all(total_by_idx.get(_idx, 0) > 0 for _idx, _free in gpus)
+                        and _discrete_vram
                         and not _mmproj_cpu_pinned
                         and _mmproj_offload_disabled(extra_args)
                         and _paravirtual_mmproj_pinnable(server_caps)
                     ):
                         _mmproj_cpu_pinned = True
+                        _mmproj_pinned_bytes = mmproj_size
                         # Everything downstream prices the projector off this, exactly
                         # as it does for the automatic pin.
                         mmproj_size = 0
@@ -14597,7 +14618,13 @@ class LlamaCppBackend:
                     if (
                         effective_is_vision
                         and mmproj_size > 0
-                        and gpus
+                        # Not merely `gpus`: the same shared-pool question the hand pin
+                        # asks. This pin zeroes the same model_size and so defeats the
+                        # same APU RAM refusal -- measured, a load origin/main refuses
+                        # launched here and would be OOM-killed mid-read. Pinning frees
+                        # nothing on a shared pool anyway; it only moves the encoder to
+                        # a slower path.
+                        and _discrete_vram
                         and not _mmproj_cpu_pinned
                         and gpu_memory_mode != "manual"
                         and _paravirtual_mmproj_pinnable(server_caps)
@@ -14608,10 +14635,14 @@ class LlamaCppBackend:
                         # ranked subsets, _pipeline_overhead_bytes per extra device), and
                         # a verdict from the wrong geometry would also reach the pooled
                         # TP weight-budget check below and talk it out of a downgrade it
-                        # should make. A request that ENDS UP layer-split is still probed:
-                        # the two tensor downgrades that need nothing from this block
-                        # already ran above, so `tensor_parallel` here is the mode the
-                        # load will actually use.
+                        # should make. The two tensor downgrades that need nothing from
+                        # this block already ran above, so a request they demoted IS
+                        # probed. The pooled weight-budget downgrade still escapes -- it
+                        # runs below and can clear `tensor_parallel` after this gate has
+                        # declined -- exactly as the MTP-drop probe's comment records for
+                        # itself. That costs a pin on a load that ends up layer-split
+                        # after all, which is the safe direction and is what the PR head
+                        # already does.
                         and not tensor_parallel
                         # llama.cpp is last-wins and Studio appends its own flags before
                         # the extras, so a user who named either spelling owns the
@@ -14666,6 +14697,7 @@ class LlamaCppBackend:
                             # put it back: the no-KV-estimate placement below, and the
                             # fit's own except arm.
                             _mmproj_auto_pin_bytes = mmproj_size
+                            _mmproj_pinned_bytes = mmproj_size
                             # Everything downstream prices the projector off this.
                             mmproj_size = 0
                             model_size = gguf_size
@@ -15305,11 +15337,9 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
                         elif _mmproj_auto_pin_bytes > 0 and not explicit_ctx:
-                            # The automatic pin is what made the weights fit here, and
-                            # this is the arm where KV cannot be estimated -- _kv_bytes
+                            # This is the arm where KV cannot be estimated -- _kv_bytes
                             # answers 0 for EVERY context, so the probe that decided to
-                            # pin priced the native context's cache at nothing. Keep the
-                            # same 4096 the branch above uses.
+                            # pin priced the native context's cache at nothing.
                             #
                             # The two halves of that decision are not equally trustworthy
                             # and are treated differently on purpose. Whether the WEIGHTS
@@ -15322,7 +15352,43 @@ class LlamaCppBackend:
                             # zero. Without this the pin promoted the deliberately
                             # conservative `-c 4096 --fit on` straight to
                             # `-c 32768 -ngl -1 --fit off`.
-                            effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                            #
+                            # Ask the question rather than infer it from the pin firing.
+                            # _mmproj_fits prices _cc_bytes and this arm's _fs_total does
+                            # not, so the two disagree over a band as wide as the compute
+                            # context buffer -- measured at 593 MiB with a q8_0 cache at
+                            # n_embd 8192. Inside it the pin fires on a load that fits
+                            # WITH the projector, and clamping there would cost 8x the
+                            # context for nothing. Re-price the same placement with the
+                            # projector charged: only if THAT cannot be placed was the
+                            # pin what bought the fit.
+                            _fs_charged = _fs_total + _mmproj_auto_pin_bytes + int(
+                                _mmproj_auto_pin_bytes * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                            )
+                            _, _needs_fit_charged = self._select_gpus(
+                                _fs_charged,
+                                gpus,
+                                usable_fraction = _pin_fraction,
+                                total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                min_gpus = _layer_min_gpus,
+                            )
+                            if _needs_fit_charged:
+                                effective_ctx = (
+                                    min(4096, effective_ctx) if effective_ctx > 0 else 4096
+                                )
+                                # And lower the ceiling with it. max_available_ctx is what
+                                # the UI publishes as "the largest context that fits", so
+                                # leaving it at native advertises the very number this
+                                # clamp is withholding -- and a reload at that number is
+                                # explicit, which skips the clamp AND keeps --fit off, so
+                                # it lands worse than origin/main's --fit on valve. The
+                                # Metal cap below lowers both for the same reason.
+                                max_available_ctx = (
+                                    min(4096, max_available_ctx)
+                                    if max_available_ctx > 0
+                                    else 4096
+                                )
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
@@ -15486,9 +15552,13 @@ class LlamaCppBackend:
                         _mmproj_auto_pinned = False
                         # Put the bytes back: `model_size` outlives the try and prices
                         # the APU RAM refusal below, and the projector is on the device
-                        # again.
+                        # again. mmproj_size has no reader past this point today, but it
+                        # is restored with it rather than left as a 0 that silently
+                        # contradicts model_size for whoever adds one.
+                        mmproj_size = _mmproj_auto_pin_bytes
                         model_size = gguf_size + _mmproj_auto_pin_bytes
                         _mmproj_auto_pin_bytes = 0
+                        _mmproj_pinned_bytes = 0
                         logger.info(
                             "Keeping the vision projector on the GPU after all: the fit "
                             "failed, so the launch falls back to --fit on and the pin "
@@ -15546,7 +15616,8 @@ class LlamaCppBackend:
                     and self._amd_apu_wants_unified_memory(gpu_indices)
                 ):
                     _ram_msg = self._apu_ram_shortfall_message(
-                        model_size, self._available_system_memory_mib()
+                        model_size + _mmproj_pinned_bytes,
+                        self._available_system_memory_mib(),
                     )
                     # gpu_indices is None for a launch nothing pinned, so the guard
                     # priced every visible card, including an APU the gate is about to
@@ -17206,7 +17277,8 @@ class LlamaCppBackend:
                         # when the APU is picked first.
                         if model_size is not None and _retry_wants_unified:
                             _retry_ram_msg = self._apu_ram_shortfall_message(
-                                model_size, self._available_system_memory_mib()
+                                model_size + _mmproj_pinned_bytes,
+                                self._available_system_memory_mib(),
                             )
                             if _retry_ram_msg:
                                 self._kill_process()

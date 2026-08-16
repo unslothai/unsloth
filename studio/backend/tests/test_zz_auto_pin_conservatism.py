@@ -73,6 +73,9 @@ def _pin_backend(
     can_estimate_kv = False,
     fit_raises = False,
     paravirtual = False,
+    ctx_buffer_bytes = None,
+    apu_guard = False,
+    apu_avail_mib = 7_000,
 ):
     _apply_os(monkeypatch, "linux")
     tmp_path.mkdir(parents = True, exist_ok = True)
@@ -94,6 +97,18 @@ def _pin_backend(
         backend._can_estimate_kv = lambda: True
         backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * _KV_PER_TOKEN
         backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    if ctx_buffer_bytes is not None:
+        # The context-linear compute buffer. _mmproj_fits charges it; the
+        # file-size-only placement does not, which is the whole point of the band
+        # test below. Needs only embedding_length in the real GGUF, so it is live
+        # on exactly the arm where the KV estimate is not.
+        backend._compute_buffer_ctx_bytes = lambda *a, **k: ctx_buffer_bytes
+    if apu_guard:
+        backend._amd_apu_wants_unified_memory = lambda *a, **k: True
+        backend._available_system_memory_mib = lambda: apu_avail_mib
+        backend._apu_ram_shortfall_message = (
+            lambda *a, **k: llama_cpp.LlamaCppBackend._apu_ram_shortfall_message(*a, **k)
+        )
     if fit_raises:
         def _boom(*a, **k):
             raise RuntimeError("simulated GPU-selection failure")
@@ -162,6 +177,88 @@ def test_the_pin_still_buys_residency_without_a_kv_estimate(monkeypatch, tmp_pat
     assert got["fit"] == "off"
     assert got["ngl"] == "-1"
     assert got["backend"].vision_on_cpu is True
+
+
+def test_the_clamp_lowers_the_advertised_ceiling_with_the_context(monkeypatch, tmp_path):
+    """Withholding the context is pointless if the UI still offers it.
+
+    ``max_available_ctx`` is published as ``max_context_length`` -- what the slider
+    reads as the largest context that fits. Left at native it advertises exactly the
+    number the clamp is withholding, and a reload at that number is an EXPLICIT
+    context, which skips the clamp and keeps ``--fit off``: strictly worse than the
+    ``--fit on`` valve origin/main would have given. The Metal cap lowers both
+    together for the same reason.
+    """
+    backend, gguf = _pin_backend(monkeypatch, tmp_path, can_estimate_kv = False)
+
+    got = _plan(backend, gguf)
+
+    assert got["ctx"] == 4096
+    assert got["pins"] == 1
+    assert backend.max_context_length == 4096
+
+
+# A context-linear compute buffer wide enough to separate the two fit
+# calculations. _mmproj_fits adds it; the file-size-only _fs_total does not.
+_CC_BAND_BYTES = 600 * MIB
+# Centre of the band that gap opens. Swept at 100 MiB steps against this exact
+# model: below 6700 MiB free the pin fires AND the projector-charged placement
+# really does miss (clamped, correctly); from 7300 MiB the pin stops firing at
+# all; in between the pin fires on a load that places fine with the projector on
+# the GPU. The band measured 600 MiB, the width of the compute buffer above,
+# which is what identifies the gap as the cause rather than a coincidence.
+_BAND_MEMORY = [(0, 7_000, 16_000)]
+
+
+def test_the_clamp_asks_whether_the_pin_actually_bought_the_fit(monkeypatch, tmp_path):
+    """The pin firing is not proof that the projector was in the way.
+
+    ``_mmproj_fits`` prices the context-linear compute buffer and this arm's
+    ``_fs_total`` does not, so the two disagree over a band as wide as that buffer.
+    Inside it the pin fires on a load that would have been placed with the
+    projector on the GPU anyway -- and clamping there costs 8x the context to
+    protect against nothing. So the clamp re-prices the same placement with the
+    projector charged and only fires when THAT cannot be placed.
+    """
+    backend, gguf = _pin_backend(
+        monkeypatch,
+        tmp_path,
+        memory = _BAND_MEMORY,
+        can_estimate_kv = False,
+        ctx_buffer_bytes = _CC_BAND_BYTES,
+    )
+
+    got = _plan(backend, gguf)
+
+    # The premise: the pin really did fire here.
+    assert got["pins"] == 1
+    # And the load fits with the projector charged, so nothing is withheld.
+    assert got["ctx"] == _NATIVE_CTX
+    assert backend.max_context_length == _NATIVE_CTX
+
+
+def test_a_shared_memory_pool_gets_no_automatic_pin_either(monkeypatch, tmp_path):
+    """The automatic pin zeroes the same ``model_size`` the hand pin does, so it
+    defeats the same refusal.
+
+    ``_apu_ram_shortfall_message`` stops a load whose weights will not fit in
+    system RAM, the alternative being the OS killing it mid-read. Measured, a load
+    origin/main refuses launched here. Pinning frees nothing on a shared pool in
+    any case -- it only moves the encoder to a slower path.
+    """
+    shared_tight = [(0, 6_000, 0)]
+    backend, gguf = _pin_backend(monkeypatch, tmp_path / "plan", memory = shared_tight)
+
+    got = _plan(backend, gguf)
+
+    assert got["pins"] == 0
+
+    # And the refusal that the pin's refund used to slip under still fires.
+    guarded, gguf2 = _pin_backend(
+        monkeypatch, tmp_path / "guard", memory = shared_tight, apu_guard = True
+    )
+    with pytest.raises(RuntimeError, match = "unified-memory"):
+        _plan(guarded, gguf2)
 
 
 def test_a_real_kv_estimate_lets_the_pin_hand_out_context_too(monkeypatch, tmp_path):
