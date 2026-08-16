@@ -7050,7 +7050,6 @@ def _gpu_placement_paravirtual() -> Optional[bool]:
     """
     try:
         from core.inference.llama_cpp import _metal_device_is_paravirtual
-
         return bool(_metal_device_is_paravirtual())
     except Exception:
         return None
