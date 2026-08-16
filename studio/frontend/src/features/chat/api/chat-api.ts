@@ -5,7 +5,10 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
-import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import {
+  combineAbortSignals,
+  disposableTimeoutSignal,
+} from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
@@ -767,21 +770,32 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
-  options: { bounded?: boolean } = {},
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
   // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
   // the write timeout exists to keep moving. Callers on a render path stay unbounded.
-  const timeout = options.bounded
-    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
-    : null;
+  // `timeoutMs` is for a caller with a deadline of its own: the settings pairing gives up
+  // on a read long before the write timeout, and without a bound of its own each retry
+  // left the previous attempt running against the server it is already struggling to
+  // reach. `signal` ends it earlier still, which is what a chat switch wants.
+  const timeout =
+    options.bounded || options.timeoutMs !== undefined
+      ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
+      : null;
+  const combined =
+    timeout && options.signal
+      ? combineAbortSignals([timeout.signal, options.signal])
+      : null;
+  const signal = combined?.signal ?? timeout?.signal ?? options.signal;
   try {
     const response = await authFetch(
       `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      timeout ? { signal: timeout.signal } : undefined,
+      signal ? { signal } : undefined,
     );
     if (response.status === 404) return null;
     return parseJsonOrThrow<ThreadRecord>(response);
   } finally {
+    combined?.dispose();
     timeout?.dispose();
   }
 }

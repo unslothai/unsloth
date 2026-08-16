@@ -918,6 +918,10 @@ function rememberThreadSettingsForReplay(
  * by the server rather than reverting anything newer.
  */
 export function replayUnconfirmedThreadSettings(): void {
+  // Once per session: it is called from both hydration outcomes, and sending each body
+  // twice would race two writes carrying the same seq for the same row.
+  if (threadSettingsReplayStarted) return;
+  threadSettingsReplayStarted = true;
   if (!canUseStorage()) return;
   let pending: Record<string, unknown> = {};
   try {
@@ -963,6 +967,7 @@ export function replayUnconfirmedThreadSettings(): void {
 
 // Resolved once the previous session's unconfirmed writes have been answered.
 let threadSettingsReplaySettled: Promise<void> = Promise.resolve();
+let threadSettingsReplayStarted = false;
 
 /**
  * Drop one entry, leaving the rest for the next attempt. `expected` narrows that to the
@@ -1392,7 +1397,11 @@ export function releaseHeldThreadScopedEdits(): void {
   // The answer is in: this chat owns no snapshot, so the defaults ARE its settings and
   // a run waiting on it can go.
   closeThreadScopedPairingGate(threadId);
-  for (const edit of held) edit.writeGlobal?.();
+  for (const edit of held) {
+    // Written to the defaults now, so the value hydration held back is history.
+    hydratedDefaultsByHeldField.delete(edit.field);
+    edit.writeGlobal?.();
+  }
 }
 
 /**
@@ -1492,6 +1501,15 @@ async function mergeThreadScopedSettingsIntoRow(
   threadSettingsWriteChains.set(threadId, next);
   return next;
 }
+
+/**
+ * What the server said an installation default is, for fields hydration had to skip
+ * because the user had just set them inside a chat whose read was still out. Those edits
+ * belong to the chat, so when its pairing window closes the default goes back to the
+ * value from before the window, which is this browser's pre-hydration copy. The server's
+ * is the authoritative one and lands nowhere else.
+ */
+const hydratedDefaultsByHeldField = new Map<string, unknown>();
 
 /** Is this field an edit waiting on its chat's read, and so not the installation's to set? */
 function isHeldThreadScopedField(field: string): boolean {
@@ -2843,6 +2861,16 @@ function getHydratedSettingsState(
     // written globally, so it advances no mutation version and the server's value would
     // silently replace it. The user is looking at their click; it wins.
     if (isHeldThreadScopedField(key)) {
+      // The click wins in the STORE, but it is the chat's, not the installation's. When
+      // the window closes the default has to go back to a value, and the one captured
+      // before the window is this browser's pre-hydration copy. Keep the server's here
+      // so the restore has the authoritative value to go back to.
+      if (
+        value !== undefined &&
+        scalarSettingMutationVersions[key] === versions.scalarSettings[key]
+      ) {
+        hydratedDefaultsByHeldField.set(key, value);
+      }
       continue;
     }
     if (
@@ -3080,6 +3108,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         warnSettingsPersistenceFailure();
         mirroredSettingsHydrated = true;
         flushPreHydrationSettings();
+        // Independent of this endpoint: the tab-close snapshots waiting in storage are
+        // rows' own settings, and leaving them unsent because /api/chat/settings was
+        // briefly unavailable strands the last session's edit for the whole of this one.
+        replayUnconfirmedThreadSettings();
         set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;
@@ -3449,11 +3481,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const beforeWindow = (pairingWindowDefaults ??
           globalThreadScopedDefaults) as Record<string, unknown> | null;
         for (const field of heldFields) {
-          if (beforeWindow && field in beforeWindow) {
+          // The server answered for this field while the window was open, and hydration
+          // had to skip it. That value is the installation's; the pre-window copy is
+          // only what this browser had cached before the answer arrived.
+          if (hydratedDefaultsByHeldField.has(field)) {
+            captured[field] = hydratedDefaultsByHeldField.get(field);
+          } else if (beforeWindow && field in beforeWindow) {
             captured[field] = beforeWindow[field];
           } else {
             delete captured[field];
           }
+          hydratedDefaultsByHeldField.delete(field);
         }
         globalThreadScopedDefaults = captured as ThreadScopedSettings;
       }

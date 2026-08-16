@@ -575,7 +575,7 @@ export type StoredChatThreadReadResult = {
 
 export async function getStoredChatThreadReadResult(
   threadId: string,
-  options: { bounded?: boolean } = {},
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<StoredChatThreadReadResult> {
   // Incognito threads are never stored, so the lookup can only come back
   // empty -- short-circuit it instead of doing a Dexie read + backend GET.
@@ -591,7 +591,11 @@ export async function getStoredChatThreadReadResult(
     // Bounded for a caller that is gating the UI on this read: an unbounded GET that
     // never answers leaves the request open for the life of the page, and every retry
     // opens another.
-    backendThread = await getChatThread(threadId, { bounded: options.bounded });
+    backendThread = await getChatThread(threadId, {
+      bounded: options.bounded,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
   } catch (error) {
     if (legacyThread && !isChatThreadDeleted(legacyThread.id)) {
       return { thread: legacyThread, cacheable: false };
@@ -623,6 +627,7 @@ export async function getStoredChatThread(
 export async function ensureStoredChatThread(
   threadId: string,
   fallback?: ThreadRecord,
+  options: { bounded?: boolean; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   // An incognito thread is never persisted, so there's genuinely nothing
   // to ensure -- skip the backend round-trips this would otherwise make
@@ -635,7 +640,13 @@ export async function ensureStoredChatThread(
   const legacyThread = fallback ?? (await db.threads.get(threadId));
   let backendThread: ThreadRecord | null;
   try {
-    backendThread = await getChatThread(threadId);
+    // Bounded for a caller whose own request carries a deadline: this read runs BEFORE
+    // it, so an unbounded one here means neither the caller's signal nor the write
+    // timeout ever applies and the write chain behind it never settles.
+    backendThread = await getChatThread(threadId, {
+      bounded: options.bounded,
+      signal: options.signal,
+    });
   } catch (error) {
     if (!legacyThread || isChatThreadDeleted(legacyThread.id)) {
       throw error;
@@ -922,7 +933,13 @@ export async function updateStoredChatThread(
   options: { signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | undefined> {
   if (isThreadIncognito(threadId)) return undefined;
-  const thread = await ensureStoredChatThread(threadId);
+  // Same bound and same signal as the write it precedes: a stall here left the settings
+  // write chain pending for the life of the page, and reopening or forking that chat
+  // waits on that chain.
+  const thread = await ensureStoredChatThread(threadId, undefined, {
+    bounded: true,
+    signal: options.signal,
+  });
   if (!thread) return undefined;
   return updateChatThread(threadId, patch, options);
 }

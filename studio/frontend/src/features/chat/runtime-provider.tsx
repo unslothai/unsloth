@@ -1756,6 +1756,14 @@ function ThreadScopedSettingsSync({
     let defaulted = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let retriesLeft = THREAD_READ_RETRIES;
+    // One per attempt, aborted when the attempt's deadline passes and when the chat is
+    // left. Without it the losing side of the race below stayed open on the server for
+    // the full write timeout while the next try opened another.
+    const reads = new Set<AbortController>();
+    const abortReads = () => {
+      for (const read of reads) read.abort();
+      reads.clear();
+    };
 
     const sync = () => {
       if (cancelled || paired) return;
@@ -1779,15 +1787,21 @@ function ThreadScopedSettingsSync({
       // Settle this chat's own PATCH first. Edit a chat, leave, come straight back and the
       // read can overtake the write and return the pre-edit snapshot, which then goes back
       // over the values the user set and is written out again by the next edit.
+      const read = new AbortController();
+      reads.add(read);
       void awaitThreadScopedSettingsWrite(activeThreadId)
         .then(() =>
           // Bounded, because this read is what holds sends back: an unbounded GET that
           // never settles would park every send in the chat behind "Loading this chat's
           // settings" with nothing to release it, and leave the request open besides.
-          // `bounded` aborts the fetch itself; the race is the backstop for the rest of
-          // the read. Either way a stall becomes a failed attempt, so it retries.
+          // The fetch carries THIS attempt's deadline and its controller, so a stall ends
+          // the request rather than leaving it running while the retry opens the next one;
+          // the race is the backstop for the rest of the read.
           Promise.race([
-            getStoredChatThreadReadResult(activeThreadId, { bounded: true }),
+            getStoredChatThreadReadResult(activeThreadId, {
+              timeoutMs: THREAD_READ_TIMEOUT_MS,
+              signal: read.signal,
+            }),
             new Promise<never>((_, reject) =>
               setTimeout(
                 () => reject(new Error("thread settings read timed out")),
@@ -1796,6 +1810,9 @@ function ThreadScopedSettingsSync({
             ),
           ]),
         )
+        .finally(() => {
+          reads.delete(read);
+        })
         .then(({ thread, cacheable }) => {
           if (cancelled || paired) return;
           // A legacy fallback row means the backend GET FAILED and Dexie answered instead.
@@ -1869,6 +1886,9 @@ function ThreadScopedSettingsSync({
     return () => {
       cancelled = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
+      // Nothing is waiting on these once the chat is gone, and leaving them running is
+      // how an outage turned every chat opened during it into three open requests.
+      abortReads();
       // switched away mid-read: the edit belongs to the chat it was made in, not to the
       // installation defaults that every other snapshot-less chat follows.
       commitHeldThreadScopedEditsToTheirThread();

@@ -1858,8 +1858,14 @@ def _write_chat_thread_settings_in_conn(
     """The snapshot write itself, on a connection whose transaction the caller owns.
 
     None when the row is gone. True when it wrote, False when an older write from the
-    same writer was refused; both leave the caller's transaction usable, so a PATCH
-    carrying settings AND guarded metadata can apply them together or not at all.
+    same writer was refused; both leave the caller's transaction usable.
+
+    The all-or-nothing the caller wants is about FAILURE: a rejected metadata
+    precondition must not leave the settings committed, and a missing row must write
+    nothing. A refusal is not a failure. It means this writer has already landed a newer
+    snapshot, so the row holds what the writer wanted either way, and rolling the
+    metadata back with it would drop a rename the client sent in the same PATCH and got
+    a 200 for.
     """
     row = conn.execute(
         "SELECT settings_json, settings_seqs FROM chat_threads WHERE id = ?",

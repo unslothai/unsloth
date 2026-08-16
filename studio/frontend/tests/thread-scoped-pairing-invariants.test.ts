@@ -119,7 +119,14 @@ test("hydration does not overwrite a field whose edit is still held", () => {
   // A held edit advances no mutation version, so the server's value would replace it and
   // then be persisted to the thread as if the user had chosen it.
   const loop = slice(store, "for (const key of SCALAR_SETTING_KEYS) {", "return nextState;");
-  assert.match(loop, /if \(isHeldThreadScopedField\(key\)\) \{\s*continue;/);
+  assert.match(loop, /if \(isHeldThreadScopedField\(key\)\) \{/);
+  const held = slice(loop, "if (isHeldThreadScopedField(key)) {", "\n    }");
+  assert.match(held, /continue;/);
+  assert.doesNotMatch(
+    held,
+    /\(nextState as Record<ScalarSettingKey, unknown>\)\[key\] = value;/,
+    "the server's value is applied over the held edit",
+  );
 });
 
 test("every snapshot write is ordered against the others", () => {
@@ -352,8 +359,56 @@ test("an explicit clear beats a capability preservation", () => {
 });
 
 test("the thread read that gates sends aborts when it times out", () => {
+  // `bounded` alone is the 30s WRITE timeout, so the losing side of the race below stayed
+  // open while the retry opened the next one. Each attempt carries its own deadline.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
-  assert.match(sync, /getStoredChatThreadReadResult\(activeThreadId, \{ bounded: true \}\)/);
+  assert.match(sync, /timeoutMs: THREAD_READ_TIMEOUT_MS/);
+  assert.match(sync, /signal: read\.signal/);
+});
+
+test("a read nobody is waiting for any more is cancelled", () => {
+  const effect = slice(provider, "const reads = new Set<AbortController>();", "\n  }, [activeThreadId");
+  assert.match(effect, /abortReads\(\);/);
+  const api = read("../src/features/chat/api/chat-api.ts");
+  const get = slice(api, "export async function getChatThread", "\n}");
+  assert.match(get, /options\.timeoutMs !== undefined/);
+  assert.match(get, /combineAbortSignals\(\[timeout\.signal, options\.signal\]\)/);
+});
+
+test("the ensure step in front of a settings write is bounded too", () => {
+  // It runs BEFORE the write, so neither the caller's signal nor the write timeout
+  // reaches it, and a stall there leaves the whole per-thread chain pending.
+  const storage = read("../src/features/chat/utils/chat-history-storage.ts");
+  const update = slice(storage, "export async function updateStoredChatThread", "\n}");
+  assert.match(update, /ensureStoredChatThread\(threadId, undefined, \{/);
+  assert.match(update, /bounded: true/);
+  assert.match(update, /signal: options\.signal/);
+});
+
+test("a tab-close snapshot is replayed even if global settings fail to hydrate", () => {
+  const hydrate = slice(store, "hydratePersistedSettings: async () => {", "beginModelLoading");
+  const catchArm = slice(hydrate, "} catch {", "settingsHydrationPromise = null;");
+  assert.match(catchArm, /replayUnconfirmedThreadSettings\(\);/);
+  // and it must not then run twice
+  const replay = slice(store, "export function replayUnconfirmedThreadSettings", "\n}");
+  assert.match(replay, /if \(threadSettingsReplayStarted\) return;/);
+});
+
+test("a default hydration had to skip is not restored from the pre-hydration copy", () => {
+  // The held edit belongs to the chat; when its window closes the installation default
+  // goes back to a value, and the server's is the authoritative one.
+  assert.match(store, /const hydratedDefaultsByHeldField = new Map<string, unknown>\(\);/);
+  const loop = slice(store, "for (const key of SCALAR_SETTING_KEYS) {", "return nextState;");
+  assert.match(loop, /hydratedDefaultsByHeldField\.set\(key, value\)/);
+  const restore = slice(store, "const beforeWindow = (pairingWindowDefaults ??", "globalThreadScopedDefaults = captured");
+  assert.match(restore, /hydratedDefaultsByHeldField\.has\(field\)/);
+  assert.ok(
+    restore.indexOf("hydratedDefaultsByHeldField.has(field)") <
+      restore.indexOf("field in beforeWindow"),
+    "the pre-window copy still wins over the server's value",
+  );
+  const release = slice(store, "export function releaseHeldThreadScopedEdits", "\n}");
+  assert.match(release, /hydratedDefaultsByHeldField\.delete\(edit\.field\)/);
 });
 
 test("one chat's pairing ending does not release another chat's run", () => {
