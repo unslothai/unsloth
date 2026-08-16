@@ -13738,11 +13738,32 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
+                # The projector is pinned to CPU for this load, so it allocates no VRAM
+                # and must not be charged any: --no-mmproj-offload clears mmproj_use_gpu
+                # and clip.cpp gates the whole GPU backend on it, so weights and compute
+                # both leave the device and there is no partial offload to leave a
+                # remainder behind. Measured at ~0 GPU bytes (3834 MiB idle pinned vs
+                # 4700 MiB on GPU), the same reading _cmd_has_gpu_companion already
+                # applies to the launched argv. Bound before the try for the same reason
+                # as _detected_gpus: the except path (--fit on) falls through to the
+                # launch, which reads it. Only the paravirtual reason is known this
+                # early; the fit probe below may add the automatic one, and it runs
+                # before every site that reads the charge.
+                _mmproj_cpu_pinned = bool(
+                    launch_mmproj_path
+                    and _paravirtual_cpu_forced
+                    and _paravirtual_mmproj_pinnable(server_caps)
+                )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
-                    # Include GPU-loaded mmproj in the fit budget (#5825).
+                    # Include GPU-loaded mmproj in the fit budget (#5825). A CPU-pinned
+                    # projector is not GPU-loaded, so it drops out of the budget here --
+                    # which also clears the _MMPROJ_VRAM_SAFETY surcharge, since both
+                    # sites that add it are gated on a non-zero mmproj_size.
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path)
+                        if effective_is_vision and not _mmproj_cpu_pinned
+                        else 0
                     )
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
@@ -15861,11 +15882,17 @@ class LlamaCppBackend:
                     # past the pass-through extras like the drafter pin, since
                     # --mmproj-offload is a real flag a user can pass and llama.cpp is
                     # last-wins.
-                    if _paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps):
+                    # One flag whichever reason pinned it: the corrupt paravirtual Metal
+                    # device, or the fit probe deciding the projector's VRAM is better
+                    # spent on layers. Both already checked the capability, and emitting
+                    # it twice would be harmless but confusing in the log.
+                    if _mmproj_cpu_pinned:
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
-                        logger.warning(
-                            "Disabling mmproj GPU offload: this Mac's Metal device is virtualised."
-                        )
+                        if _paravirtual_cpu_forced:
+                            logger.warning(
+                                "Disabling mmproj GPU offload: this Mac's Metal "
+                                "device is virtualised."
+                            )
 
                 # Option C: --api-key for direct client access when enabled
                 import secrets as _secrets
