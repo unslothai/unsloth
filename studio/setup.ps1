@@ -4892,7 +4892,11 @@ _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
-sizes = {}
+# Which DISTRIBUTIONS claim each path, by normalized name. Names, not dist-info
+# directories: an interrupted upgrade leaves two dist-infos for the same package,
+# and those are the same owner -- only a genuinely foreign claimant makes a
+# recorded size ambiguous.
+owners = {}
 cands = []
 for x in importlib.metadata.distributions(path=_paths):
     try:
@@ -4915,11 +4919,7 @@ for x in importlib.metadata.distributions(path=_paths):
         if f.is_absolute() or '..' in f.parts:
             continue
         key = os.path.normcase(str(x.locate_file(f)))
-        _sz = (r[2] if len(r) > 2 else '').strip()
-        if key not in sizes:
-            sizes[key] = int(_sz) if _sz.isdigit() else None
-        elif sizes[key] is not None:
-            sizes[key] = min(sizes[key], int(_sz)) if _sz.isdigit() else None
+        owners.setdefault(key, set()).add(_norm(name))
 def _pep440_key(v):
     # A port of packaging.version's own comparison key, used only when packaging
     # itself cannot import. Hand-rolled stage ranking kept springing leaks
@@ -5072,7 +5072,8 @@ def _verdict(d, d_record):
                 continue
             if len(f.parts) > 1 and f.parts[0] in _shared:
                 continue
-            rows.append((f, os.path.normcase(str(d.locate_file(f)))))
+            rows.append((f, (r[2] if len(r) > 2 else '').strip(),
+                         os.path.normcase(str(d.locate_file(f)))))
     tops = (d.read_text('top_level.txt') or '').split()
     # a truncated RECORD can keep its self-entry when the writer ordered entries
     # lexicographically (dist-info sorts before the payload), so the final parsed
@@ -5084,7 +5085,7 @@ def _verdict(d, d_record):
     # line boundary stays undetectable here.
     damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
     if not damaged:
-        for f, key in rows:
+        for f, sz, key in rows:
             try:
                 st = d.locate_file(f).stat()
             except (FileNotFoundError, NotADirectoryError):
@@ -5099,8 +5100,14 @@ def _verdict(d, d_record):
             if not stat.S_ISREG(st.st_mode):
                 damaged = True
                 break
-            _min = sizes.get(key)
-            if _min is not None and f.name not in _rewritten and st.st_size < _min:
+            # The SELECTED candidate's own recorded size, not the smallest across
+            # every dist-info: an old dist-info recording 100 bytes for a path the
+            # new one records as 200 would otherwise let the stale file pass. A
+            # foreign claimant still makes the size ambiguous -- whichever copy
+            # landed says nothing about either RECORD -- and larger than recorded
+            # is a collision, not damage.
+            if (len(owners.get(key, ())) <= 1 and sz.isdigit()
+                    and f.name not in _rewritten and st.st_size < int(sz)):
                 damaged = True
                 break
     def _spec(n, root):
@@ -5118,9 +5125,12 @@ def _verdict(d, d_record):
         # so an executable .pth can put a same-named copy on sys.path and answer for a
         # payload that is gone -- for a plain install and an editable one alike. An
         # empty root means nothing can be bound and only presence is checked.
-        _base = os.path.abspath(root) if root else None
+        _base = os.path.normcase(os.path.abspath(root)) if root else None
         def _inside(p):
-            return _base is None or os.path.abspath(p).startswith(_base + os.sep)
+            # normcase on both sides: Windows paths are case-insensitive, and a
+            # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
+            # would otherwise read as living outside itself
+            return _base is None or os.path.normcase(os.path.abspath(p)).startswith(_base + os.sep)
         if s.origin and s.origin != 'namespace':
             return _inside(s.origin)
         # A namespace spec is not payload on its own: an emptied package directory
