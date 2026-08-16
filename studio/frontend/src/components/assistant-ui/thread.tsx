@@ -2833,6 +2833,7 @@ const Composer: FC<{
         cancelled: boolean;
         threadId: string | null;
         localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
         historyClearGeneration: number;
       }
     >(),
@@ -3133,9 +3134,13 @@ const Composer: FC<{
       waitForCurrentRun = false,
       onStarted?: () => void,
       onAborted?: () => void,
-      // Generation captured before an awaited step that precedes this call, so
-      // a boundary advanced during that step still invalidates the queue.
-      capturedLocalModelBoundary?: number,
+      // Captured before an awaited step that precedes this call, so a boundary
+      // or setting changed during that step still invalidates the queue.
+      capturedAt?: {
+        localModelBoundaryGeneration: number;
+        queuedSettingsEpoch: number;
+        temporary: boolean;
+      },
     ) => {
       const reservationKey = JSON.stringify([
         referenceThreadId,
@@ -3146,12 +3151,15 @@ const Composer: FC<{
         return false;
       }
       const reservation = {
-        temporary: useChatRuntimeStore.getState().incognito,
+        temporary:
+          capturedAt?.temporary ?? useChatRuntimeStore.getState().incognito,
         cancelled: false,
         threadId: referenceThreadId,
         localModelBoundaryGeneration:
-          capturedLocalModelBoundary ?? localPromptQueueModelBoundary.capture(),
+          capturedAt?.localModelBoundaryGeneration ??
+          localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch:
+          capturedAt?.queuedSettingsEpoch ??
           useChatRuntimeStore.getState().queuedSettingsEpoch,
       };
       promptQueueStartPendingRef.current.set(reservationKey, reservation);
@@ -3234,11 +3242,15 @@ const Composer: FC<{
       // report it handled rather than starting a second read that would queue
       // a duplicate once the first reservation has been released.
       if (pastedTextQueuePendingRef.current.has(pendingKey)) return true;
+      // Every baseline the reservation would otherwise take after the read, so
+      // a setting or boundary changed during it still aborts the queue.
+      const chatState = useChatRuntimeStore.getState();
       const pendingRead = {
-        temporary: useChatRuntimeStore.getState().incognito,
+        temporary: chatState.incognito,
         cancelled: false,
         threadId: referenceThreadId,
         localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
+        queuedSettingsEpoch: chatState.queuedSettingsEpoch,
         historyClearGeneration: chatHistoryClearBoundary.capture(),
       };
       pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
@@ -3275,7 +3287,8 @@ const Composer: FC<{
             clearStoredDraft();
           },
           undefined,
-          pendingRead.localModelBoundaryGeneration);
+          pendingRead,
+        );
         })
         .catch(() => {
           toast.error("Could not queue the pasted text.", {
