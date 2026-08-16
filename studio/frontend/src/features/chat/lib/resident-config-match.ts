@@ -84,6 +84,51 @@ type SettingCheck = {
   ) => boolean;
 };
 
+/**
+ * Fallback reasons the backend retries on an IDENTICAL next load, taken from the arms of
+ * `LlamaCppBackend._runtime_matches_intent` that return False to force the repair: a drafter
+ * fetch that can be attempted again, and the stand-down the UI asks the user to fix by
+ * updating llama.cpp. The rest are not here on purpose. "drafter_no_vram" and
+ * "mla_mtp_disabled" are Auto-mode policy, and "runtime_error" only reopens when the draft
+ * count changes, which the settings comparison already sees; treating them as repairable
+ * would prompt to stop running chats on every re-pick and repair nothing.
+ */
+const RETRYABLE_SPEC_FALLBACKS = new Set([
+  "drafter_not_found",
+  "binary_no_mtp",
+  "binary_outdated",
+]);
+
+/** The modes the backend's retry arms are guarded on; anything else asked for no drafter. */
+const SPECULATIVE_MODES = new Set([
+  "auto",
+  "mtp",
+  "mtp+ngram",
+  "dspark",
+  "dflash",
+]);
+
+/**
+ * Whether the resident load's speculative decoding is degraded in a way the next identical
+ * `/load` would repair.
+ *
+ * This is the one place where sending a request the runtime already satisfies is not a
+ * no-op, so it is the one reason to decline the shortcut on settings that match. The
+ * decision stays coarser than the backend's: the status echoes the fallback reason but not
+ * `_dflash_retry_needed` or an inconclusive capability probe, so a load that would dedupe
+ * on the far side can still be sent. That costs one round trip through `already_loaded`,
+ * which returns before any teardown.
+ */
+export function residentSpeculativeNeedsRepair(
+  status: Pick<InferenceStatusResponse, "spec_fallback_reason">,
+  resolvedSpeculativeType: string | null,
+): boolean {
+  return (
+    RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") &&
+    SPECULATIVE_MODES.has(resolvedSpeculativeType ?? "auto")
+  );
+}
+
 const cleanTemplate = (value: string | null | undefined): string | null =>
   value?.trim() ? value : null;
 
@@ -125,7 +170,8 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     pinned: () => true,
-    agrees: (c, s) => (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
+    agrees: (c, s) =>
+      (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
     pinned: () => true,

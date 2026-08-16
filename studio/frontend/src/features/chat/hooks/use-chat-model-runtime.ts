@@ -59,7 +59,10 @@ import {
   normalizeSpeculativeType,
   resolveInferenceCheckpointId,
 } from "../lib/apply-inference-status-to-store";
-import { residentRuntimeMatchesConfig } from "../lib/resident-config-match";
+import {
+  residentRuntimeMatchesConfig,
+  residentSpeculativeNeedsRepair,
+} from "../lib/resident-config-match";
 import { residentModelMatchesPick } from "../lib/resident-model-match";
 import {
   mergeBackendRecommendedInference,
@@ -675,6 +678,15 @@ export function useChatModelRuntime() {
             loadPath,
             ggufVariant,
           }) &&
+          // A repairable speculative fallback is the one case where an identical request is
+          // not a no-op: _runtime_matches_intent deliberately answers False for it so the
+          // next load retries the drafter. Short-circuiting would suppress that and strand
+          // the user with speculation off, so let /load through and let the backend decide.
+          !residentSpeculativeNeedsRepair(
+            residentStatus,
+            normalizeSpeculativeType(pendingConfig?.speculativeType) ??
+              readPersistedSpeculativeType(),
+          ) &&
           // The id names the weights, not how the server was invoked. A remembered context
           // length, drafter, placement or extra arg the resident load does not run is a real
           // reload, and skipping it would drop the setting with nothing on screen to say so.
@@ -695,6 +707,22 @@ export function useChatModelRuntime() {
           // hydrating, so the resident status wins over the staged snapshot. The helper form
           // carries the loaded diffusion flag a resident image model needs.
           restorePreviousConfig();
+          // ...except for maxSeqLength, which the rollback has the last word on: it is a
+          // client-side generation cap, no status field echoes it, and applyActiveModelStatus
+          // below therefore cannot correct it. Leaving it rolled back would hand this model
+          // the OUTGOING one's cap, which is visible in truncation but nowhere on screen.
+          const pickedMaxSeqLength = normalizeMaxSeqLength(
+            pendingConfig?.maxSeqLength,
+          );
+          if (pickedMaxSeqLength != null) {
+            const restored = useChatRuntimeStore.getState();
+            if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
+              restored.setParams({
+                ...restored.params,
+                maxSeqLength: pickedMaxSeqLength,
+              });
+            }
+          }
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;
           // Adopt this pick's own pin, by the rule a completed load writes it: the poll skips

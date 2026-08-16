@@ -18,9 +18,8 @@ import { fileURLToPath } from "node:url";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { residentRuntimeMatchesConfig } = await import(
-  "../src/features/chat/lib/resident-config-match.ts"
-);
+const { residentRuntimeMatchesConfig, residentSpeculativeNeedsRepair } =
+  await import("../src/features/chat/lib/resident-config-match.ts");
 
 /** Every field unset: what a model the user never configured would carry. */
 const BLANK = {
@@ -508,4 +507,127 @@ test("a blank chat template agrees with a load that has none", () => {
     ),
     true,
   );
+});
+
+/**
+ * The speculative repair window. `_runtime_matches_intent` answers False for a retryable
+ * drafter failure so the next identical load fixes it, which is the only case where
+ * skipping the load is not free. Reading a permanent downgrade as repairable is the
+ * opposite failure: it would prompt to stop running chats on every re-pick, which is #8893
+ * again, and repair nothing.
+ */
+test("a retryable drafter failure declines the shortcut", () => {
+  for (const reason of [
+    "drafter_not_found",
+    "binary_no_mtp",
+    "binary_outdated",
+  ]) {
+    for (const mode of ["auto", "mtp", "mtp+ngram", "dspark", "dflash"]) {
+      assert.equal(
+        residentSpeculativeNeedsRepair({ spec_fallback_reason: reason }, mode),
+        true,
+        `${reason} under ${mode} must reload`,
+      );
+    }
+  }
+});
+
+test("an Auto-mode policy downgrade is not a repair the load can make", () => {
+  for (const reason of [
+    "drafter_no_vram",
+    "mla_mtp_disabled",
+    "runtime_error",
+  ]) {
+    assert.equal(
+      residentSpeculativeNeedsRepair({ spec_fallback_reason: reason }, "auto"),
+      false,
+      `${reason} must not reload`,
+    );
+  }
+});
+
+test("a healthy runtime and a pick wanting no drafter both stay on the shortcut", () => {
+  assert.equal(residentSpeculativeNeedsRepair({}, "auto"), false);
+  assert.equal(
+    residentSpeculativeNeedsRepair({ spec_fallback_reason: null }, "mtp"),
+    false,
+  );
+  // Speculation off: the retry arms are all guarded on a speculative mode, so a pick that
+  // asks for none has nothing to repair.
+  for (const mode of ["off", "none", "ngram"]) {
+    assert.equal(
+      residentSpeculativeNeedsRepair(
+        { spec_fallback_reason: "drafter_not_found" },
+        mode,
+      ),
+      false,
+      `${mode} must not reload`,
+    );
+  }
+  // A null resolved mode is Auto, which is a speculative mode.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: "drafter_not_found" },
+      null,
+    ),
+    true,
+  );
+});
+
+/**
+ * maxSeqLength is the one setting the comparator deliberately ignores, because no status
+ * field echoes it, and that is exactly why the shortcut has to carry it: the rollback that
+ * makes the panel agree with the resident server is the last word on a client-only cap, and
+ * it speaks for the OUTGOING model. Structural because the write happens inside selectModel
+ * against the live store rather than in this leaf.
+ */
+test("the resident shortcut keeps the picked model's own sequence cap", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const configCheck = source.indexOf(
+    "residentRuntimeMatchesConfig(residentStatus",
+  );
+  const rollback = source.indexOf("restorePreviousConfig();", configCheck);
+  const reapply = source.indexOf("pickedMaxSeqLength", configCheck);
+  assert.ok(
+    rollback > 0,
+    "the shortcut no longer rolls the staged config back",
+  );
+  assert.ok(
+    reapply > rollback,
+    "the shortcut leaves the outgoing model's maxSeqLength in place",
+  );
+  const confirmPrompt = source.indexOf(
+    "await confirmStopRunningChatsIfNeeded(",
+  );
+  assert.ok(reapply < confirmPrompt, "the re-apply escaped the shortcut");
+});
+
+/** The repair window is only useful if it is consulted before the reload is decided. */
+test("selectModel asks about a repairable drafter before adopting", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const repairCheck = source.indexOf("residentSpeculativeNeedsRepair(");
+  const confirmPrompt = source.indexOf(
+    "await confirmStopRunningChatsIfNeeded(",
+  );
+  assert.ok(
+    repairCheck > 0,
+    "selectModel no longer reloads a degraded drafter",
+  );
+  assert.ok(repairCheck < confirmPrompt);
 });
