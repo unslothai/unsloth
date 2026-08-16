@@ -3727,8 +3727,8 @@ def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
     assert counted[0] != messages
 
 
-def test_rolling_respawn_retry_preserves_resolved_default_max_tokens(monkeypatch):
-    """A changed post-respawn context does not alter the request already preflighted."""
+def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
+    """A smaller replacement window can evict more without repeating the first eviction."""
     import httpx
 
     payloads: list[dict] = []
@@ -3738,19 +3738,13 @@ def test_rolling_respawn_retry_preserves_resolved_default_max_tokens(monkeypatch
         payloads,
     )
     backend._effective_context_length = 100
-    preflight_calls: list[int] = []
-
-    def fake_fit(messages, *, context_length, max_tokens, **_kwargs):
-        preflight_calls.append(max_tokens)
-        return [messages[-1]], {
-            "dropped_messages": len(messages) - 1,
-            "prompt_tokens_before": 90,
-            "prompt_tokens_after": 10,
-            "context_length": context_length,
-            "fits": True,
-        }
-
-    monkeypatch.setattr("core.inference.llama_cpp.fit_rolling_context", fake_fit)
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
 
     def fake_respawn():
         backend._effective_context_length = 60
@@ -3760,9 +3754,11 @@ def test_rolling_respawn_retry_preserves_resolved_default_max_tokens(monkeypatch
     events = list(
         backend.generate_chat_completion(
             messages = [
-                {"role": "user", "content": "old"},
-                {"role": "assistant", "content": "answer"},
-                {"role": "user", "content": "latest"},
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "u" * 25},
+                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "final"},
             ],
             context_overflow = "truncate_oldest",
         )
@@ -3773,10 +3769,11 @@ def test_rolling_respawn_retry_preserves_resolved_default_max_tokens(monkeypatch
         for event in events
         if isinstance(event, dict) and event.get("type") == "context_truncated"
     ]
-    assert preflight_calls == [100]
-    assert len(notices) == 1
-    assert [payload["max_tokens"] for payload in payloads] == [100, 100]
-    assert payloads[0]["messages"] == payloads[1]["messages"]
+    assert [notice["dropped_messages"] for notice in notices] == [2, 2]
+    assert [notice["context_length"] for notice in notices] == [100, 60]
+    assert [payload["max_tokens"] for payload in payloads] == [100, 60]
+    assert len(payloads[0]["messages"]) == 3
+    assert len(payloads[1]["messages"]) == 1
 
 
 def test_connect_error_after_tool_result_recovers_both_generation_paths(monkeypatch):

@@ -19677,6 +19677,7 @@ class LlamaCppBackend:
         retry_image_b64 = image_b64
         retry_max_tokens = max_tokens
         retry_context_overflow = context_overflow
+        retry_preflight_context_length = None
         if perf_callback is not None:
             payload["return_progress"] = True
             payload["timings_per_token"] = True
@@ -19725,6 +19726,7 @@ class LlamaCppBackend:
                 retry_image_b64 = None
                 retry_max_tokens = payload["max_tokens"]
                 retry_context_overflow = None
+                retry_preflight_context_length = self._effective_context_length
                 if truncation and truncation["fits"]:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
@@ -19861,6 +19863,15 @@ class LlamaCppBackend:
                 logger.warning(
                     "llama-server was unreachable; respawned it and retrying the generation"
                 )
+                if (
+                    retry_preflight_context_length is not None
+                    and retry_preflight_context_length != self._effective_context_length
+                ):
+                    # Refit the already-compacted prompt against a replacement server's
+                    # actual window. Any event now reports only additional evictions.
+                    retry_context_overflow = context_overflow
+                    if max_tokens is None:
+                        retry_max_tokens = None
                 yield from self.generate_chat_completion(
                     retry_messages,
                     image_b64 = retry_image_b64,
