@@ -4503,15 +4503,15 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
     # land an unsupported version. Unpinned CPU hosts keep the bare trio (pre-pin behavior).
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
     if ($TorchIndexPinned) {
-        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
-        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
-        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+        $cpuTorchSpec  = "torch>=2.4,<2.14.0"
+        $cpuVisionSpec = "torchvision>=0.19,<0.28.0"
+        $cpuAudioSpec  = "torchaudio>=2.4,<2.14.0"
     }
     # Bound an XPU fallback too: this is not the plain CPU box the bare trio was preserved for.
     if ($XpuCpuFallback) {
-        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
-        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
-        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+        $cpuTorchSpec  = "torch>=2.4,<2.14.0"
+        $cpuVisionSpec = "torchvision>=0.19,<0.28.0"
+        $cpuAudioSpec  = "torchaudio>=2.4,<2.14.0"
     }
     $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec, $cpuAudioSpec)
     if ($WinArm64NoAudio) { $_torchTrio = @($cpuTorchSpec, $cpuVisionSpec) }

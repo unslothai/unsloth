@@ -234,9 +234,9 @@ def _torch_index_leaf(url: str) -> str:
 # torchvision/torchaudio are pinned (not bare) so the exclusive --index-url can't
 # resolve one built against a different torch major -> ABI mismatch.
 _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
-    "torch>=2.4,<2.12.0",
-    "torchvision>=0.19,<0.27.0",
-    "torchaudio>=2.4,<2.12.0",
+    "torch>=2.4,<2.14.0",
+    "torchvision>=0.19,<0.28.0",
+    "torchaudio>=2.4,<2.14.0",
 )
 
 # CPU torch repair specs (see _ensure_cpu_torch). Same bounds/reasoning as CUDA: the

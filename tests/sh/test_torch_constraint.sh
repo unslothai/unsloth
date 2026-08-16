@@ -128,14 +128,14 @@ _count=$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio"$' "$INSTALL_SH" || true)
 assert_eq "no bare torchaudio companion remains" "0" "$_count"
 # The cu* widen must carry the companions with it (torch <2.12 with torchaudio <2.11
 # would cap a mismatched pair the other way).
-assert_eq "cu widen pairs torchaudio (<2.12)" "1" "$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"' "$INSTALL_SH" || true)"
+assert_eq "cu widen pairs torchaudio (<2.14)" "1" "$(grep -c 'TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.14.0"' "$INSTALL_SH" || true)"
 _gated=$(grep -c '_expected_torch_flavor_tag "$TORCH_INDEX_URL"' "$INSTALL_SH" || true)
 _has_gate=$([ "$_gated" -ge 1 ] && echo "yes" || echo "no")
 assert_eq "custom-companion bound gated on empty flavor tag" "yes" "$_has_gate"
 
 # A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x land torch
 # 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC).
-_cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' "$INSTALL_SH" || true)
+_cuda_widen=$(grep -c 'TORCH_CONSTRAINT="torch>=2.4,<2.14.0"' "$INSTALL_SH" || true)
 assert_eq "CUDA TORCH_CONSTRAINT widened to <2.12.0" "1" "$_cuda_widen"
 
 # Widening keys off the final leaf (_torch_index_leaf), not the full URL, so a

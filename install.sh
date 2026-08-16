@@ -3686,12 +3686,12 @@ case "$_torch_index_leaf" in
         TORCHVISION_CONSTRAINT="torchvision>=0.26.0,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.11.0,<2.12.0"
         ;;
-    # CUDA cu12x/cu13x indexes ship torch 2.11.x: widen the ceiling to <2.12.0 (matches
+    # CUDA cu12x/cu13x indexes ship torch 2.13.x: widen the ceiling to <2.14.0 (matches
     # _CUDA_TORCH_PKG_SPEC) and widen the companions with it so the trio stays paired.
     cu[0-9]*)
-        TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
-        TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
-        TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
+        TORCH_CONSTRAINT="torch>=2.4,<2.14.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.28.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.14.0"
         ;;
     # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
     # device below it, so a mirror serving an older +xpu wheel would install something that

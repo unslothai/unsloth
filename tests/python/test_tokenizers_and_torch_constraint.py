@@ -70,17 +70,17 @@ class TestStructuralTorchConstraint:
     def test_tightened_assignment_exists(self):
         assert 'TORCH_CONSTRAINT="torch>=2.6,<2.11.0"' in self._sh
 
-    def test_cuda_constraint_widened_to_2_12(self):
-        """A fresh CUDA install widens the ceiling to <2.12.0 so cu12x/cu13x
-        land torch 2.11.x (matches the base image and _CUDA_TORCH_PKG_SPEC);
-        without it cu128/cu130 resolves torch 2.10.x."""
-        assert 'TORCH_CONSTRAINT="torch>=2.4,<2.12.0"' in self._sh
+    def test_cuda_constraint_widened_to_2_13(self):
+        """A fresh CUDA install widens the ceiling to <2.14.0 so cu12x/cu13x
+        land torch 2.13.x (GHSA-rrmf-rvhw-rf47); without it cu128/cu130 resolves
+        an older torch family."""
+        assert 'TORCH_CONSTRAINT="torch>=2.4,<2.14.0"' in self._sh
 
     def test_cuda_case_widens_via_index_leaf(self):
         """The cu* branch of the _torch_index_leaf case sets the widened
         constraint (parallel to rocm7.2), anchored on the leaf."""
         m = re.search(
-            r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.12\.0"',
+            r'cu\[0-9\]\*\)\s*TORCH_CONSTRAINT="torch>=2\.4,<2\.14\.0"',
             self._sh,
         )
         assert m is not None, "CUDA (cu*) TORCH_CONSTRAINT widening case not found"
@@ -436,7 +436,7 @@ class TestTorchConstraintShell:
         assert "torch>=2.4,<2.11.0" in logged, f"uv log: {logged}"
 
     # Mirrors the _torch_index_leaf case in install.sh: rocm7.2 -> 2.11.x floor,
-    # CUDA -> widened <2.12.0 ceiling, else (CPU/older ROCm) -> default. Anchored
+    # CUDA -> widened <2.14.0 ceiling, else (CPU/older ROCm) -> default. Anchored
     # on the final path segment, so a mirror base path containing cu*/rocm7.2 but
     # ending in a cpu/older-rocm leaf keeps the default.
     _INDEX_SNIPPET = textwrap.dedent(r"""
@@ -448,7 +448,7 @@ class TestTorchConstraintShell:
         _torch_index_leaf="${_torch_index_leaf##*/}"
         case "$_torch_index_leaf" in
             rocm7.2)  TORCH_CONSTRAINT="torch>=2.11.0,<2.12.0" ;;
-            cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.12.0" ;;
+            cu[0-9]*) TORCH_CONSTRAINT="torch>=2.4,<2.14.0" ;;
         esac
         echo "$TORCH_CONSTRAINT"
     """).strip()
@@ -469,7 +469,7 @@ class TestTorchConstraintShell:
     @pytest.mark.parametrize("leaf", ["cu118", "cu124", "cu126", "cu128", "cu130"])
     def test_cuda_index_widens_to_2_12(self, tmp_path, leaf):
         url = f"https://download.pytorch.org/whl/{leaf}"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.14.0"
 
     def test_rocm72_index_uses_211_floor(self, tmp_path):
         url = "https://download.pytorch.org/whl/rocm7.2"
@@ -486,7 +486,7 @@ class TestTorchConstraintShell:
 
     def test_cuda_index_custom_mirror_widens(self, tmp_path):
         url = "https://internal.example.com/pytorch/cu128"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.14.0"
 
     @pytest.mark.parametrize(
         "url",

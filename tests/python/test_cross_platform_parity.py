@@ -769,9 +769,9 @@ class TestPinnedIndexClearsUvEnvParity:
         An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         for spec in (
-            '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
-            '$cpuVisionSpec = "torchvision>=0.19,<0.27.0"',
-            '$cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"',
+            '$cpuTorchSpec  = "torch>=2.4,<2.14.0"',
+            '$cpuVisionSpec = "torchvision>=0.19,<0.28.0"',
+            '$cpuAudioSpec  = "torchaudio>=2.4,<2.14.0"',
         ):
             assert spec in text, f"setup.ps1 must bound the pinned CPU trio: {spec}"
         assert (
@@ -786,8 +786,8 @@ class TestPinnedIndexClearsUvEnvParity:
         # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
-        assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
-            "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.12 "
+        assert spec_block and '"torch>=2.4,<2.14.0"' in spec_block.group(1), (
+            "_CPU_TORCH_PKG_SPEC (via _CUDA_TORCH_PKG_SPEC) must keep the torch<2.14 "
             "ceiling the setup.ps1 pinned CPU branch mirrors"
         )
 
