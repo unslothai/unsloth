@@ -542,6 +542,28 @@ class AnthropicPassthroughEmitter:
         delta = choice.get("delta") or {}
         finish_reason = choice.get("finish_reason")
 
+        # ── Reasoning ──
+        # llama-server splits <think> into reasoning_content whenever it can parse
+        # the model's reasoning format (it does so for tool-calling turns, which is
+        # every Claude Code turn). Reading only `content` drops the entire thinking
+        # trace, so the model appears not to think at all.
+        reasoning = delta.get("reasoning_content")
+        if reasoning:
+            if self._current_block_type != "thinking":
+                if self._current_block_type is not None:
+                    events.append(self._close_current_block())
+                events.extend(self._open_thinking_block())
+            events.append(
+                build_anthropic_sse_event(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": self.block_index,
+                        "delta": {"type": "thinking_delta", "thinking": reasoning},
+                    },
+                )
+            )
+
         # ── Text content ──
         content = delta.get("content")
         if content:
@@ -651,6 +673,20 @@ class AnthropicPassthroughEmitter:
                     "type": "content_block_start",
                     "index": self.block_index,
                     "content_block": {"type": "text", "text": ""},
+                },
+            )
+        ]
+
+    def _open_thinking_block(self) -> list[str]:
+        self.block_index += 1
+        self._current_block_type = "thinking"
+        return [
+            build_anthropic_sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self.block_index,
+                    "content_block": {"type": "thinking", "thinking": ""},
                 },
             )
         ]

@@ -502,6 +502,7 @@ from models.inference import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
     AnthropicResponseTextBlock,
+    AnthropicResponseThinkingBlock,
     AnthropicResponseToolUseBlock,
     AnthropicUsage,
     CreateOpenAIContainerBody,
@@ -6266,6 +6267,13 @@ async def _anthropic_passthrough_non_streaming(
     finish_reason = choice.get("finish_reason")
 
     content_blocks = []
+    # Reasoning first: llama-server splits <think> into reasoning_content on any turn
+    # whose format it can parse, and Anthropic orders thinking ahead of the answer.
+    # Reading only `content` drops the trace and the model looks like it never thought.
+    reasoning = message.get("reasoning_content") or ""
+    if reasoning.strip():
+        content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
+
     text = message.get("content") or ""
     if text:
         text = _TOOL_XML_RE.sub("", text).strip()

@@ -1540,7 +1540,20 @@ class AnthropicResponseToolUseBlock(BaseModel):
     input: dict
 
 
-AnthropicResponseBlock = Union[AnthropicResponseTextBlock, AnthropicResponseToolUseBlock]
+class AnthropicResponseThinkingBlock(BaseModel):
+    type: Literal["thinking"] = "thinking"
+    thinking: str
+    # Anthropic signs thinking blocks so they can be replayed on a later turn.
+    # Nothing local can produce a valid signature, so it stays empty; clients
+    # that only render the trace do not check it.
+    signature: str = ""
+
+
+AnthropicResponseBlock = Union[
+    AnthropicResponseTextBlock,
+    AnthropicResponseToolUseBlock,
+    AnthropicResponseThinkingBlock,
+]
 
 
 class AnthropicMessagesResponse(BaseModel):

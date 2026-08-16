@@ -1301,6 +1301,60 @@ class TestAnthropicPassthroughStreamAdapter:
         assert captured["body"].get("chat_template_kwargs") == expected
 
 
+class TestReasoningContentReachesTheClient:
+    """llama-server puts the thinking trace in `reasoning_content`, not `content`.
+    Reading only `content` drops it and the model looks like it never thought --
+    which is what every Claude Code turn hit, since tool turns always split."""
+
+    def test_stream_emits_thinking_block(self):
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter()
+        emitter.start("msg_1", "test-model")
+        out = emitter.feed_chunk(
+            {"choices": [{"delta": {"reasoning_content": "step one"}}]}
+        )
+        out += emitter.feed_chunk({"choices": [{"delta": {"content": "the answer"}}]})
+        blob = "".join(out)
+
+        assert '"type": "thinking"' in blob
+        assert "thinking_delta" in blob
+        assert "step one" in blob
+        # Thinking must open before the text block, the order Anthropic defines.
+        assert blob.index("thinking_delta") < blob.index("text_delta")
+
+    def test_stream_thinking_only_still_emits(self):
+        """A reasoning-only reply must not come back as an empty message."""
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter()
+        emitter.start("msg_1", "test-model")
+        blob = "".join(
+            emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "only"}}]})
+        )
+        assert "thinking_delta" in blob and "only" in blob
+
+    def test_non_streaming_builds_thinking_block(self):
+        from models.inference import (
+            AnthropicMessagesResponse,
+            AnthropicResponseTextBlock,
+            AnthropicResponseThinkingBlock,
+        )
+
+        resp = AnthropicMessagesResponse(
+            model = "m",
+            content = [
+                AnthropicResponseThinkingBlock(thinking = "because 2+2"),
+                AnthropicResponseTextBlock(text = "4"),
+            ],
+        )
+        dumped = resp.model_dump()
+        assert [b["type"] for b in dumped["content"]] == ["thinking", "text"]
+        assert dumped["content"][0]["thinking"] == "because 2+2"
+        # signature is part of Anthropic's shape; empty is fine, missing is not.
+        assert "signature" in dumped["content"][0]
+
+
 class TestAnthropicReasoningArgs:
     """`/v1/messages` must accept Anthropic's `thinking` block and the
     x-unsloth reasoning fields instead of silently swallowing them."""
