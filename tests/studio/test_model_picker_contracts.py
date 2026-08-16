@@ -49,6 +49,24 @@ def _read_backend(rel: str) -> str:
     return path.read_text(encoding = "utf-8")
 
 
+def _override_lookup_candidates(*args, **kwargs) -> list[str]:
+    """The real override-key ladder, imported rather than grepped.
+
+    A text assertion over inference.py cannot survive the ladder being moved to another module,
+    which is exactly what #8702 did (unchanged, but four contract tests went red for it). The
+    module is import-cheap -- stdlib only at import time, with the quant-label helper imported
+    lazily inside the function -- so this costs nothing the source read did not already cost.
+    """
+    import sys
+
+    backend = str(WORKDIR / "studio" / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from utils.openai_auto_switch_settings import override_lookup_candidates
+
+    return override_lookup_candidates(*args, **kwargs)
+
+
 def test_models_api_sends_token_via_header_not_query():
     """getModelConfig / checkVisionModel / checkEmbeddingModel must pass the HF
     token through hubTokenHeader, never as a ?hf_token= query param (which leaks
@@ -1971,13 +1989,14 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     assert "resolveInitialConfig(checkpointId" not in status
 
     # The backend applies the same model's override by the same alias, which is why the
-    # echo the adoption gate compares against carries the saved count at all.
-    route = _read_backend("routes/inference.py")
-    overrides = route.split("Apply the saved launch config so an API swap loads as the picker", 1)[
-        1
-    ].split("load_kwargs = {", 1)[0]
-    assert 'f"{override_id}:{variant}" if variant else None,' in overrides
-    assert "override_id," in overrides
+    # echo the adoption gate compares against carries the saved count at all. Driven through the
+    # real ladder rather than grepped out of inference.py, for the reason given in
+    # test_a_standalone_gguf_has_one_settings_identity_everywhere.
+    candidates = _override_lookup_candidates("/models/m.gguf", "org/repo", "Q8_0")
+    assert candidates[:2] == ["/models/m.gguf:Q8_0", "org/repo:Q8_0"], (
+        "the variant-qualified keys come first, load path before advertised alias"
+    )
+    assert "org/repo" in candidates, "the alias is still read, as the cached-alias path relies on"
 
 
 def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count():
@@ -1998,9 +2017,13 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
         "applyPerModelConfigToRuntime(pendingLoadConfig,"
     ), "a config staged on the selection must not replace it either"
     picker = " ".join(_read("features/chat/chat-page.tsx").split())
-    assert (
-        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, }); "
-        "const hasAppliedConfig = applyModelLoadConfigToRuntime(" in picker
+    # Ordering, not adjacency, exactly as the use-chat-model-runtime.ts check above does it. The
+    # concatenated form demanded the two statements be neighbours, so #8702 broke it by inserting
+    # `const remembered = rememberedConfigFor(selection);` between them -- which changes nothing
+    # about the contract, since the snapshot is still taken first.
+    assert "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });" in picker
+    assert picker.index("const previousConfig = currentRuntimePerModelConfig(") < picker.index(
+        "applyModelLoadConfigToRuntime("
     ), "the snapshot must be taken before the target's config is applied"
     rollback = runtime.split("const rollbackSpeculativeType", 1)[1]
     assert "nParallel: previousNParallel," in rollback
@@ -2710,12 +2733,16 @@ def test_a_standalone_gguf_has_one_settings_identity_everywhere():
     row_identity = _read("features/hub/inventory/settings-identity.ts")
     assert 'row.path.toLowerCase().endsWith(".gguf")' in row_identity
 
-    # The precedence that makes the bare path the one that wins.
-    route = _read_backend("routes/inference.py")
-    assert 'f"{target_id}:{file_variant}" if file_variant else None,' in route
-    bare = route.index("\n                            target_id,\n")
-    labelled = route.index('f"{target_id}:{file_variant}"')
-    assert bare < labelled, "the bare path must be read before the filename label"
+    # The precedence that makes the bare path the one that wins. Asserted on the real function
+    # rather than on the text of inference.py: #8702 moved this ladder out into
+    # utils/openai_auto_switch_settings.py unchanged, and the grep that used to live here went red
+    # for a pure refactor while the behaviour it guards never moved.
+    candidates = _override_lookup_candidates("/models/m-Q4_K_M.gguf", "org/repo", None)
+    assert candidates == [
+        "/models/m-Q4_K_M.gguf",
+        "/models/m-Q4_K_M.gguf:Q4_K_M",
+        "org/repo",
+    ], "the bare path must be read before the filename label, and both before the alias"
 
 
 def test_monitor_unload_clears_only_the_model_it_freed():
@@ -2972,10 +2999,16 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # The button, not the word: "Reset" also appears in this file's own comments, so a
     # raw source search passes with the control deleted and the Playwright reset gate
     # only finds out 25 minutes later.
-    assert re.search(
-        r"onClick=\{\(\) => setConfig\(\{ \.\.\.DEFAULT_PER_MODEL_CONFIG \}\)\}\s*>\s*Reset\s*</Button>",
-        page,
-    ), "the Reset button's JSX is gone or no longer named Reset"
+    # Whole elements, then the one that is both, the same way
+    # test_the_primary_action_keeps_its_four_labels does it. The old single-line regex pinned the
+    # handler body exactly, so #8702 broke it by adding `llamaExtraArgs: null` and reflowing the
+    # call across lines -- while the button itself is untouched and still named Reset.
+    reset = any(
+        "DEFAULT_PER_MODEL_CONFIG" in el.group(0) and ">\n          Reset\n        <" in el.group(0)
+        or ("DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0)))
+        for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
+    )
+    assert reset, "the Reset button's JSX is gone or no longer named Reset"
 
 
 def test_the_primary_action_keeps_its_four_labels():

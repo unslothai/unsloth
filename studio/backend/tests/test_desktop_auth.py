@@ -781,6 +781,24 @@ def test_desktop_capabilities_json_reports_rollout_safe_flags():
     assert isinstance(body["version"], str)
 
 
+def _routers_main_imports() -> set[str]:
+    """Every ``*_router`` name in main.py's ``from routes import (...)`` block.
+
+    Read from the source rather than by importing ``routes``: importing it would pull in torch,
+    transformers and llama.cpp, which is precisely what the stub below exists to avoid.
+    """
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    block = re.search(r"from routes import \(([^)]*)\)", main_src, re.S)
+    assert block is not None, "main.py no longer has a parenthesised routes import; re-derive this"
+    names = set(re.findall(r"(\w+_router)", block.group(1)))
+    assert names, "the routes import block named no routers; re-derive this"
+    return names
+
+
 def test_health_response_reports_desktop_capability_fields(monkeypatch):
     routes_module = ModuleType("routes")
     routes_module.__path__ = []
@@ -797,26 +815,18 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     profile_stats_module = ModuleType("routes.profile_stats")
     profile_stats_module.router = APIRouter()
 
-    for name, router in {
-        "auth_router": APIRouter(),
-        "chat_history_router": APIRouter(),
-        "data_recipe_router": APIRouter(),
-        "datasets_router": APIRouter(),
-        "export_router": APIRouter(),
-        "inference_router": APIRouter(),
-        "inference_studio_router": APIRouter(),
-        "mcp_servers_router": APIRouter(),
-        "models_router": APIRouter(),
-        "openai_codex_auth_router": APIRouter(),
-        "providers_router": APIRouter(),
-        "rag_router": APIRouter(),
-        "research_runs_router": APIRouter(),
-        "settings_router": settings_module.router,
-        "training_history_router": APIRouter(),
-        "training_router": APIRouter(),
-        "video_router": APIRouter(),
-    }.items():
-        setattr(routes_module, name, router)
+    # Derived from main.py's own import block, not hand-listed. A hardcoded dict went stale twice:
+    # openai_codex_auth_router after #8511 and youtube_router after #8648, each time taking every
+    # test in this file out with an ImportError. Reading the names out of the source keeps the
+    # stub complete by construction, and still costs nothing at import time -- which is the whole
+    # point of stubbing `routes` here rather than importing the real package and its ML stack.
+    for name in _routers_main_imports():
+        setattr(
+            routes_module,
+            name,
+            # settings is a real module above because the health payload reads its router.
+            settings_module.router if name == "settings_router" else APIRouter(),
+        )
     routes_module.settings = settings_module
     routes_module.llama = llama_module
 
@@ -1066,32 +1076,36 @@ def test_desktop_auth_provision_has_bounded_timeout():
 
 
 def test_the_router_stub_covers_every_router_main_imports():
-    """The fake ``routes`` module above is a hardcoded dict, so a router added to main.py's
-    ``from routes import (...)`` block without a matching stub entry kills every test in this
-    file with an ImportError rather than a useful message, as ``openai_codex_auth_router`` did
-    after #8511. Comparing the two lists keeps that omission local to this assertion."""
-    import inspect
+    """The stub is now derived from main.py rather than hand-listed, so it cannot go stale the way
+    it did for ``openai_codex_auth_router`` after #8511 and ``youtube_router`` after #8648, each of
+    which killed every test in this file with an ImportError. What still can break is the
+    derivation itself: a reshaped import block in main.py would silently yield a short list, and
+    the stub would be incomplete again with no hint why. So pin the derivation against the real
+    package's ``__all__``, read textually for the same no-import reason."""
     import re
     from pathlib import Path
 
     backend = Path(__file__).resolve().parent.parent
-    main_src = (backend / "main.py").read_text(encoding = "utf-8")
-    block = re.search(r"from routes import \(([^)]*)\)", main_src, re.S)
-    assert block is not None, "main.py no longer has a parenthesised routes import; re-derive this"
-    imported = set(re.findall(r"(\w+_router)", block.group(1)))
-    assert imported, "the routes import block named no routers; re-derive this"
+    imported = _routers_main_imports()
 
-    # The health test's own stub only: another fixture's stubs would count as coverage here.
-    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
-    stubbed = set(re.findall(r'"(\w+_router)":', own_src))
-    assert stubbed, "the health test's stub dict named no routers; re-derive this"
-    missing = sorted(imported - stubbed)
-    assert not missing, (
-        f"main.py imports {missing} from routes, but the stub dict in this file does not "
-        f"define them, so the routes stand-in will not satisfy that import"
+    init_src = (backend / "routes" / "__init__.py").read_text(encoding = "utf-8")
+    all_block = re.search(r"__all__\s*=\s*\[([^\]]*)\]", init_src, re.S)
+    assert all_block is not None, "routes/__init__.py no longer has a literal __all__"
+    exported = set(re.findall(r'"(\w+_router)"', all_block.group(1)))
+    assert exported, "routes/__init__.py's __all__ named no routers; re-derive this"
+
+    unknown = sorted(imported - exported)
+    assert not unknown, (
+        f"main.py imports {unknown} from routes, but routes/__init__.py does not export them: "
+        f"the app itself would fail to start"
     )
 
-    # Same drift for submodule imports, which need a sys.modules entry rather than a dict key.
+    # Same drift for submodule imports, which need a sys.modules entry rather than an attribute,
+    # and are still registered by hand -- so this half of the check keeps earning its keep.
+    import inspect
+
+    main_src = (backend / "main.py").read_text(encoding = "utf-8")
+    own_src = inspect.getsource(test_health_response_reports_desktop_capability_fields)
     submodules = set(re.findall(r"^from routes\.(\w+) import", main_src, re.M))
     assert submodules, "main.py imports no routes submodule; re-derive this"
     registered = set(re.findall(r'setitem\(\s*sys\.modules,\s*"routes\.(\w+)"', own_src))

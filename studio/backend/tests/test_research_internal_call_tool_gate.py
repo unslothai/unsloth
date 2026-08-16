@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from auth.authentication import get_current_subject
 import routes.inference as inference_route
 from state.tool_policy import reset_tool_policy, set_tool_policy
+from .llama_backend_double import FakeLlamaCppBackend
 
 
 @pytest.fixture(autouse = True)
@@ -27,13 +28,9 @@ def _clean_policy():
     reset_tool_policy()
 
 
-class _Backend:
+class _Backend(FakeLlamaCppBackend):
     """Records which generation entry point the route picked."""
 
-    is_loaded = True
-    model_identifier = "test/model.gguf"
-    _is_audio = False
-    is_vision = False
     supports_tools = True
 
     def __init__(self):
@@ -110,8 +107,11 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
     after_entry, after_kwargs = _entry_point(monkeypatch, policy = policy, opt_out = True)
 
     assert (before_entry, after_entry) == ("plain", "plain")
-    # cancel_event is a fresh object per request, so identity differences say nothing.
-    drop = {"cancel_event"}
+    # Both are fresh objects per request, so identity differences say nothing about the payload:
+    # cancel_event is a new Event, and perf_callback is the closure the monitor builds per request
+    # to carry llama.cpp timings back for the tok/s readout. Comparing either by identity would
+    # fail for every pair of requests, opt-out or not.
+    drop = {"cancel_event", "perf_callback"}
     assert {k: v for k, v in before_kwargs.items() if k not in drop} == {
         k: v for k, v in after_kwargs.items() if k not in drop
     }
