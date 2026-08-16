@@ -1389,7 +1389,7 @@ export function AppSidebar() {
       // One notice for the batch, not one per chat.
       showArchivedChatsToast();
     } catch (err) {
-      toast.error("Failed to archive chats", {
+      toast.error(translate("settings.data.failedToArchiveChats"), {
         description: err instanceof Error ? err.message : undefined,
       });
     }

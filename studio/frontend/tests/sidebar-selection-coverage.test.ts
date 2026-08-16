@@ -51,6 +51,15 @@ test("picking one kind of row drops the other", async () => {
   assert.match(projectClick[1], /setSelectedChatIds/);
 });
 
+test("the bulk archive failure reads a translated string", async () => {
+  // Its wording already exists as a key, so a literal here would be the one
+  // English toast in an otherwise translated flow.
+  const source = await sidebarSource();
+  const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
+  assert.ok(archive, "no archiveSelected");
+  assert.match(archive[1], /translate\("settings\.data\.failedToArchiveChats"\)/);
+});
+
 test("deleting folders in bulk cleans up like deleting one", async () => {
   // Both branches end the same way, or a batch leaves stale chat rows behind
   // and strands the user on a page whose project is gone.
