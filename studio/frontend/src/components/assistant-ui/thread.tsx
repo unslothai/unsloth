@@ -2199,7 +2199,11 @@ const Composer: FC<{
       // the text: a payload carrying files is preventDefaulted above, so it
       // writes nothing, and retiring for it would leave the next queued write
       // free to refill the composer.
-      if (pastedText.length > 0 && !event.defaultPrevented) {
+      if (
+        pastedText.length > 0 &&
+        !event.defaultPrevented &&
+        justSentRef.current?.draftKey === draftKeyRef.current
+      ) {
         justSentRef.current = null;
       }
     },
@@ -3963,11 +3967,12 @@ function isTextReplacement(event: Event | undefined) {
 // A write carrying an IME composition. Finalisation converts the text, so
 // equality never matches it. Only stale when the composition began before the
 // send: one begun after raises compositionstart, which records user input.
-// Read from the input event, not compositionend, which raises no input event at
-// all and so leaves the controlled value unrestored if it is refused.
+// compositionend counts because onCompositionEnd applies the value itself; the
+// browser raises no input event for it, so nothing else would classify it.
 function isCompositionWrite(event: Event | undefined) {
   return (
     inputTypeOf(event) === "insertCompositionText" ||
+    event?.type === "compositionend" ||
     (event !== undefined && isNativeComposing(event))
   );
 }
