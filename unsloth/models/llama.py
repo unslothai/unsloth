@@ -2613,6 +2613,11 @@ class FastLlamaModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
+            # The dtype `add_dtype_kwargs` hands the load below, not the checkpoint's own:
+            # `from_pretrained`'s dtype overrides what config.json declares, so planning a
+            # float32 load against a bfloat16 checkpoint halves the weight estimate and the
+            # accepted map OOMs while materializing (and the reverse refuses a load that fits).
+            **add_dtype_kwargs(dtype),
             # The caller's own quantization_config, still untouched in kwargs here (ours
             # is only put there once the skip list below is built), overrides the flags:
             # loader.py clears them whenever it forwards one.

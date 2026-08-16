@@ -23,10 +23,15 @@ bit-identical to transformers), keeping only the safe conveniences: 4bit/8bit lo
 import os
 import torch
 from transformers import AutoConfig, AutoProcessor, AutoTokenizer
+from unsloth_zoo.hf_utils import add_dtype_kwargs
 
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
-from .loader_utils import requested_device_map, resolve_unsloth_device_map
+from .loader_utils import (
+    planner_quantization_kwargs,
+    requested_device_map,
+    resolve_unsloth_device_map,
+)
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
 
@@ -199,6 +204,31 @@ class FastDiffusionModel:
             variant = kwargs.get("variant"),
         )
 
+        # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
+        # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
+        # Built before the plan, not at the load below, because the planner has to size the
+        # exact config the load applies: the skip list becomes `modules_to_not_convert`, and
+        # sizing those modules at 4 bits while they load in compute dtype OOMs a tight map.
+        qcfg = None
+        if load_in_4bit or load_in_8bit:
+            from transformers import BitsAndBytesConfig
+            if load_in_4bit:
+                qcfg = BitsAndBytesConfig(
+                    load_in_4bit = True,
+                    bnb_4bit_use_double_quant = True,
+                    bnb_4bit_quant_type = "nf4",
+                    bnb_4bit_compute_dtype = dtype,
+                    llm_int8_skip_modules = [
+                        "lm_head",
+                        "embed_tokens",
+                        "experts",
+                        "self_conditioning",
+                        "router",
+                    ],
+                )
+            else:
+                qcfg = BitsAndBytesConfig(load_in_8bit = True)
+
         # Same leaf-level resolution as llama.py and vision.py. Without it an opt-in
         # "unsloth" reaches transformers, which turns an unknown device_map string into
         # torch.device("unsloth") and raises instead of loading.
@@ -210,8 +240,13 @@ class FastDiffusionModel:
             token = token,
             trust_remote_code = trust_remote_code,
             revision = revision,
-            load_in_4bit = load_in_4bit,
-            load_in_8bit = load_in_8bit,
+            # The dtype the load below uses, which overrides the checkpoint's own.
+            **add_dtype_kwargs(dtype),
+            **planner_quantization_kwargs(
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                quantization_config = qcfg,
+            ),
         )
 
         load_kwargs = dict(
@@ -231,26 +266,8 @@ class FastDiffusionModel:
         if kwargs.get("variant") is not None:
             load_kwargs["variant"] = kwargs["variant"]
 
-        # Optional bitsandbytes quant. The MoE experts (3D Parameters) are not nn.Linear so bnb skips
-        # them; only attention + dense MLP Linears quantize, lm_head/embeddings stay full precision.
-        if load_in_4bit or load_in_8bit:
-            from transformers import BitsAndBytesConfig
-            if load_in_4bit:
-                qcfg = BitsAndBytesConfig(
-                    load_in_4bit = True,
-                    bnb_4bit_use_double_quant = True,
-                    bnb_4bit_quant_type = "nf4",
-                    bnb_4bit_compute_dtype = dtype,
-                    llm_int8_skip_modules = [
-                        "lm_head",
-                        "embed_tokens",
-                        "experts",
-                        "self_conditioning",
-                        "router",
-                    ],
-                )
-            else:
-                qcfg = BitsAndBytesConfig(load_in_8bit = True)
+        # The same config the plan above was sized against.
+        if qcfg is not None:
             load_kwargs["quantization_config"] = qcfg
 
         print(f"==((  Unsloth: FastDiffusionModel (slow / transformers-only path)  ))==")

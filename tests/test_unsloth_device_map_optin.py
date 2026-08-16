@@ -383,7 +383,7 @@ def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
     receives the flag already cleared by loader.py.
     """
     models = os.path.join(HERE, "unsloth", "models")
-    for name in ("llama.py", "vision.py"):
+    for name in ("llama.py", "vision.py", "diffusion.py"):
         source = open(os.path.join(models, name), encoding = "utf-8").read()
         for node in ast.walk(ast.parse(source)):
             if not (
@@ -402,3 +402,78 @@ def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
             assert any(
                 getattr(call.func, "id", None) == "planner_quantization_kwargs" for call in unpacked
             ), f"{name}:{node.lineno}"
+
+
+def _resolve_calls(source):
+    return [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", None) == "resolve_unsloth_device_map"
+    ]
+
+
+@pytest.mark.parametrize("name", ["llama.py", "vision.py", "diffusion.py"])
+def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
+    """`from_pretrained`'s dtype overrides the one config.json declares, and the planner
+    only ever sees the config. So a float32 load of a bfloat16 checkpoint is sized at half
+    its real weight bytes, the map is accepted, and materializing it OOMs; the default
+    bfloat16 load of a float32 checkpoint is the same error the other way, and the planner
+    raises DeviceMapInfeasible on a load that would have fit.
+
+    `add_dtype_kwargs` rather than a literal keyword: transformers renamed `torch_dtype` to
+    `dtype`, and the planner hands these straight to AutoConfig, which only honours the
+    name its own version knows.
+    """
+    source = open(os.path.join(HERE, "unsloth", "models", name), encoding = "utf-8").read()
+    calls = _resolve_calls(source)
+    assert calls, f"{name} never resolves a device map"
+    for call in calls:
+        unpacked = [
+            kw.value for kw in call.keywords if kw.arg is None and isinstance(kw.value, ast.Call)
+        ]
+        assert any(
+            getattr(unpack.func, "id", None) == "add_dtype_kwargs" for unpack in unpacked
+        ), f"{name}:{call.lineno} plans against the checkpoint's dtype, not the load's"
+
+
+def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
+    """diffusion.py keeps `lm_head`, `embed_tokens`, `experts`, `self_conditioning` and
+    `router` out of bnb, which is most of an MoE checkpoint's parameters. Planning on the
+    bare flags sizes every one of them at 4 bits while the load materializes them in
+    compute dtype, so the one config object has to be built before the plan and reused by
+    the load.
+    """
+    path = os.path.join(HERE, "unsloth", "models", "diffusion.py")
+    source = open(path, encoding = "utf-8").read()
+    tree = ast.parse(source)
+
+    built = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and getattr(node.value, "func", None) is not None
+        and getattr(node.value.func, "id", None) == "BitsAndBytesConfig"
+        and any(getattr(target, "id", None) == "qcfg" for target in node.targets)
+    ]
+    assert built, "diffusion.py no longer builds its own BitsAndBytesConfig"
+
+    calls = _resolve_calls(source)
+    assert calls, "diffusion.py never resolves a device map"
+    for call in calls:
+        assert max(built) < call.lineno, (
+            f"diffusion.py:{call.lineno} plans before the quantization config exists"
+        )
+        forwarded = [
+            unpack
+            for unpack in (
+                kw.value for kw in call.keywords if kw.arg is None and isinstance(kw.value, ast.Call)
+            )
+            if getattr(unpack.func, "id", None) == "planner_quantization_kwargs"
+        ]
+        assert forwarded, f"diffusion.py:{call.lineno} plans without the load's quantization"
+        for unpack in forwarded:
+            passed = {kw.arg: ast.unparse(kw.value) for kw in unpack.keywords}
+            assert passed.get("quantization_config") == "qcfg", (
+                f"diffusion.py:{call.lineno} plans without the skip list the load applies"
+            )
