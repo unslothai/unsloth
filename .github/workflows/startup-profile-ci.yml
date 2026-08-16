@@ -25,6 +25,11 @@
 #
 # Raise a budget in the same PR as the import that needed it, with the run that shows
 # it, exactly as with the frontend startup budget.
+#
+# Do not make this a required status check while it is filtered by paths. A workflow
+# skipped by path filtering never reports, so a required check on it sits Pending and
+# blocks every PR that does not touch the list below:
+# https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks
 
 name: Startup profile
 
