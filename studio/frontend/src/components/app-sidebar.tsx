@@ -52,6 +52,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { PRODUCT_NAME } from "@/config/branding";
 import {
+  FEATURE_AGENTS_NAV,
   FEATURE_API_MONITOR,
   FEATURE_EXPORT,
   FEATURE_IMAGES,
@@ -61,6 +62,7 @@ import {
   FEATURE_VIDEO,
 } from "@/config/disabled-features";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import { getProductCapability } from "@/config/platform-capabilities";
 import { clearAuthTokens, logout } from "@/features/auth";
 import {
   CONVERSATION_MARKDOWN_FORMAT,
@@ -127,6 +129,7 @@ import {
   Archive03Icon,
   ArrowRight02Icon,
   BadgeInfoIcon,
+  BotIcon,
   BubbleChatIcon,
   ChefHatIcon,
   CloudIcon,
@@ -1112,6 +1115,16 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/hub" }));
       },
     },
+    agents: {
+      icon: BotIcon,
+      label: t("shell.navigation.agents"),
+      active: false,
+      disabled: !getProductCapability("agents").available,
+      tooltip:
+        getProductCapability("agents").reason ??
+        t("shell.navigation.agentsUnavailable"),
+      onClick: () => {},
+    },
     images: {
       icon: Image03Icon,
       label: t("shell.navigation.images"),
@@ -1214,6 +1227,7 @@ export function AppSidebar() {
   const enabledNav = sidebarNav.filter(
     (item) =>
       (item.id !== "projects" || FEATURE_PROJECTS) &&
+      (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

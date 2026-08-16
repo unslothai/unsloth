@@ -51,6 +51,10 @@ vi.mock("../components/platform-models-settings", () => ({
   ),
 }));
 
+vi.mock("../components/platform-langfuse-settings", () => ({
+  PlatformLangfuseSettings: () => <div>Langfuse management</div>,
+}));
+
 describe("ConnectionsTab", () => {
   it("provides Rag Platform management to the existing connection flow", () => {
     render(<ConnectionsTab />);
@@ -63,6 +67,7 @@ describe("ConnectionsTab", () => {
     expect(screen.getByText("Platform model management: create")).toBeVisible();
     expect(screen.getByText("Platform model management: manage")).toBeVisible();
     expect(screen.getByTestId("platform-connections-slot")).toBeVisible();
+    expect(screen.getByText("Langfuse management")).toBeVisible();
     expect(screen.getByTestId("connections-tab-content")).toHaveClass(
       "pb-8",
       "sm:pb-10",

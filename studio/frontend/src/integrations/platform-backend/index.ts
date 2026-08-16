@@ -23,3 +23,6 @@ export * from "./chat-api";
 export * from "./chat-types";
 export * from "./chat-completion-api";
 export * from "./chat-completion-types";
+export * from "./operations-api";
+export * from "./operations-types";
+export * from "./error-policy";

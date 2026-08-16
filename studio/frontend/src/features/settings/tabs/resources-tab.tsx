@@ -29,6 +29,7 @@ import {
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
 import { ModelMemorySection } from "../components/model-memory-section";
+import { PlatformOperationsPanel } from "../components/platform-operations-panel";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
@@ -259,6 +260,7 @@ function PlatformResourcesTab() {
           </p>
         )}
       </SettingsSection>
+      <PlatformOperationsPanel />
 
       <SettingsSection title="Kaynak telemetrisi">
         <p className="py-3 text-sm text-muted-foreground">
@@ -628,11 +630,17 @@ function LegacyResourcesTab() {
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.used", { value: usedText })}
                     </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span
+                      aria-hidden={true}
+                      className="h-3 w-px shrink-0 bg-border"
+                    />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.free", { value: freeText })}
                     </span>
-                    <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
+                    <span
+                      aria-hidden={true}
+                      className="h-3 w-px shrink-0 bg-border"
+                    />
                     <span className="min-w-0 truncate">
                       {t("settings.resources.gpu.total", {
                         value: totalText,
@@ -678,7 +686,7 @@ function LegacyResourcesTab() {
           <div className="grid w-[392px] min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-1.5 max-[840px]:w-full">
             <div className="relative min-w-0">
               <Input
-                readOnly
+                readOnly={true}
                 aria-label={t("settings.resources.storage.modelsFolder")}
                 value={modelsFolderPath}
                 title={hfCache?.cacheHome}

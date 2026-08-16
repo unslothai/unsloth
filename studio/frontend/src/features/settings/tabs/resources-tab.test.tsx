@@ -37,6 +37,10 @@ vi.mock("@/i18n", async (importOriginal) => ({
   useT: () => (key: string) => key,
 }));
 
+vi.mock("../components/platform-operations-panel", () => ({
+  PlatformOperationsPanel: () => <div>Platform operations</div>,
+}));
+
 import { ResourcesTab } from "./resources-tab";
 
 describe("ResourcesTab in Rag Platform mode", () => {
@@ -51,6 +55,7 @@ describe("ResourcesTab in Rag Platform mode", () => {
     ).toBeVisible();
     expect(systemMocks.useSystemInfo).not.toHaveBeenCalled();
     expect(systemMocks.loadHuggingFaceCacheSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Platform operations")).toBeVisible();
     await waitFor(() =>
       expect(systemMocks.checkConnection).toHaveBeenCalledTimes(1),
     );

@@ -649,6 +649,20 @@ const CLASS_RULES = [
       "Full-replacement Chat mutation duplicates the user capability exposed by PATCH. Rag Platform UI uses PATCH so a rename or dataset-scope edit cannot accidentally reset prompt/model fields; the exact PUT contract remains typed and authenticated in tests without a second indistinguishable control.",
   },
 
+  // -- Phase 9 API-token compatibility alias ------------------------------
+  {
+    id: "phase9-system-keys-api-only-alias",
+    when: {
+      path: /^\/api\/v1\/system\/keys(\/\{p\})?$/,
+      method: /^(GET|POST|DELETE)$/,
+      runtimeEnabled: true,
+    },
+    class: API_ONLY,
+    consumer: "API token compatibility client",
+    justification:
+      "Go registers /system/keys and /system/tokens on the same ListAPIKeys, CreateKey and DeleteKey handlers, backed by the same API-token service and table. Rag Platform exposes one canonical token state machine through /system/tokens; the exact /system/keys alias remains typed and contract/auth tested without duplicate UI controls.",
+  },
+
   // -- 8. Primary entity list + detail reads = dedicated screens -----------
   {
     id: "entity-screen",
@@ -2175,6 +2189,116 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
       ...PHASE8_TEST_EVIDENCE,
       "docs/rag-platform/route-inventory.md (deprecated compatibility registration)",
     ],
+  },
+});
+
+const PHASE9_OPERATIONS_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/operations-api.test.ts",
+  "src/integrations/platform-backend/__tests__/error-policy.test.ts",
+  "src/features/settings/components/platform-operations-panel.test.tsx",
+  "src/components/platform-backend-banner.test.tsx",
+  "docs/adr/0010-platform-capability-registry-and-operational-secrets.md",
+  "scripts/rag-platform/phase-9-runtime-smoke.mjs (authenticated hybrid route smoke)",
+];
+
+const PHASE9_TOKEN_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/operations-api.test.ts",
+  "src/features/settings/components/platform-api-tokens.test.tsx",
+  "docs/adr/0010-platform-capability-registry-and-operational-secrets.md",
+  "scripts/rag-platform/phase-9-runtime-smoke.mjs (create/list/revoke without secret output)",
+];
+
+const PHASE9_LANGFUSE_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/operations-api.test.ts",
+  "src/features/settings/components/platform-langfuse-settings.test.tsx",
+  "docs/adr/0010-platform-capability-registry-and-operational-secrets.md",
+  "scripts/rag-platform/phase-9-runtime-smoke.mjs (GET + unauthenticated mutation boundaries)",
+];
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "python-api|GET /api/v1/system/status": {
+    status: "implemented",
+    uiPath: "Settings → Resources → Operasyon görünümü → servis durumu",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#getPlatformOperationsStatus",
+    evidence: PHASE9_OPERATIONS_EVIDENCE,
+  },
+  "python-api|GET /api/v1/system/stats": {
+    status: "implemented",
+    uiPath: "Settings → Resources → Operasyon görünümü → kullanım özetleri",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#getPlatformUsageStats",
+    evidence: PHASE9_OPERATIONS_EVIDENCE,
+  },
+  "python-api|GET /api/v1/system/tokens": {
+    status: "implemented",
+    uiPath: "Settings → API Keys → maskeli token listesi",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#listPlatformApiTokens",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "python-api|POST /api/v1/system/tokens": {
+    status: "implemented",
+    uiPath: "Settings → API Keys → Token oluştur → tek seferlik gösterim",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#createPlatformApiToken",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/system/tokens/{p}": {
+    status: "implemented",
+    uiPath: "Settings → API Keys → token satırı → İptal → onay",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#revokePlatformApiToken",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "go-api|GET /api/v1/system/keys": {
+    status: "contract-verified",
+    uiPath: "— (API-only compatibility alias; UI uses /system/tokens)",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#listPlatformSystemKeysAlias",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "go-api|POST /api/v1/system/keys": {
+    status: "contract-verified",
+    uiPath: "— (API-only compatibility alias; UI uses /system/tokens)",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#createPlatformSystemKeyAlias",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "go-api|DELETE /api/v1/system/keys/{p}": {
+    status: "contract-verified",
+    uiPath: "— (API-only compatibility alias; UI uses /system/tokens)",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#revokePlatformSystemKeyAlias",
+    evidence: PHASE9_TOKEN_EVIDENCE,
+  },
+  "python-api|GET /api/v1/langfuse/api-key": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Langfuse gözlemlenebilirliği",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#getPlatformLangfuseConfig",
+    evidence: PHASE9_LANGFUSE_EVIDENCE,
+  },
+  "python-api|POST /api/v1/langfuse/api-key": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Langfuse → Bağla",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#createPlatformLangfuseConfig",
+    evidence: PHASE9_LANGFUSE_EVIDENCE,
+  },
+  "python-api|PUT /api/v1/langfuse/api-key": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Langfuse → Yeniden yapılandır → Güncelle",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#updatePlatformLangfuseConfig",
+    evidence: PHASE9_LANGFUSE_EVIDENCE,
+  },
+  "python-api|DELETE /api/v1/langfuse/api-key": {
+    status: "implemented",
+    uiPath: "Settings → Connections → Langfuse → Bağlantıyı kaldır → onay",
+    typedService:
+      "src/integrations/platform-backend/operations-api.ts#deletePlatformLangfuseConfig",
+    evidence: PHASE9_LANGFUSE_EVIDENCE,
   },
 });
 

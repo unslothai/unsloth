@@ -1,5 +1,6 @@
 import { Switch } from "@/components/ui/switch";
 import {
+  FEATURE_AGENTS_NAV,
   FEATURE_API_MONITOR,
   FEATURE_EXPORT,
   FEATURE_IMAGES,
@@ -12,6 +13,7 @@ import { useT } from "@/i18n";
 import type { TranslationKey } from "@/i18n";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
+  BotIcon,
   ChefHatIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
@@ -35,6 +37,7 @@ const ITEM_META: Record<
 > = {
   projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
+  agents: { icon: BotIcon, labelKey: "shell.navigation.agents" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
@@ -128,6 +131,7 @@ export function SidebarNavCustomizer() {
   const visibleNav = sidebarNav.filter(
     (item) =>
       (item.id !== "projects" || FEATURE_PROJECTS) &&
+      (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

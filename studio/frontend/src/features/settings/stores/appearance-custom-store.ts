@@ -1,6 +1,3 @@
-
-
-
 import { create } from "zustand";
 import {
   type StateStorage,
@@ -91,6 +88,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   // Model hub leads: picking a model comes before the work that uses one.
   "hub",
   "projects",
+  "agents",
   "images",
   // Video sits directly under Images: the two media tabs read as one pair.
   "video",
@@ -112,6 +110,7 @@ export type SidebarNavItemPref = {
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
+  agents: true,
   images: true,
   // Under "More" until a user pins it.
   video: false,
@@ -318,7 +317,8 @@ function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
   }
   // Ids added after the payload was written land at the end with their default.
   for (const id of SIDEBAR_NAV_ITEM_IDS) {
-    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+    if (!seen.has(id))
+      items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
   }
   return items;
 }

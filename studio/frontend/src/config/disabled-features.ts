@@ -1,14 +1,18 @@
+import { getProductCapability } from "./platform-capabilities";
+
 /**
- * Temporary feature kill-switches.
- *
- * Set a flag to `false` to hide a whole page from the app without deleting its
- * code: the sidebar row disappears, the route redirects to /chat, and the
- * persistent page mount is skipped. Flip back to `true` to restore it.
+ * Route-level compatibility exports. The product capability registry is the
+ * single source of truth; legacy pages stay mounted in source for rollback but
+ * cannot issue requests while unavailable.
  */
-export const FEATURE_IMAGES = false;
-export const FEATURE_TRAIN = false;
-export const FEATURE_PROJECTS = false;
-export const FEATURE_VIDEO = false;
-export const FEATURE_RECIPES = false;
-export const FEATURE_EXPORT = false;
-export const FEATURE_API_MONITOR = false;
+export const FEATURE_IMAGES =
+  getProductCapability("image-generation").available;
+export const FEATURE_TRAIN = getProductCapability("training").available;
+export const FEATURE_PROJECTS = getProductCapability("projects").available;
+export const FEATURE_VIDEO = getProductCapability("video-generation").available;
+export const FEATURE_RECIPES = getProductCapability("recipes").available;
+export const FEATURE_EXPORT = getProductCapability("export").available;
+export const FEATURE_API_MONITOR =
+  getProductCapability("api-monitor").available;
+export const FEATURE_AGENTS_NAV =
+  getProductCapability("agents").visibleInNavigation;

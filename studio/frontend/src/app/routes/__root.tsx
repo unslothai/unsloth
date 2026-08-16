@@ -1,5 +1,6 @@
 import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
+import { PlatformBackendBanner } from "@/components/platform-backend-banner";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { branding } from "@/config/branding";
 import {
@@ -10,10 +11,6 @@ import {
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { hasAuthToken } from "@/features/auth";
-import {
-  consumePlatformOAuthRedirect,
-  isPlatformAuthEnabled,
-} from "@/integrations/platform-backend";
 import {
   ChatPage,
   type ChatSearch,
@@ -34,6 +31,10 @@ import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
+import {
+  consumePlatformOAuthRedirect,
+  isPlatformAuthEnabled,
+} from "@/integrations/platform-backend";
 import {
   Outlet,
   createRootRoute,
@@ -177,7 +178,8 @@ function RootLayout() {
   // generation survives leaving the tab: it mounts lazily on first /chat visit, then
   // stays mounted, its search frozen to the last /chat value while off-route.
   const rawSearch = useRouterState({ select: (s) => s.location.search }) as
-    Record<string, unknown> | undefined;
+    | Record<string, unknown>
+    | undefined;
   const rawThread =
     typeof rawSearch?.thread === "string" ? rawSearch.thread : undefined;
   const rawCompare =
@@ -337,6 +339,7 @@ function RootLayout() {
             className={isChatLike ? "overflow-hidden" : "overflow-y-auto"}
           >
             <Navbar />
+            <PlatformBackendBanner />
             <div
               className={`relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col ${isChatLike ? "overflow-hidden" : "overflow-visible"} ${isChatLike ? "" : "pt-14 md:pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] md:[--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]"}`}
             >

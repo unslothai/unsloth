@@ -5,6 +5,7 @@ import {
   isPlatformModelToolsEnabled,
 } from "@/integrations/platform-backend";
 import { useCallback, useState } from "react";
+import { PlatformLangfuseSettings } from "../components/platform-langfuse-settings";
 import { PlatformModelsSettings } from "../components/platform-models-settings";
 
 export function ConnectionsTab() {
@@ -56,6 +57,7 @@ export function ConnectionsTab() {
           ) : undefined
         }
       />
+      {platformAuthEnabled && <PlatformLangfuseSettings />}
     </div>
   );
 }

@@ -9,6 +9,7 @@ export interface PlatformBackendConfig {
 export type PlatformPathMode = "api" | "root";
 
 interface PlatformBackendEnv {
+  VITE_BACKEND_MODE?: string;
   VITE_RAG_PLATFORM_BASE_URL?: string;
   VITE_RAG_PLATFORM_API_PREFIX?: string;
   VITE_RAG_PLATFORM_ENABLED?: string;

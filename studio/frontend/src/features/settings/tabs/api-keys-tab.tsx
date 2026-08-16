@@ -1,6 +1,4 @@
-
-
-
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,21 +7,27 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { FEATURE_API_MONITOR } from "@/config/disabled-features";
+import { isPlatformOnlyMode } from "@/config/platform-capabilities";
 import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
-import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
-import { MonitorLink } from "../components/monitor-link";
+import { type ApiKey, fetchApiKeys, revokeApiKey } from "../api/api-keys";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
-import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
+import { MonitorLink } from "../components/monitor-link";
+import { PlatformApiTokens } from "../components/platform-api-tokens";
 import { RemoteAccessSection } from "../components/remote-access-section";
 import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
+  if (isPlatformOnlyMode()) return <PlatformApiTokens />;
+  return <LegacyApiKeysTab />;
+}
+
+function LegacyApiKeysTab() {
   const t = useT();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,10 +120,7 @@ export function ApiKeysTab() {
             exit={{ opacity: 0, y: -4 }}
             transition={transition}
           >
-            <KeyRevealCard
-              rawKey={revealed}
-              onDone={() => setRevealed(null)}
-            />
+            <KeyRevealCard rawKey={revealed} onDone={() => setRevealed(null)} />
           </motion.div>
         ) : (
           <motion.div
@@ -180,7 +181,10 @@ export function ApiKeysTab() {
 
       <UsageExamples apiKey={revealed} />
 
-      <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
+      <Dialog
+        open={revokeTarget !== null}
+        onOpenChange={(o) => !o && setRevokeTarget(null)}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
