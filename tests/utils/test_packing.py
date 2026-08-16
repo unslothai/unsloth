@@ -22,6 +22,7 @@ from unsloth.utils.packing import (
     configure_sample_packing,
     enable_padding_free_metadata,
     enable_sample_packing,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
     patch_hybrid_linear_attention_varlen,
 )
@@ -1364,3 +1365,121 @@ def test_packing_skip_warning_keeps_custom_collator_reason(monkeypatch, caplog):
     assert len(messages) == 1
     assert "custom data collator" in messages[0]
     assert "UNSLOTH_RETURN_LOGITS" not in messages[0]
+
+
+# --- packed-boundary guard on the fused-CE path ---------------------------------------
+# mask_packed_sequence_boundaries only works on already-shifted labels, so it can never
+# be used by a loss path that shifts internally (every fused-CE path). These cover
+# mask_packed_boundary_labels, the pre-shift equivalent that the fused branch calls.
+
+
+def test_mask_packed_boundary_labels_masks_next_document_first_token():
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    out = mask_packed_boundary_labels(labels, torch.tensor([2, 1, 3], dtype = torch.int32))
+    # Documents start at 0, 2, 3; the FIRST token of documents 2 and 3 is what the
+    # previous document would otherwise be trained to predict. Slot 0 is also -100:
+    # the final cumulative sum lands out of range and is redirected there, which is a
+    # no-op because the shift discards labels[0] - and it matches TRL, whose
+    # `labels[position_ids == 0] = -100` masks slot 0 too.
+    assert out.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
+    # out-of-place: the caller's batch tensor is untouched
+    assert labels.reshape(-1).tolist() == [0, 1, 2, 3, 4, 5]
+    assert out.shape == labels.shape
+    assert out.dtype == labels.dtype
+
+
+def test_mask_packed_boundary_labels_matches_the_shifted_guard():
+    """The two entry points must mask exactly the same CE targets."""
+    labels = torch.arange(100, 112, dtype = torch.long).view(1, 12)
+    lengths = torch.tensor([5, 4, 3], dtype = torch.int32)
+
+    # Route A: shift first, then the original in-place guard.
+    shift_a = torch.empty_like(labels)
+    shift_a[..., :-1] = labels[..., 1:]
+    shift_a[..., -1] = -100
+    mask_packed_sequence_boundaries(shift_a, lengths)
+
+    # Route B: the new guard on raw labels, shifted afterwards (what fused CE does).
+    masked = mask_packed_boundary_labels(labels, lengths)
+    shift_b = torch.empty_like(masked)
+    shift_b[..., :-1] = masked[..., 1:]
+    shift_b[..., -1] = -100
+
+    assert torch.equal(shift_a, shift_b)
+
+
+def test_mask_packed_boundary_labels_is_idempotent_on_trl_masked_labels():
+    """TRL's collator already sets labels[position_ids == 0] = -100, so applying the
+    guard on top of TRL output must return the identical values."""
+    lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    position_ids = torch.tensor([[0, 1, 0, 0, 1, 2]], dtype = torch.long)
+    trl_labels = labels.clone()
+    trl_labels[position_ids == 0] = -100
+
+    once = mask_packed_boundary_labels(trl_labels, lengths)
+    twice = mask_packed_boundary_labels(once, lengths)
+    assert torch.equal(once, trl_labels)
+    assert torch.equal(twice, once)
+
+
+def test_mask_packed_boundary_labels_is_a_noop_without_packing():
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    assert mask_packed_boundary_labels(labels, None) is labels
+    assert mask_packed_boundary_labels(
+        labels, torch.tensor([], dtype = torch.int32)
+    ) is labels
+    assert mask_packed_boundary_labels(None, torch.tensor([2, 4])) is None
+
+
+def test_mask_packed_boundary_labels_tolerates_pad_to_multiple_of():
+    # pad_to_multiple_of leaves trailing tokens beyond sum(seq_lengths); they are
+    # already -100 and must stay that way, and no index may go out of bounds.
+    labels = torch.tensor([[10, 11, 12, 13, -100, -100]], dtype = torch.long)
+    out = mask_packed_boundary_labels(labels, torch.tensor([2, 2], dtype = torch.int32))
+    assert out.reshape(-1).tolist() == [10, 11, -100, 13, -100, -100]
+
+
+def test_mask_packed_boundary_labels_lengths_covering_whole_row():
+    # Final cumulative sum == numel: the redirect must not corrupt a real target.
+    labels = torch.arange(4, dtype = torch.long).view(1, 4)
+    out = mask_packed_boundary_labels(labels, [2, 2])
+    assert out.reshape(-1).tolist() == [-100, 1, -100, 3]
+
+
+def test_enable_sample_packing_masks_boundary_labels():
+    model = _DummyModel()
+    trainer = _DummyTrainer()
+    enable_sample_packing(model, trainer)
+
+    batch = trainer.data_collator.torch_call(
+        [
+            {"input_ids": [0, 1, 2], "labels": [0, 1, 2], "seq_lengths": [2, 1]},
+            {"input_ids": [3, 4, 5], "labels": [3, 4, 5], "seq_lengths": [3]},
+        ]
+    )
+    flat = batch["labels"].reshape(-1)[:6].tolist()
+    # documents [0,1] [2] [3,4,5] -> boundary label slots are 2 and 3
+    assert flat[2] == -100 and flat[3] == -100
+    assert flat[1] != -100 and flat[4] != -100 and flat[5] != -100
+
+
+def test_enable_padding_free_metadata_masks_boundary_labels():
+    model = _DummyModel()
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _PaddingFreeCollator(),
+    )
+    enable_padding_free_metadata(model, trainer)
+
+    batch = trainer.data_collator.torch_call(
+        [
+            {"input_ids": [0, 1, 2], "labels": [0, 1, 2]},
+            {"input_ids": [3, 4], "labels": [3, 4]},
+        ]
+    )
+    if batch.get("labels") is None:
+        pytest.skip("collator stub does not emit labels")
+    flat = batch["labels"].reshape(-1)[:5].tolist()
+    assert flat[3] == -100
+    assert flat[1] != -100 and flat[2] != -100 and flat[4] != -100

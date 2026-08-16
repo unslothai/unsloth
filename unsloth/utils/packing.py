@@ -169,7 +169,18 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
+                packed_seq_lengths = torch.tensor(seq_lengths, dtype = torch.int32)
+                batch["packed_seq_lengths"] = packed_seq_lengths
+                # Boundary guard at the point the metadata is created, so every
+                # downstream loss path benefits - including compiled forwards for
+                # non-Llama architectures, which never reach the guard in
+                # unsloth/models/llama.py. No-op on TRL's collator output, which
+                # already sets these positions to -100.
+                if batch.get("labels") is not None:
+                    batch["labels"] = mask_packed_boundary_labels(
+                        batch["labels"],
+                        packed_seq_lengths,
+                    )
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
@@ -211,10 +222,18 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
-            batch["packed_seq_lengths"] = torch.tensor(
+            packed_seq_lengths = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
             )
+            batch["packed_seq_lengths"] = packed_seq_lengths
+            # See the note in enable_sample_packing: padding-free flattens whole
+            # examples into one row, so the same cross-document boundaries exist.
+            if batch.get("labels") is not None:
+                batch["labels"] = mask_packed_boundary_labels(
+                    batch["labels"],
+                    packed_seq_lengths,
+                )
         return batch
 
     collator.torch_call = torch_call_with_padding_free_metadata
@@ -667,6 +686,57 @@ def mask_packed_sequence_boundaries(
     return True
 
 
+def mask_packed_boundary_labels(
+    labels: Optional[torch.Tensor],
+    seq_lengths: Any,
+    *,
+    ignore_index: int = -100,
+) -> Optional[torch.Tensor]:
+    """Same guard as :func:`mask_packed_sequence_boundaries`, expressed on the
+    RAW (unshifted) labels, and out-of-place.
+
+    ``mask_packed_sequence_boundaries`` needs a tensor that has already been
+    shifted, so it can only be used by loss paths that build ``shift_labels``
+    themselves. Every fused cross-entropy path shifts *internally* and is handed
+    the raw ``labels``, so it could never call it. Because the shift maps target
+    slot ``i`` to ``labels[i + 1]``, masking shift slot ``cumsum - 1`` is exactly
+    masking ``labels[cumsum]`` - the first token of each following document.
+
+    Returns ``labels`` unchanged (the identical object) when ``seq_lengths`` is
+    absent or empty, so non-packed callers are a strict no-op. Otherwise returns
+    a NEW tensor; the caller's batch is never mutated.
+
+    Idempotent: TRL's padding-free collator already sets exactly these positions
+    to ``-100`` (``labels[position_ids == 0] = -100``), so on the default TRL
+    path the returned values are bit-identical to the input.
+
+    Contract: ``sum(seq_lengths) <= labels.numel()``. Entries that fall outside
+    the tensor (the final cumulative sum, or malformed lengths) are redirected to
+    index 0, whose label is discarded by the shift and is therefore never a
+    cross-entropy target - so the redirect is a no-op. That keeps this function
+    free of device syncs and data-dependent shapes, which matters because it runs
+    inside the compiled fused-CE path.
+    """
+    if labels is None or not isinstance(labels, torch.Tensor):
+        return labels
+    lengths = _normalize_packed_lengths(seq_lengths, device = labels.device)
+    if lengths is None:
+        return labels
+
+    total_tokens = labels.numel()
+    if total_tokens == 0:
+        return labels
+
+    positions = torch.cumsum(lengths, dim = 0)
+    positions = torch.where(
+        positions < total_tokens,
+        positions,
+        torch.zeros_like(positions),
+    )
+    flat = labels.reshape(-1).index_fill(0, positions, ignore_index)
+    return flat.view(labels.shape)
+
+
 def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
     _PACKED_INFO_CACHE.clear()
@@ -684,5 +754,6 @@ __all__ = [
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
+    "mask_packed_boundary_labels",
     "clear_packed_caches",
 ]

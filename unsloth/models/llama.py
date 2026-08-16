@@ -35,6 +35,7 @@ from .loader_utils import (
 )
 from ..utils.packing import (
     get_packed_info_from_kwargs,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
 )
 from ..utils.attention_dispatch import (
@@ -1474,6 +1475,18 @@ def CausalLM_fast_forward(fast_forward_inference):
 
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
+
+                # Packed-boundary guard. This branch RETURNS below, so the
+                # mask_packed_sequence_boundaries() call further down is reached
+                # only under UNSLOTH_RETURN_LOGITS=1 - a flag that itself forces
+                # packing off (unsloth/trainer.py), leaving the guard dead on
+                # every packed training path. The fused kernel shifts labels
+                # internally, so the guard is applied to the raw labels here.
+                # Out-of-place, and a strict no-op without packed_seq_lengths.
+                labels = mask_packed_boundary_labels(
+                    labels,
+                    kwargs.get("packed_seq_lengths"),
+                )
 
                 ### DISABLED since T4 breaks
                 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.
