@@ -3733,6 +3733,8 @@ class TestGGUFSafetensorsHealingParity:
             "How would you like me to proceed? I'll handle it once you decide.",
             "What version are you using? Once you tell me, I'll check it.",
             "Could you clarify whether you mean the package or the UI? I'll check.",
+            "Are you using Windows or Linux? Once you tell me, I'll check the steps.",
+            "Is this about the package or the UI? I'll inspect it once you confirm.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3750,6 +3752,9 @@ class TestGGUFSafetensorsHealingParity:
             "Let me check what I should do here.",
             "I'll tell you what the results are.",
             "I'll check what files are in the directory.",
+            # asking to act is the stall the nudge exists for, unlike asking for a detail.
+            "Do you want me to run it? I'll go ahead if so.",
+            "Here is that file you wanted. I'll open it next.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 
