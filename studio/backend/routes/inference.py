@@ -8480,7 +8480,12 @@ async def _load_model_impl(
                 config.gguf_hf_repo,
                 config.gguf_variant,
                 require_mmproj = bool(
-                    config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
+                    config.is_vision
+                    # Same gate as the training guard's estimator: this load opens no
+                    # projector, so an incomplete cached copy of one is not a reason to
+                    # refuse it while an unrelated variant downloads.
+                    and not (gguf_intent is not None and gguf_intent.disable_vision)
+                    and not extra_args_disable_mmproj(extra_llama_args)
                 ),
                 hf_token = request.hf_token,
             ):

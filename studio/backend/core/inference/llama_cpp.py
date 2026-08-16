@@ -1829,7 +1829,9 @@ def _with_gguf_load_marker(load: Callable):
                 hf_repo,
                 intent.hf_variant,
                 require_mmproj = bool(
-                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
+                    intent.is_vision
+                    and not intent.disable_vision
+                    and not extra_args_disable_mmproj(intent.extra_args)
                 ),
                 hf_token = intent.hf_token,
             ):
@@ -16730,6 +16732,18 @@ class LlamaCppBackend:
                 # it outranks even the --mmproj Unsloth emits. Unsloth always passes its
                 # own projector on the command line (with --no-mmproj-offload), so an
                 # inherited one is only ever the corrupt path.
+                # Turning Vision off has the same blind spot, and it is the whole
+                # point of the switch: suppressing Studio's own --mmproj leaves an
+                # inherited LLAMA_ARG_MMPROJ / LLAMA_ARG_MMPROJ_URL untouched, so
+                # llama-server still loads a projector (common/arg.cpp sets
+                # params.mmproj.path / .url straight from those vars, and --no-mmproj
+                # only suppresses the -hf AUTO-download, never an explicit path).
+                # The load then reports effective_is_vision=False over a server that
+                # is still multimodal, and the fit budget that gave the projector's
+                # bytes away to context is short by exactly those bytes.
+                if disable_vision:
+                    for _dv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+                        env.pop(_dv_mmproj_var, None)
                 if _paravirtual_cpu_forced:
                     for _pv_mmproj_var in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
                         env.pop(_pv_mmproj_var, None)

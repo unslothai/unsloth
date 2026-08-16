@@ -15,6 +15,7 @@ import type {
 import { toast } from "sonner";
 import { externalModelLabel } from "./lib/external-model-label";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import { attachmentRejectionAlreadyToasted } from "./utils/attachment-rejection";
 
 // crypto.randomUUID is undefined in non-secure contexts (HTTP over a LAN IP).
 function newAttachmentId(): string {
@@ -56,17 +57,17 @@ export class AudioAttachmentAdapter implements AttachmentAdapter {
     }
     if (unavailableReason) {
       toast.error(unavailableReason);
-      throw new Error(unavailableReason);
+      throw attachmentRejectionAlreadyToasted(unavailableReason);
     }
     const sizeReason = getAudioSizeError(file.size);
     if (sizeReason) {
       toast.error(sizeReason);
-      throw new Error(sizeReason);
+      throw attachmentRejectionAlreadyToasted(sizeReason);
     }
     if (this.attachmentIds.size > 0 || state.pendingAudioBase64) {
       const duplicateReason = "Only one audio file can be attached per message.";
       toast.error(duplicateReason);
-      throw new Error(duplicateReason);
+      throw attachmentRejectionAlreadyToasted(duplicateReason);
     }
 
     const id = newAttachmentId();
