@@ -29,7 +29,7 @@ from hub.utils.gguf_plan import plan_from_expected_files
 
 SHARD_A = "a" * 64
 SHARD_B = "b" * 64
-GB = 1024 ** 3
+GB = 1024**3
 
 
 @pytest.fixture
