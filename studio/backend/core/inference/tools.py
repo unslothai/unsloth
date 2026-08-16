@@ -6718,7 +6718,7 @@ def _is_trusted_windows_program_dir(path: str) -> bool:
     return False
 
 
-def _build_safe_env(workdir: str) -> dict[str, str]:
+def _build_safe_env(workdir: str, *, posix_shell: bool = False) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
@@ -6773,11 +6773,11 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
-    shell_workdir = _shell_visible_workdir(workdir)
+    pwd = _bash_visible_workdir(workdir) if posix_shell else _native_workdir(workdir)
     env = {
         "PATH": os.pathsep.join(deduped),
         "HOME": workdir,
-        "PWD": shell_workdir,
+        "PWD": pwd,
         "TMPDIR": workdir,
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
@@ -6960,7 +6960,7 @@ def _is_secret_env_value(value: str) -> bool:
     return _URL_USERINFO_RE.search(value) is not None or _SECRET_VALUE_RE.search(value) is not None
 
 
-def _build_bypass_env(workdir: str) -> dict[str, str]:
+def _build_bypass_env(workdir: str, *, posix_shell: bool = False) -> dict[str, str]:
     """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
     repointed at the workdir so SDKs cannot read cached creds.
 
@@ -6976,7 +6976,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
         and not _is_cred_location_env_name(k)
     }
     env["HOME"] = workdir
-    env["PWD"] = _shell_visible_workdir(workdir)
+    env["PWD"] = _bash_visible_workdir(workdir) if posix_shell else _native_workdir(workdir)
     env["TMPDIR"] = workdir
     # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR; repoint all three so
     # the bypassed tool writes under the per-session sandbox dir on every OS.
@@ -7169,9 +7169,14 @@ def _msys_path(path: str) -> str:
     return norm.replace("\\", "/")
 
 
-def _shell_visible_workdir(workdir: str) -> str:
-    """Path form a sandbox shell reports (pwd / ``$PWD``)."""
-    resolved = os.path.realpath(workdir)
+def _native_workdir(workdir: str) -> str:
+    """Native absolute path for the sandbox directory (CPython / Explorer)."""
+    return os.path.realpath(workdir)
+
+
+def _bash_visible_workdir(workdir: str) -> str:
+    """Path form Git Bash reports as pwd / ``$PWD``."""
+    resolved = _native_workdir(workdir)
     if sys.platform == "win32" and _windows_bash():
         return _msys_path(resolved)
     return resolved
@@ -7185,7 +7190,7 @@ def _bash_wrap_for_workdir(workdir: str, command: str) -> str:
     """
     if sys.platform != "win32" or not _windows_bash():
         return command
-    shell_dir = _shell_visible_workdir(workdir).replace("'", "'\"'\"'")
+    shell_dir = _bash_visible_workdir(workdir).replace("'", "'\"'\"'")
     return f"cd '{shell_dir}' && {command}"
 
 
@@ -9147,7 +9152,7 @@ def build_sandbox_workdir_nudge(session_id: str | None = None) -> str:
         return ""
     if not workdir:
         return ""
-    visible = _shell_visible_workdir(workdir)
+    visible = _native_workdir(workdir)
     return (
         f"Your code working directory for this conversation is: {visible}. "
         "Use relative paths there for reads and writes; files you create are "
@@ -12884,7 +12889,12 @@ def _bash_exec(
         # Same pre-run snapshot as _python_exec. A command that writes a file used
         # to produce "(no output)" and no other trace anywhere in the product.
         _before = _snapshot_workdir_files(workdir)
-        safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        posix_shell = _shell_is_posix()
+        safe_env = (
+            _build_bypass_env(workdir, posix_shell = posix_shell)
+            if disable_sandbox
+            else _build_safe_env(workdir, posix_shell = posix_shell)
+        )
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
