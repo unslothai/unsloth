@@ -72,6 +72,30 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
     assert 'results["report"]["clicks_registered"]' in main
 
 
+def test_harnesses_report_why_the_page_failed() -> None:
+    # An entry module that throws and one that is merely slow both end as a timeout on a
+    # locator that was never created. Run 31935573269 was exactly that: 15s of nothing,
+    # no console, no page error, no server output, and the same shape on 7 of the 8 runs
+    # that reached this step. A harness that cannot say why it failed cannot be fixed.
+    for name in (
+        "playwright_chat_autoscroll.py",
+        "playwright_research_freeze.py",
+        "playwright_strip_ansi_smoke.py",
+    ):
+        assert "echo_browser_errors(page, info)" in source(name), (
+            f"{name} discards pageerror and console.error, so a crashed page reads as a timeout"
+        )
+
+
+def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
+    # The live log above is gone once the runner is recycled. The screenshot, the body
+    # excerpt and vite's own transform errors are what remains to look at.
+    text = source("playwright_strip_ansi_smoke.py")
+    assert "dump(page, vite)" in text, "the assertions do not run under the dump"
+    assert "dump_diagnostics(page, ART" in text
+    assert 'getattr(vite, "vite_tail"' in text, "vite's output is dropped on failure"
+
+
 def test_harnesses_own_their_dev_server() -> None:
     # A server started beside the harness leaves the node child alive when the wrapper is
     # killed, stranding the port and the step's stdout. Each harness owns its own instead.

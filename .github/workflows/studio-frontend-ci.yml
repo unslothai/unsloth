@@ -156,6 +156,36 @@ jobs:
         run: npm test
 
 
+      - name: Build
+        run: npm run build
+
+      - name: Built bundle must not contain Unsloth's unstable_Provider call site
+        run: |
+          set -e
+          JS=$(ls dist/assets/index-*.js | head -1)
+          HITS=$(grep -c 'unstable_Provider:' "$JS" || echo 0)
+          echo "main bundle: $JS"
+          echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
+          if [ "$HITS" -gt 3 ]; then
+            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
+            exit 1
+          fi
+
+      - name: Bundle size budget (75 MB)
+        run: |
+          SIZE=$(du -sb dist | cut -f1)
+          BUDGET=$((75 * 1024 * 1024))
+          echo "dist size: $SIZE bytes ($((SIZE/1024/1024)) MB), budget: $BUDGET bytes (75 MB)"
+          if [ "$SIZE" -gt "$BUDGET" ]; then
+            echo "::error::studio/frontend/dist/ exceeded the 75 MB budget. Drop dead deps (e.g. the unused next dep) or split chunks."
+            exit 1
+          fi
+
+      # The browser smokes sit after the build gates on purpose. A job stops at its first
+      # failing step, so while they ran above, one red smoke skipped the build and both
+      # bundle assertions: the checks that decide whether the app ships at all never
+      # reported. Ordering them last costs nothing (each smoke starts its own vite dev
+      # server and reads no dist/) and keeps a smoke failure to itself.
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
         run: |
@@ -186,30 +216,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      - name: Build
-        run: npm run build
-
-      - name: Built bundle must not contain Unsloth's unstable_Provider call site
-        run: |
-          set -e
-          JS=$(ls dist/assets/index-*.js | head -1)
-          HITS=$(grep -c 'unstable_Provider:' "$JS" || echo 0)
-          echo "main bundle: $JS"
-          echo "unstable_Provider: hits=$HITS (assistant-ui internals contribute up to 3)"
-          if [ "$HITS" -gt 3 ]; then
-            echo "::error file=studio/frontend/src/features/chat/runtime-provider.tsx::Unsloth bundle still passes unstable_Provider through useRemoteThreadListRuntime; this is the 2026.5.1 chat-history regression. Pass adapters directly into useLocalRuntime instead."
-            exit 1
-          fi
-
-      - name: Bundle size budget (75 MB)
-        run: |
-          SIZE=$(du -sb dist | cut -f1)
-          BUDGET=$((75 * 1024 * 1024))
-          echo "dist size: $SIZE bytes ($((SIZE/1024/1024)) MB), budget: $BUDGET bytes (75 MB)"
-          if [ "$SIZE" -gt "$BUDGET" ]; then
-            echo "::error::studio/frontend/dist/ exceeded the 75 MB budget. Drop dead deps (e.g. the unused next dep) or split chunks."
-            exit 1
-          fi
+      # The screenshot and serialized DOM the harnesses write when they fail. Small, and
+      # only kept on failure, unlike the dist upload below.
+      - name: Upload browser smoke artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-frontend-smoke-artifacts
+          path: logs/playwright-*
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Biome (non-blocking until accumulated drift is cleared)
         continue-on-error: true
