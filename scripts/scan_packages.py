@@ -279,9 +279,17 @@ RE_FS_ENUM = re.compile(
     r"|\bglob\s*\.\s*glob\s*\([^)]*(?:\*\*|\*\.pem|\*\.key|\*\.cer|\*\.pfx|\*\.p12)"
     r"|\bos\.listdir\s*\(\s*['\"](?:/home|/root|/Users|/etc)"
     r"|\bPath\s*\(\s*['\"]~['\"]\s*\)\s*\.\s*glob\b"
-    r"|\bhistory\b.*\bread\b"  # reading shell history
-    r"|\b\.bash_history\b"
-    r"|\b\.zsh_history\b"
+    # Shell / REPL history files. This was `\bhistory\b.*\bread\b`, and with re.DOTALL
+    # that `.*` spans the whole file: any module containing the word "history" anywhere
+    # before the word "read" anywhere matched. That is httpx's `Response.history`,
+    # IPython's history module, urllib3's `retries.history`, torch's CUDA memory
+    # history -- nine of the eleven baselined CRITICALs under this check were that one
+    # alternative, and each had to be allowlisted, which suppresses the whole file for
+    # the check. Name the files instead: a stealer reading history reads a history
+    # FILE, and the two literals below were already the precise half of this pattern.
+    r"|\.(?:bash|zsh|ksh|sh|fish|python|node_repl|psql|mysql|rediscli)_history\b"
+    r"|['\"~/]\.history\b"
+    r"|\bHISTFILE\b"
     r"|/etc/shadow"
     r"|/etc/passwd",
     re.DOTALL,
