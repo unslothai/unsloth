@@ -3439,13 +3439,208 @@ class UnslothTrainer:
         except Exception:
             return False
 
+    def _configure_online_tokenization(
+        self,
+        *,
+        config_args: dict,
+        dataset,
+        eval_dataset,
+        training_args: dict,
+        data_collator,
+        raw_text_mode: bool,
+        is_deepseek_ocr: bool,
+    ):
+        """Switch the plain-text path to lazy, worker-side tokenization.
+
+        Mutates ``config_args`` and the ``dataset`` wrapper in place when the run
+        qualifies, and leaves both untouched otherwise.
+        ``self._online_eval_dataset`` returns the transformed eval split, and
+        ``self._online_prewarm_batches`` tells ``_preflight_first_batch`` how deep
+        to prime. Never raises: any failure degrades to the eager path.
+        """
+        from utils.datasets.online_tokenization import (
+            OnlineTokenizationDecision,
+            attach_online_tokenization,
+            decide_online_tokenization,
+            first_sample_text,
+            online_config_args,
+            quiet_tokenizer_fork_warning,
+            resolve_add_special_tokens,
+        )
+
+        self._online_eval_dataset = eval_dataset
+        train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
+
+        # A step-capped run says nothing about passes, but Studio knows the rows
+        # and microbatch size, so resolve it here. World size scales rows consumed
+        # per step; omitting it would understate the passes.
+        resolved_epochs = None
+        max_steps = int(config_args.get("max_steps") or 0)
+        if max_steps > 0:
+            try:
+                rows = len(train_dataset)
+                world_size = max(1, int(os.environ.get("WORLD_SIZE", "1")))
+                per_step = (
+                    int(config_args.get("per_device_train_batch_size", 1))
+                    * int(config_args.get("gradient_accumulation_steps", 1))
+                    * world_size
+                )
+                resolved_epochs = (max_steps * per_step) / rows if rows else None
+            except Exception:  # noqa: BLE001 - unresolvable stays unresolved
+                resolved_epochs = None
+
+        try:
+            decision = decide_online_tokenization(
+                dataset = train_dataset,
+                eval_dataset = eval_dataset,
+                processing_class = self.tokenizer,
+                model = self.model,
+                text_field = config_args.get("dataset_text_field", "text") or "text",
+                packing = bool(config_args.get("packing", False)),
+                is_vlm = bool(self.is_vlm),
+                is_audio = bool(self.is_audio or self._cuda_audio_used),
+                is_audio_vlm = bool(self.is_audio_vlm),
+                is_deepseek_ocr = bool(is_deepseek_ocr),
+                is_cpt = bool(training_args.get("is_cpt", False)),
+                raw_text_mode = bool(raw_text_mode),
+                has_custom_collator = data_collator is not None,
+                train_on_completions = bool(training_args.get("train_on_completions", False)),
+                dataset_streaming = bool(
+                    training_args.get("dataset_streaming", False)
+                    or detect_streaming_dataset(train_dataset)
+                ),
+                num_train_epochs = config_args.get("num_train_epochs"),
+                max_steps = config_args.get("max_steps"),
+                grad_accum = config_args.get("gradient_accumulation_steps", 1),
+                resolved_max_steps_epochs = resolved_epochs,
+            )
+        except Exception as exc:  # noqa: BLE001 - a gating failure must not fail a run
+            logger.warning(f"Online tokenization gating failed, using eager path: {exc}")
+            return OnlineTokenizationDecision(enabled = False, reason = f"gating error: {exc}")
+
+        logger.info(f"{decision.as_log_line()}\n")
+        if not decision.enabled:
+            return decision
+
+        try:
+            text_field = config_args.get("dataset_text_field", "text") or "text"
+            max_length = int(config_args.get("max_seq_length") or 2048)
+            # The generated `__init__` clamps `max_seq_length` to the model's cap
+            # and derives `max_length` from it, but runs after this. Apply the same
+            # cap here or the transform truncates wider than the eager map it
+            # replaces, and the attestation claims a width nothing enforced.
+            model_cap = getattr(self.model, "max_seq_length", None)
+            try:
+                if model_cap is not None and 0 < int(model_cap) < max_length:
+                    logger.info(
+                        f"Online tokenization: max_length {max_length} exceeds the "
+                        f"model's {int(model_cap)}, using the model's\n"
+                    )
+                    max_length = int(model_cap)
+            except (TypeError, ValueError):
+                pass
+            add_special_tokens = resolve_add_special_tokens(
+                self.tokenizer, first_sample_text(train_dataset, text_field)
+            )
+            quiet_tokenizer_fork_warning()
+
+            view = attach_online_tokenization(
+                train_dataset,
+                tokenizer = self.tokenizer,
+                text_field = text_field,
+                max_length = max_length,
+                add_special_tokens = add_special_tokens,
+            )
+            if isinstance(dataset, dict):
+                dataset["dataset"] = view
+            if eval_dataset is not None:
+                # Probe the eval split's own first row: TRL calls _prepare_dataset
+                # once per split, so reusing the train answer would tokenize eval
+                # differently whenever the splits disagree about a leading BOS.
+                eval_add_special_tokens = resolve_add_special_tokens(
+                    self.tokenizer, first_sample_text(eval_dataset, text_field)
+                )
+                self._online_eval_dataset = attach_online_tokenization(
+                    eval_dataset,
+                    tokenizer = self.tokenizer,
+                    text_field = text_field,
+                    max_length = max_length,
+                    add_special_tokens = eval_add_special_tokens,
+                )
+            config_args.update(online_config_args(decision))
+            self._online_prewarm_batches = decision.prewarm_batches
+            logger.info(
+                f"Online tokenization attached: max_length={max_length}, "
+                f"add_special_tokens={add_special_tokens}\n"
+            )
+            return decision
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Online tokenization setup failed, using eager path: {exc}")
+            if isinstance(dataset, dict):
+                dataset["dataset"] = train_dataset
+            self._online_eval_dataset = eval_dataset
+            self._online_prewarm_batches = 0
+            return OnlineTokenizationDecision(enabled = False, reason = f"setup error: {exc}")
+
+    def _release_online_dataloader(self) -> None:
+        """Shut down the online path's persistent DataLoader workers.
+
+        Persistence is what carries the prewarm barrier's workers into train();
+        nothing else drops them, so they would stay resident through merging,
+        quantization and GGUF export -- the most memory-hungry part of a run --
+        each a fork of a process that had already initialised CUDA. Called from a
+        finally (so it covers preflight errors and a raising train()), and
+        idempotent because those paths reach it twice.
+        """
+        if not getattr(self, "_online_prewarm_batches", 0):
+            return
+        trainer = getattr(self, "trainer", None)
+        if trainer is None:
+            return
+        try:
+            from utils.datasets.online_tokenization import release_train_dataloader
+            released = release_train_dataloader(trainer)
+        except Exception as exc:  # noqa: BLE001 - cleanup must never fail a finished run
+            logger.warning(f"Online tokenization worker shutdown failed: {exc}")
+            return
+        # `_online_prewarm_batches` is left alone: it records how the run was
+        # configured and the A/B harness reads it back. A second call is a no-op.
+        if released:
+            logger.info(f"Online tokenization: shut down {released} DataLoader workers\n")
+
     def _preflight_first_batch(self) -> Optional[str]:
         """Validate the first real batch before train(). A base model whose chat
         template renders empty yields empty float32 input_ids that crash the
-        embedding on step 1; catch it here. Returns None for a valid batch."""
+        embedding on step 1; catch it here. Returns None for a valid batch.
+
+        On the online path this doubles as the prewarm barrier: enough
+        microbatches for the first optimizer step and the DataLoader's in-flight
+        depth are pulled through here, so step 1 never waits on a cold worker.
+
+        The workers survive, not the batches: ``train()`` calls ``iter()`` again
+        and torch answers with ``_iterator._reset(...)``, restarting the sampler
+        at row 0, so these batches are tokenized twice. No rows are lost, and what
+        it buys is forked workers past their first import and tokenizer touch plus
+        a warm page cache."""
+        prewarm = int(getattr(self, "_online_prewarm_batches", 0) or 0)
+        if prewarm:
+            from utils.datasets.online_tokenization import memoize_train_dataloader
+
+            # Hold the loader this barrier fills, or train() forks fresh workers
+            # and everything drained here is wasted.
+            memoize_train_dataloader(self.trainer)
         try:
             loader = self.trainer.get_train_dataloader()
-            batch = next(iter(loader))
+            iterator = iter(loader)
+            batch = next(iterator)
+            for _ in range(max(0, prewarm - 1)):
+                try:
+                    next(iterator)
+                except StopIteration:
+                    break  # a short split simply prewarms fewer
+            # Drop the local names: on the eager path that tears the loader down;
+            # on the online path the memo still holds it, so the workers survive.
+            del iterator, loader
         except StopIteration:
             return (
                 "Cannot start training: the dataset produced no training rows. "
@@ -3932,6 +4127,22 @@ class UnslothTrainer:
                 config_args["packing"] = False
                 logger.info("Applied DAC overrides: packing=False\n")
 
+            # ========== ONLINE (OVERLAPPED) TOKENIZATION ==========
+            # Plain-text single-pass runs tokenize in the DataLoader workers
+            # instead of a blocking .map(); everything else stays eager.
+            self._online_prewarm_batches = 0
+            online_decision = self._configure_online_tokenization(
+                config_args = config_args,
+                dataset = dataset,
+                eval_dataset = eval_dataset,
+                training_args = training_args,
+                data_collator = data_collator,
+                raw_text_mode = raw_text_mode,
+                is_deepseek_ocr = is_deepseek_ocr,
+            )
+            if online_decision.enabled:
+                eval_dataset = self._online_eval_dataset
+
             logger.info(f"The configuration is: {config_args}")
 
             logger.info("Training configuration prepared\n")
@@ -4185,7 +4396,15 @@ class UnslothTrainer:
 
             self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
-            self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
+            try:
+                self.trainer.train(
+                    resume_from_checkpoint = training_args.get("resume_from_checkpoint")
+                )
+            finally:
+                # Before _finalize_training, not after: merging and exporting are
+                # where the memory goes, and the workers still hold a fork of this
+                # process.
+                self._release_online_dataloader()
 
             # ========== SAVE MODEL ==========
             self._finalize_training(output_dir)
@@ -4198,6 +4417,9 @@ class UnslothTrainer:
             self._update_progress(is_training = False, error = str(e))
 
         finally:
+            # Backstop for returns that never reach train(), notably a preflight
+            # error: that path has already forked the workers.
+            self._release_online_dataloader()
             self.is_training = False
 
     def _patch_adapter_config(self, output_dir: str) -> None:
