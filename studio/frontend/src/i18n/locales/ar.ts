@@ -182,6 +182,8 @@ export const ar = {
       closeAriaLabel: "إغلاق الإعدادات",
       searchPlaceholder: "ابحث في الإعدادات…",
       searchNoResults: "لم يُعثر على أي إعداد.",
+      panelFailed: "تعذر تحميل هذا القسم.",
+      panelReload: "إعادة التحميل",
     },
     tabs: {
       general: "عام",

@@ -185,6 +185,8 @@ export const hi = {
       closeAriaLabel: "सेटिंग्स बंद करें",
       searchPlaceholder: "सेटिंग्स खोजें…",
       searchNoResults: "कोई सेटिंग नहीं मिली।",
+      panelFailed: "यह अनुभाग लोड नहीं हो सका।",
+      panelReload: "फिर से लोड करें",
     },
     tabs: {
       general: "सामान्य",

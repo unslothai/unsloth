@@ -3,6 +3,7 @@
 
 import { FloatingMonitor } from "@/components/floating-monitor";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -32,8 +33,10 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Component,
   type ComponentType,
   type FC,
+  type ReactNode,
   Suspense,
   lazy,
   useDeferredValue,
@@ -85,6 +88,68 @@ function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
 }
 
 const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel is fetched the first time it is shown, so it can now fail where it could not
+ * before: offline, or a page whose entry bundle predates an in-place rewrite of `dist/`
+ * and still names chunks that have been replaced. This dialog is mounted at the app root
+ * and nothing above it catches, so an unguarded failure unmounts the whole of Studio, not
+ * one panel; that was reproduced with the panel's module blocked.
+ *
+ * Reload rather than retry: React caches a `lazy` rejection for the life of the page, and
+ * the browser's module map caches the failed import, so re-importing the same URL rethrows
+ * without a new request (whatwg/html#6768). index.html is served no-store, so a reload does
+ * pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so let it render rather than holding the
+  // whole panel area on one panel's failure.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
 
 interface TabDef {
   id: SettingsTab;
@@ -500,8 +565,24 @@ export function SettingsDialog() {
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
                 {/* Only the first view of a panel waits, and the prefetch below
-                    usually gets there first, so switching tabs stays instant. */}
-                <Suspense fallback={null}>{renderTab(panelTab)}</Suspense>
+                    usually gets there first, so switching tabs stays instant.
+                    The fallback is delayed so a panel that arrives promptly, which
+                    is every panel on a local install, never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    {renderTab(panelTab)}
+                  </Suspense>
+                </SettingsPanelBoundary>
               </div>
             </main>
           </div>

@@ -186,6 +186,8 @@ export const fr = {
       closeAriaLabel: "Fermer les paramètres",
       searchPlaceholder: "Rechercher dans les paramètres…",
       searchNoResults: "Aucun paramètre trouvé.",
+      panelFailed: "Cette section n'a pas pu être chargée.",
+      panelReload: "Recharger",
     },
     tabs: {
       general: "Général",

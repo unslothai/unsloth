@@ -182,6 +182,8 @@ export const ko = {
       closeAriaLabel: "설정 닫기",
       searchPlaceholder: "설정 검색…",
       searchNoResults: "설정을 찾을 수 없습니다.",
+      panelFailed: "이 섹션을 불러오지 못했습니다.",
+      panelReload: "새로고침",
     },
     tabs: {
       general: "일반",

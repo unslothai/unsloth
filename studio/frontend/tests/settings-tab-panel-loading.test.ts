@@ -103,6 +103,76 @@ test("nothing else in src statically imports a tab panel", async () => {
   );
 });
 
+test("a panel that fails to load cannot take the app down with it", async () => {
+  // The dialog is mounted at the app root and nothing above it catches, so an
+  // uncaught render throw unmounts the whole tree, not one panel. A panel is only
+  // fetchable at all because of the change above, so the boundary belongs here.
+  const source = await readFile(DIALOG, "utf8");
+  const parsed = ts.createSourceFile(
+    DIALOG,
+    source,
+    ts.ScriptTarget.ESNext,
+    // Parent pointers: the assertion is about which element encloses which.
+    true,
+    ts.ScriptKind.TSX,
+  );
+
+  const boundaries = new Set<string>();
+  const collect = (node: ts.Node): void => {
+    if (ts.isClassDeclaration(node) && node.name) {
+      const catches = node.members.some(
+        (member) =>
+          (ts.isMethodDeclaration(member) || ts.isPropertyDeclaration(member)) &&
+          member.name !== undefined &&
+          ts.isIdentifier(member.name) &&
+          (member.name.text === "getDerivedStateFromError" ||
+            member.name.text === "componentDidCatch"),
+      );
+      if (catches) boundaries.add(node.name.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  ts.forEachChild(parsed, collect);
+  assert.ok(
+    boundaries.size > 0,
+    "settings-dialog defines no error boundary for the lazy panels",
+  );
+
+  const tagName = (node: ts.Node): string | null => {
+    if (ts.isJsxElement(node)) return node.openingElement.tagName.getText(parsed);
+    if (ts.isJsxSelfClosingElement(node)) return node.tagName.getText(parsed);
+    return null;
+  };
+
+  let guarded = 0;
+  let total = 0;
+  const check = (node: ts.Node): void => {
+    if (tagName(node) === "Suspense") {
+      total += 1;
+      for (
+        let parent: ts.Node | undefined = node.parent;
+        parent;
+        parent = parent.parent
+      ) {
+        const name = tagName(parent);
+        if (name && boundaries.has(name)) {
+          guarded += 1;
+          break;
+        }
+      }
+    }
+    ts.forEachChild(node, check);
+  };
+  ts.forEachChild(parsed, check);
+  assert.ok(total > 0, "settings-dialog has no Suspense boundary around the panels");
+  assert.equal(
+    guarded,
+    total,
+    `${total - guarded} of ${total} panel Suspense boundaries are not inside ` +
+      `one of ${[...boundaries].join(", ")}`,
+  );
+});
+
 test("the panels are prefetched once the dialog opens", async () => {
   // Without this the first click on a tab waits on a network round trip, which
   // would trade a startup cost for an interaction one.

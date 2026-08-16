@@ -184,6 +184,8 @@ export const ptBR = {
       closeAriaLabel: "Fechar configurações",
       searchPlaceholder: "Pesquisar configurações…",
       searchNoResults: "Nenhuma configuração encontrada.",
+      panelFailed: "Não foi possível carregar esta seção.",
+      panelReload: "Recarregar",
     },
     tabs: {
       general: "Geral",

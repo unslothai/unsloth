@@ -150,6 +150,8 @@ export const it = {
       closeAriaLabel: "Chiudi le impostazioni",
       searchPlaceholder: "Cerca nelle impostazioni…",
       searchNoResults: "Nessuna impostazione trovata.",
+      panelFailed: "Non è stato possibile caricare questa sezione.",
+      panelReload: "Ricarica",
     },
     tabs: {
       general: "Generali",
