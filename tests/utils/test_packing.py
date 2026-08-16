@@ -1505,7 +1505,11 @@ class _StubInner(torch.nn.Module):
         )
 
 
-def _make_stub_causal_lm(hidden_size = 8, vocab = 16, seq = 8):
+def _make_stub_causal_lm(
+    hidden_size = 8,
+    vocab = 16,
+    seq = 8,
+):
     hidden = torch.zeros(1, seq, hidden_size)
     model = _StubInner(hidden)
     lm_head = torch.nn.Linear(hidden_size, vocab, bias = False)
