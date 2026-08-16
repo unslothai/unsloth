@@ -37,6 +37,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  announceProjectSourcesUpdated,
   invalidateProjectSources,
   listKnowledgeBases,
   listProjectDocuments,
@@ -46,8 +47,19 @@ import { useRagAvailabilityStore } from "../api/rag-availability";
 import {
   type DocumentStatus,
   RAG_UPLOAD_ACCEPT,
+  type RagDocument,
   isLinkedFolderManaged,
 } from "../types/rag";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { DocumentStatusChip } from "./document-status-chip";
 import { useRagDocuments } from "./use-rag-documents";
 
@@ -402,6 +414,7 @@ export function ThreadDocumentsBar({
     documents,
     uploading,
     hasIndexing: threadIndexing,
+    loading: threadListLoading,
     upload,
     remove,
   } = useRagDocuments(
@@ -437,7 +450,10 @@ export function ThreadDocumentsBar({
   // before either instance has a row for it. Reopening a project is the same
   // question unanswered: a job may already be running, and its row arrives with
   // the first list, so hold the gate until that lands.
-  const hasIndexing = threadIndexing || projectIndexing || projectListLoading;
+  // Both scopes hold on their first list, for the same reason: reopening a chat
+  // whose own attachment was still indexing lists nothing until it lands either.
+  const hasIndexing =
+    threadIndexing || threadListLoading || projectIndexing || projectListLoading;
   useEffect(() => {
     onIndexingChange?.(hasIndexing);
   }, [hasIndexing, onIndexingChange]);
@@ -507,7 +523,7 @@ export function ThreadDocumentsBar({
         // Explicit scope: a desktop drop enables RAG and attaches in the same
         // tick, so the hook's own scope is still null on this render.
         void uploadToProject(items, { type: "project", projectId }).finally(() =>
-          invalidateProjectSources(projectId),
+          announceProjectSourcesUpdated(projectId),
         );
         return;
       }
@@ -579,6 +595,10 @@ export function ThreadDocumentsBar({
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
+  // Removing a project source from here deletes it for every chat in the
+  // project, and the chip sits beside this chat's own, whose X is undoable by
+  // re-attaching. Confirm, as the Sources tab and Settings already do.
+  const [removingShared, setRemovingShared] = useState<RagDocument | null>(null);
   const updateChipFade = useCallback(() => {
     const el = chipScrollRef.current;
     if (!el) return;
@@ -665,7 +685,7 @@ export function ThreadDocumentsBar({
             onRemove={
               doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                 ? undefined
-                : () => void removeFromProject(doc.id)
+                : () => setRemovingShared(doc)
             }
           />
         ))}
@@ -684,6 +704,35 @@ export function ThreadDocumentsBar({
           />
         ))}
       </div>
+      <AlertDialog
+        open={removingShared !== null}
+        onOpenChange={(open) => {
+          if (!open) setRemovingShared(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove from project sources</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove "{removingShared?.filename}"? Every chat in this project
+              loses it, and the file and its indexed content are deleted. This
+              cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const doc = removingShared;
+                setRemovingShared(null);
+                if (doc) void removeFromProject(doc.id);
+              }}
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

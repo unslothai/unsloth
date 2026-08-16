@@ -84,6 +84,14 @@ export interface LoadModelRequest {
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
   n_ubatch?: number | null;
   /**
+   * Pass-through llama-server args, one argv token per entry, appended after
+   * Unsloth's own flags so llama.cpp's last-wins parser takes these. Flags Unsloth
+   * manages are refused with a 4xx naming the flag. Omit/null inherits the stored
+   * per-model value; [] launches with none. GGUF only.
+   */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  llama_extra_args?: string[] | null;
+  /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
@@ -258,6 +266,8 @@ export interface LoadModelResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
 }
 
 export interface UnloadModelRequest {
@@ -345,6 +355,8 @@ export interface InferenceStatusResponse {
   requested_n_batch?: number | null;
   /** micro-batch size (--ubatch-size) the active load was invoked with; null = default */
   requested_n_ubatch?: number | null;
+  /** Pass-through llama-server arguments the running load was invoked with. */
+  requested_llama_extra_args?: string[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -405,6 +417,8 @@ export interface ApiMonitorEntry {
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
+  /** Final request-specific prompt rate from engine timings. */
+  prompt_tok_per_sec?: number | null;
   stop_reason?: string | null;
 }
 

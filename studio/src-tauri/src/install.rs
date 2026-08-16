@@ -1,4 +1,5 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::install_watchdog::{self, ProgressWatch, WatchState};
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::collections::{HashMap, VecDeque};
@@ -626,6 +627,7 @@ fn spawn_script(
 fn stream_output(
     app: &AppHandle,
     state: &InstallState,
+    watch: &WatchState,
     event_mode: InstallEventMode,
     diagnostics: DiagnosticsState,
     attempt: AttemptLog,
@@ -641,6 +643,7 @@ fn stream_output(
     if let Some(out) = stdout {
         let app_clone = app.clone();
         let state_clone = Arc::clone(state);
+        let watch_clone = Arc::clone(watch);
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
         let failure_context_clone = Arc::clone(&failure_context);
@@ -654,6 +657,12 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                        // Not forwarded: a line per large dependency is noise. install.sh
+                        // sends them on stderr and install.ps1 on stdout, so both filter.
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stdout] {}", text);
+                            continue;
+                        }
                         let is_failure_control = failure_context_clone
                             .lock()
                             .map(|mut context| context.observe_stdout(&text))
@@ -717,6 +726,7 @@ fn stream_output(
     if let Some(err) = stderr {
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
+        let watch_clone = Arc::clone(watch);
         let failure_context_clone = Arc::clone(&failure_context);
         threads.push(std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(err);
@@ -728,6 +738,10 @@ fn stream_output(
                     Ok(_) => {
                         let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                         diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                        if install_watchdog::note_progress(&watch_clone, &text) {
+                            info!("[install][stderr] {}", text);
+                            continue;
+                        }
                         let is_failure_control = failure_context_clone
                             .lock()
                             .map(|mut context| context.observe_stderr(&text))
@@ -754,35 +768,42 @@ fn stream_output(
 // ── Wait & Finalize ──
 
 /// Waits for the install process to exit. Returns (exit_status, was_intentional_stop).
-/// Times out after 2 hours to prevent infinite loops if the child hangs.
-fn wait_for_exit(state: &InstallState) -> Result<(ExitStatus, bool), String> {
-    const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
-    for _ in 0..MAX_WAIT_ITERATIONS {
-        let mut install = state.lock().map_err(|e| e.to_string())?;
-        let intentional = install.intentional_stop;
-
-        match install.child.as_mut() {
-            Some(child) => match child.try_wait() {
-                Ok(Some(status)) => {
-                    install.child = None;
-                    return Ok((status, intentional));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    install.child = None;
-                    return Err(format!("Error waiting for installer: {}", e));
-                }
-            },
-            None if intentional => return Err("Installation stopped.".to_string()),
-            None => return Err("Installer process disappeared unexpectedly.".to_string()),
-        }
-
-        drop(install);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-    // Timed out — kill and report
-    let _ = stop_install(state);
-    Err("Installation timed out after 2 hours".to_string())
+/// The deadline is a backstop, not a patience limit; see install_watchdog.
+fn wait_for_exit(
+    state: &InstallState,
+    watch: &WatchState,
+    app: &AppHandle,
+    event_mode: InstallEventMode,
+) -> Result<(ExitStatus, bool), String> {
+    install_watchdog::wait_with_watchdog(
+        watch,
+        || {
+            let mut install = state.lock().map_err(|e| e.to_string())?;
+            let intentional = install.intentional_stop;
+            match install.child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        install.child = None;
+                        Ok(Some((status, intentional)))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => {
+                        install.child = None;
+                        Err(format!("Error waiting for installer: {}", e))
+                    }
+                },
+                None if intentional => Err("Installation stopped.".to_string()),
+                None => Err("Installer process disappeared unexpectedly.".to_string()),
+            }
+        },
+        |line| {
+            info!("[install] {}", line);
+            let _ = app.emit(event_mode.progress_event(), line);
+        },
+        || {
+            let _ = stop_install(state);
+        },
+    )
 }
 
 // ── Public API ──
@@ -869,9 +890,11 @@ fn run_install_with_event_mode(
             return Err(msg);
         }
     };
+    let watch: WatchState = Arc::new(Mutex::new(ProgressWatch::new(std::time::Instant::now())));
     let (threads, failure_context) = stream_output(
         &app,
         &state,
+        &watch,
         event_mode,
         diagnostics.clone(),
         attempt.clone(),
@@ -880,7 +903,7 @@ fn run_install_with_event_mode(
     );
 
     // Wait for exit, join reader threads
-    let result = wait_for_exit(&state);
+    let result = wait_for_exit(&state, &watch, &app, event_mode);
     for handle in threads {
         let _ = handle.join();
     }

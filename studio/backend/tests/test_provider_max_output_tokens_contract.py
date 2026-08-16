@@ -8,10 +8,9 @@ Three things a happy-path test cannot reach:
 * an existing studio.db, written before this column existed, opened by this code;
 * the same database opened AGAIN by a build that has never heard of the column,
   which is what a user who reverts to the previous release does;
-* the route contract, where an explicit null has to be accepted on every provider
-  type. The dialog sends null for a blank field, and it renders that field from the
-  UI provider type, which is "custom" for rows STORED as `openai` with a custom name
-  or base URL -- so rejecting the null broke every unrelated edit of those rows.
+* the route contract, where an explicit null has to be accepted on every provider type:
+  the dialog sends null for a blank field rather than omitting it, so rejecting it broke
+  every unrelated edit of a row that carries no override.
 
 No network, no GPU, no server: the routes are driven as plain coroutines and every
 database is a per-test temporary file.
@@ -66,9 +65,9 @@ finally:
 
 CREDENTIAL = ("alice", None)
 
-# Read from the registry rather than hardcoded, so a provider added later is covered
-# without an edit here.
+# From the registry, so a provider added later is covered without an edit here.
 NON_CUSTOM_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "custom")
+OVERRIDABLE_PROVIDER_TYPES = tuple(t for t in PROVIDER_REGISTRY if t != "openai_codex")
 
 # The schema as it stood before this column, including the two columns earlier
 # releases added by ALTER. A database in this shape is what an upgrading user has.
@@ -277,15 +276,9 @@ def _update(provider_id: str, payload: ProviderUpdate):
 def test_a_non_custom_provider_accepts_an_explicit_null_override(
     provider_routes: Path, provider_type: str
 ):
-    """The regression this fix targets.
-
-    The dialog renders the Max Tokens limit row from the UI provider type, and
-    `resolveUiProviderTypeFromConfig` reports "custom" for rows stored as `openai`
-    with a custom name or base URL. A blank field serialises as null rather than as
-    an omission, so rejecting the null made every unrelated edit of such a row -- a
-    rename, a model change, a key rotation -- fail with an error about a field the
-    user never touched. Clearing an override that cannot exist is a no-op.
-    """
+    """A blank Max Tokens limit field serialises as null rather than as an omission, so
+    an unrelated edit of a row with no override -- a rename, a model change, a key
+    rotation -- sends the null along and rejecting it failed the whole edit."""
     providers_db.create_provider(
         id = f"{provider_type}-1",
         provider_type = provider_type,
@@ -300,22 +293,51 @@ def test_a_non_custom_provider_accepts_an_explicit_null_override(
     assert _raw_override(provider_routes, f"{provider_type}-1") is None
 
 
-@pytest.mark.parametrize("provider_type", NON_CUSTOM_PROVIDER_TYPES)
-def test_a_non_custom_provider_still_rejects_a_real_override(
+@pytest.mark.parametrize("provider_type", OVERRIDABLE_PROVIDER_TYPES)
+def test_every_provider_type_but_codex_takes_a_real_override(
     provider_routes: Path, provider_type: str
 ):
-    """The half of the contract that must NOT be relaxed: providers with documented
-    caps of their own do not take a hand-written one."""
+    """A documented per-model cap still wins in the frontend; the override replaces the
+    32,768-token fallback every provider reaches for an unlisted model."""
     providers_db.create_provider(
         id = f"{provider_type}-1",
         provider_type = provider_type,
         display_name = provider_type,
         base_url = "https://example.com/v1",
     )
+    assert (
+        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 262144)).max_output_tokens
+        == 262144
+    )
+    assert _raw_override(provider_routes, f"{provider_type}-1") == 262144
+
+
+def test_a_chatgpt_subscription_rejects_a_real_override(provider_routes: Path):
+    """Codex routing, model list and output cap are fixed, so a stored override would
+    never be read."""
+    providers_db.create_provider(
+        id = "openai_codex-1",
+        provider_type = "openai_codex",
+        display_name = "ChatGPT",
+        base_url = "https://chatgpt.com/backend-api/codex",
+    )
     with pytest.raises(HTTPException) as error:
-        _update(f"{provider_type}-1", ProviderUpdate(max_output_tokens = 65536))
+        _update("openai_codex-1", ProviderUpdate(max_output_tokens = 65536))
     assert error.value.status_code == 400
-    assert _raw_override(provider_routes, f"{provider_type}-1") is None
+    assert _raw_override(provider_routes, "openai_codex-1") is None
+
+    # Create takes the same contract, and reaches it before the auth one, so the caller
+    # is told which rule stopped them.
+    with pytest.raises(HTTPException) as created:
+        _create(
+            ProviderCreate(
+                provider_type = "openai_codex",
+                display_name = "ChatGPT",
+                max_output_tokens = 65536,
+            )
+        )
+    assert created.value.status_code == 400
+    assert "fixed Max Tokens limit" in created.value.detail
 
 
 def test_a_custom_connection_can_set_preserve_and_clear_its_override(provider_routes: Path):

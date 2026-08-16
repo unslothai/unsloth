@@ -103,6 +103,7 @@ class ApiMonitorEntry:
     first_decode_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
+    prompt_tok_per_sec: Optional[float] = None
     # timings.predicted_ms; set only from engine timings, so its presence marks a rateable row.
     decode_ms: Optional[float] = None
     stop_reason: Optional[str] = None
@@ -176,6 +177,9 @@ class ApiMonitorEntry:
             "progress": self.progress,
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
+            "prompt_tok_per_sec": (
+                round(self.prompt_tok_per_sec, 2) if self.prompt_tok_per_sec is not None else None
+            ),
             # The engine's decode span, not the streamed window: an unknowable first-chunk token
             # count and reasoning tokens both inflate a streamed rate. Absent rather than guessed.
             "decode_ms": int(self.decode_ms) if self.decode_ms is not None else None,
@@ -392,6 +396,7 @@ class ApiMonitor:
         entry_id: Optional[str],
         *,
         tok_per_sec: Optional[float] = None,
+        prompt_tok_per_sec: Optional[float] = None,
         prompt_ms: Optional[float] = None,
         decode_ms: Optional[float] = None,
         stop_reason: Optional[str] = None,
@@ -401,14 +406,17 @@ class ApiMonitor:
         # Coerce before locking: arbitrary payloads, and a raise here (this runs inside
         # streaming generators) would truncate the user's response.
         tok_per_sec = _finite_float_or_none(tok_per_sec)
+        prompt_tok_per_sec = _finite_float_or_none(prompt_tok_per_sec)
         prompt_ms = _finite_float_or_none(prompt_ms)
         decode_ms = _finite_float_or_none(decode_ms)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            if tok_per_sec is not None:
+            if tok_per_sec is not None and tok_per_sec >= 0:
                 entry.tok_per_sec = tok_per_sec
+            if prompt_tok_per_sec is not None and prompt_tok_per_sec >= 0:
+                entry.prompt_tok_per_sec = prompt_tok_per_sec
             if prompt_ms is not None:
                 entry.prompt_ms = prompt_ms
             # Past a day of decode it is a bad reading, not a slow model.

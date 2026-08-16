@@ -229,7 +229,7 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
   );
   assert.match(
     bar,
-    /const hasIndexing =\s*threadIndexing \|\| projectIndexing \|\| projectListLoading;/,
+    /const hasIndexing =\s*threadIndexing \|\| threadListLoading \|\| projectIndexing \|\| projectListLoading;/,
   );
 });
 
@@ -279,7 +279,7 @@ test("the poll and the initial list are wired that way", () => {
   );
   assert.match(
     bar,
-    /threadIndexing \|\| projectIndexing \|\| projectListLoading/,
+    /threadIndexing \|\| threadListLoading \|\| projectIndexing \|\| projectListLoading/,
   );
 });
 
@@ -489,39 +489,42 @@ test("work in flight renews the deadline other tabs put on it", () => {
     "utf8",
   );
   assert.match(api, /const WORK_HEARTBEAT_MS = 45_000;/);
-  assert.match(
-    api,
-    /channel\.postMessage\(\{ kind: "work", projectId, delta: 0, from: TAB_ID \}\)/,
-  );
+  // The absolute count, not a zero delta: a delta cannot revive an entry the
+  // receiver has already let lapse, which a suspended timer produces.
+  assert.match(api, /setInterval\(answerWorkQuery, WORK_HEARTBEAT_MS\)/);
   // Started and stopped by the count itself, so an idle tab posts nothing.
   assert.match(
     api,
     /if \(projectWorkInFlight\.size === 0\) \{\s*if \(workHeartbeat !== null\) \{\s*clearInterval\(workHeartbeat\)/,
   );
 
-  // A zero delta moves the deadline and leaves the count alone.
   const remote = new Map<string, { count: number; until: number }>();
   let now = 1_000;
-  const note = (projectId: string, delta: number) => {
-    const entry = remote.get(projectId) ?? { count: 0, until: 0 };
-    const count = Math.max(0, entry.count + delta);
-    if (count === 0) remote.delete(projectId);
-    else remote.set(projectId, { count, until: now + 120_000 });
-  };
   const counted = (projectId: string) => {
     const entry = remote.get(projectId);
     return entry && entry.until > now ? entry.count : 0;
   };
+  // seedRemoteProjectWork: renews the deadline and floors the count, so a
+  // heartbeat both holds a live entry and revives one already let lapse.
+  const seed = (projectId: string, count: number) => {
+    if (count <= 0) return;
+    remote.set(projectId, {
+      count: Math.max(counted(projectId), count),
+      until: now + 120_000,
+    });
+  };
 
-  note("proj-1", 1);
+  seed("proj-1", 1);
   now += 90_000;
-  note("proj-1", 0); // heartbeat at 45s and 90s
+  seed("proj-1", 1); // heartbeat inside the deadline
   now += 90_000;
   assert.equal(counted("proj-1"), 1, "still gated three minutes in");
 
-  // The tab goes away, the heartbeats stop, and the gate lapses as before.
+  // A tab frozen past the deadline: the next heartbeat must count again.
   now += 120_001;
-  assert.equal(counted("proj-1"), 0);
+  assert.equal(counted("proj-1"), 0, "lapsed while nothing was heard");
+  seed("proj-1", 1);
+  assert.equal(counted("proj-1"), 1, "revived by the heartbeat after it lapsed");
 });
 
 // Clearing to a null scope outranks the refresh still in flight but starts no
@@ -570,7 +573,7 @@ test("a folder job drops the cached answer before the gate", () => {
   );
   assert.match(
     api,
-    /invalidateProjectSources\(projectId\);\s*noteProjectWork\(projectId, -1\);/,
+    /announceProjectSourcesUpdated\(projectId\);\s*noteProjectWork\(projectId, -1\);/,
   );
 });
 

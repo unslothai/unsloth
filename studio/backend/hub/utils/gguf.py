@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
+from utils.models.gguf_metadata import mmproj_accepts_image
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -925,9 +926,11 @@ def list_local_gguf_variants(
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_mmproj_filename(file.name):
-            # A projector llama.cpp cannot open is not vision support.
+            # An empty projector is an interrupted download; an audio-only one is not vision.
             try:
-                has_vision = has_vision or file.stat().st_size > 0
+                has_vision = has_vision or (
+                    file.stat().st_size > 0 and mmproj_accepts_image(str(file))
+                )
             except OSError:
                 pass
             continue

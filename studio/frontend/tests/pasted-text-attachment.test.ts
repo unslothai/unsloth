@@ -6,9 +6,10 @@ import test from "node:test";
 
 import { fallbackTitleFromUserText } from "../src/features/chat/utils/chat-title.ts";
 import {
-  PASTED_TEXT_MIN_CHARS,
-  PASTED_TEXT_MIN_LINES,
+  PASTED_TEXT_DEFAULT_MIN_CHARS,
   PASTED_TEXT_PREVIEW_MAX_CHARS,
+  PASTED_TEXT_THRESHOLD_CHOICES,
+  PASTED_TEXT_THRESHOLD_OFF,
   attachmentContentSample,
   attachmentContentText,
   attachmentsPastedText,
@@ -66,21 +67,42 @@ test("short pastes stay inline", () => {
   assert.equal(shouldAttachPastedText("   \n  "), false);
   assert.equal(shouldAttachPastedText("what does this function do?"), false);
   assert.equal(
-    shouldAttachPastedText("a".repeat(PASTED_TEXT_MIN_CHARS - 1)),
+    shouldAttachPastedText("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS - 1)),
     false,
   );
+  // Line count no longer decides: a tall but short paste stays inline.
+  assert.equal(shouldAttachPastedText("line\n".repeat(200)), false);
+});
+
+test("bulk pastes become attachments by length", () => {
   assert.equal(
-    shouldAttachPastedText("line\n".repeat(PASTED_TEXT_MIN_LINES - 2)),
-    false,
+    shouldAttachPastedText("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS)),
+    true,
   );
 });
 
-test("bulk pastes become attachments by length or by line count", () => {
-  assert.equal(shouldAttachPastedText("a".repeat(PASTED_TEXT_MIN_CHARS)), true);
-  // Many short lines (a log tail, a stack trace) are just as unusable inline.
-  assert.equal(
-    shouldAttachPastedText("x\n".repeat(PASTED_TEXT_MIN_LINES)),
-    true,
+test("the threshold is configurable", () => {
+  const text = "a".repeat(3000);
+  assert.equal(shouldAttachPastedText(text, 2000), true);
+  assert.equal(shouldAttachPastedText(text, 4000), false);
+  assert.equal(shouldAttachPastedText(text, 16000), false);
+});
+
+test("the off choice keeps every paste inline", () => {
+  const huge = "a".repeat(5 * 1024 * 1024);
+  assert.equal(shouldAttachPastedText(huge, PASTED_TEXT_THRESHOLD_OFF), false);
+  // A negative or nonsense value cannot turn it back on either.
+  assert.equal(shouldAttachPastedText(huge, -1), false);
+});
+
+test("the default is one of the offered choices", () => {
+  assert.ok(
+    PASTED_TEXT_THRESHOLD_CHOICES.includes(PASTED_TEXT_DEFAULT_MIN_CHARS),
+  );
+  assert.equal(PASTED_TEXT_DEFAULT_MIN_CHARS, 4000);
+  assert.deepEqual(
+    [...PASTED_TEXT_THRESHOLD_CHOICES],
+    [0, 2000, 4000, 8000, 16000],
   );
 });
 
@@ -132,9 +154,7 @@ test("the file is named after the opening of the paste", () => {
 });
 
 test("pasted text files are recognised by identity", () => {
-  const file = createPastedTextFile(
-    "Deploy log\n".repeat(PASTED_TEXT_MIN_LINES),
-  );
+  const file = createPastedTextFile("Deploy log\n".repeat(400));
   assert.equal(file.name, "Deploy log.txt");
   assert.equal(file.type, "text/plain");
   assert.equal(isPastedTextFile(file), true);
@@ -340,7 +360,7 @@ test("the preview is capped, and says how much it is holding back", () => {
 });
 
 test("a long text paste is swallowed and handed over as a file", async () => {
-  const text = "a".repeat(PASTED_TEXT_MIN_CHARS);
+  const text = "a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS);
   const added: File[] = [];
   const event = pasteEvent(clipboard(text));
 
@@ -366,7 +386,7 @@ test("normal pastes and file pastes fall through untouched", () => {
   // An image on the clipboard belongs to the file-paste path, even when the
   // app also offers a long text/plain rendering of it.
   const withFile = pasteEvent(
-    clipboard("a".repeat(PASTED_TEXT_MIN_CHARS), [
+    clipboard("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS), [
       new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" }),
     ]),
   );
@@ -387,10 +407,9 @@ test("a paste too big to hold inline still attaches", () => {
   // one case the input cannot survive.
   const huge = "a".repeat(20 * 1024 * 1024 + 1);
   assert.equal(shouldAttachPastedText(huge), true);
-  // Whitespace is no exemption either: it used to skip both thresholds.
-  assert.equal(shouldAttachPastedText(" ".repeat(PASTED_TEXT_MIN_CHARS)), true);
+  // Whitespace is no exemption either.
   assert.equal(
-    shouldAttachPastedText("\n".repeat(PASTED_TEXT_MIN_LINES)),
+    shouldAttachPastedText(" ".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS)),
     true,
   );
   assert.equal(shouldAttachPastedText("   "), false);
@@ -398,7 +417,9 @@ test("a paste too big to hold inline still attaches", () => {
 
 test("an attachment that throws on the spot reports instead of vanishing", () => {
   let errors = 0;
-  const event = pasteEvent(clipboard("a".repeat(PASTED_TEXT_MIN_CHARS)));
+  const event = pasteEvent(
+    clipboard("a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS)),
+  );
 
   const handled = pasteLongTextAsFile(
     event,
@@ -424,7 +445,7 @@ test("a .txt named like a pasted one keeps the normal tile", () => {
 });
 
 test("native image and file payloads stay on the file paste path", () => {
-  const text = "a".repeat(PASTED_TEXT_MIN_CHARS);
+  const text = "a".repeat(PASTED_TEXT_DEFAULT_MIN_CHARS);
   // Tauri advertises native payloads by type only, with nothing in files.
   const svg = pasteEvent(
     clipboard(text, [], { types: ["text/plain", "image/svg+xml"] }),

@@ -4132,9 +4132,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        # Spelled out rather than swallowed by a **kwargs: this double exists to pin the exact
+        # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
+        # that keeps the no-download promise has to be one _assemble_pipe really passes.
+        local_files_only = False,
     ):
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["local_files_only"] = local_files_only
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
@@ -4158,7 +4163,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     )
     assert isinstance(pipe, Pipe)
     # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
-    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    assert calls == {
+        "base": "unsloth/Krea-2-Turbo",
+        "transformer": marker,
+        "device": "cuda:0",
+        # Default here (a direct call), but PASSED rather than left to the loader's own default:
+        # the parameter this test binds is what an API-initiated load flips.
+        "local_files_only": False,
+    }
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(

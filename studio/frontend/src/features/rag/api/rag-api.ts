@@ -223,10 +223,40 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
  * project's Sources panel are separate hook instances over the same scope, so
  * without this a file added in one stays invisible to the other. */
 export const PROJECT_SOURCES_CHANGED_EVENT = "unsloth-project-sources-changed";
+/** Earlier name for the same event, so existing listeners keep working. */
+export const PROJECT_SOURCES_UPDATED_EVENT = PROJECT_SOURCES_CHANGED_EVENT;
 
+/** Drop the probe's cached answer, and nothing else. Callers invalidate *before*
+ * their own mutation too, where refetching would resurrect a row the panel has
+ * already dropped optimistically. */
 export function invalidateProjectSources(projectId: string): void {
+  projectSourcesCache.delete(projectId);
+}
+
+/** Invalidate, then tell every mounted list: this tab's other instances, and the
+ * other tabs, which a CustomEvent alone never reaches. Call after a mutation. */
+export function announceProjectSourcesUpdated(projectId: string): void {
   publishProjectSourcesChanged(projectId);
   getProjectChannel()?.postMessage({ kind: "sources", projectId });
+}
+
+/** Run `onUpdated` whenever this project's sources change elsewhere in the app.
+ * Returns the unsubscribe, so a component can hand it back from an effect. */
+export function subscribeProjectSourcesUpdated(
+  projectId: string,
+  onUpdated: () => void,
+): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const listener = (event: Event) => {
+    const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+    // Another project's save must not refetch this one's list.
+    if (detail?.projectId === projectId) onUpdated();
+  };
+  window.addEventListener(PROJECT_SOURCES_CHANGED_EVENT, listener);
+  subscribeProjectSourcesBroadcast();
+  return () => {
+    window.removeEventListener(PROJECT_SOURCES_CHANGED_EVENT, listener);
+  };
 }
 
 function publishProjectSourcesChanged(projectId: string): void {
@@ -255,6 +285,9 @@ function getProjectChannel(): BroadcastChannel | null {
     return null;
   }
   projectChannel = new BroadcastChannel(PROJECT_SOURCES_CHANGED_EVENT);
+  // Node's BroadcastChannel holds the event loop open, which hangs a test run
+  // that touches this module. Browsers have no unref and need none.
+  (projectChannel as { unref?: () => void }).unref?.();
   projectChannel.onmessage = (event: MessageEvent) => {
     const message = event.data as {
       kind?: string;
@@ -307,7 +340,7 @@ function askForWorkInFlight(): void {
 }
 
 function answerWorkQuery(): void {
-  const channel = projectChannel;
+  const channel = getProjectChannel();
   if (!channel) return;
   for (const [projectId, count] of projectWorkInFlight) {
     channel.postMessage({ kind: "work-state", projectId, count, from: TAB_ID });
@@ -357,7 +390,9 @@ export function noteProjectWork(projectId: string, delta: number): void {
  * Renew the deadline the other tabs put on this tab's work. An upload of a
  * large file outlives the deadline with no delta to send in between, and
  * without a renewal the other tab would stop counting it and let a send go out
- * mid-upload. A zero delta leaves the count alone and moves the deadline only.
+ * mid-upload. The absolute count is sent rather than a zero delta: a delta
+ * cannot revive an entry the receiver has already let lapse, which is exactly
+ * the case a suspended timer or a slept laptop produces.
  */
 const WORK_HEARTBEAT_MS = 45_000;
 let workHeartbeat: ReturnType<typeof setInterval> | null = null;
@@ -373,13 +408,8 @@ function syncWorkHeartbeat(): void {
   if (workHeartbeat !== null) {
     return;
   }
-  workHeartbeat = setInterval(() => {
-    const channel = getProjectChannel();
-    if (!channel) return;
-    for (const projectId of projectWorkInFlight.keys()) {
-      channel.postMessage({ kind: "work", projectId, delta: 0, from: TAB_ID });
-    }
-  }, WORK_HEARTBEAT_MS);
+  workHeartbeat = setInterval(answerWorkQuery, WORK_HEARTBEAT_MS);
+  (workHeartbeat as { unref?: () => void }).unref?.();
 }
 
 function publishProjectWorkChanged(projectId: string): void {
@@ -467,16 +497,19 @@ function noteRemoteProjectWork(
   setRemoteProjectWork(projectId, from, Math.max(0, current + delta));
 }
 
-/** An absolute count a tab reports for work it started before this one was
- * listening. Recorded against that tab alone: every other tab answers the same
- * query separately, and their deltas are already counted under their own ids. */
+/** An absolute count a tab reports: for work it started before this one was
+ * listening, and on every heartbeat after. Recorded against that tab alone:
+ * every other tab answers the same query separately, and their deltas are
+ * already counted under their own ids. Always renews the deadline, and never
+ * lowers a count a delta has raised in the meantime, so a heartbeat both keeps
+ * live work counted and revives an entry this tab has already let lapse. */
 function seedRemoteProjectWork(
   projectId: string,
   from: string,
   count: number,
 ): void {
-  if (count <= 0 || remoteSenderCount(projectId, from) >= count) return;
-  setRemoteProjectWork(projectId, from, count);
+  if (count <= 0) return;
+  setRemoteProjectWork(projectId, from, Math.max(remoteSenderCount(projectId, from), count));
 }
 
 export function projectWorkCount(projectId: string): number {
@@ -529,9 +562,9 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
     } finally {
       watchedFolderJobs.delete(jobId);
       // The rows this job wrote are new sources, and this watcher is the only
-      // observer left once the panel unmounts. Drop the probe's cached answer
-      // before the gate, or a send released by it still reads "no sources".
-      invalidateProjectSources(projectId);
+      // observer left once the panel unmounts. Announce before the gate, or a
+      // send released by it still reads the cached "no sources".
+      announceProjectSourcesUpdated(projectId);
       noteProjectWork(projectId, -1);
     }
   })();
@@ -655,7 +688,7 @@ export async function deleteDocument(
       method: "DELETE",
     },
   );
-  if (projectId) invalidateProjectSources(projectId);
+  if (projectId) announceProjectSourcesUpdated(projectId);
   return result;
 }
 

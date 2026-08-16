@@ -26,7 +26,10 @@
       "@/*": ["./src/*"]
     }
   },
-  // The ambient declarations too: a test that reaches a src module pulling in
-  // the dictation adapter needs the SpeechRecognition globals it declares.
-  "include": ["tests", "src/speech-recognition.d.ts"]
+  // The ambient globals under src/ are declaration files, so nothing imports them and
+  // "tests" alone never reaches them. A test that (transitively) pulls in a src module
+  // relying on one -- the dictation adapter's SpeechRecognition globals, say -- would
+  // otherwise fail to typecheck here only; the app project sees them because it
+  // includes all of src.
+  "include": ["tests", "src/**/*.d.ts"]
 }
