@@ -27,6 +27,7 @@ type ResidentRuntime = Pick<
   | "gpu_ids"
   | "is_gguf"
   | "tensor_parallel_dropped_by_arch_gate"
+  | "gpu_placement_paravirtual"
   | "tensor_split"
   | "cpu_fallback_reason"
 >;
@@ -298,6 +299,8 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       c.tensorParallel === (s.tensor_parallel ?? false) ||
+      // Rewritten away with the rest of the placement on a virtualised Metal device.
+      s.gpu_placement_paravirtual === true ||
       // A split the architecture gate normalized away: that layer-mode runtime IS this
       // request as the gate rewrote it, and the backend accepts it back unchanged.
       (c.tensorParallel === true &&
@@ -442,11 +445,11 @@ export function residentRuntimeMatchesConfig(
   if (!config) {
     return true;
   }
-  const placementPreserved = cpuFallbackPlacementPreserved(
-    config,
-    status,
-    standing,
-  );
+  const placementPreserved =
+    // A virtualised Metal device pins every GGUF request to the CPU before either
+    // comparator runs, so placement cannot tell two requests apart there at all.
+    status.gpu_placement_paravirtual === true ||
+    cpuFallbackPlacementPreserved(config, status, standing);
   return SETTING_CHECKS.every(
     (check) =>
       (check.placement && placementPreserved) ||

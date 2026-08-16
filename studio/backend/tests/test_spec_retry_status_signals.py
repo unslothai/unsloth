@@ -211,3 +211,28 @@ def test_the_arch_gate_drop_is_reported():
             raise AttributeError(name)
 
     assert helper(_Bare()) is None
+
+
+def test_the_paravirtual_pin_follows_the_detector(monkeypatch):
+    # The helper reads the detector rather than deciding anything itself, so drive the
+    # detector. It is lru_cached, which is what keeps this free on the status poll.
+    helper = _load_helper("_gpu_placement_paravirtual")
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: True)
+    assert helper() is True
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: False)
+    assert helper() is False
+
+
+def test_a_detector_that_raises_is_unknown_not_false(monkeypatch):
+    # False would tell the client placement is comparable on a host where it is not,
+    # which is the direction that adopts a runtime the user did not ask for.
+    helper = _load_helper("_gpu_placement_paravirtual")
+    from core.inference import llama_cpp
+
+    def _boom():
+        raise RuntimeError("probe failed")
+
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", _boom)
+    assert helper() is None

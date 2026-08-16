@@ -7038,6 +7038,24 @@ def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
         return None
 
 
+def _gpu_placement_paravirtual() -> Optional[bool]:
+    """Whether every GGUF request on this host is rewritten to the CPU pin.
+
+    ``paravirtual_normalized_request`` maps any placement to manual / zero layers / no
+    split / no MoE on a virtualised Metal device, and ``adopt_load_intent_if_matched``
+    applies it before comparing, so placement cannot distinguish two requests here at
+    all. A client comparing the raw values sees its Auto pick against a manual status and
+    reloads on every re-pick. The detector is lru_cached, so this costs one probe per
+    process and nothing after.
+    """
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+
+        return bool(_metal_device_is_paravirtual())
+    except Exception:
+        return None
+
+
 def _arch_gate_dropped_tensor_parallel(llama_backend) -> Optional[bool]:
     """Whether the GPU architecture gate normalized a tensor-parallel request away.
 
@@ -10598,6 +10616,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
                 spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
+                gpu_placement_paravirtual = _gpu_placement_paravirtual(),
                 tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
                     llama_backend
                 ),

@@ -389,6 +389,8 @@ export interface InferenceStatusResponse {
   spec_dspark_sidecar_absent?: boolean | null;
   /** The architecture gate normalized a tensor-parallel request to layer mode. */
   tensor_parallel_dropped_by_arch_gate?: boolean | null;
+  /** A virtualised Metal device: every GGUF request is rewritten to the CPU pin. */
+  gpu_placement_paravirtual?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

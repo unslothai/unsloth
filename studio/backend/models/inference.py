@@ -1107,6 +1107,15 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "runtime. None on a backend too old to report it."
         ),
     )
+    gpu_placement_paravirtual: Optional[bool] = Field(
+        None,
+        description = (
+            "Metal is a virtualised Apple GPU, so paravirtual_normalized_request rewrites "
+            "every GGUF request to manual / zero layers / no split / no MoE before the "
+            "duplicate-load comparators run. Placement cannot tell two requests apart "
+            "here. None on a backend too old to report it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

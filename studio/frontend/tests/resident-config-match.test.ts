@@ -855,6 +855,39 @@ test("a tensor split the architecture gate normalized away still matches", () =>
   );
 });
 
+test("a virtualised Metal host cannot disagree about placement", () => {
+  // paravirtual_normalized_request rewrites every GGUF request to manual / zero layers /
+  // no split / no MoE, and adopt_load_intent_if_matched applies it before comparing, so
+  // an Auto pick against the resident manual status is the SAME request. Comparing raw
+  // reloaded on every re-pick, which on such a host is every re-pick there is.
+  const pv = {
+    ...DEFAULTS,
+    gpu_placement_paravirtual: true,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 0,
+    tensor_parallel: false,
+  };
+  assert.equal(matches(pv, BLANK), true);
+  assert.equal(
+    matches(pv, { ...BLANK, gpuLayers: 40, nCpuMoe: 8, tensorParallel: true }),
+    true,
+  );
+  assert.equal(
+    matches(
+      { ...pv, requested_gpu_ids: null },
+      { ...BLANK, selectedGpuIds: [1] },
+    ),
+    true,
+  );
+  // Placement only: everything else still decides.
+  assert.equal(matches({ ...pv, cache_type_kv: "q8_0" }, BLANK), false);
+  // And a physical Mac is judged normally.
+  assert.equal(
+    matches({ ...DEFAULTS, gpu_memory_mode: "manual", gpu_layers: 0 }, BLANK),
+    false,
+  );
+});
+
 test("a custom tensor split the config cannot carry is still a reload", () => {
   // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
   // default distribution while the resident manual load runs a custom one.
