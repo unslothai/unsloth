@@ -65,6 +65,45 @@ test("a deferred script is on the startup path, an async one is not", () => {
   assert.deepEqual(eagerChunksFromHtml(html), ["late.js"]);
 });
 
+test("an async script that blocks rendering is on the startup path", () => {
+  // `blocking="render"` holds the first paint until the script has been fetched and
+  // run, which is the timeline this budgets, and it is the documented way to take a
+  // boot script off the parser without letting the unthemed page paint. Measured in
+  // Chromium 151 and WebKit 26.5: a two-second script moved first contentful paint
+  // from ~20 ms to ~2,020 ms. Excluded for being async, it could grow without limit.
+  const html =
+    '<script async blocking="render" src="/theme-boot.js"></script>' +
+    '<script async src="/whenever.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, ["theme-boot.js"]);
+});
+
+test("the blocking attribute is a token list, matched like the spec matches it", () => {
+  // "converted to ASCII lowercase... split on ASCII whitespace", then the set is
+  // asked whether it contains "render". So case and neighbouring tokens do not
+  // matter, and a token that merely CONTAINS render is a different token.
+  const html =
+    '<script async blocking="  RENDER  " src="/shouty.js"></script>' +
+    '<script async blocking="render full" src="/two-tokens.js"></script>' +
+    '<script async blocking="rendering" src="/not-a-token.js"></script>' +
+    '<script async blocking="prerender" src="/also-not.js"></script>' +
+    '<script async blocking="" src="/empty.js"></script>' +
+    '<script async data-blocking="render" src="/decoy.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, [
+    "shouty.js",
+    "two-tokens.js",
+  ]);
+});
+
+test("blocking=render on a non-async script changes nothing", () => {
+  // It is already counted for being parser-blocking; saying so twice must not
+  // duplicate it, and the attribute must not pull in a type the browser never runs.
+  const html =
+    '<script blocking="render" src="/theme-boot.js"></script>' +
+    '<script blocking="render" src="/theme-boot.js"></script>' +
+    '<script type="application/json" blocking="render" src="/data.js"></script>';
+  assert.deepEqual(eagerSetFromHtml(html).blocking, ["theme-boot.js"]);
+});
+
 test("a script type is judged on whether the browser runs it", () => {
   const html =
     '<script type="application/javascript" src="/legacy.js"></script>' +

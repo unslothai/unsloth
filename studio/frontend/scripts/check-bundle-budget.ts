@@ -238,6 +238,32 @@ function relTokens(tag: StartTag): string[] {
 }
 
 /**
+ * True when the tag carries `blocking="render"`, which holds the FIRST RENDER back
+ * until the resource has been fetched and evaluated.
+ *
+ * The spec's own reading: "Let value be the value of el's blocking attribute...
+ * converted to ASCII lowercase... split on ASCII whitespace", then "An element is
+ * potentially render-blocking if its blocking tokens set contains 'render'", and in
+ * prepare the script element, "If el is potentially render-blocking, then block
+ * rendering on el" -- which is reached for any external script, `async` or not. The
+ * async/defer carve-out applies only to what is IMPLICITLY render-blocking.
+ * https://html.spec.whatwg.org/multipage/urls-and-fetching.html#blocking-attributes
+ * https://html.spec.whatwg.org/multipage/scripting.html#prepare-the-script-element
+ *
+ * Measured, not assumed: a `<script async blocking="render" src>` held back for two
+ * seconds moved first contentful paint from 20 ms to 2,020 ms in Chromium 151 and
+ * from 11 ms to 2,009 ms in WebKit 26.5, with Chromium reporting the request's
+ * renderBlockingStatus as "blocking". Firefox has not shipped it (bugzil.la/1751383)
+ * and simply treats the script as async.
+ */
+function blocksRender(tag: StartTag): boolean {
+  return (attr(tag, "blocking") ?? "")
+    .toLowerCase()
+    .split(/\s+/)
+    .includes("render");
+}
+
+/**
  * The eager set, in three buckets, as paths relative to `dist/`.
  *
  * `entry` and `preloads` are Vite's output and stay apart so the caller can tell
@@ -307,7 +333,14 @@ export function eagerSetFromHtml(html: string): EagerSet {
       // on exactly the timeline this budgets. Only `async` is out, having no
       // ordering relationship to the first screen at all. `async` also wins when
       // both are present, which is why it is the one tested.
-      if (!hasAttr(tag, "async")) {
+      //
+      // Unless it is asked to block rendering, which restores the relationship the
+      // exclusion assumes is absent: `blocking="render"` is the documented way to
+      // keep a boot script off the parser without letting the unthemed page paint,
+      // and it delays the first screen by the whole fetch and evaluation. Not
+      // counting it would leave the one thing this gate exists to bound -- bytes
+      // between the navigation and the first screen -- unbounded.
+      if (!hasAttr(tag, "async") || blocksRender(tag)) {
         add(set.blocking, attr(tag, "src"));
       }
     }
