@@ -1997,9 +1997,9 @@ class TestSandboxWorkdirVisibility:
         wrapped = _bash_wrap_for_workdir("C:\\Users\\foo\\chat", "pwd")
         assert wrapped.startswith("cd '/c/Users/foo/chat' && pwd")
 
-    def test_python_env_uses_native_pwd_on_windows(self, monkeypatch, tmp_path):
+    def test_python_env_uses_native_pwd_not_msys(self, monkeypatch, tmp_path):
         import core.inference.tools as tools_mod
-        from core.inference.tools import _build_safe_env
+        from core.inference.tools import _build_safe_env, _native_workdir
 
         monkeypatch.setattr(sys, "platform", "win32")
         monkeypatch.setattr(
@@ -2007,11 +2007,10 @@ class TestSandboxWorkdirVisibility:
             "_windows_bash",
             lambda: r"C:\Program Files\Git\bin\bash.exe",
         )
-        native = str(tmp_path / "sandbox")
-        env = _build_safe_env(native)
-        assert env["PWD"] == native
-        bash_env = _build_safe_env(native, posix_shell = True)
-        assert bash_env["PWD"] == "/c" + native.replace("\\", "/").replace(":", "")
+        monkeypatch.setattr(tools_mod, "_bash_visible_workdir", lambda w: "/c/msys/path")
+        wd = str(tmp_path)
+        assert _build_safe_env(wd)["PWD"] == _native_workdir(wd)
+        assert _build_safe_env(wd, posix_shell = True)["PWD"] == "/c/msys/path"
 
     def test_build_sandbox_workdir_nudge_names_the_folder(self, tmp_path, monkeypatch):
         from core.inference.tools import build_sandbox_workdir_nudge
