@@ -222,8 +222,8 @@ def test_custom_max_output_tokens_requires_a_safe_integer(value):
 
 
 def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override():
-    """The override replaces the frontend's 32,768-token fallback, which every provider
-    type reaches for a model with no documented cap of its own."""
+    """The override replaces the frontend's 32,768-token fallback, which every type
+    reaches for a model with no documented cap."""
     for provider_type in ("openai", "openrouter", "vllm", "ollama", "llama_cpp"):
         created = asyncio.run(
             providers_route.create_provider_config(
@@ -242,8 +242,8 @@ def test_known_and_custom_preset_providers_accept_a_non_null_max_output_override
 
 
 def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
-    """Codex routing, model list and output cap are all fixed, so an override stored
-    against one would never be read."""
+    """Codex routing, model list and output cap are fixed, so a stored override would
+    never be read."""
     with pytest.raises(HTTPException) as error:
         asyncio.run(
             providers_route.create_provider_config(
@@ -257,17 +257,16 @@ def test_chatgpt_subscription_rejects_a_non_null_max_output_override():
             )
         )
     assert error.value.status_code == 400
-    # on the detail, not the status: a Codex create with no models 400s on the auth contract too
+    # on the detail, not the status: a Codex create with no models also 400s on auth
     assert error.value.detail == "ChatGPT subscriptions use a fixed Max Tokens limit."
 
 
 def test_known_and_custom_preset_providers_accept_an_explicit_null_max_output_override():
     """A blank Max Tokens limit field serialises as null, not as an omission.
 
-    So the null has to be accepted on every provider type, ChatGPT subscriptions
-    included: an unrelated edit of a connection -- a rename, a model change, a key
-    rotation -- carries the blank field along, and clearing an override that cannot
-    exist is a no-op. Only a non-null value on a subscription is refused.
+    So every provider type has to accept the null, ChatGPT subscriptions included: an
+    unrelated edit -- a rename, a model change, a key rotation -- carries the blank field
+    along. Only a non-null value on a subscription is refused.
     """
     for provider_type in ("openai", "vllm", "ollama", "llama_cpp"):
         created = asyncio.run(

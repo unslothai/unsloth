@@ -74,10 +74,7 @@ export function clampReasoningEffortToLevels(
   return effortLevels[0] ?? "low";
 }
 
-/**
- * Fallback cap for providers / models with no documented limit, used when the
- * connection carries no explicit per-connection override either.
- */
+/** Fallback cap for a model with no documented limit and no connection override. */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
@@ -138,15 +135,11 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
 /**
  * The connection's effective Max Tokens ceiling for one model.
  *
- * A documented per-model cap bounds the connection's own Max Tokens limit rather
- * than replacing it: the override may lower the ceiling but never raise it past
- * what the model documents, because one connection fronts many models on a router
- * and a limit set for a 256k-output model must not raise the slider past what a
- * smaller model on the same connection accepts. A model with no documented cap
- * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS` (32k).
- *
- * The provider's own output floor wins over both, so the Max Tokens slider can
- * never be handed a max below its min.
+ * A documented per-model cap bounds the connection override rather than replacing it:
+ * one connection fronts many models on a router, so a limit set for a 256k-output model
+ * must not raise the slider past what a smaller model accepts. An undocumented model
+ * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS`. The provider's output
+ * floor wins over both, so the slider is never handed a max below its min.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
@@ -163,10 +156,9 @@ export function getExternalMaxOutputTokens(
 }
 
 /**
- * The published per-model cap, or null when nothing documents this id. No table
- * entry targets a generic Custom connection, so those always read as undocumented
- * whatever model id they carry. OpenRouter `provider/model` ids have the prefix
- * stripped before matching.
+ * The published per-model cap, or null when nothing documents this id. No table entry
+ * targets a generic Custom connection, so those always read as undocumented. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
  */
 function _documentedMaxOutputTokens(
   providerType: string | null | undefined,
@@ -200,11 +192,10 @@ function _documentedMaxOutputTokens(
  * The lowered Max Tokens the settings panel should write back, or null to leave it be.
  *
  * The availability guards are load-bearing: the caller PERSISTS this and it only ever
- * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider
- * is momentarily unresolved (connections toggled off, cold hydration, a deleted
- * connection). No provider means the cap is unknown, not 32,768.
- *
- * Returning the cap itself is what makes it converge in one pass.
+ * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider is
+ * momentarily unresolved (connections toggled off, cold hydration, a deleted connection).
+ * No provider means the cap is unknown, not 32,768. Returning the cap itself is what
+ * makes it converge in one pass.
  */
 export function resolveExternalMaxTokensClamp(input: {
   settingsHydrated: boolean;
@@ -223,7 +214,6 @@ export function resolveExternalMaxTokensClamp(input: {
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
-  // Map OpenRouter `provider/model` prefix to our internal providerType.
   if (normalizedId.startsWith("openai/")) return "openai";
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";

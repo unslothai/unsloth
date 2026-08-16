@@ -120,13 +120,12 @@ def _validate_max_output_tokens_contract(
     """Reject a non-null override on a ChatGPT subscription.
 
     Codex routing, model list and output cap are all fixed, so an override stored there
-    would never be read. Every other provider type takes one: the frontend uses it to
-    lower a model's documented cap, or to replace the 32,768-token fallback it applies
-    to a model with no documented cap at all.
+    would never be read. Every other type takes one: the frontend uses it to lower a
+    model's documented cap, or to replace the 32,768-token fallback for a model with no
+    documented cap.
 
-    An explicit null is allowed through everywhere, Codex included: a blank field
-    serialises as null rather than as an omission, and clearing an override that cannot
-    exist is a no-op.
+    An explicit null is allowed everywhere, Codex included: a blank field serialises as
+    null rather than as an omission, and clearing an absent override is a no-op.
     """
     if field_was_set and value is not None and provider_type == "openai_codex":
         raise HTTPException(

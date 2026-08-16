@@ -29,10 +29,9 @@ const {
   resolveExternalMaxTokensClamp,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-// Two provider types are in play and they are NOT interchangeable. The UI type is
-// what the connections dialog draws, from `resolveUiProviderTypeFromConfig`; the
-// backend type is what the server row actually holds. They disagree for a row saved
-// as `openai` with a custom display name or base URL.
+// The UI type is what the dialog draws (`resolveUiProviderTypeFromConfig`); the backend
+// type is what the server row holds. They disagree for a row saved as `openai` with a
+// custom display name or base URL.
 test("the override is offered on every connection except a ChatGPT subscription", () => {
   assert.equal(supportsProviderMaxOutputTokens("custom", "custom"), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", "openai"), true);
@@ -44,8 +43,8 @@ test("the override is offered on every connection except a ChatGPT subscription"
   assert.equal(supportsProviderMaxOutputTokens("openai_codex", null), false);
   assert.equal(supportsProviderMaxOutputTokens("openai", "openai_codex"), false);
 
-  // Unknown backend type: a connection being created has no server row yet, and an
-  // entry synced before the field existed carries no value. The UI type decides both.
+  // Unknown backend type: a connection being created has no server row yet, and an entry
+  // synced before the field existed carries no value. The UI type decides both.
   assert.equal(supportsProviderMaxOutputTokens("custom", null), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", undefined), true);
   assert.equal(supportsProviderMaxOutputTokens("custom", ""), true);
@@ -57,7 +56,7 @@ test("a stored override is dropped unless it is a usable value", () => {
   assert.equal(normalizeProviderMaxOutputTokens(384000), 384000);
   assert.equal(normalizeProviderMaxOutputTokens(PROVIDER_MAX_OUTPUT_TOKENS_MIN), 64);
 
-  // Anything a hand-edited or older localStorage entry could hold.
+  // anything a hand-edited or older localStorage entry could hold
   for (const junk of [
     "384000", 384000.5, -1, 0, 63, Number.NaN, Number.POSITIVE_INFINITY,
     null, undefined, {}, [], 2 ** 53,
@@ -113,10 +112,9 @@ test("a model with no documented cap takes the connection override", () => {
   }
 });
 
-/** Kimi is the one provider with an output floor of its own (16,000, so a thinking
- * model's reasoning_content and answer both fit) and has no documented per-model cap.
- * Without this, its override would decide the slider's max alone and could land below
- * the slider's own min. */
+/** Kimi is the one provider with an output floor of its own (16,000) and no documented
+ * per-model cap, so without this its override alone could set the slider's max below
+ * the slider's min. */
 test("a provider's own output floor outranks a lower connection override", () => {
   const kimiFloor = getExternalMinOutputTokens("kimi");
   assert.equal(kimiFloor, 16000);
@@ -129,7 +127,7 @@ test("a provider's own output floor outranks a lower connection override", () =>
   );
 });
 
-// The settings panel PERSISTS what this returns, and it only ever lowers, so the
+// The settings panel PERSISTS what this returns and it only ever lowers, so the
 // availability guards are what stop a blink in the provider list from destroying a
 // configured override.
 test("a live Max Tokens is only lowered when the cap is actually known", () => {
@@ -142,20 +140,20 @@ test("a live Max Tokens is only lowered when the cap is actually known", () => {
   };
   assert.equal(resolveExternalMaxTokensClamp(base), 32768);
 
-  // No resolved provider: connections toggled off, a cold browser where settings
-  // hydrate before the sync lands, or a connection deleted while selected. The cap
-  // reads as the 32,768 fallback in all of those, and clamping would be permanent.
+  // No resolved provider: connections toggled off, settings hydrated before the sync
+  // lands, or a connection deleted while selected. The cap reads as the 32,768 fallback
+  // in all of those, and clamping would be permanent.
   assert.equal(
     resolveExternalMaxTokensClamp({ ...base, hasActiveExternalProvider: false }),
     null,
   );
   assert.equal(resolveExternalMaxTokensClamp({ ...base, settingsHydrated: false }), null);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, isExternalModel: false }), null);
-  // Already within the cap, and exactly at it.
+  // already within the cap, and exactly at it
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: 8192 }), null);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: 32768 }), null);
 
-  // Converges in one pass: feeding the result back in asks for no further change.
+  // converges in one pass: feeding the result back asks for no further change
   const once = resolveExternalMaxTokensClamp(base);
   assert.equal(resolveExternalMaxTokensClamp({ ...base, maxTokens: once as number }), null);
 });
@@ -179,17 +177,16 @@ test("an entry saved by an older install loads without gaining a cap", () => {
   assert.equal(loaded.backendProviderType, undefined);
   assert.equal(loaded.models.length, 1);
 
-  // And a round trip through save keeps the stored type once it is known.
+  // a round trip through save keeps the stored type once it is known
   saveExternalProviders([{ ...loaded, backendProviderType: "openai", maxOutputTokens: 384000 }]);
   const [reloaded] = loadExternalProviders();
   assert.equal(reloaded.backendProviderType, "openai");
   assert.equal(reloaded.maxOutputTokens, 384000);
 });
 
-// The same guard has to hold everywhere a cap is applied, not just in the effect:
-// a preset applied, or a checkpoint selected, while the provider is unresolved would
-// otherwise lower the value permanently. Source-level assertions, since neither call
-// site is reachable without a DOM.
+// The guard has to hold at every clamp site, not just the effect: a preset or checkpoint
+// applied while the provider is unresolved would lower the value permanently. Source-level
+// assertions, since neither call site is reachable without a DOM.
 test("every clamp site waits for a resolved provider", () => {
   const settings = readFileSync(
     new URL("../src/features/chat/chat-settings-sheet.tsx", import.meta.url),

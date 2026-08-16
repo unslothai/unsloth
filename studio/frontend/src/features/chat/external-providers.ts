@@ -279,14 +279,12 @@ export function normalizeProviderMaxOutputTokens(
 }
 
 /**
- * Whether a connection may carry a per-connection Max Tokens limit.
+ * Whether a connection may carry a per-connection Max Tokens limit. Every type may,
+ * except ChatGPT subscriptions, whose routing, model list and output cap are all fixed,
+ * so an override there would be stored and never read.
  *
- * Every type may, except ChatGPT subscriptions, whose routing, model list and output
- * cap are all fixed, so an override there would be stored and never read.
- *
- * Both provider types are checked. The stored type is what the server validates
- * against; the UI type covers a connection being created, which has no server row
- * yet, and is the only one the dialog has before the first save.
+ * Both types are checked: the stored one is what the server validates against, the UI
+ * one is all the dialog has for a connection with no server row yet.
  */
 export function supportsProviderMaxOutputTokens(
   uiProviderType: string | null | undefined,

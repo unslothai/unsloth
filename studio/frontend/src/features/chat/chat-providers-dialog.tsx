@@ -938,9 +938,8 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    // Seeded at the floor, not below it: parseMaxOutputTokens throws under the floor, so
-    // a row stored below one (a direct REST write, or a floor added later) would fail
-    // every unrelated edit. The resolver already reads such a value as the floor.
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
+    // one would fail every unrelated edit. The resolver already reads it as the floor.
     setMaxOutputTokensDraft(
       provider.maxOutputTokens == null
         ? ""
