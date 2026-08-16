@@ -6,6 +6,7 @@ import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { defaultInferenceParams } from "../presets/preset-policy";
 import { serverWideReloadRequired } from "../lib/server-wide-reload";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
@@ -80,6 +81,7 @@ import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker";
@@ -710,23 +712,52 @@ export function useChatModelRuntime() {
           // The id names the weights, not how the server was invoked. A remembered context
           // length, drafter, placement or extra arg the resident load does not run is a real
           // reload, and skipping it would drop the setting with nothing on screen to say so.
-          residentRuntimeMatchesConfig(residentStatus, pendingConfig, {
-            // What the applier fills an unset field with, so the comparison is against what
-            // /load would send rather than against silence.
-            speculativeType: readPersistedSpeculativeType(),
-            gpuMemoryMode: readPersistedGpuMemoryMode(),
-            gpuLayers: GPU_LAYERS_AUTO,
-            nCpuMoe: 0,
-            // What /load sends: a pick saved in another index namespace, or naming GPUs
-            // that are gone, is reconciled to Automatic before it leaves.
-            reconcileGpuIds: (ids, savedIndexKind) =>
-              reconcilePersistedGpuIds(
-                ids,
-                savedIndexKind,
-                residentStatus.is_diffusion ?? false,
-              ),
-            normalizeSpeculative: normalizeSpeculativeType,
-          }) &&
+          // Not `pendingConfig`: with no saved record the caller has already run
+          // applyModelLoadConfigToRuntime(null), which resets the store to
+          // DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for every field the
+          // config does not carry. The live store is therefore what /load would send, on
+          // both doors: reset to defaults after a hub or handoff pick, and still the
+          // resident values where nothing reset it.
+          residentRuntimeMatchesConfig(
+            residentStatus,
+            pendingConfig ?? currentRuntimePerModelConfig(),
+            {
+              // What the applier fills an unset field with, so the comparison is against
+              // what /load would send rather than against silence.
+              speculativeType: readPersistedSpeculativeType(),
+              gpuMemoryMode: readPersistedGpuMemoryMode(),
+              gpuLayers: GPU_LAYERS_AUTO,
+              nCpuMoe: 0,
+              // The n_ctx /load would send. Built from the live store, as performLoad
+              // builds it, so an unset length resolves the same way on both sides.
+              resolveContextLength: (customContextLength) => {
+                const live = useChatRuntimeStore.getState();
+                return resolveLoadMaxSeqLength({
+                  modelId,
+                  ggufVariant,
+                  // Identity matched above, so the resident model is this pick.
+                  isGguf: residentStatus.is_gguf,
+                  customContextLength,
+                  ggufContextLength: live.ggufContextLength,
+                  currentCheckpoint: live.params.checkpoint,
+                  activeGgufVariant: live.activeGgufVariant,
+                  maxSeqLength: live.params.maxSeqLength,
+                  presetSource: live.activePresetSource,
+                });
+              },
+              // Never a config field, so the store is the only place it can come from.
+              splitRatio: useChatRuntimeStore.getState().splitRatio,
+              // What /load sends: a pick saved in another index namespace, or naming GPUs
+              // that are gone, is reconciled to Automatic before it leaves.
+              reconcileGpuIds: (ids, savedIndexKind) =>
+                reconcilePersistedGpuIds(
+                  ids,
+                  savedIndexKind,
+                  residentStatus.is_diffusion ?? false,
+                ),
+              normalizeSpeculative: normalizeSpeculativeType,
+            },
+          ) &&
           // Both are server-wide, so a save leaves the pick and its config identical while
           // adopt_load_intent_if_matched forces a reload anyway. Without them a policy or
           // budget change made between two picks of one model would never reach the child.
@@ -743,17 +774,17 @@ export function useChatModelRuntime() {
           // client-side generation cap, no status field echoes it, and applyActiveModelStatus
           // below therefore cannot correct it. Leaving it rolled back would hand this model
           // the OUTGOING one's cap, which is visible in truncation but nowhere on screen.
-          const pickedMaxSeqLength = normalizeMaxSeqLength(
-            pendingConfig?.maxSeqLength,
-          );
-          if (pickedMaxSeqLength != null) {
-            const restored = useChatRuntimeStore.getState();
-            if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
-              restored.setParams({
-                ...restored.params,
-                maxSeqLength: pickedMaxSeqLength,
-              });
-            }
+          // An absent cap is not silence either: applyPerModelConfigToRuntime resolves it to
+          // defaultInferenceParams.maxSeqLength, so leaving it unset kept the outgoing cap.
+          const pickedMaxSeqLength =
+            normalizeMaxSeqLength(pendingConfig?.maxSeqLength) ??
+            defaultInferenceParams.maxSeqLength;
+          const restored = useChatRuntimeStore.getState();
+          if (restored.params.maxSeqLength !== pickedMaxSeqLength) {
+            restored.setParams({
+              ...restored.params,
+              maxSeqLength: pickedMaxSeqLength,
+            });
           }
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;

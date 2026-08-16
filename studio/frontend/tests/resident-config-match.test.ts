@@ -51,6 +51,10 @@ const STANDING = {
   nCpuMoe: 0,
   // Identity by default: reconciliation is exercised on its own below.
   reconcileGpuIds: (ids: number[] | null) => ids,
+  // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
+  resolveContextLength: (customContextLength: number | null) =>
+    customContextLength ?? 0,
+  splitRatio: null,
   // Enough of normalizeSpeculativeType for these cases; the real mapping is the store's
   // and is tested there. What matters here is that the comparator USES it on both sides.
   normalizeSpeculative: (v: string | null | undefined) =>
@@ -340,8 +344,9 @@ test("selectModel weighs the config and the lease before confirming a reload", (
     ),
     "utf8",
   );
-  const configCheck = source.indexOf(
-    "residentRuntimeMatchesConfig(residentStatus",
+  // Newline-tolerant: the call wraps once its argument list grows.
+  const configCheck = source.search(
+    /residentRuntimeMatchesConfig\(\s*residentStatus/,
   );
   const identityCheck = source.indexOf(
     "residentModelMatchesPick(residentStatus",
@@ -448,6 +453,81 @@ test("the GPU pick is compared after reconciliation, not as saved", () => {
     },
   );
   assert.deepEqual(kinds, ["vulkan"]);
+});
+
+test("an unset context length is resolved the way the load resolves it", () => {
+  // resolveLoadMaxSeqLength answers 0 for a cross-model GGUF pick and the resident context
+  // when re-picking the same one. Comparing null against either was a reload the backend
+  // would have deduplicated.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_context_length: 0 }, BLANK),
+    true,
+  );
+  assert.equal(
+    matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK, {
+      ...STANDING,
+      // The re-pick branch: ggufContextLength, not 0.
+      resolveContextLength: (pin) => pin ?? 32768,
+    }),
+    true,
+  );
+  // Still a reload when the resolved value really differs.
+  assert.equal(
+    matches({ ...DEFAULTS, requested_context_length: 32768 }, BLANK),
+    false,
+  );
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_context_length: 8192 },
+      { ...BLANK, customContextLength: 4096 },
+    ),
+    false,
+  );
+});
+
+test("a custom tensor split the config cannot carry is still a reload", () => {
+  // applyPerModelConfigToRuntime clears splitRatio, so a remembered config asks for the
+  // default distribution while the resident manual load runs a custom one.
+  assert.equal(
+    matches({ ...DEFAULTS, tensor_split: [0.7, 0.3] }, BLANK),
+    false,
+  );
+  assert.equal(
+    matches({ ...DEFAULTS, tensor_split: [0.7, 0.3] }, BLANK, {
+      ...STANDING,
+      splitRatio: [0.7, 0.3],
+    }),
+    true,
+  );
+  assert.equal(matches({ ...DEFAULTS, tensor_split: null }, BLANK), true);
+});
+
+test("a preserved Vulkan CPU fallback is not a placement disagreement", () => {
+  // _preserve_cpu_fallback_intent rewrites an eligible Auto request into the resident
+  // manual/zero-layer intent before the comparison, so /load would report already-loaded.
+  const fallback = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 0,
+    cpu_fallback_reason: "vulkan_startup_crash" as const,
+  };
+  assert.equal(matches(fallback, BLANK), true);
+  // Only placement is exempt: a real setting difference still reloads.
+  assert.equal(matches({ ...fallback, cache_type_kv: "q8_0" }, BLANK), false);
+  // And only for a request the backend would actually rewrite. _cpu_fallback_request_eligible
+  // refuses one that pins its own placement.
+  assert.equal(matches(fallback, { ...BLANK, selectedGpuIds: [0] }), false);
+  assert.equal(matches(fallback, { ...BLANK, tensorParallel: true }), false);
+  assert.equal(matches(fallback, { ...BLANK, nCpuMoe: 4 }), false);
+  assert.equal(
+    matches(fallback, { ...BLANK, llamaExtraArgs: ["--device", "Vulkan0"] }),
+    false,
+  );
+  // A fallback from another cause is not this one.
+  assert.equal(
+    matches({ ...fallback, cpu_fallback_reason: null }, BLANK),
+    false,
+  );
 });
 
 test("an unset GPU memory mode is the standing preference, not silence", () => {
@@ -632,8 +712,8 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
     ),
     "utf8",
   );
-  const configCheck = source.indexOf(
-    "residentRuntimeMatchesConfig(residentStatus",
+  const configCheck = source.search(
+    /residentRuntimeMatchesConfig\(\s*residentStatus/,
   );
   const rollback = source.indexOf("restorePreviousConfig();", configCheck);
   const reapply = source.indexOf("pickedMaxSeqLength", configCheck);
@@ -649,6 +729,40 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
     "await confirmStopRunningChatsIfNeeded(",
   );
   assert.ok(reapply < confirmPrompt, "the re-apply escaped the shortcut");
+  // An absent cap is not "leave it alone": applyPerModelConfigToRuntime resolves it to the
+  // default, so a pick without one must land on the default rather than the outgoing cap.
+  assert.match(
+    source.slice(reapply, reapply + 260),
+    /\?\?\s*defaultInferenceParams\.maxSeqLength/,
+    "an absent cap no longer resolves to the default",
+  );
+});
+
+/**
+ * The comparison must be against what /load would send, and with no saved config that is
+ * the live runtime store: the caller ran applyModelLoadConfigToRuntime(null) first, which
+ * resets it to DEFAULT_PER_MODEL_CONFIG, and performLoad reads the store for every field
+ * the config does not carry. Passing the absent config straight through made the gate a
+ * wildcard, adopting whatever another tab or API client had left running.
+ */
+test("with no saved config the gate compares the live runtime, not nothing", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const configCheck = source.search(
+    /residentRuntimeMatchesConfig\(\s*residentStatus/,
+  );
+  assert.match(
+    source.slice(configCheck, configCheck + 200),
+    /pendingConfig\s*\?\?\s*currentRuntimePerModelConfig\(\)/,
+    "the gate takes an absent config as a wildcard again",
+  );
 });
 
 /** The repair window is only useful if it is consulted before the reload is decided. */

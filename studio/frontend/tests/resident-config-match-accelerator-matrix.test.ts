@@ -46,6 +46,10 @@ const STANDING = {
   // Identity: the sweep is about the fields, not about a stale pick. The reconciler's own
   // effect is covered in resident-config-match.test.ts.
   reconcileGpuIds: (ids: number[] | null) => ids,
+  // Auto resolves to 0 here; the resident-repick branch is exercised on its own below.
+  resolveContextLength: (customContextLength: number | null) =>
+    customContextLength ?? 0,
+  splitRatio: null,
   normalizeSpeculative: (value: string | null | undefined) =>
     value == null || value === "" || value === "none" ? null : value,
 };

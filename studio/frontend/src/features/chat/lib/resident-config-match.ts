@@ -24,6 +24,8 @@ type ResidentRuntime = Pick<
   | "gpu_layers"
   | "n_cpu_moe"
   | "requested_gpu_ids"
+  | "tensor_split"
+  | "cpu_fallback_reason"
 >;
 
 function sameList(
@@ -74,6 +76,18 @@ export type StandingConfigDefaults = {
     savedIndexKind: GpuIndexKind | null | undefined,
   ) => number[] | null;
   /**
+   * `resolveLoadMaxSeqLength` bound to the inputs `performLoad` gives it, so the comparison
+   * is against the n_ctx the load would send. An unset length is not simply 0: for a GGUF
+   * re-pick it resolves to the resident context, and only otherwise to 0, which is Auto.
+   */
+  resolveContextLength: (customContextLength: number | null) => number;
+  /**
+   * `splitRatio` as the store holds it now, which is what the load sends. Never a config
+   * field: `applyPerModelConfigToRuntime` clears it, so applying any remembered config
+   * asks for the default distribution rather than the resident custom one.
+   */
+  splitRatio: number[] | null;
+  /**
    * `normalizeSpeculativeType`, passed rather than imported. It lives on the chat runtime
    * store, which reaches React, and this module is deliberately a leaf so the node suite
    * can drive it; copying its mapping here (comma-chained legacy echoes and all) would be
@@ -88,6 +102,8 @@ export type StandingConfigDefaults = {
  * `llamaExtraArgs`, the only field the applier leaves unresolved.
  */
 type SettingCheck = {
+  /** Placement, which the backend rewrites wholesale on a preserved CPU fallback. */
+  placement?: true;
   pinned: (config: PerModelConfig) => boolean;
   agrees: (
     config: PerModelConfig,
@@ -157,9 +173,13 @@ const cleanTemplate = (value: string | null | undefined): string | null =>
  */
 const SETTING_CHECKS: SettingCheck[] = [
   {
+    // Resolved, not compared raw: an unset length is Auto, which the load sends as 0 for a
+    // cross-model GGUF pick and as the resident context when re-picking the same one.
+    // Reading null as "no opinion" against a status echoing either number was a reload.
     pinned: () => true,
-    agrees: (c, s) =>
-      (c.customContextLength ?? null) === (s.requested_context_length ?? null),
+    agrees: (c, s, standing) =>
+      standing.resolveContextLength(c.customContextLength ?? null) ===
+      (s.requested_context_length ?? 0),
   },
   {
     pinned: () => true,
@@ -218,6 +238,7 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     // Standing preference, like the speculative mode above.
+    placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.gpuMemoryMode ?? standing.gpuMemoryMode) ===
@@ -225,12 +246,14 @@ const SETTING_CHECKS: SettingCheck[] = [
   },
   {
     // Resolves to GPU_LAYERS_AUTO rather than to a preference, but the load still sends it.
+    placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.gpuLayers ?? standing.gpuLayers) ===
       (s.gpu_layers ?? standing.gpuLayers),
   },
   {
+    placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
@@ -239,6 +262,7 @@ const SETTING_CHECKS: SettingCheck[] = [
     // Absent resolves to a null selection in the applier, and a null selection is sent as
     // Automatic, so this is pinned like the rest: an unset pick does not adopt a server
     // that was placed on a chosen GPU. Reconciled first, since that is what /load sends.
+    placement: true,
     pinned: () => true,
     agrees: (c, s, standing) =>
       sameGpuSet(
@@ -249,7 +273,49 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.requested_gpu_ids,
       ),
   },
+  {
+    // The split is placement the config cannot carry: the applier clears splitRatio, so a
+    // remembered config asks for the default distribution while a resident manual load may
+    // be running a custom one. Omitting it kept that custom split with nothing saying so.
+    placement: true,
+    pinned: () => true,
+    agrees: (_c, s, standing) => sameList(standing.splitRatio, s.tensor_split),
+  },
 ];
+
+/**
+ * Whether the backend would rewrite this request into the resident CPU fallback.
+ *
+ * `adopt_load_intent_if_matched` runs `_preserve_cpu_fallback_intent` first, so after a
+ * Vulkan startup crash an Auto request becomes the resident manual/zero-layer intent and
+ * dedupes. Comparing placement literally rejected it and raised the prompt this PR removes.
+ *
+ * Mirrors `_cpu_fallback_request_eligible`, minus its environment terms: the resident
+ * server already fell back under this same env, and a request carrying its own placement
+ * args is excluded here rather than guessed at.
+ */
+function cpuFallbackPlacementPreserved(
+  config: PerModelConfig,
+  status: ResidentRuntime,
+  standing: StandingConfigDefaults,
+): boolean {
+  if (status.cpu_fallback_reason !== "vulkan_startup_crash") {
+    return false;
+  }
+  const mode = config.gpuMemoryMode ?? standing.gpuMemoryMode;
+  const layers = config.gpuLayers ?? standing.gpuLayers;
+  return (
+    (mode === "auto" || (mode === "manual" && layers === 0)) &&
+    !standing.reconcileGpuIds(
+      config.selectedGpuIds ?? null,
+      config.selectedGpuIndexKind,
+    )?.length &&
+    !config.tensorParallel &&
+    !standing.splitRatio?.length &&
+    (config.nCpuMoe ?? standing.nCpuMoe) === 0 &&
+    !config.llamaExtraArgs?.length
+  );
+}
 
 /**
  * Whether the resident load already runs the settings this pick would ask for.
@@ -280,7 +346,15 @@ export function residentRuntimeMatchesConfig(
   if (!config) {
     return true;
   }
+  const placementPreserved = cpuFallbackPlacementPreserved(
+    config,
+    status,
+    standing,
+  );
   return SETTING_CHECKS.every(
-    (check) => !check.pinned(config) || check.agrees(config, status, standing),
+    (check) =>
+      (check.placement && placementPreserved) ||
+      !check.pinned(config) ||
+      check.agrees(config, status, standing),
   );
 }
