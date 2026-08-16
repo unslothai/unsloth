@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import re
 from pathlib import Path
 
 
@@ -215,8 +216,25 @@ def test_research_presentation_is_integrated() -> None:
         1
     ].split("setActiveThreadId:", 1)[0]
     assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
-    assert "const permissionMode = loadPermissionMode();" in store
-    assert "permissionMode," in store
+    # #8686 put a chat-scoped override in front of the global read here, so the literal
+    # `const permissionMode = loadPermissionMode();` this used to pin is gone. The read
+    # itself is the contract, and it is still per call: toggling deep research re-resolves
+    # the permission level, taking the chat's own level when it has one and the persisted
+    # global otherwise, rather than reusing a stale value. Scoped to the setter, because
+    # over the whole file this would also match the initial-state constant, which is a
+    # different property and would keep passing if this read were dropped.
+    deep_research_update = store.split("setDeepResearchEnabled: (deepResearchEnabled) =>", 1)[
+        1
+    ].split("setResearchWebsitePolicy:", 1)[0]
+    assert re.search(
+        r"const\s+permissionMode\s*=\s*threadScopedOverride\(\s*[\"']permissionMode[\"']\s*\)"
+        r"\s*\?\?\s*loadPermissionMode\(\)",
+        deep_research_update,
+    ), (
+        "toggling deep research must re-resolve permissionMode from the chat's own level "
+        "falling back to the persisted global"
+    )
+    assert "permissionMode," in deep_research_update
 
 
 def test_research_plan_and_status_contract() -> None:
