@@ -212,9 +212,10 @@ _CLARIFICATION_REQUEST = re.compile(
     r"|\b(?:could|can|would)\s+you\s+(?:please\s+)?"
     r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
     r"|\bd(?:o|id)\s+you\s+mean\b"
-    # an interrogative putting the choice on the user; "what you should do" is advice and keeps its own word order
+    r"|\b(?:what|which|where|who|how)(?:['’]s|\s+is|\s+are)\s+your\b"
+    # an interrogative putting the choice on the user; "how can i ..." is the model's own task, so only should takes i
     r"|\b(?:what|which|where|when|who|why|how)\s+(?:\w+\s+){0,4}?"
-    r"(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+(?:i|you)\b"
+    r"(?:should\s+i\b|(?:should|would|shall|do|did|is|are|was|were|can|could|have)\s+you\b)"
     # copular question opening a line; a bare "is this ..." is as often the lookup the model just promised
     r"|(?:^|[.!?:]\s+|\n\s*[-*]?\s*)"
     r"(?:(?:is|are|was|were)\s+you\b|(?:is|are|was|were)\s+(?:this|that|it)\s+about\b)"
@@ -223,8 +224,9 @@ _CLARIFICATION_REQUEST = re.compile(
 # a quote the model attributes to the user is the prompt echoed back, so an ask inside it is not the model asking
 _ECHOED_USER_QUOTE = re.compile(
     r"(?i)(?:(?:you|the\s+user)\s+(?:asked|said|wrote|mentioned)"
-    r"|your\s+(?:question|request|message|prompt))"
-    r"[^\"“]{0,40}[\"“][^\"”]{0,300}[\"”]"
+    r"|your\s+(?:question|request|message|prompt)(?:\s+(?:was|is))?)"
+    # only light punctuation may sit between the attribution and the quote, else it reaches past the clause it belongs to
+    r"[,:\s]{0,3}[\"“][^\"”]{0,300}[\"”]"
 )
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
 # times since #5620); safetensors and MLX inherit the same cap from here.

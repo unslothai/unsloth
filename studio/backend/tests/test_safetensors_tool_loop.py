@@ -3741,8 +3741,11 @@ class TestGGUFSafetensorsHealingParity:
             "I'll help.\n- Are you on Windows or Linux?\nTell me and I'll check.",
             "Why do you need this information? Once you tell me, I'll recommend an option.",
             "Which version of the package are you using? Once you tell me, I'll inspect it.",
+            "What's your operating system? Once you tell me, I'll check the right steps.",
             # the model quoting its own question is not the user's words echoed back.
             'One question: "Which repository should I inspect?" Once you answer, I\'ll check it.',
+            'To answer your question, one clarification: "Which repository should I inspect?" '
+            "Once you answer, I'll check it.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3769,6 +3772,8 @@ class TestGGUFSafetensorsHealingParity:
             "I'll explain why you should use the pinned version.",
             # the ask is the user's own words echoed back, not the model asking for anything.
             'You asked, "Can you provide the latest CUDA release?" I\'ll search the web now.',
+            # a question the model puts to itself restates its own work rather than blocking on the user.
+            "I'll search the web now. How can I find the latest release notes?",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 
