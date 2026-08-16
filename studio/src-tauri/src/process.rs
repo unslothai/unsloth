@@ -2860,6 +2860,19 @@ pub fn start_backend(
         return Err(msg);
     }
 
+    // A debug binary may borrow the installed environment when the checkout
+    // has no .venv. Keep its dependencies, but import the backend and CLI from
+    // this checkout so the web bundle and Python routes always come from the
+    // same source revision. Release builds continue using the installed wheel.
+    #[cfg(debug_assertions)]
+    if let Some(repo_root) = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|studio| studio.parent())
+    {
+        info!("Dev mode: loading backend source from {:?}", repo_root);
+        cmd.env("PYTHONPATH", repo_root);
+    }
+
     #[cfg(windows)]
     cmd.env(STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 

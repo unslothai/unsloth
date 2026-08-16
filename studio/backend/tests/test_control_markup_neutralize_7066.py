@@ -2878,7 +2878,13 @@ def test_custom_provider_is_treated_as_template_applying():
     registered without its preset, so it has to be swept like the named ones (#7066)."""
     from core.inference.external_provider import _TEMPLATE_APPLYING_PROVIDERS
 
-    assert _TEMPLATE_APPLYING_PROVIDERS == {"vllm", "llama_cpp", "ollama", "custom"}
+    assert _TEMPLATE_APPLYING_PROVIDERS == {
+        "vllm",
+        "llama_cpp",
+        "lmstudio",
+        "ollama",
+        "custom",
+    }
     providers = (_REPO_ROOT / "studio" / "backend" / "routes" / "providers.py").read_text(
         encoding = "utf-8"
     )

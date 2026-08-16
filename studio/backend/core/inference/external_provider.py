@@ -34,10 +34,18 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
 # self-hosted vLLM or llama.cpp registers without its preset. Unknown endpoint means assume
 # a template applies: sweeping a hosted API costs a space in delimiter-like text, not
 # sweeping a local one costs a forged turn.
-_TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+_TEMPLATE_APPLYING_PROVIDERS = frozenset(
+    {"vllm", "llama_cpp", "lmstudio", "ollama", "custom"}
+)
 _SELF_HOSTED_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
+_QWEN38_MODEL_RE = re.compile(r"(?:^|[\/_-])qwen-?3\.8(?:$|[\/:_-])", re.IGNORECASE)
+_LMSTUDIO_QWEN38_REASONING_TOKENS = {
+    "low": 4_096,
+    "medium": 16_384,
+    "xhigh": 262_144,
+}
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on
 # /v1/chat/completions.
@@ -49,7 +57,9 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
 # "openai" is absent because it never reaches this body: it routes to /v1/responses,
 # which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset(
+    {"vllm", "lmstudio", "openrouter", "kimi"}
+)
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
@@ -1162,6 +1172,14 @@ class ExternalProviderClient:
             and reasoning_effort in _SELF_HOSTED_REASONING_EFFORTS
         ):
             body["reasoning_effort"] = reasoning_effort
+            if self.provider_type == "lmstudio" and _QWEN38_MODEL_RE.search(model):
+                reasoning_tokens = _LMSTUDIO_QWEN38_REASONING_TOKENS.get(reasoning_effort)
+                if reasoning_tokens is not None:
+                    # LM Studio treats this as a hard ceiling for the parsed
+                    # reasoning section. The effort still reaches Qwen's chat
+                    # template, while this prevents "low" from running until
+                    # the model's much larger default budget.
+                    body["reasoning_tokens"] = reasoning_tokens
             if self.provider_type == "llama_cpp":
                 # llama.cpp currently applies non-"none" levels only when they
                 # are supplied to the model's Jinja template explicitly.

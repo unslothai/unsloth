@@ -647,12 +647,13 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // surface every knob and let the gateway handle the per-model fan-out.
   openrouter: ALL_SUPPORTED,
   // Local OpenAI-compat connections go through the OpenAI backend path, but
-  // vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
+  // LM Studio/vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
   // be permissive.
   custom: ALL_SUPPORTED,
   vllm: ALL_SUPPORTED,
   ollama: ALL_SUPPORTED,
   llama_cpp: ALL_SUPPORTED,
+  lmstudio: ALL_SUPPORTED,
 };
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
@@ -671,7 +672,12 @@ export function getProviderCapabilities(
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
 // Ollama's OpenAI shim currently rejects Qwen3.8's required `xhigh` value.
-const QWEN38_EFFORT_PROVIDER_TYPES = new Set(["custom", "llama_cpp", "vllm"]);
+const QWEN38_EFFORT_PROVIDER_TYPES = new Set([
+  "custom",
+  "llama_cpp",
+  "lmstudio",
+  "vllm",
+]);
 const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
   "google/gemini-pro-latest",
   "baidu/cobuddy:free",

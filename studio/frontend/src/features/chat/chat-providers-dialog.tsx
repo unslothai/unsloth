@@ -115,6 +115,11 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
       description:
         "Ensure the vLLM server is running and models are loaded, then reload — or enter model IDs manually below.",
     },
+    lmstudio: {
+      title: "No LM Studio models found.",
+      description:
+        "Start the LM Studio Developer server, then reload — or enter a model ID manually below.",
+    },
   };
 
 function emptyCatalogHint(providerType: string): {
@@ -134,6 +139,7 @@ function shouldAppendOpenAiVersionPath(providerType: string): boolean {
     providerType === "ollama" ||
     providerType === "llama_cpp" ||
     providerType === "vllm" ||
+    providerType === "lmstudio" ||
     providerType === LEGACY_CUSTOM_PROVIDER_TYPE
   );
 }

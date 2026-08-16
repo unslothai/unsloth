@@ -234,7 +234,7 @@ test("a manual model ID the user deleted is not blamed on the provider", () => {
 });
 
 test("no connection that takes manual model IDs reports a withdrawal", () => {
-  for (const providerType of ["ollama", "vllm", "llama_cpp", "custom"]) {
+  for (const providerType of ["ollama", "vllm", "llama_cpp", "lmstudio", "custom"]) {
     assert.equal(
       missingExternalModel(
         DROPPED_ID,

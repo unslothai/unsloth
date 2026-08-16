@@ -301,6 +301,12 @@ export function supportsCustomMaxOutputTokens(
 
 export const CUSTOM_PROVIDER_PRESETS = [
   {
+    providerType: "lmstudio",
+    displayName: "LM Studio",
+    baseUrlPlaceholder: "http://localhost:1234/v1",
+    modelIdsPlaceholder: "qwen/qwen3.8-27b\nopenai/gpt-oss-20b",
+  },
+  {
     providerType: "llama_cpp",
     displayName: "llama.cpp",
     baseUrlPlaceholder: "http://localhost:8080/v1",
@@ -363,6 +369,7 @@ const REMOTE_MODEL_CATALOG_CUSTOM_PROVIDER_TYPES = new Set([
   "ollama",
   "vllm",
   "llama_cpp",
+  "lmstudio",
 ]);
 
 export function supportsRemoteModelCatalog(
@@ -439,6 +446,7 @@ export function toExternalBackendProviderType(
   if (providerType === "vllm") return "vllm";
   if (providerType === "ollama") return "ollama";
   if (providerType === "llama_cpp") return "llama_cpp";
+  if (providerType === "lmstudio") return "lmstudio";
   // Generic custom servers are OpenAI-compatible, but should still use the
   // chat-completions backend path instead of OpenAI's Responses API route.
   if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {

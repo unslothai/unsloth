@@ -22,7 +22,7 @@ def _drive(coro):
 
 
 HOSTED_PROVIDERS = ("openai", "gemini", "kimi", "openrouter")
-SELF_HOSTED_PROVIDERS = ("llama_cpp", "vllm", "ollama", "custom")
+SELF_HOSTED_PROVIDERS = ("llama_cpp", "lmstudio", "vllm", "ollama", "custom")
 
 
 def _payload(**overrides):

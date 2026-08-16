@@ -225,7 +225,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         # The saved row is the source of truth for routing, so validate against
         # it rather than against the type the client sent. A self-hosted
         # connection is stored under the backend "openai" type but surfaced to
-        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
+        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp" / "lmstudio", and the composer
         # offers research for those aliases because their registry entries
         # declare Studio tools. Comparing the two for equality therefore 400s
         # exactly the connections this path exists to serve, while the ordinary

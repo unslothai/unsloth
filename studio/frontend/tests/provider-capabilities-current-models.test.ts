@@ -17,9 +17,13 @@ const {
   providerSupportsFastMode,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
-const { providerModelSupportsVision, setProviderModelCapabilities } = await import(
-  "../src/features/chat/external-providers.ts"
-);
+const {
+  CUSTOM_PROVIDER_PRESETS,
+  providerModelSupportsVision,
+  setProviderModelCapabilities,
+  supportsRemoteModelCatalog,
+  toExternalBackendProviderType,
+} = await import("../src/features/chat/external-providers.ts");
 
 // The picker's default_models list (backend core/inference/providers.py) grew a
 // Claude 5 / gpt-5.6 / gemini-3.6 generation. Every table here is prefix-based,
@@ -164,7 +168,7 @@ test("generic Custom connections use only their explicit max-output override", (
 });
 
 test("Qwen3.8 self-hosted models expose their exact reasoning ladder", () => {
-  for (const provider of ["custom", "llama_cpp", "vllm"]) {
+  for (const provider of ["custom", "llama_cpp", "lmstudio", "vllm"]) {
     const caps = getExternalReasoningCapabilities(
       provider,
       "qwen/qwen3.8-27b",
@@ -179,6 +183,16 @@ test("Qwen3.8 self-hosted models expose their exact reasoning ladder", () => {
       provider,
     );
   }
+});
+
+test("LM Studio is a dedicated remote-catalog connection", () => {
+  const preset = CUSTOM_PROVIDER_PRESETS.find(
+    (candidate) => candidate.providerType === "lmstudio",
+  );
+  assert.equal(preset?.displayName, "LM Studio");
+  assert.equal(preset?.baseUrlPlaceholder, "http://localhost:1234/v1");
+  assert.equal(toExternalBackendProviderType("lmstudio"), "lmstudio");
+  assert.equal(supportsRemoteModelCatalog("lmstudio"), true);
 });
 
 test("Qwen3.8 does not expose xhigh through Ollama's incompatible enum", () => {

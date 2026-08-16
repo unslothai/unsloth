@@ -63,7 +63,15 @@ test("a stored override is dropped unless it is a usable custom-connection value
   }
 
   // And never for a provider that has documented caps of its own.
-  for (const type of ["openai", "anthropic", "gemini", "vllm", "ollama", "llama_cpp"]) {
+  for (const type of [
+    "openai",
+    "anthropic",
+    "gemini",
+    "vllm",
+    "ollama",
+    "llama_cpp",
+    "lmstudio",
+  ]) {
     assert.equal(normalizeCustomMaxOutputTokens(type, 384000), undefined);
   }
 });

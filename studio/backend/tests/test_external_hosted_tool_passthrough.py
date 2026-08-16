@@ -157,7 +157,7 @@ HOSTED_SELECTIONS = (
     ["web_search", "web_fetch", "code_execution", "image_generation"],
 )
 
-SELF_HOSTED_PROVIDERS = ("llama_cpp", "vllm", "ollama", "custom")
+SELF_HOSTED_PROVIDERS = ("llama_cpp", "lmstudio", "vllm", "ollama", "custom")
 
 
 @pytest.mark.parametrize("provider_type", HOSTED_PROVIDERS)

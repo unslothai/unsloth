@@ -61,9 +61,9 @@ def _capturing_handler(captured: dict):
     return handler
 
 
-# The four self-hosted presets. They are ``hidden`` in the registry and are
+# The five self-hosted presets. They are ``hidden`` in the registry and are
 # surfaced by the UI through CUSTOM_PROVIDER_PRESETS rather than the dropdown.
-SELF_HOSTED_PRESETS = ("custom", "vllm", "ollama", "llama_cpp")
+SELF_HOSTED_PRESETS = ("custom", "vllm", "ollama", "llama_cpp", "lmstudio")
 
 # Keys the pre-change bundle already read off every registry row. Dropping or
 # renaming any of them breaks a cached bundle even though the server is new.
@@ -95,7 +95,7 @@ def test_registry_default_still_hides_self_hosted_presets():
     hardcoded ``HIDDEN_PROVIDER_TYPES`` set that contains only ``qwen``; it has
     no idea to filter on a ``hidden`` field. If the default response started
     including the self-hosted presets, that bundle would render vLLM / Ollama /
-    llama.cpp / Custom as four extra dropdown entries duplicating the custom
+    llama.cpp / LM Studio / Custom as five extra dropdown entries duplicating the custom
     presets it already lists above the separator. Hence: opt-in.
     """
     types = {entry["provider_type"] for entry in list_available_providers()}
@@ -344,6 +344,65 @@ def test_self_hosted_reasoning_effort_is_forwarded_when_requested(
     assert captured["body"]["reasoning_effort"] == reasoning_effort
     if provider_type == "llama_cpp":
         assert captured["body"]["chat_template_kwargs"]["reasoning_effort"] == reasoning_effort
+
+
+@pytest.mark.parametrize(
+    ("reasoning_effort", "reasoning_tokens"),
+    [
+        ("low", 4_096),
+        ("medium", 16_384),
+        ("xhigh", 262_144),
+    ],
+)
+def test_lmstudio_qwen38_reasoning_effort_has_a_hard_budget(
+    monkeypatch, reasoning_effort, reasoning_tokens
+):
+    """LM Studio must cap Qwen3.8 reasoning instead of only prompting an effort."""
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "lmstudio",
+            base_url = "http://localhost:1234/v1",
+            api_key = "",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "qwen/qwen3.8-27b",
+                reasoning_effort = reasoning_effort,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning_effort"] == reasoning_effort
+    assert captured["body"]["reasoning_tokens"] == reasoning_tokens
+
+
+def test_lmstudio_reasoning_budget_is_not_guessed_for_other_models(monkeypatch):
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "lmstudio",
+            base_url = "http://localhost:1234/v1",
+            api_key = "",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "Qwen/Qwen3-8B",
+                reasoning_effort = "low",
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning_effort"] == "low"
+    assert "reasoning_tokens" not in captured["body"]
 
 
 # ── 5. response_format reaches the native provider shapes ────────────

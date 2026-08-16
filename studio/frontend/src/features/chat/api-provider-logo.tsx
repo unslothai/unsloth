@@ -23,6 +23,7 @@ const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   vllm: "svg",
   ollama: "svg",
   llama_cpp: "svg",
+  lmstudio: "svg",
 };
 
 export function apiProviderLogoSrc(

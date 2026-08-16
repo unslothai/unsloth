@@ -295,6 +295,23 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # default_models keeps flagship ids near the top.
         "model_id_limit": 15,
     },
+    "lmstudio": {
+        "display_name": "LM Studio",
+        "base_url": "http://localhost:1234/v1",
+        "default_models": [],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": (
+            "Local LM Studio Developer server. Uses the OpenAI-compatible "
+            "/v1/chat/completions and /v1/models endpoints; API token optional. "
+            "Surfaced via CUSTOM_PROVIDER_PRESETS in the frontend."
+        ),
+        "hidden": True,
+    },
     "vllm": {
         "display_name": "vLLM",
         # User-supplied via provider_base_url; the route falls back to the

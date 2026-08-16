@@ -151,7 +151,9 @@ def test_a_provider_without_that_tool_is_not_offered_it():
     assert hosted_only_tools("anthropic", ["python", "web_fetch"]) == ["web_fetch"]
 
 
-@pytest.mark.parametrize("provider_type", ["llama_cpp", "vllm", "ollama", "custom"])
+@pytest.mark.parametrize(
+    "provider_type", ["llama_cpp", "lmstudio", "vllm", "ollama", "custom"]
+)
 def test_a_self_hosted_server_is_sent_no_hosted_names_at_all(provider_type):
     """These declare no hosted tools, and an unknown name is a 400 from some of
     them, so the filter has to be empty rather than pass-through."""

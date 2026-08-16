@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M0 179.2C0 116.474 0 85.1112 12.2073 61.1531C22.9451 40.0789 40.0789 22.9451 61.1531 12.2073C85.1112 0 116.474 0 179.2 0H332.8C395.526 0 426.889 0 450.847 12.2073C471.921 22.9451 489.055 40.0789 499.793 61.1531C512 85.1112 512 116.474 512 179.2V332.8C512 395.526 512 426.889 499.793 450.847C489.055 471.921 471.921 489.055 450.847 499.793C426.889 512 395.526 512 332.8 512H179.2C116.474 512 85.1112 512 61.1531 499.793C40.0789 489.055 22.9451 471.921 12.2073 450.847C0 426.889 0 395.526 0 332.8V179.2Z" fill="url(#paint0_linear_496_292)"/>
+<rect opacity="0.25" x="128" y="84" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="64" y="84" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect opacity="0.25" x="224" y="144" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="160" y="144" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect opacity="0.25" x="168" y="204" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="104" y="204" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect opacity="0.25" x="112" y="264" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="48" y="264" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect opacity="0.25" x="176" y="324" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="112" y="324" width="224" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect opacity="0.25" x="304" y="384" width="152" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<rect x="240" y="384" width="152" height="44" rx="22" fill="white" style="fill:white;fill-opacity:1;"/>
+<defs>
+<linearGradient id="paint0_linear_496_292" x1="-219.792" y1="229.426" x2="239.06" y2="702.601" gradientUnits="userSpaceOnUse">
+<stop stop-color="#6E7EF3" style="stop-color:#6E7EF3;stop-color:color(display-p3 0.4303 0.4946 0.9515);stop-opacity:1;"/>
+<stop offset="1" stop-color="#4F13BE" style="stop-color:#4F13BE;stop-color:color(display-p3 0.3079 0.0763 0.7470);stop-opacity:1;"/>
+</linearGradient>
+</defs>
+</svg>
