@@ -2627,6 +2627,11 @@ def run_server(
             # which is why the marker goes here rather than in _remove_pid_file.
             _remove_startup_marker()
             _remove_pid_file()
+            # the loop is closed above, so this is what an embedded host that calls
+            # run_server again needs to stop seeing the previous listener as live
+            from lan_access import close_lan_listener_lifecycle as _close_lan_listener
+
+            _close_lan_listener()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread

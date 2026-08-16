@@ -348,8 +348,13 @@ def stop_lan_listener() -> bool:
     """
     global _server, _serve_loop, _sockets, _bound_addresses, _port, _error
 
+    # a start holds _lock while waiting for this loop to run serve(), so a stop that
+    # arrives on the loop itself must not block on it or the two wait each other out
+    if not _lock.acquire(blocking = not _running_on_event_loop()):
+        logger.info("LAN access stop deferred: a listener change is in flight")
+        return False
     # held across the wait so a start cannot begin rebinding sockets still closing
-    with _lock:
+    try:
         server, loop, sockets = _server, _serve_loop, _sockets
         port = _port
         # closed before the wait so a request landing mid-teardown already reads as off
@@ -382,6 +387,8 @@ def stop_lan_listener() -> bool:
         _error = "stop_timed_out"
         logger.warning("LAN access did not release port %s within %ss", port, _STOP_TIMEOUT)
         return False
+    finally:
+        _lock.release()
 
 
 def lan_listener_status() -> dict:

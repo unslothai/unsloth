@@ -616,6 +616,50 @@ def test_a_schedule_that_cannot_reach_the_loop_releases_the_bound_sockets(live_s
     assert _free_port_is_bindable(live_server.port)
 
 
+@pytest.mark.allow_network
+def test_a_stop_on_the_serving_loop_never_blocks_on_a_start_holding_the_lock(live_server):
+    """A start holds _lock while waiting for this loop to run serve(). /api/shutdown
+    reaches stop_lan_listener from that same loop, so blocking on the lock would
+    leave the two waiting each other out for the whole start timeout."""
+    _require_lan_address()
+    holding = threading.Event()
+    release = threading.Event()
+
+    def _hold():
+        with lan_access._lock:
+            holding.set()
+            release.wait(10)
+
+    holder = threading.Thread(target = _hold, daemon = True)
+    holder.start()
+    assert holding.wait(5)
+    try:
+
+        async def _stop_from_loop():
+            started = time.monotonic()
+            return lan_access.stop_lan_listener(), time.monotonic() - started
+
+        stopped, elapsed = asyncio.run_coroutine_threadsafe(
+            _stop_from_loop(), live_server.loop
+        ).result(timeout = 10)
+        assert elapsed < 1, "the loop-side stop waited on the lock"
+        assert stopped is False, "an unconfirmed stop must not report success"
+    finally:
+        release.set()
+        holder.join(timeout = 10)
+
+
+def test_the_server_thread_releases_the_listener_once_its_loop_ends():
+    """An embedded host calls run_server again in-process, and a stale _server would
+    report the old addresses as online and skip binding a new listener."""
+    source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
+    run_body = source[
+        source.index("    def _run():") : source.index("    thread = Thread(target = _run")
+    ]
+    assert "loop.close()" in run_body
+    assert "_close_lan_listener()" in run_body
+
+
 def test_stop_releases_the_sockets_itself_when_the_serving_loop_is_gone(monkeypatch):
     """An abnormal exit leaves nobody to run uvicorn's shutdown, so stop must close them."""
 
@@ -830,9 +874,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():
