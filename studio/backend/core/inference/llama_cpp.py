@@ -14733,7 +14733,14 @@ class LlamaCppBackend:
                             # length and no request) prices weights only, which makes
                             # "fits" the optimistic answer and pins less often -- the
                             # direction that leaves today's behaviour alone when unsure.
-                            if ctx > 0:
+                            # Both cache terms belong to the arm that can size a cache.
+                            # The file-size-only arm charges NEITHER -- its _fs_total is
+                            # model_size_fit plus the flat reserve and nothing else -- so
+                            # charging them here answers for a footprint a gigabyte-wide
+                            # band away from the one the fit tests, and the pin fired on
+                            # loads that arm was about to place with the projector still
+                            # on the GPU.
+                            if ctx > 0 and not _mm_flat_mtp:
                                 _need += _kv_bytes(ctx) + _cc_bytes(ctx, n)
                             if with_drafter:
                                 # The reserve is priced where the fit CHARGES it, which

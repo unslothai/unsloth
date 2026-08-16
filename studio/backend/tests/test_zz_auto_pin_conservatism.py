@@ -199,26 +199,33 @@ def test_the_clamp_lowers_the_advertised_ceiling_with_the_context(monkeypatch, t
 
 
 # A context-linear compute buffer wide enough to separate the two fit
-# calculations. _mmproj_fits adds it; the file-size-only _fs_total does not.
+# calculations, back when they were separable. This arm's ``_fs_total`` charges
+# neither cache term, and ``_mmproj_fits`` no longer charges them here either, so
+# the band this number used to open is closed at the source.
 _CC_BAND_BYTES = 600 * MIB
-# Centre of the band that gap opens. Swept at 100 MiB steps against this exact
-# model: below 6700 MiB free the pin fires AND the projector-charged placement
-# really does miss (clamped, correctly); from 7300 MiB the pin stops firing at
-# all; in between the pin fires on a load that places fine with the projector on
-# the GPU. The band measured 600 MiB, the width of the compute buffer above,
-# which is what identifies the gap as the cause rather than a coincidence.
+# Centre of that former band. Swept at 100 MiB steps against this exact model:
+# below 6700 MiB free the pin fires AND the projector-charged placement really
+# does miss; from 7300 MiB the pin stops firing at all; in between the pin used
+# to fire on a load that places fine with the projector on the GPU. The band
+# measured 600 MiB, the width of the compute buffer above, which is what
+# identified the gap as the cause rather than a coincidence.
 _BAND_MEMORY = [(0, 7_000, 16_000)]
 
 
-def test_the_clamp_asks_whether_the_pin_actually_bought_the_fit(monkeypatch, tmp_path):
-    """The pin firing is not proof that the projector was in the way.
+def test_the_pin_does_not_fire_where_the_charged_load_places_anyway(monkeypatch, tmp_path):
+    """The pin firing was never proof that the projector was in the way.
 
-    ``_mmproj_fits`` prices the context-linear compute buffer and this arm's
-    ``_fs_total`` does not, so the two disagree over a band as wide as that buffer.
-    Inside it the pin fires on a load that would have been placed with the
-    projector on the GPU anyway -- and clamping there costs 8x the context to
-    protect against nothing. So the clamp re-prices the same placement with the
-    projector charged and only fires when THAT cannot be placed.
+    ``_mmproj_fits`` used to price the two context-linear cache terms on the arm
+    whose ``_fs_total`` prices neither, so the two disagreed over a band as wide
+    as that buffer, and inside it the pin fired on a load that would have been
+    placed with the projector on the GPU anyway -- a ~3.6x image encode paid for
+    a placement nothing was threatening. It is now priced the way the arm charges
+    it, so the answer inside the band is simply no pin.
+
+    The clamp that used to be the only protection here is still a backstop and
+    still tested: ``test_the_pin_does_not_lift_the_no_kv_estimate_context_clamp``
+    and ``test_the_clamp_lowers_the_advertised_ceiling_with_the_context`` both
+    hold it against a live refund on the tighter card, where the pin does fire.
     """
     backend, gguf = _pin_backend(
         monkeypatch,
@@ -230,9 +237,10 @@ def test_the_clamp_asks_whether_the_pin_actually_bought_the_fit(monkeypatch, tmp
 
     got = _plan(backend, gguf)
 
-    # The premise: the pin really did fire here.
-    assert got["pins"] == 1
-    # And the load fits with the projector charged, so nothing is withheld.
+    assert got["pins"] == 0
+    assert backend.vision_on_cpu is False
+    # Nothing is withheld either: the load places, so no clamp and no lowered
+    # ceiling. These two are the outcome this cell has always been about.
     assert got["ctx"] == _NATIVE_CTX
     assert backend.max_context_length == _NATIVE_CTX
 
