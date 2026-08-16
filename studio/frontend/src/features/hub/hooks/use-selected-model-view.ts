@@ -347,7 +347,7 @@ export function useSelectedModelView({
           title: selectedLocalRow.title,
           summary: selectedHfResult
             ? buildSummary(selectedHfResult)
-            : "Partial download. Resume to finish or delete to free space.",
+            : "Partial download. Finish it from the card below, or delete it to free space.",
           sourceLabel: "Hub cache",
           path: selectedLocalRow.path,
           isLocal: false,

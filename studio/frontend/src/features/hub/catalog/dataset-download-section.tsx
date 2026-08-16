@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useRepoDownload } from "../download-manager";
+import { useHttpPartialsResumable, useRepoDownload } from "../download-manager";
 import { deleteCachedDataset } from "../inventory";
 import { cn } from "@/lib/utils";
 import { TrainIcon } from "../components/train-icon";
@@ -86,6 +86,7 @@ export function DatasetDownloadSection({
   const downloading = progress !== null;
   const canDelete =
     (isDownloaded || isPartial) && !downloading && !cancelling && !deleting;
+  const partialsResumable = useHttpPartialsResumable();
   const downloadAction = useDownloadCardState({
     job,
     variant: null,
@@ -96,6 +97,7 @@ export function DatasetDownloadSection({
     disabled: cancelling || deleting,
     isPartial,
     partialTransport,
+    partialsResumable,
   });
 
   return (
@@ -136,7 +138,8 @@ export function DatasetDownloadSection({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top" sideOffset={4}>
-                Partial download. Click to continue.
+                {/* The badge is a status dot, not a control. */}
+                {downloadAction.partialHint}
               </TooltipContent>
             </Tooltip>
           )}
@@ -179,6 +182,7 @@ export function DatasetDownloadSection({
           loading={downloadAction.starting}
           isPartial={downloadAction.isPartial}
           partialTransport={downloadAction.partialTransport}
+          partialsResumable={downloadAction.partialsResumable}
           stopMode={downloadAction.stopMode}
           progressPercent={downloadAction.progressPercent}
           disabled={downloadAction.disabled}

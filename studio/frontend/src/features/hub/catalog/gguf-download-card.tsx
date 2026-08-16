@@ -51,6 +51,7 @@ import {
 import {
   downloadManager,
   useDownloadManagerStore,
+  useHttpPartialsResumable,
   useRepoDownload,
 } from "../download-manager";
 import { useOnlineStatus } from "../hooks/use-online-status";
@@ -507,9 +508,11 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               </span>
             </TooltipTrigger>
             <TooltipContent side="top" sideOffset={4}>
+              {/* Selecting a row only selects it; the card's button starts the
+                  transfer, so do not promise otherwise. */}
               {liveActive
                 ? "Download is running. Select it to view progress."
-                : "Partial download. Select it to continue."}
+                : "Partial download. Select it, then use the button on the card to finish it."}
             </TooltipContent>
           </Tooltip>
         )}
@@ -574,6 +577,7 @@ export function GgufDownloadCard({
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
+  const partialsResumable = useHttpPartialsResumable();
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
@@ -779,6 +783,7 @@ export function GgufDownloadCard({
         : ctaDisabled && !selectedIsActive,
     isPartial: Boolean(selected?.partial),
     partialTransport: selected?.partial_transport ?? null,
+    partialsResumable,
   });
   const selectedLabel = selected ? ggufVariantDisplayLabel(selected) : null;
   const deleteTargetVariant =
@@ -980,9 +985,11 @@ export function GgufDownloadCard({
                       </span>
                     </TooltipTrigger>
                     <TooltipContent side="top" sideOffset={4}>
+                      {/* The badge rides inside the quant trigger, so clicking
+                          it opens the menu. Name the button that acts. */}
                       {selectedLiveActive
-                        ? "Download is running. Click to cancel."
-                        : "Partial download. Click to continue."}
+                        ? "Download is running. Use the button on the right to stop it."
+                        : downloadAction.partialHint}
                     </TooltipContent>
                   </Tooltip>
                 )}

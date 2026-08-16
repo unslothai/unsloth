@@ -45,8 +45,8 @@ class GgufVariantDetail(BaseModel):
         None,
         description = (
             'Transport recorded for the partial state ("http" or '
-            '"xet"), or null if not partial / unknown. Frontend uses '
-            "this to pick Resume (http) vs Redownload (xet) labels."
+            '"xet"), or null if not partial / unknown. Paired with the '
+            "partials_resumable capability to pick Resume vs Continue."
         ),
     )
     dependency_key: Optional[str] = Field(

@@ -234,6 +234,7 @@ export function DownloadActionButton({
   loading = false,
   isPartial = false,
   partialTransport = null,
+  partialsResumable = false,
   stopMode = "cancel",
   progressPercent = null,
   disabled,
@@ -245,6 +246,8 @@ export function DownloadActionButton({
   loading?: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  /** Backend capability: see partialIsResumable. */
+  partialsResumable?: boolean;
   /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
@@ -285,7 +288,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialTransport)}
+          {downloadActionLabel(isPartial, partialTransport, partialsResumable)}
         </>
       )}
     </button>

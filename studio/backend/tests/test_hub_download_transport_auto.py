@@ -86,6 +86,15 @@ def test_auto_reports_http_when_hf_xet_is_missing(monkeypatch):
     assert "hf_xet" in reason
 
 
+def test_capabilities_carry_the_partial_resume_verdict(monkeypatch):
+    """The card labels a partial from this. huggingface_hub >= 1.18 refetches an interrupted file
+    from zero, so a byte-resume must not be offered there."""
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: False)
+    assert download_registry.get_download_transport_capabilities().partials_resumable is False
+    monkeypatch.setattr(download_registry, "hf_partials_are_resumable", lambda: True)
+    assert download_registry.get_download_transport_capabilities().partials_resumable is True
+
+
 def test_auto_is_not_a_real_transport():
     """ "auto" is a request preference: the .transport marker must keep naming the writer that
     produced a partial, or a resume picks the wrong strategy."""

@@ -73,6 +73,7 @@ from hub.utils.hf_cache_state import (
     VALID_TRANSPORTS,
     VALID_TRANSPORT_MODES,
     has_active_incomplete_blobs,
+    hf_partials_are_resumable,
     iter_repo_cache_dirs,
     iter_active_repo_cache_dirs,
     repo_cache_dir_name,
@@ -101,6 +102,9 @@ class DownloadTransportCapabilities:
     # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
     auto_resolves_to: str = TRANSPORT_XET
     auto_reason: Optional[str] = None
+    # Whether an interrupted HTTP transfer leaves bytes the next attempt can append to. False on
+    # huggingface_hub >= 1.18, so the UI stops offering a byte-resume no writer can honour.
+    partials_resumable: bool = True
 
 
 def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
@@ -132,6 +136,7 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
         ),
         auto_resolves_to = auto_transport,
         auto_reason = auto_reason,
+        partials_resumable = hf_partials_are_resumable(),
     )
 
 
