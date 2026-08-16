@@ -1993,9 +1993,10 @@ def test_remembered_slots_are_read_through_the_cached_repo_alias():
     # real ladder rather than grepped out of inference.py, for the reason given in
     # test_a_standalone_gguf_has_one_settings_identity_everywhere.
     candidates = _override_lookup_candidates("/models/m.gguf", "org/repo", "Q8_0")
-    assert candidates[:2] == ["/models/m.gguf:Q8_0", "org/repo:Q8_0"], (
-        "the variant-qualified keys come first, load path before advertised alias"
-    )
+    assert candidates[:2] == [
+        "/models/m.gguf:Q8_0",
+        "org/repo:Q8_0",
+    ], "the variant-qualified keys come first, load path before advertised alias"
     assert "org/repo" in candidates, "the alias is still read, as the cached-alias path relies on"
 
 
@@ -2021,7 +2022,10 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     # concatenated form demanded the two statements be neighbours, so #8702 broke it by inserting
     # `const remembered = rememberedConfigFor(selection);` between them -- which changes nothing
     # about the contract, since the snapshot is still taken first.
-    assert "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });" in picker
+    assert (
+        "const previousConfig = currentRuntimePerModelConfig({ includeMaxSeqLength: true, });"
+        in picker
+    )
     assert picker.index("const previousConfig = currentRuntimePerModelConfig(") < picker.index(
         "applyModelLoadConfigToRuntime("
     ), "the snapshot must be taken before the target's config is applied"
@@ -3004,7 +3008,8 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # handler body exactly, so #8702 broke it by adding `llamaExtraArgs: null` and reflowing the
     # call across lines -- while the button itself is untouched and still named Reset.
     reset = any(
-        "DEFAULT_PER_MODEL_CONFIG" in el.group(0) and ">\n          Reset\n        <" in el.group(0)
+        "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
+        and ">\n          Reset\n        <" in el.group(0)
         or ("DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0)))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )

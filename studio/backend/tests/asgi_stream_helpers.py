@@ -47,12 +47,8 @@ async def wait_for_frame(
             # Re-raises inside the test, with the original traceback.
             exc = task.exception()
             if exc is not None:
-                raise AssertionError(
-                    f"the request failed before {what} was sent: {exc!r}"
-                ) from exc
-            raise AssertionError(
-                f"the request completed without sending {what}"
-            )
+                raise AssertionError(f"the request failed before {what} was sent: {exc!r}") from exc
+            raise AssertionError(f"the request completed without sending {what}")
         raise AssertionError(
             f"timed out after {timeout}s waiting for {what}, and the request task is still "
             f"running: the path is parked rather than failing"
