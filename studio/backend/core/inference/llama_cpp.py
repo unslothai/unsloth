@@ -14525,19 +14525,33 @@ class LlamaCppBackend:
                     # reached automatically, which zeroes the same term below.
                     #
                     # Deferred to here rather than answered at the charge site, where the
-                    # token is already readable: `gpus` is the whole question. It is empty
-                    # exactly on the machines where the pin frees nothing -- Metal, whose
-                    # memory is unified and whose budget (_apple_metal_memory_budget_bytes)
-                    # this same model_size feeds, and a CPU-only box where the projector
-                    # is in host RAM either way. Zeroing there hands out a context sized
-                    # against memory the machine does not have. Read last-wins, so a
-                    # trailing --mmproj-offload takes the placement back; and gated on the
-                    # capability like the automatic pin, since a build that conclusively
-                    # lacks the flag cannot honor the request.
+                    # token is already readable: whether the memory is discrete is the
+                    # whole question, and it is not answerable until the probe has run.
+                    #
+                    # An empty `gpus` is the obvious half -- Metal, whose budget
+                    # (_apple_metal_memory_budget_bytes) this same model_size feeds, and a
+                    # CPU-only box where the projector is in host RAM either way -- but it
+                    # is NOT the whole of it. A unified-memory APU and an integrated Vulkan
+                    # GPU both enumerate a device, and both report system RAM as its free
+                    # "VRAM". Their marker is a total of 0, which _get_gpu_memory and
+                    # _vulkan_auto_gpu_memory set deliberately for a shared pool; the same
+                    # 0 also stands for a total the probe could not read (MIG/vGPU/N/A),
+                    # where the honest answer is likewise "do not hand bytes back".
+                    # Required of EVERY device in play, since a mixed pool splits weights
+                    # onto the shared one too.
+                    #
+                    # Without that, typing the flag on an APU cut ~1.26 GB off a budget
+                    # that is host RAM and, worse, took the load under the
+                    # _apu_ram_shortfall_message refusal threshold -- turning a deliberate
+                    # "this will be OOM-killed mid-load" into a launch. Read last-wins, so
+                    # a trailing --mmproj-offload takes the placement back; and gated on
+                    # the capability like the automatic pin, since a build that
+                    # conclusively lacks the flag cannot honor the request.
                     if (
                         effective_is_vision
                         and mmproj_size > 0
                         and gpus
+                        and all(total_by_idx.get(_idx, 0) > 0 for _idx, _free in gpus)
                         and not _mmproj_cpu_pinned
                         and _mmproj_offload_disabled(extra_args)
                         and _paravirtual_mmproj_pinnable(server_caps)

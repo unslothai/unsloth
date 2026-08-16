@@ -234,6 +234,90 @@ def test_the_explicit_request_places_no_worse_than_the_automatic_one(monkeypatch
     assert hand["backend"].vision_on_cpu is True
 
 
+# --------------------------------------------------------------------------
+# A device is enumerated, but its memory is the host's
+# --------------------------------------------------------------------------
+
+# How the two probes report a shared pool: free is system RAM (already less the
+# iGPU host reserve) and the TOTAL is a deliberate 0 -- see the `0 if shared` in
+# _get_gpu_memory and the `0 if is_igpu` in _vulkan_auto_gpu_memory. The same 0
+# also stands for a total the probe could not read at all.
+_APU_MEMORY = [(0, 20_000, 0)]
+_APU_MODEL_BYTES = 4_500 * MIB
+# Enough for the weights and change, but not for the projector's charge on top:
+# this is the band where the refusal below flips.
+_APU_AVAIL_MIB = (_APU_MODEL_BYTES // MIB) + 2048 + 200
+
+
+def _apu_charge(monkeypatch, tmp_path, *, extra_args, ram_guard):
+    """Launch against an enumerated device whose 'VRAM' is system RAM."""
+    _apply_os(monkeypatch, "linux")
+    tmp_path.mkdir(parents = True, exist_ok = True)
+    backend, gguf = _accel_backend(
+        monkeypatch,
+        tmp_path,
+        "nvidia",
+        memory = list(_APU_MEMORY),
+        model_bytes = _APU_MODEL_BYTES,
+    )
+    if ram_guard:
+        # The refusal that stops an APU load being OOM-killed mid-read. The shared
+        # placement harness stubs all three of these out, so put the real message
+        # back rather than assert against a stub that always answers "fine".
+        backend._amd_apu_wants_unified_memory = lambda *a, **k: True
+        backend._available_system_memory_mib = lambda: _APU_AVAIL_MIB
+        backend._apu_ram_shortfall_message = (
+            lambda *a, **k: llama_cpp.LlamaCppBackend._apu_ram_shortfall_message(*a, **k)
+        )
+    record: dict = {}
+    _real_select = backend._select_gpus
+
+    def _capture(model_size, gpus, *args, **kwargs):
+        record.setdefault("model_size_fit", model_size)
+        return _real_select(model_size, gpus, *args, **kwargs)
+
+    backend._select_gpus = _capture
+    record["cmd"] = [str(a) for a in _launch(
+        backend, gguf, is_vision = True, extra_args = extra_args
+    )["cmd"]]
+    return record
+
+
+def test_a_shared_pool_is_not_discrete_memory_however_many_gpus_it_enumerates(
+    monkeypatch, tmp_path
+):
+    """A non-empty ``gpus`` is not the same claim as "the memory is discrete".
+
+    A unified-memory APU and an integrated Vulkan GPU both enumerate a device and
+    both report system RAM as its free VRAM. Pinning the encoder to the CPU moves
+    it within one pool, so its bytes must stay charged for exactly the reason the
+    Mac's do -- and ``total == 0`` is the marker both probes already set for it.
+    """
+    plain = _apu_charge(monkeypatch, tmp_path / "plain", extra_args = None, ram_guard = False)
+    hand = _apu_charge(monkeypatch, tmp_path / "hand", extra_args = [_PIN], ram_guard = False)
+
+    assert hand["model_size_fit"] == plain["model_size_fit"]
+    # The projector really is inside the figure that did not move.
+    assert plain["model_size_fit"] > _APU_MODEL_BYTES + PROJECTOR_BYTES
+
+
+def test_the_apu_ram_refusal_survives_the_users_own_pin(monkeypatch, tmp_path):
+    """The sharp end of the same bug, and the reason the byte assertion above is
+    not academic.
+
+    ``_apu_ram_shortfall_message`` refuses a load whose weights will not fit in
+    system RAM, because the alternative is the OS killing it mid-read. It prices
+    ``model_size``. Handing the projector's bytes back on a shared pool took this
+    load under the threshold, so typing a flag that frees nothing on this machine
+    converted a deliberate refusal into the launch it exists to prevent.
+    """
+    for label, extras in (("plain", None), ("hand", [_PIN])):
+        with pytest.raises(RuntimeError, match = "unified-memory"):
+            _apu_charge(
+                monkeypatch, tmp_path / label, extra_args = extras, ram_guard = True
+            )
+
+
 def test_a_build_without_the_flag_keeps_charging_the_hand_pinned_projector(monkeypatch, tmp_path):
     """A conclusive probe that does not list ``--no-mmproj-offload`` means a
     build too old to honour it, so the encoder stays on the card whatever the
