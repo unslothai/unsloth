@@ -2096,6 +2096,11 @@ _bounded_pkg_probe() {
             # D-state process survives both, which is why it is abandoned rather
             # than waited on.
             sleep 0.5
+            # children too: a sitecustomize or .pth hook can spawn one, and it would
+            # keep the redirected handle open after the interpreter is gone. Direct
+            # children only, best effort -- pkill is not guaranteed to exist, and
+            # this is teardown, not a contract. Mirrors Stop-StudioProbeTree.
+            command -v pkill >/dev/null 2>&1 && pkill -9 -P "$_bpp_pid" 2>/dev/null || true
             kill -9 "$_bpp_pid" 2>/dev/null || true
             rm -f "$_bpp_out"
             return 0

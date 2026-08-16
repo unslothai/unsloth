@@ -1062,7 +1062,15 @@ function Invoke-BoundedPythonProbe {
         $outTask = $proc.StandardOutput.ReadToEndAsync()
         $errTask = $proc.StandardError.ReadToEndAsync()
         if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-            try { $proc.Kill() } catch {}
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
@@ -1126,7 +1134,15 @@ function Invoke-BoundedPythonStdinProbe {
         if (-not $writeDone -and -not $writeBroke) {
             # Kill first: it breaks the pipe and unblocks the pending write, so the
             # Close below cannot wedge behind it.
-            try { $proc.Kill() } catch {}
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
             try { $proc.StandardInput.Close() } catch {}
             $result.Error = "python did not accept the probe within $TimeoutSec seconds"
             return $result
@@ -1136,7 +1152,15 @@ function Invoke-BoundedPythonStdinProbe {
         try { $proc.StandardInput.Close() } catch {}
         $_waitLeft = [Math]::Max(1000, $TimeoutSec * 1000 - [int]$sw.ElapsedMilliseconds)
         if (-not $proc.WaitForExit($_waitLeft)) {
-            try { $proc.Kill() } catch {}
+            # 5.1's Kill() ends only the interpreter; taskkill /T /F also reaps a
+            # descendant a sitecustomize or .pth hook spawned, which would otherwise
+            # keep the redirected handles open (mirrors _windows_taskkill_tree in
+            # studio/backend/core/inference/tools.py). Inlined rather than factored
+            # out: the probe suites lift this function out on its own and execute it,
+            # so it has to stay self-contained. install.ps1's copy is deliberately
+            # untouched -- this reland's scope is setup.sh/setup.ps1.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
+            try { if (-not $proc.HasExited) { $proc.Kill() } } catch {}
             # Synthesised, not read back: waiting on the reader tasks of a wedged child would
             # reintroduce the hang this helper exists to bound.
             $result.Error = "python did not answer within $TimeoutSec seconds"
