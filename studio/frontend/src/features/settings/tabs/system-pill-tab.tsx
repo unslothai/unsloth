@@ -72,6 +72,20 @@ export function SystemPillTab(): ReactElement {
         await syncNativePillConfig(next);
       } catch {
         toast.error(t("systemPill.settings.saveError"));
+        // A predecessor may have persisted and then skipped its own apply as
+        // superseded by this save. With this one failed, nothing else will
+        // apply it, so read back what actually stuck rather than leaving the
+        // switch and the native hotkey disagreeing with the backend. Only the
+        // newest save reconciles; an older one still has a successor coming.
+        if (seq !== saveSeqRef.current) return;
+        try {
+          const actual = await fetchPillSettings();
+          if (seq !== saveSeqRef.current) return;
+          setSettings(actual);
+          await syncNativePillConfig(actual);
+        } catch {
+          // Backend unreachable too; the next open re-reads it.
+        }
       }
     });
     return saveChainRef.current;
