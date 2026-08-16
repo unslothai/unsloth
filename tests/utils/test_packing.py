@@ -1441,44 +1441,6 @@ def test_mask_packed_boundary_labels_lengths_covering_whole_row():
     assert out.reshape(-1).tolist() == [-100, 1, -100, 3]
 
 
-def test_enable_sample_packing_masks_boundary_labels():
-    model = _DummyModel()
-    trainer = _DummyTrainer()
-    enable_sample_packing(model, trainer)
-
-    batch = trainer.data_collator.torch_call(
-        [
-            {"input_ids": [0, 1, 2], "labels": [0, 1, 2], "seq_lengths": [2, 1]},
-            {"input_ids": [3, 4, 5], "labels": [3, 4, 5], "seq_lengths": [3]},
-        ]
-    )
-    flat = batch["labels"].reshape(-1)[:6].tolist()
-    # docs [0,1] [2] [3,4,5] -> boundary slots 2 and 3
-    assert flat[2] == -100 and flat[3] == -100
-    assert flat[1] != -100 and flat[4] != -100 and flat[5] != -100
-
-
-def test_enable_padding_free_metadata_masks_boundary_labels():
-    model = _DummyModel()
-    trainer = SimpleNamespace(
-        args = SimpleNamespace(remove_unused_columns = True),
-        data_collator = _PaddingFreeCollator(),
-    )
-    enable_padding_free_metadata(model, trainer)
-
-    batch = trainer.data_collator.torch_call(
-        [
-            {"input_ids": [0, 1, 2], "labels": [0, 1, 2]},
-            {"input_ids": [3, 4], "labels": [3, 4]},
-        ]
-    )
-    if batch.get("labels") is None:
-        pytest.skip("collator stub does not emit labels")
-    flat = batch["labels"].reshape(-1)[:5].tolist()
-    assert flat[3] == -100
-    assert flat[1] != -100 and flat[2] != -100 and flat[4] != -100
-
-
 # ==========================================================================
 # Each test below fails when its production hunk is reverted.
 # 1 + 2. the two fused-CE call sites (llama.py / mistral.py)
@@ -1564,10 +1526,11 @@ def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
     assert labels.reshape(-1).tolist() == list(range(seq))
 
 
-# 3. enable_sample_packing collator hunk
+# 3. the collator wrappers must leave the boundary targets in place, because
+#    unsloth_zoo counts num_items_in_batch off this batch and already deducts them
 class _UnmaskedPackingCollator:
-    """A padding-free collator that does NOT pre-mask boundaries, unlike TRL's own -
-    a test built on TRL's would pass with or without the wrapper."""
+    """A padding-free collator that does NOT pre-mask boundaries, like TRL < 0.24 -
+    a test built on TRL 0.24+ output would pass either way."""
 
     def __init__(self):
         self.padding_free = True
@@ -1581,13 +1544,23 @@ class _UnmaskedPackingCollator:
         }
 
 
-def test_enable_sample_packing_masks_boundaries_a_collator_left_open():
+def _zoo_num_items_in_batch(batch):
+    """The count unsloth_zoo._unsloth_get_batch_samples derives from a batch."""
+    count = int((batch["labels"][..., 1:] != -100).sum())
+    lengths = batch.get("packed_seq_lengths")
+    if lengths is not None:
+        count -= int(torch.count_nonzero(lengths > 0)) - 1
+    return count
+
+
+@pytest.mark.parametrize("wrapper", [enable_sample_packing, enable_padding_free_metadata])
+def test_collator_keeps_boundary_targets_for_the_num_items_deduction(wrapper):
     model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
     trainer = SimpleNamespace(
         args = SimpleNamespace(remove_unused_columns = True),
         data_collator = _UnmaskedPackingCollator(),
     )
-    enable_sample_packing(model, trainer)
+    wrapper(model, trainer)
 
     batch = trainer.data_collator.torch_call(
         [
@@ -1595,26 +1568,9 @@ def test_enable_sample_packing_masks_boundaries_a_collator_left_open():
             {"input_ids": [13, 14, 15], "seq_lengths": [3]},
         ]
     )
-    # docs [10,11] [12] [13,14,15] -> boundary slots 2 and 3
-    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
-
-
-def test_enable_padding_free_metadata_masks_boundaries_a_collator_left_open():
-    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
-    trainer = SimpleNamespace(
-        args = SimpleNamespace(remove_unused_columns = True),
-        data_collator = _UnmaskedPackingCollator(),
-    )
-    enable_padding_free_metadata(model, trainer)
-
-    batch = trainer.data_collator.torch_call(
-        [
-            {"input_ids": [10, 11, 12]},
-            {"input_ids": [13, 14]},
-        ]
-    )
-    # two flattened examples -> boundary slot 3
-    assert batch["labels"].reshape(-1).tolist() == [-100, 11, 12, -100, 14]
+    assert batch["labels"].reshape(-1).tolist() == [10, 11, 12, 13, 14, 15]
+    # docs [10,11] [12] [13,14,15] -> 1 + 0 + 2 real cross-entropy targets
+    assert _zoo_num_items_in_batch(batch) == 3
 
 
 # 4. idempotence, discriminating (an identity helper must not pass)

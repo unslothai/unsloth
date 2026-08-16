@@ -169,17 +169,12 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                packed_seq_lengths = torch.tensor(seq_lengths, dtype = torch.int32)
-                batch["packed_seq_lengths"] = packed_seq_lengths
-                # Guard here so every downstream loss path benefits, including
-                # compiled forwards for non-Llama architectures that never reach
-                # the guard in llama.py. No-op on TRL's collator output, which
-                # already sets these positions to -100.
-                if batch.get("labels") is not None:
-                    batch["labels"] = mask_packed_boundary_labels(
-                        batch["labels"],
-                        packed_seq_lengths,
-                    )
+                # Boundary labels are NOT masked here: unsloth_zoo's
+                # _unsloth_get_batch_samples derives num_items_in_batch from this
+                # batch and already subtracts the N-1 boundary targets, so
+                # dropping them here too would deduct them twice on TRL < 0.24
+                # (which does not pre-mask). The guard runs in the forward.
+                batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
         return batch
@@ -221,18 +216,12 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
-            packed_seq_lengths = torch.tensor(
+            # Labels are left alone here for the same reason as in
+            # enable_sample_packing: num_items_in_batch is counted off this batch.
+            batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
             )
-            batch["packed_seq_lengths"] = packed_seq_lengths
-            # Padding-free flattens whole examples into one row, so the same
-            # cross-document boundaries exist. See enable_sample_packing.
-            if batch.get("labels") is not None:
-                batch["labels"] = mask_packed_boundary_labels(
-                    batch["labels"],
-                    packed_seq_lengths,
-                )
         return batch
 
     collator.torch_call = torch_call_with_padding_free_metadata
