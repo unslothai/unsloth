@@ -161,13 +161,28 @@ const SPECULATIVE_MODES = new Set([
 export function residentSpeculativeNeedsRepair(
   status: Pick<
     InferenceStatusResponse,
-    "spec_fallback_reason" | "spec_fallback_binary_changed"
+    | "spec_fallback_reason"
+    | "spec_fallback_binary_changed"
+    | "spec_probe_retry_pending"
+    | "spec_dflash_retry_pending"
   >,
   resolvedSpeculativeType: string | null,
 ): boolean {
+  const mode = resolvedSpeculativeType ?? "auto";
+  // Two arms that record no fallback reason, so the reason check below cannot see them.
+  // The probe arm is not gated on a mode; the DFlash one is, as the backend gates it.
+  if (status.spec_probe_retry_pending === true) {
+    return true;
+  }
+  if (
+    status.spec_dflash_retry_pending === true &&
+    (mode === "auto" || mode === "dflash")
+  ) {
+    return true;
+  }
   if (
     !RETRYABLE_SPEC_FALLBACKS.has(status.spec_fallback_reason ?? "") ||
-    !SPECULATIVE_MODES.has(resolvedSpeculativeType ?? "auto")
+    !SPECULATIVE_MODES.has(mode)
   ) {
     return false;
   }

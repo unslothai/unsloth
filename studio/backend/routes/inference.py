@@ -7014,6 +7014,40 @@ def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
         return None
 
 
+def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether the capability probe has started answering since a degraded launch.
+
+    Mirrors the ``_capability_probe_inconclusive`` arm of ``_runtime_matches_intent``,
+    which rejects an identical load once the probe turns conclusive so the degraded
+    runtime is re-derived. No speculative mode gates it, and it records the conclusive
+    probe and clears, so it is one reload rather than a loop. Probing is cheap here:
+    ``probe_server_capabilities`` caches on the binary's revision and this route already
+    calls it.
+    """
+    if not getattr(llama_backend, "_capability_probe_inconclusive", False):
+        return False
+    if getattr(llama_backend, "_is_diffusion", False):
+        return False
+    try:
+        return not llama_backend.probe_server_capabilities().get("mtp_probe_inconclusive")
+    except Exception:
+        return None
+
+
+def _spec_dflash_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether a DFlash sidecar fetch failed in a way the next identical load retries.
+
+    Under Auto a failed fetch records no ``spec_fallback_reason``, so a client reading
+    only that adopts a runtime the backend would have rebuilt. Set only for retryable
+    failures: a repo publishing no sidecar is ``_dflash_sidecar_absent``'s business.
+    Applies to the Auto and DFlash modes, as the arm does.
+    """
+    try:
+        return bool(llama_backend._dflash_retry_needed)
+    except Exception:
+        return None
+
+
 class _NoParallelRequest:
     """A stand-in for a load that named no slot count, for reading the default."""
 
@@ -10528,6 +10562,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
+                spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
+                spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,

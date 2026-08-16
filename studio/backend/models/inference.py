@@ -1071,6 +1071,24 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "to report it."
         ),
     )
+    spec_probe_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "The capability probe has started answering since a launch it degraded, so "
+            "an identical /load is rejected once to re-derive the runtime "
+            "(_runtime_matches_intent's _capability_probe_inconclusive arm). No "
+            "speculative mode gates it. None on a backend too old to report it."
+        ),
+    )
+    spec_dflash_retry_pending: Optional[bool] = Field(
+        None,
+        description = (
+            "A DFlash sidecar fetch failed retryably, which under Auto records no "
+            "spec_fallback_reason at all, so an identical /load is rejected to fetch "
+            "again. Applies to the 'auto' and 'dflash' modes. None on a backend too old "
+            "to report it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

@@ -566,6 +566,54 @@ test("a pick naming the fitted subset of a wider pool is not a reload", () => {
   );
 });
 
+test("a retry arm that records no fallback reason still declines the shortcut", () => {
+  // _dflash_retry_needed and the capability-probe arm both reject an identical load while
+  // leaving spec_fallback_reason null, so reading only the reason adopted a runtime the
+  // backend would have rebuilt, and nothing else would ever retry it.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: null, spec_dflash_retry_pending: true },
+      "auto",
+    ),
+    true,
+  );
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: null, spec_dflash_retry_pending: true },
+      "dflash",
+    ),
+    true,
+  );
+  // The backend gates that arm on those two modes; a pick asking for MTP is not it.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: null, spec_dflash_retry_pending: true },
+      "mtp",
+    ),
+    false,
+  );
+  // The probe arm has no mode gate at all.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      { spec_fallback_reason: null, spec_probe_retry_pending: true },
+      "off",
+    ),
+    true,
+  );
+  // Neither pending, and no reason: nothing to repair.
+  assert.equal(
+    residentSpeculativeNeedsRepair(
+      {
+        spec_fallback_reason: null,
+        spec_probe_retry_pending: false,
+        spec_dflash_retry_pending: false,
+      },
+      "auto",
+    ),
+    false,
+  );
+});
+
 test("a binary stand-down that cannot repair does not decline the shortcut", () => {
   // spec_binary_fallback_can_retry needs a different llama-server installed before an
   // identical /load repairs anything; without one it dedupes and the prompt was for nothing.

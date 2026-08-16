@@ -381,6 +381,10 @@ export interface InferenceStatusResponse {
   spec_fallback_reason?: string | null;
   /** Only for a binary stand-down: whether a different llama-server is installed now. */
   spec_fallback_binary_changed?: boolean | null;
+  /** The capability probe has started answering since a launch it degraded. */
+  spec_probe_retry_pending?: boolean | null;
+  /** A DFlash sidecar fetch failed retryably, which records no fallback reason. */
+  spec_dflash_retry_pending?: boolean | null;
 }
 
 export interface ApiMonitorEntry {
