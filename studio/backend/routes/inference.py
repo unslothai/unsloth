@@ -873,11 +873,7 @@ def _apply_overflow_truncation(
     return True
 
 
-def _apply_measured_overflow_truncation(
-    body: dict,
-    err_text: str,
-    policy: str,
-) -> Optional[int]:
+def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) -> Optional[int]:
     before = len(body.get("messages") or [])
     if not _apply_overflow_truncation(body, err_text, policy):
         return None
