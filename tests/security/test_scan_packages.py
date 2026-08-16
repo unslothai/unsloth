@@ -1933,7 +1933,9 @@ def _oversized_member_wheel(path):
     return path
 
 
-def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(tmp_path, monkeypatch, capsys):
+def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(
+    tmp_path, monkeypatch, capsys
+):
     """The whole safety argument for the pool is that it changes nothing.
 
     Drives `main()` over the same corpus at `--jobs 1` (serial branch) and
@@ -1966,7 +1968,8 @@ def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(tmp_pa
 
         monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
         monkeypatch.setattr(
-            sys, "argv",
+            sys,
+            "argv",
             ["scan_packages.py", "--no-baseline", "--jobs", str(jobs)]
             + [name for name, _ in copies],
         )
