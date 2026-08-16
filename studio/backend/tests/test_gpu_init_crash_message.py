@@ -1541,9 +1541,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: [
-        (0, 24 * 1024**3, 24 * 1024**3)
-    ]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3, 24 * 1024**3)]
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 24 * 1024**3)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
@@ -1565,7 +1563,12 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
     )
 
-    def _env_for_binary(_binary, *, use_system_rocm = True, **_k):
+    def _env_for_binary(
+        _binary,
+        *,
+        use_system_rocm = True,
+        **_k,
+    ):
         ld = "/opt/rocm/lib:/bundle/bin" if use_system_rocm else "/bundle/bin"
         return {"PATH": os.environ.get("PATH", ""), "LD_LIBRARY_PATH": ld}
 
@@ -1657,4 +1660,3 @@ class TestHipRocrRetryKeepsFitBudget:
         assert _fit_mode(launches[0][0]) == "off"
         assert _fit_mode(launches[1][0]) == "off"
         assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
-
