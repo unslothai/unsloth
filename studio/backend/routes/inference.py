@@ -673,6 +673,19 @@ def _context_truncated_sse_chunk(
     return f"data: {json.dumps(data)}\n\n"
 
 
+def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict:
+    incoming = {key: value for key, value in event.items() if key != "type"}
+    if current is None:
+        return incoming
+    combined = {**current, **incoming}
+    combined["dropped_messages"] = int(current.get("dropped_messages") or 0) + int(
+        incoming.get("dropped_messages") or 0
+    )
+    if current.get("prompt_tokens_before") is not None:
+        combined["prompt_tokens_before"] = current["prompt_tokens_before"]
+    return combined
+
+
 def _parse_overflow_counts(err_text: str):
     """(n_prompt_tokens, n_ctx) from an exceed_context_size_error body, or
     None. Tolerates \\" around keys (body may be a re-wrapped JSON string)."""
@@ -7515,6 +7528,16 @@ def _model_json_response(model, status_code: int = 200) -> Response:
     )
 
 
+def _model_json_response_with_context_truncation(
+    model, context_truncation: Optional[dict]
+) -> Response:
+    if context_truncation is None:
+        return _model_json_response(model)
+    content = model.model_dump()
+    content["context_truncated"] = context_truncation
+    return JSONResponse(content = content)
+
+
 _NOT_SUPPORTED_HINTS = (
     "No config file found",
     "not yet supported",
@@ -14308,6 +14331,7 @@ async def openai_chat_completions(
                 usage = None
                 finish = None
                 timings = None
+                context_truncation = None
                 gen = gguf_generate_with_tools()
                 try:
                     for event in gen:
@@ -14317,6 +14341,10 @@ async def openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                             timings = event.get("timings")
+                        elif event.get("type") == "context_truncated":
+                            context_truncation = _accumulate_context_truncation(
+                                context_truncation, event
+                            )
                         elif event.get("type") == "content":
                             # Content is cumulative within a turn and resets
                             # between turns, so the last event holds the final
@@ -14328,7 +14356,7 @@ async def openai_chat_completions(
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                                 enabled_tool_names = _gguf_display_tool_names,
                             )
-                    return full_text, usage, finish, timings
+                    return full_text, usage, finish, timings, context_truncation
                 finally:
                     # Close the generator on early break/cancel so the underlying
                     # llama-server stream socket is released, like the SSE path.
@@ -14396,6 +14424,7 @@ async def openai_chat_completions(
                     completion_usage,
                     completion_finish,
                     completion_timings,
+                    completion_context_truncation,
                 ) = await asyncio.shield(drain_task)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
@@ -14443,7 +14472,9 @@ async def openai_chat_completions(
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
-                return _model_json_response(response)
+                return _model_json_response_with_context_truncation(
+                    response, completion_context_truncation
+                )
             except asyncio.CancelledError:
                 cancel_event.set()
                 await _drain_cancelled_gguf_tool_task()
@@ -15008,6 +15039,7 @@ async def openai_chat_completions(
                     _prompt_details = None
                     _last_timings = None
                     _last_finish = None
+                    _context_truncation = None
                     for _idx in range(_n):
                         # Stop spawning the remaining choices once cancelled.
                         if cancel_event.is_set():
@@ -15022,6 +15054,10 @@ async def openai_chat_completions(
                                     completion_finish = token.get("finish_reason")
                                     _last_timings = token.get("timings")
                                     _last_finish = completion_finish
+                                elif token.get("type") == "context_truncated" and _idx == 0:
+                                    _context_truncation = _accumulate_context_truncation(
+                                        _context_truncation, token
+                                    )
                                 continue
                             full_text = token
 
@@ -15060,6 +15096,7 @@ async def openai_chat_completions(
                         _prompt_details,
                         _last_timings,
                         _last_finish,
+                        _context_truncation,
                     )
 
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_choices))
@@ -15072,6 +15109,7 @@ async def openai_chat_completions(
                     _prompt_details,
                     _last_timings,
                     _last_finish,
+                    _context_truncation,
                 ) = await asyncio.shield(drain_task)
 
                 response = ChatCompletion(
@@ -15110,7 +15148,9 @@ async def openai_chat_completions(
                     ),
                 )
                 api_monitor.finish(monitor_id)
-                return _model_json_response(response)
+                return _model_json_response_with_context_truncation(
+                    response, _context_truncation
+                )
 
             except asyncio.CancelledError:
                 cancel_event.set()

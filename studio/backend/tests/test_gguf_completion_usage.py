@@ -16,11 +16,15 @@ class _GgufBackend:
     _is_audio = False
     is_vision = False
     supports_tools = False
+    context_length = 8192
 
-    def __init__(self, usage):
+    def __init__(self, usage, context_truncation = None):
         self.usage = usage
+        self.context_truncation = context_truncation
 
     def generate_chat_completion(self, **kwargs):
+        if self.context_truncation:
+            yield {"type": "context_truncated", **self.context_truncation}
         yield "answer"
         yield {
             "type": "metadata",
@@ -29,8 +33,12 @@ class _GgufBackend:
         }
 
 
-def _request_completion(monkeypatch, usage):
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage))
+def _request_completion(monkeypatch, usage, context_truncation = None):
+    monkeypatch.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: _GgufBackend(usage, context_truncation),
+    )
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
 
     app = FastAPI()
@@ -84,3 +92,21 @@ def test_non_streaming_gguf_completion_defaults_nullable_usage_to_zero(monkeypat
         "accepted_prediction_tokens": 0,
         "rejected_prediction_tokens": 0,
     }
+
+
+def test_non_streaming_gguf_completion_includes_context_truncation(monkeypatch):
+    truncation = {
+        "dropped_messages": 4,
+        "prompt_tokens_before": 9000,
+        "prompt_tokens_after": 7000,
+        "context_length": 8192,
+        "fits": True,
+    }
+    response = _request_completion(
+        monkeypatch,
+        {"prompt_tokens": 7000, "completion_tokens": 20, "total_tokens": 7020},
+        truncation,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["context_truncated"] == truncation

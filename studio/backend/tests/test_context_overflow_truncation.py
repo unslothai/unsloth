@@ -23,6 +23,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from routes.inference import (
+    _accumulate_context_truncation,
     _apply_overflow_truncation,
     _clip_long_contents,
     _CLIP_MARKER,
@@ -35,6 +36,7 @@ from routes.inference import (
     _truncate_oldest_messages,
 )
 from core.inference.context_window import fit_rolling_context, messages_have_media
+from models.inference import ChatCompletion
 import routes.inference as routes_mod
 
 
@@ -370,6 +372,55 @@ def test_context_truncation_notice_is_an_openai_compatible_empty_chunk():
     assert payload["object"] == "chat.completion.chunk"
     assert payload["choices"] == []
     assert payload["context_truncated"] == {"dropped_messages": 4, "fits": True}
+
+
+def test_nonstream_completion_serializes_context_truncation():
+    response = ChatCompletion(choices = [])
+    body = json.loads(
+        routes_mod._model_json_response_with_context_truncation(
+            response, {"dropped_messages": 4, "fits": True}
+        ).body
+    )
+    assert body["context_truncated"] == {"dropped_messages": 4, "fits": True}
+
+
+def test_nonstream_completion_omits_context_field_when_not_truncated():
+    response = ChatCompletion(choices = [])
+    body = json.loads(
+        routes_mod._model_json_response_with_context_truncation(response, None).body
+    )
+
+    assert "context_truncated" not in body
+
+
+def test_tool_loop_context_truncation_accumulates_dropped_messages():
+    first = _accumulate_context_truncation(
+        None,
+        {
+            "type": "context_truncated",
+            "dropped_messages": 2,
+            "prompt_tokens_before": 1200,
+            "prompt_tokens_after": 800,
+            "fits": True,
+        },
+    )
+    combined = _accumulate_context_truncation(
+        first,
+        {
+            "type": "context_truncated",
+            "dropped_messages": 3,
+            "prompt_tokens_before": 1000,
+            "prompt_tokens_after": 700,
+            "fits": True,
+        },
+    )
+
+    assert combined == {
+        "dropped_messages": 5,
+        "prompt_tokens_before": 1200,
+        "prompt_tokens_after": 700,
+        "fits": True,
+    }
 
 
 def test_apply_overflow_truncation_clips_giant_protected_tool_results():
