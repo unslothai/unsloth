@@ -68,9 +68,7 @@ _LEAK_WINDOW_S = 1.0
 
 def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
     """Shell for a grandchild that holds stdout and writes *sentinel* once *gate* exists."""
-    return (
-        f"while [ ! -f '{gate}' ]; do sleep {_GATE_POLL_S}; done; touch '{sentinel}'"
-    )
+    return f"while [ ! -f '{gate}' ]; do sleep {_GATE_POLL_S}; done; touch '{sentinel}'"
 
 
 def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
@@ -78,9 +76,9 @@ def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
     gate.write_text("go")
     deadline = time.monotonic() + _LEAK_WINDOW_S
     while time.monotonic() < deadline:
-        assert not sentinel.exists(), (
-            "a grandchild survived the process-group kill and wrote its sentinel"
-        )
+        assert (
+            not sentinel.exists()
+        ), "a grandchild survived the process-group kill and wrote its sentinel"
         time.sleep(0.02)
 
 

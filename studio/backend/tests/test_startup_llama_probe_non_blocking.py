@@ -118,9 +118,7 @@ def test_disable_env_skips_probe_entirely(monkeypatch):
     # was ever created, which is what "skips the probe entirely" means, and it is
     # true the instant the call returns.
     started = [
-        t
-        for t in threading.enumerate()
-        if t not in before and t.name == "llama-cpp-startup-probe"
+        t for t in threading.enumerate() if t not in before and t.name == "llama-cpp-startup-probe"
     ]
     assert started == [], "a probe thread was started despite UNSLOTH_DISABLE_UPDATE_CHECK=1"
     assert calls == [], "freshness check ran despite UNSLOTH_DISABLE_UPDATE_CHECK=1"
