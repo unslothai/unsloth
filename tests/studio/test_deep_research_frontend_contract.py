@@ -223,9 +223,9 @@ def test_research_presentation_is_integrated() -> None:
     permission_read = re.search(
         r"const\s+(\w+)\s*(?::\s*PermissionMode\s*)?=\s*loadPermissionMode\(\)\s*;", store
     )
-    assert permission_read, (
-        "chat-runtime-store must read the persisted permission mode through loadPermissionMode()"
-    )
+    assert (
+        permission_read
+    ), "chat-runtime-store must read the persisted permission mode through loadPermissionMode()"
     assert re.search(
         rf"\bpermissionMode:\s*(?:{permission_read.group(1)}\b|loadPermissionMode\(\))",
         store,
