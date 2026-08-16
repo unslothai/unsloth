@@ -6497,7 +6497,17 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
-        _sized_attrs = ["gguf_mmproj_file"]
+        # Same gate as the remote branch's include_mmproj below, for the same
+        # reason: llama_cpp.py resolves no projector under either opt-out, so the
+        # file is never opened and the guard must not refuse a chat load over
+        # bytes it provably does not take. A local sidecar sitting beside the
+        # weights is exactly the case where those bytes are already on disk and
+        # the charge is pure loss.
+        _sized_attrs = (
+            []
+            if (disable_vision or extra_args_disable_mmproj(llama_extra_args))
+            else ["gguf_mmproj_file"]
+        )
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
