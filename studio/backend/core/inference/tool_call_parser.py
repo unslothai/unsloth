@@ -204,6 +204,15 @@ INTENT_SIGNAL = re.compile(
     r"\b(?:now i|next i)\b"
     r")"
 )
+# a turn that asks the user for a missing detail waits on the reply, so no tool call can serve it
+_CLARIFICATION_REQUEST = re.compile(
+    r"(?i)\b(?:"
+    r"let\s+me\s+know"
+    r"|(?:could|can|would)\s+you\s+(?:please\s+)?"
+    r"(?:clarify|specify|confirm|provide|share|tell\s+me)\b"
+    r"|what\s+(?:would|do)\s+you\s+(?:like|want|mean)\b"
+    r")"
+)
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
@@ -215,7 +224,11 @@ NUDGE_TOOL_CALLS_STATUS = "Nudging tool calls"
 
 def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
-    return 0 < len(stripped) < REPROMPT_MAX_CHARS and INTENT_SIGNAL.search(stripped) is not None
+    if not 0 < len(stripped) < REPROMPT_MAX_CHARS:
+        return False
+    if _CLARIFICATION_REQUEST.search(stripped):
+        return False
+    return INTENT_SIGNAL.search(stripped) is not None
 
 
 # Leading marks are kept unless they are quotes or brackets, so ".NET" survives;

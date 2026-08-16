@@ -3705,6 +3705,33 @@ class TestGGUFSafetensorsHealingParity:
             assert not shared_re.search(plain), f"wrongly fired on {plain!r}"
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
 
+    def test_a_turn_that_asks_the_user_for_a_detail_is_not_a_plan(self):
+        """#8907: a turn waiting on the user has nothing a tool call can supply.
+
+        These sit apart from the phrase lists above because ``INTENT_SIGNAL`` still
+        matches every one of them; only the helper knows the turn is an ask. Asserting
+        both would be asserting the regex misses them, which it does not.
+        """
+        from core.inference.tool_call_parser import (
+            INTENT_SIGNAL as shared_re,
+            is_short_intent_without_action as shared_fn,
+        )
+
+        for asks in (
+            # the reported turn: a clarification request closing on an intent clause.
+            "\"balls\" is pretty broad, so what would you like to know or do? "
+            "Let me know what you're after and I'll dig in.",
+            "I need more context. Could you please clarify what \"it\" refers to? "
+            "Let me know and I'll help analyze!",
+            # the ask can follow the intent too; order carries no meaning here.
+            "Let me check I have this right: could you confirm the repo is unslothai/unsloth?",
+            "I'll look that up. Let me know your question, and I'll assist you!",
+            "If a tool is needed, I will call web_search accordingly. "
+            "Let me know if you need me to use any of the tools.",
+        ):
+            assert shared_re.search(asks), f"regex missed {asks!r}"
+            assert not shared_fn(asks), f"helper wrongly fired on {asks!r}"
+
     def test_max_reprompts_equal_on_both_backends(self):
         # Both loops draw the cap from the shared constant, so they stay equal.
         from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap

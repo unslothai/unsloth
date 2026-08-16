@@ -2365,6 +2365,26 @@ def test_restatement_keeps_deletions_that_change_the_answer():
     assert not is_reprompt_restatement(stall + " Tokyo.", stall)
 
 
+def test_forced_turn_keeps_a_retry_that_asks_the_user_a_question():
+    """#8907: the question is the whole turn, so discarding it leaves the user nothing.
+
+    ``_FORCED_PLAN_INTENT`` matches the obligation clause these open with and returns
+    before the plan-without-action gate, so the ask needs its own check ahead of it.
+    """
+    from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
+
+    previous = "I will search the web now."
+    for question in (
+        "I need to use the web tool for this. Could you clarify which site you mean?",
+        "I should search the docs. Let me know which version you are on.",
+        "I need to run a query. What would you like me to look up?",
+    ):
+        assert not suppress(question, previous), f"dropped {question!r}"
+
+    # an obligation plan with no question attached is still a stall.
+    assert suppress("I need to call web_search for that.", previous)
+
+
 def test_forced_turn_suppression_covers_obligation_phrasing():
     from core.inference.llama_cpp import _should_suppress_forced_no_tool_output as suppress
     for stall in (
@@ -3023,6 +3043,41 @@ def test_direct_answer_never_shows_the_nudge_status(monkeypatch):
     )
 
     assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+
+
+def test_clarification_request_is_not_nudged(monkeypatch):
+    """#8907: the model asked what the user wants, so there is nothing to act on.
+
+    The turn ends on an intent clause conditional on the reply, which ``INTENT_SIGNAL``
+    matches. Nudging it regenerated the turn and showed two near-identical questions.
+    """
+
+    clarification = (
+        '"balls" is pretty broad, so what would you like to know or do?\n\n'
+        "- Sports: rules of a game\n"
+        "- Physics: projectile motion, volume of a sphere\n\n"
+        "Let me know what you're after and I'll dig in."
+    )
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [[_sse({"content": clarification}), _done()]],
+        payloads,
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Balls"}],
+            tools = [_WEB_SEARCH_TOOL],
+            max_tool_iterations = 2,
+        )
+    )
+
+    assert NUDGE_TOOL_CALLS_STATUS not in _status_texts(events)
+    # one payload: a second would be the wasted re-prompted generation.
+    assert len(payloads) == 1
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts and content_texts[-1] == clarification
 
 
 def test_nudge_status_absent_when_nudging_is_disabled(monkeypatch):
