@@ -76,6 +76,20 @@ Run:
 It starts and stops its own vite dev server. Point it at one you already have with
 SMOKE_BASE_URL, or move the port it picks with SMOKE_PORT.
 
+RUN ONE ENGINE PER INVOCATION IN CI, UNDER AN EXTERNAL TIMEOUT. Measured on a macos-14 runner:
+Chromium finished all three sizes in 90 seconds, and then Playwright's WebKit wedged at the
+smallest size and never came back. `page.evaluate` and `browser.new_page` have no timeout of
+their own, and a SIGALRM does not help, because Playwright's sync API blocks the main thread
+inside a greenlet and the exception lands in the driver rather than in the caller. The only
+bound that works is the process one, so drive the engines as separate invocations:
+
+    for engine in chromium webkit firefox; do
+      SMOKE_HEAVY_ENGINES=$engine SMOKE_LABEL=run-$engine timeout 1800 \\
+        python -u tests/studio/playwright_heavy_thread.py || echo "$engine did not finish"
+    done
+
+One wedged engine then costs one engine's column instead of the whole matrix.
+
 The dev server is deliberate and is a limitation to read the numbers against: React runs in
 development mode, nothing is minified, and vite serves unbundled modules. Absolute milliseconds
 are therefore higher than a packaged Studio's. The curve across sizes and the ranking across
@@ -139,7 +153,6 @@ ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "120000"))
 # action that never happened and nothing else, so it has to stay well above the slowest honest
 # measurement or a very slow open is reported as "never opened".
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "120000"))
-
 ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 # Installed into every page before anything else runs.
