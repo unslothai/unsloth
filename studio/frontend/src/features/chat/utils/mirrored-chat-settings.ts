@@ -66,7 +66,7 @@ const MAX_RESEARCH_POLICY_DOMAINS = 1000;
 const MAX_DOMAIN_LENGTH = 253;
 const MAX_RAG_KB_ID_LENGTH = 256;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -90,7 +90,7 @@ function sanitizeResearchWebsitePolicy(
   };
 }
 
-function sanitizeRagSource(
+export function sanitizeRagSource(
   value: unknown,
 ): PersistedChatSettings["ragSource"] | undefined {
   if (!isRecord(value)) return undefined;
@@ -106,7 +106,7 @@ function sanitizeRagSource(
   return undefined;
 }
 
-function sanitizeBoundedNumber(
+export function sanitizeBoundedNumber(
   value: unknown,
   { min, max, integer }: { min: number; max: number; integer: boolean },
 ): number | undefined {
@@ -177,6 +177,18 @@ export function loadShadowOwnsMirroredSetting(
   if (key === "speculativeType") return shadows.loadedSpeculativeType !== null;
   if (key === "gpuMemoryMode") return shadows.loadedGpuMemoryMode !== null;
   return false;
+}
+
+// storage predating the level control holds only the confirm toggle: on -> ask, off -> off.
+export function normalizeStoredPermissionMode(
+  rawMode: string | null,
+  legacyConfirm: boolean | null,
+): "ask" | "auto" | "off" {
+  if (rawMode === "ask" || rawMode === "auto" || rawMode === "off") {
+    return rawMode;
+  }
+  if (legacyConfirm === null) return "auto";
+  return legacyConfirm ? "ask" : "off";
 }
 
 /** Whether `settings` carries none of the mirrored values. */
