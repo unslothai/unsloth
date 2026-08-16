@@ -362,17 +362,27 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
 class _SelfShim:
     """Stand-in for the backend instance the fixup block runs against.
 
-    The block reads instance state (``_kv_lora_rank``) as well as class
-    methods, and binding the class itself meant any new ``self.<attr>`` in
-    that block raised AttributeError here rather than failing on its merits.
-    Anything not set on the shim falls through to the class.
+    The block reads instance state (``_kv_lora_rank``, ``_architecture``,
+    ``_mtp_draft_path``) as well as class methods, and binding the class itself
+    meant any new ``self.<attr>`` in that block raised AttributeError here rather
+    than failing on its merits. Anything not set on the shim falls through to the
+    class, and a plain function found there is bound to the shim so the block can
+    call ``self.<method>()`` the way the real backend does.
     """
 
-    def __init__(self, kv_lora_rank = None):
+    def __init__(self, kv_lora_rank = None, architecture = None, mtp_draft_path = None):
         self._kv_lora_rank = kv_lora_rank
+        self._architecture = architecture
+        self._mtp_draft_path = mtp_draft_path
 
     def __getattr__(self, name):
-        return getattr(LlamaCppBackend, name)
+        attr = getattr(LlamaCppBackend, name)
+        # A staticmethod reached through the class is a plain function too, but it
+        # takes no self, so only genuine instance methods get bound.
+        declared = inspect.getattr_static(LlamaCppBackend, name, None)
+        if inspect.isfunction(attr) and not isinstance(declared, staticmethod):
+            return _types.MethodType(attr, self)
+        return attr
 
 
 def _flagless_v_cache_fixup(

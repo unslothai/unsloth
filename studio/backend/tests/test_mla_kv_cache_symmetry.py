@@ -185,10 +185,95 @@ class TestNonMlaBehaviourIsUnchanged:
 
 
 class TestTheSignalStudioAlreadyHas:
-    def test_kv_lora_rank_is_the_mla_marker(self):
-        """Both call sites pass `self._kv_lora_rank is not None`, which is the
-        same signal _can_estimate_kv uses to take its MLA branch."""
+    def test_every_call_site_passes_both_per_model_signals(self):
+        """The target and the drafter are separate models with separate contexts,
+        so every reset site gates each side on its own metadata rather than
+        reusing the target's answer for both."""
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert src.count("mla = self._kv_lora_rank is not None") >= 2
+        assert src.count("mla = self._target_kv_symmetry()") >= 2
+        assert src.count("draft_mla = self._draft_kv_symmetry()") == src.count(
+            "mla = self._target_kv_symmetry()"
+        )
+
+    def test_kv_lora_rank_is_the_mla_marker(self):
+        """kv_lora_rank stands in for is_mla(): the MLA archs' converter writes it
+        alongside the MLA head dims that is_mla() actually reads."""
+        assert LlamaCppBackend._requires_symmetric_kv(512, "deepseek2") is True
+        assert LlamaCppBackend._requires_symmetric_kv(None, "llama") is False
+
+    def test_deepseek4_is_recognized_without_kv_lora_rank(self):
+        """Upstream checks `is_mla() || arch == LLM_ARCH_DEEPSEEK4`. DeepSeek4 has
+        its own KV cache, never sets the MLA head dims, and its converter writes
+        q_lora_rank but no kv_lora_rank, so the rank probe alone misses it."""
+        assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek4") is True
+        assert LlamaCppBackend._requires_symmetric_kv(None, "DeepSeek4") is True
+        assert LlamaCppBackend._requires_symmetric_kv(None, " deepseek4 ") is True
+
+    def test_a_non_mla_arch_without_a_rank_is_not_symmetric(self):
+        assert LlamaCppBackend._requires_symmetric_kv(None, None) is False
+        assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek") is False
+        assert LlamaCppBackend._requires_symmetric_kv(None, "deepseek2") is False
+
+
+class TestTheDrafterIsGatedOnItsOwnModel:
+    """llama.cpp applies the K == V restriction per context, and the drafter is a
+    separate model, so the target's answer must not decide the draft flags."""
+
+    DRAFT_CMD = [
+        "llama-server",
+        "--flash-attn",
+        "on",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+        "--spec-draft-type-k",
+        "q8_0",
+        "--spec-draft-type-v",
+        "q8_0",
+    ]
+
+    def _draft_k(self, out):
+        return out[out.index("--spec-draft-type-k") + 1]
+
+    def _main_k(self, out):
+        return out[out.index("--cache-type-k") + 1]
+
+    def test_an_mla_target_leaves_a_non_mla_drafters_k_quantized(self):
+        """Resetting it would needlessly double the drafter's K cache, which is
+        the OOM the size argument warns about."""
+        out = LlamaCppBackend._with_flash_attn_off(
+            list(self.DRAFT_CMD), mla = True, draft_mla = False
+        )
+        assert self._main_k(out) == "f16"
+        assert self._draft_k(out) == "q8_0"
+
+    def test_a_non_mla_target_still_brings_an_mla_drafters_k_down(self):
+        """The mirror case, and the more serious one: leaving the draft K
+        quantized against an f16 draft V aborts the draft context."""
+        out = LlamaCppBackend._with_flash_attn_off(
+            list(self.DRAFT_CMD), mla = False, draft_mla = True
+        )
+        assert self._main_k(out) == "q8_0"
+        assert self._draft_k(out) == "f16"
+
+    def test_an_unknown_drafter_falls_back_to_the_target(self):
+        """None means the drafter's GGUF could not be read. An unnecessary reset
+        only costs memory; a missing one aborts, so it follows the target."""
+        out = LlamaCppBackend._with_flash_attn_off(
+            list(self.DRAFT_CMD), mla = True, draft_mla = None
+        )
+        assert self._main_k(out) == "f16"
+        assert self._draft_k(out) == "f16"
+
+    def test_the_env_pair_is_split_the_same_way(self):
+        env = {
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q8_0",
+        }
+        LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True, draft_mla = False)
+        assert env == {"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
