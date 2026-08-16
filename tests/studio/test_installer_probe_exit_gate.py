@@ -40,9 +40,7 @@ def _run_probe(tmp_path: Path, fake_python: str) -> str:
         "#!/usr/bin/env bash\n"
         f'VENV_DIR="{tmp_path / "venv"}"\n'
         "_PKG_PROBE_PY='pass'\n"
-        "_PKG_NAME=unsloth\n"
-        + m.group(0)
-        + "\n_bounded_pkg_probe\n",
+        "_PKG_NAME=unsloth\n" + m.group(0) + "\n_bounded_pkg_probe\n",
         encoding = "utf-8",
     )
     result = subprocess.run(
