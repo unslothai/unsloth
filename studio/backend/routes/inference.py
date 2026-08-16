@@ -4667,7 +4667,28 @@ def _build_chat_request(
     if payload.parallel_tool_calls is not None:
         chat_kwargs["parallel_tool_calls"] = payload.parallel_tool_calls
 
+    # OpenAI carries reasoning control in `reasoning.effort`. Without this the
+    # field is parsed and dropped, so the model stays in its load-time default
+    # and a Responses client can never turn thinking on.
+    effort = _responses_reasoning_effort(payload.reasoning)
+    if effort is not None:
+        chat_kwargs["reasoning_effort"] = effort
+        # "none"/"minimal" mean "don't think" for enable_thinking-style templates,
+        # which have no effort dial -- only a boolean.
+        chat_kwargs["enable_thinking"] = effort not in ("none", "minimal")
+
     return ChatCompletionRequest(**chat_kwargs)
+
+
+def _responses_reasoning_effort(reasoning: Any) -> Optional[str]:
+    """Effort string out of a Responses `reasoning` object, if it carries one."""
+    if not isinstance(reasoning, dict):
+        return None
+    effort = reasoning.get("effort")
+    if not isinstance(effort, str):
+        return None
+    effort = effort.strip().lower()
+    return effort or None
 
 
 def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
@@ -4710,10 +4731,12 @@ async def _responses_non_streaming(
 
     choices = body.get("choices", [])
     text = ""
+    reasoning_text = ""
     tool_calls: list[dict] = []
     if choices:
         msg = choices[0].get("message", {}) or {}
         text = msg.get("content", "") or ""
+        reasoning_text = msg.get("reasoning_content", "") or ""
         tool_calls = msg.get("tool_calls") or []
 
     usage_data = body.get("usage", {})
@@ -4727,6 +4750,14 @@ async def _responses_non_streaming(
     # the model produced content, so clients expecting a pure tool-call turn
     # (finish_reason="tool_calls") don't see a spurious empty message item.
     output_items: list[dict] = []
+    # Reasoning leads, the way OpenAI orders it -- the trace explains the message
+    # that follows. Dropping it here is what made thinking invisible in Codex.
+    if reasoning_text.strip():
+        output_items.append(
+            ResponsesOutputReasoning(
+                summary = [ResponsesReasoningSummaryPart(text = reasoning_text)],
+            ).model_dump()
+        )
     if text:
         msg_id = f"msg_{uuid.uuid4().hex[:12]}"
         output_items.append(
@@ -4829,10 +4860,30 @@ async def _responses_stream(
         tool_call_state: dict[int, dict] = {}
         # Text message lives at output_index 0; tool calls claim 1, 2, ...
         next_output_index = 1
+        # Reasoning claims an index lazily -- only when the model actually
+        # produces a trace, so a non-thinking turn emits no reasoning item.
+        reasoning_state: dict = {
+            "item_id": f"rs_{uuid.uuid4().hex[:12]}",
+            "output_index": None,
+            "text": "",
+        }
 
         def _snapshot_output() -> list[dict]:
             """Snapshot of all completed output items for response.completed."""
-            items: list[dict] = [
+            items: list[dict] = []
+            # Reasoning leads the snapshot the way OpenAI orders it: the trace
+            # explains the message that follows.
+            if reasoning_state["text"].strip():
+                items.append(
+                    {
+                        "type": "reasoning",
+                        "id": reasoning_state["item_id"],
+                        "summary": [
+                            {"type": "summary_text", "text": reasoning_state["text"]}
+                        ],
+                    }
+                )
+            items.append(
                 {
                     "type": "message",
                     "id": msg_id,
@@ -4846,7 +4897,7 @@ async def _responses_stream(
                         }
                     ],
                 }
-            ]
+            )
             for st in sorted(tool_call_state.values(), key = lambda s: s["output_index"]):
                 items.append(
                     {
@@ -4933,6 +4984,37 @@ async def _responses_stream(
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
+
+                # Reasoning arrives on its own key; relaying only `content`
+                # drops the trace entirely (this is why Codex showed none).
+                reasoning_delta = delta.get("reasoning_content")
+                if reasoning_delta:
+                    if reasoning_state["output_index"] is None:
+                        reasoning_state["output_index"] = next_output_index
+                        next_output_index += 1
+                        added = {
+                            "type": "response.output_item.added",
+                            "output_index": reasoning_state["output_index"],
+                            "item": {
+                                "type": "reasoning",
+                                "id": reasoning_state["item_id"],
+                                "summary": [],
+                            },
+                        }
+                        yield f"event: response.output_item.added\ndata: {json.dumps(added)}\n\n"
+                    reasoning_state["text"] += reasoning_delta
+                    rd = {
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": reasoning_state["item_id"],
+                        "output_index": reasoning_state["output_index"],
+                        "summary_index": 0,
+                        "delta": reasoning_delta,
+                    }
+                    yield (
+                        "event: response.reasoning_summary_text.delta\n"
+                        f"data: {json.dumps(rd)}\n\n"
+                    )
+
                 content = delta.get("content")
                 if content:
                     full_text += content
@@ -5082,6 +5164,31 @@ async def _responses_stream(
                 },
             }
             yield f"event: response.output_item.done\ndata: {json.dumps(item_done)}\n\n"
+
+        # ── Closing events for the reasoning item, when the model produced one ──
+        if reasoning_state["output_index"] is not None:
+            rs_text = reasoning_state["text"]
+            rs_done = {
+                "type": "response.reasoning_summary_text.done",
+                "item_id": reasoning_state["item_id"],
+                "output_index": reasoning_state["output_index"],
+                "summary_index": 0,
+                "text": rs_text,
+            }
+            yield (
+                "event: response.reasoning_summary_text.done\n"
+                f"data: {json.dumps(rs_done)}\n\n"
+            )
+            rs_item_done = {
+                "type": "response.output_item.done",
+                "output_index": reasoning_state["output_index"],
+                "item": {
+                    "type": "reasoning",
+                    "id": reasoning_state["item_id"],
+                    "summary": [{"type": "summary_text", "text": rs_text}],
+                },
+            }
+            yield f"event: response.output_item.done\ndata: {json.dumps(rs_item_done)}\n\n"
 
         # ── Closing events for text message ──
         yield f"event: response.output_text.done\ndata: {json.dumps({'type': 'response.output_text.done', 'item_id': msg_id, 'output_index': 0, 'content_index': 0, 'text': full_text})}\n\n"

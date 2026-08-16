@@ -1294,7 +1294,28 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+class ResponsesReasoningSummaryPart(BaseModel):
+    type: Literal["summary_text"] = "summary_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A reasoning output item, emitted ahead of the message it explains.
+
+    llama-server returns the trace in ``reasoning_content``; without this item
+    there is nowhere to put it and the whole trace is dropped.
+    """
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    summary: list[ResponsesReasoningSummaryPart] = Field(default_factory = list)
+
+
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputFunctionCall,
+    ResponsesOutputReasoning,
+]
 
 
 class ResponsesUsage(BaseModel):

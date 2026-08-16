@@ -45,6 +45,7 @@ BASE_COMMIT = os.environ.get(
 PATCHED_FILES = [
     "studio/backend/models/inference.py",
     "studio/backend/routes/inference.py",
+    "studio/backend/core/inference/anthropic_compat.py",
     "studio/backend/tests/test_anthropic_messages.py",  # lets you run pytest in-container
 ]
 
@@ -90,6 +91,8 @@ image = image.run_commands(
     # Fail the build rather than serve a stale image that silently still drops thinking.
     "grep -q '_anthropic_reasoning_args' /root/unsloth/studio/backend/routes/inference.py",
     "grep -q 'AnthropicThinkingConfig' /root/unsloth/studio/backend/models/inference.py",
+    "grep -q 'AnthropicResponseThinkingBlock' /root/unsloth/studio/backend/models/inference.py",
+    "grep -q 'thinking_delta' /root/unsloth/studio/backend/core/inference/anthropic_compat.py",
     # install.sh at the pinned commit needs bubblewrap to build the GGUF engine and
     # cannot sudo. Installed here rather than in the base apt_install so the base
     # layer stays byte-identical to modal_studio.py and keeps its cache.
@@ -165,25 +168,27 @@ def studio():
         ))
         print()
         print("  Testing: LOCAL branch worktree-anthropic-thinking-passthrough")
-        print("           (thinking / reasoning controls forwarded on /v1/messages)")
+        print("    fix 1: thinking controls forwarded on /v1/messages")
+        print("    fix 2: reasoning_content emitted as an Anthropic thinking block")
         print()
         print("  HOW TO VERIFY")
-        print(f"   1. Open the URL, load {MODEL}, wait for it to finish loading.")
+        print(f"   1. Open the URL, load {MODEL}, wait for it to finish.")
+        print("      MUST report reasoning_always_on: false -- an always-on model")
+        print("      ignores the setting by design and proves nothing.")
         print("   2. Settings -> API keys -> create one. Copy it.")
         print("   3. On your laptop:")
         print(f"        UNSLOTH_STUDIO_URL={tunnel.url} \\")
         print("          unsloth start claude --api-key <the key>")
-        print("   4. Press Ctrl+O to turn on verbose mode.")
-        print("   5. Ask something that needs reasoning, e.g.")
-        print("        A bat and a ball cost $1.10. The bat costs $1.00 more")
-        print("        than the ball. How much is the ball?")
+        print("   4. Press Ctrl+O for verbose mode (Claude Code hides thinking")
+        print("      by default, so without this you see nothing either way).")
+        print("   5. Ask: What is 2+2?")
         print()
-        print("   PASS -> a reasoning trace appears in verbose mode.")
-        print("   FAIL -> still no trace; the request is still being dropped.")
+        print("   PASS -> a thinking trace appears above the answer.")
+        print("   FAIL -> just '4' with no trace.")
         print()
-        print("   Control: the same prompt in Studio's own chat should think too.")
-        print("   If neither thinks, the model is not in a thinking-capable config")
-        print("   and the test proves nothing -- try a different GGUF.")
+        print("   A/B it -- rerun with MAX_THINKING_TOKENS=0 prefixed and the")
+        print("   trace should disappear. Same output both ways means the")
+        print("   setting still is not reaching the model.")
         print()
         print("  (wait for the 'Unsloth Studio running' line below)")
         print("=" * 72, flush=True)
