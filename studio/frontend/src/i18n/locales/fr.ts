@@ -1035,6 +1035,9 @@ export const fr = {
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
       },
+      pastedTextThreshold: "Condenser les collages longs",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",

@@ -1003,6 +1003,9 @@ export const it = {
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
       },
+      pastedTextThreshold: "Condensa incolla lunghi",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",

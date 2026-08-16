@@ -1009,6 +1009,9 @@ export const hi = {
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
       },
+      pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
+      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है।",
+      pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
