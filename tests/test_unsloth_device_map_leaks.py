@@ -44,7 +44,6 @@ def _resolve_calls(source):
 def test_unsloth_is_not_a_device_map_transformers_accepts():
     """The premise. If transformers ever learns the string, the rest of this file is moot."""
     import torch
-
     with pytest.raises(RuntimeError):
         torch.device("unsloth")
 
