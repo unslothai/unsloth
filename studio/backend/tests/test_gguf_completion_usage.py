@@ -8,21 +8,11 @@ from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
 import routes.inference as inference_route
+from .llama_backend_double import FakeLlamaCppBackend
 
 
-class _GgufBackend:
-    is_loaded = True
-    model_identifier = "test/model.gguf"
-    _is_audio = False
-    is_vision = False
-    supports_tools = False
-    context_length = 8192
-
-    def __init__(
-        self,
-        usage,
-        context_truncation = None,
-    ):
+class _GgufBackend(FakeLlamaCppBackend):
+    def __init__(self, usage, context_truncation = None):
         self.usage = usage
         self.context_truncation = context_truncation
 

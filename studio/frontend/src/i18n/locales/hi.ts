@@ -97,6 +97,8 @@ export const hi = {
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
+      showMore: "और दिखाएं",
+      showLess: "कम दिखाएं",
       settings: "सेटिंग्स",
       api: "API",
       lightMode: "लाइट मोड",
@@ -110,6 +112,44 @@ export const hi = {
       title: "पेज नहीं मिला",
       description: "{path} मौजूद नहीं है।",
       backToChat: "चैट पर वापस जाएँ",
+    },
+    selection: {
+      pinProjects: "प्रोजेक्ट पिन करें",
+      unpinProjects: "प्रोजेक्ट अनपिन करें",
+      deleteProjects: "प्रोजेक्ट हटाएँ",
+      deleteProjectsTitle: "प्रोजेक्ट हटाएँ",
+      deleteProjectsDescription:
+        "{count} प्रोजेक्ट हटाएँ? उनकी चैट स्थायी रूप से हट जाएँगी।",
+      deleteProjectsFilesDescription:
+        "हर प्रोजेक्ट का कार्यक्षेत्र फ़ोल्डर डिस्क से हटा दिया जाता है।",
+      countSelected: "{count} चुने गए",
+      pinChats: "चैट पिन करें",
+      unpinChats: "चैट अनपिन करें",
+      archiveChats: "चैट संग्रहित करें",
+      markUnread: "अपठित के रूप में चिह्नित करें",
+      deleteChats: "चैट हटाएँ",
+      deleteTitle: "चैट हटाएँ",
+      deleteDescription: "{count} चैट हटाएँ? इसे पूर्ववत नहीं किया जा सकता।",
+      deleteFilesDescription:
+        "हर चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+      deleteFilesLabel: "फ़ाइलें और सैंडबॉक्स फ़ोल्डर हटाएं",
+      deleteChatFilesDescription:
+        "इस चैट का अपना सैंडबॉक्स फ़ोल्डर डिस्क से हटा दिया जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
+    },
+    organize: {
+      sidebarHeading: "साइडबार व्यवस्थित करें",
+      byProject: "प्रोजेक्ट के अनुसार",
+      inOneList: "एक ही सूची में",
+      sortChatsBy: "चैट क्रमबद्ध करें",
+      sortPinnedBy: "पिन किए गए क्रमबद्ध करें",
+      priority: "प्राथमिकता",
+      lastUpdated: "अंतिम अपडेट",
+      manualOrder: "मैन्युअल क्रम",
+      moveUp: "ऊपर ले जाएँ",
+      moveDown: "नीचे ले जाएँ",
+      organizeChats: "चैट व्यवस्थित करें",
+      organizeProjects: "प्रोजेक्ट व्यवस्थित करें",
+      sortPinnedChats: "पिन की गई चैट क्रमबद्ध करें",
     },
     dialog: {
       deleteChat: {
@@ -945,6 +985,9 @@ export const hi = {
       },
     },
     chat: {
+      projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
+      projectsSectionDescription:
+        "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       title: "चैट",
       description: "इस डिवाइस पर चैट के व्यवहार को अपनी पसंद के अनुसार बदलें।",
       modelSelection: {
@@ -966,6 +1009,9 @@ export const hi = {
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
       },
+      pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
+      pastedTextThresholdDescription: "इससे लंबा चिपकाया गया टेक्स्ट संदेश बॉक्स भरने के बजाय .txt अटैचमेंट बन जाता है।",
+      pastedTextThresholdOff: "बंद",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -1084,6 +1130,9 @@ export const hi = {
       confirmBeforeDeleting: "हटाने से पहले पुष्टि करें",
       confirmBeforeDeletingDescription:
         "चैट हटाने से पहले पुष्टि मांगता है। तुरंत हटाने के लिए इसे बंद करें।",
+      alwaysDeleteFiles: "फ़ाइलें हमेशा हटाएँ",
+      alwaysDeleteFilesDescription:
+        "चैट हटाने पर उसका अपना सैंडबॉक्स फ़ोल्डर भी डिस्क से हट जाता है। किसी प्रोजेक्ट के अंदर लिखी गई फ़ाइलें उस प्रोजेक्ट के कार्यक्षेत्र में बनी रहती हैं।",
       filesSection: "फ़ाइलें",
       uploadedFiles: "अपलोड की गई फ़ाइलें",
       uploadedFilesDescription:

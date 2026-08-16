@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import {
   cachedPinnableGpuIndexKind,
@@ -40,9 +41,18 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
+import {
+  THREAD_SCOPED_SETTING_KEYS,
+  type ThreadScopedSettingKey,
+  type ThreadScopedSettings,
+  hasThreadScopedSettings,
+  isThreadOwnedSettingKey,
+  sanitizeThreadScopedSettings,
+} from "../utils/thread-scoped-settings";
 import {
   chatModelLifecycleGate,
   type ModelLifecycleLease,
@@ -387,8 +397,31 @@ function saveSettingsPatch(patch: SettingsPatch): void {
 // Best-effort flush of any pending patch when the page is going away. keepalive
 // lets the PUT outlive the unload; without it the browser cancels the fetch and
 // the user's last slider drag is dropped.
-function flushSettingsOnPageHidden(): void {
+function flushSettingsOnPageHidden(terminal: boolean): void {
   if (pendingTimer !== null) clearTimeout(pendingTimer);
+  // A captured edit lives only in the debounce, so send it before the tab goes.
+  // Only on a terminal event, though: the beacon PATCHes the row directly and a
+  // thread whose row has not been created yet answers 404, where the normal path
+  // would have created it first. visibilitychange is not terminal (it fires on
+  // every tab switch), and the page is still there to await the ensure.
+  // Chats whose newest values have just gone out, so an older unsettled snapshot for
+  // the same chat is not sent after them: each beacon takes a higher seq than the last,
+  // which would make the stale one the winner.
+  const sentNewest = new Set<string>();
+  const flushedThreadId = threadSettingsWriteThreadId;
+  flushThreadScopedSettingsWrite(terminal);
+  if (terminal && flushedThreadId !== null) sentNewest.add(flushedThreadId);
+  // An edit made while its chat's read was still out lives only in heldThreadScopedEdits,
+  // so the flush above does not see it. Effect cleanup is not guaranteed during unload and
+  // its ordinary fetch would not outlive the page anyway, so send it from here, keepalive.
+  if (terminal) {
+    const heldThreadId = pendingPairingThreadId;
+    void commitHeldThreadScopedEditsToTheirThread(true);
+    if (heldThreadId !== null) sentNewest.add(heldThreadId);
+    // And anything an earlier visibilitychange already flushed the normal way, which
+    // this event would otherwise leave to a fetch the page is about to cancel.
+    beaconUnsettledThreadSettingsWrites(sentNewest);
+  }
   // An edit still waiting on hydration is a user edit like any other, and the
   // tab is going away, so send it rather than let the next session hydrate over it.
   drainPreHydrationPatch();
@@ -399,7 +432,7 @@ function flushSettingsOnPageHidden(): void {
 }
 
 if (typeof window !== "undefined") {
-  window.addEventListener("beforeunload", flushSettingsOnPageHidden);
+  window.addEventListener("beforeunload", () => flushSettingsOnPageHidden(true));
   // beforeunload is not the end of a page's life on every platform: mobile
   // Safari and backgrounded Android tabs are routinely discarded without it, and
   // a page restored from the back/forward cache never unloaded at all. pagehide
@@ -408,9 +441,9 @@ if (typeof window !== "undefined") {
   // unload would have run. Safe to add rather than replace: the pending patch is
   // swapped out before the request, so a second call with nothing queued returns
   // immediately and the two never send the same edit twice.
-  window.addEventListener("pagehide", flushSettingsOnPageHidden);
+  window.addEventListener("pagehide", () => flushSettingsOnPageHidden(true));
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") flushSettingsOnPageHidden();
+    if (document.visibilityState === "hidden") flushSettingsOnPageHidden(false);
   });
 }
 
@@ -636,14 +669,875 @@ function flushPreHydrationSettings(): void {
  * cache; the backend copy is what a second browser or a remote session reads.
  */
 function persistSetting(key: string, raw: string): void {
-  // Before hydration the cache says nothing about the server's value, so an
-  // explicit write is recorded even where it changes nothing locally. A
-  // constraint write (deep research turning the tool pills off) has to reach
-  // the backend, or hydration restores the toggle it was there to clear.
-  if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
-    mirrorSettingToBackend(key, raw);
+  const mirrored = MIRRORED_SETTING_BY_STORAGE_KEY.get(key);
+  const writeGlobal = () => {
+    // Before hydration the cache says nothing about the server's value, so an
+    // explicit write is recorded even where it changes nothing locally. A
+    // constraint write (deep research turning the tool pills off) has to reach
+    // the backend, or hydration restores the toggle it was there to clear.
+    if (!mirroredSettingsHydrated || readStorageValue(key) !== raw) {
+      mirrorSettingToBackend(key, raw);
+    }
+    writeStorageValue(key, raw);
+  };
+  if (mirrored && captureThreadScopedEdit(mirrored.field, writeGlobal)) return;
+  writeGlobal();
+}
+
+const THREAD_SETTINGS_DEBOUNCE_MS = 400;
+
+/** the thread whose snapshot the store shows, or null on a new chat. */
+let threadScopedSettingsThreadId: string | null = null;
+/** that thread's stored values, for the load paths that read a setting outside the store. */
+let activeThreadScopedSettings: ThreadScopedSettings | null = null;
+// captured on the way into a thread: edits made with a chat open must not move the defaults.
+let globalThreadScopedDefaults: ThreadScopedSettings | null = null;
+let threadSettingsWriteTimer: ReturnType<typeof setTimeout> | null = null;
+let threadSettingsWriteThreadId: string | null = null;
+// set only when pinning: the values applied on open, not whatever a model-capability effect
+// leaves in the store by the time the debounce fires.
+let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
+
+function readThreadScopedSettings(
+  state: ChatRuntimeStore,
+): ThreadScopedSettings {
+  const source: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_SETTING_KEYS) {
+    source[key] = state[key];
   }
-  writeStorageValue(key, raw);
+  // drops "full" with it: a stored bypass would come back without the warning dialog.
+  return sanitizeThreadScopedSettings(source);
+}
+
+// keeps a model load from re-applying the global default over the pills the chat is running with.
+export function threadScopedOverride<K extends ThreadScopedSettingKey>(
+  key: K,
+): ThreadScopedSettings[K] | undefined {
+  // activeThreadScopedSettings is only refreshed when the debounce fires, so for the 400ms
+  // after an edit it still holds the pre-edit values, and the capture path deliberately
+  // wrote nothing to localStorage either. A model load or a status poll landing in that
+  // window would read the old value, revert the pill, and then be persisted by the write
+  // the edit itself scheduled. The store already holds the edit, so prefer it.
+  // A pending PIN carries its own snapshot, which is what the chat is about to be
+  // stored as, so that answers instead of the live store. Falling through to
+  // activeThreadScopedSettings here reads null, because a chat being pinned had no
+  // snapshot to begin with, and the load then puts the global values back over the
+  // edit the queued write is about to persist.
+  if (
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId === threadScopedSettingsThreadId
+  ) {
+    if (threadSettingsWriteSnapshot !== null) {
+      if (threadSettingsWriteSnapshot[key] !== undefined) {
+        return threadSettingsWriteSnapshot[key];
+      }
+    } else {
+      const live = readThreadScopedSettings(useChatRuntimeStore.getState());
+      if (live[key] !== undefined) return live[key];
+    }
+  }
+  return activeThreadScopedSettings?.[key];
+}
+
+/**
+ * Fields the user has just set on the open chat, as opposed to ones a model's
+ * capabilities moved in the store. The preservations below exist to stop a clamp erasing
+ * a stored choice; they must not also undo a choice the user has only now made.
+ */
+const explicitlyEditedThreadFields = new Set<string>();
+
+/**
+ * Fields a provider constraint has moved in the store WITHOUT persisting them. Kimi's
+ * builtin web search may not run with thinking, so the composer turns the other pill off
+ * with `{ persist: false }`; that write bypasses persistSetting, and so the capture path,
+ * on purpose. The value in the store is then the provider's, not the user's, and the
+ * next full-snapshot write must not save it over what the chat has stored, or a chat
+ * that asked for thinking comes back without it on a model that allows it.
+ */
+const constraintSuppressedThreadFields = new Set<string>();
+
+/** Both pills of Kimi's search/thinking exclusion; the only non-persisting setters. */
+const CONSTRAINT_SUPPRESSIBLE_KEYS = ["reasoningEnabled", "toolsEnabled"] as const;
+
+function noteConstraintSuppressedThreadField(
+  field: (typeof CONSTRAINT_SUPPRESSIBLE_KEYS)[number],
+): void {
+  if (useChatRuntimeStore.getState().activeThreadId === null) return;
+  constraintSuppressedThreadFields.add(field);
+}
+
+/** Is the stored value the one to keep, rather than the constraint-derived live one? */
+function keepsStoredValueUnderConstraint(
+  key: (typeof CONSTRAINT_SUPPRESSIBLE_KEYS)[number],
+  threadId: string,
+  settings: ThreadScopedSettings,
+): boolean {
+  return (
+    threadId === threadScopedSettingsThreadId &&
+    constraintSuppressedThreadFields.has(key) &&
+    // A choice the user has since made themselves is theirs, constraint or not.
+    !explicitlyEditedThreadFields.has(key) &&
+    typeof activeThreadScopedSettings?.[key] === "boolean" &&
+    settings[key] !== activeThreadScopedSettings[key]
+  );
+}
+
+// The pills chat-page clamps to the selected model's capabilities.
+const CLAMPED_PILL_KEYS = [
+  "toolsEnabled",
+  "codeToolsEnabled",
+  "imageToolsEnabled",
+  "webFetchToolsEnabled",
+] as const;
+type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
+
+function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
+  if (Object.is(next, current)) return true;
+  // ragSource is the only object among these, and its variants carry at most a kb id.
+  if (isPlainObject(next) && isPlainObject(current)) {
+    return next.type === current.type && next.kbId === current.kbId;
+  }
+  return false;
+}
+
+function buildThreadScopedSnapshot(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): ThreadScopedSettings {
+  const settings =
+    snapshot ?? readThreadScopedSettings(useChatRuntimeStore.getState());
+  // the write replaces the row, and the sanitizer drops a live "full", so without this the
+  // level the chat had stored would be erased by any pill toggled under Full access.
+  if (
+    settings.permissionMode === undefined &&
+    threadId === threadScopedSettingsThreadId &&
+    activeThreadScopedSettings?.permissionMode !== undefined
+  ) {
+    settings.permissionMode = activeThreadScopedSettings.permissionMode;
+  }
+  // Same for deep research, which apply() also holds back (external models and incognito
+  // cannot run it). Without this, toggling any other pill in such a chat erases the true
+  // it had stored, and it comes back off once the chat is on a local model again.
+  //
+  // Unless the user just changed it themselves: enabling Search, Code or Images clears
+  // deep research deliberately, and restoring it here would ignore that and bring it
+  // back, alongside Search, the moment the chat is on a local model again.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("deepResearchEnabled") &&
+    activeThreadScopedSettings?.deepResearchEnabled === true &&
+    settings.deepResearchEnabled !== true &&
+    (externalCheckpointRefusesDeepResearch(
+      useChatRuntimeStore.getState().params.checkpoint,
+    ) ||
+      useChatRuntimeStore.getState().incognito)
+  ) {
+    settings.deepResearchEnabled = true;
+  }
+  // And for thinking, which a model that cannot stop thinking forces on in the store.
+  // That true is the model's, so persisting it would erase a chat's stored false and
+  // leave thinking on once the chat is back on a model where it is optional.
+  if (
+    threadId === threadScopedSettingsThreadId &&
+    !explicitlyEditedThreadFields.has("reasoningEnabled") &&
+    activeThreadScopedSettings?.reasoningEnabled === false &&
+    settings.reasoningEnabled !== false &&
+    useChatRuntimeStore.getState().reasoningAlwaysOn
+  ) {
+    settings.reasoningEnabled = false;
+  }
+  // Same again for every pill the model-selection pass in chat-page clamps off in the
+  // store without touching the snapshot. The clamp is the model's, not the user's, so it
+  // must not erase what the chat had stored; the condition is each pill's own capability
+  // rule, which is exactly when the user could not have turned it off themselves.
+  if (threadId === threadScopedSettingsThreadId) {
+    const live = useChatRuntimeStore.getState();
+    const modelLoaded = !!live.params.checkpoint && !live.modelLoading;
+    const capable: Record<ClampedPillKey, boolean> = {
+      toolsEnabled: live.supportsTools || live.supportsBuiltinWebSearch,
+      codeToolsEnabled: live.supportsTools || live.supportsBuiltinCodeExecution,
+      imageToolsEnabled: live.supportsBuiltinImageGeneration,
+      webFetchToolsEnabled: live.supportsBuiltinWebFetch,
+    };
+    for (const key of CLAMPED_PILL_KEYS) {
+      if (
+        modelLoaded &&
+        !capable[key] &&
+        !explicitlyEditedThreadFields.has(key) &&
+        activeThreadScopedSettings?.[key] === true &&
+        settings[key] !== true
+      ) {
+        settings[key] = true;
+      }
+    }
+  }
+  // And for the pills a provider constraint moved without persisting them: the store
+  // holds the provider's value there, so the chat keeps the one it was stored with.
+  if (keepsStoredValueUnderConstraint("reasoningEnabled", threadId, settings)) {
+    settings.reasoningEnabled = activeThreadScopedSettings?.reasoningEnabled;
+  }
+  if (keepsStoredValueUnderConstraint("toolsEnabled", threadId, settings)) {
+    settings.toolsEnabled = activeThreadScopedSettings?.toolsEnabled;
+  }
+  if (threadId === threadScopedSettingsThreadId) {
+    activeThreadScopedSettings = settings;
+  }
+  // Spent: this snapshot has taken them into account, and the next one is about
+  // whatever the user does next.
+  explicitlyEditedThreadFields.clear();
+  return settings;
+}
+
+const THREAD_SETTINGS_REPLAY_KEY = "unsloth_chat_thread_settings_replay";
+const THREAD_SETTINGS_REPLAY_TIMEOUT_MS = 10_000;
+
+/**
+ * Snapshots a terminal event sent but could not confirm, kept where the next session
+ * will find them. The beacon cannot await anything: a chat whose row is still being
+ * created answers 404 and the edit is gone, and the creation that follows knows nothing
+ * about it. Writing the attempt down costs nothing and makes the loss recoverable.
+ */
+function rememberThreadSettingsForReplay(
+  threadId: string,
+  body: Record<string, unknown>,
+): void {
+  if (!canUseStorage()) return;
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    const pending = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    pending[threadId] = body;
+    localStorage.setItem(THREAD_SETTINGS_REPLAY_KEY, JSON.stringify(pending));
+  } catch {
+    // A full or unavailable store just means no replay; the beacon may still land.
+  }
+}
+
+/**
+ * Re-send anything the last session could not confirm. Safe to run always: the seq the
+ * body carries is that session's own, so a replay of a write that did land is refused
+ * by the server rather than reverting anything newer.
+ */
+export function replayUnconfirmedThreadSettings(): void {
+  // Once per session: it is called from both hydration outcomes, and sending each body
+  // twice would race two writes carrying the same seq for the same row.
+  if (threadSettingsReplayStarted) return;
+  threadSettingsReplayStarted = true;
+  if (!canUseStorage()) return;
+  let pending: Record<string, unknown> = {};
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    if (!raw) return;
+    pending = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
+    return;
+  }
+  const sent: Promise<unknown>[] = [];
+  for (const [threadId, body] of Object.entries(pending)) {
+    // Bounded: every settings write in the session waits for these, so a socket that
+    // never settles would leave the whole session unable to persist anything.
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), THREAD_SETTINGS_REPLAY_TIMEOUT_MS);
+    const request = authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: timeout.signal,
+    })
+      .finally(() => clearTimeout(timer))
+      // Only an ok response means it landed. authFetch resolves for 404 and 5xx too,
+      // and the missing-row case this exists for is exactly the one that 404s, so
+      // dropping the entry on any settled promise would throw the edit away for good.
+      .then((res) => {
+        // Only the body this request carried. A terminal event in THIS session can
+        // store a newer body for the same thread while the replay is still out, and
+        // that one is unconfirmed by definition: dropping it because an older replay
+        // succeeded would leave the newest edit with nothing to recover it from.
+        if (res.ok) forgetReplayedThreadSettings(threadId, body);
+      })
+      .catch(() => undefined);
+    sent.push(request);
+  }
+  // Every snapshot write waits for this. The replay carries the PREVIOUS session's
+  // writer id, so the server treats it as unrelated to anything this session sends and
+  // will apply it whenever it arrives: on a slow connection a full snapshot from last
+  // time could land after an edit made just now and revert it.
+  threadSettingsReplaySettled = Promise.all(sent).then(() => undefined);
+}
+
+// Resolved once the previous session's unconfirmed writes have been answered.
+let threadSettingsReplaySettled: Promise<void> = Promise.resolve();
+let threadSettingsReplayStarted = false;
+
+/**
+ * Drop one entry, leaving the rest for the next attempt. `expected` narrows that to the
+ * exact body the caller sent, for callers whose success says nothing about a newer entry
+ * stored since; a caller that has itself just written the row passes nothing, because its
+ * values supersede whatever the entry holds.
+ */
+function forgetReplayedThreadSettings(
+  threadId: string,
+  expected?: unknown,
+): void {
+  if (!canUseStorage()) return;
+  try {
+    const raw = localStorage.getItem(THREAD_SETTINGS_REPLAY_KEY);
+    if (!raw) return;
+    const pending = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      expected !== undefined &&
+      JSON.stringify(pending[threadId]) !== JSON.stringify(expected)
+    ) {
+      return;
+    }
+    delete pending[threadId];
+    if (Object.keys(pending).length === 0) {
+      localStorage.removeItem(THREAD_SETTINGS_REPLAY_KEY);
+    } else {
+      localStorage.setItem(THREAD_SETTINGS_REPLAY_KEY, JSON.stringify(pending));
+    }
+  } catch {
+    // Leaving it behind only costs one more replay next time.
+  }
+}
+
+/**
+ * Send the snapshot on tab close. The ensure-then-update chain cannot finish during unload, so
+ * the row write goes straight out with keepalive, and what it could not confirm is left for
+ * the next session to replay: a thread whose row is still being created answers 404, and the
+ * creation that follows would otherwise land without the user's last edit.
+ */
+function sendThreadScopedSettingsBeacon(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+  merge = false,
+): void {
+  // A merge carries only what the user touched, for the chat whose own snapshot was
+  // never read; sending a replacement built from the defaults on screen would erase
+  // the rest of its row. Everything else replaces, as the debounced write does.
+  const body = merge
+    ? {
+        settingsPatch: snapshot,
+        settingsSeq: nextThreadSettingsSeq(),
+        settingsWriter: threadSettingsWriter,
+      }
+    : {
+        settings: buildThreadScopedSnapshot(threadId, snapshot),
+        settingsSeq: nextThreadSettingsSeq(),
+        settingsWriter: threadSettingsWriter,
+      };
+  // The beacon carries the newest values but skips the chain, so an older write would
+  // otherwise land after it and put the stale snapshot back. The ticket stands down the
+  // ones still queued; the abort ends the one already out, which no ticket can reach.
+  takeThreadSettingsWriteTicket(threadId);
+  threadSettingsWriteAborts.get(threadId)?.abort();
+  rememberThreadSettingsForReplay(threadId, body);
+  void authFetch(`/api/chat/threads/${encodeURIComponent(threadId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
+// One chain per thread. The write REPLACES settings_json rather than merging it, so two
+// unordered writes do not merge into the newer one, they pick a winner: a slow first
+// request landing after a fast second restores the settings the user just moved away from.
+const threadSettingsWriteChains = new Map<string, Promise<unknown>>();
+// Newest snapshot issued per thread, so a write that is still waiting its turn can tell it
+// has been superseded and skip its PATCH rather than reinstate what it captured.
+const threadSettingsWriteTickets = new Map<string, number>();
+
+// The request each thread currently has out, so a newer snapshot can stand it down.
+const threadSettingsWriteAborts = new Map<string, AbortController>();
+
+/**
+ * Stamps each snapshot write so the server can refuse this tab's own older ones, which
+ * is the case that needs it: a keepalive sent on unload can be undone by a PATCH the
+ * server already had in hand, and no client-side abort reaches that.
+ *
+ * The id makes the ordering per-tab. A plain counter, and never a clock: comparing one
+ * machine's numbers with another's means the browser that happens to be behind has
+ * every edit refused while still being told it saved. Across tabs the last write wins,
+ * as it did before any of this.
+ */
+const threadSettingsWriter = crypto.randomUUID();
+let lastThreadSettingsSeq = 0;
+
+function nextThreadSettingsSeq(): number {
+  lastThreadSettingsSeq += 1;
+  return lastThreadSettingsSeq;
+}
+
+function takeThreadSettingsWriteTicket(threadId: string): number {
+  const ticket = (threadSettingsWriteTickets.get(threadId) ?? 0) + 1;
+  threadSettingsWriteTickets.set(threadId, ticket);
+  return ticket;
+}
+
+/** Resolves true when the snapshot reached the row, so callers can tell it landed. */
+function writeThreadScopedSettings(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): Promise<boolean> {
+  // Built now, not inside the chain: the snapshot must describe the store as it is at the
+  // moment of the edit, not as it will be once the previous write has finished.
+  const settings = buildThreadScopedSnapshot(threadId, snapshot);
+  // Stamped with the snapshot, not with the request: the seq has to say when the edit
+  // happened, not when its turn in the chain came up.
+  const settingsSeq = nextThreadSettingsSeq();
+  const ticket = takeThreadSettingsWriteTicket(threadId);
+  const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    // Last session's unconfirmed writes go first, or one of them can land on top of
+    // this edit: it carries a different writer id, so nothing on the server orders it.
+    .then(() => threadSettingsReplaySettled)
+    .catch(() => undefined)
+    .then(async () => {
+      // superseded while queued: sending this would undo the newer snapshot, and the
+      // newer one is what the replay entry should be measured against, so this counts
+      // as landed for the purposes of the caller.
+      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+        return true;
+      }
+      const controller = new AbortController();
+      threadSettingsWriteAborts.set(threadId, controller);
+      try {
+        const { updateStoredChatThread } = await import(
+          "../utils/chat-history-storage"
+        );
+        await updateStoredChatThread(
+          threadId,
+          { settings, settingsSeq, settingsWriter: threadSettingsWriter },
+          { signal: controller.signal },
+        );
+        // This session's values are now the row's, so a leftover replay entry from the
+        // last one would revert them if it were ever retried.
+        forgetReplayedThreadSettings(threadId);
+        return true;
+      } catch {
+        // the chat still behaves as edited; only the snapshot for the next visit is lost.
+        // An abort lands here too, and that one is deliberate: a newer snapshot won.
+        if (!controller.signal.aborted) warnSettingsPersistenceFailure();
+        // An abort means a newer write won and is tracked in its place; a real failure
+        // means nothing reached the row, and the caller needs to know.
+        return controller.signal.aborted;
+      } finally {
+        if (threadSettingsWriteAborts.get(threadId) === controller) {
+          threadSettingsWriteAborts.delete(threadId);
+        }
+      }
+    })
+    .finally(() => {
+      if (threadSettingsWriteChains.get(threadId) === next) {
+        threadSettingsWriteChains.delete(threadId);
+        threadSettingsWriteTickets.delete(threadId);
+      }
+    });
+  threadSettingsWriteChains.set(threadId, next);
+  return next;
+}
+
+/**
+ * Settle this chat's snapshot before anything reads it back. A chat edited, left and
+ * re-entered has its PATCH in flight, and a GET overtaking it returns the pre-edit
+ * snapshot, which then gets applied over the values the user set and written back on the
+ * next edit. Pending debounce included, or the read races the timer instead.
+ */
+export async function settleThreadScopedSettingsForCopy(
+  threadId: string,
+): Promise<void> {
+  // An edit made while this chat's read was still out lives in neither the debounce nor
+  // the chain, so settling those alone leaves it behind and the copy takes the old row.
+  // Only for a caller that is about to read the row server side: the pairing itself
+  // waits on this function's sibling, which must not close the window it just opened.
+  if (pendingPairingThreadId === threadId) {
+    await commitHeldThreadScopedEditsToTheirThread();
+  }
+  // A flushed replacement write that failed resolves false rather than throwing, so
+  // awaiting the chain alone cannot tell a saved edit from a lost one. The copy is made
+  // server side from the row: going ahead on a failed write hands the new chat the
+  // pre-edit snapshot and tells the user nothing.
+  if (!(await awaitThreadScopedSettingsWrite(threadId))) {
+    throw new Error("This chat's settings could not be saved before copying it");
+  }
+}
+
+/** Resolves false only when a write for this chat is known to have failed. */
+export async function awaitThreadScopedSettingsWrite(
+  threadId: string,
+): Promise<boolean> {
+  if (threadSettingsWriteThreadId === threadId) {
+    flushThreadScopedSettingsWrite();
+  }
+  const chain = threadSettingsWriteChains.get(threadId);
+  if (chain === undefined) return true;
+  // A rejection is the held-edit merge path, which throws on failure.
+  const landed = await chain.catch(() => false);
+  return landed !== false;
+}
+
+function flushThreadScopedSettingsWrite(keepalive = false): void {
+  if (threadSettingsWriteTimer !== null) {
+    clearTimeout(threadSettingsWriteTimer);
+    threadSettingsWriteTimer = null;
+  }
+  const threadId = threadSettingsWriteThreadId;
+  const snapshot = threadSettingsWriteSnapshot;
+  threadSettingsWriteThreadId = null;
+  threadSettingsWriteSnapshot = null;
+  if (threadId === null) return;
+  if (keepalive) {
+    sendThreadScopedSettingsBeacon(threadId, snapshot);
+    return;
+  }
+  trackUnsettledThreadSettingsWrite(threadId, snapshot);
+}
+
+/**
+ * Start a normal write and keep its snapshot until it settles.
+ *
+ * Some browsers fire visibilitychange(hidden) and then pagehide. The first flushes
+ * normally and clears the pending snapshot, so the terminal event would find nothing to
+ * beacon and a discarded page takes the ordinary fetch with it. Holding the snapshot
+ * lets the terminal path send it again, keepalive.
+ */
+function trackUnsettledThreadSettingsWrite(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null,
+): void {
+  // Identity, not value: two ordinary edits both carry a null snapshot, so comparing
+  // the value let the first request's settle delete the second one's tracking, and a
+  // terminal event then found nothing to resend for a write still in flight.
+  const entry: UnsettledThreadSettingsWrite = { snapshot };
+  unsettledThreadSettingsWrites.set(threadId, entry);
+  void writeThreadScopedSettings(threadId, snapshot).then((landed) => {
+    // Only a write that reached the row stops being unsettled. Dropping it on failure
+    // left nothing for a terminal event to beacon, so the edit was lost on close and
+    // came back reverted, which is the opposite of what this tracking is for.
+    if (landed && unsettledThreadSettingsWrites.get(threadId) === entry) {
+      unsettledThreadSettingsWrites.delete(threadId);
+    }
+  });
+}
+
+type UnsettledThreadSettingsWrite = { snapshot: ThreadScopedSettings | null };
+
+/** Flushed but not yet acknowledged, so a terminal event can still resend it. */
+const unsettledThreadSettingsWrites = new Map<
+  string,
+  UnsettledThreadSettingsWrite
+>();
+
+/**
+ * Re-send anything a normal flush has not landed yet, with keepalive.
+ *
+ * `alreadySent` names the threads the terminal flush has just beaconed. Those carry the
+ * newest values, and every beacon takes a higher seq than the last, so re-sending an
+ * older unsettled snapshot for the same chat afterwards would make the stale one win.
+ */
+function beaconUnsettledThreadSettingsWrites(
+  alreadySent: ReadonlySet<string>,
+): void {
+  const unsettled = [...unsettledThreadSettingsWrites];
+  unsettledThreadSettingsWrites.clear();
+  for (const [threadId, entry] of unsettled) {
+    if (alreadySent.has(threadId)) continue;
+    sendThreadScopedSettingsBeacon(threadId, entry.snapshot);
+  }
+}
+
+function scheduleThreadScopedSettingsWrite(
+  threadId: string,
+  snapshot: ThreadScopedSettings | null = null,
+): void {
+  if (
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId !== threadId
+  ) {
+    flushThreadScopedSettingsWrite();
+  }
+  threadSettingsWriteThreadId = threadId;
+  threadSettingsWriteSnapshot = snapshot;
+  if (threadSettingsWriteTimer !== null) clearTimeout(threadSettingsWriteTimer);
+  threadSettingsWriteTimer = setTimeout(() => {
+    threadSettingsWriteTimer = null;
+    const pendingThreadId = threadSettingsWriteThreadId;
+    const pendingSnapshot = threadSettingsWriteSnapshot;
+    threadSettingsWriteThreadId = null;
+    threadSettingsWriteSnapshot = null;
+    if (pendingThreadId !== null) {
+      // Tracked the same way a manual flush is: once the timer has fired there is no
+      // pending debounce left for a terminal event to find, so without this the write
+      // in flight is the only copy and the page teardown cancels it.
+      trackUnsettledThreadSettingsWrite(pendingThreadId, pendingSnapshot);
+    }
+  }, THREAD_SETTINGS_DEBOUNCE_MS);
+}
+
+// the chat whose snapshot is in flight, and the edits made before it landed. The store already
+// shows them; only the read can say whether they belong to this chat or to the defaults, so they
+// wait here. Writing them globally in the meantime moved every other chat's default and was then
+// overwritten by the arriving snapshot, so the click both leaked and appeared to do nothing.
+let pendingPairingThreadId: string | null = null;
+/** The store's thread-scoped values as they stood when the current pairing began. */
+let pairingWindowDefaults: ThreadScopedSettings | null = null;
+/** and the chat it was sampled for, so a retry does not resample over its own edit. */
+let pairingWindowDefaultsThreadId: string | null = null;
+let heldThreadScopedEdits: {
+  field: string;
+  writeGlobal: (() => void) | null;
+}[] = [];
+
+/** Start of the window: the read for `threadId` is out but its snapshot has not landed. */
+export function beginThreadScopedPairing(threadId: string): void {
+  if (pendingPairingThreadId === threadId) return;
+  releaseHeldThreadScopedEdits();
+  pendingPairingThreadId = threadId;
+  // What the installation defaults were before this chat could edit anything. Recorded
+  // here because there is nowhere later to recover it from: an edit made during the
+  // window overwrites the store, and on the first pairing of a session there is no
+  // earlier capture to fall back on.
+  //
+  // Once per chat, not once per attempt: a retry after a failed read runs with the held
+  // edit already in the store, and re-sampling would take that edit for a default.
+  if (pairingWindowDefaultsThreadId !== threadId) {
+    pairingWindowDefaultsThreadId = threadId;
+    // Switching straight from one saved chat to another, the store still holds the
+    // OUTGOING chat's values at this point, so it is not a source of defaults. The
+    // capture made when that chat was paired is, and it exists whenever a chat is
+    // applied. Only with no chat applied does the store itself hold the defaults.
+    pairingWindowDefaults =
+      threadScopedSettingsThreadId === null
+        ? readThreadScopedSettings(useChatRuntimeStore.getState())
+        : globalThreadScopedDefaults;
+  }
+  openThreadScopedPairingGate(threadId);
+}
+
+/** Sends are held while this is true; see the field's own note. */
+function openThreadScopedPairingGate(threadId: string): void {
+  if (!useChatRuntimeStore.getState().threadScopedSettingsPending) {
+    useChatRuntimeStore.setState({ threadScopedSettingsPending: true });
+  }
+  if (!pairingSettledByThreadId.has(threadId)) {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
+    });
+    pairingSettledByThreadId.set(threadId, { promise, resolve });
+  }
+}
+
+/**
+ * Release ONE chat's gate. Releasing all of them let a run started for A be freed by B's
+ * pairing ending, which is the whole reason these are held per chat; the composer flag
+ * is separate, and only tracks whether the chat now on screen is still waiting.
+ */
+function closeThreadScopedPairingGate(threadId: string | null): void {
+  if (threadId !== null) {
+    pairingSettledByThreadId.get(threadId)?.resolve();
+    pairingSettledByThreadId.delete(threadId);
+  }
+  const stillWaiting =
+    pendingPairingThreadId !== null &&
+    pairingSettledByThreadId.has(pendingPairingThreadId);
+  if (useChatRuntimeStore.getState().threadScopedSettingsPending !== stillWaiting) {
+    useChatRuntimeStore.setState({ threadScopedSettingsPending: stillWaiting });
+  }
+}
+
+// Per chat, not one for all of them: a run started for A must not be released by B's
+// pairing ending, or it resumes and reads B's settings for A's run.
+const pairingSettledByThreadId = new Map<
+  string,
+  { promise: Promise<void>; resolve: () => void }
+>();
+
+/**
+ * Resolves once `threadId`'s own settings are known, or immediately if they already
+ * are. Every run goes through the adapter, so awaiting this there is what stops a
+ * Reload, a Continue or an edit-and-send from starting on the installation defaults
+ * that stand in while the read is out: a chat stored as "ask" would run as "off".
+ * Bounded, so it cannot wait for the life of the tab.
+ *
+ * Resolves false when the wait ran out. The caller must NOT go ahead on that: the only
+ * way to reach it is a chat left mid-read, whose gate is held shut deliberately and
+ * whose settings never arrived, so the store now describes some other chat. Running
+ * anyway is exactly the mix-up the gate exists to prevent, only 10 seconds later.
+ */
+export function awaitThreadScopedPairing(
+  threadId: string | null | undefined,
+): Promise<boolean> {
+  if (!threadId) return Promise.resolve(true);
+  const gate = pairingSettledByThreadId.get(threadId);
+  if (!gate) return Promise.resolve(true);
+  return Promise.race([
+    gate.promise.then(() => true),
+    new Promise<boolean>((resolve) =>
+      setTimeout(() => resolve(false), THREAD_PAIRING_WAIT_MS),
+    ),
+  ]);
+}
+
+// Longer than the read can take (THREAD_READ_RETRIES retries, each bounded by
+// THREAD_READ_TIMEOUT_MS and spaced THREAD_READ_RETRY_MS apart, then a give-up that
+// opens the gate itself), so a slow read never reaches this and a run is only refused
+// for a chat whose pairing has genuinely been abandoned.
+const THREAD_PAIRING_WAIT_MS = 30_000;
+
+/** The chat turned out to own no snapshot: send the held edits to the defaults, as before. */
+export function releaseHeldThreadScopedEdits(): void {
+  const held = heldThreadScopedEdits;
+  const threadId = pendingPairingThreadId;
+  heldThreadScopedEdits = [];
+  pendingPairingThreadId = null;
+  pairingWindowDefaultsThreadId = null;
+  // The answer is in: this chat owns no snapshot, so the defaults ARE its settings and
+  // a run waiting on it can go.
+  closeThreadScopedPairingGate(threadId);
+  for (const edit of held) {
+    // Written to the defaults now, so the value hydration held back is history.
+    hydratedDefaultsByHeldField.delete(edit.field);
+    edit.writeGlobal?.();
+  }
+}
+
+/**
+ * The user left before the read finished. The edit belongs to the chat it was made in, so
+ * write it there; replaying it into the installation defaults would move every
+ * snapshot-less chat, which is the leak this path exists to prevent.
+ *
+ * The store still holds the edited values here: the incoming chat's own read has not
+ * resolved yet, so nothing has overwritten them. A chat with no row of its own writes
+ * nothing (`ensureStoredChatThread` only adopts a record that already exists), which
+ * correctly leaves an unsaved chat following the defaults.
+ */
+export function commitHeldThreadScopedEditsToTheirThread(
+  keepalive = false,
+): Promise<void> {
+  const threadId = pendingPairingThreadId;
+  const held = heldThreadScopedEdits;
+  heldThreadScopedEdits = [];
+  pendingPairingThreadId = null;
+  // pairingWindowDefaultsThreadId is deliberately NOT cleared: a failed read commits
+  // and then re-pairs the same chat, and the store holds the edit by then, so letting
+  // the retry resample would take that edit for the installation default. Leaving for a
+  // different chat resamples anyway, because the id no longer matches.
+  //
+  // The gate is NOT opened here. This runs when the user leaves mid-read, and this
+  // chat's snapshot was never loaded, so a run still waiting on it must not be told the
+  // settings are known: the store now shows the chat the user moved to.
+  closeThreadScopedPairingGate(null);
+  if (threadId === null || held.length === 0) return Promise.resolve();
+  const changes = heldThreadScopedChanges(held);
+  if (keepalive) {
+    sendThreadScopedSettingsBeacon(threadId, changes, true);
+    return Promise.resolve();
+  }
+  // Returned rather than fired and forgotten: forking copies settings_json server side,
+  // so it has to be able to wait for a held edit to reach the row first.
+  return mergeThreadScopedSettingsIntoRow(threadId, changes);
+}
+
+/** What the user actually touched, read off the store, which still holds their edits. */
+function heldThreadScopedChanges(
+  held: { field: string }[],
+): ThreadScopedSettings {
+  const edited: Record<string, unknown> = {};
+  const live = useChatRuntimeStore.getState() as Record<string, unknown>;
+  for (const edit of held) edited[edit.field] = live[edit.field];
+  return sanitizeThreadScopedSettings(edited);
+}
+
+/**
+ * PATCH just the fields in `changes`, leaving the rest of the row alone. Used when the
+ * store cannot be trusted to describe the chat, which is any time its read has not
+ * landed: the store is showing the installation defaults, and a replacement built from
+ * those would erase everything the chat had stored that the user did not touch.
+ */
+async function mergeThreadScopedSettingsIntoRow(
+  threadId: string,
+  changes: ThreadScopedSettings,
+): Promise<void> {
+  const settingsSeq = nextThreadSettingsSeq();
+  const ticket = takeThreadSettingsWriteTicket(threadId);
+  const previous = threadSettingsWriteChains.get(threadId) ?? Promise.resolve();
+  const next = previous
+    .catch(() => undefined)
+    // Last session's unconfirmed writes go first, or one of them can land on top of
+    // this edit: it carries a different writer id, so nothing on the server orders it.
+    .then(() => threadSettingsReplaySettled)
+    .catch(() => undefined)
+    .then(async () => {
+      if ((threadSettingsWriteTickets.get(threadId) ?? ticket) !== ticket) {
+        return;
+      }
+      try {
+        const { updateStoredChatThread } = await import(
+          "../utils/chat-history-storage"
+        );
+        await updateStoredChatThread(threadId, {
+          settingsPatch: changes,
+          settingsSeq,
+          settingsWriter: threadSettingsWriter,
+        });
+        forgetReplayedThreadSettings(threadId);
+      } catch (error) {
+        warnSettingsPersistenceFailure();
+        // Rethrown as well as toasted: a fork waits on this to know the row holds the
+        // edit before the backend copies it, and a resolved promise would let it make
+        // a fork carrying the pre-edit snapshot.
+        throw error;
+      }
+    })
+    .finally(() => {
+      if (threadSettingsWriteChains.get(threadId) === next) {
+        threadSettingsWriteChains.delete(threadId);
+        threadSettingsWriteTickets.delete(threadId);
+      }
+    });
+  threadSettingsWriteChains.set(threadId, next);
+  return next;
+}
+
+/**
+ * What the server said an installation default is, for fields hydration had to skip
+ * because the user had just set them inside a chat whose read was still out. Those edits
+ * belong to the chat, so when its pairing window closes the default goes back to the
+ * value from before the window, which is this browser's pre-hydration copy. The server's
+ * is the authoritative one and lands nowhere else.
+ */
+const hydratedDefaultsByHeldField = new Map<string, unknown>();
+
+/** Is this field an edit waiting on its chat's read, and so not the installation's to set? */
+function isHeldThreadScopedField(field: string): boolean {
+  return heldThreadScopedEdits.some((edit) => edit.field === field);
+}
+
+// reports whether the edit was taken; with no chat open the caller persists globally as before.
+function captureThreadScopedEdit(
+  field: string,
+  writeGlobal: (() => void) | null = null,
+): boolean {
+  if (!isThreadOwnedSettingKey(field)) return false;
+  const threadId = useChatRuntimeStore.getState().activeThreadId;
+  if (threadId === null) return false;
+  // both ids: between a switch and its snapshot arriving the store still holds the old values.
+  if (threadId === threadScopedSettingsThreadId) {
+    explicitlyEditedThreadFields.add(field);
+    // Set by the user now, so the chat stores this rather than what it had before a
+    // constraint moved the same field.
+    constraintSuppressedThreadFields.delete(field);
+    scheduleThreadScopedSettingsWrite(threadId);
+    return true;
+  }
+  if (threadId === pendingPairingThreadId) {
+    heldThreadScopedEdits.push({ field, writeGlobal });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -686,9 +1580,9 @@ export function loadOptionalBool(key: string): boolean | null {
  * Resolve the web-search / code-execution pill state to apply when a model
  * loads. Honors the user's persisted preference so a tool-capable model never
  * re-enables a pill the user turned off, and never re-disables one they turned
- * on. When no preference has been expressed the pills stay off: tool execution
- * is opt-in, so the person enables it with a click rather than a tool-capable
- * model turning it on for them.
+ * on, and the open chat's own state wins over the installation default. When no
+ * preference has been expressed the pills stay off: tool execution is opt-in, so
+ * the person enables it with a click rather than a model turning it on for them.
  */
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
@@ -696,8 +1590,14 @@ export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
 } {
   if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
   return {
-    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? false,
-    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? false,
+    toolsEnabled:
+      threadScopedOverride("toolsEnabled") ??
+      loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ??
+      false,
+    codeToolsEnabled:
+      threadScopedOverride("codeToolsEnabled") ??
+      loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ??
+      false,
   };
 }
 
@@ -731,11 +1631,10 @@ function loadShowCanvasMenuItem(): boolean {
  * off -> "off", i.e. no prompts); fresh installs default to "auto".
  */
 function loadPermissionMode(): PermissionMode {
-  const raw = readStorageValue(CHAT_PERMISSION_MODE_KEY);
-  if (raw === "ask" || raw === "auto" || raw === "off") return raw;
-  const legacyConfirm = loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY);
-  if (legacyConfirm === null) return "auto";
-  return legacyConfirm ? "ask" : "off";
+  return normalizeStoredPermissionMode(
+    readStorageValue(CHAT_PERMISSION_MODE_KEY),
+    loadOptionalBool(CHAT_CONFIRM_TOOL_CALLS_KEY),
+  );
 }
 
 function savePermissionMode(mode: PermissionMode): void {
@@ -1147,6 +2046,12 @@ type ToolStatusEntry = {
 
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
+  /**
+   * The open chat's own settings have been asked for but have not arrived. The store is
+   * showing the installation defaults meanwhile, so a run started now would be captured
+   * with them: a chat stored as "ask" could run tools without asking. Sending waits.
+   */
+  threadScopedSettingsPending: boolean;
   params: InferenceParams;
   customPresets: Preset[];
   activePreset: string;
@@ -1522,6 +2427,11 @@ type ChatRuntimeStore = {
     options?: { trackQueuedSettings?: boolean },
   ) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  /** show `threadId`'s own settings; a null threadId or snapshot restores the global ones. */
+  applyThreadScopedSettings: (
+    threadId: string | null,
+    settings: ThreadScopedSettings | null,
+  ) => void;
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
@@ -1886,6 +2796,22 @@ function externalCheckpointRefusesDeepResearch(
   return provider != null && provider.providerType !== "openai_codex";
 }
 
+/**
+ * Kimi's $web_search builtin requires thinking disabled, so the composer keeps the two
+ * pills mutually exclusive. A restore has to do the same, or a chat stored under another
+ * provider sends a combination Kimi rejects.
+ */
+function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
+  const parsed = parseExternalModelId(checkpoint);
+  if (!parsed) return false;
+  return (
+    useExternalProvidersStore
+      .getState()
+      .providers.find((candidate) => candidate.id === parsed.providerId)
+      ?.providerType === "kimi"
+  );
+}
+
 function getHydratedSettingsState(
   settings: PersistedChatSettings,
   state: ChatRuntimeStore,
@@ -1940,6 +2866,22 @@ function getHydratedSettingsState(
     ) {
       continue;
     }
+    // A click made before this response landed is held for the open chat rather than
+    // written globally, so it advances no mutation version and the server's value would
+    // silently replace it. The user is looking at their click; it wins.
+    if (isHeldThreadScopedField(key)) {
+      // The click wins in the STORE, but it is the chat's, not the installation's. When
+      // the window closes the default has to go back to a value, and the one captured
+      // before the window is this browser's pre-hydration copy. Keep the server's here
+      // so the restore has the authoritative value to go back to.
+      if (
+        value !== undefined &&
+        scalarSettingMutationVersions[key] === versions.scalarSettings[key]
+      ) {
+        hydratedDefaultsByHeldField.set(key, value);
+      }
+      continue;
+    }
     if (
       value !== undefined &&
       scalarSettingMutationVersions[key] === versions.scalarSettings[key]
@@ -1958,12 +2900,17 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   if (Object.is(value, currentValue)) {
     return;
   }
-  scalarSettingMutationVersions[key] += 1;
-  saveSettingsPatch({ [key]: value });
+  const writeGlobal = () => {
+    scalarSettingMutationVersions[key] += 1;
+    saveSettingsPatch({ [key]: value });
+  };
+  if (captureThreadScopedEdit(key, writeGlobal)) return;
+  writeGlobal();
 }
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
+  threadScopedSettingsPending: false,
   // Hydrate the last external checkpoint so the external picker survives a
   // refresh. Local checkpoints are re-derived from the backend in
   // useChatModelRuntime and intentionally NOT persisted here.
@@ -2160,6 +3107,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (fromServer) backfillMirroredSettings(settings);
           // After the backfill, so a startup edit wins over the stored value.
           flushPreHydrationSettings();
+          // The previous session's tab-close writes, for the rows that did not exist
+          // yet when it sent them. A replay of one that did land is refused by its own
+          // seq, so this cannot revert anything newer.
+          replayUnconfirmedThreadSettings();
         }
       } catch {
         // Hydrate failed: treat as hydrated-with-defaults so future setParams
@@ -2167,6 +3118,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         warnSettingsPersistenceFailure();
         mirroredSettingsHydrated = true;
         flushPreHydrationSettings();
+        // Independent of this endpoint: the tab-close snapshots waiting in storage are
+        // rows' own settings, and leaving them unsent because /api/chat/settings was
+        // briefly unavailable strands the last session's edit for the whole of this one.
+        replayUnconfirmedThreadSettings();
         set({ settingsHydrated: true });
       } finally {
         settingsHydrationPromise = null;
@@ -2488,6 +3443,151 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ? (state.contextUsageByThreadId[activeThreadId] ?? null)
         : null,
     })),
+  applyThreadScopedSettings: (threadId, settings) =>
+    set((state) => {
+      // the pending write belongs to the outgoing thread, so it goes out before the swap.
+      flushThreadScopedSettingsWrite();
+      // edits made while this chat's snapshot was in flight: keep them and store them on the
+      // chat. Anything else and the read would silently undo a click the user already saw.
+      const heldFields = new Set<string>();
+      if (threadId !== null && threadId === pendingPairingThreadId) {
+        for (const edit of heldThreadScopedEdits) heldFields.add(edit.field);
+        heldThreadScopedEdits = [];
+        pendingPairingThreadId = null;
+        // The window is over, so the next visit to this chat samples afresh rather than
+        // reusing what the installation defaults were the last time round.
+        pairingWindowDefaultsThreadId = null;
+        // Its snapshot is now the one in the store, so anything waiting on it can go.
+        closeThreadScopedPairingGate(threadId);
+      } else if (
+        // A drop to the defaults for the chat that is still open and still waiting on its
+        // read keeps holding: those edits are that chat's, and releasing them here is the
+        // leak this whole path exists to prevent.
+        threadId !== null ||
+        pendingPairingThreadId === null ||
+        pendingPairingThreadId !== state.activeThreadId
+      ) {
+        releaseHeldThreadScopedEdits();
+      }
+      // Set from here rather than trusting the calls above: this updater's own return
+      // value is merged last, so a `return state` would put the old flag back.
+      const pending = pendingPairingThreadId !== null;
+      // nothing was overridden while unpaired, so there is nothing to restore.
+      if (threadScopedSettingsThreadId === null && threadId === null) {
+        return state.threadScopedSettingsPending === pending
+          ? state
+          : { ...state, threadScopedSettingsPending: pending };
+      }
+      if (threadScopedSettingsThreadId === null) {
+        // A held edit is already in the store but belongs to its chat, not to the
+        // installation. Capturing it here would promote it to the default that every
+        // snapshot-less chat follows, so take the value from before the window opened.
+        // Deleting the key instead leaves it with no fallback at all, and the edited
+        // value then stays live into the next chat, which is the same leak.
+        const captured = readThreadScopedSettings(state) as Record<
+          string,
+          unknown
+        >;
+        const beforeWindow = (pairingWindowDefaults ??
+          globalThreadScopedDefaults) as Record<string, unknown> | null;
+        for (const field of heldFields) {
+          // The server answered for this field while the window was open, and hydration
+          // had to skip it. That value is the installation's; the pre-window copy is
+          // only what this browser had cached before the answer arrived.
+          if (hydratedDefaultsByHeldField.has(field)) {
+            captured[field] = hydratedDefaultsByHeldField.get(field);
+          } else if (beforeWindow && field in beforeWindow) {
+            captured[field] = beforeWindow[field];
+          } else {
+            delete captured[field];
+          }
+          hydratedDefaultsByHeldField.delete(field);
+        }
+        globalThreadScopedDefaults = captured as ThreadScopedSettings;
+      }
+      threadScopedSettingsThreadId = threadId;
+      explicitlyEditedThreadFields.clear();
+      // The constraint belongs to the chat it was applied in, and this chat's own
+      // provider effects will say so again if it still holds here.
+      constraintSuppressedThreadFields.clear();
+      const stored = hasThreadScopedSettings(settings)
+        ? (settings as ThreadScopedSettings)
+        : null;
+      activeThreadScopedSettings = stored;
+      const nextState: Partial<ChatRuntimeStore> = {};
+      const target = nextState as Record<string, unknown>;
+      const applied: Record<string, unknown> = {};
+      for (const key of THREAD_SCOPED_SETTING_KEYS) {
+        // the user set this one while the read was in flight, so it wins over what came back.
+        if (heldFields.has(key)) {
+          applied[key] = state[key];
+          continue;
+        }
+        // full access was accepted through a warning dialog: a switch must not drop it.
+        // The chat is still pinned with the level underneath it, or a chat first opened
+        // under full access would store no level at all and follow the installation one
+        // forever after, which is the opposite of what pinning on open is for.
+        if (key === "permissionMode" && state.permissionMode === "full") {
+          const underneath =
+            stored?.permissionMode ??
+            globalThreadScopedDefaults?.permissionMode ??
+            loadPermissionMode();
+          if (underneath !== "full") applied[key] = underneath;
+          continue;
+        }
+        // setCheckpoint clears deep research for external models in the store only, so a
+        // stored true would come back and fail every send in that chat. openai_codex is the
+        // exception the composer already makes, so use the same predicate rather than
+        // refusing every external checkpoint.
+        if (
+          key === "deepResearchEnabled" &&
+          (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
+            state.incognito)
+        ) {
+          continue;
+        }
+        // a key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
+        const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
+        if (value === undefined) continue;
+        applied[key] = value;
+        if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
+      }
+      // Search and Thinking are mutually exclusive on Kimi, and the model-selection effect
+      // that enforces it does not rerun on a thread switch. Restoring both, which a chat
+      // stored under another provider can hold, would send an unsupported combination, so
+      // the restore drops thinking exactly as clicking the Search pill does.
+      if (
+        isKimiCheckpoint(state.params.checkpoint) &&
+        (applied.toolsEnabled ?? state.toolsEnabled) === true &&
+        (applied.reasoningEnabled ?? state.reasoningEnabled) === true
+      ) {
+        applied.reasoningEnabled = false;
+        if (state.reasoningEnabled !== false) target.reasoningEnabled = false;
+      }
+      // pin what the chat shows now, or changing the defaults later would rewrite its modes.
+      // A chat that already had a snapshot only needs a write if it is carrying a held edit.
+      if (threadId !== null && (stored === null || heldFields.size > 0)) {
+        scheduleThreadScopedSettingsWrite(
+          threadId,
+          stored === null ? sanitizeThreadScopedSettings(applied) : null,
+        );
+      }
+      if (!hasKeys(nextState)) {
+        return state.threadScopedSettingsPending === pending
+          ? state
+          : { ...state, threadScopedSettingsPending: pending };
+      }
+      if (nextState.permissionMode !== undefined) {
+        nextState.confirmToolCalls =
+          nextState.permissionMode === "ask" ||
+          nextState.permissionMode === "auto";
+      }
+      return {
+        ...nextState,
+        threadScopedSettingsPending: pending,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => {
     if (incognito) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
@@ -2602,6 +3702,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      } else {
+        noteConstraintSuppressedThreadField("reasoningEnabled");
       }
       return {
         reasoningEnabled,
@@ -2643,6 +3745,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      } else {
+        noteConstraintSuppressedThreadField("toolsEnabled");
       }
       if (toolsEnabled) saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false);
       return {
@@ -2677,7 +3781,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
-      const permissionMode = loadPermissionMode();
+      // the level this chat carries, or the global one when it carries none.
+      const permissionMode =
+        threadScopedOverride("permissionMode") ?? loadPermissionMode();
       if (deepResearchEnabled) {
         saveBool(CHAT_TOOLS_ENABLED_KEY, false);
         saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false);
@@ -2821,7 +3927,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
         };
       }
-      const permissionMode = loadPermissionMode();
+      // back to the level this chat carries, or the global one when it carries none.
+      const permissionMode =
+        threadScopedOverride("permissionMode") ?? loadPermissionMode();
       return {
         bypassPermissions,
         permissionMode,
@@ -2869,10 +3977,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     }),
   setRagEnabled: (ragEnabled) =>
-    set((state) => ({
-      ragEnabled,
-      queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
-    })),
+    set((state) => {
+      // the only thread-scoped setting with no global slot, so no persist helper reaches it.
+      if (ragEnabled !== state.ragEnabled) captureThreadScopedEdit("ragEnabled");
+      return {
+        ragEnabled,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
   setRagSource: (ragSource) =>
     set((state) => {
       saveRagSource(ragSource);

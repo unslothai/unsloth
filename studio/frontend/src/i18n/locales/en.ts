@@ -92,6 +92,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      showMore: "Show more",
+      showLess: "Show less",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
@@ -105,6 +107,46 @@ export const en = {
       title: "Page not found",
       description: "{path} does not exist.",
       backToChat: "Back to chat",
+    },
+    // Bulk actions on a multi-row selection.
+    selection: {
+      pinProjects: "Pin projects",
+      unpinProjects: "Unpin projects",
+      deleteProjects: "Delete projects",
+      deleteProjectsTitle: "Delete projects",
+      deleteProjectsDescription:
+        "Delete {count} projects? Their chats are permanently deleted.",
+      deleteProjectsFilesDescription:
+        "Each project workspace folder is removed from disk.",
+      countSelected: "{count} selected",
+      pinChats: "Pin chats",
+      unpinChats: "Unpin chats",
+      archiveChats: "Archive chats",
+      markUnread: "Mark as unread",
+      deleteChats: "Delete chats",
+      deleteTitle: "Delete chats",
+      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteFilesDescription:
+        "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
+      deleteFilesLabel: "Delete files and sandbox folder",
+      deleteChatFilesDescription:
+        "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
+    },
+    // Sidebar list headers: how chats are grouped and ordered.
+    organize: {
+      sidebarHeading: "Organize sidebar",
+      byProject: "By project",
+      inOneList: "In one list",
+      sortChatsBy: "Sort chats by",
+      sortPinnedBy: "Sort pinned by",
+      priority: "Priority",
+      lastUpdated: "Last updated",
+      manualOrder: "Manual order",
+      moveUp: "Move up",
+      moveDown: "Move down",
+      organizeChats: "Organize chats",
+      organizeProjects: "Organize projects",
+      sortPinnedChats: "Sort pinned chats",
     },
     dialog: {
       deleteChat: {
@@ -933,6 +975,9 @@ export const en = {
       },
     },
     chat: {
+      projectsSection: "Show projects section",
+      projectsSectionDescription:
+        "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -954,6 +999,9 @@ export const en = {
         compareChat: "Compare chat",
         exportChat: "Export chat",
       },
+      pastedTextThreshold: "Condense long pastes",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model metadata in assistant responses.",
@@ -1070,6 +1118,9 @@ export const en = {
       confirmBeforeDeleting: "Confirm before deleting",
       confirmBeforeDeletingDescription:
         "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      alwaysDeleteFiles: "Always delete files",
+      alwaysDeleteFilesDescription:
+        "Deleting a chat also removes its own sandbox folder from disk. Files it wrote inside a project stay in that project workspace.",
       filesSection: "Files",
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:

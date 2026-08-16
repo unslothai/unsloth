@@ -122,6 +122,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -167,6 +168,7 @@ import {
   hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -3529,11 +3531,28 @@ export function createOpenAIStreamAdapter(
       unstable_assistantMessageId,
     }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
+      const runThreadId =
+        unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      // Refused rather than run on whatever the store holds now: the wait only runs out
+      // for a chat the user left mid-read, and the settings on screen are then some
+      // other chat's. The run is recoverable by reopening the chat; a message sent with
+      // another chat's tools and permission level is not.
+      if (!(await awaitThreadScopedPairing(runThreadId))) {
+        throw new Error(
+          "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
+        );
+      }
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
-      const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const resolvedThreadId = (runThreadId ?? runtime.activeThreadId) || undefined;
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),
@@ -4584,6 +4603,9 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // What the cap is measured against: only grows, unlike cumulativeText,
+      // and counts tool-argument deltas, which never reach it.
+      let streamedChars = 0;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -5415,6 +5437,8 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
+            // Per run, not per module: two turns must not share a cycle.
+            const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -5588,6 +5612,7 @@ export function createOpenAIStreamAdapter(
                     const accum =
                       (liveArgsTextById.get(liveId) ?? "") + fragment;
                     liveArgsTextById.set(liveId, accum);
+                    streamedChars += fragment.length;
                     const partial = parseLiveToolArgs(accum);
                     const idx = toolCallParts.findIndex(
                       (p) => p.toolCallId === liveId,
@@ -5601,17 +5626,22 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      yield {
-                        content: liveAssistantContent(),
-                        metadata: {
-                          timing: buildTiming(
-                            streamStartTime,
-                            totalChunks,
-                            firstTokenTime,
-                          ),
-                          custom: liveCustom(),
-                        },
-                      };
+                      // A preview: it repeats per argument delta and
+                      // tool_start replaces it. Tool events carry state, so
+                      // they stay ungated.
+                      if (canPublish(streamedChars)) {
+                        yield {
+                          content: liveAssistantContent(),
+                          metadata: {
+                            timing: buildTiming(
+                              streamStartTime,
+                              totalChunks,
+                              firstTokenTime,
+                            ),
+                            custom: liveCustom(),
+                          },
+                        };
+                      }
                     }
                   }
                   continue;
@@ -5996,12 +6026,17 @@ export function createOpenAIStreamAdapter(
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
+              // Replay state reaches the message only through a yield, so a
+              // Stop while the gate holds one persists a turn that cannot
+              // replay. Pace previews, never state.
+              let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<string, unknown>;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
                   const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
+                    replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
@@ -6012,6 +6047,7 @@ export function createOpenAIStreamAdapter(
                     codexReasoning,
                     codexRoundToolCallIds,
                   );
+                  replayStateChanged = true;
                 }
               }
 
@@ -6057,6 +6093,9 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
+                // Extending a call's arguments is a preview; introducing one
+                // is state, so it always publishes.
+                let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -6095,6 +6134,8 @@ export function createOpenAIStreamAdapter(
                     codexRoundToolCallIds.push(stablePartId);
                   }
                   const argsFragment = call.function?.arguments ?? "";
+                  streamedChars +=
+                    argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
@@ -6114,6 +6155,15 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    if (
+                      call.extra_content !== undefined &&
+                      JSON.stringify(call.extra_content) !==
+                        JSON.stringify(prevExtra)
+                    ) {
+                      // Gemini puts the thought signature on the call, and
+                      // the next turn is rejected without it.
+                      replayStateChanged = true;
+                    }
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
                       // a late id claims the slot its id-less opening fragment
@@ -6166,24 +6216,53 @@ export function createOpenAIStreamAdapter(
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
+                    addedToolCall = true;
                   }
                 }
-                yield {
-                  content: liveAssistantContent(),
-                  metadata: {
-                    timing: buildTiming(
-                      streamStartTime,
-                      totalChunks,
-                      firstTokenTime,
-                    ),
-                    custom: liveCustom(),
-                  },
-                };
+                if (
+                  addedToolCall ||
+                  replayStateChanged ||
+                  canPublish(streamedChars)
+                ) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
+              // extra_content can arrive with no content at all: a Gemini
+              // thoughtSignature fragment, or the codex reasoning ledger on a
+              // terminal delta. The skip below would drop both.
+              if (replayStateChanged && !delta && !reasoning) {
+                const replayContent = liveAssistantContent();
+                if (replayContent.length > 0) {
+                  yield {
+                    content: replayContent,
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
                 continue;
               }
               if (!delta && !reasoning) {
                 continue;
               }
+              // So the strip below can be told from a chunk that added nothing.
+              const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
@@ -6206,6 +6285,7 @@ export function createOpenAIStreamAdapter(
                 }
                 cumulativeText += delta;
               }
+              streamedChars += reasoning.length + delta.length;
               // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
@@ -6244,6 +6324,25 @@ export function createOpenAIStreamAdapter(
                 !hasUnclosedThinkTag(cumulativeText)
               ) {
                 reasoningDurationTracker.finishGroup();
+              }
+
+              // Everything above runs on every arrival; only the publish is
+              // coalesced. The cost being removed is downstream of the yield
+              // (assistant-ui, React, markdown, paint), not the rebuild, which
+              // is tens of milliseconds across a whole reply.
+              //
+              // A chunk with nothing new is skipped rather than paced: the gate
+              // would spend this cycle on an identical publish and hold the
+              // next real one.
+              if (
+                !replayStateChanged &&
+                (assistantContent.length === 0 ||
+                  cumulativeText.length === textLenBeforeChunk)
+              ) {
+                continue;
+              }
+              if (!replayStateChanged && !canPublish(streamedChars)) {
+                continue;
               }
 
               if (assistantContent.length > 0) {

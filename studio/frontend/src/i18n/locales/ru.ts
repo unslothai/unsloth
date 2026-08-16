@@ -96,6 +96,8 @@ export const ru = {
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
+      showMore: "Показать больше",
+      showLess: "Показать меньше",
       settings: "Настройки",
       api: "API",
       lightMode: "Светлая тема",
@@ -109,6 +111,44 @@ export const ru = {
       title: "Страница не найдена",
       description: "{path} не существует.",
       backToChat: "Вернуться к чату",
+    },
+    selection: {
+      pinProjects: "Закрепить проекты",
+      unpinProjects: "Открепить проекты",
+      deleteProjects: "Удалить проекты",
+      deleteProjectsTitle: "Удалить проекты",
+      deleteProjectsDescription:
+        "Удалить проекты ({count})? Их чаты будут удалены безвозвратно.",
+      deleteProjectsFilesDescription:
+        "Рабочая папка каждого проекта удаляется с диска.",
+      countSelected: "Выбрано: {count}",
+      pinChats: "Закрепить чаты",
+      unpinChats: "Открепить чаты",
+      archiveChats: "Архивировать чаты",
+      markUnread: "Отметить как непрочитанное",
+      deleteChats: "Удалить чаты",
+      deleteTitle: "Удалить чаты",
+      deleteDescription: "Удалить чаты ({count})? Это действие необратимо.",
+      deleteFilesDescription:
+        "Собственная папка песочницы каждого чата удаляется с диска. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
+      deleteFilesLabel: "Удалить файлы и папку песочницы",
+      deleteChatFilesDescription:
+        "Собственная папка песочницы этого чата удаляется с диска. Файлы, записанные им внутри проекта, остаются в рабочей области проекта.",
+    },
+    organize: {
+      sidebarHeading: "Настроить боковую панель",
+      byProject: "По проектам",
+      inOneList: "Одним списком",
+      sortChatsBy: "Сортировать чаты по",
+      sortPinnedBy: "Сортировать закреплённые по",
+      priority: "Приоритету",
+      lastUpdated: "Последнему обновлению",
+      manualOrder: "Вручную",
+      moveUp: "Переместить вверх",
+      moveDown: "Переместить вниз",
+      organizeChats: "Настроить чаты",
+      organizeProjects: "Настроить проекты",
+      sortPinnedChats: "Сортировать закреплённые чаты",
     },
     dialog: {
       deleteChat: {
@@ -950,6 +990,9 @@ export const ru = {
       },
     },
     chat: {
+      projectsSection: "Показывать раздел «Проекты»",
+      projectsSectionDescription:
+        "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",
       title: "Чат",
       description: "Настройка поведения чата на этом устройстве.",
       modelSelection: {
@@ -971,6 +1014,9 @@ export const ru = {
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
       },
+      pastedTextThreshold: "Сворачивать длинные вставки",
+      pastedTextThresholdDescription: "Вставленный текст длиннее этого значения станет вложением .txt вместо заполнения поля сообщения.",
+      pastedTextThresholdOff: "Выкл.",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
@@ -1088,6 +1134,9 @@ export const ru = {
       confirmBeforeDeleting: "Подтверждать перед удалением",
       confirmBeforeDeletingDescription:
         "Запрашивает подтверждение перед удалением чата. Отключите, чтобы удалять сразу.",
+      alwaysDeleteFiles: "Всегда удалять файлы",
+      alwaysDeleteFilesDescription:
+        "При удалении чата с диска удаляется и его собственная папка песочницы. Файлы, созданные внутри проекта, остаются в рабочей папке этого проекта.",
       filesSection: "Файлы",
       uploadedFiles: "Загруженные файлы",
       uploadedFilesDescription:
