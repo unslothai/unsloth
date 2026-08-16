@@ -32,9 +32,29 @@ import type { PerModelConfig } from "../src/features/model-picker/model-config/p
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { residentRuntimeMatchesConfig } = await import(
+const { residentRuntimeMatchesConfig: matchesWithStanding } = await import(
   "../src/features/chat/lib/resident-config-match.ts"
 );
+
+/**
+ * What the applier resolves an unset field to. Four fields are not per-model, so leaving
+ * them out of a config is not silence; the caller passes what `/load` would actually send.
+ * These are the shipped defaults: speculation off, memory mode "auto", `GPU_LAYERS_AUTO`
+ * and no CPU MoE offload.
+ */
+const STANDING = {
+  speculativeType: null,
+  gpuMemoryMode: "auto" as const,
+  gpuLayers: -1,
+  nCpuMoe: 0,
+  normalizeSpeculative: (value: string | null | undefined) =>
+    value == null || value === "" || value === "none" ? null : value,
+};
+
+const residentRuntimeMatchesConfig = (
+  status: Parameters<typeof matchesWithStanding>[0],
+  config: Parameters<typeof matchesWithStanding>[1],
+) => matchesWithStanding(status, config, STANDING);
 
 /** A config that pins nothing: what a model the user never configured carries. */
 const BLANK = {
@@ -74,9 +94,13 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     requested_gpu_ids: [0, 1],
     tensor_parallel: false,
   },
+  // A host with no GPU still reports the invocation it was ASKED for, not what llama.cpp
+  // settled on: a default load sends Auto, so the echo is "auto" / -1 exactly as on a CUDA
+  // box, with no placement pool. A manual zero-layer load is a different thing and is
+  // covered on its own below, since an unset config resolves to Auto and so differs from it.
   "cpu-only": {
-    gpu_memory_mode: "manual",
-    gpu_layers: 0,
+    gpu_memory_mode: "auto",
+    gpu_layers: -1,
     n_cpu_moe: 0,
     requested_gpu_ids: null,
     tensor_parallel: false,
@@ -258,12 +282,20 @@ test("a CPU-only host distinguishes zero offloaded layers from automatic", () =>
   // gpu_layers 0 under manual is "keep it all on the CPU"; -1 is "let llama.cpp size it".
   // They are different loads, and 0 must not be read as an absent value.
   assert.equal(
-    residentRuntimeMatchesConfig(ACCELERATORS["cpu-only"], {
-      ...BLANK,
-      gpuMemoryMode: "manual",
-      gpuLayers: 0,
-    }),
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["cpu-only"], gpu_memory_mode: "manual", gpu_layers: 0 },
+      { ...BLANK, gpuMemoryMode: "manual", gpuLayers: 0 },
+    ),
     true,
+  );
+  // The other direction, which is the one the standing defaults buy: a config that pins
+  // neither field resolves to Auto and so does NOT adopt a manual zero-layer server.
+  assert.equal(
+    residentRuntimeMatchesConfig(
+      { ...ACCELERATORS["cpu-only"], gpu_memory_mode: "manual", gpu_layers: 0 },
+      BLANK,
+    ),
+    false,
   );
   assert.equal(
     residentRuntimeMatchesConfig(

@@ -44,15 +44,53 @@ function sameGpuSet(
 }
 
 /**
+ * What a field of the config resolves to when it is left unset.
+ *
+ * Four of these are NOT per-model, so leaving them out of a config is not silence: the
+ * applier fills them from a standing preference or a constant, and the load then sends
+ * that. `applyPerModelConfigToRuntime` is the definition -- speculative mode and GPU memory
+ * mode fall back to `readPersistedSpeculativeType()` / `readPersistedGpuMemoryMode()`, GPU
+ * layers to `GPU_LAYERS_AUTO` and CPU MoE layers to 0 -- and `loadSpeculativeType` in
+ * `selectModel` sends the resolved value verbatim.
+ *
+ * The caller supplies them rather than this module reading the store, so the comparison
+ * stays a pure function of its inputs. It is required, not optional: an optional resolver
+ * is one a caller forgets, and forgetting it here silently keeps a runtime the user did not
+ * ask for.
+ */
+export type StandingConfigDefaults = {
+  /** `readPersistedSpeculativeType()`, already normalized. */
+  speculativeType: string | null;
+  /** `readPersistedGpuMemoryMode()`. */
+  gpuMemoryMode: "auto" | "manual";
+  /** `GPU_LAYERS_AUTO`. */
+  gpuLayers: number;
+  /** The applier's own constant, 0. */
+  nCpuMoe: number;
+  /**
+   * `normalizeSpeculativeType`, passed rather than imported. It lives on the chat runtime
+   * store, which reaches React, and this module is deliberately a leaf so the node suite
+   * can drive it; copying its mapping here (comma-chained legacy echoes and all) would be
+   * a second copy free to drift from the one the load actually uses.
+   */
+  normalizeSpeculative: (value: string | null | undefined) => string | null;
+};
+
+/**
  * One setting the resident load can disagree about.
  *
  * `pinned` answers whether the config expresses an opinion at all, and `agrees` whether the
  * running server already satisfies it. Keeping them apart is the whole point: a field the
- * config leaves unset must not be read as a demand for the default.
+ * config leaves unset must not be read as a demand for the default -- except for the four
+ * above, which are always pinned because the applier always resolves them.
  */
 type SettingCheck = {
   pinned: (config: PerModelConfig) => boolean;
-  agrees: (config: PerModelConfig, status: ResidentRuntime) => boolean;
+  agrees: (
+    config: PerModelConfig,
+    status: ResidentRuntime,
+    standing: StandingConfigDefaults,
+  ) => boolean;
 };
 
 const set = (value: unknown): boolean => value != null;
@@ -77,8 +115,14 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => c.mlxKvBits === (s.mlx_kv_bits_requested ?? null),
   },
   {
-    pinned: (c) => set(c.speculativeType),
-    agrees: (c, s) => c.speculativeType === (s.speculative_type ?? null),
+    // Always pinned: an unset mode resolves to the standing preference, and the load sends
+    // it. Reading it as silence let a pick asking for "off" adopt a resident MTP runtime.
+    pinned: () => true,
+    agrees: (c, s, standing) =>
+      (standing.normalizeSpeculative(c.speculativeType) ??
+        standing.speculativeType) ===
+      (standing.normalizeSpeculative(s.speculative_type) ??
+        standing.speculativeType),
   },
   {
     pinned: (c) => set(c.specDraftNMax),
@@ -113,16 +157,23 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => sameList(c.llamaExtraArgs, s.requested_llama_extra_args),
   },
   {
-    pinned: (c) => c.gpuMemoryMode !== undefined,
-    agrees: (c, s) => c.gpuMemoryMode === s.gpu_memory_mode,
+    // Standing preference, like the speculative mode above.
+    pinned: () => true,
+    agrees: (c, s, standing) =>
+      (c.gpuMemoryMode ?? standing.gpuMemoryMode) ===
+      (s.gpu_memory_mode ?? standing.gpuMemoryMode),
   },
   {
-    pinned: (c) => c.gpuLayers !== undefined,
-    agrees: (c, s) => c.gpuLayers === s.gpu_layers,
+    // Resolves to GPU_LAYERS_AUTO rather than to a preference, but the load still sends it.
+    pinned: () => true,
+    agrees: (c, s, standing) =>
+      (c.gpuLayers ?? standing.gpuLayers) ===
+      (s.gpu_layers ?? standing.gpuLayers),
   },
   {
-    pinned: (c) => c.nCpuMoe !== undefined,
-    agrees: (c, s) => c.nCpuMoe === s.n_cpu_moe,
+    pinned: () => true,
+    agrees: (c, s, standing) =>
+      (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
   },
   {
     // null or absent is Automatic, which pins nothing and so agrees with any placement.
@@ -155,11 +206,15 @@ const SETTING_CHECKS: SettingCheck[] = [
 export function residentRuntimeMatchesConfig(
   status: ResidentRuntime,
   config: PerModelConfig | null | undefined,
+  standing: StandingConfigDefaults,
 ): boolean {
+  // No config at all is not the same as a config that pins nothing: with none, the load
+  // path reads the live runtime, which was hydrated from the resident model, so there is
+  // nothing that could differ.
   if (!config) {
     return true;
   }
   return SETTING_CHECKS.every(
-    (check) => !check.pinned(config) || check.agrees(config, status),
+    (check) => !check.pinned(config) || check.agrees(config, status, standing),
   );
 }

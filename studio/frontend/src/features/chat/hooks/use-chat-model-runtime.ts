@@ -43,6 +43,7 @@ import {
   isLocalModelPath,
   loadedGpuMemoryFields,
   persistGpuMemoryModeOnLoad,
+  readPersistedGpuMemoryMode,
   readPersistedSpeculativeType,
   reconcilePersistedGpuIds,
   resolveToolsEnabledOnLoad,
@@ -681,7 +682,15 @@ export function useChatModelRuntime() {
           // the resident load does not already run is a real reload, and skipping it would
           // drop the setting silently, since the rollback below makes the panel agree with
           // the server either way.
-          residentRuntimeMatchesConfig(residentStatus, pendingConfig)
+          residentRuntimeMatchesConfig(residentStatus, pendingConfig, {
+            // What the applier would fill an unset field with, so the comparison is
+            // against what /load would actually send rather than against silence.
+            speculativeType: readPersistedSpeculativeType(),
+            gpuMemoryMode: readPersistedGpuMemoryMode(),
+            gpuLayers: GPU_LAYERS_AUTO,
+            nCpuMoe: 0,
+            normalizeSpeculative: normalizeSpeculativeType,
+          })
         ) {
           // Same window as the confirm below: a rival load may have started during that GET,
           // and it owns the resident model now.

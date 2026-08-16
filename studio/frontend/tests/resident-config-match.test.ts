@@ -40,19 +40,46 @@ const BLANK = {
 /** A resident llama-server running nothing but defaults. */
 const DEFAULTS = {};
 
+/**
+ * What the applier fills an unset field with. Four fields are not per-model, so leaving
+ * them out of a config is not silence: applyPerModelConfigToRuntime resolves them from a
+ * standing preference or a constant, and the load sends the result.
+ */
+const STANDING = {
+  speculativeType: "auto",
+  gpuMemoryMode: "auto" as const,
+  gpuLayers: -1,
+  nCpuMoe: 0,
+  // Enough of normalizeSpeculativeType for these cases; the real mapping is the store's
+  // and is tested there. What matters here is that the comparator USES it on both sides.
+  normalizeSpeculative: (v: string | null | undefined) =>
+    v == null || !String(v).trim()
+      ? null
+      : String(v).trim().toLowerCase() === "default"
+        ? "auto"
+        : String(v).trim().toLowerCase(),
+};
+
+/** Shorthand: the comparator always needs the standing defaults. */
+const matches = (
+  status: Parameters<typeof residentRuntimeMatchesConfig>[0],
+  config: Parameters<typeof residentRuntimeMatchesConfig>[1],
+  standing: Parameters<typeof residentRuntimeMatchesConfig>[2] = STANDING,
+) => residentRuntimeMatchesConfig(status, config, standing);
+
 test("no config at all adopts the resident model", () => {
-  assert.equal(residentRuntimeMatchesConfig(DEFAULTS, null), true);
-  assert.equal(residentRuntimeMatchesConfig(DEFAULTS, undefined), true);
+  assert.equal(matches(DEFAULTS, null), true);
+  assert.equal(matches(DEFAULTS, undefined), true);
 });
 
 test("a config that pins nothing adopts the resident model", () => {
-  assert.equal(residentRuntimeMatchesConfig(DEFAULTS, BLANK), true);
+  assert.equal(matches(DEFAULTS, BLANK), true);
 });
 
 /** The regression this file exists for: the setting must reach the server. */
 test("a remembered context length the resident load does not run is a reload", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_context_length: 4096 },
       { ...BLANK, customContextLength: 32768 },
     ),
@@ -62,7 +89,7 @@ test("a remembered context length the resident load does not run is a reload", (
 
 test("a remembered context length the resident load already runs adopts it", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_context_length: 32768 },
       { ...BLANK, customContextLength: 32768 },
     ),
@@ -171,14 +198,11 @@ const FIELDS: {
 
 for (const field of FIELDS) {
   test(`a matching ${field.name} adopts the resident model`, () => {
-    assert.equal(
-      residentRuntimeMatchesConfig(field.same, { ...BLANK, ...field.config }),
-      true,
-    );
+    assert.equal(matches(field.same, { ...BLANK, ...field.config }), true);
   });
   test(`a differing ${field.name} is a real reload`, () => {
     assert.equal(
-      residentRuntimeMatchesConfig(field.differs, {
+      matches(field.differs, {
         ...BLANK,
         ...field.config,
       }),
@@ -188,17 +212,14 @@ for (const field of FIELDS) {
   test(`a ${field.name} the resident load never reported is a real reload`, () => {
     // An older backend that does not echo the field cannot prove it agrees, and guessing
     // that it does is the one answer that loses a setting with nothing on screen to say so.
-    assert.equal(
-      residentRuntimeMatchesConfig({}, { ...BLANK, ...field.config }),
-      false,
-    );
+    assert.equal(matches({}, { ...BLANK, ...field.config }), false);
   });
 }
 
 /** Ordering is the backend's to choose: it narrows and reorders placement at fit time. */
 test("GPU placement compares as a set, not as an order", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_gpu_ids: [3, 1, 0] },
       { ...BLANK, selectedGpuIds: [0, 1, 3] },
     ),
@@ -208,10 +229,7 @@ test("GPU placement compares as a set, not as an order", () => {
 
 test("automatic placement agrees with whatever the resident load pinned", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
-      { requested_gpu_ids: [0, 1] },
-      { ...BLANK, selectedGpuIds: null },
-    ),
+    matches({ requested_gpu_ids: [0, 1] }, { ...BLANK, selectedGpuIds: null }),
     true,
   );
 });
@@ -219,28 +237,22 @@ test("automatic placement agrees with whatever the resident load pinned", () => 
 /** The three states of llamaExtraArgs are load-bearing; see PerModelConfig. */
 test("llama args never read by this copy express no opinion", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
-      { requested_llama_extra_args: ["--verbose"] },
-      { ...BLANK },
-    ),
+    matches({ requested_llama_extra_args: ["--verbose"] }, { ...BLANK }),
     true,
   );
 });
 
 test("llama args the user cleared only agree with a load that has none", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_llama_extra_args: ["--verbose"] },
       { ...BLANK, llamaExtraArgs: null },
     ),
     false,
   );
+  assert.equal(matches({}, { ...BLANK, llamaExtraArgs: null }), true);
   assert.equal(
-    residentRuntimeMatchesConfig({}, { ...BLANK, llamaExtraArgs: null }),
-    true,
-  );
-  assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_llama_extra_args: [] },
       { ...BLANK, llamaExtraArgs: null },
     ),
@@ -251,7 +263,7 @@ test("llama args the user cleared only agree with a load that has none", () => {
 test("llama args differing only in order are a real reload", () => {
   // argv order changes what llama-server does; unlike GPU ids these are not a set.
   assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_llama_extra_args: ["b", "a"] },
       { ...BLANK, llamaExtraArgs: ["a", "b"] },
     ),
@@ -261,45 +273,27 @@ test("llama args differing only in order are a real reload", () => {
 
 /** tensorParallel is the one non-nullable field, so it always has an opinion. */
 test("tensor parallel off agrees with a status that omits the field", () => {
-  assert.equal(
-    residentRuntimeMatchesConfig({}, { ...BLANK, tensorParallel: false }),
-    true,
-  );
+  assert.equal(matches({}, { ...BLANK, tensorParallel: false }), true);
 });
 
 test("tensor parallel off is a reload when the resident load split tensors", () => {
   assert.equal(
-    residentRuntimeMatchesConfig(
-      { tensor_parallel: true },
-      { ...BLANK, tensorParallel: false },
-    ),
+    matches({ tensor_parallel: true }, { ...BLANK, tensorParallel: false }),
     false,
   );
 });
 
 /** maxSeqLength never reaches llama-server, so it cannot force a reload. */
 test("a generation cap alone still adopts the resident model", () => {
-  assert.equal(
-    residentRuntimeMatchesConfig(DEFAULTS, { ...BLANK, maxSeqLength: 2048 }),
-    true,
-  );
+  assert.equal(matches(DEFAULTS, { ...BLANK, maxSeqLength: 2048 }), true);
 });
 
 /** Zero is a real value in this API (0 = Auto for context, 0 layers = CPU only). */
 test("zero is a pinned value, not an absent one", () => {
+  assert.equal(matches({ gpu_layers: 40 }, { ...BLANK, gpuLayers: 0 }), false);
+  assert.equal(matches({ gpu_layers: 0 }, { ...BLANK, gpuLayers: 0 }), true);
   assert.equal(
-    residentRuntimeMatchesConfig(
-      { gpu_layers: 40 },
-      { ...BLANK, gpuLayers: 0 },
-    ),
-    false,
-  );
-  assert.equal(
-    residentRuntimeMatchesConfig({ gpu_layers: 0 }, { ...BLANK, gpuLayers: 0 }),
-    true,
-  );
-  assert.equal(
-    residentRuntimeMatchesConfig(
+    matches(
       { requested_context_length: 0 },
       { ...BLANK, customContextLength: 0 },
     ),
@@ -323,11 +317,8 @@ test("one differing field among many agreeing ones is still a reload", () => {
     requested_parallel_slots: 2,
     gpu_layers: 99,
   };
-  assert.equal(residentRuntimeMatchesConfig(status, config), true);
-  assert.equal(
-    residentRuntimeMatchesConfig({ ...status, cache_type_kv: "f16" }, config),
-    false,
-  );
+  assert.equal(matches(status, config), true);
+  assert.equal(matches({ ...status, cache_type_kv: "f16" }, config), false);
 });
 
 /**
@@ -368,5 +359,89 @@ test("selectModel weighs the config and the lease before confirming a reload", (
     source.slice(Math.max(0, identityCheck - 600), identityCheck),
     /if\s*\(!forceReload\s*&&\s*!nativePathToken\)/,
     "the resident short-circuit no longer excludes native-lease picks",
+  );
+});
+
+/**
+ * The four fields that are NOT per-model. Leaving one out of a config is not silence:
+ * applyPerModelConfigToRuntime resolves it from a standing preference or a constant and
+ * the load sends that, so reading it as unpinned let a pick adopt a runtime it did not
+ * ask for. Reported on this file by review, reproduced against the applier, fixed here.
+ */
+test("an unset speculative mode is the standing preference, not silence", () => {
+  // Standing preference is "off"; the resident model is running MTP. The load would send
+  // "off", so this is a real reload even though the config names no mode.
+  assert.equal(
+    matches({ ...DEFAULTS, speculative_type: "mtp" }, BLANK, {
+      ...STANDING,
+      speculativeType: "off",
+    }),
+    false,
+  );
+  // Same standing preference, and the resident model already runs it.
+  assert.equal(
+    matches({ ...DEFAULTS, speculative_type: "off" }, BLANK, {
+      ...STANDING,
+      speculativeType: "off",
+    }),
+    true,
+  );
+});
+
+test("a config that names a mode still beats the standing preference", () => {
+  assert.equal(
+    matches(
+      { ...DEFAULTS, speculative_type: "mtp" },
+      { ...BLANK, speculativeType: "mtp" },
+      { ...STANDING, speculativeType: "off" },
+    ),
+    true,
+  );
+});
+
+test("the speculative mode is normalized on both sides", () => {
+  // "default" and "auto" are the same mode; a spelling difference is not a reload.
+  assert.equal(
+    matches({ ...DEFAULTS, speculative_type: "default" }, BLANK),
+    true,
+  );
+});
+
+test("an unset GPU memory mode is the standing preference, not silence", () => {
+  assert.equal(
+    matches({ ...DEFAULTS, gpu_memory_mode: "manual" }, BLANK),
+    false,
+  );
+  assert.equal(
+    matches({ ...DEFAULTS, gpu_memory_mode: "manual" }, BLANK, {
+      ...STANDING,
+      gpuMemoryMode: "manual",
+    }),
+    true,
+  );
+});
+
+test("unset GPU layers and CPU MoE layers resolve to Auto and 0", () => {
+  // GPU_LAYERS_AUTO is -1; a resident manual pin is a real reload.
+  assert.equal(matches({ ...DEFAULTS, gpu_layers: 20 }, BLANK), false);
+  assert.equal(matches({ ...DEFAULTS, gpu_layers: -1 }, BLANK), true);
+  assert.equal(matches({ ...DEFAULTS, n_cpu_moe: 12 }, BLANK), false);
+  assert.equal(matches({ ...DEFAULTS, n_cpu_moe: 0 }, BLANK), true);
+});
+
+test("no config at all still adopts, whatever the resident runtime is", () => {
+  // Nothing to send means nothing can differ: the load path reads the live runtime, which
+  // was hydrated from the resident model.
+  assert.equal(
+    matches(
+      {
+        speculative_type: "mtp",
+        gpu_layers: 20,
+        gpu_memory_mode: "manual",
+        n_cpu_moe: 12,
+      },
+      null,
+    ),
+    true,
   );
 });
