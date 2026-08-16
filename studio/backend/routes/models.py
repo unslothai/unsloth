@@ -870,8 +870,10 @@ class _CompatLocalInventorySources(NamedTuple):
     legacy_hf: Path
     hf_default: Path
     lm_dirs: tuple[Path, ...]
-    omlx_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
+    # Last, and defaulted: callers that build this positionally with the original
+    # five fields keep working, and every reader here goes through the name.
+    omlx_dirs: tuple[Path, ...] = ()
 
 
 def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
@@ -887,8 +889,8 @@ def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
         legacy_hf_cache_dir(),
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
-        tuple(omlx_model_dirs()),
         tuple(known_hf_hub_caches()),
+        tuple(omlx_model_dirs()),
     )
 
 
@@ -1139,8 +1141,8 @@ async def _shared_compat_local_inventory_scan(
             return await hf_cache_scan.shared_scan(
                 _compat_local_inventory_flights,
                 key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: (
-                    collect(expected_epoch, folders, roots)
+                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
+                    expected_epoch, folders, roots
                 ),
             )
         except _CompatLocalCacheChanged as changed:
