@@ -1178,7 +1178,9 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             row = results["by_engine"][engine]["by_size"][str(size)]
             where = f"{engine} at {size} chars"
             if "crashed" in row:
-                failures.append(f"{where} crashed before it produced a measurement: {row['crashed']}")
+                failures.append(
+                    f"{where} crashed before it produced a measurement: {row['crashed']}"
+                )
                 continue
             counts = row["counts"]
             plan = row["plan"]
