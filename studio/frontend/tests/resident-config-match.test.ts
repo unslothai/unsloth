@@ -1424,6 +1424,37 @@ test("the resident shortcut keeps the picked model's own sequence cap", () => {
 });
 
 /**
+ * The one non-settings reason the route refuses its own already-loaded answer.
+ *
+ * _reuse_loaded_gguf requires _audio_probed, and when it is false load_model reaches its
+ * fast path and re-probes there. Nothing else re-probes, so a shortcut that skips /load
+ * leaves the model's audio capabilities undetected for as long as the server runs, which
+ * is a silent loss rather than one extra reload.
+ */
+test("an outstanding audio probe keeps the shortcut from skipping the load", () => {
+  const source = readFileSync(
+    fileURLToPath(
+      new URL(
+        "../src/features/chat/hooks/use-chat-model-runtime.ts",
+        import.meta.url,
+      ),
+    ),
+    "utf8",
+  );
+  const identity = source.search(/residentModelMatchesPick\(\s*status/);
+  const probe = source.indexOf("status.audio_probe_pending !== true", identity);
+  assert.ok(
+    probe > identity,
+    "the shortcut adopts a model whose audio probe never finished",
+  );
+  // Inside the verdict, so the re-read before adopting judges it again.
+  const decision = source.indexOf("const confirmedStatus", identity);
+  assert.ok(probe < decision, "the probe check escaped the residency verdict");
+  // Only an explicit true declines: a backend too old to report it behaves as before.
+  assert.match(source.slice(probe - 40, probe + 40), /!== true/);
+});
+
+/**
  * The status that opens the window is not the one adopted.
  *
  * Between the first /api/inference/status and the decision there are awaits: the GPU

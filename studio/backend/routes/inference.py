@@ -7038,6 +7038,17 @@ def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
         return None
 
 
+def _audio_probe_pending(llama_backend) -> bool:
+    """Whether the post-launch audio probe still has to be retried.
+
+    ``_reuse_loaded_gguf`` refuses the route's own already-loaded answer while this is
+    true, so ``load_model`` reaches its fast path and re-probes there. A client that
+    skips /load skips the retry with it, and nothing else re-probes, so the model's
+    audio capabilities would stay undetected for as long as the server runs.
+    """
+    return not getattr(llama_backend, "_audio_probed", True)
+
+
 def _gpu_placement_paravirtual() -> Optional[bool]:
     """Whether every GGUF request on this host is rewritten to the CPU pin.
 
@@ -10616,6 +10627,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
                 spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
                 gpu_placement_paravirtual = _gpu_placement_paravirtual(),
+                audio_probe_pending = _audio_probe_pending(llama_backend),
                 tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
                     llama_backend
                 ),

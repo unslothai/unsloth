@@ -1116,6 +1116,14 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "here. None on a backend too old to report it."
         ),
     )
+    audio_probe_pending: bool = Field(
+        False,
+        description = (
+            "The post-launch audio probe did not finish and has to be retried. The route "
+            "refuses its own already-loaded answer while this is true so load_model can "
+            "re-probe, and nothing else does, so a client must not skip /load for it."
+        ),
+    )
     llama_cpp_prebuilt_stale: bool = Field(
         False,
         description = (

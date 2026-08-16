@@ -391,6 +391,8 @@ export interface InferenceStatusResponse {
   tensor_parallel_dropped_by_arch_gate?: boolean | null;
   /** A virtualised Metal device: every GGUF request is rewritten to the CPU pin. */
   gpu_placement_paravirtual?: boolean | null;
+  /** The post-launch audio probe did not finish; only a load retries it. */
+  audio_probe_pending?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

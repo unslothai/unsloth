@@ -742,6 +742,11 @@ export function useChatModelRuntime() {
             loadPath,
             ggufVariant,
           }) &&
+          // _reuse_loaded_gguf refuses its own already-loaded answer while the audio probe
+          // is outstanding, so load_model reaches its fast path and re-probes there.
+          // Nothing else does, so skipping /load would leave the model's audio
+          // capabilities undetected for as long as the server runs.
+          status.audio_probe_pending !== true &&
           // A repairable speculative fallback is the one case where an identical request is
           // not a no-op: _runtime_matches_intent deliberately answers False for it so the
           // next load retries the drafter. Short-circuiting would suppress that and strand

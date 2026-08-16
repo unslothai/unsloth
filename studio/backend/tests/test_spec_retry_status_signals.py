@@ -236,3 +236,21 @@ def test_a_detector_that_raises_is_unknown_not_false(monkeypatch):
 
     monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", _boom)
     assert helper() is None
+
+
+def test_a_pending_audio_probe_is_reported():
+    # _reuse_loaded_gguf reads _audio_probed with a True default, and this mirrors it: a
+    # backend that never tracked the probe is not one with an outstanding probe.
+    helper = _load_helper("_audio_probe_pending")
+
+    class _Probed:
+        def __init__(self, probed):
+            self._audio_probed = probed
+
+    assert helper(_Probed(False)) is True
+    assert helper(_Probed(True)) is False
+
+    class _Bare:
+        pass
+
+    assert helper(_Bare()) is False
