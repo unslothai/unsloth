@@ -30,6 +30,7 @@ import {
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
+  DeleteChatFilesSwitch,
   downloadArchivedChatExport,
   downloadChatExport,
   exportFineTuneJsonl,
@@ -96,6 +97,9 @@ export function DataTab() {
     (s) => s.consumeArchivedChatsRequest,
   );
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // Preselected from the preference, so the dialog shows what is about to
+  // happen and can still be turned off for this one clear.
+  const [deleteFilesOnClear, setDeleteFilesOnClear] = useState(false);
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   // Subpages swap the Data tab body instead of opening nested dialogs.
   const [subpage, setSubpage] = useState<
@@ -412,7 +416,7 @@ export function DataTab() {
     setClearing(true);
     try {
       const result = await clearAllChats({
-        deleteFiles: alwaysDeleteChatFiles,
+        deleteFiles: deleteFilesOnClear,
       });
       const clearedCount = result.deletedThreadIds.length;
       // A sandbox the backend could not remove, asked for or not.
@@ -832,7 +836,10 @@ export function DataTab() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => {
+              setDeleteFilesOnClear(alwaysDeleteChatFiles);
+              setConfirmOpen(true);
+            }}
             disabled={count === 0}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
@@ -930,6 +937,13 @@ export function DataTab() {
               {t("settings.chat.clearChatsConfirmDescription")}
             </DialogDescription>
           </DialogHeader>
+          <DeleteChatFilesSwitch
+            id="clear-chats-delete-files"
+            checked={deleteFilesOnClear}
+            onCheckedChange={setDeleteFilesOnClear}
+            // Every chat at once, so the per-chat wording does not fit.
+            description={t("shell.selection.deleteFilesDescription")}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)}>
               {t("common.cancel")}

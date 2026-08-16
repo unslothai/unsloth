@@ -52,24 +52,33 @@ test("every confirmation discloses the file deletion and can undo it", async () 
   // The preference makes a delete destructive past the chat itself. A dialog
   // that neither says so nor offers the switch removes a sandbox the user was
   // never shown, and there is no undo.
-  const dialogs = [
-    "../src/components/app-sidebar.tsx",
-    "../src/features/chat/chat-page.tsx",
-    "../src/features/settings/components/archived-chats-dialog.tsx",
+  // Every dialog that can reach a delete, with the state each one names.
+  const dialogs: Array<[string, string]> = [
+    ["../src/components/app-sidebar.tsx", "deleteFilesOnDelete"],
+    ["../src/features/chat/chat-page.tsx", "deleteFilesOnDelete"],
+    [
+      "../src/features/settings/components/archived-chats-dialog.tsx",
+      "deleteFilesOnDelete",
+    ],
+    [
+      "../src/features/settings/components/recent-dictations-view.tsx",
+      "deleteFilesOnDelete",
+    ],
+    ["../src/features/settings/tabs/data-tab.tsx", "deleteFilesOnClear"],
   ];
-  for (const file of dialogs) {
+  for (const [file, state] of dialogs) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     // The rendered control, not just the state behind it.
-    assert.match(
-      source,
-      /checked=\{deleteFilesOnDelete\}/,
+    assert.ok(
+      source.includes(`checked={${state}}`),
       `${file} deletes files without a switch to turn it off`,
     );
     // Preselected from the preference: the switch has to show what will happen,
     // not sit off while the delete removes the files anyway.
+    const setter = state.replace(/^delete/, "setDelete");
     assert.match(
       source,
-      /setDeleteFilesOnDelete\([\s\S]{0,40}alwaysDeleteChatFiles/,
+      new RegExp(`${setter}\\([\\s\\S]{0,40}alwaysDeleteChatFiles`),
       `${file} does not preselect the switch from the preference`,
     );
   }
@@ -78,18 +87,22 @@ test("every confirmation discloses the file deletion and can undo it", async () 
 test("the confirmed delete follows the switch, not the preference", async () => {
   // Reading the preference at delete time would ignore a switch the user just
   // turned off, which is the whole point of showing it.
-  for (const file of [
-    "../src/features/chat/chat-page.tsx",
-    "../src/features/settings/components/archived-chats-dialog.tsx",
-  ]) {
+  for (const [file, signature] of [
+    ["../src/features/chat/chat-page.tsx", /item: SidebarItem,\s*deleteFiles: boolean/],
+    [
+      "../src/features/settings/components/archived-chats-dialog.tsx",
+      /item: SidebarItem,\s*deleteFiles: boolean/,
+    ],
+    [
+      "../src/features/settings/components/recent-dictations-view.tsx",
+      /confirmDeleteWithChat\(deleteFiles: boolean\)/,
+    ],
+    ["../src/features/settings/tabs/data-tab.tsx", /deleteFiles: deleteFilesOnClear/],
+  ] as Array<[string, RegExp]>) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     // The executor is handed the answer instead of reading the store, so the
     // confirmed value is the one that reaches the request.
-    assert.match(
-      source,
-      /item: SidebarItem,\s*deleteFiles: boolean/,
-      `${file} does not take the confirmed value`,
-    );
+    assert.match(source, signature, `${file} does not take the confirmed value`);
     assert.equal(
       /deleteFiles: alwaysDeleteChatFiles/.test(source),
       false,

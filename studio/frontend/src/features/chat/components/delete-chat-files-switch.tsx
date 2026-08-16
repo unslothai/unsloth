@@ -14,10 +14,13 @@ export function DeleteChatFilesSwitch({
   id,
   checked,
   onCheckedChange,
+  description,
 }: {
   id: string;
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
+  /** For a delete covering more than one chat, which reads differently. */
+  description?: string;
 }) {
   const t = useT();
   const label = t("shell.selection.deleteFilesLabel");
@@ -28,7 +31,7 @@ export function DeleteChatFilesSwitch({
           {label}
         </span>
         <span className="block break-words text-xs leading-5 text-muted-foreground">
-          {t("shell.selection.deleteChatFilesDescription")}
+          {description ?? t("shell.selection.deleteChatFilesDescription")}
         </span>
       </label>
       <Switch
