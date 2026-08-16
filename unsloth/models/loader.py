@@ -1923,6 +1923,7 @@ class FastModel(FastBaseModel):
         is_vlm = any(x.endswith("ForConditionalGeneration") for x in architectures)
         is_vlm = is_vlm or hasattr(model_config, "vision_config")
         load_text_only = text_only and auto_model is None
+        text_only_decoder = False
         if load_text_only:
             if hasattr(model_config, "vision_config"):
                 text_config = _get_text_only_config(model_config, old_model_name)
@@ -1943,6 +1944,9 @@ class FastModel(FastBaseModel):
                     _apply_text_only_key_mapping(kwargs, model_config, text_config)
                     model_config = text_config
                     is_vlm = False
+                    # model_config is no longer the repo's config; anything that rebuilds
+                    # it from model_name (the device-map planner) sees a different model.
+                    text_only_decoder = True
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
@@ -2026,6 +2030,7 @@ class FastModel(FastBaseModel):
             disable_log_stats = disable_log_stats,
             load_in_fp8 = load_in_fp8,
             text_only = load_text_only,
+            text_only_decoder = text_only_decoder,
             *args,
             **kwargs,
         )

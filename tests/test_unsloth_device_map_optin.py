@@ -64,6 +64,7 @@ def _load(
             "requested_device_map",
             "resolve_unsloth_device_map",
             "planner_quantization_kwargs",
+            "planner_class_mismatch_reason",
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
         elif (
@@ -145,6 +146,105 @@ def test_the_env_var_only_upgrades_the_default(monkeypatch):
 def test_planning_is_declined_where_something_else_owns_placement(kwargs, why):
     ns = _load(planner = lambda *a, **k: pytest.fail(f"must not plan: {why}"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
+
+
+def test_a_caller_that_vetoes_planning_is_obeyed():
+    """Only the leaf knows when the config it is about to load is not the one the planner
+    would rebuild from the repo, so it needs a way to say so."""
+    ns = _load(planner = lambda *a, **k: pytest.fail("planned despite the veto"))
+    assert (
+        ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = "text_only") == "sequential"
+    )
+    # A veto is not a licence to reinterpret a placement the caller chose.
+    assert ns["resolve_unsloth_device_map"]("auto", "m", skip_reason = "text_only") == "auto"
+
+
+def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
+    """`text_only = True` loads a VLM's standalone decoder: `auto_config` becomes the text
+    sub-config and `auto_model` becomes AutoModelForCausalLM, so Gemma 3 loads
+    Gemma3ForCausalLM (`model.layers.0`). The planner only gets `model_name`, rebuilds the
+    repo's own multimodal config and plans Gemma3ForConditionalGeneration
+    (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
+    decoder weight matches a key of that map, and transformers raises
+    "model.embed_tokens.weight doesn't have any device set" for the first of them.
+    """
+    models = os.path.join(HERE, "unsloth", "models")
+
+    vision = open(os.path.join(models, "vision.py"), encoding = "utf-8").read()
+    tree = ast.parse(vision)
+    signature = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "from_pretrained"
+        and any(a.arg == "text_only" for a in node.args.args + node.args.kwonlyargs)
+    ]
+    assert signature, "vision.py no longer takes text_only"
+    for node in signature:
+        args = {a.arg for a in node.args.args + node.args.kwonlyargs}
+        assert "text_only_decoder" in args, f"vision.py:{node.lineno}"
+    # The direct-call path resolves the text config itself, so it has to raise the flag.
+    assert "text_only_decoder = True" in vision
+
+    # The veto reaches the planner call, and whatever it is spelled as is decided by the flag.
+    assignments = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                assignments[target.id] = assignments.get(target.id, "") + ast.unparse(node.value)
+    for call in _resolve_calls(vision):
+        passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+        assert "skip_reason" in passed, f"vision.py:{call.lineno} plans a text-only decoder"
+        source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
+        assert "text_only_decoder" in source, f"vision.py:{call.lineno}"
+        # The other way the load can diverge from the plan; see the task-head test.
+        assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
+
+    # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.
+    loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
+    assert "text_only_decoder = True" in loader
+    forwarded = [
+        node
+        for node in ast.walk(ast.parse(loader))
+        if isinstance(node, ast.Call)
+        and any(kw.arg == "text_only_decoder" for kw in node.keywords)
+    ]
+    assert forwarded, "loader.py swaps the config but never tells the leaf"
+
+
+def test_a_task_head_the_planner_cannot_see_declines_planning():
+    """`num_labels` makes the load AutoModelForSequenceClassification, whose `score`
+    replaces `lm_head`. The planner only gets `model_name`, reads the repo's own
+    `architectures` (`LlamaForCausalLM`) and emits units ending in `lm_head`, so
+    `score.weight` matches no key of the map and accelerate's dispatch refuses it: "does
+    not give any device for the following parameters: score.weight". A checkpoint weight
+    that lands the same way (a text-only decoder) fails earlier still, inside the load.
+    Compared as model classes: AutoModelForVision2Seq and
+    AutoModelForImageTextToText are different objects that build the same VLM, so
+    comparing auto classes would decline planning for every VLM.
+    """
+    ns = _load()
+    mismatch = ns["planner_class_mismatch_reason"]
+
+    class LlamaForCausalLM:
+        pass
+
+    class LlamaForSequenceClassification:
+        pass
+
+    reason = mismatch(LlamaForSequenceClassification, LlamaForCausalLM)
+    assert reason and "LlamaForSequenceClassification" in reason
+    assert mismatch(LlamaForCausalLM, LlamaForCausalLM) is None
+    # Unknown is not mismatched: an unsloth_zoo too old to name the class has no planner.
+    assert mismatch(LlamaForCausalLM, None) is None
+    assert mismatch(None, LlamaForCausalLM) is None
+
+    ns = _load(planner = lambda *a, **k: pytest.fail("planned a head the plan does not name"))
+    assert (
+        ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = reason) == "sequential"
+    )
 
 
 def test_a_distributed_launch_never_gets_an_intra_model_split():

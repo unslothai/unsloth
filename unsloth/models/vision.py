@@ -47,6 +47,8 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    planner_class_mismatch_reason,
+    planner_model_class,
     planner_quantization_kwargs,
     requested_device_map,
     resolve_unsloth_device_map,
@@ -917,6 +919,10 @@ class FastBaseModel:
         unsloth_vllm_standby = False,
         load_in_fp8 = False,  # fp8 LoRA (True, False, 'block')
         text_only = False,
+        # True when the caller already swapped a multimodal config for its text sub-config,
+        # so `auto_config` no longer describes the repo. loader.py sets it; the block below
+        # sets it for the direct-call path.
+        text_only_decoder = False,
         **kwargs,
     ):
         user_config = kwargs.pop("config", None)
@@ -976,6 +982,7 @@ class FastBaseModel:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
                 _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
             AutoModelForImageTextToText,
@@ -1170,6 +1177,27 @@ class FastBaseModel:
         if do_forced_float32:
             torch_dtype = torch.bfloat16
 
+        # text_only loads the decoder alone, but the planner only gets `model_name` and
+        # rebuilds the repo's own config, which is the whole VLM: it budgets a vision tower
+        # this load never creates and names its modules (`model.language_model.layers.0`),
+        # none of which exist on the standalone decoder (`model.layers.0`), so transformers
+        # raises "doesn't have any device set" on the first decoder weight. Plan nothing
+        # rather than plan the wrong module tree.
+        _planner_skip_reason = (
+            "text_only loads a decoder the repo config does not describe"
+            if text_only_decoder
+            else None
+        )
+        # Same failure from the other direction: `num_labels` (or an explicit `auto_model`)
+        # loads a task head, so LlamaForSequenceClassification's `score` replaces the
+        # `lm_head` the planner named off the repo's config, and accelerate's dispatch
+        # refuses a map that gives `score.weight` no device.
+        if _planner_skip_reason is None:
+            _planner_skip_reason = planner_class_mismatch_reason(
+                model_class,
+                planner_model_class(auto_config, trust_remote_code = trust_remote_code),
+            )
+
         # A no-op unless the caller asked for "unsloth" (or set UNSLOTH_AUTO_DEVICE_MAP).
         # loader.py resolves it too, and returns an already-planned map unchanged, so
         # calling FastBaseModel directly gets the same behaviour as going through FastModel.
@@ -1179,6 +1207,7 @@ class FastBaseModel:
             fast_inference = fast_inference,
             full_finetuning = full_finetuning,
             planner_kwargs = device_map_planner_kwargs,
+            skip_reason = _planner_skip_reason,
             token = token,
             trust_remote_code = trust_remote_code,
             # The pin the config and weights below use. Planning against the default

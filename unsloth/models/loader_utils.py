@@ -151,6 +151,37 @@ def planner_quantization_kwargs(
     return kwargs
 
 
+def planner_model_class(config, trust_remote_code = False):
+    """The model class unsloth_zoo's planner will build for `config`, or None if unknown.
+
+    The planner never sees the auto class the load chose: it picks its own off the config.
+    """
+    try:
+        from unsloth_zoo.device_map_planner import _auto_class_for
+        from ._utils import resolve_model_class
+
+        auto_class = _auto_class_for(config, trust_remote_code = trust_remote_code)
+        return resolve_model_class(auto_class, config)
+    except Exception:
+        # Unknown, not mismatched: an unsloth_zoo without this has no planner to feed.
+        return None
+
+
+def planner_class_mismatch_reason(loaded_class, planned_class):
+    """Why the planner's model differs from the one being loaded, else None.
+
+    A load that overrides the config's own choice gets a map for a module tree it does not
+    have: `num_labels` swaps in AutoModelForSequenceClassification, whose `score` replaces
+    the `lm_head` the plan named, and accelerate's dispatch then refuses the map with "does
+    not give any device for the following parameters: score.weight". Compared as model
+    classes, not auto classes -- AutoModelForVision2Seq and AutoModelForImageTextToText are
+    distinct objects that resolve to the same VLM.
+    """
+    if loaded_class is None or planned_class is None or loaded_class is planned_class:
+        return None
+    return f"the load builds {loaded_class.__name__}, not the planned {planned_class.__name__}"
+
+
 def resolve_unsloth_device_map(
     device_map,
     model_name,
@@ -158,6 +189,7 @@ def resolve_unsloth_device_map(
     fast_inference = False,
     full_finetuning = False,
     planner_kwargs = None,
+    skip_reason = None,
     **config_kwargs,
 ):
     """Plan a head-aware multi-GPU map for `device_map = "unsloth"`, else return as-is.
@@ -170,6 +202,9 @@ def resolve_unsloth_device_map(
     old way beats one that refuses to load at all. `DeviceMapInfeasible` is the exception:
     the planner raises it rather than spilling a bitsandbytes model to CPU, and silently
     undoing that would hand the user an OOM instead of a diagnosis.
+
+    `skip_reason` is the caller's own veto, for when only the caller can tell that the
+    planner would describe a different model than the load builds.
     """
     if device_map != UNSLOTH_DEVICE_MAP:
         return device_map
@@ -178,6 +213,8 @@ def resolve_unsloth_device_map(
         print(f"Unsloth: Not planning a device map; {reason}. Using `sequential`.")
         return "sequential"
 
+    if skip_reason is not None:
+        return _fallback(skip_reason)
     if fast_inference:
         return _fallback("vLLM places its own weights")
     if full_finetuning:
