@@ -12298,9 +12298,7 @@ async def _proxy_to_external_provider(
                 session_id = payload.session_id,
             )
             if _codex_workdir_nudge and not payload.bypass_permissions:
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_workdir_nudge
-                )
+                chat_messages = _append_to_codex_instructions(chat_messages, _codex_workdir_nudge)
             if payload.bypass_permissions:
                 _codex_full_access_nudge = _build_tool_action_nudge(
                     tools = studio_tool_payloads,
