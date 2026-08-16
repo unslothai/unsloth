@@ -2042,6 +2042,22 @@ def _verdict(d, d_record):
     # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
     # line boundary stays undetectable here.
     damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
+    if not _edit and rows:
+        # A PEP 660 editable whose direct_url.json is gone or corrupt still has its
+        # .pth and finder shims, and those are its ENTIRE payload -- a plain file
+        # scan finds them present and calls the install healthy while the checkout
+        # they point at may be deleted. Nothing here can validate that target, and
+        # unusable metadata for an editable install is the damage, exactly as an
+        # unresolvable url is below. A wheel that merely ships a .pth alongside real
+        # modules is untouched: this needs the payload to be shims and nothing else.
+        _shim = _real = 0
+        for _f, _fsz, _fk in rows:
+            if _f.suffix == '.pth' or _f.name.startswith(('__editable__', '_editable_')):
+                _shim += 1
+            else:
+                _real += 1
+        if _shim and not _real:
+            damaged = True
     if not damaged:
         for f, sz, key in rows:
             try:
