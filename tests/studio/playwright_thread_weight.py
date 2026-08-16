@@ -586,7 +586,7 @@ TABLE_ROWS = (
     ("katex nodes", lambda r: r["counts"]["katexNodes"]),
     ("action bars", lambda r: r["counts"]["actionBars"]),
     ("tooltip triggers", lambda r: r["counts"]["tooltipTriggers"]),
-    ("tooltip triggers hovered", lambda r: r["menu"].get("triggers_while_hovered")),
+    ("tooltip triggers hovered", lambda r: r["menu"]["triggers_while_hovered"]),
     ("viewport scrollHeight", lambda r: r["viewport"]["scrollHeight"]),
     ("viewport scrollTop", lambda r: r["viewport"]["scrollTop"]),
     ("viewport clientHeight", lambda r: r["viewport"]["clientHeight"]),
@@ -795,6 +795,20 @@ def harness_failures(results: dict) -> list[str]:
         # An empty popover satisfies "the menu opened" and costs nothing to render.
         elif not menu["items_while_open"]:
             failures.append(f"N={size} opened an action menu with no items in it")
+
+    # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
+    # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
+    # across N is comparing columns measured on different mechanisms, which is the quiet way
+    # this table stops meaning anything.
+    layers = set()
+    for size in results["sizes"]:
+        menu = results["by_size"][str(size)]["menu"]
+        layers.add(menu["body_pointer_events_while_open"])
+    if len(layers) > 1:
+        failures.append(
+            f"the menu put the body on {sorted(str(x) for x in layers)} across N; the columns "
+            "are not measuring the same mechanism"
+        )
         deleted = row["delete"]
         if deleted["ms"] is None:
             failures.append(f"N={size} never deleted a message")
