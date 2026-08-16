@@ -41,8 +41,16 @@ export function isGuardRetiringKey(event: {
   key: string;
   metaKey: boolean;
   ctrlKey: boolean;
+  altKey?: boolean;
+  getModifierState?: (key: "AltGraph") => boolean;
 }): boolean {
-  if (event.metaKey || event.ctrlKey) return false;
+  // AltGr types characters but Windows reports it as Ctrl+Alt, so the chord
+  // check alone would drop every character produced with it. Both forms are
+  // tested: some builds set the flags even while AltGraph reads true.
+  const altGraph =
+    event.getModifierState?.("AltGraph") === true ||
+    (event.ctrlKey && event.altKey === true && event.key.length === 1);
+  if (!altGraph && (event.metaKey || event.ctrlKey)) return false;
   if (event.key === "Enter" || event.key === "Escape" || event.key === "Tab") {
     return false;
   }

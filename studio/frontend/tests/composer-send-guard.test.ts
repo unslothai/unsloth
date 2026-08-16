@@ -289,3 +289,41 @@ test("a composition begun after the send is applied", () => {
     guard: null,
   });
 });
+
+// AltGr is how a lot of layouts reach @, so a one-character prompt typed with
+// it must retire the equality guard. Windows reports it as Ctrl+Alt, and some
+// builds set those flags even while AltGraph reads true, so both forms count.
+test("an AltGr character is a keystroke boundary", () => {
+  assert.equal(
+    isGuardRetiringKey({
+      key: "@",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: true,
+      getModifierState: (k: "AltGraph") => k === "AltGraph",
+    }),
+    true,
+  );
+  assert.equal(
+    isGuardRetiringKey({ key: "@", metaKey: false, ctrlKey: true, altKey: true }),
+    true,
+  );
+});
+
+test("a real Ctrl chord is still not a keystroke boundary", () => {
+  assert.equal(
+    isGuardRetiringKey({
+      key: "a",
+      metaKey: false,
+      ctrlKey: true,
+      altKey: false,
+      getModifierState: () => false,
+    }),
+    false,
+  );
+  // Ctrl+Alt on a named key is a shortcut, not a character.
+  assert.equal(
+    isGuardRetiringKey({ key: "Delete", metaKey: false, ctrlKey: true, altKey: true }),
+    false,
+  );
+});
