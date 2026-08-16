@@ -6280,7 +6280,10 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ActionBarMorePrimitive.Root>
+        {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
+            that is an INHERITED property, so every open invalidates style for the whole
+            document. On a long thread that recalc is the bulk of the open+close cost. */}
+        <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
               tooltip="More"

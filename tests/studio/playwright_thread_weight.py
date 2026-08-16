@@ -282,6 +282,10 @@ async (timeoutMs) => {
   const openMs = opened === null ? null : performance.now() - openStarted;
   const bodyPointerEvents = getComputedStyle(document.body).pointerEvents;
   const itemsWhileOpen = api.openMenuItemCount();
+  // Counted here, under the pointer, not in the resting-state census. An autohidden bar is
+  // absent at rest by design; one that never mounts at all is a broken page, and only a
+  // hovered count tells the two apart.
+  const triggersWhileHovered = document.querySelectorAll('[data-slot="tooltip-trigger"]').length;
   // The clock starts BEFORE the dispatch. Radix dismisses synchronously inside it -- layer
   // teardown, focus restore, the body coming off the modal layer and the re-render that
   // follows -- which is the O(messages) fan-out being measured. Starting it after the dispatch
@@ -297,6 +301,7 @@ async (timeoutMs) => {
     bodyPointerEvents,
     bodyPointerEventsAfterClose: getComputedStyle(document.body).pointerEvents,
     itemsWhileOpen,
+    triggersWhileHovered,
   };
   watcher.disconnect();
   return result;
@@ -493,6 +498,7 @@ def measure_one(context, cdp_throttle_rate: float, size: int) -> dict:
                 None if menu is None else menu["bodyPointerEventsAfterClose"]
             ),
             "items_while_open": None if menu is None else menu["itemsWhileOpen"],
+            "triggers_while_hovered": None if menu is None else menu["triggersWhileHovered"],
             **counters(before, after),
             **long_task_summary(page),
         }
@@ -584,6 +590,7 @@ TABLE_ROWS = (
     ("katex nodes", lambda r: r["counts"]["katexNodes"]),
     ("action bars", lambda r: r["counts"]["actionBars"]),
     ("tooltip triggers", lambda r: r["counts"]["tooltipTriggers"]),
+    ("tooltip triggers hovered", lambda r: r["menu"].get("triggers_while_hovered")),
     ("viewport scrollHeight", lambda r: r["viewport"]["scrollHeight"]),
     ("viewport scrollTop", lambda r: r["viewport"]["scrollTop"]),
     ("viewport clientHeight", lambda r: r["viewport"]["clientHeight"]),
@@ -738,10 +745,15 @@ def harness_failures(results: dict) -> list[str]:
                 f"N={size} rendered {counts['codeBlocks']} code blocks and "
                 f"{counts['katexNodes']} KaTeX nodes; the message bodies are not realistic"
             )
-        if counts["actionBars"] <= 0 or counts["tooltipTriggers"] <= 0:
+        # An autohidden bar is absent at rest ON PURPOSE, so the resting census cannot be the
+        # guard any more. What must still hold is that hovering produces one: a tree that
+        # mounts no bar under the pointer either is broken, and its menu column is measuring
+        # a page that has no menu.
+        hovered_triggers = row["menu"].get("triggers_while_hovered")
+        if counts["actionBars"] <= 0 and not hovered_triggers:
             failures.append(
-                f"N={size} mounted no action bar or tooltip trigger; the per-message weight "
-                "under investigation is absent"
+                f"N={size} mounted no action bar at rest and none under the pointer either; "
+                "the per-message weight under investigation is absent"
             )
         viewport = row["viewport"]
         if viewport["scrollHeight"] <= viewport["clientHeight"]:
@@ -782,14 +794,6 @@ def harness_failures(results: dict) -> list[str]:
             failures.append(f"N={size} never opened the message action menu")
         elif menu["close_ms"] is None:
             failures.append(f"N={size} opened the action menu and it never closed")
-        # The fan-out this issue blames runs off the body going onto the modal layer. If it did
-        # not, the menu timing above is measuring some other, cheaper thing.
-        elif menu["body_pointer_events_while_open"] != "none":
-            failures.append(
-                f"N={size} opened the menu without putting the body on the modal layer "
-                f"(pointer-events: {menu['body_pointer_events_while_open']}); the menu cost "
-                "recorded here is not the one under investigation"
-            )
         elif menu["body_pointer_events_after_close"] == "none":
             failures.append(f"N={size} left the body on the modal layer after closing the menu")
         # An empty popover satisfies "the menu opened" and costs nothing to render.
