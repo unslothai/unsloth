@@ -3,18 +3,15 @@
 
 """A split that truncates its own rows may say so instead of being scanned.
 
-`pretokenized_within_cap` decides whether `max_length` is already enforced by
-reading EVERY row of the split. For a lazily-tokenizing split -- a
-`datasets.with_transform` view, which is what Studio's online tokenization
-produces -- reading a row IS tokenizing it, so that scan runs the whole eager
-tokenize pass the view exists to avoid, inside `__init__` where nothing overlaps
-it.
+`pretokenized_within_cap` checks `max_length` by reading every row. On a
+lazily-tokenizing `with_transform` view -- what Studio's online tokenization
+produces -- reading a row is tokenizing it, so the scan runs the whole eager pass
+the view exists to avoid, inside `__init__` where nothing overlaps it.
 
-The attestation is the escape: `_unsloth_truncated_to = N` on the split means
-"every row I yield is already cut at N". The two copies of the scan (this
-module's, and the one `rl.py` inlines into every generated trainer) must agree
-on it, so both are exercised here -- the inlined one by extracting it from the
-codegen string and executing it, which is the only way to test source that only
+`_unsloth_truncated_to = N` is the escape: every row is already cut at N. Both
+copies of the scan (this module's and the one `rl.py` inlines into every
+generated trainer) must agree, so both run here; the inlined one is extracted
+from the codegen string and executed, the only way to test source that only
 exists as a string.
 """
 
@@ -34,10 +31,8 @@ RL_PATH = REPO_ROOT / "unsloth" / "models" / "rl.py"
 
 
 def _load_rl_module():
-    """`unsloth.models.rl` without importing unsloth (torch, CUDA, the lot).
-
-    Only the pure helpers are needed, and they are stdlib-only.
-    """
+    """`unsloth.models.rl` without importing unsloth: only the pure, stdlib-only
+    helpers are needed."""
     import ast
 
     source = RL_PATH.read_text(encoding = "utf-8")
@@ -67,11 +62,9 @@ rl = _load_rl_module()
 
 
 class _Lazy:
-    """A split that rebuilds its rows on read, and counts the reads.
-
-    Stands in for `with_transform`: same shape, no `datasets` dependency, and it
-    can prove the scan did not happen.
-    """
+    """A split that rebuilds its rows on read and counts the reads: stands in for
+    `with_transform` without the `datasets` dependency, and can prove the scan
+    did not happen."""
 
     def __init__(
         self,
@@ -173,17 +166,15 @@ def test_splits_within_cap_honours_the_attestation_per_split():
 def _inlined_within_cap(cap):
     """Build `_unsloth_within_cap` out of the codegen string and return it.
 
-    The generated trainer is a standalone module and cannot import from
-    `rl.py`, so the scan exists twice. This extracts the string literals that
-    make up the second copy and executes them, which is the only way to hold
-    the two to the same verdict.
+    The generated trainer cannot import from `rl.py`, so the scan exists twice;
+    extracting and executing the literals is the only way to hold both copies to
+    the same verdict.
     """
     source = RL_PATH.read_text(encoding = "utf-8")
     start = source.index('"    def _unsloth_within_cap(_ds):\\n"')
     end = source.index('"    def _unsloth_splits_within_cap(_ev):\\n"')
     body = "".join(re.findall(r'^\s*"((?:[^"\\]|\\.)*)"\s*$', source[start:end], re.MULTILINE))
-    # The literals carry the indentation they will have inside the generated
-    # `__init__`; strip it so the block can stand on its own here.
+    # Strip the indentation the literals carry for the generated `__init__`.
     body = textwrap.dedent(body.encode().decode("unicode_escape"))
     namespace = {"_unsloth_cap": cap}
     exec(body, namespace)
@@ -238,12 +229,10 @@ if __name__ == "__main__":
 
 
 def test_the_generated_max_length_block_is_valid_python():
-    """The block only exists as string literals, so a stray indent or an unclosed
-    bracket is invisible until a user on a TRL that ships the `max_length` guard
-    gets a `SyntaxError` out of a generated trainer. Assemble it and parse it.
-
-    The literals are read off the source rather than by running the generator,
-    which needs a TRL carrying the guard string this installation may not have.
+    """The block only exists as string literals, so a stray indent or unclosed
+    bracket stays invisible until a user gets a `SyntaxError` from a generated
+    trainer. Assemble and parse it, reading the literals off the source rather
+    than running the generator, which needs a TRL this install may not have.
     """
     import ast
 

@@ -3,17 +3,16 @@
 
 """What the mechanism does once it is running, not what the gate decided.
 
-The gate is a pure function and is covered exhaustively next door.  These are
-the three claims that a gate test cannot reach, because each one is a property
-of real DataLoader worker processes pulling real rows through the lazy view:
+Three claims a gate test cannot reach, each a property of real DataLoader worker
+processes pulling real rows through the lazy view:
 
-1. the prewarm barrier does not CONSUME rows that training then never sees,
-2. the loader the barrier filled is the loader ``train()`` goes on to use,
+1. the prewarm barrier does not consume rows training then never sees,
+2. the loader the barrier filled is the one ``train()`` uses,
 3. those workers are gone once training is over.
 
-All three are asserted against a real ``torch.utils.data.DataLoader`` with real
-forked workers over a real ``datasets.Dataset``.  No model and no GPU: the
-tokenizer is a stand-in, because none of these claims is about tokenization.
+Asserted against a real ``DataLoader`` with forked workers over a real
+``datasets.Dataset``. No model, no GPU, and a stand-in tokenizer: none of these
+claims is about tokenization.
 """
 
 import multiprocessing
@@ -78,9 +77,8 @@ def _view():
 class _FakeTrainer:
     """Only the surface the mechanism touches: one loader factory, counted.
 
-    Each call builds a NEW loader, exactly as ``Trainer.get_train_dataloader``
-    does -- transformers memoizes the eval loaders when persistent workers are
-    on and rebuilds the train one every time, which is the whole reason
+    Each call builds a new loader, as ``Trainer.get_train_dataloader`` does:
+    transformers rebuilds the train loader every time, which is why
     ``memoize_train_dataloader`` exists.
     """
 
@@ -108,11 +106,9 @@ class _FakeTrainer:
 
 
 def _prewarm(trainer, batches):
-    """The barrier from ``UnslothTrainer._preflight_first_batch``, verbatim.
-
-    Memoize first, then pull ``batches`` microbatches and drop the local names.
-    The memo is what keeps the filled workers alive past this function.
-    """
+    """The barrier from ``UnslothTrainer._preflight_first_batch``, verbatim:
+    memoize, pull ``batches`` microbatches, drop the local names. The memo keeps
+    the filled workers alive past this function."""
     memoize_train_dataloader(trainer)
     loader = trainer.get_train_dataloader()
     iterator = iter(loader)
@@ -150,11 +146,11 @@ def _no_leaked_workers():
 
 
 def test_the_prewarm_re_iterates_from_the_start_rather_than_continuing():
-    """The barrier pulls microbatches. Training must not begin where it stopped.
+    """The barrier pulls microbatches; training must not begin where it stopped.
 
-    A sequential sampler makes the claim exact rather than statistical: if the
-    prewarm left the iterator where it finished, the first batch training sees
-    would be row 16, and the pass would come up ``PREWARM * BATCH`` rows short.
+    A sequential sampler makes it exact: had the prewarm left the iterator where
+    it finished, training would start at row 16 and come up ``PREWARM * BATCH``
+    rows short.
     """
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)
@@ -251,12 +247,10 @@ def test_a_wrapped_loader_reports_its_workers_once():
 
 
 def test_the_memoized_eval_workers_are_released_too():
-    """`dataloader_num_workers` is a TrainingArguments setting, so an online run
-    with evaluation on forks the same workers for the eval loader, and
-    transformers parks that loader in `_eval_dataloaders`. torch keeps
-    `_iterator` alive on a persistent-workers loader after the eval loop has
-    drained it, so those workers outlive train() exactly as the train ones do.
-    """
+    """`dataloader_num_workers` is a TrainingArguments setting, so the eval loader
+    forks the same workers and transformers parks it in `_eval_dataloaders`; torch
+    keeps its `_iterator` alive after the eval loop drains it, so those workers
+    outlive train() just as the train ones do."""
     before = len(multiprocessing.active_children())
     trainer = _FakeTrainer(_view())
     _prewarm(trainer, PREWARM)

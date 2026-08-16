@@ -4,10 +4,9 @@
 """Which configurations may tokenize online, and what the lazy view produces.
 
 No GPU and no model: the gate is a pure function of the run's shape, and the
-transform is checked against a real tokenizer on a real ``datasets.Dataset``.
-Every "degrades to the old path" claim in the feature is a test here, because a
-silent wrong answer on this gate is either a crash (VLM, pre-tokenized) or a
-run that trains on different rows than it used to.
+transform runs against a real tokenizer on a real ``datasets.Dataset``. Every
+"degrades to the old path" claim is a test here, since a wrong answer is either a
+crash (VLM, pre-tokenized) or a run that trains on different rows.
 """
 
 import sys
@@ -97,10 +96,9 @@ def _no_env_override(monkeypatch):
     # The gate refuses on spawn platforms; these tests describe Linux behaviour
     # and simulate the other platforms explicitly where that is the point.
     monkeypatch.setattr(sys, "platform", "linux")
-    # Same reason for the TRL hook: it is a property of the installed TRL, and
-    # the CPU test job installs none, so leaving it ambient makes every gate
-    # below report "no skip_prepare_dataset hook" instead of what it tests.
-    # The detector itself is covered directly, further down.
+    # Same for the TRL hook: the CPU test job installs no TRL, so leaving it
+    # ambient makes every gate below report "no skip_prepare_dataset hook".
+    # The detector itself is covered separately below.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
@@ -217,13 +215,9 @@ def test_missing_text_column_is_refused():
 
 
 def test_a_null_text_row_is_refused():
-    """The reproduction that motivated this gate.
-
-    The eager map reads every row inside the trainer constructor, so one None
-    kills the run in seconds. The lazy view reads a row only when the sampler
-    draws it: without this gate the same dataset trained happily past step 20
-    and would have died at whatever step drew row 137, hours in.
-    """
+    """The reproduction that motivated this gate: the eager map dies on one None
+    inside the constructor, while the lazy view trained past step 20 and would
+    have died hours in, at whatever step drew row 137."""
     texts = [f"row {i}" for i in range(ROWS)]
     texts[137] = None
     dataset = datasets.Dataset.from_dict({"text": texts})
@@ -310,9 +304,9 @@ def test_a_trl_without_the_hook_keeps_the_eager_path(monkeypatch):
 
 
 def test_the_hook_detector_reads_the_installed_trl(monkeypatch):
-    """No TRL at all means no SFT run, so the detector says no rather than
-    raising. A TRL whose `SFTConfig` has no `dataset_kwargs` field says no too:
-    the key would be silently dropped and TRL would tokenize the view."""
+    """No TRL means no SFT run, so the detector says no rather than raising; a
+    `SFTConfig` without `dataset_kwargs` says no too, since the key would be
+    dropped and TRL would tokenize the view."""
     import builtins
 
     real_import = builtins.__import__

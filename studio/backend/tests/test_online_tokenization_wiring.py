@@ -3,15 +3,12 @@
 
 """`UnslothTrainer._configure_online_tokenization`: what it changes, and when.
 
-The gate itself is covered by ``test_online_tokenization.py``. This file is
-about the wiring: the method must either apply all four parts of the mechanism,
-or leave ``config_args`` and the dataset wrapper byte-for-byte as it found them.
-A half-applied configuration is the dangerous state -- ``skip_prepare_dataset``
-without the lazy transform is a run that trains on raw strings.
-
-Every degradation path in the feature description gets a case here, driven
-through the real method rather than the pure gate, because "silently takes the
-old path" is a claim about this method's side effects.
+The gate itself is covered by ``test_online_tokenization.py``; this is the
+wiring. The method must apply all four parts of the mechanism or leave
+``config_args`` and the dataset wrapper exactly as it found them: half-applied is
+the dangerous state, since ``skip_prepare_dataset`` without the lazy transform
+trains on raw strings. Every degradation path gets a case, driven through the
+real method, because "silently takes the old path" is a claim about side effects.
 """
 
 import contextlib
@@ -23,9 +20,8 @@ import pytest
 sys.path.insert(0, "studio/backend")
 
 datasets = pytest.importorskip("datasets")
-# These drive the real `UnslothTrainer._configure_online_tokenization`, and
-# importing the trainer imports torch. A runner without it must skip the module,
-# not fail collection and take the rest of the run down with it.
+# Importing the trainer imports torch; a runner without it skips the module
+# rather than failing collection.
 pytest.importorskip("torch")
 
 from utils.datasets.online_tokenization import MIN_ROWS_FOR_ONLINE  # noqa: E402
@@ -37,9 +33,9 @@ _STUBBED: list = []
 def _stub_if_missing(name, attrs):
     """Stand in for a dep the CPU-only test job does not install.
 
-    The real one wins whenever it imports: the same rule (and the same
-    ``__spec__ = None``, which keeps the trainer's namespace-shadow guard quiet)
-    as ``test_training_preflight.py``.
+    The real one wins whenever it imports, same rule and same ``__spec__ = None``
+    (which quiets the trainer's namespace-shadow guard) as
+    ``test_training_preflight.py``.
     """
     if name in sys.modules:
         return
@@ -148,8 +144,7 @@ def _run(
 ):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.delenv("UNSLOTH_STUDIO_ONLINE_TOKENIZATION", raising = False)
-    # Pin the installed TRL's hook, for the reason the gate tests pin it: these
-    # cover the wiring, not which TRL the runner happens to have.
+    # Pin the TRL hook: these cover the wiring, not the runner's TRL version.
     monkeypatch.setattr(
         "utils.datasets.online_tokenization.trl_supports_skip_prepare_dataset",
         lambda: True,
@@ -209,10 +204,9 @@ def test_an_eval_split_is_transformed_with_the_same_settings(monkeypatch):
 
 
 def test_the_eval_split_gets_its_own_double_bos_probe(monkeypatch):
-    """TRL runs `_prepare_dataset` once per split, so the eager path derives
-    `add_special_tokens` from each split's own first row. Reusing the train
-    answer would shift every eval sequence by a token whenever the two splits
-    disagree about a leading BOS."""
+    """TRL runs `_prepare_dataset` once per split, so `add_special_tokens` comes
+    from each split's own first row; reusing the train answer would shift every
+    eval sequence by a token whenever the splits disagree about a leading BOS."""
 
     class _Recording(_Tokenizer):
         def __init__(self):
@@ -476,8 +470,7 @@ def test_the_prewarm_drains_the_requested_depth_and_keeps_the_loader():
     trainer._online_prewarm_batches = 16
     assert trainer._preflight_first_batch() is None
     # The memo is what makes the barrier mean anything: transformers rebuilds the
-    # TRAIN loader on every call (only eval loaders are cached), so without it
-    # train() would fork a second worker set and drop everything drained here.
+    # train loader every call, so without it train() forks a second worker set.
     assert trainer.trainer._unsloth_online_memoized is True
     assert trainer.trainer.get_train_dataloader() is trainer.trainer.loader
     assert len(calls) == 1
