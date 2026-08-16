@@ -327,8 +327,19 @@ def test_report_is_recovered_from_substantial_synthesis_reasoning(heading):
     from core import research_runs as worker
 
     report = heading + "\n\n" + ("Evidence-based conclusion. " * 30)
-    reasoning = "I will organize the final answer.\n" + report
+    reasoning = (
+        "## Analysis\n\nI will organize the final answer.\n"
+        "<!-- UNSLOTH_FINAL_REPORT -->\n"
+        + report
+    )
     assert worker._recover_report_from_reasoning(reasoning) == report.strip()
+
+
+def test_report_is_not_recovered_from_an_arbitrary_reasoning_heading():
+    from core import research_runs as worker
+
+    reasoning = "## Analysis\n\n" + ("Private reasoning trace. " * 30)
+    assert worker._recover_report_from_reasoning(reasoning) == ""
 
 
 def test_document_citations_are_restricted_to_persisted_sources():
@@ -361,6 +372,7 @@ def test_report_prompt_requires_comprehensive_evidence_based_detail():
     from core import research_runs as worker
 
     prompt = worker._REPORT_SYSTEM_PROMPT
+    assert "<!-- UNSLOTH_FINAL_REPORT -->" in prompt
     assert "detailed, comprehensive report" in prompt
     assert "every material dimension in the approved plan" in prompt
     assert "implications, tradeoffs, limitations" in prompt

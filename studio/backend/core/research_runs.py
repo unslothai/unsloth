@@ -32,6 +32,7 @@ from core.research.parsing import (
     _parse_and_validate_plan,
     _parse_json_object,
     _recover_report_from_reasoning,
+    _report_after_boundary,
     _streamed_titles,
 )
 from core.research.citations import (
@@ -2329,6 +2330,9 @@ class ResearchSupervisor:
                 )
         if not report.strip():
             report = _recover_report_from_reasoning(synthesis_reasoning)
+        marked_report = _report_after_boundary(report)
+        if marked_report is not None:
+            report = marked_report
         if not report:
             raise ValueError("Local model returned an empty report")
         report = _validate_report_sources(report, sources)

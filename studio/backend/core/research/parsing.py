@@ -21,6 +21,10 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
+_REPORT_BOUNDARY_MARKER = "<!-- UNSLOTH_FINAL_REPORT -->"
+_REPORT_BOUNDARY_LINE = re.compile(
+    rf"(?m)^[ \t]*{re.escape(_REPORT_BOUNDARY_MARKER)}[ \t]*\r?$"
+)
 
 
 def _validate_agent_action(
@@ -262,11 +266,24 @@ def _parse_and_validate_plan(response: str, reasoning: str, max_steps: int) -> d
     raise ValueError("Planner did not return a JSON object")
 
 
+def _report_after_boundary(text: str) -> str | None:
+    markers = list(_REPORT_BOUNDARY_LINE.finditer(text))
+    if not markers:
+        return None
+    return text[markers[-1].end() :].strip()
+
+
 def _recover_report_from_reasoning(reasoning: str) -> str:
     text = reasoning.strip()
+    report = _report_after_boundary(text)
+    if report is not None:
+        return report if len(report) >= 500 else ""
+
+    # Preserve the original recovery contract for models configured with the older prompt.
     marker = re.search(
-        r"(?m)^(?:#{1,6}[ \t]+\S[^\r\n]*|\*\*\S(?:[^\r\n]*\S)?\*\*)[ \t]*\r?$",
+        r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|\*\*(?:Executive\s+)?Summary\*\*)",
         text,
+        flags = re.IGNORECASE,
     )
     if marker is None:
         return ""
