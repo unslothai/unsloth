@@ -3679,6 +3679,9 @@ class TestGGUFSafetensorsHealingParity:
             "I'll dig in and search the web for the latest numbers.",
             "I'll dig in, then run the numbers.",
             "I'll help analyze the sales data now.",
+            # "let me assist" names work without a "to", so only the sign-offs skip that gate.
+            "Let me assist by searching the web now.",
+            "Let me assist with checking the documentation.",
         ):
             assert shared_re.search(phrase), f"missed {phrase!r}"
             assert shared_fn(phrase), f"helper missed {phrase!r}"
