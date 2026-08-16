@@ -1175,9 +1175,36 @@ jobs:
               print(f"  sweeping {len(models)} model_types across {workers} workers", flush=True)
               ctx = _mp.get_context("spawn")
               with ctx.Pool(workers) as pool:
-                  for i, (model_type, outcome, msg) in enumerate(
-                      pool.imap(_compile_one, models, chunksize=4)
-                  ):
+                  # next(timeout=...) rather than a plain for loop. A worker that dies
+                  # mid-task (segfault, OOM killer) never sets its result, and
+                  # Pool.imap then blocks forever -- python/cpython#66587, still open.
+                  # The serial loop could not lose a worker: a segfault killed pytest
+                  # outright and turned the leg red in seconds. Without this the same
+                  # crash would sit until the job's 35 minute timeout, which costs far
+                  # more than running the sweep pooled ever saves.
+                  #
+                  # 600s is a "nothing is moving" detector, not a per-model budget:
+                  # the per-model cap is the 60s SIGALRM inside _compile_one.
+                  #
+                  # chunksize=1 is required, not incidental: Pool.imap only returns an
+                  # IMapIterator (the thing with a timeout) when chunksize == 1. For
+                  # chunksize > 1 it returns a bare generator expression over the
+                  # chunks, which has no next(timeout=...) at all. Per-task IPC is
+                  # noise next to a ~1s compile.
+                  results = pool.imap(_compile_one, models, chunksize=1)
+                  i = -1
+                  while True:
+                      try:
+                          model_type, outcome, msg = results.next(timeout=600)
+                      except StopIteration:
+                          break
+                      except _mp.TimeoutError:
+                          raise AssertionError(
+                              f"compile sweep stalled after {i + 1}/{len(models)} "
+                              "model_types with no result for 600s; a pool worker "
+                              "most likely died (segfault or OOM)"
+                          ) from None
+                      i += 1
                       if i % 25 == 0:
                           print(f"  sweep progress: {i}/{len(models)} -> {model_type}", flush=True)
                       if outcome == "skipped":
