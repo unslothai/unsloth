@@ -316,12 +316,24 @@ def main():
         if disabled_globals["unsloth_chat_tools_enabled"] != "false":
             fail(f"toggling back never reached the defaults: {disabled_globals!r}")
 
+        step("pin the installation default every later step compares against")
+        # The install is shared, not fresh: the UI workflow boots this server on the same
+        # Studio home the chat-ui and cross-browser permission tests have already used, and
+        # those leave a permission level behind in the mirrored settings. Every assertion
+        # below names a literal level, so the default is set here rather than assumed.
+        # No chat is open, so this writes the installation default itself.
+        choose_permission(page, "Approve for me")
+        print(
+            f"[thread-settings]   defaults now {read_globals(page)!r}",
+            flush = True,
+        )
+
         step("seed two saved chats")
         thread_a = seed_thread(page, token, "Chat A")
         thread_b = seed_thread(page, token, "Chat B")
         print(f"[thread-settings]   A={thread_a} B={thread_b}", flush = True)
 
-        step("a fresh install opens every chat on the defaults")
+        step("a chat with no snapshot of its own opens on those defaults")
         open_thread(page, thread_a)
         expect_pills(page, "A on first open", False, False, "Approve for me")
         defaults = read_globals(page)
