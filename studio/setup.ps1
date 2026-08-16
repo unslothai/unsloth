@@ -5173,9 +5173,30 @@ def _verdict(d, d_record):
         # unusable metadata for an editable install is the damage, exactly as an
         # unresolvable url is below. A wheel that merely ships a .pth alongside real
         # modules is untouched: this needs the payload to be shims and nothing else.
+        # Finder names are the backend's to choose (scikit-build-core writes
+        # _<name>_editable.py), so a finder is recognized by being imported from a
+        # .pth line here, not by its filename; the legacy prefixes stay for shims
+        # whose .pth has gone unreadable.
+        _pth_mods = set()
+        for _f, _fsz, _fk in rows:
+            if _f.suffix != '.pth':
+                continue
+            try:
+                _txt = d.locate_file(_f).read_text(encoding='utf-8', errors='ignore')
+            except OSError:
+                _txt = ''
+            for _ln in (_txt or '').splitlines():
+                _parts = _ln.strip().split(None, 1)
+                if len(_parts) == 2 and _parts[0] == 'import':
+                    for _mod in _parts[1].split(';', 1)[0].split(','):
+                        _toks = _mod.replace('.', ' ').split()
+                        if _toks:
+                            _pth_mods.add(_toks[0])
         _shim = _real = 0
         for _f, _fsz, _fk in rows:
             if _f.suffix == '.pth' or _f.name.startswith(('__editable__', '_editable_')):
+                _shim += 1
+            elif len(_f.parts) == 1 and _f.stem in _pth_mods:
                 _shim += 1
             else:
                 _real += 1
