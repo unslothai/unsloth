@@ -1056,6 +1056,11 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "'mtp_partial_offload' -> an Auto-mode policy downgrade: the model "
+            "has an embedded Hybrid Mamba MTP head and the placement offloads "
+            "only part of it, where the recurrent rollback copies cost more "
+            "layers than the drafting wins back -- updating won't help; choose "
+            "MTP in Settings to force it. "
             "None when the requested strategy engaged or was not requested."
         ),
     )
