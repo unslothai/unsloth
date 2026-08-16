@@ -433,14 +433,26 @@ jobs:
       - name: Install Colab-shaped venv
         run: |
           python -m pip install --upgrade pip
-          # Best-effort: any single line that fails to resolve on CPU is
-          # tolerated; the smoke contract is "the install cell + the unsloth
-          # import works", not "the entire Colab venv reproduces."
-          while IFS= read -r spec; do
-            pip install "$spec" --index-url https://download.pytorch.org/whl/cpu \
-              --extra-index-url https://pypi.org/simple || \
-              echo "::warning::pin failed: $spec"
-          done < /tmp/seed_pins.txt
+          # One resolve for the whole pin set instead of one per line. The per-line loop
+          # below re-resolved against both indexes for every one of ~683 pins, which is
+          # why this step spent its entire 25 minute cap here and never once reached
+          # "Verify imports under spoof".
+          #
+          # Best-effort is preserved, just moved: a single unresolvable pin fails the bulk
+          # install, and the fallback then walks the list line by line exactly as before,
+          # tolerating the ones that cannot resolve on CPU. The smoke contract is "the
+          # install cell + the unsloth import works", not "the entire Colab venv
+          # reproduces."
+          if ! pip install -r /tmp/seed_pins.txt \
+                --index-url https://download.pytorch.org/whl/cpu \
+                --extra-index-url https://pypi.org/simple; then
+            echo "::warning::bulk resolve failed, falling back to per-pin best effort"
+            while IFS= read -r spec; do
+              pip install "$spec" --index-url https://download.pytorch.org/whl/cpu \
+                --extra-index-url https://pypi.org/simple || \
+                echo "::warning::pin failed: $spec"
+            done < /tmp/seed_pins.txt
+          fi
 
       - name: Run install cell
         run: |
