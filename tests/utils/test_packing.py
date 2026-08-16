@@ -1481,3 +1481,160 @@ def test_enable_padding_free_metadata_masks_boundary_labels():
     flat = batch["labels"].reshape(-1)[:5].tolist()
     assert flat[3] == -100
     assert flat[1] != -100 and flat[2] != -100 and flat[4] != -100
+
+
+# ==========================================================================
+# Discriminating coverage for the fused-CE call sites and the collator
+# wrappers: each of these fails when its production hunk is reverted.
+# ==========================================================================
+# --------------------------------------------------------------------------
+# 1 + 2. the two fused-CE call sites (llama.py / mistral.py)
+# --------------------------------------------------------------------------
+class _StubInner(torch.nn.Module):
+    def __init__(self, hidden):
+        super().__init__()
+        self.hidden = hidden
+
+    def forward(self, **kwargs):
+        from transformers.modeling_outputs import BaseModelOutputWithPast
+        return BaseModelOutputWithPast(
+            last_hidden_state = self.hidden,
+            past_key_values = None,
+            hidden_states = None,
+            attentions = None,
+        )
+
+
+def _make_stub_causal_lm(hidden_size = 8, vocab = 16, seq = 8):
+    hidden = torch.zeros(1, seq, hidden_size)
+    model = _StubInner(hidden)
+    lm_head = torch.nn.Linear(hidden_size, vocab, bias = False)
+    stub = SimpleNamespace(
+        model = model,
+        lm_head = lm_head,
+        config = SimpleNamespace(
+            output_attentions = False,
+            output_hidden_states = False,
+            use_return_dict = True,
+            model_type = "llama",
+            final_logit_softcapping = 0,
+            logit_scale = 0,
+            torch_dtype = torch.float32,
+        ),
+    )
+    return stub
+
+
+@pytest.mark.parametrize("module_name", ["llama", "mistral"])
+def test_fused_ce_branch_masks_packed_boundaries(monkeypatch, module_name):
+    """The fused-CE branch must hand boundary-masked labels to the kernel.
+
+    Reverting the `mask_packed_boundary_labels(...)` call in
+    unsloth/models/<module>.py makes this fail.
+    """
+    import importlib
+
+    mod = importlib.import_module(f"unsloth.models.{module_name}")
+    seq = 8
+    stub = _make_stub_causal_lm(seq = seq)
+
+    seen = {}
+
+    def _fake_fused(**kwargs):
+        seen["labels"] = kwargs["labels"].clone()
+        return torch.zeros((), requires_grad = False)
+
+    monkeypatch.setattr(mod, "unsloth_fused_ce_loss", _fake_fused)
+    monkeypatch.delenv("UNSLOTH_RETURN_LOGITS", raising = False)
+    monkeypatch.delenv("UNSLOTH_RETURN_HIDDEN_STATES", raising = False)
+
+    if module_name == "llama":
+        forward = mod.CausalLM_fast_forward(lambda *a, **k: None)
+    else:
+        forward = mod.MistralForCausalLM_fast_forward
+
+    labels = torch.arange(seq, dtype = torch.long).view(1, seq)
+    forward(
+        stub,
+        input_ids = torch.zeros(1, seq, dtype = torch.long),
+        labels = labels,
+        packed_seq_lengths = torch.tensor([3, 5], dtype = torch.int32),
+    )
+
+    got = seen["labels"].reshape(-1).tolist()
+    # doc boundary at flat slot 3 (first token of document 2) must be dropped;
+    # slot 0 is the harmless out-of-range redirect; nothing else may change.
+    assert got == [-100, 1, 2, -100, 4, 5, 6, 7], got
+    # caller's tensor untouched
+    assert labels.reshape(-1).tolist() == list(range(seq))
+
+
+# --------------------------------------------------------------------------
+# 3. enable_sample_packing collator hunk
+# --------------------------------------------------------------------------
+class _UnmaskedPackingCollator:
+    """A padding-free collator that does NOT pre-mask boundaries.
+
+    TRL's own collator already sets `labels[position_ids == 0] = -100`, so a
+    test built on it passes with or without the wrapper - it proves nothing.
+    """
+
+    def __init__(self):
+        self.padding_free = True
+        self.return_position_ids = False
+
+    def torch_call(self, examples):
+        ids = [i for ex in examples for i in ex["input_ids"]]
+        return {
+            "input_ids": torch.tensor([ids], dtype = torch.long),
+            "labels": torch.tensor([ids], dtype = torch.long),
+        }
+
+
+def test_enable_sample_packing_masks_boundaries_a_collator_left_open():
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _UnmaskedPackingCollator(),
+    )
+    enable_sample_packing(model, trainer)
+
+    batch = trainer.data_collator.torch_call(
+        [
+            {"input_ids": [10, 11, 12], "seq_lengths": [2, 1]},
+            {"input_ids": [13, 14, 15], "seq_lengths": [3]},
+        ]
+    )
+    # documents [10,11] [12] [13,14,15] -> boundary label slots 2 and 3
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, -100, -100, 14, 15]
+
+
+def test_enable_padding_free_metadata_masks_boundaries_a_collator_left_open():
+    model = SimpleNamespace(max_seq_length = 16, children = lambda: [])
+    trainer = SimpleNamespace(
+        args = SimpleNamespace(remove_unused_columns = True),
+        data_collator = _UnmaskedPackingCollator(),
+    )
+    enable_padding_free_metadata(model, trainer)
+
+    batch = trainer.data_collator.torch_call(
+        [
+            {"input_ids": [10, 11, 12]},
+            {"input_ids": [13, 14]},
+        ]
+    )
+    # two flattened examples -> boundary label slot 3
+    assert batch["labels"].reshape(-1).tolist() == [-100, 11, 12, -100, 14]
+
+
+# --------------------------------------------------------------------------
+# 4. idempotence, but discriminating (identity helper must not pass)
+# --------------------------------------------------------------------------
+def test_guard_is_idempotent_and_actually_masks():
+    lengths = torch.tensor([2, 1, 3], dtype = torch.int32)
+    labels = torch.arange(6, dtype = torch.long).view(1, 6)
+    once = mask_packed_boundary_labels(labels, lengths)
+    twice = mask_packed_boundary_labels(once, lengths)
+    assert torch.equal(twice, once)
+    # an identity helper would satisfy idempotence trivially, so pin the values
+    assert once.reshape(-1).tolist() == [-100, 1, -100, -100, 4, 5]
