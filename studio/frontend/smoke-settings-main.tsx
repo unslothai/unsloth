@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_settings_tabs.py: the real SettingsDialog with the real
-// store, so tab switching, search and the scroll-to-setting jump are the app's own code paths.
-// Same shape as smoke-ansi.html / smoke-research.html: a vite entry, no backend, no auth.
+// Harness for tests/studio/playwright_settings_tabs.py, shaped like smoke-ansi.html: a vite
+// entry with no backend and no auth, driving the real SettingsDialog against the real store.
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
@@ -27,8 +26,7 @@ import "./src/index.css";
 
 declare global {
   interface Window {
-    // Optional: this entry is in the app's typecheck project, and app code must not be
-    // able to reach a handle that only the harness page installs.
+    // Optional: the app typechecks this entry, and only the harness page installs the handle.
     __settingsSmoke?: {
       open: (tab?: string) => void;
       close: () => void;
@@ -47,8 +45,8 @@ window.addEventListener("unhandledrejection", (e) => {
   seenErrors.push(String(e.reason));
 });
 
-// A rejected lazy chunk has no boundary of its own in the app, so give the harness one and
-// record what reaches it; whether anything does is exactly what is under test.
+// The app has no boundary above the dialog, so give the harness one and record what reaches
+// it; whether anything does is exactly what is under test.
 class Boundary extends Component<
   { children: ReactNode },
   { error: string | null }
@@ -95,8 +93,7 @@ function Harness() {
   );
 }
 
-// Several panels use router hooks (Link, useNavigate), so the dialog needs a router in scope.
-// A memory router with one route keeps the harness backend-free while those hooks resolve.
+// Several panels use router hooks (Link, useNavigate), so a one-route memory router is in scope.
 const harnessRootRoute = createRootRoute({ component: Harness });
 const harnessIndexRoute = createRoute({
   getParentRoute: () => harnessRootRoute,

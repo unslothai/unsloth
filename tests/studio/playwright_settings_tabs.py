@@ -3,15 +3,13 @@
 
 """Settings dialog behaviour harness: every tab renders, search jumps land, deep-open works.
 
-Drives smoke-settings.html (the real SettingsDialog against the real store, no backend) so the
-result is comparable between a tree where the tab panels are static imports and one where they
-are behind React.lazy + Suspense.
-
-Emits a JSON report to $PW_OUT so two trees can be diffed field by field.
+Drives smoke-settings.html (the real SettingsDialog and store, no backend), so a static-import
+tree and a React.lazy one are directly comparable. Emits a JSON report to $PW_OUT for a
+field-by-field diff.
 
     PW_ENGINE=chromium PW_PORT=5399 PW_OUT=out.json python tests/studio/playwright_settings_tabs.py
 
-PW_CHUNK_DELAY_MS delays every tab module response, to widen the window a lazy panel is
+PW_CHUNK_DELAY_MS delays every tab module response, widening the window a lazy panel is
 in-flight for; PW_CHUNK_FAIL=<tab> aborts one tab's module outright.
 """
 
@@ -52,7 +50,7 @@ CHUNK_DELAY_MS = int(os.environ.get("PW_CHUNK_DELAY_MS", "0"))
 CHUNK_FAIL = os.environ.get("PW_CHUNK_FAIL", "")
 SETTLE_MS = 600
 SETTLE_TIMEOUT_S = 25.0
-# Panel container: the scroller `mainScrollRef` points at, inside the dialog.
+# The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
 
 report: dict = {
@@ -116,9 +114,8 @@ def settle(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
 def settle_panel(page, timeout_s: float = SETTLE_TIMEOUT_S) -> dict:
     """Settle, but do not accept a placeholder as the answer.
 
-    The panel renders from a deferred value, so a switch keeps the outgoing content on
-    screen until the incoming panel is ready. Under load that hand-off can hold still for
-    longer than SETTLE_MS, and settling on it reports a placeholder as the final panel.
+    The panel renders from a deferred value, so the outgoing content stays on screen until
+    the incoming one is ready, and under load that hand-off can hold still past SETTLE_MS.
     """
     deadline = time.time() + timeout_s
     latest = settle(page, timeout_s = timeout_s)
@@ -182,8 +179,7 @@ def run_chunk_fail(page) -> None:
     )
     report["chunk_fail_state"] = state
     log(f"after blocking {CHUNK_FAIL}: {state}")
-    # The idle prefetch pulls every panel, so a blocked module must not surface as an
-    # unhandled rejection for a tab the user never opened.
+    # The idle prefetch pulls every panel, so a blocked one must not surface as a rejection.
     errors = page.evaluate("() => window.__settingsSmoke.errors()")
     report["chunk_fail_window_errors"] = errors
     unhandled = [
@@ -264,8 +260,7 @@ def run(page) -> None:
     report["steps"].append("deep-open")
 
     # --- 3. search, then jump to a result and confirm the scroll target flashed ------
-    # Pick a real setting that lives well down a long panel, so a jump that does not
-    # happen is visible in scrollTop as well as in the flash.
+    # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]
     query = target_label.split()[0]
@@ -363,8 +358,8 @@ def main() -> int:
                         raise
                     time.sleep(2)
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
-            # Vite dev re-optimizes deps on first sight and full-reloads; let that settle, then
-            # reload once so every module is served from a stable dep graph.
+            # Vite dev re-optimizes deps on first sight and full-reloads; let that settle,
+            # then reload once for a stable dep graph.
             page.wait_for_timeout(4000)
             page.reload(wait_until = "domcontentloaded")
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
@@ -385,9 +380,8 @@ def main() -> int:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     except Exception as exc:
-        # The dev server occasionally does not serve a module on a cold start, which
-        # strands the page before any of this is under test. Report it as what it is
-        # rather than dying with no record of how far the run got.
+        # A cold-start dev server occasionally fails to serve a module, stranding the page
+        # before anything is under test. Report that rather than dying with no record.
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
         write_report()

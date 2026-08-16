@@ -53,11 +53,9 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-// The dialog is rendered at the app root and is closed on launch, but its twelve tab
-// panels and everything they pull in were in the entry's static import closure, so the
-// browser fetched, parsed and executed all of it before the first paint. Each panel is
-// loaded when it is first shown instead. `loadTab` is also what prefetches the rest, so
-// there is no second list to keep in step.
+// All twelve panels sat in the entry's static import closure, so the browser fetched,
+// parsed and ran them before first paint even though the dialog starts closed. Load each
+// on first view instead; this same map drives the prefetch, so there is no second list.
 const TAB_LOADERS = {
   general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
   profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
@@ -102,16 +100,15 @@ interface PanelBoundaryState {
 }
 
 /**
- * A panel is fetched the first time it is shown, so it can now fail where it could not
- * before: offline, or a page whose entry bundle predates an in-place rewrite of `dist/`
- * and still names chunks that have been replaced. This dialog is mounted at the app root
- * and nothing above it catches, so an unguarded failure unmounts the whole of Studio, not
- * one panel; that was reproduced with the panel's module blocked.
+ * Fetching a panel on first view can now fail: offline, or an entry bundle that predates
+ * an in-place rewrite of `dist/` and still names replaced chunks. Nothing above this
+ * root-mounted dialog catches, so an unguarded failure unmounts all of Studio rather than
+ * one panel, as reproduced with the panel's module blocked.
  *
- * Reload rather than retry: React caches a `lazy` rejection for the life of the page, and
+ * Reload rather than retry: React caches a `lazy` rejection for the life of the page and
  * the browser's module map caches the failed import, so re-importing the same URL rethrows
- * without a new request (whatwg/html#6768). index.html is served no-store, so a reload does
- * pick up the current chunk names.
+ * with no new request (whatwg/html#6768). index.html is no-store, so a reload does pick up
+ * the current chunk names.
  */
 class SettingsPanelBoundary extends Component<
   PanelBoundaryProps,
@@ -123,8 +120,7 @@ class SettingsPanelBoundary extends Component<
     return { failed: true };
   }
 
-  // A different tab is a different chunk, so let it render rather than holding the
-  // whole panel area on one panel's failure.
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
   static getDerivedStateFromProps(
     props: PanelBoundaryProps,
     state: PanelBoundaryState,
@@ -248,17 +244,15 @@ export function SettingsDialog() {
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
 
-  // Once the dialog has been opened, pull the other panels in on idle so a tab
-  // click never waits on a network round trip. Nothing here runs while it is
-  // closed, which is the state it is in for the whole launch.
+  // Once opened, pull the other panels in on idle so a tab click never waits on a network
+  // round trip. Nothing runs while closed, which is its state for the whole launch.
   useEffect(() => {
     if (!open) return;
     return scheduleIdleTask(() => {
       for (const load of Object.values(TAB_LOADERS)) {
-        // The prefetch warms panels nobody has asked for, so a fetch that fails is
-        // not something to report; the boundary above speaks for the panel the user
-        // does open. Swallowed here because an unhandled rejection would otherwise
-        // reach the page for every panel a lost connection could not reach.
+        // This warms panels nobody asked for, so a failed fetch is not worth reporting
+        // and must not reach the page as an unhandled rejection. The boundary above
+        // speaks for the panel the user does open.
         void load().catch(() => undefined);
       }
     });
@@ -568,10 +562,9 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {/* Only the first view of a panel waits, and the prefetch below
-                    usually gets there first, so switching tabs stays instant.
-                    The fallback is delayed so a panel that arrives promptly, which
-                    is every panel on a local install, never flashes it. */}
+                {/* Only a panel's first view waits, and the prefetch usually beats it. The
+                    fallback is delayed so a panel that arrives promptly, which is every
+                    panel on a local install, never flashes it. */}
                 <SettingsPanelBoundary
                   tab={panelTab}
                   message={t("settings.dialog.panelFailed")}

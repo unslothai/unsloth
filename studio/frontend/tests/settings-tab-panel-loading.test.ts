@@ -2,13 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The settings dialog is mounted at the app root and is closed for the whole
- * launch, but its twelve tab panels were static imports, so the browser fetched,
- * parsed and executed every one of them before the first paint.
- *
- * Bundle membership follows the static import graph, so a single static
- * `./tabs/...` edge from anywhere reachable at startup puts them all back. That
- * is what these assert, rather than the dialog's rendered output.
+ * The settings dialog is closed for the whole launch, yet its twelve tab panels were
+ * static imports, so the browser fetched, parsed and executed every one before first
+ * paint. Bundle membership follows the static import graph, so one static `./tabs/...`
+ * edge from anywhere reachable at startup puts them all back. That graph is what these
+ * assert, rather than the dialog's rendered output.
  */
 
 import assert from "node:assert/strict";
@@ -33,9 +31,9 @@ async function* walk(dir: string): AsyncGenerator<string> {
 }
 
 /**
- * Module specifiers of the `import`/`export ... from` declarations in a file. A
- * deferred `import(...)` parses as a call expression, so it is never collected,
- * which is exactly the distinction being enforced.
+ * Module specifiers of the `import`/`export ... from` declarations, parsed rather than
+ * grepped: a deferred `import(...)` is a call expression, so it is never collected, which
+ * is exactly the distinction being enforced.
  */
 const staticSpecifiers = (file: string, text: string): string[] => {
   const parsed = ts.createSourceFile(
@@ -69,8 +67,7 @@ test("the dialog loads every tab panel on demand", async () => {
   const statics = staticSpecifiers(DIALOG, source).filter(isTabPanel);
   assert.deepEqual(statics, [], `settings-dialog still statically imports: ${statics}`);
 
-  // One loader per panel on disk, so a tab added later cannot quietly go missing
-  // from the map and take the whole switch down with it.
+  // One loader per panel on disk, so a tab added later cannot go missing from the map.
   const panels = (await readdir(TABS_DIR)).filter((f) => /-tab\.tsx$/.test(f));
   assert.ok(panels.length >= 12, `only found ${panels.length} tab panels`);
   for (const file of panels) {
@@ -104,9 +101,8 @@ test("nothing else in src statically imports a tab panel", async () => {
 });
 
 test("a panel that fails to load cannot take the app down with it", async () => {
-  // The dialog is mounted at the app root and nothing above it catches, so an
-  // uncaught render throw unmounts the whole tree, not one panel. A panel is only
-  // fetchable at all because of the change above, so the boundary belongs here.
+  // Nothing above the root-mounted dialog catches, so an uncaught render throw unmounts
+  // the whole tree, not one panel, and panels are only fetchable because of the change above.
   const source = await readFile(DIALOG, "utf8");
   const parsed = ts.createSourceFile(
     DIALOG,
@@ -174,12 +170,10 @@ test("a panel that fails to load cannot take the app down with it", async () => 
 });
 
 test("the panels are prefetched once the dialog opens", async () => {
-  // Without this the first click on a tab waits on a network round trip, which
-  // would trade a startup cost for an interaction one.
+  // Without this the first tab click trades the startup cost for an interaction one.
   const source = await readFile(DIALOG, "utf8");
   assert.match(source, /scheduleIdleTask/);
   assert.match(source, /Object\.values\(TAB_LOADERS\)/);
-  // The prefetch warms panels nobody selected, so a chunk it cannot fetch must not
-  // reach the page as an unhandled rejection.
+  // It warms panels nobody selected, so a failed chunk must not reach the page as a rejection.
   assert.match(source, /load\(\)\.catch\(/);
 });
