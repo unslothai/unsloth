@@ -20,8 +20,10 @@ WHAT IS MEASURED, AND WHY THESE METRICS
 Every primary number here is DOM-observable and wall-clock, because the interesting engines are
 not Chromium. Unsloth Desktop is Tauri: WebView2 on Windows, WKWebView on macOS, WebKitGTK on
 Linux. The Long Tasks API does not exist on JavaScriptCore, so a `longtask` PerformanceObserver
-silently reports NOTHING on Desktop macOS and Desktop Linux -- it does not error, it just never
-fires, which reads as "no jank" instead of "no measurement". `Performance.getMetrics` and
+silently reports NOTHING on Desktop macOS and Desktop Linux. Measured here: on WebKit 26.5 and
+Firefox 153 the `observe({ type: "longtask" })` call does not even throw. It is accepted and then
+never fires, which reads as "no jank" instead of "no measurement", so support is read from
+`PerformanceObserver.supportedEntryTypes` instead. `Performance.getMetrics` and
 `Emulation.setCPUThrottlingRate` are CDP, so they do not exist off Chromium either.
 
 So the primary four, all portable:
