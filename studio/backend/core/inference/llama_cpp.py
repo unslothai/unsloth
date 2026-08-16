@@ -11856,9 +11856,7 @@ class LlamaCppBackend:
 
     def _target_kv_symmetry(self) -> bool:
         """Whether the TARGET model requires K == V."""
-        return self._requires_symmetric_kv(
-            self._kv_lora_rank, getattr(self, "_architecture", None)
-        )
+        return self._requires_symmetric_kv(self._kv_lora_rank, getattr(self, "_architecture", None))
 
     def _draft_kv_symmetry(self) -> Optional[bool]:
         """Whether the DRAFTER requires K == V; None when it cannot be determined."""
@@ -11982,9 +11980,7 @@ class LlamaCppBackend:
         _draft_k_flags = ("--cache-type-k-draft", "--spec-draft-type-k", "-ctkd")
         if draft_mla is None:
             draft_mla = mla
-        _k_cache_flags = (_main_k_flags if mla else ()) + (
-            _draft_k_flags if draft_mla else ()
-        )
+        _k_cache_flags = (_main_k_flags if mla else ()) + (_draft_k_flags if draft_mla else ())
         _k_reset = False
         for i, tok in enumerate(out):
             if _flag_name(tok) not in _k_cache_flags:
@@ -12014,7 +12010,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _with_flash_attn_off(
-        cmd: list[str], *, mla: bool = False, draft_mla: Optional[bool] = None
+        cmd: list[str],
+        *,
+        mla: bool = False,
+        draft_mla: Optional[bool] = None,
     ) -> Optional[list[str]]:
         """Return cmd with flash attention forced off, or None when its effective
         (last-wins) value is already off/absent so there is nothing to retry. FA
@@ -15836,8 +15835,9 @@ class LlamaCppBackend:
                 # Same for an env-only quantized V cache, which the argv reset
                 # above cannot reach.
                 if _flash_attn_known_off and self._drop_env_quantized_v_cache(
-                    env, mla = self._target_kv_symmetry(),
-                            draft_mla = self._draft_kv_symmetry(),
+                    env,
+                    mla = self._target_kv_symmetry(),
+                    draft_mla = self._draft_kv_symmetry(),
                 ):
                     logger.info(
                         "Dropped inherited quantized V-cache env: this build has "
@@ -16673,7 +16673,8 @@ class LlamaCppBackend:
                     _fa_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
-                            _last_spawn_cmd, mla = self._target_kv_symmetry(),
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
                             draft_mla = self._draft_kv_symmetry(),
                         )
                         if self._is_signal_crash(_fa_rc)
@@ -16690,7 +16691,8 @@ class LlamaCppBackend:
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
                         if self._drop_env_quantized_v_cache(
-                            env, mla = self._target_kv_symmetry(),
+                            env,
+                            mla = self._target_kv_symmetry(),
                             draft_mla = self._draft_kv_symmetry(),
                         ):
                             logger.info(
@@ -16743,7 +16745,8 @@ class LlamaCppBackend:
                     _probe_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
-                            _last_spawn_cmd, mla = self._target_kv_symmetry(),
+                            _last_spawn_cmd,
+                            mla = self._target_kv_symmetry(),
                             draft_mla = self._draft_kv_symmetry(),
                         )
                         if self._is_signal_crash(_probe_rc)
@@ -16760,7 +16763,8 @@ class LlamaCppBackend:
                         # The argv rewrite can't reach an env-only quantized V
                         # cache; drop it so the FA-off child doesn't abort on it.
                         if self._drop_env_quantized_v_cache(
-                            env, mla = self._target_kv_symmetry(),
+                            env,
+                            mla = self._target_kv_symmetry(),
                             draft_mla = self._draft_kv_symmetry(),
                         ):
                             logger.info(

@@ -370,7 +370,12 @@ class _SelfShim:
     call ``self.<method>()`` the way the real backend does.
     """
 
-    def __init__(self, kv_lora_rank = None, architecture = None, mtp_draft_path = None):
+    def __init__(
+        self,
+        kv_lora_rank = None,
+        architecture = None,
+        mtp_draft_path = None,
+    ):
         self._kv_lora_rank = kv_lora_rank
         self._architecture = architecture
         self._mtp_draft_path = mtp_draft_path

@@ -244,27 +244,21 @@ class TestTheDrafterIsGatedOnItsOwnModel:
     def test_an_mla_target_leaves_a_non_mla_drafters_k_quantized(self):
         """Resetting it would needlessly double the drafter's K cache, which is
         the OOM the size argument warns about."""
-        out = LlamaCppBackend._with_flash_attn_off(
-            list(self.DRAFT_CMD), mla = True, draft_mla = False
-        )
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = False)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "q8_0"
 
     def test_a_non_mla_target_still_brings_an_mla_drafters_k_down(self):
         """The mirror case, and the more serious one: leaving the draft K
         quantized against an f16 draft V aborts the draft context."""
-        out = LlamaCppBackend._with_flash_attn_off(
-            list(self.DRAFT_CMD), mla = False, draft_mla = True
-        )
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = False, draft_mla = True)
         assert self._main_k(out) == "q8_0"
         assert self._draft_k(out) == "f16"
 
     def test_an_unknown_drafter_falls_back_to_the_target(self):
         """None means the drafter's GGUF could not be read. An unnecessary reset
         only costs memory; a missing one aborts, so it follows the target."""
-        out = LlamaCppBackend._with_flash_attn_off(
-            list(self.DRAFT_CMD), mla = True, draft_mla = None
-        )
+        out = LlamaCppBackend._with_flash_attn_off(list(self.DRAFT_CMD), mla = True, draft_mla = None)
         assert self._main_k(out) == "f16"
         assert self._draft_k(out) == "f16"
 
