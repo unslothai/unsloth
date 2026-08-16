@@ -3952,14 +3952,21 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// The engine replacing text rather than the user inserting it: an autocorrect
-// commit, or an IME finalising a composition. Both can carry a converted value
-// that equality would never match, and neither can start from an empty
-// composer, since there would be nothing to replace or convert.
+// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
+// differ from what was sent, so equality alone would let it through.
 function isTextReplacement(event: Event | undefined) {
+  return inputTypeOf(event) === "insertReplacementText";
+}
+
+// A write carrying an IME composition. Finalisation converts the text, so
+// equality never matches it. Only stale when the composition began before the
+// send: one begun after raises compositionstart, which records user input.
+// Read from the input event, not compositionend, which raises no input event at
+// all and so leaves the controlled value unrestored if it is refused.
+function isCompositionWrite(event: Event | undefined) {
   return (
-    inputTypeOf(event) === "insertReplacementText" ||
-    event?.type === "compositionend"
+    inputTypeOf(event) === "insertCompositionText" ||
+    (event !== undefined && isNativeComposing(event))
   );
 }
 
@@ -4054,6 +4061,7 @@ function useImeComposerInputHandlers({
           value,
           replacesText: isTextReplacement(nativeEvent),
           isDeliberate: isDeliberateWrite(nativeEvent),
+          isComposition: isCompositionWrite(nativeEvent),
           composerIsEmpty: composer.getState().text.length === 0,
         });
         justSentRef.current = result.guard;

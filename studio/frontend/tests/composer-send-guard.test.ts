@@ -19,12 +19,14 @@ const typed = (value: string) => ({
   value,
   replacesText: false,
   isDeliberate: false,
+  isComposition: false,
   composerIsEmpty: false,
 });
 const replacement = (value: string, composerIsEmpty = true) => ({
   value,
   replacesText: true,
   isDeliberate: false,
+  isComposition: false,
   composerIsEmpty,
 });
 // Undo, redo, paste, drop and yank all arrive this way.
@@ -32,6 +34,15 @@ const deliberate = (value: string) => ({
   value,
   replacesText: false,
   isDeliberate: true,
+  isComposition: false,
+  composerIsEmpty: true,
+});
+// An IME write. Finalisation converts the text, so equality never matches it.
+const composing = (value: string) => ({
+  value,
+  replacesText: false,
+  isDeliberate: false,
+  isComposition: true,
   composerIsEmpty: true,
 });
 const armed = (texts: string[] = [PROMPT], key: string | null = KEY) =>
@@ -258,4 +269,23 @@ test("a drop or a yank of the sent text is applied", () => {
 test("a deliberate write wins over an armed wrapper pair", () => {
   const guard = armed([`Apply this edit: ${PROMPT}`, PROMPT]);
   assert.equal(applySentTextGuard(guard, deliberate(PROMPT)).accept, true);
+});
+
+// A composition still open when the send happened commits a converted value
+// that matches no armed text. compositionstart is what separates it from one
+// the user began afterwards.
+test("a composition begun before the send is refused", () => {
+  const guard = armed();
+  assert.deepEqual(applySentTextGuard(guard, composing("\u65e5\u672c\u8a9e")), {
+    accept: false,
+    guard,
+  });
+});
+
+test("a composition begun after the send is applied", () => {
+  const guard = markSentTextGuardUserInput(armed());
+  assert.deepEqual(applySentTextGuard(guard, composing("\u65e5\u672c\u8a9e")), {
+    accept: true,
+    guard: null,
+  });
 });

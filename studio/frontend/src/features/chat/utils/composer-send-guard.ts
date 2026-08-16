@@ -87,6 +87,12 @@ export function applySentTextGuard(
      * reports one, so it applies even when it restores what was sent.
      */
     isDeliberate: boolean;
+    /**
+     * An IME composition write. Stale only when the composition began before
+     * the send; one begun after raises compositionstart, which records user
+     * input, so userInputSince separates the two.
+     */
+    isComposition: boolean;
     composerIsEmpty: boolean;
   },
 ): { accept: boolean; guard: SentTextGuard | null } {
@@ -99,6 +105,9 @@ export function applySentTextGuard(
     return { accept: false, guard };
   }
   if (write.replacesText && write.composerIsEmpty) {
+    return { accept: false, guard };
+  }
+  if (write.isComposition && write.composerIsEmpty && !guard.userInputSince) {
     return { accept: false, guard };
   }
   // Anything else is the user, so stop guarding rather than judge later writes.
