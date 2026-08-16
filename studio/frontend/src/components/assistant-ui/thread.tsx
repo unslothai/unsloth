@@ -3319,6 +3319,11 @@ const Composer: FC<{
         temporary: chatState.incognito,
         cancelled: false,
         threadId: referenceThreadId,
+        // Which chat the composer was showing when the read began. The queue
+        // target is anchored where createPromptQueueTarget is CALLED, and on
+        // this path that is after the read, so a switch mid-read would aim the
+        // target at the chat now on screen and dispatch this prompt there.
+        composerIdentity: composerIdentityRef.current,
         localModelBoundaryGeneration: localPromptQueueModelBoundary.capture(),
         queuedSettingsEpoch: chatState.queuedSettingsEpoch,
         historyClearGeneration: chatHistoryClearBoundary.capture(),
@@ -3329,9 +3334,11 @@ const Composer: FC<{
       pastedTextQueuePendingRef.current.set(pendingKey, pendingRead);
       void Promise.all(files.map((file) => file.text()))
         .then((texts) => {
-          // Stopped, cleared, or replaced while the read was in flight.
+          // Stopped, cleared, replaced, or aimed at another chat while the
+          // read was in flight.
           if (
             pendingQueueStartIsStale(pendingRead) ||
+            composerIdentityRef.current !== pendingRead.composerIdentity ||
             pastedTextQueuePendingRef.current.get(pendingKey) !== pendingRead
           ) {
             return;
@@ -3604,8 +3611,20 @@ const Composer: FC<{
         // Wait mode read here rather than carried from the parked submit: a
         // run can start while the settings load, and a queue that ignored it
         // would dispatch on top of the response already streaming.
-        queueComposerText(aui.thread().getState().isRunning);
-        return;
+        const waitForCurrentRun = aui.thread().getState().isRunning;
+        // The same two branches the chord takes in handleSubmit, in the same
+        // order. A long paste lives in an attachment rather than in the text,
+        // so queueing the text alone would queue nothing at all for an
+        // attachment-only prompt and drop the paste from one that has both.
+        if (canQueueCurrentPrompt) {
+          queueComposerText(waitForCurrentRun);
+          return;
+        }
+        if (canQueuePastedTextPrompt && queuePastedTextPrompt(waitForCurrentRun)) {
+          return;
+        }
+        // Nothing queueable: send it, which is what this path did before the
+        // queue intent was carried at all.
       }
       sendReservedComposer();
     }
@@ -3616,9 +3635,12 @@ const Composer: FC<{
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
     aui,
+    canQueueCurrentPrompt,
+    canQueuePastedTextPrompt,
     clearStoredDraft,
     dismissWaitToast,
     queueComposerText,
+    queuePastedTextPrompt,
     sendReservedComposer,
   ]);
 
