@@ -19707,9 +19707,7 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(
-                            fitted, None, self.markup_profile
-                        ),
+                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
                         None,
                         None,
                         strict = True,
@@ -21485,9 +21483,7 @@ class LlamaCppBackend:
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
-                        neutralize_control_markup_in_messages(
-                            fitted, None, self.markup_profile
-                        ),
+                        neutralize_control_markup_in_messages(fitted, None, self.markup_profile),
                         None,
                         None,
                         strict = True,
