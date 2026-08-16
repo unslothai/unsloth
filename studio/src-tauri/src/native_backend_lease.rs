@@ -19,6 +19,7 @@ pub enum NativePathOperation {
     DatasetImport,
     Attach,
     LinkDocuments,
+    OpenProject,
     Reveal,
     Open,
 }

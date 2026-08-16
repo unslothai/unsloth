@@ -35,6 +35,17 @@ export async function pickNativeDocumentFolder(): Promise<NativeDocumentFolderSe
   );
 }
 
+export async function pickNativeProjectFolder(): Promise<NativeDocumentFolderSelection | null> {
+  if (!isTauri) {
+    throw new Error(
+      "Local project folders are only available in the desktop app.",
+    );
+  }
+  return invokeNative<NativeDocumentFolderSelection | null>(
+    "pick_native_project_folder",
+  );
+}
+
 export async function drainNativeIntents(): Promise<NativeIntent[]> {
   if (!isTauri) return [];
   return invokeNative<NativeIntent[]>("drain_native_intents");

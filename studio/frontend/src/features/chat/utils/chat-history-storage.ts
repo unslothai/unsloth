@@ -16,6 +16,7 @@ import {
   listChatProjects,
   listChatThreads,
   notifyChatHistoryUpdated,
+  openChatProjectFolder,
   recordChatImportLedger,
   saveChatMessage,
   saveChatProject,
@@ -834,6 +835,12 @@ export async function createStoredChatProject(
   });
 }
 
+export async function openStoredChatProjectFolder(
+  nativePathLease: string,
+): Promise<ProjectRecord> {
+  return openChatProjectFolder(nativePathLease);
+}
+
 export async function updateStoredChatProject(
   projectId: string,
   patch: Partial<ProjectRecord>,
@@ -1008,9 +1015,9 @@ export function clearStoredChats(
   return tracked;
 }
 
-async function clearStoredChatsWithAdmissionClosed(
-  options: { deleteFiles?: boolean },
-): Promise<ClearStoredChatsResult> {
+async function clearStoredChatsWithAdmissionClosed(options: {
+  deleteFiles?: boolean;
+}): Promise<ClearStoredChatsResult> {
   // Admission is closed before this one-shot fence snapshot.
   const pendingThreadIds = threadRecordWrites.idsRequiringFence();
   const operationId = crypto.randomUUID();

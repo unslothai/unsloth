@@ -1766,11 +1766,7 @@ const UPDATE_ONLY_ENV: &[&str] = &["STUDIO_LOCAL_REPO"];
 /// expand it themselves: llama_cpp.py hands UNSLOTH_LLAMA_CPP_PATH straight to
 /// Path(), so a moved child would look for a folder called "~" beside its new
 /// working directory.
-fn expand_windows_user(
-    value: &str,
-    home: &std::path::Path,
-    username: Option<&str>,
-) -> String {
+fn expand_windows_user(value: &str, home: &std::path::Path, username: Option<&str>) -> String {
     if !value.starts_with('~') {
         return value.to_string();
     }
@@ -2157,7 +2153,11 @@ pub(crate) fn apply_managed_cli_context(cmd: &mut Command) -> Result<(), String>
     // interpreter, and the update starts more. Skipping it here rather than
     // removing it afterwards means an unresolvable entry cannot refuse an update
     // that was never going to read it.
-    apply_managed_cli_context_inner(cmd, &managed_cli_working_dir()?, &update_child_skipped_env())
+    apply_managed_cli_context_inner(
+        cmd,
+        &managed_cli_working_dir()?,
+        &update_child_skipped_env(),
+    )
 }
 
 pub(crate) fn apply_managed_cli_context_at(
@@ -2396,7 +2396,13 @@ mod tests {
         );
 
         // The legacy base has the package and the new one does not.
-        fs::create_dir_all(old_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        fs::create_dir_all(
+            old_base
+                .join("Lib")
+                .join("site-packages")
+                .join("unsloth_cli"),
+        )
+        .unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(old_base.join("Scripts").join("unsloth.exe")),
@@ -2404,7 +2410,13 @@ mod tests {
         );
 
         // Once the new base has it too, layout order takes over again.
-        fs::create_dir_all(new_base.join("Lib").join("site-packages").join("unsloth_cli")).unwrap();
+        fs::create_dir_all(
+            new_base
+                .join("Lib")
+                .join("site-packages")
+                .join("unsloth_cli"),
+        )
+        .unwrap();
         assert_eq!(
             find_unsloth_binary_in_studio_dir(&studio),
             Some(new_base.join("Scripts").join("unsloth.exe")),
@@ -2528,8 +2540,16 @@ mod tests {
         let isolated =
             resolve_managed_cli_invocation_with(&bin, &["studio"], Isolation::Isolated).unwrap();
 
-        assert!(!inherit.args.iter().any(|arg| arg == "-I"), "{:?}", inherit.args);
-        assert!(isolated.args.iter().any(|arg| arg == "-I"), "{:?}", isolated.args);
+        assert!(
+            !inherit.args.iter().any(|arg| arg == "-I"),
+            "{:?}",
+            inherit.args
+        );
+        assert!(
+            isolated.args.iter().any(|arg| arg == "-I"),
+            "{:?}",
+            isolated.args
+        );
         // -X utf8 comes first either way: -I implies -E, which would drop
         // PYTHONUTF8, and the flag form survives it.
         assert_eq!(isolated.args[0], std::ffi::OsString::from("-X"));
@@ -2540,7 +2560,9 @@ mod tests {
         assert_eq!(inherit.args.last(), isolated.args.last());
         // And the default entry point is the inheriting one.
         assert_eq!(
-            resolve_managed_cli_invocation(&bin, &["studio"]).unwrap().args,
+            resolve_managed_cli_invocation(&bin, &["studio"])
+                .unwrap()
+                .args,
             inherit.args
         );
         fs::remove_dir_all(dir).unwrap();
@@ -4032,23 +4054,25 @@ mod managed_cli_working_dir_tests {
             other => panic!("unexpected value needing the OS: {other}"),
         };
 
-        let pins =
-            relative_override_pins_from(Some(cwd.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).unwrap();
+        let pins = relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true,
+        )
+        .unwrap();
         assert_eq!(
             pins,
             vec![
                 // Root-relative: the drive is the current one, which the move
                 // can change, so the OS resolves it before that happens.
-                (
-                    "LLAMA_SERVER_PATH",
-                    PathBuf::from("C:\\srv\\llama-server")
-                ),
+                ("LLAMA_SERVER_PATH", PathBuf::from("C:\\srv\\llama-server")),
                 ("UNSLOTH_COMPILE_LOCATION", cwd.join("studio")),
                 ("HF_HOME", cwd.join("cache")),
-                (
-                    "HF_DATASETS_CACHE",
-                    PathBuf::from("D:\\work\\datasets")
-                ),
+                ("HF_DATASETS_CACHE", PathBuf::from("D:\\work\\datasets")),
             ],
             "only values that name no directory on their own are rewritten"
         );
@@ -4056,18 +4080,42 @@ mod managed_cli_working_dir_tests {
         // An unresolvable drive-relative value refuses the whole move rather
         // than being dropped: a child moved with that override still relative
         // would read and write somewhere else than the caller named.
-        assert!(relative_override_pins_from(Some(cwd.clone()), &work_dir, env, |_| None, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
+        assert!(relative_override_pins_from(
+            Some(cwd.clone()),
+            &work_dir,
+            env,
+            |_| None,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .is_err());
 
         // Staying put is the common case: nothing is rewritten, so a desktop
         // started from a project folder keeps every override as it was.
-        assert!(
-            relative_override_pins_from(Some(work_dir.clone()), &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(relative_override_pins_from(
+            Some(work_dir.clone()),
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .unwrap()
+        .is_empty());
         // The directory being left is unknown, so a relative override cannot be
         // anchored to it and the move is refused rather than retargeting it.
-        assert!(relative_override_pins_from(None, &work_dir, env, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true).is_err());
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .is_err());
         // With nothing relative left to preserve, an unknown directory is fine.
         let absolute_only = |name: &str| match name {
             "HF_HOME" => Some("D:\\cache".to_string()),
@@ -4076,11 +4124,17 @@ mod managed_cli_working_dir_tests {
             "UNSLOTH_STUDIO_HOME" => Some("studio".to_string()),
             _ => None,
         };
-        assert!(
-            relative_override_pins_from(None, &work_dir, absolute_only, absolute, Some(std::path::Path::new("C:\\Users\\me")), MANAGED_CHILD_SCRUBBED_ENV, true)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            absolute_only,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
@@ -4172,7 +4226,10 @@ mod managed_cli_working_dir_tests {
         assert_eq!(expand_posix_vars("${HOME}/hf", &lookup), "/home/me/hf");
         assert_eq!(expand_posix_vars("%HOME%/hf", &lookup), "%HOME%/hf");
         assert_eq!(expand_posix_vars("$UNSET/hf", &lookup), "$UNSET/hf");
-        assert_eq!(expand_posix_vars("${UNTERMINATED/hf", &lookup), "${UNTERMINATED/hf");
+        assert_eq!(
+            expand_posix_vars("${UNTERMINATED/hf", &lookup),
+            "${UNTERMINATED/hf"
+        );
         assert_eq!(expand_posix_vars("cost: $5", &lookup), "cost: $5");
         assert_eq!(expand_posix_vars("plain/path", &lookup), "plain/path");
 
@@ -4327,7 +4384,11 @@ mod managed_cli_working_dir_tests {
             table,
             vec![
                 ("elsewhere", "clean", "nothing rewritten"),
-                ("elsewhere", "relative", "anchored to the directory being left"),
+                (
+                    "elsewhere",
+                    "relative",
+                    "anchored to the directory being left"
+                ),
                 ("elsewhere", "absolute", "nothing rewritten"),
                 ("elsewhere", "toggle", "nothing rewritten"),
                 // Staying put rewrites nothing whatever the environment holds.
@@ -4377,9 +4438,10 @@ mod managed_cli_working_dir_tests {
         // And the spawn path turns that report into staying put, without
         // moving this process to prove it: an unpinnable environment plus a
         // directory that cannot be named means the child stays where it is.
-        let unpinnable: Result<Vec<(&'static str, PathBuf)>, String> =
-            Err("DG_VISUAL_BIN is relative and the directory it was written against is gone"
-                .to_string());
+        let unpinnable: Result<Vec<(&'static str, PathBuf)>, String> = Err(
+            "DG_VISUAL_BIN is relative and the directory it was written against is gone"
+                .to_string(),
+        );
         assert_eq!(stay_put_on_lost_cwd(unpinnable.clone(), false), Ok(None));
         assert!(stay_put_on_lost_cwd(unpinnable, true).is_err());
     }
@@ -4492,36 +4554,32 @@ mod managed_cli_working_dir_tests {
             _ => None,
         };
         let absolute = |_: &str| None;
-        assert!(
-            relative_override_pins_from(
-                None,
-                &work_dir,
-                env,
-                absolute,
-                Some(std::path::Path::new("C:\\Users\\me")),
-                MANAGED_CHILD_SCRUBBED_ENV,
-                true
-            )
-            .unwrap()
-            .is_empty()
-        );
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            env,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .unwrap()
+        .is_empty());
         // A genuinely relative folder in the same list is still refused.
         let with_relative = |name: &str| match name {
             "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH" => Some("1;models".to_string()),
             _ => None,
         };
-        assert!(
-            relative_override_pins_from(
-                None,
-                &work_dir,
-                with_relative,
-                absolute,
-                Some(std::path::Path::new("C:\\Users\\me")),
-                MANAGED_CHILD_SCRUBBED_ENV,
-                true
-            )
-            .is_err()
-        );
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            with_relative,
+            absolute,
+            Some(std::path::Path::new("C:\\Users\\me")),
+            MANAGED_CHILD_SCRUBBED_ENV,
+            true
+        )
+        .is_err());
     }
 
     #[test]
@@ -4833,19 +4891,17 @@ mod managed_cli_working_dir_tests {
             "XDG_CACHE_HOME" => Some("/var/cache/unsloth".to_string()),
             _ => None,
         };
-        assert!(
-            relative_override_pins_from(
-                None,
-                &work_dir,
-                posix,
-                |_| None,
-                home,
-                MANAGED_CHILD_SCRUBBED_ENV,
-                false
-            )
-            .unwrap()
-            .is_empty()
-        );
+        assert!(relative_override_pins_from(
+            None,
+            &work_dir,
+            posix,
+            |_| None,
+            home,
+            MANAGED_CHILD_SCRUBBED_ENV,
+            false
+        )
+        .unwrap()
+        .is_empty());
         // Something genuinely relative is still refused.
         let relative = |name: &str| match name {
             "XDG_CACHE_HOME" => Some("cache".to_string()),
@@ -4926,7 +4982,10 @@ mod managed_cli_working_dir_tests {
             true,
         )
         .unwrap();
-        assert!(for_child.is_empty(), "a child that ignores it must not pin it");
+        assert!(
+            for_child.is_empty(),
+            "a child that ignores it must not pin it"
+        );
     }
 
     #[test]
@@ -4943,10 +5002,16 @@ mod managed_cli_working_dir_tests {
             "C:\\Users\\me/llama.cpp"
         );
         // ~name is the sibling profile, as ntpath resolves it.
-        assert_eq!(expand_windows_user("~other\\x", home, me), "C:\\Users\\other\\x");
+        assert_eq!(
+            expand_windows_user("~other\\x", home, me),
+            "C:\\Users\\other\\x"
+        );
         // ~me is this profile whatever the folder is called.
         let domain = std::path::Path::new("C:\\Users\\me.DOMAIN");
-        assert_eq!(expand_windows_user("~me\\x", domain, me), "C:\\Users\\me.DOMAIN\\x");
+        assert_eq!(
+            expand_windows_user("~me\\x", domain, me),
+            "C:\\Users\\me.DOMAIN\\x"
+        );
         // And ntpath declines to guess a sibling when this profile is not named
         // after the current user, so neither does this.
         assert_eq!(expand_windows_user("~other\\x", domain, me), "~other\\x");
@@ -4980,9 +5045,15 @@ mod managed_cli_working_dir_tests {
                 "{value} did not expand the way the CLI guard expands it"
             );
         }
-        assert_eq!(expand_windows_vars("$CACHE-ROOT\\hf", &lookup), "C:\\right\\hf");
+        assert_eq!(
+            expand_windows_vars("$CACHE-ROOT\\hf", &lookup),
+            "C:\\right\\hf"
+        );
         // A percent name may hold spaces; a dollar name stops at the dot.
-        assert_eq!(expand_windows_vars("%TWO WORDS%\\x", &lookup), "C:\\spaced\\x");
+        assert_eq!(
+            expand_windows_vars("%TWO WORDS%\\x", &lookup),
+            "C:\\spaced\\x"
+        );
         assert_eq!(expand_windows_vars("$CACHE.d", &lookup), "C:\\wrong.d");
         // Doubled markers stand for one character.
         assert_eq!(expand_windows_vars("100%%", &lookup), "100%");
@@ -5160,10 +5231,7 @@ mod managed_cli_working_dir_tests {
         );
         assert_eq!(
             pins,
-            vec![(
-                "UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH",
-                PathBuf::from(expected)
-            )],
+            vec![("UNSLOTH_ALLOW_LOCAL_PREQUANT_PATH", PathBuf::from(expected))],
             "a relative entry must not authorise a different directory after the move"
         );
     }
@@ -5377,7 +5445,10 @@ mod exit_status_after_stdout_closed_tests {
         let mut child = spawn(&["/bin/sh", "-c", "exit 3"]);
         let status = exit_status_after_stdout_closed(&mut child)
             .expect("a child that exited must be reported, not read as alive");
-        assert!(status.contains('3'), "expected the real exit code in {status:?}");
+        assert!(
+            status.contains('3'),
+            "expected the real exit code in {status:?}"
+        );
     }
 
     // The half of the contract a naive "retry until you get something" would break: a

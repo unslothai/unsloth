@@ -10,6 +10,7 @@ import {
   isExpectedBackgroundChatStorageError,
   listStoredChatProjects,
   moveStoredChatItemToProject,
+  openStoredChatProjectFolder,
   updateStoredChatProject,
 } from "../utils/chat-history-storage";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
@@ -112,7 +113,10 @@ export function useChatProjects(): {
     window.addEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
     return () => {
       cancelled = true;
-      window.removeEventListener(CHAT_PROJECTS_UPDATED_EVENT, onProjectsUpdated);
+      window.removeEventListener(
+        CHAT_PROJECTS_UPDATED_EVENT,
+        onProjectsUpdated,
+      );
     };
   }, []);
 
@@ -121,6 +125,12 @@ export function useChatProjects(): {
 
 export async function createChatProject(name: string): Promise<ProjectRecord> {
   return createStoredChatProject(name);
+}
+
+export async function openChatProjectFromFolder(
+  nativePathLease: string,
+): Promise<ProjectRecord> {
+  return openStoredChatProjectFolder(nativePathLease);
 }
 
 export async function renameChatProject(
@@ -136,7 +146,9 @@ export async function updateChatProjectInstructions(
   projectId: string,
   instructions: string,
 ): Promise<void> {
-  await updateStoredChatProject(projectId, { instructions: instructions.trim() });
+  await updateStoredChatProject(projectId, {
+    instructions: instructions.trim(),
+  });
 }
 
 export async function deleteChatProject(

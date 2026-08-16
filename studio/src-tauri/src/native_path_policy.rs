@@ -68,8 +68,8 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     if classified.path_type != NativePathType::File {
         return Err("Only files can be attached to a chat.".to_string());
     }
-    let supported = accepted_attachment_exts()
-        .any(|ext| has_extension(&classified.canonical_path, ext));
+    let supported =
+        accepted_attachment_exts().any(|ext| has_extension(&classified.canonical_path, ext));
     if !supported {
         return Err(format!(
             "Unsupported attachment type. Supported: {}",
@@ -95,7 +95,10 @@ pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, St
     reject_sensitive_document_folder(&classified.canonical_path)?;
     Ok(ClassifiedPath {
         path_kind: NativePathKind::DocumentFolder,
-        allowed_operations: vec![NativePathOperation::LinkDocuments],
+        allowed_operations: vec![
+            NativePathOperation::LinkDocuments,
+            NativePathOperation::OpenProject,
+        ],
         ..classified
     })
 }
@@ -630,9 +633,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        scratch_root().join(format!("unsloth-native-policy-{name}-{}-{nanos}", std::process::id()))
+        scratch_root().join(format!(
+            "unsloth-native-policy-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
-
 
     #[test]
     fn gguf_model_allows_validate_load_reveal() {
@@ -712,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn document_folder_is_directory_with_link_only_capability() {
+    fn document_folder_is_directory_with_link_and_project_capabilities() {
         let path = temp_path("documents");
         fs::create_dir(&path).unwrap();
         let classified = classify_native_document_folder(&path).unwrap();
@@ -720,7 +725,10 @@ mod tests {
         assert_eq!(classified.path_type, NativePathType::Directory);
         assert_eq!(
             classified.allowed_operations,
-            vec![NativePathOperation::LinkDocuments]
+            vec![
+                NativePathOperation::LinkDocuments,
+                NativePathOperation::OpenProject,
+            ]
         );
         let _ = fs::remove_dir(path);
     }

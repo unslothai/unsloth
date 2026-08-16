@@ -4195,9 +4195,9 @@ def test_a_workspace_is_kept_when_the_wait_ran_out():
 
     route = inspect.getsource(chat_history.delete_project)
     assert "run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])" in route
-    assert "if delete_files and idle and not referenced and not recreated:" in route
+    assert "if delete_workspace_files and idle and not referenced and not recreated:" in route
     assert route.index(
-        "if delete_files and idle and not referenced and not recreated:"
+        "if delete_workspace_files and idle and not referenced and not recreated:"
     ) < route.index("run_in_threadpool(delete_project_workspace, project)")
     # And a wait that ran out queues the finish rather than dropping it.
     assert "finish_workspace_delete_when_idle(project_id)" in route
@@ -4332,8 +4332,8 @@ def test_a_kept_workspace_is_recorded_even_when_nothing_was_deleted():
 
     route = inspect.getsource(chat_history.delete_project)
     assert 'if project.get("sandboxPath"):' in route
-    assert "if not delete_files:" in route
-    body = route[route.index("if not delete_files:") :]
+    assert "if not delete_workspace_files:" in route
+    body = route[route.index("if not delete_workspace_files:") :]
     assert "record_orphaned_project," in body[:400]
     assert "False," in body[:400], "a keep must not be recorded as pending deletion"
 

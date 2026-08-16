@@ -447,7 +447,10 @@ async fn check_watchdog_health(
     // the grace open. A failed read reports not-warming, which is the conservative answer:
     // it lets the failure count rather than extending the grace on a backend we cannot read.
     let warming_up = if verified {
-        check_health_inner(port).await.unwrap_or_default().warming_up
+        check_health_inner(port)
+            .await
+            .unwrap_or_default()
+            .warming_up
     } else {
         false
     };

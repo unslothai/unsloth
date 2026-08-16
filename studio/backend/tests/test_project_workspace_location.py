@@ -102,6 +102,107 @@ def test_the_workspace_error_carries_the_folder_it_could_not_make(tmp_path, monk
     assert caught.value.path == str(blocked)
 
 
+def test_project_folder_grant_has_its_own_operation(tmp_path):
+    from types import SimpleNamespace
+
+    from routes.chat_history import _resolve_project_folder_path
+
+    selected = tmp_path / "repo"
+    selected.mkdir()
+    seen = {}
+
+    def verify(lease, **kwargs):
+        seen.update(kwargs)
+        assert lease == "signed-folder"
+        return SimpleNamespace(canonical_path = selected, display_label = "repo")
+
+    path, label = _resolve_project_folder_path("signed-folder", verifier = verify)
+
+    assert path == str(selected)
+    assert label == "repo"
+    assert seen == {
+        "operation": "open-project",
+        "expected_kind": "document-folder",
+        "expected_path_type": "directory",
+    }
+
+
+def test_open_folder_route_creates_a_folder_backed_project(tmp_path, monkeypatch):
+    from routes import chat_history
+
+    selected = tmp_path / "repo"
+    selected.mkdir()
+    captured = {}
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_folder_path",
+        lambda lease: (str(selected), "repo"),
+    )
+    monkeypatch.setattr(chat_history, "list_chat_projects", lambda **kwargs: [])
+
+    def save(project):
+        captured.update(project)
+        return {**project, "sandboxPath": project["rootPath"]}
+
+    monkeypatch.setattr(chat_history, "upsert_chat_project", save)
+
+    opened = chat_history.open_project_folder(
+        chat_history.OpenProjectFolderRequest(nativePathLease = "signed"),
+        current_subject = "tester",
+    )
+
+    assert opened.name == "repo"
+    assert opened.rootPath == str(selected)
+    assert opened.sandboxPath == str(selected)
+    assert opened.workspaceKind == "folder"
+    assert captured["workspaceKind"] == "folder"
+
+
+def test_opening_the_same_folder_returns_its_existing_project(tmp_path, monkeypatch):
+    from routes import chat_history
+
+    selected = tmp_path / "repo"
+    selected.mkdir()
+    existing = {
+        "id": "existing-project",
+        "name": "repo",
+        "instructions": "",
+        "rootPath": str(selected),
+        "sandboxPath": str(selected),
+        "workspaceKind": "folder",
+        "archived": False,
+        "createdAt": 1,
+        "updatedAt": 2,
+    }
+    monkeypatch.setattr(
+        chat_history,
+        "_resolve_project_folder_path",
+        lambda lease: (str(selected), "repo"),
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "list_chat_projects",
+        lambda **kwargs: [existing],
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "ensure_chat_project_workspace",
+        lambda project_id: existing,
+    )
+    monkeypatch.setattr(
+        chat_history,
+        "upsert_chat_project",
+        lambda project: pytest.fail("duplicate project was created"),
+    )
+
+    opened = chat_history.open_project_folder(
+        chat_history.OpenProjectFolderRequest(nativePathLease = "signed"),
+        current_subject = "tester",
+    )
+
+    assert opened.id == "existing-project"
+
+
 def test_creating_a_project_says_which_folder_failed(tmp_path, monkeypatch):
     """A folder Studio cannot create is the one failure this route has.
 

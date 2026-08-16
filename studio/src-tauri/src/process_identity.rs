@@ -425,8 +425,7 @@ fn process_start_time_impl(pid: u32) -> Option<f64> {
         if ok == 0 {
             return None;
         }
-        let ticks =
-            ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
+        let ticks = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
         Some(ticks.checked_sub(EPOCH_OFFSET)? as f64 / 10_000_000.0)
     }
 }
@@ -577,7 +576,11 @@ mod tests {
             ProcessOrigin::InsideTree
         );
         assert_eq!(
-            origin_of(std::process::id(), Path::new("/definitely/elsewhere"), &none),
+            origin_of(
+                std::process::id(),
+                Path::new("/definitely/elsewhere"),
+                &none
+            ),
             ProcessOrigin::Elsewhere
         );
     }
@@ -636,16 +639,21 @@ mod tests {
     #[test]
     fn the_base_interpreter_from_pyvenv_cfg_is_listed() {
         let base = tempfile::tempdir().unwrap();
-        let interpreter = base
-            .path()
-            .join(if cfg!(windows) { "python.exe" } else { "python3.13" });
+        let interpreter = base.path().join(if cfg!(windows) {
+            "python.exe"
+        } else {
+            "python3.13"
+        });
         std::fs::write(&interpreter, "").unwrap();
         let tree = tree_with_venv(Some(base.path()), "Scripts");
 
         let found = interpreters_of(tree.path());
 
         assert!(!found.base_unknown);
-        assert_eq!(found.shared, vec![std::fs::canonicalize(&interpreter).unwrap()]);
+        assert_eq!(
+            found.shared,
+            vec![std::fs::canonicalize(&interpreter).unwrap()]
+        );
     }
 
     /// A uv venv whose base interpreter was deleted or moved: the config still
@@ -699,7 +707,10 @@ mod tests {
         }
         child.wait().unwrap();
 
-        assert!(zombie, "a killed but unreaped child should read as a zombie");
+        assert!(
+            zombie,
+            "a killed but unreaped child should read as a zombie"
+        );
         assert!(!is_zombie(std::process::id()), "we are not a zombie");
     }
 

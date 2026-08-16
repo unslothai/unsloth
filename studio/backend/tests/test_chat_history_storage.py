@@ -385,6 +385,50 @@ def test_chat_project_delete_files_removes_workspace(
     assert studio_db.get_chat_project(project["id"]) is None
 
 
+def test_folder_project_uses_the_selected_directory_directly(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    selected = tmp_path / "existing-project"
+    selected.mkdir()
+    marker = selected / "README.md"
+    marker.write_text("existing project", encoding = "utf-8")
+
+    project = studio_db.upsert_chat_project(
+        {
+            **_project("folder-project"),
+            "rootPath": str(selected),
+            "workspaceKind": "folder",
+        }
+    )
+
+    assert project["workspaceKind"] == "folder"
+    assert Path(project["rootPath"]) == selected.resolve()
+    assert Path(project["sandboxPath"]) == selected.resolve()
+    assert marker.read_text(encoding = "utf-8") == "existing project"
+    assert not (selected / "sandbox").exists()
+
+
+def test_deleting_folder_project_never_deletes_selected_directory(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    selected = tmp_path / "existing-project"
+    selected.mkdir()
+    marker = selected / "keep.txt"
+    marker.write_text("keep me", encoding = "utf-8")
+    project = studio_db.upsert_chat_project(
+        {
+            **_project("folder-project"),
+            "rootPath": str(selected),
+            "workspaceKind": "folder",
+        }
+    )
+
+    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+
+    assert deleted is not None
+    assert deleted["workspaceKind"] == "folder"
+    assert marker.read_text(encoding = "utf-8") == "keep me"
+    assert studio_db.get_chat_project(project["id"]) is None
+
+
 def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())

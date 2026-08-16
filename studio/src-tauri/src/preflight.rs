@@ -56,7 +56,9 @@ fn stale_auto_repair(managed: &ManagedProbe) -> bool {
 /// since the frontend answers every other reason with "update", which needs it.
 fn stale_reason(managed: &ManagedProbe, reason: &str) -> String {
     if managed_profile_unreachable(managed) {
-        info!("Desktop preflight: stale backend ({reason}) reported as an unusable managed context");
+        info!(
+            "Desktop preflight: stale backend ({reason}) reported as an unusable managed context"
+        );
         return match managed {
             ManagedProbe::Unavailable { reason } | ManagedProbe::Stale { reason, .. } => {
                 reason.clone()

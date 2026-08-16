@@ -68,7 +68,10 @@ impl ProgressWatch {
 
     #[cfg(test)]
     pub fn with_backstop(now: Instant, backstop: Duration) -> Self {
-        Self { backstop_timeout: backstop, ..Self::new(now) }
+        Self {
+            backstop_timeout: backstop,
+            ..Self::new(now)
+        }
     }
 
     pub fn note_output(&mut self, now: Instant) {
@@ -97,7 +100,10 @@ impl ProgressWatch {
     pub fn expired(&self, now: Instant) -> Option<String> {
         (now.duration_since(self.started) >= self.backstop_timeout).then(|| {
             let budget = human_duration(self.backstop_timeout);
-            format!("Installation timed out after {budget}{}.", self.where_it_was())
+            format!(
+                "Installation timed out after {budget}{}.",
+                self.where_it_was()
+            )
         })
     }
 
@@ -205,7 +211,10 @@ mod tests {
     fn markers_are_parsed_and_anything_else_is_left_alone() {
         assert_eq!(
             parse_marker("[TAURI:DL] torch 2.4GiB"),
-            Some(Marker::Start { package: "torch", size: "2.4GiB" })
+            Some(Marker::Start {
+                package: "torch",
+                size: "2.4GiB"
+            })
         );
         assert_eq!(
             parse_marker("[TAURI:DL_DONE] torch"),
@@ -223,13 +232,20 @@ mod tests {
 
     #[test]
     fn only_the_backstop_stops_an_install() {
-        assert_eq!(BACKSTOP_TIMEOUT, 12 * HOUR, "the shipped budget is what these assert");
+        assert_eq!(
+            BACKSTOP_TIMEOUT,
+            12 * HOUR,
+            "the shipped budget is what these assert"
+        );
         let t0 = Instant::now();
         let mut watch = watch(t0);
         watch.note_step("Installing unsloth");
         // The reporting host needed ~3.7 h for its torch download and was killed at 2 h.
         assert_eq!(watch.expired(t0 + 4 * HOUR), None);
-        assert_eq!(watch.expired(t0 + 11 * HOUR + Duration::from_secs(3599)), None);
+        assert_eq!(
+            watch.expired(t0 + 11 * HOUR + Duration::from_secs(3599)),
+            None
+        );
         let message = watch.expired(t0 + 12 * HOUR).expect("the backstop fires");
         assert!(message.contains("12 h"), "{message}");
         assert!(message.contains("Installing unsloth"), "{message}");
@@ -240,16 +256,32 @@ mod tests {
         let t0 = Instant::now();
         let mut watch = watch(t0);
         watch.note_step("Installing PyTorch");
-        watch.note_marker(&Marker::Start { package: "torch", size: "2.4GiB" }, t0);
+        watch.note_marker(
+            &Marker::Start {
+                package: "torch",
+                size: "2.4GiB",
+            },
+            t0,
+        );
 
         // Output resets the window, so an install that talks never reports.
         watch.note_output(t0 + Duration::from_secs(299));
         assert_eq!(watch.due_report(t0 + Duration::from_secs(300)), None);
-        let first = watch.due_report(t0 + Duration::from_secs(600)).expect("a report is due");
-        assert!(first.contains("torch") && first.contains("2.4GiB"), "{first}");
-        assert!(first.contains("Installing PyTorch") && first.contains("10 min"), "{first}");
+        let first = watch
+            .due_report(t0 + Duration::from_secs(600))
+            .expect("a report is due");
+        assert!(
+            first.contains("torch") && first.contains("2.4GiB"),
+            "{first}"
+        );
+        assert!(
+            first.contains("Installing PyTorch") && first.contains("10 min"),
+            "{first}"
+        );
         assert_eq!(watch.due_report(t0 + Duration::from_secs(601)), None);
-        let second = watch.due_report(t0 + Duration::from_secs(900)).expect("a second report");
+        let second = watch
+            .due_report(t0 + Duration::from_secs(900))
+            .expect("a second report");
         assert!(second.contains("15 min"), "{second}");
     }
 
@@ -257,9 +289,17 @@ mod tests {
     fn a_landed_download_stops_being_named() {
         let t0 = Instant::now();
         let mut watch = watch(t0);
-        watch.note_marker(&Marker::Start { package: "torch", size: "2.4GiB" }, t0);
+        watch.note_marker(
+            &Marker::Start {
+                package: "torch",
+                size: "2.4GiB",
+            },
+            t0,
+        );
         watch.note_marker(&Marker::Done { package: "torch" }, t0);
-        let report = watch.due_report(t0 + Duration::from_secs(600)).expect("a report is due");
+        let report = watch
+            .due_report(t0 + Duration::from_secs(600))
+            .expect("a report is due");
         assert!(!report.contains("torch"), "{report}");
         assert!(report.contains("still working"), "{report}");
     }
@@ -275,8 +315,15 @@ mod tests {
         assert_eq!(watch.lock().unwrap().due_report(Instant::now()), None);
 
         let later = now + Duration::from_secs(600);
-        let report = watch.lock().unwrap().due_report(later).expect("a report is due");
-        assert!(report.contains("torch") && report.contains("Installing PyTorch"), "{report}");
+        let report = watch
+            .lock()
+            .unwrap()
+            .due_report(later)
+            .expect("a report is due");
+        assert!(
+            report.contains("torch") && report.contains("Installing PyTorch"),
+            "{report}"
+        );
         assert!(note_progress(&watch, "[TAURI:DL_DONE] torch"));
         let after = watch
             .lock()
@@ -288,7 +335,10 @@ mod tests {
 
     #[test]
     fn the_wait_loop_reports_a_silence_then_stops_the_child_at_the_backstop() {
-        let watch = Mutex::new(ProgressWatch::with_backstop(Instant::now() - 13 * HOUR, 12 * HOUR));
+        let watch = Mutex::new(ProgressWatch::with_backstop(
+            Instant::now() - 13 * HOUR,
+            12 * HOUR,
+        ));
         let (mut reports, mut stops) = (Vec::new(), 0);
         let error = wait_with_watchdog(
             &watch,

@@ -64,7 +64,6 @@ export {
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export {
   preferFullToolOutput,
-
   preferSanitizedFullToolOutput,
   toolOutputKey,
   toolThreadScope,
@@ -257,6 +256,7 @@ export {
   createChatProject,
   deleteChatProject,
   moveChatItemToProject,
+  openChatProjectFromFolder,
   renameChatProject,
   updateChatProjectInstructions,
   useChatProjects,

@@ -28,12 +28,10 @@ pub(super) fn context_reason(error: &crate::process::ManagedContextError) -> Str
         crate::process::ManagedContextError::WorkingDirectory(_) => {
             WORKING_DIRECTORY_UNAVAILABLE.to_string()
         }
-        crate::process::ManagedContextError::PathSetting(detail) => {
-            match setting_name(detail) {
-                Some(name) => format!("{PATH_SETTING_UNRESOLVABLE}:{name}"),
-                None => PATH_SETTING_UNRESOLVABLE.to_string(),
-            }
-        }
+        crate::process::ManagedContextError::PathSetting(detail) => match setting_name(detail) {
+            Some(name) => format!("{PATH_SETTING_UNRESOLVABLE}:{name}"),
+            None => PATH_SETTING_UNRESOLVABLE.to_string(),
+        },
     }
 }
 

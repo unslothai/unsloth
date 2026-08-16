@@ -217,16 +217,20 @@ impl NativeIntakeState {
         Ok(entry.to_ref())
     }
 
-    fn sign_document_folder_path(
+    fn sign_folder_path(
         &self,
         path: impl AsRef<Path>,
+        operation: NativePathOperation,
     ) -> Result<NativeDocumentFolderSelection, String> {
         let classified = classify_native_document_folder(path.as_ref())?;
+        if !classified.allowed_operations.contains(&operation) {
+            return Err("The selected folder does not allow that operation.".to_string());
+        }
         let token = random_token("path_");
         let lease = sign_path_lease(
             &self.lease_secret,
             NativePathLeaseRequest {
-                operation: NativePathOperation::LinkDocuments,
+                operation,
                 canonical_path: portable_path_string(&classified.canonical_path),
                 path_kind: classified.path_kind,
                 path_type: classified.path_type,
@@ -243,6 +247,20 @@ impl NativeIntakeState {
             token: lease.native_path_lease,
             display_name: lease.display_label,
         })
+    }
+
+    fn sign_document_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        self.sign_folder_path(path, NativePathOperation::LinkDocuments)
+    }
+
+    fn sign_project_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        self.sign_folder_path(path, NativePathOperation::OpenProject)
     }
 
     fn register_classified_path(
@@ -527,6 +545,29 @@ pub async fn pick_native_document_folder(
 }
 
 #[tauri::command]
+pub async fn pick_native_project_folder(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, NativeIntakeState>,
+) -> Result<Option<NativeDocumentFolderSelection>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Open project folder")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    state.sign_project_folder_path(path).map(Some)
+}
+
+#[tauri::command]
 pub fn consume_native_path_token(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,
@@ -672,9 +713,8 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
-    let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image and audio attachments can be read inline.".to_string()
-    })?;
+    let mime_type = attachment_mime_type(path)
+        .ok_or_else(|| "Only chat image and audio attachments can be read inline.".to_string())?;
     let max_bytes = if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
     } else {
@@ -746,9 +786,11 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        crate::native_path_policy::scratch_root().join(format!("unsloth-native-intents-{name}-{}-{nanos}", std::process::id()))
+        crate::native_path_policy::scratch_root().join(format!(
+            "unsloth-native-intents-{name}-{}-{nanos}",
+            std::process::id()
+        ))
     }
-
 
     fn attachment_entry(path: &Path) -> (NativeIntakeState, NativePathEntry) {
         let state = new_native_intake_state();
@@ -990,6 +1032,7 @@ mod tests {
         let payload = lease.token.split('.').next().unwrap();
         let payload: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(payload["operation"], "link-documents");
         assert!(payload["modified_ms"].is_null());
         assert!(payload["device_id"]
             .as_str()
@@ -1008,6 +1051,14 @@ mod tests {
         assert!(state
             .entry_for_operation("path_token", NativePathOperation::LinkDocuments)
             .is_err());
+
+        let project_lease = state.sign_project_folder_path(&path).unwrap();
+        let payload = project_lease.token.split('.').next().unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(payload["operation"], "open-project");
+        assert_eq!(payload["path_kind"], "document-folder");
+        assert_eq!(payload["path_type"], "directory");
         let _ = fs::remove_dir(path);
     }
 

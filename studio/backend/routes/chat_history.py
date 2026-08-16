@@ -9,7 +9,11 @@ mixed handlers explicitly send their database transaction through Starlette's th
 """
 
 import asyncio
+import os
 import sqlite3
+import time
+import uuid
+from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -112,6 +116,7 @@ class ChatProject(BaseModel):
     instructions: str = ""
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
+    workspaceKind: Literal["managed", "folder"] = "managed"
     archived: bool = False
     createdAt: int
     updatedAt: int
@@ -129,6 +134,10 @@ class ChatProjectPatch(BaseModel):
     archived: Optional[bool] = None
     createdAt: Optional[int] = None
     updatedAt: Optional[int] = None
+
+
+class OpenProjectFolderRequest(BaseModel):
+    nativePathLease: str = Field(min_length = 1)
 
 
 class ChatThreadListResponse(BaseModel):
@@ -752,10 +761,45 @@ def list_projects(
     )
 
 
+def _resolve_project_folder_path(
+    native_path_lease: str, *, verifier = None
+) -> tuple[str, str]:
+    """Consume the desktop grant for the folder the user explicitly picked."""
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    verify = verifier or verify_native_path_lease
+    try:
+        grant = verify(
+            native_path_lease,
+            operation = "open-project",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return str(grant.canonical_path), str(grant.display_label or "")
+
+
+def _same_project_root(first: str | None, second: str) -> bool:
+    if not first:
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(first)) == os.path.normcase(
+            os.path.realpath(second)
+        )
+    except (OSError, ValueError):
+        return False
+
+
 @router.post("/projects", response_model = ChatProject)
 def save_project(payload: ChatProject, current_subject: str = Depends(get_current_subject)):
     try:
-        return ChatProject(**upsert_chat_project(payload.model_dump()))
+        project = payload.model_dump()
+        # The general history endpoint restores logical project records. Only
+        # the signed desktop-folder endpoint below may grant filesystem access.
+        project["rootPath"] = None
+        project["workspaceKind"] = "managed"
+        return ChatProject(**upsert_chat_project(project))
     except ProjectWorkspaceError as exc:
         # A project is the only thing Studio writes to Documents, so a folder it
         # cannot create there fails here and nowhere else. Only this error, and
@@ -768,6 +812,52 @@ def save_project(payload: ChatProject, current_subject: str = Depends(get_curren
             "folder is writable, or set UNSLOTH_STUDIO_PROJECTS_HOME to another "
             "location.",
             event = "chat_history.create_project_workspace_failed",
+            log = logger,
+        ) from exc
+
+
+@router.post("/projects/open-folder", response_model = ChatProject)
+def open_project_folder(
+    payload: OpenProjectFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    root_path, display_label = _resolve_project_folder_path(payload.nativePathLease)
+
+    # Opening the same folder again selects its existing project instead of
+    # creating two project ids that concurrently write in one directory.
+    for existing in list_chat_projects(include_archived = True):
+        if not _same_project_root(existing.get("rootPath"), root_path):
+            continue
+        if existing.get("archived"):
+            existing = update_chat_project(
+                existing["id"],
+                {"archived": False, "updatedAt": int(time.time() * 1000)},
+            )
+        resolved = ensure_chat_project_workspace(existing["id"]) if existing else None
+        if resolved is not None:
+            return ChatProject(**resolved)
+
+    now = int(time.time() * 1000)
+    name = (display_label.strip() or Path(root_path).name or "Project")[:120]
+    project = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "instructions": "",
+        "rootPath": root_path,
+        "workspaceKind": "folder",
+        "archived": False,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    try:
+        return ChatProject(**upsert_chat_project(project))
+    except ProjectWorkspaceError as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            f"Could not open the selected project folder {exc.path}. Check that the "
+            "folder still exists and is accessible.",
+            event = "chat_history.open_project_folder_failed",
             log = logger,
         ) from exc
 
@@ -853,6 +943,12 @@ async def delete_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    # A folder project points at a directory the user already owned before
+    # Studio saw it. Even an API caller asking for file deletion may delete the
+    # project record and member-chat sandboxes, never that selected folder.
+    delete_workspace_files = (
+        delete_files and project.get("workspaceKind", "managed") == "managed"
+    )
     # before any workspace work: the row is already gone, so a later failure must not
     # leave the scope owned by nothing
     try:
@@ -887,7 +983,7 @@ async def delete_project(
         shared = project_session_id(project_id)
         idle = (
             await run_in_threadpool(wait_for_sessions_idle, [shared, *member_ids])
-            if delete_files
+            if delete_workspace_files
             else True
         )
         # A chat forked out of the project still shows cards for the shared
@@ -897,7 +993,7 @@ async def delete_project(
         # id in the window. It resolves to the same default path, and a tool
         # call of its own may be writing in there right now.
         recreated = await run_in_threadpool(get_chat_project, project_id) is not None
-        if not delete_files:
+        if not delete_workspace_files:
             # The files stay, so the only job here is making them reachable: the
             # row that held a custom path is gone, and a fork's cards still name
             # this session.
@@ -926,7 +1022,7 @@ async def delete_project(
                 "Kept project workspace %s: a surviving chat still shows its files",
                 project_id,
             )
-        if delete_files and idle and not referenced and not recreated:
+        if delete_workspace_files and idle and not referenced and not recreated:
             # Written down first: the delete can decline an unexpected path or
             # stop at a locked file, and the row that knew where this workspace
             # lives has already gone. The record is the only way back to it.
@@ -963,7 +1059,7 @@ async def delete_project(
                     project["sandboxPath"],
                     project.get("rootPath"),
                 )
-        elif delete_files and not recreated:
+        elif delete_workspace_files and not recreated:
             # Written down so it can be resolved and later collected: the row
             # that knew where it lives is gone. The root too, since the deferred
             # delete removes what the immediate one would; not for a live id.
