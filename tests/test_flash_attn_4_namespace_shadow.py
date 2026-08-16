@@ -28,13 +28,33 @@ whole fix hangs off getting the classification exactly right: a real flash-attn 
 not be touched, and neither must a machine with BOTH installed.
 """
 
+import importlib.util
+import pathlib
 import subprocess
 import sys
 import textwrap
 
 import pytest
 
-from unsloth import import_fixes
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _load_import_fixes():
+    """The module by path, not `from unsloth import import_fixes`.
+
+    Importing the package runs unsloth/__init__.py, which refuses to import without an
+    accelerator, so the package form cannot be collected on the CPU-only CI job. This
+    module is stdlib plus packaging at import time, so it loads on its own.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "unsloth_import_fixes_under_test", _REPO_ROOT / "unsloth" / "import_fixes.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+import_fixes = _load_import_fixes()
 
 
 def _write_layout(tmp_path, layout):
@@ -61,12 +81,23 @@ def _write_layout(tmp_path, layout):
     return root
 
 
+# Load import_fixes.py by path rather than as unsloth.import_fixes: importing the
+# package runs unsloth/__init__.py, which refuses to import without an accelerator,
+# so `from unsloth.import_fixes import ...` cannot run on the CPU-only CI job. The
+# module is stdlib plus packaging at import time, so it loads standalone.
+_LOAD_MODULE = """
+    import importlib.util, pathlib, sys
+    _path = pathlib.Path(sys.argv[2]) / "unsloth" / "import_fixes.py"
+    _spec = importlib.util.spec_from_file_location("unsloth_import_fixes", _path)
+    import_fixes = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(import_fixes)
+"""
+
 _CLASSIFY = textwrap.dedent(
-    """
-    import sys
+    _LOAD_MODULE
+    + """
     sys.path.insert(0, sys.argv[1])
-    from unsloth.import_fixes import _flash_attn_layout
-    print("LAYOUT=" + _flash_attn_layout())
+    print("LAYOUT=" + import_fixes._flash_attn_layout())
     """
 )
 
@@ -87,26 +118,25 @@ def test_layout_is_classified_correctly(tmp_path, layout, expected):
     # A subprocess per layout: `flash_attn` gets imported by find_spec on the submodule and
     # cannot be un-imported cleanly between cases.
     out = subprocess.run(
-        [sys.executable, "-c", _CLASSIFY, str(root)],
+        [sys.executable, "-c", _CLASSIFY, str(root), str(_REPO_ROOT)],
         capture_output = True,
         text = True,
-        check = True,
     )
+    assert out.returncode == 0, out.stdout + out.stderr
     assert f"LAYOUT={expected}" in out.stdout, out.stdout + out.stderr
 
 
 _NO_EAGER_IMPORT = textwrap.dedent(
-    """
-    import sys
-    # Import unsloth BEFORE the layout is visible, so this measures the classifier only and not
-    # some unrelated consumer of flash_attn further down the import graph.
-    from unsloth.import_fixes import _flash_attn_layout, _flash_attn_4_present
+    # Load the module BEFORE the layout is visible, so this measures the classifier
+    # only and not some unrelated consumer of flash_attn further down the graph.
+    _LOAD_MODULE
+    + """
     sys.modules.pop("flash_attn", None)
     sys.path.insert(0, sys.argv[1])
     import importlib
     importlib.invalidate_caches()
-    _flash_attn_layout()
-    _flash_attn_4_present()
+    import_fixes._flash_attn_layout()
+    import_fixes._flash_attn_4_present()
     mod = sys.modules.get("flash_attn")
     # A namespace package has no __file__ and executes nothing; a REGULAR flash-attn 2 package
     # would have run its __init__ (and loaded flash_attn_2_cuda) if we had imported it.
@@ -126,11 +156,11 @@ def test_classification_never_imports_flash_attn(tmp_path, layout):
     """
     root = _write_layout(tmp_path, layout)
     out = subprocess.run(
-        [sys.executable, "-c", _NO_EAGER_IMPORT, str(root)],
+        [sys.executable, "-c", _NO_EAGER_IMPORT, str(root), str(_REPO_ROOT)],
         capture_output = True,
         text = True,
-        check = True,
     )
+    assert out.returncode == 0, out.stdout + out.stderr
     assert "EXECUTED=False" in out.stdout, out.stdout + out.stderr
 
 
@@ -183,9 +213,9 @@ def test_fix_is_a_noop_without_xformers(monkeypatch):
 
 
 _BROKEN_XFORMERS = textwrap.dedent(
-    """
-    import importlib.util, sys
-    from unsloth import import_fixes
+    _LOAD_MODULE
+    + """
+    import importlib.util
 
     # An xformers whose `ops` submodule explodes on import, standing in for an install the
     # repair cannot rescue.
@@ -214,7 +244,11 @@ def test_find_spec_is_restored_even_when_xformers_import_fails():
     """The repair patches `importlib.util.find_spec` for exactly one import. If that import
     raises, the patch must still come off, or every later find_spec in the process lies --
     and the unrepairable state must warn rather than degrade in silence."""
-    out = subprocess.run([sys.executable, "-c", _BROKEN_XFORMERS], capture_output = True, text = True)
+    out = subprocess.run(
+        [sys.executable, "-c", _BROKEN_XFORMERS, "", str(_REPO_ROOT)],
+        capture_output = True,
+        text = True,
+    )
     assert "RESTORED=True" in out.stdout, out.stdout + out.stderr
     assert "WARNED=True" in out.stdout, out.stdout + out.stderr
 
