@@ -326,7 +326,12 @@ def test_bounded_synthesis_evidence_keeps_every_step_on_small_budget():
 def test_report_is_recovered_from_substantial_synthesis_reasoning(heading):
     from core import research_runs as worker
 
-    report = heading + "\n\n" + ("Evidence-based conclusion. " * 30)
+    report = (
+        "The evidence supports the requested conclusion.\n\n"
+        + heading
+        + "\n\n"
+        + ("Evidence-based conclusion. " * 30)
+    )
     reasoning = (
         "## Analysis\n\nI will organize the final answer.\n"
         "<!-- UNSLOTH_FINAL_REPORT -->\n"
@@ -373,6 +378,7 @@ def test_report_prompt_requires_comprehensive_evidence_based_detail():
 
     prompt = worker._REPORT_SYSTEM_PROMPT
     assert "<!-- UNSLOTH_FINAL_REPORT -->" in prompt
+    assert "Before writing any report content" in prompt
     assert "detailed, comprehensive report" in prompt
     assert "every material dimension in the approved plan" in prompt
     assert "implications, tradeoffs, limitations" in prompt
