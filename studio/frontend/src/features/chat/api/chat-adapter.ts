@@ -1796,12 +1796,17 @@ export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
   // A caller that gates on the answer (the queue's indexing probe) has to tell
-  // "no project" from "could not read the row": one sends, the other waits.
-  opts?: { rethrowReadFailure?: boolean },
+  // "no project" from "could not read the row": one sends, the other waits. It
+  // also names its own fallback, since the store names whichever project is on
+  // screen when it polls rather than the one it is waiting for.
+  opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
   // Read before the await: a send survives navigation, so a store read after the
   // lookup could hand this request the project the user moved to.
-  const composerProjectId = useChatRuntimeStore.getState().activeProjectId;
+  const composerProjectId =
+    opts?.composerProjectId !== undefined
+      ? opts.composerProjectId
+      : useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
     let thread: ThreadRecord | undefined;
     try {

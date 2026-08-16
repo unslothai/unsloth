@@ -816,6 +816,7 @@ test("a background prompt queue checks the project it will send to", () => {
     /if \(!item\.target\.usesThreadDocuments\) \{\s*return false;/,
   );
   assert.match(thread, /\? await resolveProjectId\(threadId, undefined, \{/);
+  assert.match(thread, /composerProjectId: queueProjectId,/);
   // Work in flight counts as well as rows: an upload has no row until it lands.
   assert.match(
     thread,
@@ -844,7 +845,7 @@ test("a queue in a chat with no row still waits on its project", () => {
   // The thread lookup stays the source of truth wherever there is a thread.
   assert.match(
     src,
-    /const projectId = threadId\s*\?\s*await resolveProjectId\(threadId, undefined, \{ rethrowReadFailure: true \}\)\s*:\s*item\.target\.getQueueProjectId\(\);/,
+    /const queueProjectId = item\.target\.getQueueProjectId\(\);\s*const projectId = threadId\s*\?\s*await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,\s*composerProjectId: queueProjectId,\s*\}\)\s*:\s*queueProjectId;/,
   );
   // And the thread-document read is still only made when there is a thread.
   assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
@@ -902,7 +903,7 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",
   );
-  assert.match(adapter, /opts\?: \{ rethrowReadFailure\?: boolean \}/);
+  assert.match(adapter, /opts\?: \{ rethrowReadFailure\?: boolean;/);
   assert.match(
     adapter,
     /\} catch \(error\) \{[\s\S]{0,200}?if \(opts\?\.rethrowReadFailure\) throw error;\s*return null;/,
@@ -913,7 +914,7 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
   );
   assert.match(
     thread,
-    /await resolveProjectId\(threadId, undefined, \{ rethrowReadFailure: true \}\)/,
+    /await resolveProjectId\(threadId, undefined, \{\s*rethrowReadFailure: true,/,
   );
   // Every other caller keeps failing soft: they run on the send path, where a
   // read failure must not adopt whichever project is on screen.
@@ -940,7 +941,7 @@ test("a knowledge-base queue does not wait on project sources", () => {
   // never takes anyway.
   assert.match(
     thread,
-    /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,600}?const projectId = threadId/,
+    /if \(item\.target\.usesKnowledgeBase\) \{\s*return false;\s*\}[\s\S]{0,900}?const projectId = threadId/,
   );
   // The exclusivity this relies on, in the adapter that builds the scope.
   const adapter = readFileSync(
@@ -975,4 +976,26 @@ test("a retry stops when the scope it started for is gone", () => {
     hook,
     /await new Promise\(\(resolve\) =>\s*setTimeout\(resolve, 1000 \* \(attempt \+ 1\)\),\s*\);[\s\S]{0,400}?if \(liveScopeKeyRef\.current !== startedFor\) return;/,
   );
+});
+
+// A thread has its id before initialize() has finished writing its row, and the
+// store names whichever project is on screen when the queue polls. Falling back
+// to it there probes the project the user moved to, not the one being waited on.
+test("a queue with no row yet falls back to its own project, not the store", () => {
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    adapter,
+    /opts\?: \{ rethrowReadFailure\?: boolean; composerProjectId\?: string \| null \}/,
+  );
+  // The caller's fallback wins over the store, and null from a caller is an
+  // answer rather than a reason to read the store.
+  assert.match(
+    adapter,
+    /const composerProjectId =\s*opts\?\.composerProjectId !== undefined\s*\?\s*opts\.composerProjectId\s*:\s*useChatRuntimeStore\.getState\(\)\.activeProjectId;/,
+  );
+  // The row and the pending map still outrank it.
+  assert.match(adapter, /if \(thread\) \{\s*composerProjectByPendingThread\.delete\(threadId\);/);
 });

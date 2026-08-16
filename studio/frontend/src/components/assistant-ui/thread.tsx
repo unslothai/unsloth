@@ -507,10 +507,16 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     // them is mounted, which a background queue has not. So ask directly, and
     // for a chat with no row yet use the project the queue was started in.
     // Rethrowing: a row this probe could not read is not a chat with no project,
-    // and the catch below is what holds the prompt and asks again.
+    // and the catch below is what holds the prompt and asks again. The queue's
+    // own project is the fallback wherever the row is still missing, so a poll
+    // landing mid-navigation cannot probe the project the user moved to.
+    const queueProjectId = item.target.getQueueProjectId();
     const projectId = threadId
-      ? await resolveProjectId(threadId, undefined, { rethrowReadFailure: true })
-      : item.target.getQueueProjectId();
+      ? await resolveProjectId(threadId, undefined, {
+          rethrowReadFailure: true,
+          composerProjectId: queueProjectId,
+        })
+      : queueProjectId;
     if (!projectId) {
       return false;
     }
