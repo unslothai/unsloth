@@ -405,6 +405,8 @@ export function useChatSearchIndex(enabled: boolean): {
 
     const scheduleRebuild = () => {
       rebuildPending = true;
+      // retires a build that read the history before this change, which would else republish it
+      requestSeqRef.current += 1;
       if (debounceTimer !== null) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
