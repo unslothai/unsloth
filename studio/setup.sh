@@ -2144,15 +2144,28 @@ _bounded_pkg_probe() {
     _bpp_i=0
     while kill -0 "$_bpp_pid" 2>/dev/null; do
         if [ "$_bpp_i" -ge 300 ]; then
-            # Children are listed BEFORE the interpreter is signalled: once it exits
-            # they are reparented to init and -P can no longer find them. A
-            # sitecustomize or .pth hook can spawn one, and it would keep the
-            # redirected handle open after the interpreter is gone. Direct children
-            # only, best effort -- pgrep is not guaranteed to exist, and this is
-            # teardown, not a contract.
+            # The descendant tree is walked BEFORE the interpreter is signalled: once
+            # it exits its children are reparented to init and -P can no longer find
+            # them. A sitecustomize or .pth hook can spawn a helper that spawns its
+            # own child, so this descends rather than taking one level -- bounded, and
+            # best effort: pgrep is not guaranteed to exist, anything spawned after
+            # the snapshot is missed, and this is teardown, not a contract. A process
+            # group would be exact, but job control prints its own notifications to
+            # the console and this script's output is pinned.
             _bpp_kids=""
             if command -v pgrep >/dev/null 2>&1; then
-                _bpp_kids=$(pgrep -P "$_bpp_pid" 2>/dev/null || true)
+                _bpp_level="$_bpp_pid"
+                _bpp_depth=0
+                while [ -n "$_bpp_level" ] && [ "$_bpp_depth" -lt 5 ]; do
+                    _bpp_next=""
+                    for _bpp_p in $_bpp_level; do
+                        _bpp_c=$(pgrep -P "$_bpp_p" 2>/dev/null || true)
+                        [ -n "$_bpp_c" ] && _bpp_next="$_bpp_next $_bpp_c"
+                    done
+                    _bpp_kids="$_bpp_kids $_bpp_next"
+                    _bpp_level="$_bpp_next"
+                    _bpp_depth=$((_bpp_depth + 1))
+                done
             fi
             kill "$_bpp_pid" 2>/dev/null || true
             # KILL after a grace period: a probe wedged in an interruptible stall
@@ -2161,8 +2174,8 @@ _bounded_pkg_probe() {
             # than waited on.
             sleep 0.5
             kill -9 "$_bpp_pid" 2>/dev/null || true
-            # unquoted on purpose: pgrep returns one pid per line
-            [ -n "$_bpp_kids" ] && kill -9 $_bpp_kids 2>/dev/null || true
+            # unquoted on purpose: the tree is a whitespace-separated pid list
+            [ -n "$(printf '%s' "$_bpp_kids" | tr -d ' ')" ] && kill -9 $_bpp_kids 2>/dev/null || true
             rm -f "$_bpp_out"
             return 0
         fi
