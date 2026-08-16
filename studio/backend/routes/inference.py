@@ -20912,13 +20912,16 @@ def _nudge_retry_messages(
     )
 
 
-async def _anthropic_passthrough_retry_url(llama_backend, exc):
+async def _passthrough_retry_url(llama_backend, exc):
     """Fresh upstream URL after respawning a dead llama-server, else None.
 
     A crashed server relaunches on a NEW ephemeral port, so a passthrough still
     holding the old base_url keeps failing until the next load. Mirrors the
     respawn-and-retry in generate_chat_completion. None when an MTP+tensor crash
     already scheduled its own recovery, or when nothing needed respawning.
+
+    Shared by both passthrough surfaces: /v1/messages and /v1/chat/completions post
+    to the same upstream route, and a crash strands whichever one is in use.
     """
     recover = getattr(llama_backend, "_maybe_recover_from_mtp_crash", None)
     if recover is not None and recover(exc):
@@ -21078,7 +21081,7 @@ async def _anthropic_passthrough_stream(
             except httpx.ConnectError as exc:
                 # Nothing has streamed yet, so a respawned server can be retried once
                 # on its new port without duplicating output.
-                url = await _anthropic_passthrough_retry_url(llama_backend, exc)
+                url = await _passthrough_retry_url(llama_backend, exc)
                 if url is None:
                     raise
                 req = client.build_request("POST", url, json = body, headers = {"Connection": "close"})
@@ -21244,7 +21247,7 @@ async def _anthropic_passthrough_non_streaming(
             # Nothing was returned yet, so retry once against the respawned server's
             # new port; the nudge retry below then reuses the same fresh URL.
             retry_url = (
-                await _anthropic_passthrough_retry_url(llama_backend, exc)
+                await _passthrough_retry_url(llama_backend, exc)
                 if isinstance(exc, httpx.ConnectError)
                 else None
             )
@@ -22130,6 +22133,9 @@ async def _openai_passthrough_stream_admitted(
         _truncate_budget = (
             _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
         )
+        # One respawn per request: a second unreachable upstream after a successful
+        # relaunch is a real failure, not a stale port.
+        _respawn_retried = False
 
         while True:
             try:
@@ -22156,7 +22162,26 @@ async def _openai_passthrough_stream_admitted(
                 resp = await send_task
                 send_task = None
             except httpx.RequestError as e:
-                # llama-server subprocess crashed / starting / unreachable.
+                # llama-server subprocess crashed / starting / unreachable. Nothing has
+                # streamed yet, so a respawned server can be retried once on its new
+                # ephemeral port without duplicating output, exactly as /v1/messages does.
+                # Without this an OpenAI-API client stays broken until the next explicit
+                # load, while an Anthropic-API client on the same backend recovers itself.
+                if not _respawn_retried:
+                    _respawn_retried = True
+                    retry_url = await _passthrough_retry_url(llama_backend, e)
+                    if retry_url is not None:
+                        closed = False
+                        try:
+                            await _aclose_send_task(send_task)
+                            closed = True
+                        finally:
+                            # Only a retry that is actually going upstream keeps the slot.
+                            if not closed:
+                                _release_admission(admission_lease, _tracker)
+                        send_task = None
+                        target_url = retry_url
+                        continue
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Nested so a cancel inside _aclose_send_task's wait cannot skip the closes.
@@ -22904,6 +22929,8 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_budget = (
         _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
     )
+    # One respawn per request, as on the streaming twin.
+    _respawn_retried = False
 
     async def _post(body_to_send):
         if cancel_event is None and request is None:
@@ -22960,9 +22987,18 @@ async def _openai_passthrough_non_streaming_upstream(
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except httpx.RequestError as e:
-            # llama-server subprocess crashed / starting / unreachable. Surface the
-            # same friendly message the sync chat path emits so operators don't see
-            # a bare 500 with no diagnostic.
+            # llama-server subprocess crashed / starting / unreachable. Nothing has been
+            # sent to the client yet, so retry once on the new port of a respawned server.
+            # The helper defers to an MTP fallback already in flight, so nothing respawns
+            # underneath it; the recovery call below stays for the paths it declines.
+            if not _respawn_retried:
+                _respawn_retried = True
+                retry_url = await _passthrough_retry_url(llama_backend, e)
+                if retry_url is not None:
+                    target_url = retry_url
+                    continue
+            # Surface the same friendly message the sync chat path emits so operators
+            # don't see a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
             get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
