@@ -3,68 +3,30 @@
 
 "use client";
 
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
-import { CopyIcon, TerminalIcon } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { TerminalIcon } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo } from "react";
 import {
   ToolFallbackContent,
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
+import { SandboxFiles } from "./sandbox-files-view";
+import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
-  preferFullToolOutput,
-  toolOutputKey,
+  preferSanitizedFullToolOutput,
+  useToolAwaitingApproval,
+  useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
-
-const COPY_RESET_MS = 2000;
-
-function CopyBtn({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-    };
-  }, []);
-
-  const copy = useCallback(async () => {
-    if (await copyToClipboard(text)) {
-      setCopied(true);
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-      timer.current = setTimeout(() => setCopied(false), COPY_RESET_MS);
-    }
-  }, [text]);
-
-  return (
-    <button
-      type="button"
-      onClick={copy}
-      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      aria-label="Copy to clipboard"
-    >
-      {copied ? (
-        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
-      ) : (
-        <CopyIcon className="size-3" />
-      )}
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-}
 
 const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   toolCallId,
@@ -77,23 +39,41 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
+  // A command that wrote files arrives as the python tool's structured shape;
+  // a plain string means it wrote none.
+  // The same test the adapter applies: a foreign result that merely has text
+  // would otherwise be rendered as that field alone.
+  const structured = isSandboxToolResult(result)
+    ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
+    : null;
+  const files = structured?.files ?? [];
+  const sessionId = structured?.sessionId ?? "";
   const output =
-    typeof result === "string"
-      ? result
-      : result
-        ? JSON.stringify(result, null, 2)
-        : "";
+    structured !== null
+      ? stringifyToolResult(structured.text)
+      : result == null
+        ? ""
+        : stringifyToolResult(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
   const paneScope = useToolPaneScope();
-  const fullOutput = useChatRuntimeStore(
-    (s) => s.toolFullOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  const fullOutput = useToolOutputFor(
+    useChatRuntimeStore((s) => s.toolFullOutput),
+    paneScope,
+    toolCallId,
   );
-  const displayOutput = preferFullToolOutput(fullOutput, output);
+  // Compare the same plain-text representation on both sides. Otherwise a raw
+  // SGR-prefixed stream cannot match its cleaned truncated result and the
+  // reconciliation helper appends a duplicate prefix.
+  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
+  // The gate only opens once the call parsed, so a pending approval means the command is
+  // written even while the args status still reads as streaming.
+  const awaitingApproval = useToolAwaitingApproval(toolCallId);
+  const isWriting = isWritingCommand && !awaitingApproval;
 
   return (
-    // Open when mounted mid-run so live output shows; collapsed from history.
+    // Open mid-run so command and live output show, collapsed from history.
     <ToolFallbackRoot defaultOpen={isRunning}>
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
@@ -101,12 +81,27 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         icon={TerminalIcon}
       />
       <ToolFallbackContent>
+        {command && (
+          <ToolCodeCell
+            label="command"
+            code={command}
+            language="bash"
+            downloadName="command.sh"
+            streaming={isWriting}
+          />
+        )}
         <div className="border-l-2 border-muted-foreground/20 pl-2">
           {isRunning ? (
             <>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Spinner className="size-3.5" />
-                <span>{isWritingCommand ? "Writing command…" : "Running…"}</span>
+                <span>
+                  {awaitingApproval
+                    ? "Waiting for approval…"
+                    : isWriting
+                      ? "Writing command…"
+                      : "Running…"}
+                </span>
               </div>
               {/* Live stdout streamed via tool_output SSE events. */}
               <ToolLiveOutput toolCallId={toolCallId} />
@@ -120,6 +115,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
+          {/* Files the command wrote; this card used to show nothing for them */}
+          <SandboxFiles sessionId={sessionId} files={files} />
         </div>
       </ToolFallbackContent>
     </ToolFallbackRoot>

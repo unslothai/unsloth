@@ -4,7 +4,6 @@
 import type { TourStep } from "@/features/tour";
 import { studioBaseModelStep } from "./base-model";
 import { studioDatasetStep } from "./dataset";
-import { studioLocalModelStep } from "./local-model";
 import { studioMethodStep } from "./method";
 import { studioNavStep } from "./nav";
 import { studioParamsStep } from "./params";
@@ -13,7 +12,6 @@ import { studioStartStep } from "./start";
 
 export const studioTourSteps: TourStep[] = [
   studioNavStep,
-  studioLocalModelStep,
   studioBaseModelStep,
   studioMethodStep,
   studioDatasetStep,
@@ -21,4 +19,3 @@ export const studioTourSteps: TourStep[] = [
   studioStartStep,
   studioSaveStep,
 ];
-

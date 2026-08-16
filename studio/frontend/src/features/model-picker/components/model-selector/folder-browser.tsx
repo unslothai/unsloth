@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { type BrowseFoldersResponse, browseFolders } from "@/features/chat";
+import { useT } from "@/i18n";
 import { ChevronUpStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Folder02Icon } from "@hugeicons/core-free-icons";
@@ -85,6 +86,7 @@ export function FolderBrowser({
   confirmLabel = "Use this folder",
   showModelHints = true,
 }: FolderBrowserProps) {
+  const t = useT();
   const [data, setData] = useState<BrowseFoldersResponse | null>(null);
   const [path, setPath] = useState<string | undefined>(initialPath);
   const [showHidden, setShowHidden] = useState(false);
@@ -211,7 +213,9 @@ export function FolderBrowser({
           {!error && !data && loading && (
             <div className="flex items-center gap-2 px-6 py-3">
               <Spinner className="size-3 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Loading…</span>
+              <span className="text-xs text-muted-foreground">
+                {t("common.loading")}
+              </span>
             </div>
           )}
           {!error && data && (

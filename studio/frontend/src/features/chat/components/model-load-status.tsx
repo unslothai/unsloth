@@ -4,12 +4,15 @@
 import { Progress } from "@/components/ui/progress";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 type ModelLoadDescriptionProps = {
   title?: string | null;
   message?: string | null;
   progressPercent?: number | null;
   progressLabel?: string | null;
+  // Extra classes for the root row (e.g. a titleless caller dropping min-h-12).
+  className?: string;
 };
 
 function clampProgress(value: number): number {
@@ -39,6 +42,7 @@ export function ModelLoadDescription({
   message,
   progressPercent,
   progressLabel,
+  className,
 }: ModelLoadDescriptionProps) {
   const hasProgress = typeof progressPercent === "number";
   // Split once at the top so the JSX below stays flat (no IIFE).
@@ -46,7 +50,7 @@ export function ModelLoadDescription({
     splitProgressLabel(progressLabel);
 
   return (
-    <div className="relative flex min-h-12 w-full items-stretch gap-2">
+    <div className={cn("relative flex min-h-12 w-full items-stretch gap-2", className)}>
       <div className="flex h-full shrink-0 items-center self-center">
         <Spinner className="size-3.5 text-muted-foreground" />
       </div>

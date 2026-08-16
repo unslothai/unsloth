@@ -28,6 +28,7 @@ from models.inference import (
 )
 from core.inference.anthropic_compat import (
     anthropic_messages_to_openai,
+    anthropic_schema_client_tool_kind,
     anthropic_tools_to_openai,
     build_anthropic_sse_event,
     AnthropicStreamEmitter,
@@ -625,6 +626,41 @@ class TestAnthropicToolsToOpenAI:
             {"type": "web_search_20250305", "name": "web_search"},
         ]
         assert anthropic_tools_to_openai(tools) == []
+
+    @pytest.mark.parametrize(
+        ("type_", "name", "kind"),
+        [
+            ("bash_20250124", "bash", "bash"),
+            ("text_editor_20250728", "str_replace_based_edit_tool", "text_editor"),
+            ("computer_20251124", "computer", "computer"),
+            ("memory_20250818", "memory", "memory"),
+        ],
+    )
+    def test_schema_client_tools_are_converted_to_openai_functions(self, type_, name, kind):
+        tool = {"type": type_, "name": name}
+
+        [result] = anthropic_tools_to_openai([tool])
+
+        assert anthropic_schema_client_tool_kind(tool) == kind
+        assert result["function"]["name"] == name
+        assert result["function"]["parameters"]["type"] == "object"
+
+    @pytest.mark.parametrize(
+        ("type_", "supports_undo"),
+        [
+            ("text_editor_20241022", True),
+            ("text_editor_20250124", True),
+            ("text_editor_20250429", False),
+            ("text_editor_20250728", False),
+        ],
+    )
+    def test_text_editor_commands_follow_tool_version(self, type_, supports_undo):
+        [result] = anthropic_tools_to_openai(
+            [{"type": type_, "name": "str_replace_based_edit_tool"}]
+        )
+
+        commands = result["function"]["parameters"]["properties"]["command"]["enum"]
+        assert ("undo_edit" in commands) is supports_undo
 
     def test_server_tool_selection_merges_enabled_tools_extension(self):
         all_tools = [
@@ -1735,6 +1771,116 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
+    def test_explicit_server_loop_and_client_tools_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"name": "Write", "input_schema": {"type": "object"}}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    def test_explicit_server_loop_and_schema_client_tools_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"type": "bash_20250124", "name": "bash"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "Mixing Anthropic server tools" in exc.value.detail
+
+    def test_process_tool_policy_does_not_steal_schema_client_tools(self, monkeypatch):
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured["tools"] = args[2]
+            return JSONResponse(
+                {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "test-model",
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(True)
+        payload = _basic_payload(tools = [{"type": "bash_20250124", "name": "bash"}])
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls == []
+        assert captured["tools"][0]["function"]["name"] == "bash"
+
+    @pytest.mark.parametrize("permission_mode", [None, "ask"])
+    @pytest.mark.parametrize(
+        ("tool_policy", "enable_tools"),
+        [(True, None), (False, True)],
+    )
+    def test_process_tool_policy_does_not_steal_client_tools(
+        self, monkeypatch, permission_mode, tool_policy, enable_tools
+    ):
+        """A server-wide tool default must not replace Claude Code's own tools."""
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured["tools"] = args[2]
+            return JSONResponse(
+                {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "model": "test-model",
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            )
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(tool_policy)
+        fields = {
+            "tools": [
+                {
+                    "name": "Write",
+                    "description": "Write a file",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                    },
+                }
+            ],
+        }
+        if enable_tools is not None:
+            fields["enable_tools"] = enable_tools
+        if permission_mode is not None:
+            fields["permission_mode"] = permission_mode
+        payload = _basic_payload(**fields)
+
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+
+        assert backend.calls == []
+        assert captured["tools"][0]["function"]["name"] == "Write"
+
     def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
         # Regression: a client tool sharing a name with a mapped server tool
         # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
@@ -1774,6 +1920,15 @@ class TestAnthropicMessagesToolRouting:
         payload = _basic_payload(
             tools = [{"input_schema": {"type": "object"}}],
         )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "name" in exc.value.detail
+
+    def test_schema_client_tool_missing_name_rejected_with_400(self, monkeypatch):
+        _mock_backend(monkeypatch)
+        payload = _basic_payload(tools = [{"type": "bash_20250124"}])
 
         with pytest.raises(HTTPException) as exc:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
@@ -1909,6 +2064,70 @@ class TestAnthropicMessagesToolRouting:
             payload = _basic_payload(**extra)
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
+
+    def test_the_process_tool_default_alone_is_not_a_server_tool_selection(self, monkeypatch):
+        """`unsloth studio run` resolves the policy to on unless --disable-tools. Reading that
+        as "this request selected server tools" rejected every plain Messages request on a
+        default server, and routing on it ran the local tool loop with terminal/python and no
+        way to confirm them. A default is not a selection, in either direction."""
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+
+        async def _passthrough(*args, **kwargs):
+            return JSONResponse({"type": "message", "content": []})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(True)
+
+        _drive(anthropic_messages(_basic_payload(), request = None, current_subject = "t"))
+        assert backend.calls, "a plain chat request must still be served"
+        path, kwargs = backend.calls[0]
+        assert path == "plain", (
+            "a tool-free request took the server-tool loop on the process default alone, so "
+            "the model can call terminal/python with no confirmation channel"
+        )
+        assert not kwargs.get("tools")
+
+        # An explicit ask still routes to the loop, with the mode that permits it.
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(enable_tools = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "tools"
+
+        # mcp_enabled is an ask on the OpenAI routes, which wire MCP discovery. This one does
+        # not, and the request model is extra="allow" so the key does arrive: honouring it
+        # would answer an MCP-only request with ALL_TOOLS' terminal/python under an MCP name.
+        reset_tool_policy()
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(mcp_enabled = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "plain"
+        assert not backend.calls[0][1].get("tools")
+
+        # The same default must not stop gating a request that does ask for server tools.
+        for fields in (
+            {"enable_tools": True},
+            {"enable_tools": True, "permission_mode": "ask"},
+            {"tools": [{"type": "terminal", "name": "terminal"}]},
+        ):
+            with pytest.raises(HTTPException) as exc:
+                _drive(
+                    anthropic_messages(_basic_payload(**fields), request = None, current_subject = "t")
+                )
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
 
     def test_render_html_gated_for_server_tools(self, monkeypatch):
         # render_html is no longer unconditionally safe: a networked canvas prompts

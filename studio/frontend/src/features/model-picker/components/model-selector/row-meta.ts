@@ -33,6 +33,13 @@ export function splitRepoLabel(label: string): {
   return { owner: label.slice(0, slash), name: label.slice(slash + 1) };
 }
 
+/** Our official Hub owners. Rows drop the owner prefix, since the Unsloth
+ *  section already carries it; the full repo id stays in the row tooltip. */
+export function isUnslothOwner(owner: string | null | undefined): boolean {
+  const normalized = owner?.toLowerCase();
+  return normalized === "unsloth" || normalized === "unslothai";
+}
+
 export type MetaToken =
   | { kind: "format"; label: string; tone: FormatTone }
   | { kind: "size"; label: string }

@@ -83,7 +83,7 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
+      className="chat-search-surface rounded-3xl! max-sm:rounded-none! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
       <Command className="rounded-3xl p-0" shouldFilter={false}>

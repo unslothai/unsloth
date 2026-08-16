@@ -37,9 +37,15 @@ async def get_default_chat_template_route(
     hf_token: Optional[str] = Depends(get_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
-    template = await asyncio.to_thread(
-        read_default_chat_template, model_name, hf_token, gguf_variant
-    )
+    # Cached repos resolve from disk, but a cache miss falls through to the hub and
+    # offline that costs one retry backoff per candidate template file.
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+    def _read():
+        with _hf_offline_if_unreachable_for(model_name):
+            return read_default_chat_template(model_name, hf_token, gguf_variant)
+
+    template = await asyncio.to_thread(_read)
     if template is not None and len(template.encode("utf-8")) > MAX_CHAT_TEMPLATE_BYTES:
         template = None
     return ModelTemplateResponse(model_name = model_name, chat_template = template)

@@ -30,14 +30,27 @@ const SHAPE: Record<AvatarShape, string> = {
   rounded: "rounded-[22%]",
 };
 
-export function UserAvatar({ name, imageUrl, size, className, shape }: UserAvatarProps) {
+export function UserAvatar({
+  name,
+  imageUrl,
+  size,
+  className,
+  shape,
+}: UserAvatarProps) {
   const label = initialsFromName(name);
   const storedShape = useUserProfileStore((s) => s.avatarShape);
   const shapeClass = SHAPE[shape ?? storedShape];
 
   if (imageUrl) {
     return (
-      <span className={cn("relative inline-flex shrink-0 overflow-hidden bg-transparent", shapeClass, SIZE[size], className)}>
+      <span
+        className={cn(
+          "relative inline-flex shrink-0 overflow-hidden bg-transparent",
+          shapeClass,
+          SIZE[size],
+          className,
+        )}
+      >
         <img src={imageUrl} alt="" className="size-full object-cover" />
       </span>
     );
