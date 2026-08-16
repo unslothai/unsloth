@@ -46,18 +46,27 @@ def test_an_omitted_disable_vision_is_not_an_explicit_false():
     assert "disable_vision" in explicit.model_fields_set
 
 
-def test_a_reload_omitting_the_field_keeps_the_resident_setting():
-    """A settings-only reload must not silently switch the projector back on.
+def test_a_reload_omitting_the_field_resets_it_rather_than_inheriting():
+    """Pinned deliberately: omitted means False, it does NOT inherit.
 
-    The resident model was loaded text-only. A client changing some unrelated
-    field and omitting disable_vision has not asked for vision back; resetting
-    it to the schema default reloads the model with the projector attached,
-    which is both a surprise reload and a silent policy reversal.
+    ``llama_extra_args`` and ``gpu_memory_mode`` inherit from the resident
+    intent when omitted, so the asymmetry is worth stating rather than
+    discovering. It is the right way round here, and the alternative is worse:
+    ``model_override_load_kwargs`` only emits ``disable_vision`` when the
+    override store holds a True, so a user who REMOVES the override sends a
+    payload with the key absent. If absence inherited, turning Vision back on
+    from the model page could never take effect on a resident model.
+
+    The cost is that a third-party client driving /load directly has to resend
+    the field on every reload of a text-only-loaded vision model, or the
+    projector comes back. Every in-product load path sends it unconditionally
+    (shared-composer.tsx, use-chat-model-runtime.ts, chat-adapter.ts), so this
+    is an API-shape property rather than a live defect.
     """
     resident = GgufLoadIntent(model_identifier = "m", is_vision = True, disable_vision = True)
     request = LoadRequest(model_path = "m", max_seq_length = 8192)
 
-    assert _intent_from(request, resident).disable_vision is True
+    assert _intent_from(request, resident).disable_vision is False
 
 
 def test_an_explicit_false_does_turn_vision_back_on():
