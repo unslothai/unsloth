@@ -35,20 +35,65 @@ test("folder rows select too, and open their own bulk menu", async () => {
   assert.match(source, /selectedProjectIds\.has\(project\.id\)/);
 });
 
-test("picking one kind of row drops the other", async () => {
-  // Chats and folders have no shared bulk action, so a mixed selection would
-  // leave the menu unable to say what it acts on.
-  const source = await sidebarSource();
-  const chatClick = /function handleSelectionClick\(([\s\S]*?)\n  \}/.exec(
+function bodyOf(source: string, name: string): string {
+  const found = new RegExp(`function ${name}\\(([\\s\\S]*?)\\n  \\}`).exec(
     source,
   );
-  assert.ok(chatClick, "no handleSelectionClick");
-  assert.match(chatClick[1], /setSelectedProjectIds/);
+  assert.ok(found, `no ${name}`);
+  return found[1];
+}
 
-  const projectClick =
-    /function handleProjectSelectionClick\(([\s\S]*?)\n  \}/.exec(source);
-  assert.ok(projectClick, "no handleProjectSelectionClick");
-  assert.match(projectClick[1], /setSelectedChatIds/);
+test("picking one kind of row drops the other", async () => {
+  // Chats and folders have no shared bulk action, so a mixed selection would
+  // leave the menu unable to say what it acts on. All four entry points, since
+  // one that skips it is what puts the sidebar in that state.
+  const source = await sidebarSource();
+  for (const [name, drop] of [
+    ["handleSelectionClick", "dropProjectSelection()"],
+    ["selectForContextMenu", "dropProjectSelection()"],
+    ["handleProjectSelectionClick", "dropChatSelection()"],
+    ["selectProjectForContextMenu", "dropChatSelection()"],
+  ]) {
+    assert.ok(
+      bodyOf(source, name).includes(drop),
+      `${name} leaves the other kind of row selected`,
+    );
+  }
+});
+
+test("a right-click drops the other kind even on an already-selected row", async () => {
+  // Both menus return early when the row is already selected. Dropping after
+  // that return would keep a mixed selection alive for exactly the rows a bulk
+  // action is most likely to run on.
+  const source = await sidebarSource();
+  for (const [name, drop] of [
+    ["selectForContextMenu", "dropProjectSelection()"],
+    ["selectProjectForContextMenu", "dropChatSelection()"],
+  ]) {
+    const body = bodyOf(source, name);
+    const dropAt = body.indexOf(drop);
+    const returnAt = body.search(/if \(selected\w+\.has\([\w.]+\)\) return;/);
+    assert.ok(dropAt >= 0, `${name} does not drop the other kind`);
+    assert.ok(returnAt >= 0, `${name} lost its early return`);
+    assert.ok(
+      dropAt < returnAt,
+      `${name} drops the other kind only after its early return`,
+    );
+  }
+});
+
+test("dropping a selection clears its anchor too", async () => {
+  // A kept anchor shift-selects a range from a row that no longer looks
+  // selected, which is how a cleared list grows again on the next click.
+  const source = await sidebarSource();
+  assert.match(
+    source,
+    /const dropChatSelection = useCallback\(\(\) => \{\s*selectionAnchorRef\.current = null;/,
+  );
+  assert.match(
+    source,
+    /const dropProjectSelection = useCallback\(\(\) => \{\s*projectAnchorRef\.current = null;/,
+  );
 });
 
 test("the bulk archive failure reads a translated string", async () => {

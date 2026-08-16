@@ -1244,12 +1244,21 @@ export function AppSidebar() {
   );
   const projectSelectionCount = selectedProjectRecords.length;
 
-  const clearSelection = useCallback(() => {
+  // Each kind drops the other, anchor included: a stale anchor would shift-select
+  // a range from a row the user can no longer see selected.
+  const dropChatSelection = useCallback(() => {
     selectionAnchorRef.current = null;
-    projectAnchorRef.current = null;
     setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+  }, []);
+  const dropProjectSelection = useCallback(() => {
+    projectAnchorRef.current = null;
     setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
   }, []);
+
+  const clearSelection = useCallback(() => {
+    dropChatSelection();
+    dropProjectSelection();
+  }, [dropChatSelection, dropProjectSelection]);
 
   // Escape is the way out of a selection, as it is for the menus.
   useEffect(() => {
@@ -1267,7 +1276,7 @@ export function AppSidebar() {
     item: SidebarItem,
     list: { scope: string; ids: string[] },
   ): boolean {
-    setSelectedProjectIds((prev) => (prev.size === 0 ? prev : new Set()));
+    dropProjectSelection();
     if (SELECT_WITH_META ? event.metaKey : event.ctrlKey) {
       setSelectedChatIds((prev) => toggleSelected(prev, item.id));
       selectionAnchorRef.current = { scope: list.scope, id: item.id };
@@ -1293,6 +1302,9 @@ export function AppSidebar() {
     item: SidebarItem,
     list: { scope: string; ids: string[] },
   ) {
+    // Before the early return: the menu that opens acts on chats, so folders
+    // left highlighted would misreport what a bulk action is about to touch.
+    dropProjectSelection();
     if (selectedChatIds.has(item.id)) return;
     selectionAnchorRef.current = { scope: list.scope, id: item.id };
     setSelectedChatIds(new Set([item.id]));
@@ -1305,7 +1317,7 @@ export function AppSidebar() {
   ): boolean {
     const additive = SELECT_WITH_META ? event.metaKey : event.ctrlKey;
     if (!additive && !event.shiftKey) return false;
-    setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
+    dropChatSelection();
     if (additive) {
       setSelectedProjectIds((prev) => toggleSelected(prev, projectId));
       projectAnchorRef.current = projectId;
@@ -1322,8 +1334,8 @@ export function AppSidebar() {
   }
 
   function selectProjectForContextMenu(projectId: string) {
+    dropChatSelection();
     if (selectedProjectIds.has(projectId)) return;
-    setSelectedChatIds((prev) => (prev.size === 0 ? prev : new Set()));
     projectAnchorRef.current = projectId;
     setSelectedProjectIds(new Set([projectId]));
   }
