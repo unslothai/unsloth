@@ -46,10 +46,17 @@ export const BUDGET = {
 // raises it while lowering the bytes, which is the behaviour this is trying to
 // reward; capping it would penalise the fix.
 
-/** Reads an attribute off a single tag. HTML attribute names are case-insensitive. */
+/**
+ * Reads an attribute off a single tag. Names are case-insensitive.
+ *
+ * Anchored on whitespace, not `\b`: a hyphen is a word boundary, so `\btype`
+ * matches inside `data-type` and would read a decoy attribute in preference to
+ * the real one. Every attribute in a tag is preceded by whitespace, the tag name
+ * included, so this is the exact boundary HTML gives us.
+ */
 function attr(tag: string, name: string): string | undefined {
   const m = tag.match(
-    new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"),
+    new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'>]+))`, "i"),
   );
   if (!m) {
     return undefined;
@@ -89,6 +96,11 @@ export type EagerSet = {
  * A `type` the browser still runs as a classic script. An absent type is the same
  * thing; anything else (`importmap`, `application/json`, a template) is not code
  * that runs, and `module` is handled on its own.
+ *
+ * Exact strings, deliberately. The spec matches this attribute on JavaScript MIME
+ * type ESSENCE, so a parameter makes it match nothing: `text/javascript;
+ * charset=utf-8` is not evaluated, and Chromium, Firefox and WebKit do not even
+ * fetch such a script. Bytes the browser never requests are not startup cost.
  */
 const CLASSIC_TYPES = new Set([
   "text/javascript",

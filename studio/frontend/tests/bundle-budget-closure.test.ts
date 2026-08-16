@@ -73,6 +73,28 @@ test("a script type is judged on whether the browser runs it", () => {
   assert.deepEqual(eagerChunksFromHtml(html), ["legacy.js"]);
 });
 
+test("a MIME type with parameters is not a script the browser runs", () => {
+  // The type attribute is matched on JavaScript MIME type ESSENCE, so a parameter
+  // makes it match nothing. Chromium, Firefox and WebKit all decline to fetch it,
+  // and bytes the browser never requests are not startup cost.
+  const html = '<script type="text/javascript; charset=utf-8" src="/never.js">';
+  assert.deepEqual(eagerChunksFromHtml(html), []);
+});
+
+test("a decoy data- attribute cannot shadow the real one", () => {
+  // A hyphen is a word boundary, so a `\b`-anchored `type` reads `data-type`
+  // first, drops the entry, and leaves the preloads to satisfy the shape guard.
+  const html =
+    '<script data-type="metadata" type="module" src="/assets/entry.js"></script>' +
+    '<script data-src="/decoy.js" type="module" src="/assets/second.js"></script>' +
+    '<link data-rel="x" rel="modulepreload" data-href="/assets/no.js" href="/assets/yes.js">';
+  assert.deepEqual(eagerSetFromHtml(html), {
+    entry: ["assets/entry.js", "assets/second.js"],
+    preloads: ["assets/yes.js"],
+    blocking: [],
+  });
+});
+
 test("a cross-origin classic script is not ours to budget", () => {
   const html =
     '<script src="https://cdn.example/x.js"></script>' +
