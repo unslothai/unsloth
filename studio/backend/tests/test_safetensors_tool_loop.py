@@ -3729,6 +3729,8 @@ class TestGGUFSafetensorsHealingParity:
             # a direct question carries the ask on its own, with no stock opener.
             "Which repository should I inspect? Once you tell me, I'll check it.",
             "Do you mean the package or the UI? I'll inspect it.",
+            "Where should I search? Once you tell me, I'll look it up.",
+            "How would you like me to proceed? I'll handle it once you decide.",
             # "when" waits on the user, unlike the "if"/"whether" closings below.
             "Let me know when you're ready and I'll start the run.",
         ):
@@ -3741,6 +3743,9 @@ class TestGGUFSafetensorsHealingParity:
             "Let me know if you have any other questions.",
             "I'll search the web now. Let me know whether you need anything else.",
             "I will run the query now. Let me know if that is not what you wanted.",
+            # advice to the user keeps its own word order, so the interrogative arm stays clear of it.
+            "I'll explain what you should do next.",
+            "Let me check what I should do here.",
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 
