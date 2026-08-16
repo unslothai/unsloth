@@ -908,6 +908,82 @@ test("a tensor split the architecture gate normalized away still matches", () =>
   );
 });
 
+test("the arch-gate excuse reads the resolved split, not the toggle", () => {
+  // resolve_tensor_parallel lets --split-mode tensor in the pass-through args ask for a
+  // split the toggle does not, and that is the request the gate dropped. Reading the raw
+  // toggle here made the excuse miss exactly the configs it exists for.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: false,
+        tensor_parallel_dropped_by_arch_gate: true,
+        requested_llama_extra_args: ["--split-mode", "tensor"],
+      },
+      {
+        ...BLANK,
+        tensorParallel: false,
+        llamaExtraArgs: ["--split-mode", "tensor"],
+      },
+    ),
+    true,
+  );
+  // Pass-through args turning the split OFF leave nothing for the gate to have dropped,
+  // so that arm answers on the resolved mode alone, as it did before.
+  assert.equal(
+    matches(
+      {
+        ...DEFAULTS,
+        tensor_parallel: true,
+        requested_llama_extra_args: ["-sm", "layer"],
+      },
+      { ...BLANK, tensorParallel: true, llamaExtraArgs: ["-sm", "layer"] },
+    ),
+    false,
+  );
+});
+
+test("a malformed manual layer override declines rather than normalizing away", () => {
+  // parse_gpu_layers_override RAISES on these, so the load fails and says so. Folding
+  // them into "no override" here stripped the token, found the rest agreeable, adopted,
+  // and the saved setting went missing without a word. Reachable from an Apply that
+  // persisted the config before its load failed.
+  const running = {
+    ...DEFAULTS,
+    gpu_memory_mode: "manual" as const,
+    gpu_layers: 20,
+    requested_llama_extra_args: [],
+  };
+  const manual = { ...BLANK, gpuMemoryMode: "manual" as const, gpuLayers: 20 };
+  for (const bad of [["-ngl", "-2"], ["--gpu-layers=many"], ["-ngl", "20.5"]]) {
+    assert.equal(matches(running, { ...manual, llamaExtraArgs: bad }), false);
+  }
+  // A well-formed override is still read, not refused.
+  assert.equal(
+    matches(
+      { ...running, gpu_layers: 99 },
+      {
+        ...manual,
+        llamaExtraArgs: ["-ngl", "99"],
+      },
+    ),
+    true,
+  );
+  // Automatic never reaches the parser: the args go through untouched and the backend
+  // decides, so a bad token there is not this comparison's to judge.
+  assert.equal(
+    matches(
+      { ...DEFAULTS, requested_llama_extra_args: ["-ngl", "-2"] },
+      {
+        ...BLANK,
+        gpuMemoryMode: "auto" as const,
+        llamaExtraArgs: ["-ngl", "-2"],
+      },
+    ),
+    true,
+  );
+});
+
 test("a virtualised Metal host cannot disagree about placement", () => {
   // paravirtual_normalized_request rewrites every GGUF request to manual / zero layers /
   // no split / no MoE, and adopt_load_intent_if_matched applies it before comparing, so

@@ -90,18 +90,29 @@ export function resolveTensorParallel(
     : override.trim().toLowerCase() === "tensor";
 }
 
-/** `parse_gpu_layers_override`: the layer count a pass-through `-ngl` asks for. */
+/**
+ * `parse_gpu_layers_override`, in the three states its caller has to tell apart.
+ *
+ * The backend raises on a malformed value, so the load fails and says so. A comparison
+ * that folded that into "no override" would strip the offending token, find the rest
+ * agreeable and adopt, and the user's saved setting would go missing in silence instead.
+ */
+export type GpuLayersOverride =
+  | { kind: "absent" }
+  | { kind: "value"; layers: number }
+  | { kind: "invalid" };
+
 export function parseGpuLayersOverride(
   extraArgs: readonly string[] | null | undefined,
-): number | null {
+): GpuLayersOverride {
   const raw = lastFlagValue(extraArgs, GPU_LAYER_FLAGS);
   if (raw === null) {
-    return null;
+    return { kind: "absent" };
   }
   const value = Number.parseInt(raw, 10);
   return Number.isInteger(value) && value >= -1 && String(value) === raw.trim()
-    ? value
-    : null;
+    ? { kind: "value", layers: value }
+    : { kind: "invalid" };
 }
 
 /**

@@ -345,8 +345,9 @@ const SETTING_CHECKS: SettingCheck[] = [
       // Rewritten away with the rest of the placement on a virtualised Metal device.
       s.gpu_placement_paravirtual === true ||
       // A split the architecture gate normalized away: that layer-mode runtime IS this
-      // request as the gate rewrote it, and the backend accepts it back unchanged.
-      (c.tensorParallel === true &&
+      // request as the gate rewrote it, and the backend accepts it back unchanged. The
+      // resolved mode again, since a pass-through --split-mode is what was gated.
+      (resolveTensorParallel(c.llamaExtraArgs, c.tensorParallel) &&
         s.tensor_parallel !== true &&
         s.tensor_parallel_dropped_by_arch_gate === true),
   },
@@ -442,6 +443,15 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (_c, s, standing) => sameList(standing.splitRatio, s.tensor_split),
   },
   {
+    // A managed override the backend would reject outright. It raises there, so the load
+    // fails and says so; folding it into "no override" here would strip the token, find
+    // the rest agreeable and adopt, losing the saved setting in silence.
+    pinned: (c) => c.llamaExtraArgs !== undefined,
+    agrees: (c, _s, standing) =>
+      requestedGpuMemoryMode(c, standing) !== "manual" ||
+      parseGpuLayersOverride(c.llamaExtraArgs).kind !== "invalid",
+  },
+  {
     // What the diffusion branch compares in place of the placement fields above:
     // _diffusion_manual_ngl, the layer count only under Manual with a non-negative pin and
     // the runner's own default otherwise. An older shim that dropped a manual NGL leaves
@@ -478,8 +488,10 @@ function requestedGpuLayers(
   const override =
     requestedGpuMemoryMode(config, standing) === "manual"
       ? parseGpuLayersOverride(config.llamaExtraArgs)
-      : null;
-  return override ?? config.gpuLayers ?? standing.gpuLayers;
+      : { kind: "absent" as const };
+  return override.kind === "value"
+    ? override.layers
+    : (config.gpuLayers ?? standing.gpuLayers);
 }
 
 /** `_diffusion_manual_ngl`: only an explicit manual count reaches the child. */

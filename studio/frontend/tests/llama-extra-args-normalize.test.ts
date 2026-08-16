@@ -43,24 +43,32 @@ test("an explicit split mode last-wins over the toggle", () => {
 });
 
 test("a pass-through layer count is read the way the route reads it", () => {
-  assert.equal(parseGpuLayersOverride(null), null);
-  assert.equal(parseGpuLayersOverride(["--flash-attn", "on"]), null);
-  assert.equal(parseGpuLayersOverride(["-ngl", "20"]), 20);
-  assert.equal(parseGpuLayersOverride(["--gpu-layers=0"]), 0);
-  assert.equal(parseGpuLayersOverride(["--n-gpu-layers", "-1"]), -1);
-  assert.equal(parseGpuLayersOverride(["-ngl", "8", "-ngl", "99"]), 99);
-  // Below -1 and non-integers are what the backend rejects outright.
-  assert.equal(parseGpuLayersOverride(["-ngl", "-2"]), null);
-  assert.equal(parseGpuLayersOverride(["-ngl", "many"]), null);
-  assert.equal(parseGpuLayersOverride(["-ngl", "20.5"]), null);
+  const absent = { kind: "absent" };
+  const invalid = { kind: "invalid" };
+  const value = (layers: number) => ({ kind: "value", layers });
+
+  assert.deepEqual(parseGpuLayersOverride(null), absent);
+  assert.deepEqual(parseGpuLayersOverride(["--flash-attn", "on"]), absent);
+  assert.deepEqual(parseGpuLayersOverride(["-ngl", "20"]), value(20));
+  assert.deepEqual(parseGpuLayersOverride(["--gpu-layers=0"]), value(0));
+  assert.deepEqual(parseGpuLayersOverride(["--n-gpu-layers", "-1"]), value(-1));
+  assert.deepEqual(
+    parseGpuLayersOverride(["-ngl", "8", "-ngl", "99"]),
+    value(99),
+  );
+  // Below -1 and non-integers are what the backend rejects outright, and it RAISES
+  // rather than defaulting, so these stay distinct from an absent override.
+  assert.deepEqual(parseGpuLayersOverride(["-ngl", "-2"]), invalid);
+  assert.deepEqual(parseGpuLayersOverride(["-ngl", "many"]), invalid);
+  assert.deepEqual(parseGpuLayersOverride(["-ngl", "20.5"]), invalid);
   // -1 is a value, not a flag: shorts always start with a letter. Without that rule the
   // commonest pass-through of all, an explicit Auto, reads as malformed.
-  assert.equal(
+  assert.deepEqual(
     parseGpuLayersOverride(["-ngl", "-1", "--flash-attn", "on"]),
-    -1,
+    value(-1),
   );
   // llama.cpp takes the underscore spelling of a long option, and so does this.
-  assert.equal(parseGpuLayersOverride(["--n_gpu_layers", "12"]), 12);
+  assert.deepEqual(parseGpuLayersOverride(["--n_gpu_layers", "12"]), value(12));
 });
 
 test("the offload family is dropped with its values, and nothing else is", () => {
