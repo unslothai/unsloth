@@ -77,11 +77,11 @@ def test_probe_avoids_the_escapes_the_shell_rewrites() -> None:
     quoted = [
         f"{number}: {line.strip()}"
         for number, line in enumerate(raw.splitlines(), start = 1)
-        if '"' in line
+        if '"' in line or "`" in line
     ]
     assert not quoted, (
-        "a double quote ENDS the shell string carrying the probe, comments included; "
-        f"use single quotes: {quoted[:5]}"
+        "a double quote ENDS the shell string carrying the probe and a backtick runs a "
+        f"command inside it, comments included; use plain single quotes: {quoted[:5]}"
     )
 
 

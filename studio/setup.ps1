@@ -4940,12 +4940,18 @@ for x in importlib.metadata.distributions(path=_paths):
     except Exception:
         continue
     try:
-        record = x.read_text('RECORD') or ''
+        # NOT collapsed with an or-empty: read_text returns None when RECORD is
+        # absent and '' when it
+        # is present and empty, and those mean different things -- a wheel install
+        # always writes at least the self-entry, so a zero-byte inventory is an
+        # interrupted metadata write, which is damage rather than a RECORD-less
+        # install. The distinction is carried through to _verdict.
+        record = x.read_text('RECORD')
     except Exception:
-        record = ''
+        record = None
     if _norm(name) == _norm(_pkg):
         cands.append((x, record))
-    for r in csv.reader(record.splitlines()):
+    for r in csv.reader((record or '').splitlines()):
         rel = r[0] if r else ''
         if not rel or rel.endswith('/'):
             continue
@@ -5106,7 +5112,7 @@ def _verdict(d, d_record):
     selfrec = False
     flen = 3
     if not _edit:
-        for r in csv.reader(d_record.splitlines()):
+        for r in csv.reader((d_record or '').splitlines()):
             if r:
                 flen = len(r)
             rel = r[0] if r else ''
@@ -5131,7 +5137,10 @@ def _verdict(d, d_record):
     # one either: top_level.txt legitimately names tops the wheel never ships
     # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
     # line boundary stays undetectable here.
-    damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
+    # an existing but empty RECORD is corruption, not the absence of one
+    _empty_record = d_record is not None and not d_record.strip()
+    damaged = (not _edit) and (_empty_record
+                               or (bool(d_record) and (not selfrec or flen != 3)))
     try:
         _mine = (_norm(d.metadata['Name']), d.version)
     except Exception:
@@ -5246,7 +5255,7 @@ def _verdict(d, d_record):
             # checkout does not. Name-derived, like the RECORD-less branch below: without
             # top_level.txt there is nothing better to key on.
             damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target)
-        elif not d_record:
+        elif d_record is None:
             # Nothing enumerates the payload: no RECORD at all (an interrupted install,
             # or a distro/conda package that legitimately ships none, which the CLI
             # mirror declines to judge) and no top_level.txt either. Rather than trust
