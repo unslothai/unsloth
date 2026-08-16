@@ -373,9 +373,9 @@ def test_the_metrics_wait_is_bounded_by_time_not_by_attempts(monkeypatch):
     with pytest.raises(RuntimeError):
         kit._await_metrics_endpoint()
     spent = clock["now"] - started
-    assert spent <= 110, (
-        f"spent {spent:.0f}s of simulated time on a wait the message calls 100 seconds"
-    )
+    assert (
+        spent <= 110
+    ), f"spent {spent:.0f}s of simulated time on a wait the message calls 100 seconds"
 
 
 def test_an_unbounded_timeout_is_a_wait_not_a_type_error():
