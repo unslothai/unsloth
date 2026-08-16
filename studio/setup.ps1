@@ -5126,11 +5126,13 @@ def _verdict(d, d_record):
         return False
     rows = []
     selfrec = False
-    flen = 3
+    _badrow = False
     if not _edit:
         for r in csv.reader((d_record or '').splitlines()):
             if r:
-                flen = len(r)
+                # accumulated, not overwritten: a short row anywhere is a truncated
+                # write, and a later well-formed row must not erase the evidence
+                _badrow = _badrow or len(r) != 3
             rel = r[0] if r else ''
             if not rel or rel.endswith('/'):
                 continue
@@ -5158,7 +5160,7 @@ def _verdict(d, d_record):
     _unreadable = d_record is False
     _empty_record = (not _unreadable) and d_record is not None and not d_record.strip()
     damaged = (not _edit) and (_unreadable or _empty_record
-                               or (bool(d_record) and (not selfrec or flen != 3)))
+                               or (bool(d_record) and (not selfrec or _badrow)))
     try:
         _mine = (_norm(d.metadata['Name']), d.version)
     except Exception:
@@ -5275,9 +5277,19 @@ def _verdict(d, d_record):
             # a setup.py or noxfile.py long after its package directory is gone. The
             # editable finder knows where the package really lives, so a src/ layout
             # still resolves, while a deleted package or a same-named copy outside the
-            # checkout does not. Name-derived, like the RECORD-less branch below: without
-            # top_level.txt there is nothing better to key on.
-            damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target)
+            # checkout does not.
+            #
+            # A miss is NOT damage though: a distribution name does not determine its
+            # import name, and acme-unsloth may legitimately expose unsloth. Only two
+            # things are provable without top_level.txt -- the checkout is gone, or it
+            # holds no importable module at all. Anything else is unverifiable here,
+            # and unverifiable must not read as broken.
+            if not _target or not os.path.isdir(_target):
+                damaged = True
+            elif _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target):
+                damaged = False
+            else:
+                damaged = not _has_module(_target)
         elif d_record is None:
             # Nothing enumerates the payload: no RECORD at all (an interrupted install,
             # or a distro/conda package that legitimately ships none, which the CLI
