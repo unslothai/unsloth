@@ -1978,7 +1978,6 @@ class TestHfUploadEnvAndSecretLeakBlock:
 class TestSandboxWorkdirVisibility:
     def test_msys_path_maps_drive_letters(self):
         from core.inference.tools import _msys_path
-
         assert _msys_path("C:\\Users\\foo\\sandbox") == "/c/Users/foo/sandbox"
 
     def test_bash_wrap_prepends_cd_on_windows(self, monkeypatch):
