@@ -718,7 +718,10 @@ def test_remote_vulkan_diffusion_preflight_runs_before_teardown(monkeypatch):
     preflight = src.index("_preflight_model_path = self._download_gguf(")
     teardown = src.index("# ── Phase 1: kill old process")
     assert preflight < teardown
-    assert "model_path = _preflight_model_path or self._download_gguf(" in src
+    # Phase 2 uses the preflight result before falling back to a download.
+    phase_two = src.index("model_path = _preflight_model_path", teardown)
+    download = src.index("model_path = self._download_gguf(", teardown)
+    assert phase_two < download
 
 
 def test_local_vulkan_diffusion_preflight_runs_before_teardown():

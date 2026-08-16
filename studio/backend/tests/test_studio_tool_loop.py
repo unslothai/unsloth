@@ -1036,3 +1036,71 @@ def test_a_skipped_duplicate_closes_the_card_the_provider_already_painted(execut
     # every tool_end has a matching tool_start.
     starts = _events(lines, "tool_start")
     assert [start["tool_call_id"] for start in starts] == ["call_a", "call_a"]
+
+
+def test_a_second_call_at_one_index_keeps_its_own_argument_fragments(executed):
+    """Two tool rounds in one response, both streamed at index 0.
+
+    Providers restart ``delta.tool_calls[].index`` at 0 for every round while
+    giving each call its own id, and the continuation fragments carrying the
+    rest of the arguments are sent bare. Routing those by index alone appended
+    round two's tail to round one, producing an unparseable blob and running
+    both tools on the wrong arguments.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"first"}'}}]}),
+                _sse({"tool_calls": [_call_delta(0, "call_b", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [{"index": 0, "function": {"arguments": '"second"}'}}]}),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
+
+
+def test_a_fragment_naming_its_call_goes_back_to_that_call(executed):
+    """Two calls at index 0 with the id repeated on every argument fragment.
+
+    The latest-index mapping only exists to place fragments that carry no id, so
+    a fragment that names the call the index opened first has to go back to it
+    rather than fork a third slot. Forking left that call with truncated JSON,
+    which reaches the tool as ``_raw``, and dropped the fragment for having no
+    function name.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse({"tool_calls": [_call_delta(0, "call_a", "web_search", '{"query":')]}),
+                _sse({"tool_calls": [_call_delta(0, "call_b", "web_search", '{"query":')]}),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "id": "call_a", "function": {"arguments": '"first"}'}}
+                        ]
+                    }
+                ),
+                _sse(
+                    {
+                        "tool_calls": [
+                            {"index": 0, "id": "call_b", "function": {"arguments": '"second"}'}}
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "first"}, {"query": "second"}]
