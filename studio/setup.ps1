@@ -5130,7 +5130,14 @@ def _verdict(d, d_record):
                 return True
         return False
     if not rows and not damaged:
-        if tops:
+        if _edit and not _target:
+            # An editable install whose direct_url.json no longer says where it
+            # points: nothing can bind it, and an unbound presence check would let a
+            # same-named copy reached through a .pth answer for a checkout that may
+            # be gone. Unusable metadata for an editable install is itself the
+            # damage, and it is what the no-tops branch below has always reported.
+            damaged = True
+        elif tops:
             damaged = not all(_spec(t, _target if _edit else str(d.locate_file(''))) for t in tops if t)
         elif _edit:
             # An editable install with no top_level.txt: its RECORD lists only the
@@ -5142,7 +5149,7 @@ def _verdict(d, d_record):
             # still resolves, while a deleted package or a same-named copy outside the
             # checkout does not. Name-derived, like the RECORD-less branch below: without
             # top_level.txt there is nothing better to key on.
-            damaged = not (_target and _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target))
+            damaged = not _spec(re.sub(r'[-.]+', '_', (d.metadata['Name'] or '')).lower(), _target)
         elif not d_record:
             # Nothing enumerates the payload: no RECORD at all (an interrupted install,
             # or a distro/conda package that legitimately ships none, which the CLI
