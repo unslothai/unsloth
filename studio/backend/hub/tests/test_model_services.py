@@ -7252,3 +7252,59 @@ def test_local_inventory_retries_when_the_cache_changes_during_classification(mo
     listed = asyncio.run(run())
     assert scans == [0, 1], scans
     assert [row.id for row in listed.models] == ["scan2"]
+def _write_sharded_safetensors(model_dir: Path, *, total: int, present: int) -> Path:
+    """A model that declares *total* shards in its index and ships only *present* of them."""
+    model_dir.mkdir(parents = True, exist_ok = True)
+    (model_dir / "config.json").write_text('{"model_type": "qwen3"}', encoding = "utf-8")
+    names = [f"model-{i + 1:05d}-of-{total:05d}.safetensors" for i in range(total)]
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {f"layer.{i}": n for i, n in enumerate(names)}}),
+        encoding = "utf-8",
+    )
+    for name in names[:present]:
+        (model_dir / name).write_bytes(b"weights")
+    return model_dir
+
+
+def test_a_local_dir_missing_shards_is_reported_partial(tmp_path):
+    """An interrupted download in a plain local folder was offered as a complete model.
+    Only HF-cache rows got a partial flag, because detection was transport-based -- it read
+    the downloader's `.incomplete` markers, which a third-party app's folder never has. A
+    model with one of four shards on disk therefore looked ready to load."""
+    model_dir = _write_sharded_safetensors(tmp_path / "Muse-Glimmer-30B-4bit", total = 4, present = 1)
+
+    rows = model_common._classify_local_path(model_dir, "lmstudio")
+
+    assert [r.model_format for r in rows] == ["safetensors"]
+    assert rows[0].partial is True
+    assert rows[0].capabilities.can_chat is False, "a model short a shard cannot be loaded"
+
+
+def test_a_complete_local_dir_stays_whole(tmp_path):
+    model_dir = _write_sharded_safetensors(tmp_path / "Complete-4bit", total = 4, present = 4)
+
+    rows = model_common._classify_local_path(model_dir, "lmstudio")
+
+    assert rows[0].partial is False
+    assert rows[0].capabilities.can_chat is True
+
+
+def test_an_unsharded_local_dir_stays_whole(tmp_path):
+    model_dir = tmp_path / "Single"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "qwen3"}', encoding = "utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"weights")
+
+    rows = model_common._classify_local_path(model_dir, "lmstudio")
+
+    assert rows[0].partial is False
+
+
+def test_an_hf_cache_row_keeps_the_partial_flag_it_was_given(tmp_path):
+    """The HF cache has its own authoritative detector (`is_snapshot_partial`, which already
+    includes the shard check). The caller's verdict must win there."""
+    model_dir = _write_sharded_safetensors(tmp_path / "cached", total = 4, present = 4)
+
+    rows = model_common._classify_local_path(model_dir, "hf_cache", partial = True)
+
+    assert rows[0].partial is True
