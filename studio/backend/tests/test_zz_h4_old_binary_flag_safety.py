@@ -73,7 +73,9 @@ def _tight_vision(tmp_path, monkeypatch, caps: dict):
     ],
 )
 def test_pin_respects_the_capability_probe(tmp_path, monkeypatch, answered, supports, expect_flag):
-    backend, gguf = _tight_vision(tmp_path, monkeypatch, _caps(answered = answered, supports = supports))
+    backend, gguf = _tight_vision(
+        tmp_path, monkeypatch, _caps(answered = answered, supports = supports)
+    )
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
@@ -90,9 +92,7 @@ def test_the_unanswered_fail_open_is_backed_by_the_base_argv(tmp_path, monkeypat
     emitting `--flash-attn on` on an unanswered probe, the projector pin becomes
     the oldest thing in the argv and the fail-open is no longer free.
     """
-    backend, gguf = _tight_vision(
-        tmp_path, monkeypatch, _caps(answered = False, supports = False)
-    )
+    backend, gguf = _tight_vision(tmp_path, monkeypatch, _caps(answered = False, supports = False))
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
@@ -103,9 +103,7 @@ def test_the_unanswered_fail_open_is_backed_by_the_base_argv(tmp_path, monkeypat
 
 def test_conclusively_unsupported_build_keeps_the_projector_on_the_gpu(tmp_path, monkeypatch):
     """The (b) case is a degradation, not an outage: no flag, projector stays."""
-    backend, gguf = _tight_vision(
-        tmp_path, monkeypatch, _caps(answered = True, supports = False)
-    )
+    backend, gguf = _tight_vision(tmp_path, monkeypatch, _caps(answered = True, supports = False))
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 

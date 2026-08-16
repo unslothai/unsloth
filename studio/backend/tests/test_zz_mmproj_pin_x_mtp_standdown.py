@@ -124,7 +124,13 @@ def _hybrid_vision_backend(
     return backend, gguf
 
 
-def _outcome(tmp_path: Path, *, free_mib: int, speculative_type: str = "auto", **kwargs):
+def _outcome(
+    tmp_path: Path,
+    *,
+    free_mib: int,
+    speculative_type: str = "auto",
+    **kwargs,
+):
     backend, gguf = _hybrid_vision_backend(tmp_path, free_mib = free_mib, **kwargs)
     cmd = _launch(
         backend,
@@ -237,9 +243,7 @@ def test_a_forced_drafter_is_not_pinned_against_a_reserve_it_cannot_drop(tmp_pat
     and the first is what the pin's own rank is responsible for -- the refund is
     the backstop, not the answer.
     """
-    result = _outcome(
-        tmp_path, free_mib = _TIER_PIN_BUYS_RESIDENCY_ONLY, speculative_type = "mtp"
-    )
+    result = _outcome(tmp_path, free_mib = _TIER_PIN_BUYS_RESIDENCY_ONLY, speculative_type = "mtp")
     _out = capfd.readouterr()
 
     assert result["fit"] == "on"
@@ -257,15 +261,13 @@ def test_an_unsizable_kv_does_not_pin_and_stand_down_at_once(tmp_path, capfd):
     drafter-blind estimate, the fit failed on the reserve, and #8875 then read
     that (correct) partial verdict and disabled MTP.
     """
-    result = _outcome(
-        tmp_path, free_mib = _TIER_PIN_BUYS_RESIDENCY_ONLY, can_estimate_kv = False
-    )
+    result = _outcome(tmp_path, free_mib = _TIER_PIN_BUYS_RESIDENCY_ONLY, can_estimate_kv = False)
     _out = capfd.readouterr()
 
     assert _PIN_TAKEN not in (_out.out + _out.err)
-    assert not (result["pin"] and result["spec"] == "none"), (
-        "paid the per-image cost AND lost the drafter"
-    )
+    assert not (
+        result["pin"] and result["spec"] == "none"
+    ), "paid the per-image cost AND lost the drafter"
     assert result["pin"] is False
     assert result["spec"] == "none"
     assert result["reason"] == "mtp_partial_offload"
@@ -288,9 +290,7 @@ def test_a_placement_the_pooled_probe_did_not_predict_hands_the_pin_back(tmp_pat
     backend._select_gpus = lambda *a, **k: (None, True)
     backend._select_gpus_split_aware = lambda *a, **k: (None, True)
 
-    cmd = _launch(
-        backend, gguf, is_vision = True, speculative_type = "auto", n_ctx = 4096
-    )["cmd"]
+    cmd = _launch(backend, gguf, is_vision = True, speculative_type = "auto", n_ctx = 4096)["cmd"]
 
     assert cmd[cmd.index("--fit") + 1] == "on"
     assert _PIN not in cmd
@@ -379,8 +379,21 @@ def test_a_drafter_with_no_vision_is_untouched(tmp_path, free_mib, fit, spec, re
 
 # Ordered worst to best. Two features that each mutate the placement can only be
 # composed safely if a bigger card never buys a worse launch.
-_LADDER = [9_000, 10_000, 10_500, 11_000, 11_500, 12_000, 12_500, 13_000, 13_500, 14_000,
-           15_000, 16_000, _TIER_ROOMY]
+_LADDER = [
+    9_000,
+    10_000,
+    10_500,
+    11_000,
+    11_500,
+    12_000,
+    12_500,
+    13_000,
+    13_500,
+    14_000,
+    15_000,
+    16_000,
+    _TIER_ROOMY,
+]
 
 
 def _rank(result) -> int:

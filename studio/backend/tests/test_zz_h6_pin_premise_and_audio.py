@@ -25,9 +25,7 @@ from test_mmproj_cpu_pin_policy import _tight_vision_backend, _vision_backend  #
 
 def test_the_pin_actually_buys_full_residency(tmp_path):
     """Otherwise the trade the policy comment describes was never made."""
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
@@ -40,9 +38,7 @@ def test_the_pin_actually_buys_full_residency(tmp_path):
 
 def test_without_the_pin_the_same_card_falls_back_to_fit(tmp_path):
     """The control for the test above: the pin is what changes the placement."""
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     # The user owning the placement suppresses the automatic pin, leaving the
     # projector charged -- which is exactly the pre-feature planner.
@@ -63,20 +59,14 @@ def test_disable_vision_is_inert_for_a_model_with_no_projector(tmp_path):
 
     (tmp_path / "on").mkdir(exist_ok = True)
     (tmp_path / "off").mkdir(exist_ok = True)
-    on_backend, on_gguf = _backend(
-        tmp_path / "on", vulkan = False, memory = [(0, 40_000, 48_000)]
-    )
-    off_backend, off_gguf = _backend(
-        tmp_path / "off", vulkan = False, memory = [(0, 40_000, 48_000)]
-    )
+    on_backend, on_gguf = _backend(tmp_path / "on", vulkan = False, memory = [(0, 40_000, 48_000)])
+    off_backend, off_gguf = _backend(tmp_path / "off", vulkan = False, memory = [(0, 40_000, 48_000)])
 
     on = _launch(on_backend, on_gguf, disable_vision = True)["cmd"]
     off = _launch(off_backend, off_gguf)["cmd"]
 
     def _scrub(cmd):
-        return [
-            "<X>" if ("/" in str(a) or str(a).isdigit()) else a for a in cmd
-        ]
+        return ["<X>" if ("/" in str(a) or str(a).isdigit()) else a for a in cmd]
 
     assert _scrub(on) == _scrub(off)
     assert on_backend.vision_disabled_by_user is False

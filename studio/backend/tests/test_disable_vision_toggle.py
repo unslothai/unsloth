@@ -85,7 +85,6 @@ class TestTheThreeEchoesAreIndependent:
 class TestPersistedBlobBackCompat:
     def test_an_override_blob_without_the_key_normalizes_to_absent(self):
         from utils.openai_auto_switch_settings import normalize_model_override
-
         entry = normalize_model_override({"model_id": "owner/repo", "n_ctx": 4096})
         assert "disable_vision" not in entry
 
@@ -103,7 +102,6 @@ class TestPersistedBlobBackCompat:
         # Falsey flags are not content: storing them would make an override that
         # says nothing survive the removal sweep.
         from utils.openai_auto_switch_settings import normalize_model_override
-
         entry = normalize_model_override({"model_id": "owner/repo", "disable_vision": False})
         assert "disable_vision" not in entry
 
@@ -131,18 +129,14 @@ class TestFlippingTheToggleForcesAReload:
     def test_turning_vision_off_against_a_vision_server_reloads(self, tmp_path):
         backend, gguf = self._loaded(tmp_path, disable_vision = False)
         assert (
-            backend.adopt_load_intent_if_matched(self._intent(gguf, disable_vision = True))
-            is False
+            backend.adopt_load_intent_if_matched(self._intent(gguf, disable_vision = True)) is False
         )
 
     def test_turning_vision_back_on_reloads_too(self, tmp_path):
         # Both directions: a projector-free server cannot serve an image request.
         backend, gguf = self._loaded(tmp_path, disable_vision = True)
         assert backend.adopt_load_intent_if_matched(self._intent(gguf)) is False
-        assert (
-            backend.adopt_load_intent_if_matched(self._intent(gguf, disable_vision = True))
-            is True
-        )
+        assert backend.adopt_load_intent_if_matched(self._intent(gguf, disable_vision = True)) is True
 
 
 class TestTheStateDoesNotLeakToTheNextModel:

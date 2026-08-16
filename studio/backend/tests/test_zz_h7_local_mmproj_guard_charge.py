@@ -66,9 +66,9 @@ def test_a_local_projector_is_not_charged_when_vision_is_off(_sizes):
 
     assert charged is not None and skipped is not None
     # The 1 GiB projector must drop out of the budget.
-    assert charged - skipped == pytest.approx(1.0, abs = 0.01), (
-        f"guard charges the projector either way: {charged} vs {skipped}"
-    )
+    assert charged - skipped == pytest.approx(
+        1.0, abs = 0.01
+    ), f"guard charges the projector either way: {charged} vs {skipped}"
 
 
 def test_a_local_projector_is_not_charged_under_an_extras_opt_out(_sizes):
@@ -76,6 +76,6 @@ def test_a_local_projector_is_not_charged_under_an_extras_opt_out(_sizes):
     charged = _estimate_gguf_required_gb(_sizes)
     skipped = _estimate_gguf_required_gb(_sizes, llama_extra_args = ["--no-mmproj"])
 
-    assert charged - skipped == pytest.approx(1.0, abs = 0.01), (
-        f"guard charges the projector either way: {charged} vs {skipped}"
-    )
+    assert charged - skipped == pytest.approx(
+        1.0, abs = 0.01
+    ), f"guard charges the projector either way: {charged} vs {skipped}"

@@ -110,6 +110,7 @@ def _pin_backend(
             lambda *a, **k: llama_cpp.LlamaCppBackend._apu_ram_shortfall_message(*a, **k)
         )
     if fit_raises:
+
         def _boom(*a, **k):
             raise RuntimeError("simulated GPU-selection failure")
 
@@ -119,9 +120,7 @@ def _pin_backend(
 
 
 def _plan(backend, gguf, **load_kwargs):
-    cmd = [str(a) for a in _launch(
-        backend, gguf, is_vision = True, n_ctx = 0, **load_kwargs
-    )["cmd"]]
+    cmd = [str(a) for a in _launch(backend, gguf, is_vision = True, n_ctx = 0, **load_kwargs)["cmd"]]
     return {
         "cmd": cmd,
         "pins": cmd.count(_PIN),

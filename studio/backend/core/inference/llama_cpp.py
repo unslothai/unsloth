@@ -14672,7 +14672,6 @@ class LlamaCppBackend:
                         # placement; do not race them for it.
                         and not _extra_args_set_mmproj_offload(extra_args)
                     ):
-
                         # A drafter that is GPU-resident holds VRAM the fit charges and
                         # this probe used to ignore, priced here exactly as the fit
                         # prices it below: _MTP_DRAFT_COMPUTE_BYTES into the soft
@@ -14693,10 +14692,7 @@ class LlamaCppBackend:
                         )
 
                         def _mmproj_fits(
-                            with_projector: bool,
-                            with_drafter: bool,
-                            n: int,
-                            subset: list,
+                            with_projector: bool, with_drafter: bool, n: int, subset: list
                         ) -> bool:
                             _mm = mmproj_size if with_projector else 0
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
@@ -15420,8 +15416,10 @@ class LlamaCppBackend:
                             # context for nothing. Re-price the same placement with the
                             # projector charged: only if THAT cannot be placed was the
                             # pin what bought the fit.
-                            _fs_charged = _fs_total + _mmproj_auto_pin_bytes + int(
-                                _mmproj_auto_pin_bytes * (self._MMPROJ_VRAM_SAFETY - 1.0)
+                            _fs_charged = (
+                                _fs_total
+                                + _mmproj_auto_pin_bytes
+                                + int(_mmproj_auto_pin_bytes * (self._MMPROJ_VRAM_SAFETY - 1.0))
                             )
                             _, _needs_fit_charged = self._select_gpus(
                                 _fs_charged,
@@ -15443,9 +15441,7 @@ class LlamaCppBackend:
                                 # it lands worse than origin/main's --fit on valve. The
                                 # Metal cap below lowers both for the same reason.
                                 max_available_ctx = (
-                                    min(4096, max_available_ctx)
-                                    if max_available_ctx > 0
-                                    else 4096
+                                    min(4096, max_available_ctx) if max_available_ctx > 0 else 4096
                                 )
 
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
@@ -17251,9 +17247,7 @@ class LlamaCppBackend:
                 # had just pinned it by hand, which is the opposite of what the
                 # UI note is for. Covers both automatic reasons too, since both
                 # write the flag into this same argv.
-                self._vision_on_cpu = bool(
-                    effective_is_vision and _mmproj_offload_disabled(cmd)
-                )
+                self._vision_on_cpu = bool(effective_is_vision and _mmproj_offload_disabled(cmd))
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do

@@ -140,9 +140,7 @@ def test_the_mac_still_reports_the_projector_as_cpu_resident(tmp_path, monkeypat
     """Charging the bytes is a budget decision, not a claim about where the
     encoder runs. The UI note must still say CPU, or the fix above would have
     bought its correctness by lying to the user instead."""
-    got = _launch_metal(
-        tmp_path, paravirtual = False, monkeypatch = monkeypatch, extra_args = [_PIN]
-    )
+    got = _launch_metal(tmp_path, paravirtual = False, monkeypatch = monkeypatch, extra_args = [_PIN])
 
     assert got["backend"].vision_on_cpu is True
     # The user's own token, once, and Studio adds no second one.
@@ -154,7 +152,14 @@ def test_the_mac_still_reports_the_projector_as_cpu_resident(tmp_path, monkeypat
 # --------------------------------------------------------------------------
 
 
-def _discrete_charge(monkeypatch, tmp_path, *, extra_args, caps = None, accel = "nvidia"):
+def _discrete_charge(
+    monkeypatch,
+    tmp_path,
+    *,
+    extra_args,
+    caps = None,
+    accel = "nvidia",
+):
     """Launch on a card the projector is what tips over, and capture the weight
     the planner priced the placement at.
 
@@ -184,9 +189,9 @@ def _discrete_charge(monkeypatch, tmp_path, *, extra_args, caps = None, accel = 
         return _real_select(model_size, gpus, *args, **kwargs)
 
     backend._select_gpus = _capture
-    record["cmd"] = [str(a) for a in _launch(
-        backend, gguf, is_vision = True, extra_args = extra_args
-    )["cmd"]]
+    record["cmd"] = [
+        str(a) for a in _launch(backend, gguf, is_vision = True, extra_args = extra_args)["cmd"]
+    ]
     record["backend"] = backend
     return record
 
@@ -277,9 +282,9 @@ def _apu_charge(monkeypatch, tmp_path, *, extra_args, ram_guard):
         return _real_select(model_size, gpus, *args, **kwargs)
 
     backend._select_gpus = _capture
-    record["cmd"] = [str(a) for a in _launch(
-        backend, gguf, is_vision = True, extra_args = extra_args
-    )["cmd"]]
+    record["cmd"] = [
+        str(a) for a in _launch(backend, gguf, is_vision = True, extra_args = extra_args)["cmd"]
+    ]
     return record
 
 
@@ -313,9 +318,7 @@ def test_the_apu_ram_refusal_survives_the_users_own_pin(monkeypatch, tmp_path):
     """
     for label, extras in (("plain", None), ("hand", [_PIN])):
         with pytest.raises(RuntimeError, match = "unified-memory"):
-            _apu_charge(
-                monkeypatch, tmp_path / label, extra_args = extras, ram_guard = True
-            )
+            _apu_charge(monkeypatch, tmp_path / label, extra_args = extras, ram_guard = True)
 
 
 def test_a_build_without_the_flag_keeps_charging_the_hand_pinned_projector(monkeypatch, tmp_path):

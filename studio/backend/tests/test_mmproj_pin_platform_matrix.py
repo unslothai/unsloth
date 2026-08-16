@@ -304,9 +304,7 @@ _USER_PLACEMENT_SPELLINGS = [
 _USER_DISABLE_SPELLINGS = ["--no-mmproj", "--no_mmproj", "--no-mmproj-auto", "--no_mmproj_auto"]
 
 
-@pytest.mark.parametrize(
-    "spelling", _USER_PLACEMENT_SPELLINGS + _USER_DISABLE_SPELLINGS
-)
+@pytest.mark.parametrize("spelling", _USER_PLACEMENT_SPELLINGS + _USER_DISABLE_SPELLINGS)
 @pytest.mark.parametrize("os_key, accel", GPU_MATRIX)
 def test_an_explicit_user_flag_owns_the_placement(monkeypatch, tmp_path, os_key, accel, spelling):
     """A user who named the placement wins, on every host.
@@ -449,11 +447,17 @@ def test_a_hand_pinned_projector_is_charged_no_vram_either(
     (tmp_path / "auto").mkdir()
     (tmp_path / "hand").mkdir()
     auto, gguf_a = _accel_backend(
-        monkeypatch, tmp_path / "auto", accel, memory = _TIGHT_MEMORY,
+        monkeypatch,
+        tmp_path / "auto",
+        accel,
+        memory = _TIGHT_MEMORY,
         model_bytes = _TIGHT_MODEL_BYTES,
     )
     hand, gguf_h = _accel_backend(
-        monkeypatch, tmp_path / "hand", accel, memory = _TIGHT_MEMORY,
+        monkeypatch,
+        tmp_path / "hand",
+        accel,
+        memory = _TIGHT_MEMORY,
         model_bytes = _TIGHT_MODEL_BYTES,
     )
 
@@ -613,7 +617,15 @@ _MULTI_GPU_POOLS = {
 }
 
 
-def _sweep(monkeypatch, tmp_path, accel, pool, *, os_key = "linux", step_mib = 200):
+def _sweep(
+    monkeypatch,
+    tmp_path,
+    accel,
+    pool,
+    *,
+    os_key = "linux",
+    step_mib = 200,
+):
     """Launch across a range of model sizes on one pool, one row per size.
 
     Sizing the "just barely does not fit" model by hand needs the planner's exact
@@ -724,9 +736,7 @@ def test_multi_gpu_pin_window_is_contiguous_and_bounded(monkeypatch, tmp_path, p
 
 
 @pytest.mark.parametrize("pool_key", list(_MULTI_GPU_POOLS))
-def test_multi_gpu_no_pin_when_one_card_already_holds_everything(
-    monkeypatch, tmp_path, pool_key
-):
+def test_multi_gpu_no_pin_when_one_card_already_holds_everything(monkeypatch, tmp_path, pool_key):
     """A pool whose largest card fits model + projector outright.
 
     The subset walk starts at one GPU, so the ``fits on GPU`` answer must be
@@ -743,9 +753,7 @@ def test_multi_gpu_no_pin_when_one_card_already_holds_everything(
 
 
 @pytest.mark.parametrize("pool_key", list(_MULTI_GPU_POOLS))
-def test_multi_gpu_no_pin_when_the_pool_cannot_hold_it_either_way(
-    monkeypatch, tmp_path, pool_key
-):
+def test_multi_gpu_no_pin_when_the_pool_cannot_hold_it_either_way(monkeypatch, tmp_path, pool_key):
     """Too large for the whole pool with or without the projector.
 
     Freeing the projector's bytes on a stack that is mostly CPU-resident buys a

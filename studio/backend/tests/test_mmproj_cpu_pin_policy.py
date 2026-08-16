@@ -35,7 +35,12 @@ from core.inference.llama_cpp import (  # noqa: E402
 _PROJECTOR_BYTES = 900 * 1024 * 1024
 
 
-def _vision_backend(tmp_path: Path, *, memory, mmproj_bytes: int = _PROJECTOR_BYTES):
+def _vision_backend(
+    tmp_path: Path,
+    *,
+    memory,
+    mmproj_bytes: int = _PROJECTOR_BYTES,
+):
     """A backend whose model resolves a projector of a known size."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = memory)
     mmproj = tmp_path / "model-mmproj.gguf"
@@ -58,9 +63,7 @@ def _tight_vision_backend(tmp_path: Path, *, free_mib: int, model_bytes: int):
     and makes nothing fit on any card -- so a pin test built on it would pass
     whatever the policy did.
     """
-    backend, gguf = _vision_backend(
-        tmp_path, memory = [(0, free_mib, free_mib + 2_000)]
-    )
+    backend, gguf = _vision_backend(tmp_path, memory = [(0, free_mib, free_mib + 2_000)])
     backend._get_gguf_size_bytes = lambda _path: model_bytes
     backend._estimate_compute_buffer_bytes = lambda *a, **k: 100 * 1024 * 1024
     return backend, gguf
@@ -129,9 +132,7 @@ def test_no_pin_when_everything_fits(tmp_path):
 def test_no_pin_on_a_cpu_only_box(tmp_path):
     # No GPU enumerated: the projector is already on the CPU and there are no
     # layers to displace, so the flag would be noise. Metal reaches here too.
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 0, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 0, model_bytes = 4_500 * 1024 * 1024)
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
 
@@ -142,13 +143,9 @@ def test_no_pin_on_a_cpu_only_box(tmp_path):
 
 def test_no_pin_in_manual_placement(tmp_path):
     # Manual means the user owns the offload. Studio does not second-guess it.
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
-    cmd = _launch(
-        backend, gguf, is_vision = True, gpu_memory_mode = "manual", gpu_layers = 10
-    )["cmd"]
+    cmd = _launch(backend, gguf, is_vision = True, gpu_memory_mode = "manual", gpu_layers = 10)["cmd"]
 
     assert not _pinned(cmd)
 
@@ -163,9 +160,7 @@ def test_no_automatic_pin_when_the_user_named_the_placement(tmp_path, spelling, 
     # llama.cpp is last-wins and Studio appends its own flags first, so racing
     # the user for the flag would either be silently overridden or fight a
     # deliberate choice.
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     cmd = _launch(backend, gguf, is_vision = True, extra_args = [spelling])["cmd"]
 
@@ -251,9 +246,7 @@ def test_vision_on_cpu_never_true_while_is_vision_is_false(tmp_path):
 def test_pins_when_the_projector_would_displace_layers(tmp_path):
     # The model alone nearly fills the card; the projector is what tips it over.
     # Its VRAM is worth more as layers, which run per token rather than per image.
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
@@ -265,9 +258,7 @@ def test_pins_when_the_projector_would_displace_layers(tmp_path):
 
 
 def test_the_flag_is_emitted_exactly_once(tmp_path):
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     cmd = _launch(backend, gguf, is_vision = True)["cmd"]
 
@@ -276,9 +267,7 @@ def test_the_flag_is_emitted_exactly_once(tmp_path):
 
 def test_disable_vision_beats_the_pin(tmp_path):
     # Nothing to place when the projector was never resolved.
-    backend, gguf = _tight_vision_backend(
-        tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024
-    )
+    backend, gguf = _tight_vision_backend(tmp_path, free_mib = 6_000, model_bytes = 4_500 * 1024 * 1024)
 
     cmd = _launch(backend, gguf, is_vision = True, disable_vision = True)["cmd"]
 

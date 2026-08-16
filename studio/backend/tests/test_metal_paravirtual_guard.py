@@ -2055,9 +2055,7 @@ def test_the_toggle_does_not_warn_about_a_missing_projector():
     """The user asked for this. Reporting it as a fault ("loaded without a usable
     mmproj") would send them hunting for a problem that does not exist, so the only
     line the block emits here is the info one the harness swallows."""
-    _path, _vision, warnings = _mmproj_gate(
-        paravirtual = False, caps = {}, disable_vision = True
-    )
+    _path, _vision, warnings = _mmproj_gate(paravirtual = False, caps = {}, disable_vision = True)
     assert warnings == [], warnings
 
 

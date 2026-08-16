@@ -46,7 +46,12 @@ MAIN_MODEL_SIZE_FIT = 7_868_514_303
 MAIN_CTX = 10752
 
 
-def _metal_backend(tmp_path: Path, *, mmproj_bytes = PROJECTOR_BYTES, record: dict):
+def _metal_backend(
+    tmp_path: Path,
+    *,
+    mmproj_bytes = PROJECTOR_BYTES,
+    record: dict,
+):
     """A Mac: no GPU enumerated, a unified-memory budget, a KV estimate."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
     mmproj = tmp_path / "model-mmproj.gguf"
@@ -91,9 +96,7 @@ def _launch_metal(
     backend, gguf = _metal_backend(tmp_path, mmproj_bytes = mmproj_bytes, record = record)
     cmd = [
         str(a)
-        for a in _launch(
-            backend, gguf, is_vision = True, n_ctx = 0, extra_args = extra_args
-        )["cmd"]
+        for a in _launch(backend, gguf, is_vision = True, n_ctx = 0, extra_args = extra_args)["cmd"]
     ]
     record["backend"] = backend
     record["ctx"] = int(cmd[cmd.index("-c") + 1])
