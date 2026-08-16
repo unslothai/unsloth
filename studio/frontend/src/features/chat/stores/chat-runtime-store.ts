@@ -2852,6 +2852,9 @@ function rememberOutgoingModel(
   state: ChatRuntimeStore,
   outgoing: InferenceParams,
 ): Record<string, PersistedInferenceParams> | null {
+  if (!state.settingsHydrated && outgoing.checkpoint) {
+    modelLeftBeforeHydration = outgoing.checkpoint;
+  }
   const snapshot = pickRememberedParams(outgoing);
   // Only to seed a model with no entry: that is what this snapshot is for, and
   // every later change is written by the edit that made it, key by key. A full
@@ -2992,6 +2995,11 @@ function loadedContextFor(checkpoint: string): number | null {
  * this model's, and the global set is still the other model's. */
 let modelLoadedBeforeHydration: string | null = null;
 
+/** A model stepped off before hydration. Nothing can be filed for it yet -- the
+ * params are placeholders -- but the global set the response is about to deliver
+ * is what it was running with, so this says which model to file that under. */
+let modelLeftBeforeHydration: string | null = null;
+
 function noteModelDefaultsBeforeHydration(
   checkpoint: string,
   replacedAnotherModel: boolean,
@@ -3121,6 +3129,26 @@ function getHydratedSettingsState(
         ...state.paramsByModel,
         [checkpoint]: { ...state.paramsByModel[checkpoint], ...edited },
       };
+    }
+  }
+  // A model stepped off before this response landed could not be filed at the
+  // time, and the global set it was running with is only now known. Without
+  // this it has no entry at all, so switching back to it inherits whatever the
+  // model that replaced it is running -- the bleed this feature exists to stop,
+  // on the upgrade path where the global set is the only record there is.
+  const left = modelLeftBeforeHydration;
+  modelLeftBeforeHydration = null;
+  const byModel = nextState.paramsByModel ?? state.paramsByModel;
+  if (remembersPerModel && left && left !== checkpoint && !byModel[left]) {
+    const inherited: PersistedInferenceParams = {};
+    for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
+      const value = settings.inferenceParams?.[key];
+      if (value !== undefined) {
+        setInferenceParam(inherited as InferenceParams, key, value);
+      }
+    }
+    if (hasKeys(inherited)) {
+      nextState.paramsByModel = { ...byModel, [left]: inherited };
     }
   }
   for (const key of SCALAR_SETTING_KEYS) {

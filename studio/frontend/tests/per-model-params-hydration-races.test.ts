@@ -182,3 +182,32 @@ test("the memory being off does not disable the loaded-context cap", () => {
     .setCheckpoint("fresh", null, { maxTokensCap: 8192 });
   assert.equal(useChatRuntimeStore.getState().params.maxTokens, 8192);
 });
+
+test("a model left before hydration keeps the globals it was running with", async () => {
+  // The upgrade path again, from the other side: A is resident with only the
+  // legacy global set to its name, and B replaces it before the GET returns.
+  // Nothing could be filed for A at the time, so without this A ends up with no
+  // entry and switching back inherits B's settings.
+  settingsHttp.settings = {
+    inferenceParams: { temperature: 0.33, systemPrompt: "A's prompt" },
+  };
+  reset({ checkpoint: A });
+  settingsHttp.hold();
+  const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
+  useChatRuntimeStore.getState().setParams(
+    {
+      ...useChatRuntimeStore.getState().params,
+      checkpoint: B,
+      temperature: 0.95,
+      systemPrompt: "B's prompt",
+    },
+    { fromModelDefaults: true },
+  );
+  settingsHttp.release?.();
+  await hydrating;
+
+  useChatRuntimeStore.getState().setCheckpoint(A, null);
+  const { params } = useChatRuntimeStore.getState();
+  assert.equal(params.temperature, 0.33);
+  assert.equal(params.systemPrompt, "A's prompt");
+});
