@@ -133,8 +133,13 @@ def _clean_widgets(nb):
     return changed
 
 
-def strip_notebook(path):
-    """Return True if the notebook was modified and written back."""
+def strip_notebook(path, staged = None):
+    """Return True if the notebook was modified and written back.
+
+    ``staged`` is an optional dict; on a successful publish it receives
+    ``{"sha256": ...}`` for the bytes THIS call wrote, so the caller can record
+    what it published instead of re-reading the live file afterwards.
+    """
     try:
         before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
@@ -153,6 +158,10 @@ def strip_notebook(path):
         with open(tmp, "w", encoding = "utf-8") as f:
             json.dump(nb, f, indent = 1, ensure_ascii = False)
             f.write("\n")
+        # Hash the staged copy up front: it is what gets published, and taking it
+        # here rather than after the replace keeps the recheck below immediately
+        # adjacent to the replace it guards.
+        after = _sha256(tmp)
         # The refresh child re-arms this cleanup AFTER the entrypoint has execed
         # the container command, so JupyterLab is already serving the tree: a save
         # landing between the read above and this replace would be silently
@@ -164,6 +173,11 @@ def strip_notebook(path):
             os.remove(tmp)
             return False
         os.replace(tmp, path)
+        # Hand the caller the STAGED hash: rehashing `path` after the replace
+        # would adopt a save that landed in that window and record the user's own
+        # work as pristine, which is what lets the next refresh overwrite it.
+        if staged is not None:
+            staged["sha256"] = after
     except Exception:
         try:
             os.remove(tmp)
@@ -201,8 +215,9 @@ def migrate(state_path, dest):
         if rel.endswith(".ipynb") and os.path.isfile(path):
             try:
                 if _sha256(path) == rec:  # we own it and it is unedited
-                    if strip_notebook(path):
-                        rec = _sha256(path)
+                    published = {}
+                    if strip_notebook(path, published):
+                        rec = published["sha256"]
                         changed += 1
             except OSError:
                 pass

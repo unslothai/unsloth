@@ -121,6 +121,62 @@ def test_studio_update_does_not_restart_into_a_backend_that_cannot_import(tmp_pa
     assert "--with-deps" in res.stderr, "the remedy must still be printed"
 
 
+def _zoo_ref_env(tmp_path: Path, *, git_exit: int) -> dict:
+    """`--ref` env whose stub `git ls-remote` exits with `git_exit`.
+
+    Real exit codes, measured against github.com with git 2.43.0:
+      0    the zoo has the ref
+      2    reached the remote, no matching ref (`--exit-code`)
+      128  never reached the remote (DNS / TLS / auth / proxy)
+    """
+    env = _studio_env(tmp_path, import_ok = True)
+    _stub(tmp_path / "bin", "git", f"exit {git_exit}\n")
+    return env
+
+
+def _zoo_spec(calls: str) -> str:
+    for line in calls.splitlines():
+        for token in line.split():
+            if token.startswith("git+https://github.com/unslothai/unsloth-zoo.git@"):
+                return token
+    return ""
+
+
+def test_studio_update_mirrors_the_ref_when_the_zoo_has_it(tmp_path: Path):
+    env = _zoo_ref_env(tmp_path, git_exit = 0)
+    res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
+    calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
+    assert res.returncode == 0, res.stderr
+    assert _zoo_spec(calls).endswith("@v2026.7.5#egg=unsloth_zoo"), calls
+
+
+def test_studio_update_falls_back_to_zoo_main_when_the_ref_is_absent(tmp_path: Path):
+    env = _zoo_ref_env(tmp_path, git_exit = 2)
+    res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
+    calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
+    assert res.returncode == 0, res.stderr
+    assert _zoo_spec(calls).endswith("@main#egg=unsloth_zoo"), calls
+    assert "has no ref" in res.stdout, res.stdout
+
+
+def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_path: Path):
+    # `git ls-remote --exit-code` reserves status 2 for "reached the remote, no
+    # matching ref"; 128 means the lookup never happened. Treating the two alike
+    # pairs the requested unsloth revision with an unrelated zoo revision the
+    # moment the network recovers for the pip call, and they share a private API.
+    env = _zoo_ref_env(tmp_path, git_exit = 128)
+    res = _run(STUDIO_UPDATE, ["--ref", "v2026.7.5", "--no-restart"], env)
+    calls = Path(env["STUB_LOG"]).read_text() if Path(env["STUB_LOG"]).exists() else ""
+    assert "STUB-PIP" not in calls, (
+        "a transport failure must not install anything:\n" + calls
+    )
+    assert res.returncode != 0, "an unresolvable zoo ref must not report success"
+    assert "has no ref" not in res.stdout, (
+        "an unreachable remote must not be reported as a missing ref:\n" + res.stdout
+    )
+    assert "--zoo-ref" in res.stderr, "the remedy must be printed"
+
+
 # --- unsloth-llama-update -----------------------------------------------------
 
 

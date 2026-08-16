@@ -139,3 +139,72 @@ def test_the_normal_no_race_cleanup_still_strips_and_rewrites(strip, tmp_path: P
     cleaned = json.loads(path.read_text(encoding = "utf-8"))
     assert cleaned["cells"][0]["source"] == ["# Llama\n"]
     assert strip.strip_notebook(str(path)) is False  # idempotent
+
+
+@pytest.fixture
+def racing_after_replace(strip, tmp_path: Path):
+    """Fire the save in the OTHER window: after os.replace has published the
+    cleaned copy, while migrate() is about to hash the live file."""
+    real_replace = strip.os.replace
+    state = {"save": None, "path": None, "fired": 0}
+
+    def replace(src, dst, *args, **kwargs):
+        out = real_replace(src, dst, *args, **kwargs)
+        if state["save"] is not None and state["fired"] == 0 and str(dst) == state["path"]:
+            state["fired"] = 1
+            Path(state["path"]).write_text(state["save"], encoding = "utf-8")  # Ctrl+S
+        return out
+
+    strip.os.replace = replace
+    try:
+        yield state
+    finally:
+        strip.os.replace = real_replace
+
+
+def test_a_save_landing_after_the_replace_is_not_recorded_as_pristine(
+    strip, racing_after_replace, tmp_path: Path
+):
+    # The recheck above closes the read-to-replace window, but migrate() then
+    # re-read the published file to update STATE. rename(2) is atomic; that
+    # second read is not part of it. A save landing in between was recorded as
+    # the sync-owned pristine hash, so the NEXT refresh overwrote the user's
+    # work -- the same shape as the publish in unsloth_sync_notebooks.sh.
+    dest = tmp_path / "unsloth-notebooks"
+    dest.mkdir()
+    path = dest / "Llama.ipynb"
+    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    before = strip._sha256(str(path))
+    state = tmp_path / ".unsloth_sync_state"
+    state.write_text(f"{before}  Llama.ipynb\n", encoding = "utf-8")
+
+    edited = notebook([INTRO, "\n", "# Llama\n", "\n", "saved right after the replace\n"])
+    racing_after_replace["save"] = json.dumps(edited, indent = 1, ensure_ascii = False) + "\n"
+    racing_after_replace["path"] = str(path)
+
+    strip.migrate(str(state), str(dest))
+
+    assert racing_after_replace["fired"] == 1, (
+        "the window was never exercised; this test would pass vacuously"
+    )
+    recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
+    assert json.loads(path.read_text(encoding = "utf-8")) == edited
+    assert recorded != strip._sha256(str(path)), (
+        "the user's own save was recorded as the cleaned, sync-owned version"
+    )
+
+
+def test_the_recorded_hash_is_the_cleaned_copy_when_nobody_races(strip, tmp_path: Path):
+    # Over-reach guard: with no save in flight, STATE must still adopt the hash
+    # of the cleaned notebook, or every later boot re-strips the same file.
+    dest = tmp_path / "unsloth-notebooks"
+    dest.mkdir()
+    path = dest / "Llama.ipynb"
+    write(path, notebook([INTRO, "\n", "# Llama\n"]))
+    state = tmp_path / ".unsloth_sync_state"
+    state.write_text(f"{strip._sha256(str(path))}  Llama.ipynb\n", encoding = "utf-8")
+
+    strip.migrate(str(state), str(dest))
+
+    recorded = state.read_text(encoding = "utf-8").split("  ", 1)[0]
+    assert recorded == strip._sha256(str(path))

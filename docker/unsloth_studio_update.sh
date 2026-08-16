@@ -70,12 +70,25 @@ if [ -n "$REF" ]; then
     # main.
     _zoo_ref="$ZOO_REF"
     if [ -z "$_zoo_ref" ]; then
-        if git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \
-                "$REF" >/dev/null 2>&1; then
+        # Only "reached the remote, no matching ref" may fall through to main.
+        # git ls-remote --exit-code documents status 2 for that case; any other
+        # non-zero status (128 on DNS/TLS/auth/proxy failure) means the lookup
+        # never happened. Taking main there pairs the requested unsloth revision
+        # with an unrelated zoo revision as soon as the network recovers for the
+        # pip call below, and the two share a private API. Same rule the publish
+        # workflow applies when it freezes refs.
+        _ls_rc=0
+        git ls-remote --exit-code https://github.com/unslothai/unsloth-zoo.git \
+            "$REF" >/dev/null 2>&1 || _ls_rc=$?
+        if [ "$_ls_rc" = "0" ]; then
             _zoo_ref="$REF"
-        else
+        elif [ "$_ls_rc" = "2" ]; then
             _zoo_ref="main"
             echo "[studio-update] unsloth-zoo has no ref '${REF}'; using zoo main"
+        else
+            echo "unsloth-studio-update: could not reach unslothai/unsloth-zoo (git ls-remote exit ${_ls_rc}); refusing to guess the zoo ref." >&2
+            echo "unsloth-studio-update: retry, or pin it yourself with --zoo-ref <ref>." >&2
+            exit 1
         fi
     fi
     SPECS="$SPECS git+https://github.com/unslothai/unsloth-zoo.git@${_zoo_ref}#egg=unsloth_zoo"

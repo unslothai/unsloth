@@ -4,6 +4,7 @@
 
 import hashlib
 import json
+import re
 import sys
 
 # Lowercased substrings that mark a markdown cell as top/bottom boilerplate.
@@ -60,12 +61,39 @@ def _is_boilerplate_md(cell):
     return any(m in low for m in _BOILERPLATE_MD)
 
 
-def _is_boilerplate(cell):
-    return _is_install_code(cell) or _is_boilerplate_md(cell)
+# A `#` that opens a comment: at line start, or preceded by whitespace. A `#`
+# glued to the previous token is data, not a comment -- notably the fragment in
+# `pip install "git+https://host/repo#subdirectory=pkg"`, which selects the
+# package and has to stay in the signature.
+_COMMENT_RE = re.compile(r"(?:^|(?<=\s))#.*$", re.MULTILINE)
+
+
+def _normalize_install(text):
+    """Drop the cosmetic half of an install cell, keep what it installs.
+
+    Upstream regenerates this cell on every build, so its comments, blank lines
+    and spacing churn across every notebook for no functional reason. That churn
+    is why the cell used to be skipped outright -- but its package specs are the
+    other half and they are functional: a transformers bump or an added
+    dependency is a fix, and the image keys its transformers sidecar off this
+    cell (unsloth_pip_shim.py reads the pin from it). Skipping the whole cell
+    made such a fix invisible to the refresh forever, because SAME keeps the old
+    file AND re-records its old hash, so it never converges. Hash the cell with
+    only the cosmetics normalized away instead.
+    """
+    lines = []
+    for line in _COMMENT_RE.sub("", text).split("\n"):
+        line = " ".join(line.split())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 def middle_digest(path):
-    """sha256 over the (type, source) of every non-boilerplate cell, or None."""
+    """sha256 over the (type, source) of every non-boilerplate cell, or None.
+
+    Install cells are hashed in normalized form rather than skipped.
+    """
     try:
         with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)
@@ -78,12 +106,15 @@ def middle_digest(path):
     for cell in cells:
         if not isinstance(cell, dict):
             continue
-        if _is_boilerplate(cell):
+        if _is_boilerplate_md(cell):
             continue
+        text = _text(cell)
+        if _is_install_code(cell):
+            text = _normalize_install(text)
         h.update(b"\x00")
         h.update(str(cell.get("cell_type", "")).encode("utf-8"))
         h.update(b"\x01")
-        h.update(_text(cell).encode("utf-8"))
+        h.update(text.encode("utf-8"))
     return h.hexdigest()
 
 

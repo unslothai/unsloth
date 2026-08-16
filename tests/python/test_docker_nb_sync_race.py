@@ -191,3 +191,198 @@ def test_a_pristine_pre_existing_file_is_not_rewritten_on_first_boot(sync: str):
         "an existing file with the template's exact bytes must be recorded as "
         "managed without being copied over"
     )
+
+
+def test_the_recorded_hash_is_the_staged_copy_not_the_published_file(sync: str):
+    # rename(2) is atomic, but the hash taken AFTER it is a second, unprotected
+    # read: JupyterLab is already serving $DEST while the refresh child runs, so
+    # a save landing between the rename and that read is recorded as the
+    # sync-owned pristine version, and the NEXT refresh is then allowed to
+    # overwrite the user's work. The staging file is dot-prefixed and per-PID, so
+    # hashing it before publishing cannot race with anything.
+    block = sync[sync.index("while IFS= read -r -d '' f; do") :]
+    block = block[: block.index("done < <(find")]
+    assert re.search(r'staged="\$\(hash_of "\$new"\)"', block), (
+        "the published hash must be taken from the staging copy"
+    )
+    assert block.index('staged="$(hash_of "$new")"') < block.index('mv -f "$new" "$dst"'), (
+        "the staged hash must be taken BEFORE the rename that publishes it"
+    )
+    publish = block.index('mv -f "$new" "$dst"')
+    tail = block[publish:]
+    assert re.search(r"printf '%s  %s\\n' \"\$staged\" \"\$rel\"", tail), (
+        "the state line must record the staged hash, not a re-read of $dst"
+    )
+    assert not re.search(r"printf '%s  %s\\n' \"\$\(hash_of \"\$dst\"\)\"", tail), (
+        "re-reading $dst after the rename adopts whatever save landed in that "
+        "window as the pristine version"
+    )
+
+
+# --- behavioural: the same race, driven end to end ---------------------------
+# The refresh child is re-entered directly (UNSLOTH_NB_REFRESH_CHILD=1), against
+# a LOCAL git remote, with a `mv` shim that performs the real rename and then
+# writes the user's bytes -- i.e. the Ctrl+S that lands inside the window.
+
+import hashlib          # noqa: E402
+import os               # noqa: E402
+import shutil           # noqa: E402
+import subprocess       # noqa: E402
+
+_NEEDS = ("bash", "git", "sha256sum", "mv")
+
+behavioural = pytest.mark.skipif(
+    any(shutil.which(tool) is None for tool in _NEEDS),
+    reason = "needs bash, git, sha256sum and mv",
+)
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd = cwd,
+        check = True,
+        capture_output = True,
+        env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME = "t", GIT_AUTHOR_EMAIL = "t@e",
+            GIT_COMMITTER_NAME = "t", GIT_COMMITTER_EMAIL = "t@e",
+        ),
+    )
+
+
+def _remote_with(tmp_path: Path, body: str) -> Path:
+    remote = tmp_path / "remote"
+    remote.mkdir()
+    _git(remote, "init", "-q", "-b", "main")
+    (remote / "x.ipynb").write_text(body, encoding = "utf-8")
+    _git(remote, "add", "x.ipynb")
+    _git(remote, "commit", "-qm", "one")
+    return remote
+
+
+def _advance(remote: Path, body: str) -> None:
+    (remote / "x.ipynb").write_text(body, encoding = "utf-8")
+    _git(remote, "add", "x.ipynb")
+    _git(remote, "commit", "-qm", "next")
+
+
+def _env(tmp_path: Path, remote: Path, dest: Path, *, save_bytes: str | None) -> dict:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok = True)
+    real_mv = shutil.which("mv")
+    shim = bin_dir / "mv"
+    if save_bytes is None:
+        shim.write_text(f'#!/usr/bin/env bash\nexec "{real_mv}" "$@"\n', encoding = "utf-8")
+    else:
+        # Rename for real, then land the user's save in the window between the
+        # rename and the hash the script records. Fires once, on the notebook only.
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            f'"{real_mv}" "$@" || exit $?\n'
+            'dst="${@: -1}"\n'
+            f'if [ "$dst" = "{dest / "x.ipynb"}" ] && [ ! -e "{tmp_path / ".fired"}" ]; then\n'
+            f'  : > "{tmp_path / ".fired"}"\n'
+            f'  printf %s {save_bytes!r} > "$dst"\n'
+            "fi\n",
+            encoding = "utf-8",
+        )
+    shim.chmod(0o755)
+    return dict(
+        os.environ,
+        PATH = f"{bin_dir}{os.pathsep}" + os.environ["PATH"],
+        UNSLOTH_NB_REFRESH_CHILD = "1",
+        UNSLOTH_NOTEBOOKS_TEMPLATE = str(tmp_path / "template"),
+        UNSLOTH_NOTEBOOKS_DIR = str(dest),
+        UNSLOTH_NOTEBOOKS_REPO = str(remote),
+        UNSLOTH_SKIP_NOTEBOOK_VIEW = "1",
+        UNSLOTH_KEEP_COLAB_INTRO = "1",
+        UNSLOTH_NOTEBOOK_BODY_AWARE = "0",
+    )
+
+
+def _recorded(dest: Path) -> str:
+    for line in (dest / ".unsloth_sync_state").read_text().splitlines():
+        parts = line.split("  ", 1)
+        if len(parts) == 2 and parts[1] == "x.ipynb":
+            return parts[0]
+    return ""
+
+
+def _seed(tmp_path: Path, body: str) -> Path:
+    # The baked template has to exist: phase 1 exits early without it, and the
+    # refresh child never runs.
+    template = tmp_path / "template"
+    template.mkdir(exist_ok = True)
+    (template / "x.ipynb").write_text(body, encoding = "utf-8")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "x.ipynb").write_text(body, encoding = "utf-8")
+    (dest / ".unsloth_sync_state").write_text(
+        f"{_sha256(dest / 'x.ipynb')}  x.ipynb\n", encoding = "utf-8"
+    )
+    (dest / ".unsloth_sync_commit").write_text("0" * 40 + "\n", encoding = "utf-8")
+    return dest
+
+
+@behavioural
+def test_a_save_landing_after_the_rename_is_not_recorded_as_pristine(tmp_path: Path):
+    remote = _remote_with(tmp_path, "v1")
+    _advance(remote, "v2")
+    dest = _seed(tmp_path, "v1")
+    subprocess.run(
+        ["bash", str(SYNC)],
+        env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
+        capture_output = True, text = True, timeout = 180,
+    )
+    live = (dest / "x.ipynb").read_text()
+    assert live == "USER EDIT", f"the shim did not land the save: {live!r}"
+    assert _recorded(dest) != _sha256(dest / "x.ipynb"), (
+        "the user's own save was recorded as the sync-owned pristine version"
+    )
+    assert _recorded(dest) == hashlib.sha256(b"v2").hexdigest(), (
+        "the recorded hash must be the bytes this refresh published"
+    )
+
+
+@behavioural
+def test_a_save_in_that_window_survives_the_next_refresh(tmp_path: Path):
+    # The consequence of the above: with the user's bytes recorded as pristine,
+    # the next refresh sees hash(dst) == recorded and overwrites their work.
+    remote = _remote_with(tmp_path, "v1")
+    _advance(remote, "v2")
+    dest = _seed(tmp_path, "v1")
+    subprocess.run(
+        ["bash", str(SYNC)],
+        env = _env(tmp_path, remote, dest, save_bytes = "USER EDIT"),
+        capture_output = True, text = True, timeout = 180,
+    )
+    _advance(remote, "v3")
+    subprocess.run(
+        ["bash", str(SYNC)],
+        env = _env(tmp_path, remote, dest, save_bytes = None),
+        capture_output = True, text = True, timeout = 180,
+    )
+    assert (dest / "x.ipynb").read_text() == "USER EDIT", (
+        "the user's notebook edit was overwritten by the upstream refresh"
+    )
+
+
+@behavioural
+def test_an_unraced_refresh_still_publishes_and_records_upstream(tmp_path: Path):
+    # Over-reach guard: without a save in the window the refresh must still
+    # update the notebook and record the bytes it wrote.
+    remote = _remote_with(tmp_path, "v1")
+    _advance(remote, "v2")
+    dest = _seed(tmp_path, "v1")
+    subprocess.run(
+        ["bash", str(SYNC)],
+        env = _env(tmp_path, remote, dest, save_bytes = None),
+        capture_output = True, text = True, timeout = 180,
+    )
+    assert (dest / "x.ipynb").read_text() == "v2"
+    assert _recorded(dest) == hashlib.sha256(b"v2").hexdigest()

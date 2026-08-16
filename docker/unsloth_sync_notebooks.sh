@@ -294,8 +294,10 @@ while IFS= read -r -d '' f; do
             continue
         fi
         if [ -n "$rec" ] && middle_unchanged "$dst" "$f"; then
-            # Untouched notebook whose only upstream change is the install header/
-            # announcements/footer. Body identical, so keep it and its marker.
+            # Untouched notebook whose only upstream change is the announcements/
+            # footer or install-cell cosmetics (comments, spacing). Body identical
+            # and the same packages requested, so keep it and its marker. A changed
+            # package spec is NOT cosmetic and falls through to the refresh below.
             printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
             unchanged=$((unchanged + 1))
             continue
@@ -320,6 +322,12 @@ while IFS= read -r -d '' f; do
     # this way.
     new="$(dirname "$dst")/.unsloth_nb_new.$$"
     if cp -a "$f" "$new" 2>/dev/null; then
+        # Hash what is about to be PUBLISHED, not what is live afterwards. $new is
+        # dot-prefixed and per-PID, so nothing else can write it; re-reading $dst
+        # after the rename adopts whatever save landed there in the meantime and
+        # records the user's own bytes as the sync-owned pristine version, which
+        # is exactly what lets the NEXT refresh overwrite their work.
+        staged="$(hash_of "$new")"
         if [ -e "$dst" ] && [ "$(hash_of "$dst")" != "${LAST[$rel]:-}" ]; then
             # Saved while we were copying -> their edit wins, keep the marker.
             rm -f "$new"
@@ -330,7 +338,8 @@ while IFS= read -r -d '' f; do
         # A single-FILE bind mount cannot be renamed over (EBUSY); fall back to the
         # previous in-place copy there so that setup keeps working as it does today.
         if mv -f "$new" "$dst" 2>/dev/null || { rm -f "$new"; cp -a "$f" "$dst" 2>/dev/null; }; then
-            printf '%s  %s\n' "$(hash_of "$dst")" "$rel" >> "$TMPSTATE"
+            # $staged, not hash_of "$dst": both branches write the bytes of "$f".
+            printf '%s  %s\n' "$staged" "$rel" >> "$TMPSTATE"
             updated=$((updated + 1))
         fi
     fi
