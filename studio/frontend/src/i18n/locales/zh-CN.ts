@@ -706,6 +706,9 @@ export const zhCN = {
         title: "布局",
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
+        projectsSection: "显示项目分区",
+        projectsSectionDescription:
+          "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       },
       sidebarNav: {
         title: "侧边栏导航",

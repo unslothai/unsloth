@@ -12,6 +12,7 @@ import {
   projectOrderScope,
   RECENTS_ORDER_SCOPE,
   reorderIds,
+  showsInRecents,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
 
@@ -39,6 +40,17 @@ test("a drop that cannot be resolved leaves the order alone", () => {
   assert.equal(reorderIds(ids, "b", "b"), ids);
   assert.equal(reorderIds(ids, "gone", "b"), ids);
   assert.equal(reorderIds(ids, "b", "gone"), ids);
+});
+
+test("a project chat shows in Recents only when the folders are off", () => {
+  // With folders on it would be listed twice, once in each place.
+  assert.equal(showsInRecents("p1", "project"), false);
+  assert.equal(showsInRecents("p1", "list"), true);
+  // A chat in no project is in Recents either way, or it has nowhere to go.
+  for (const mode of ["project", "list"] as const) {
+    assert.equal(showsInRecents(null, mode), true);
+    assert.equal(showsInRecents(undefined, mode), true);
+  }
 });
 
 test("the drop indicator names the edge the row actually lands on", () => {

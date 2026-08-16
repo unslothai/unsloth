@@ -735,6 +735,9 @@ export const ptBR = {
         compactSidebar: "Fixar barra lateral por padrão",
         compactSidebarDescription:
           "Mantém a barra lateral expandida em vez de recolhê-la em ícones.",
+        projectsSection: "Mostrar a seção Projetos",
+        projectsSectionDescription:
+          "Agrupa as conversas de projeto sob um título Projetos. Desative para listá-las em Recentes.",
       },
       sidebarNav: {
         title: "Navegação da barra lateral",

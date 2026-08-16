@@ -716,6 +716,9 @@ export const it = {
         compactSidebar: "Fissa la barra laterale per impostazione predefinita",
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
+        projectsSection: "Mostra la sezione Progetti",
+        projectsSectionDescription:
+          "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       },
       sidebarNav: {
         title: "Navigazione della barra laterale",

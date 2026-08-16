@@ -81,6 +81,7 @@ export {
   applyManualOrder,
   dropEdgeFor,
   moveIdBy,
+  showsInRecents,
   PINNED_ORDER_SCOPE,
   PROJECT_ORDER_SCOPE,
   projectOrderScope,

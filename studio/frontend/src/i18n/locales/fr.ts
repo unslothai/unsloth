@@ -749,6 +749,9 @@ export const fr = {
         compactSidebar: "Épingler la barre latérale par défaut",
         compactSidebarDescription:
           "Garder la barre latérale déployée au lieu de la réduire en icônes.",
+        projectsSection: "Afficher la section Projets",
+        projectsSectionDescription:
+          "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       },
       sidebarNav: {
         title: "Navigation de la barre latérale",

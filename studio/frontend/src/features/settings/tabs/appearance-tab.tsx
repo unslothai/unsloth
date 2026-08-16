@@ -3,6 +3,7 @@
 
 import { useEffect, useRef } from "react";
 import { Switch } from "@/components/ui/switch";
+import { useSidebarOrganizationStore } from "@/features/chat";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT } from "@/i18n";
 import {
@@ -35,6 +36,8 @@ export function AppearanceTab() {
   const t = useT();
   const { resolved } = useTheme();
   const { pinned, setPinned } = useSidebarPin();
+  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
+  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   // The sidebar's "Customize sidebar" entry lands mid-page, so scroll its section into view.
   const sidebarNavSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -168,6 +171,19 @@ export function AppearanceTab() {
           )}
         >
           <Switch checked={pinned} onCheckedChange={setPinned} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.layout.projectsSection")}
+          description={t(
+            "settings.appearance.layout.projectsSectionDescription",
+          )}
+        >
+          <Switch
+            checked={organizeBy === "project"}
+            onCheckedChange={(checked) =>
+              setOrganizeBy(checked ? "project" : "list")
+            }
+          />
         </SettingsRow>
       </SettingsSection>
 

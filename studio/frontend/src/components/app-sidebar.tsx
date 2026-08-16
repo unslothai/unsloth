@@ -156,6 +156,7 @@ import {
   useSidebarOrganizationStore,
   applyManualOrder,
   dropEdgeFor,
+  showsInRecents,
   moveIdBy,
   projectOrderScope,
   reorderIds,
@@ -955,12 +956,18 @@ export function AppSidebar() {
   const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
   const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
   const setManualOrder = useSidebarOrganizationStore((s) => s.setManualOrder);
-  // Recents is the whole history, project chats included: filing a chat under a
-  // project used to drop it from here, so a new project chat went nowhere
-  // visible. Only pinned chats are held back; the Pinned section renders those.
+  // With the Projects section on, a project chat lives in its folder and
+  // repeating it here would be noise. With it off there are no folders, so
+  // Recents is where those chats go, and a new project chat still lands
+  // somewhere visible. Pinned chats are held back either way: the Pinned
+  // section renders those.
   const recentChatItems = useMemo(
-    () => allChatItems.filter((item) => !pinnedIdSet.has(item.id)),
-    [allChatItems, pinnedIdSet],
+    () =>
+      allChatItems.filter(
+        (item) =>
+          !pinnedIdSet.has(item.id) && showsInRecents(item.projectId, organizeBy),
+      ),
+    [allChatItems, pinnedIdSet, organizeBy],
   );
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const [projectsOpen, setProjectsOpen] = useState(true);
@@ -3088,6 +3095,7 @@ export function AppSidebar() {
         {/* Projects: one folder per project, its chats nested underneath */}
         {!isStudioRoute &&
           !showTrainingRecents &&
+          organizeBy === "project" &&
           sidebarProjectRecords.length > 0 && (
             <Collapsible
               open={projectsOpen}
@@ -3128,11 +3136,7 @@ export function AppSidebar() {
                           sortedChatsByProjectId.get(project.id) ?? [];
                         const projectChatIds =
                           projectChatRowIds.get(project.id) ?? [];
-                        // "In one list" keeps the folders but stops nesting
-                        // their chats, leaving Recents as the single list.
-                        const expanded =
-                          organizeBy === "project" &&
-                          !collapsedProjectIds.has(project.id);
+                        const expanded = !collapsedProjectIds.has(project.id);
                         const showAll = expandedChatProjectIds.has(project.id);
                         const visibleChats =
                           expanded && !showAll
@@ -3163,12 +3167,7 @@ export function AppSidebar() {
                           <SidebarMenuButton
                             // Highlight the folder only on the project home; with a chat open, only that row is active.
                             isActive={activeProjectId === project.id && !activeThreadId}
-                            // Nothing to disclose with nesting off, so open it.
-                            onClick={() =>
-                              organizeBy === "project"
-                                ? toggleProjectCollapsed(project.id)
-                                : openProject(project.id)
-                            }
+                            onClick={() => toggleProjectCollapsed(project.id)}
                             className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
                           >
                             <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-icon! shrink-0" />
@@ -3360,8 +3359,8 @@ export function AppSidebar() {
                     )}
                   </SidebarMenu>
                   {/* "No chats yet" only when there is truly no history:
-                      archived threads leave Recents empty but still count as
-                      existing chats. */}
+                      project-scoped and archived threads leave Recents empty
+                      but still count as existing chats. */}
                   {chatItemsLoaded &&
                     allChatItems.length === 0 &&
                     archivedChatItems.length === 0 && (

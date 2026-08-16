@@ -724,6 +724,9 @@ export const ko = {
         compactSidebar: "기본적으로 사이드바 고정",
         compactSidebarDescription:
           "사이드바를 아이콘으로 접지 않고 펼친 상태로 유지합니다.",
+        projectsSection: "프로젝트 섹션 표시",
+        projectsSectionDescription:
+          "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       },
       sidebarNav: {
         title: "사이드바 탐색",

@@ -54,6 +54,18 @@ export function reorderIds(
 }
 
 /**
+ * Whether a chat belongs in Recents. With the Projects section on, a project
+ * chat lives in its folder and listing it twice is noise; with it off there are
+ * no folders, so Recents is the only place it can appear.
+ */
+export function showsInRecents(
+  projectId: string | null | undefined,
+  organizeBy: SidebarOrganizeBy,
+): boolean {
+  return organizeBy === "list" || !projectId;
+}
+
+/**
  * Which edge of the target row the drop indicator belongs on, matching where
  * `reorderIds` actually lands the row: after the target when dragging down,
  * before it when dragging up.

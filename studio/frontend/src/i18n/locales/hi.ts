@@ -730,6 +730,9 @@ export const hi = {
         compactSidebar: "साइडबार को डिफ़ॉल्ट रूप से पिन करें",
         compactSidebarDescription:
           "साइडबार को आइकन में संक्षिप्त करने के बजाय विस्तारित रखें।",
+        projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
+        projectsSectionDescription:
+          "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       },
       sidebarNav: {
         title: "साइडबार नेविगेशन",

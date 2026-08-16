@@ -750,6 +750,9 @@ export const de = {
         compactSidebar: "Seitenleiste standardmäßig anheften",
         compactSidebarDescription:
           "Hält die Seitenleiste ausgeklappt, statt sie zu Symbolen einzuklappen.",
+        projectsSection: "Projektbereich anzeigen",
+        projectsSectionDescription:
+          "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       },
       sidebarNav: {
         title: "Seitenleisten-Navigation",

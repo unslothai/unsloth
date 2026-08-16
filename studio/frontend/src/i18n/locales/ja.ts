@@ -708,6 +708,9 @@ export const ja = {
         title: "レイアウト",
         compactSidebar: "デフォルトでサイドバーを固定",
         compactSidebarDescription: "サイドバーをアイコンに折りたたまず、展開したままにします。",
+        projectsSection: "プロジェクトセクションを表示",
+        projectsSectionDescription:
+          "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       },
       sidebarNav: {
         title: "サイドバーナビゲーション",

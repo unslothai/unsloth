@@ -724,6 +724,9 @@ export const en = {
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
+        projectsSection: "Show projects section",
+        projectsSectionDescription:
+          "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       },
       sidebarNav: {
         title: "Sidebar navigation",

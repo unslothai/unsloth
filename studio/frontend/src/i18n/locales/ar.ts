@@ -727,6 +727,9 @@ export const ar = {
         compactSidebar: "تثبيت الشريط الجانبي افتراضيًا",
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
+        projectsSection: "إظهار قسم المشاريع",
+        projectsSectionDescription:
+          "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       },
       sidebarNav: {
         title: "التنقّل في الشريط الجانبي",
