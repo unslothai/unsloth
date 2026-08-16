@@ -29,6 +29,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
   const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
@@ -66,6 +67,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       nBatch: nBatch ?? null,
       nUbatch: nUbatch ?? null,
       tensorParallel: tensorParallel ?? false,
+      disableVision: disableVision ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
     if (!isGguf) {
@@ -92,6 +94,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     nBatch,
     nUbatch,
     tensorParallel,
+    disableVision,
     chatTemplateOverride,
     gpuMemoryMode,
     gpuLayers,

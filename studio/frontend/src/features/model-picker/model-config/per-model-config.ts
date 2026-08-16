@@ -24,6 +24,8 @@ export interface PerModelConfig {
   nBatch: number | null;
   nUbatch: number | null;
   tensorParallel: boolean;
+  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
+  disableVision: boolean;
   chatTemplateOverride: string | null;
   /**
    * Pass-through llama-server args, one argv token per entry, appended after
@@ -57,6 +59,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   nBatch: null,
   nUbatch: null,
   tensorParallel: false,
+  disableVision: false,
   chatTemplateOverride: null,
 };
 
@@ -189,6 +192,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "nBatch",
   "nUbatch",
   "tensorParallel",
+  "disableVision",
   "chatTemplateOverride",
   "llamaExtraArgs",
   "gpuMemoryMode",
@@ -515,6 +519,8 @@ function legacyEntryToConfig(raw: Record<string, unknown>): PerModelConfig {
     nParallel: null,
     tensorParallel:
       typeof raw.tensorParallel === "boolean" ? raw.tensorParallel : false,
+    disableVision:
+      typeof raw.disableVision === "boolean" ? raw.disableVision : false,
     chatTemplateOverride: null,
     // Absent, not null: a legacy blob predates the editor, and the server may well
     // hold flags set from the CLI. Reading that as "cleared" would wipe them on the
@@ -711,6 +717,10 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
         : DEFAULT_PER_MODEL_CONFIG.tensorParallel,
+    disableVision:
+      typeof partial.disableVision === "boolean"
+        ? partial.disableVision
+        : DEFAULT_PER_MODEL_CONFIG.disableVision,
     chatTemplateOverride:
       typeof partial.chatTemplateOverride === "string" &&
       isChatTemplateWithinLimit(partial.chatTemplateOverride)
@@ -869,6 +879,8 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.nUbatch == null &&
     Boolean(config.tensorParallel) ===
       Boolean(DEFAULT_PER_MODEL_CONFIG.tensorParallel) &&
+    Boolean(config.disableVision) ===
+      Boolean(DEFAULT_PER_MODEL_CONFIG.disableVision) &&
     (config.chatTemplateOverride ?? null) === null &&
     // Or a config whose only change is Extra Arguments reads as default, and
     // savePerModelConfig deletes the entry it was asked to remember.

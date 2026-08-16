@@ -11,6 +11,7 @@ export function getImageInputUnavailableReason({
   loadedIsMultimodal,
   modelLoaded,
   loadError,
+  visionDisabledByUser,
 }: {
   activeModel?: ChatModelSummary;
   isExternalModel: boolean;
@@ -24,6 +25,9 @@ export function getImageInputUnavailableReason({
   modelLoaded: boolean;
   // Runtime lastModelLoadError; lets the no-model branch flag a failed load.
   loadError?: string | null;
+  // Backend-reported: image input is off because Vision was switched off for this
+  // model, not because no projector could be found.
+  visionDisabledByUser?: boolean | null;
 }): string | null {
   if (isExternalModel) {
     const explicitlyNonVision =
@@ -61,6 +65,13 @@ export function getImageInputUnavailableReason({
   }
 
   const label = activeModel?.name || activeModel?.id || "Current model";
+  // Checked before the generic message below, which would otherwise tell someone
+  // who switched Vision off to go and find a vision model with a valid mmproj --
+  // sending them after a problem they do not have. The model is capable and the
+  // projector is fine; the setting is the only thing in the way.
+  if (visionDisabledByUser) {
+    return `Vision is turned off for ${label}. Turn it back on in the model's Advanced Settings to attach images.`;
+  }
   const suffix = activeModel?.isGguf
     ? " with a valid mmproj before attaching images."
     : " before attaching images.";

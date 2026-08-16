@@ -41,6 +41,7 @@ function config(overrides: Record<string, unknown> = {}) {
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,
+    disableVision: false,
     chatTemplateOverride: null,
     ...overrides,
   };
@@ -78,6 +79,7 @@ test("a v0 record with no version key at all still loads every field it carried"
       kvCacheDtype: "q8_0",
       nParallel: 4,
       tensorParallel: true,
+      disableVision: false,
     },
   });
   const loaded = load();

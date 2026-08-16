@@ -390,6 +390,14 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    ...(seedLoadParams &&
+      status.vision_disabled_by_user !== undefined && {
+        loadedVisionDisabledByUser: status.vision_disabled_by_user,
+      }),
+    ...(seedLoadParams &&
+      status.vision_on_cpu !== undefined && {
+        loadedVisionOnCpu: status.vision_on_cpu,
+      }),
     // Hydration only, so a steady poll never rewrites settings the store owns.
     // Width, verdict and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&

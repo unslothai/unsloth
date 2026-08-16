@@ -379,6 +379,8 @@ async function syncInferenceStatusToStore(options?: {
         residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
+        loadedVisionDisabledByUser: null,
+        loadedVisionOnCpu: null,
         loadedIsDiffusion: false,
       });
       // Known resident a moment ago, and nothing loading now. Both matter: a
@@ -952,6 +954,12 @@ export function useChatModelRuntime() {
             ? false
             : (pendingLoadConfig?.tensorParallel ??
               stateBeforeUnload.tensorParallel);
+          // The diffusion runner has no projector to skip, so the toggle is inert
+          // there for the same reason tensorParallel is.
+          const loadDisableVision = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.disableVision ??
+              stateBeforeUnload.disableVision);
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -1069,6 +1077,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf
                 ? {
@@ -1303,6 +1312,7 @@ export function useChatModelRuntime() {
                 ? { n_ubatch: loadNUbatch }
                 : {}),
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
               n_cpu_moe: loadNCpuMoe,
@@ -1460,6 +1470,12 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              // Alongside loadedIsMultimodal on every path that sets it, so the
+              // composer can say WHY images are unavailable rather than falling
+              // back to "load a vision-capable model with a valid mmproj".
+              loadedVisionDisabledByUser:
+                loadResponse.vision_disabled_by_user ?? false,
+              loadedVisionOnCpu: loadResponse.vision_on_cpu ?? false,
               ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
@@ -1629,6 +1645,12 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  // Restore the vision placement the previous model was running.
+                  // The backend reports this as is_vision AND disable_vision, which is
+                  // the value to replay: on a model with no projector the flag is a
+                  // documented no-op, so the false it reports loads identically.
+                  disable_vision:
+                    stateBeforeUnload.loadedVisionDisabledByUser ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
@@ -1678,6 +1700,9 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  loadedVisionDisabledByUser:
+                    rollbackResponse.vision_disabled_by_user ?? false,
+                  loadedVisionOnCpu: rollbackResponse.vision_on_cpu ?? false,
                   customContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:

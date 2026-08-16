@@ -41,6 +41,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   tensor_parallel?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
+  disable_vision?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   chat_template_override?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_memory_mode?: "auto" | "manual";
@@ -303,6 +305,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.tensorParallel) {
     payload.tensor_parallel = true;
+  }
+  if (config.disableVision) {
+    payload.disable_vision = true;
   }
   if (config.chatTemplateOverride?.trim()) {
     payload.chat_template_override = config.chatTemplateOverride;
