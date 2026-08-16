@@ -12007,9 +12007,7 @@ class LlamaCppBackend:
         )
 
     @staticmethod
-    def _drop_env_quantized_v_cache(
-        env: MutableMapping[str, str], *, mla: bool = False
-    ) -> bool:
+    def _drop_env_quantized_v_cache(env: MutableMapping[str, str], *, mla: bool = False) -> bool:
         """Drop an inherited quantized V-cache env var (main or draft) in place
         before a flash-attn-off retry, returning True if anything was removed.
 

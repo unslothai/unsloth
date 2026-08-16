@@ -167,8 +167,7 @@ class TestTheEnvDropKeepsMlaKAndVEqual:
         change a launch the user configured deliberately."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
         assert LlamaCppBackend._drop_env_quantized_v_cache(env, mla = True) is False
-        assert env == {"LLAMA_ARG_CACHE_TYPE_K": "bf16",
-                       "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
+        assert env == {"LLAMA_ARG_CACHE_TYPE_K": "bf16", "LLAMA_ARG_CACHE_TYPE_V": "bf16"}
 
 
 class TestNonMlaBehaviourIsUnchanged:
