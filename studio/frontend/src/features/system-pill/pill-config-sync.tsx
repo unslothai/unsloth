@@ -6,7 +6,11 @@
 
 import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
-import { fetchPillSettings, syncNativePillConfig } from "./api";
+import {
+  fetchPillSettings,
+  syncNativePillConfig,
+  updatePillSettings,
+} from "./api";
 import { isMacPlatform } from "@/lib/pill-native";
 
 // server-port re-announcements can arrive in bursts; one sync per window. The
@@ -28,10 +32,29 @@ async function syncConfigToNative(): Promise<void> {
   if (lastSyncSucceededAt && Date.now() - lastSyncSucceededAt < 30_000) return;
   syncInFlight = true;
   try {
-    await syncNativePillConfig(await fetchPillSettings());
-    lastSyncSucceededAt = Date.now();
-  } catch {
-    // Backend not up yet or signed out; the next sync trigger really does retry.
+    // Read and apply are separated because they fail for different reasons: a
+    // failed read means the backend is not up yet and the next trigger retries,
+    // while a failed apply means the shortcut could not be taken.
+    let settings;
+    try {
+      settings = await fetchPillSettings();
+    } catch {
+      return;
+    }
+    try {
+      await syncNativePillConfig(settings);
+      lastSyncSucceededAt = Date.now();
+    } catch {
+      // Nothing here renders native status, so a backend left saying enabled
+      // would keep the settings switch claiming a bar with no shortcut behind
+      // it. Undo it, exactly as the settings tab does on the same failure.
+      if (!settings.enabled) return;
+      try {
+        await updatePillSettings({ enabled: false });
+      } catch {
+        // Could not undo it either; the next open reads the backend.
+      }
+    }
   } finally {
     syncInFlight = false;
     if (syncQueued) {
