@@ -13855,10 +13855,19 @@ class LlamaCppBackend:
                 # launch, which reads it. Only the paravirtual reason is known this
                 # early; the fit probe below may add the automatic one, and it runs
                 # before every site that reads the charge.
+                # The user's own --no-mmproj-offload is the third reason, and it is
+                # known here too. Without it the planner charged ~1.4x the
+                # projector's bytes against a card the user had just told
+                # llama-server to keep it off, so a model that fits went out with
+                # `--fit on` and no layer plan -- strictly worse placement than
+                # the automatic pin gives for the identical argv. Read last-wins
+                # so a trailing --mmproj-offload takes it back.
                 _mmproj_cpu_pinned = bool(
                     launch_mmproj_path
-                    and _paravirtual_cpu_forced
-                    and _paravirtual_mmproj_pinnable(server_caps)
+                    and (
+                        (_paravirtual_cpu_forced and _paravirtual_mmproj_pinnable(server_caps))
+                        or _mmproj_offload_disabled(extra_args)
+                    )
                 )
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
@@ -16080,7 +16089,12 @@ class LlamaCppBackend:
                     # device, or the fit probe deciding the projector's VRAM is better
                     # spent on layers. Both already checked the capability, and emitting
                     # it twice would be harmless but confusing in the log.
-                    if _mmproj_cpu_pinned:
+                    # Not when the user's own extras already end in the pin: their
+                    # token is in this same argv and says the same thing, so a
+                    # second one is noise. A user --mmproj-offload is NOT such a
+                    # case -- on a virtualised Metal device Studio still has to
+                    # win that race -- so this reads the placement, not the flag.
+                    if _mmproj_cpu_pinned and not _mmproj_offload_disabled(extra_args):
                         _pv_mmproj_cpu_pin = ["--no-mmproj-offload"]
                         if _paravirtual_cpu_forced:
                             logger.warning(

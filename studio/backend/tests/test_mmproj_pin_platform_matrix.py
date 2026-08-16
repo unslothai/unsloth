@@ -344,6 +344,27 @@ def test_an_explicit_user_flag_owns_the_placement(monkeypatch, tmp_path, os_key,
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("os_key", OS_KEYS)
+def test_the_projector_path_reaches_the_argv_verbatim(monkeypatch, tmp_path, os_key):
+    """No separator rewriting anywhere on the projector path, on any host.
+
+    ``_resolve_launch_mmproj_path`` is pure ``pathlib`` and nothing between it
+    and the argv consults ``os.sep`` or ``os.pathsep``, so a Windows path with
+    backslashes must arrive at llama-server exactly as resolved. Asserted as
+    identity rather than by faking a separator: pinning ``sys.platform`` does not
+    move ``os.pathsep``, and a test that assumes it does is how this suite broke
+    CI before.
+    """
+    _apply_os(monkeypatch, os_key)
+    backend, gguf = _accel_backend(monkeypatch, tmp_path, "cpu", memory = [])
+    resolved = backend._resolve_launch_mmproj_path()
+
+    cmd = _launch(backend, gguf, is_vision = True)["cmd"]
+
+    assert cmd[cmd.index("--mmproj") + 1] == resolved
+    assert cmd.count("--mmproj") == 1
+
+
 def test_windows_full_offload_tuning_engages_after_the_pin(monkeypatch, tmp_path):
     """The pin turns a partial placement into a full one, which is what the
     Windows ``--ctx-checkpoints 0`` / ``--cache-ram 0`` block keys off.
@@ -409,6 +430,113 @@ def test_wsl_is_a_linux_host_for_the_pin(monkeypatch, tmp_path):
     assert llama_cpp.sys.platform == "linux"
     assert cmd.count(_PIN) == 1
     assert "--ctx-checkpoints" not in cmd
+
+
+@pytest.mark.parametrize("spelling", ["--no-mmproj-offload", "--no_mmproj_offload"])
+@pytest.mark.parametrize("os_key, accel", GPU_MATRIX)
+def test_a_hand_pinned_projector_is_charged_no_vram_either(
+    monkeypatch, tmp_path, os_key, accel, spelling
+):
+    """A user who pins by hand must get the same placement Auto's pin gets.
+
+    The projector is on the CPU in both cases and takes 0 GPU bytes in both, so
+    the planner must reach the same verdict: every layer resident,
+    ``-ngl -1 --fit off``. Charging the bytes anyway made the explicit request
+    strictly worse than the automatic one on the identical argv -- the model
+    fits, and Studio declined to say so.
+    """
+    _apply_os(monkeypatch, os_key)
+    (tmp_path / "auto").mkdir()
+    (tmp_path / "hand").mkdir()
+    auto, gguf_a = _accel_backend(
+        monkeypatch, tmp_path / "auto", accel, memory = _TIGHT_MEMORY,
+        model_bytes = _TIGHT_MODEL_BYTES,
+    )
+    hand, gguf_h = _accel_backend(
+        monkeypatch, tmp_path / "hand", accel, memory = _TIGHT_MEMORY,
+        model_bytes = _TIGHT_MODEL_BYTES,
+    )
+
+    auto_cmd = _launch(auto, gguf_a, is_vision = True)["cmd"]
+    hand_cmd = _launch(hand, gguf_h, is_vision = True, extra_args = [spelling])["cmd"]
+
+    # The premise: Auto pins this exact model on this exact card.
+    assert auto_cmd.count(_PIN) == 1
+    assert auto_cmd[auto_cmd.index("--fit") + 1] == "off"
+
+    assert hand_cmd[hand_cmd.index("--fit") + 1] == "off"
+    assert hand_cmd[hand_cmd.index("-ngl") + 1] == "-1"
+    # And still exactly one placement token, the user's own.
+    assert [a for a in hand_cmd if a.replace("_", "-") in ("--mmproj-offload", _PIN)] == [spelling]
+    assert hand.vision_on_cpu is True
+
+
+def test_a_virtualised_metal_device_still_outranks_a_user_gpu_request(monkeypatch, tmp_path):
+    """The one case where Studio must race the user and win.
+
+    A paravirtual Apple GPU returns corrupt output, so ``--mmproj-offload`` in
+    the advanced arguments is a request Studio cannot honour: it appends its own
+    pin after the extras and llama.cpp takes the last one. The
+    hand-pin suppression above must not have opened a hole here.
+    """
+    _apply_os(monkeypatch, "macos")
+    backend, gguf = _accel_backend(monkeypatch, tmp_path, "metal", memory = [])
+    monkeypatch.setattr(llama_cpp, "_metal_device_is_paravirtual", lambda: True)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_no_mmproj_offload": True,
+    }
+
+    cmd = _launch(backend, gguf, is_vision = True, extra_args = ["--mmproj-offload"])["cmd"]
+
+    assert cmd.count(_PIN) == 1
+    assert cmd.index(_PIN) > cmd.index("--mmproj-offload")
+    assert backend.vision_on_cpu is True
+
+
+@pytest.mark.parametrize("os_key, accel", GPU_MATRIX)
+def test_a_build_without_the_flag_keeps_the_projector_on_the_gpu(
+    monkeypatch, tmp_path, os_key, accel
+):
+    """Graceful degradation, not an unknown argument.
+
+    ``--no-mmproj-offload`` is b5178, so a conclusive probe that does not list it
+    means a build genuinely too old. Emitting it anyway would make llama-server
+    exit on an unrecognised flag, which is a worse outcome than the spill the pin
+    was avoiding.
+    """
+    _apply_os(monkeypatch, os_key)
+    backend, gguf = _accel_backend(
+        monkeypatch, tmp_path, accel, memory = _TIGHT_MEMORY, model_bytes = _TIGHT_MODEL_BYTES
+    )
+    # A probe that ANSWERED and did not list the flag.
+    backend.probe_server_capabilities = lambda _binary = None: {"supports_metrics": False}
+
+    cmd = _launch(backend, gguf, is_vision = True)["cmd"]
+
+    assert _PIN not in cmd
+    assert "--mmproj" in cmd
+    assert backend.is_vision is True
+    assert backend.vision_on_cpu is False
+
+
+@pytest.mark.parametrize("os_key, accel", GPU_MATRIX)
+def test_an_unanswered_probe_still_pins(monkeypatch, tmp_path, os_key, accel):
+    """A --help probe that failed is not evidence the flag is missing.
+
+    One malformed inherited LLAMA_ARG_* makes the probe exit non-zero and every
+    capability read as absent for the process. Declining the pin there would
+    hand the user a spilled model over a flag every launchable build has.
+    """
+    _apply_os(monkeypatch, os_key)
+    backend, gguf = _accel_backend(
+        monkeypatch, tmp_path, accel, memory = _TIGHT_MEMORY, model_bytes = _TIGHT_MODEL_BYTES
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {"mtp_probe_inconclusive": True}
+
+    cmd = _launch(backend, gguf, is_vision = True)["cmd"]
+
+    assert cmd.count(_PIN) == 1
+    assert backend.vision_on_cpu is True
 
 
 def test_paravirtual_metal_still_pins(monkeypatch, tmp_path):
@@ -541,6 +669,36 @@ def test_multi_gpu_pin_only_ever_buys_full_residency(monkeypatch, tmp_path, pool
 
 
 @pytest.mark.parametrize("pool_key", list(_MULTI_GPU_POOLS))
+def test_the_pin_band_reaches_past_what_the_largest_card_alone_holds(
+    monkeypatch, tmp_path, pool_key
+):
+    """The subset walk is load-bearing, not decoration.
+
+    ``_mm_subsets`` offers the fit 1..N cards, fewest first. If it only ever
+    offered the largest card, the pin would still fire and still buy full
+    residency -- every shape assertion above would pass -- but it would fire on a
+    strictly smaller band of models, and every multi-card user whose model needs
+    two or more cards would silently lose the pin. So compare the band against
+    the same sweep run on a pool holding only that largest card: the multi-card
+    band must reach strictly higher.
+    """
+    pool = _MULTI_GPU_POOLS[pool_key]
+    largest = max(pool, key = lambda g: g[1])
+
+    pooled = [mib for mib, cmd, _b in _sweep(monkeypatch, tmp_path, "nvidia", pool) if _PIN in cmd]
+    alone = [
+        mib for mib, cmd, _b in _sweep(monkeypatch, tmp_path, "nvidia", [largest]) if _PIN in cmd
+    ]
+
+    assert pooled and alone
+    assert max(pooled) > max(alone), (
+        f"{pool_key}: the pin band tops out at {max(pooled)} MiB, the same as the "
+        f"largest card alone ({max(alone)} MiB) -- the extra cards bought nothing, "
+        "so the subset ranking is not being walked"
+    )
+
+
+@pytest.mark.parametrize("pool_key", list(_MULTI_GPU_POOLS))
 def test_multi_gpu_pin_window_is_contiguous_and_bounded(monkeypatch, tmp_path, pool_key):
     """The pin band sits between "fits with the projector" and "fits neither way".
 
@@ -614,6 +772,31 @@ def test_multi_gpu_no_pin_when_the_pool_cannot_hold_it_either_way(
 # --------------------------------------------------------------------------
 # The four emitters
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "argv, holds_vram",
+    [
+        (["--mmproj", "/mm.gguf"], True),
+        (["--mmproj", "/mm.gguf", "--mmproj-offload"], True),
+        (["--mmproj", "/mm.gguf", _PIN], False),
+        # Last-wins, both directions.
+        (["--mmproj", "/mm.gguf", _PIN, "--mmproj-offload"], True),
+        (["--mmproj", "/mm.gguf", "--mmproj-offload", _PIN], False),
+        # arg.cpp folds the underscore, so this is the same pin to the child.
+        (["--mmproj", "/mm.gguf", "--no_mmproj_offload"], False),
+    ],
+)
+def test_a_pinned_projector_holds_no_vram_in_the_residency_bookkeeping(argv, holds_vram):
+    """The other half of "a CPU-pinned projector is charged 0 VRAM".
+
+    ``_cmd_has_gpu_companion`` is what tells the residency bookkeeping and the
+    coexistence guard whether a launch keeps VRAM for a companion. It has to read
+    the pin the same way llama.cpp does -- last occurrence wins, underscores
+    folded -- or a pinned projector keeps being counted against a card it is not
+    on.
+    """
+    assert llama_cpp.LlamaCppBackend._cmd_has_gpu_companion(argv) is holds_vram
 
 
 def test_the_cpu_replay_does_not_re_add_a_pin_the_argv_already_carries():
