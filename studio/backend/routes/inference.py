@@ -873,6 +873,17 @@ def _apply_overflow_truncation(
     return True
 
 
+def _apply_measured_overflow_truncation(
+    body: dict,
+    err_text: str,
+    policy: str,
+) -> Optional[int]:
+    before = len(body.get("messages") or [])
+    if not _apply_overflow_truncation(body, err_text, policy):
+        return None
+    return max(0, before - len(body.get("messages") or []))
+
+
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
     _cls = _classify_llama_generation_error(exc)
@@ -22218,13 +22229,15 @@ async def _openai_passthrough_stream_admitted(
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _truncated_messages = 0
+        _context_was_truncated = False
 
         def _apply_passthrough_truncation(err_text: str) -> bool:
-            nonlocal _truncated_messages
-            before = len(body.get("messages") or [])
-            if not _apply_overflow_truncation(body, err_text, _truncate_policy):
+            nonlocal _context_was_truncated, _truncated_messages
+            dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+            if dropped is None:
                 return False
-            _truncated_messages += max(0, before - len(body.get("messages") or []))
+            _context_was_truncated = True
+            _truncated_messages += dropped
             return True
 
         while True:
@@ -22572,7 +22585,7 @@ async def _openai_passthrough_stream_admitted(
                     yield _openai_stream_error_sse(error_payload)
                     return
 
-                if _truncated_messages:
+                if _context_was_truncated:
                     yield _context_truncated_sse_chunk(
                         completion_id,
                         model_name,
@@ -23009,13 +23022,15 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
     _truncated_messages = 0
+    _context_was_truncated = False
 
     def _apply_nonstream_truncation(err_text: str) -> bool:
-        nonlocal _truncated_messages
-        before = len(body.get("messages") or [])
-        if not _apply_overflow_truncation(body, err_text, _truncate_policy):
+        nonlocal _context_was_truncated, _truncated_messages
+        dropped = _apply_measured_overflow_truncation(body, err_text, _truncate_policy)
+        if dropped is None:
             return False
-        _truncated_messages += max(0, before - len(body.get("messages") or []))
+        _context_was_truncated = True
+        _truncated_messages += dropped
         return True
 
     async def _post(body_to_send):
@@ -23150,7 +23165,7 @@ async def _openai_passthrough_non_streaming_upstream(
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
     changed = False
-    if _truncated_messages and isinstance(data, dict):
+    if _context_was_truncated and isinstance(data, dict):
         data["context_truncated"] = {
             "dropped_messages": _truncated_messages,
             "fits": True,

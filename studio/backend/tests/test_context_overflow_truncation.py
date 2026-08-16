@@ -25,6 +25,7 @@ if _BACKEND_DIR not in sys.path:
 from routes.inference import (
     _accumulate_context_truncation,
     _apply_overflow_truncation,
+    _apply_measured_overflow_truncation,
     _clip_long_contents,
     _CLIP_MARKER,
     _context_truncated_sse_chunk,
@@ -458,6 +459,19 @@ def test_apply_overflow_truncation_clips_giant_protected_tool_results():
     for m in body["messages"]:
         if m.get("role") == "tool":
             assert m["tool_call_id"] in surviving_call_ids
+
+
+def test_measured_overflow_truncation_distinguishes_clipping_from_no_change():
+    body = {
+        "messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            *_tool_turn(0, result_chars = 60000),
+        ]
+    }
+
+    assert _apply_measured_overflow_truncation(body, _NICK_ERROR, "truncate_middle") == 0
+    assert _CLIP_MARKER in body["messages"][-1]["content"]
 
 
 def test_clip_long_contents_reaches_target_and_keeps_structure():
