@@ -96,6 +96,8 @@ export const es = {
       export: "Exportar",
       recents: "Recientes",
       noChatsYet: "Aún no hay chats",
+      showMore: "Mostrar más",
+      showLess: "Mostrar menos",
       settings: "Configuración",
       api: "API",
       lightMode: "Modo claro",
@@ -109,6 +111,44 @@ export const es = {
       title: "Página no encontrada",
       description: "{path} no existe.",
       backToChat: "Volver al chat",
+    },
+    selection: {
+      pinProjects: "Fijar proyectos",
+      unpinProjects: "Dejar de fijar proyectos",
+      deleteProjects: "Eliminar proyectos",
+      deleteProjectsTitle: "Eliminar proyectos",
+      deleteProjectsDescription:
+        "¿Eliminar {count} proyectos? Sus chats se eliminan de forma permanente.",
+      deleteProjectsFilesDescription:
+        "La carpeta del espacio de trabajo de cada proyecto se elimina del disco.",
+      countSelected: "{count} seleccionados",
+      pinChats: "Fijar chats",
+      unpinChats: "Dejar de fijar chats",
+      archiveChats: "Archivar chats",
+      markUnread: "Marcar como no leído",
+      deleteChats: "Eliminar chats",
+      deleteTitle: "Eliminar chats",
+      deleteDescription: "¿Eliminar {count} chats? Esta acción no se puede deshacer.",
+      deleteFilesDescription:
+        "Se elimina del disco la carpeta de entorno aislado de cada chat. Los archivos que hayan escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+      deleteFilesLabel: "Eliminar archivos y carpeta de espacio aislado",
+      deleteChatFilesDescription:
+        "La carpeta de espacio aislado propia de este chat se elimina del disco. Los archivos que escribió dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
+    },
+    organize: {
+      sidebarHeading: "Organizar la barra lateral",
+      byProject: "Por proyecto",
+      inOneList: "En una sola lista",
+      sortChatsBy: "Ordenar chats por",
+      sortPinnedBy: "Ordenar fijados por",
+      priority: "Prioridad",
+      lastUpdated: "Última actualización",
+      manualOrder: "Orden manual",
+      moveUp: "Subir",
+      moveDown: "Bajar",
+      organizeChats: "Organizar chats",
+      organizeProjects: "Organizar proyectos",
+      sortPinnedChats: "Ordenar chats fijados",
     },
     dialog: {
       deleteChat: {
@@ -403,6 +443,9 @@ export const es = {
           "Libera la VRAM después de este número de segundos de inactividad. El valor 0 mantiene el modelo cargado; el mínimo es 60.",
         idleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar el modelo",
+        mediaEnable: "Cambiar de modelo de imagen y vídeo según la solicitud",
+        mediaEnableDescription:
+          "Si una solicitud de la API especifica un modelo de imagen o vídeo ya descargado, lo carga antes de generar. Es una opción independiente: la de arriba solo se aplica al modelo de chat. Desactivado por defecto.",
         mediaIdleUnload:
           "Liberar imagen y vídeo automáticamente por inactividad",
         mediaIdleUnloadDescription:
@@ -410,7 +453,7 @@ export const es = {
         mediaIdleSecondsAriaLabel:
           "Segundos de inactividad antes de liberar los modelos de imagen y vídeo",
         mediaIdlePaused:
-          "En pausa mientras «Mantener el modelo en la memoria de la GPU» o «Liberar solo los modelos cargados por la API» esté activado.",
+          "En pausa mientras «Mantener el modelo en la memoria de la GPU» está activado.",
         idleNeedsEnable: "Activa primero «Cambiar de modelo según la solicitud».",
         idleActiveViaEnv:
           "La descarga automática por inactividad está activa mediante la variable de entorno UNSLOTH_MODEL_IDLE_TTL.",
@@ -962,6 +1005,9 @@ export const es = {
       },
     },
     chat: {
+      projectsSection: "Mostrar la sección Proyectos",
+      projectsSectionDescription:
+        "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
       title: "Chat",
       description: "Personaliza cómo funciona el chat en este dispositivo.",
       modelSelection: {
@@ -983,6 +1029,9 @@ export const es = {
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
       },
+      pastedTextThreshold: "Condensar pegados largos",
+      pastedTextThresholdDescription: "El texto pegado más largo que esto se convierte en un adjunto .txt en lugar de llenar el cuadro de mensaje.",
+      pastedTextThresholdOff: "Desactivado",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -1104,6 +1153,9 @@ export const es = {
       confirmBeforeDeleting: "Confirmar antes de eliminar",
       confirmBeforeDeletingDescription:
         "Pide confirmación antes de eliminar un chat. Desactívalo para eliminar los chats al instante.",
+      alwaysDeleteFiles: "Eliminar siempre los archivos",
+      alwaysDeleteFilesDescription:
+        "Al eliminar un chat también se quita del disco su carpeta de entorno aislado. Los archivos que haya escrito dentro de un proyecto permanecen en el espacio de trabajo de ese proyecto.",
       filesSection: "Archivos",
       uploadedFiles: "Archivos subidos",
       uploadedFilesDescription:

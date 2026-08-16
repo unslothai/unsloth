@@ -169,6 +169,10 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
+                # Boundary labels are NOT masked here: unsloth_zoo's
+                # _unsloth_get_batch_samples counts num_items_in_batch off this batch and
+                # already subtracts the N-1 boundary targets, so masking here would deduct
+                # twice on TRL < 0.24 (no pre-masking). The guard runs in the forward.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -211,6 +215,8 @@ def enable_padding_free_metadata(model, trainer):
 
         batch = original_torch_call(examples)
         if seq_lengths:
+            # Labels left alone for the same reason as enable_sample_packing:
+            # num_items_in_batch is counted off this batch.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
@@ -667,6 +673,48 @@ def mask_packed_sequence_boundaries(
     return True
 
 
+def mask_packed_boundary_labels(
+    labels: Optional[torch.Tensor],
+    seq_lengths: Any,
+    *,
+    ignore_index: int = -100,
+) -> Optional[torch.Tensor]:
+    """Same guard as :func:`mask_packed_sequence_boundaries`, but on RAW (unshifted)
+    labels and out-of-place, for fused cross-entropy paths that shift internally.
+
+    The shift maps target slot ``i`` to ``labels[i + 1]``, so masking shift slot
+    ``cumsum - 1`` is exactly masking ``labels[cumsum]``, the first token of each
+    following document.
+
+    Returns ``labels`` unchanged when ``seq_lengths`` is absent or empty, else a NEW
+    tensor; the caller's batch is never mutated. Idempotent, and a no-op on TRL's
+    padding-free collator output (``labels[position_ids == 0] = -100``).
+
+    Contract: ``sum(seq_lengths) <= labels.numel()``. Out-of-range entries (the final
+    cumsum, or malformed lengths) redirect to index 0, which the shift discards and so
+    is never a CE target; this avoids device syncs and data-dependent shapes in the
+    compiled fused-CE path.
+    """
+    if labels is None or not isinstance(labels, torch.Tensor):
+        return labels
+    lengths = _normalize_packed_lengths(seq_lengths, device = labels.device)
+    if lengths is None:
+        return labels
+
+    total_tokens = labels.numel()
+    if total_tokens == 0:
+        return labels
+
+    positions = torch.cumsum(lengths, dim = 0)
+    positions = torch.where(
+        positions < total_tokens,
+        positions,
+        torch.zeros_like(positions),
+    )
+    flat = labels.reshape(-1).index_fill(0, positions, ignore_index)
+    return flat.view(labels.shape)
+
+
 def clear_packed_caches():
     """Release cached masks/metadata to free device memory."""
     _PACKED_INFO_CACHE.clear()
@@ -684,5 +732,6 @@ __all__ = [
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
     "mask_packed_sequence_boundaries",
+    "mask_packed_boundary_labels",
     "clear_packed_caches",
 ]

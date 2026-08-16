@@ -94,6 +94,8 @@ export const ko = {
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
+      showMore: "더 보기",
+      showLess: "간략히 보기",
       settings: "설정",
       api: "API",
       lightMode: "라이트 모드",
@@ -107,6 +109,44 @@ export const ko = {
       title: "페이지를 찾을 수 없습니다",
       description: "{path} 경로가 존재하지 않습니다.",
       backToChat: "채팅으로 돌아가기",
+    },
+    selection: {
+      pinProjects: "프로젝트 고정",
+      unpinProjects: "프로젝트 고정 해제",
+      deleteProjects: "프로젝트 삭제",
+      deleteProjectsTitle: "프로젝트 삭제",
+      deleteProjectsDescription:
+        "프로젝트 {count}개를 삭제할까요? 포함된 채팅이 영구히 삭제됩니다.",
+      deleteProjectsFilesDescription:
+        "각 프로젝트의 작업 공간 폴더가 디스크에서 삭제됩니다.",
+      countSelected: "{count}개 선택됨",
+      pinChats: "채팅 고정",
+      unpinChats: "채팅 고정 해제",
+      archiveChats: "채팅 보관",
+      markUnread: "읽지 않음으로 표시",
+      deleteChats: "채팅 삭제",
+      deleteTitle: "채팅 삭제",
+      deleteDescription: "채팅 {count}개를 삭제할까요? 되돌릴 수 없습니다.",
+      deleteFilesDescription:
+        "각 채팅 전용 샌드박스 폴더가 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
+      deleteFilesLabel: "파일 및 샌드박스 폴더 삭제",
+      deleteChatFilesDescription:
+        "이 채팅 전용 샌드박스 폴더가 디스크에서 제거됩니다. 프로젝트 안에 기록한 파일은 해당 프로젝트 작업 공간에 남습니다.",
+    },
+    organize: {
+      sidebarHeading: "사이드바 정리",
+      byProject: "프로젝트별",
+      inOneList: "하나의 목록으로",
+      sortChatsBy: "채팅 정렬 기준",
+      sortPinnedBy: "고정됨 정렬 기준",
+      priority: "우선순위",
+      lastUpdated: "최근 업데이트",
+      manualOrder: "수동 정렬",
+      moveUp: "위로 이동",
+      moveDown: "아래로 이동",
+      organizeChats: "채팅 정리",
+      organizeProjects: "프로젝트 정리",
+      sortPinnedChats: "고정된 채팅 정렬",
     },
     dialog: {
       deleteChat: {
@@ -391,13 +431,16 @@ export const ko = {
         idleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 모델을 해제하여 VRAM을 확보합니다. 다음 요청 시 다시 불러옵니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         idleSecondsAriaLabel: "유휴 시 자동 해제까지의 시간(초)",
+        mediaEnable: "요청에 따라 이미지·동영상 모델 전환",
+        mediaEnableDescription:
+          "API 요청에 지정된 이미지 또는 동영상 모델이 다운로드되어 있으면 생성 전에 불러옵니다. 위 설정은 채팅 모델에만 적용되는 별개의 설정입니다. 기본값은 꺼짐입니다.",
         mediaIdleUnload: "이미지와 동영상의 유휴 시 자동 해제",
         mediaIdleUnloadDescription:
           "지정한 유휴 시간(초)이 지나면 이미지와 동영상 모델을 해제하여 VRAM을 확보합니다. 별도의 설정입니다. 위 설정은 채팅 모델에만 적용됩니다. 0으로 설정하면 계속 로드된 상태로 유지됩니다. 최소 60초입니다.",
         mediaIdleSecondsAriaLabel:
           "이미지와 동영상의 유휴 시 자동 해제까지의 시간(초)",
         mediaIdlePaused:
-          "‘모델을 GPU 메모리에 유지’ 또는 ‘API가 불러온 모델만 해제’가 켜져 있는 동안 일시 중지됩니다.",
+          "‘모델을 GPU 메모리에 유지’가 켜져 있는 동안 일시 중지됩니다.",
         idleNeedsEnable: "먼저 ‘요청에 따라 모델 전환’을 켜세요.",
         idleActiveViaEnv:
           "유휴 시 자동 해제가 UNSLOTH_MODEL_IDLE_TTL 환경 변수를 통해 활성화되어 있습니다.",
@@ -934,6 +977,9 @@ export const ko = {
       },
     },
     chat: {
+      projectsSection: "프로젝트 섹션 표시",
+      projectsSectionDescription:
+        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {
@@ -955,6 +1001,9 @@ export const ko = {
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
       },
+      pastedTextThreshold: "긴 붙여넣기 압축",
+      pastedTextThresholdDescription: "이 길이를 초과한 붙여넣기 텍스트는 입력창을 채우는 대신 .txt 첨부 파일이 됩니다.",
+      pastedTextThresholdOff: "끄기",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -1073,6 +1122,9 @@ export const ko = {
       confirmBeforeDeleting: "삭제 전 확인",
       confirmBeforeDeletingDescription:
         "채팅을 삭제하기 전에 확인을 요청합니다. 끄면 즉시 삭제합니다.",
+      alwaysDeleteFiles: "항상 파일 삭제",
+      alwaysDeleteFilesDescription:
+        "채팅을 삭제하면 해당 채팅 전용 샌드박스 폴더도 디스크에서 삭제됩니다. 프로젝트 안에서 만든 파일은 해당 프로젝트 작업 공간에 남습니다.",
       filesSection: "파일",
       uploadedFiles: "업로드한 파일",
       uploadedFilesDescription:
