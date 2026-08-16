@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  SHORTCUT_DEFS,
+  bindingFromEvent,
+  formatBindingLabel,
+  formatBindingValue,
+  isAcceptableBinding,
+  isShortcutId,
+  matchesBinding,
+  parseBinding,
+} from "../src/features/settings/lib/keyboard-shortcuts.ts";
+import {
+  findConflicts,
+  resolveAllBindings,
+  resolveBinding,
+} from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
+
+function keyEvent(
+  code: string,
+  mods: Partial<{
+    metaKey: boolean;
+    ctrlKey: boolean;
+    shiftKey: boolean;
+    altKey: boolean;
+  }> = {},
+) {
+  return {
+    code,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    ...mods,
+  };
+}
+
+test("a binding round-trips through serialize and parse", () => {
+  const binding = {
+    code: "KeyO",
+    mod: true,
+    ctrl: false,
+    shift: true,
+    alt: false,
+  };
+  const value = formatBindingValue(binding);
+  assert.equal(value, "Mod+Shift+KeyO");
+  assert.deepEqual(parseBinding(value), binding);
+});
+
+test("parse rejects junk, empties and modifier-only values", () => {
+  assert.equal(parseBinding(null), null);
+  assert.equal(parseBinding(""), null);
+  assert.equal(parseBinding("Mod+ShiftLeft"), null);
+  assert.equal(parseBinding("Hyper+KeyO"), null);
+});
+
+test("every shipped default parses", () => {
+  for (const def of SHORTCUT_DEFS) {
+    if (def.defaultBinding === null) continue;
+    assert.ok(
+      parseBinding(def.defaultBinding),
+      `${def.id} has an unparseable default: ${def.defaultBinding}`,
+    );
+  }
+});
+
+test("matching is exact about modifiers", () => {
+  const binding = parseBinding("Mod+Shift+KeyO");
+  assert.ok(binding);
+  // Non-mac, so Mod is Ctrl.
+  assert.ok(
+    matchesBinding(
+      binding,
+      keyEvent("KeyO", { ctrlKey: true, shiftKey: true }),
+      false,
+    ),
+  );
+  // Missing Shift, extra Alt, and wrong key must all miss.
+  assert.equal(
+    matchesBinding(binding, keyEvent("KeyO", { ctrlKey: true }), false),
+    false,
+  );
+  assert.equal(
+    matchesBinding(
+      binding,
+      keyEvent("KeyO", { ctrlKey: true, shiftKey: true, altKey: true }),
+      false,
+    ),
+    false,
+  );
+  assert.equal(
+    matchesBinding(
+      binding,
+      keyEvent("KeyP", { ctrlKey: true, shiftKey: true }),
+      false,
+    ),
+    false,
+  );
+});
+
+test("off-platform Meta does not satisfy a Mod binding", () => {
+  const binding = parseBinding("Mod+KeyB");
+  assert.ok(binding);
+  // Windows key held instead of Ctrl, on a non-mac platform.
+  assert.equal(
+    matchesBinding(binding, keyEvent("KeyB", { metaKey: true }), false),
+    false,
+  );
+});
+
+test("on macOS Mod is Cmd, and a bare Ctrl is not a substitute", () => {
+  const binding = parseBinding("Mod+KeyB");
+  assert.ok(binding);
+  assert.ok(matchesBinding(binding, keyEvent("KeyB", { metaKey: true }), true));
+  assert.equal(
+    matchesBinding(binding, keyEvent("KeyB", { ctrlKey: true }), true),
+    false,
+  );
+  // Ctrl is bindable in its own right on macOS.
+  const ctrlBinding = parseBinding("Ctrl+KeyB");
+  assert.ok(ctrlBinding);
+  assert.ok(
+    matchesBinding(ctrlBinding, keyEvent("KeyB", { ctrlKey: true }), true),
+  );
+});
+
+test("recording a chord ignores a lone modifier", () => {
+  assert.equal(
+    bindingFromEvent(keyEvent("ShiftLeft", { shiftKey: true }), false),
+    null,
+  );
+  const binding = bindingFromEvent(keyEvent("KeyK", { ctrlKey: true }), false);
+  assert.ok(binding);
+  assert.equal(formatBindingValue(binding), "Mod+KeyK");
+  // The same physical chord on macOS is Cmd, not Ctrl.
+  const macBinding = bindingFromEvent(
+    keyEvent("KeyK", { metaKey: true }),
+    true,
+  );
+  assert.ok(macBinding);
+  assert.equal(formatBindingValue(macBinding), "Mod+KeyK");
+});
+
+test("a bare letter is refused but function keys stand alone", () => {
+  assert.equal(
+    isAcceptableBinding({
+      code: "KeyK",
+      mod: false,
+      ctrl: false,
+      shift: false,
+      alt: false,
+    }),
+    false,
+  );
+  assert.ok(
+    isAcceptableBinding({
+      code: "F5",
+      mod: false,
+      ctrl: false,
+      shift: false,
+      alt: false,
+    }),
+  );
+});
+
+test("labels use each platform's own modifier notation", () => {
+  const binding = parseBinding("Mod+Shift+KeyO");
+  assert.ok(binding);
+  assert.equal(formatBindingLabel(binding, true), "⇧⌘O");
+  assert.equal(formatBindingLabel(binding, false), "Ctrl+Shift+O");
+  const comma = parseBinding("Mod+Comma");
+  assert.ok(comma);
+  assert.equal(formatBindingLabel(comma, true), "⌘,");
+});
+
+test("an override wins, and null means unassigned", () => {
+  assert.equal(resolveBinding({}, "toggleSidebar"), "Mod+KeyB");
+  assert.equal(
+    resolveBinding({ toggleSidebar: "Mod+Alt+KeyB" }, "toggleSidebar"),
+    "Mod+Alt+KeyB",
+  );
+  // Present-but-null is a deliberate clear, not a fallback to the default.
+  assert.equal(resolveBinding({ toggleSidebar: null }, "toggleSidebar"), null);
+});
+
+test("defaults ship without conflicts", () => {
+  assert.equal(findConflicts({}).size, 0);
+  const all = resolveAllBindings({});
+  assert.equal(all.newChat, "Mod+Shift+KeyO");
+});
+
+test("two actions on one chord are both flagged", () => {
+  const conflicts = findConflicts({ toggleSidebar: "Mod+KeyK" });
+  assert.deepEqual(
+    [...conflicts].sort(),
+    ["searchChats", "toggleSidebar"].sort(),
+  );
+});
+
+test("cleared actions never count as conflicting", () => {
+  const conflicts = findConflicts({ toggleSidebar: null, searchChats: null });
+  assert.equal(conflicts.size, 0);
+});
+
+test("ids from an older build are rejected", () => {
+  assert.ok(isShortcutId("newChat"));
+  assert.equal(isShortcutId("someRemovedAction"), false);
+});

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { useEffect, useMemo, useRef } from "react";
+import {
+  type ShortcutId,
+  matchesBinding,
+  parseBinding,
+} from "../lib/keyboard-shortcuts";
+import {
+  resolveBinding,
+  useKeyboardShortcutsStore,
+} from "../stores/keyboard-shortcuts-store";
+
+function isTextEntryFocused(): boolean {
+  if (typeof document === "undefined") return false;
+  const el = document.activeElement as HTMLElement | null;
+  const tag = el?.tagName;
+  return (
+    tag === "INPUT" || tag === "TEXTAREA" || Boolean(el?.isContentEditable)
+  );
+}
+
+export interface UseShortcutOptions {
+  /** Skip registration entirely (route gating, dialogs). Defaults to true. */
+  enabled?: boolean;
+  /**
+   * Ignore the chord while a text field has focus. For chords that would
+   * otherwise steal a keystroke the composer wants.
+   */
+  skipInTextFields?: boolean;
+}
+
+/**
+ * Run `handler` when the user presses whatever chord `id` is currently bound
+ * to. The binding is read from the shortcuts store, so an edit in Settings
+ * takes effect without a reload; an unassigned action registers nothing.
+ */
+export function useShortcut(
+  id: ShortcutId,
+  handler: (event: KeyboardEvent) => void,
+  options: UseShortcutOptions = {},
+): void {
+  const { enabled = true, skipInTextFields = false } = options;
+  const value = useKeyboardShortcutsStore((s) =>
+    resolveBinding(s.overrides, id),
+  );
+  const binding = useMemo(() => parseBinding(value), [value]);
+  // The handler usually closes over fresh props, so keep it in a ref rather
+  // than tearing down and re-adding the listener on every render.
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+
+  useEffect(() => {
+    if (!binding || !enabled) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (!matchesBinding(binding, event)) return;
+      if (skipInTextFields && isTextEntryFocused()) return;
+      event.preventDefault();
+      handlerRef.current(event);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [binding, enabled, skipInTextFields]);
+}

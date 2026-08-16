@@ -22,6 +22,7 @@ import {
   DatabaseSettingIcon,
   Globe02Icon,
   HelpCircleIcon,
+  KeyboardIcon,
   Message01Icon,
   PaintBrush02Icon,
   Search01Icon,
@@ -55,6 +56,7 @@ import { ConnectionsTab } from "./tabs/connections-tab";
 import { DataTab } from "./tabs/data-tab";
 import { DebuggingTab } from "./tabs/debugging-tab";
 import { GeneralTab } from "./tabs/general-tab";
+import { KeyboardShortcutsTab } from "./tabs/keyboard-shortcuts-tab";
 import { ProfileTab } from "./tabs/profile-tab";
 import { ResourcesTab } from "./tabs/resources-tab";
 import { VoiceTab } from "./tabs/voice-tab";
@@ -120,6 +122,11 @@ const TABS: TabDef[] = [
     badgeKey: "common.new",
   },
   {
+    id: "keyboard-shortcuts",
+    labelKey: "settings.tabs.keyboardShortcuts",
+    icon: KeyboardIcon,
+  },
+  {
     id: "debugging",
     labelKey: "settings.tabs.debugging",
     icon: ComputerTerminal01Icon,
@@ -159,6 +166,8 @@ function renderTab(tab: SettingsTab) {
       return <ApiKeysTab />;
     case "agents":
       return <AgentsTab />;
+    case "keyboard-shortcuts":
+      return <KeyboardShortcutsTab />;
     case "debugging":
       return <DebuggingTab />;
     case "about":
@@ -270,6 +279,7 @@ export function SettingsDialog() {
     chat: null,
     voice: null,
     connections: null,
+    "keyboard-shortcuts": null,
     data: null,
     "api-keys": null,
     agents: null,

@@ -14,6 +14,7 @@ export type SettingsTab =
   | "data"
   | "api-keys"
   | "agents"
+  | "keyboard-shortcuts"
   | "debugging"
   | "about";
 
