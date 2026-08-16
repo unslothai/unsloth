@@ -32,8 +32,8 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-/** The message a caller shows, plus the status one has to branch on. A 404 for a
- * project that no longer exists is an answer; a network failure is not. */
+/** The message a caller shows, plus the status one has to branch on: a 404 is an
+ * answer, a network failure is not. */
 export function ragError(status: number, body: unknown): Error & { status: number } {
   return Object.assign(new Error(parseErrorText(status, body)), { status });
 }
@@ -231,29 +231,27 @@ export async function projectHasSources(projectId: string): Promise<boolean> {
   }
 }
 
-/** Fired on every project-source mutation. The composer's documents bar and the
- * project's Sources panel are separate hook instances over the same scope, so
- * without this a file added in one stays invisible to the other. */
+/** Fired on every project-source mutation. The composer's bar and the Sources
+ * panel are separate hooks over one scope, so each has to hear the other. */
 export const PROJECT_SOURCES_CHANGED_EVENT = "unsloth-project-sources-changed";
 /** Earlier name for the same event, so existing listeners keep working. */
 export const PROJECT_SOURCES_UPDATED_EVENT = PROJECT_SOURCES_CHANGED_EVENT;
 
-/** Drop the probe's cached answer, and nothing else. Callers invalidate *before*
- * their own mutation too, where refetching would resurrect a row the panel has
- * already dropped optimistically. */
+/** Drop the probe's cached answer, and nothing else: callers invalidate before
+ * their own mutation too, where a refetch would resurrect a dropped row. */
 export function invalidateProjectSources(projectId: string): void {
   projectSourcesCache.delete(projectId);
 }
 
-/** Invalidate, then tell every mounted list: this tab's other instances, and the
- * other tabs, which a CustomEvent alone never reaches. Call after a mutation. */
+/** Invalidate, then tell every mounted list, in this tab and in the others a
+ * CustomEvent never reaches. Call after a mutation. */
 export function announceProjectSourcesUpdated(projectId: string): void {
   publishProjectSourcesChanged(projectId);
   getProjectChannel()?.postMessage({ kind: "sources", projectId });
 }
 
-/** Run `onUpdated` whenever this project's sources change elsewhere in the app.
- * Returns the unsubscribe, so a component can hand it back from an effect. */
+/** Run `onUpdated` when this project's sources change elsewhere. Returns the
+ * unsubscribe. */
 export function subscribeProjectSourcesUpdated(
   projectId: string,
   onUpdated: () => void,
@@ -279,10 +277,9 @@ function publishProjectSourcesChanged(projectId: string): void {
   );
 }
 
-/** A project's sources are shared by every tab on this origin, and a CustomEvent
- * reaches only the tab that fired it. Without this a second tab keeps listing
- * the sources it saw first, and its cached "no sources" answer stands for the
- * probe's whole TTL. Opened lazily so importing this module starts nothing. */
+/** Every tab on this origin shares a project's sources, and a CustomEvent reaches
+ * only its own tab, so a second tab would list what it saw first for the probe's
+ * whole TTL. Opened lazily, so importing this module starts nothing. */
 let projectChannel: BroadcastChannel | null | undefined;
 
 function getProjectChannel(): BroadcastChannel | null {
@@ -297,8 +294,8 @@ function getProjectChannel(): BroadcastChannel | null {
     return null;
   }
   projectChannel = new BroadcastChannel(PROJECT_SOURCES_CHANGED_EVENT);
-  // Node's BroadcastChannel holds the event loop open, which hangs a test run
-  // that touches this module. Browsers have no unref and need none.
+  // Node's BroadcastChannel holds the event loop open and hangs a test run.
+  // Browsers have no unref and need none.
   (projectChannel as { unref?: () => void }).unref?.();
   projectChannel.onmessage = (event: MessageEvent) => {
     const message = event.data as {
@@ -344,9 +341,8 @@ function getProjectChannel(): BroadcastChannel | null {
   return projectChannel;
 }
 
-/** BroadcastChannel does not replay, so a tab that opens mid-upload hears
- * nothing until the next delta, which for an upload is its completion. Ask on
- * the way in instead, and answer for whatever this tab is running. */
+/** BroadcastChannel does not replay, so a tab opening mid-upload hears nothing
+ * until that upload completes. Ask on the way in instead. */
 function askForWorkInFlight(): void {
   projectChannel?.postMessage({ kind: "work-query" });
 }
@@ -359,9 +355,8 @@ function answerWorkQuery(): void {
   }
 }
 
-/** This tab, so its work is counted apart from every other tab's. Two tabs
- * uploading to one project are two operations, and merging them into a single
- * project-wide count lets the first to finish release the second's gate. */
+/** This tab, so its work is counted apart from every other tab's: merged into one
+ * project-wide count, the first upload to finish would release the second. */
 const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 /** Listeners only hear another tab once the channel is open. */
@@ -398,14 +393,9 @@ export function noteProjectWork(projectId: string, delta: number): void {
   publishProjectWorkChanged(projectId);
 }
 
-/**
- * Renew the deadline the other tabs put on this tab's work. An upload of a
- * large file outlives the deadline with no delta to send in between, and
- * without a renewal the other tab would stop counting it and let a send go out
- * mid-upload. The absolute count is sent rather than a zero delta: a delta
- * cannot revive an entry the receiver has already let lapse, which is exactly
- * the case a suspended timer or a slept laptop produces.
- */
+/** Renew the deadline the other tabs put on this tab's work: a large upload
+ * outlives it with no delta to send in between. The absolute count, not a zero
+ * delta, since a delta cannot revive an entry the receiver has let lapse. */
 const WORK_HEARTBEAT_MS = 45_000;
 let workHeartbeat: ReturnType<typeof setInterval> | null = null;
 
@@ -433,17 +423,12 @@ function publishProjectWorkChanged(projectId: string): void {
   );
 }
 
-/**
- * Work another tab reports, with a deadline. The tab that started it is the
- * only one that can report the end, and it may be closed or reloaded first, so
- * a count taken on its word alone could gate this project for the session. The
- * deadline caps that at a couple of minutes; a job outliving it falls back to
- * the rows the list refresh brings, which is where the gate started.
- */
+/** Work another tab reports, with a deadline: only the tab that started it can
+ * report the end, and it may be closed first. Past the deadline the gate falls
+ * back to the rows the list refresh brings. */
 const REMOTE_WORK_TTL_MS = 120_000;
-/** Per project, per reporting tab. Two tabs uploading to one project are two
- * operations: aggregating them here would let the first to finish clear the
- * count the second is still holding. */
+/** Per project, per reporting tab: aggregated, the first upload to finish would
+ * clear the count the second is still holding. */
 const remoteProjectWork = new Map<
   string,
   Map<string, { count: number; until: number }>
@@ -455,9 +440,8 @@ function armRemoteWorkExpiry(projectId: string): void {
   if (timer !== undefined) {
     clearTimeout(timer);
   }
-  // Re-publish when the deadline passes, so a listener re-reads instead of
-  // holding a count nothing will come back to clear. One timer per project: a
-  // chatty tab renews the deadline, it does not stack another wake-up on it.
+  // Re-publish when the deadline passes, or a listener holds a count nothing
+  // comes back to clear. One timer per project, renewed rather than stacked.
   remoteWorkTimers.set(
     projectId,
     setTimeout(() => {
@@ -503,18 +487,16 @@ function noteRemoteProjectWork(
   delta: number,
 ): void {
   const current = remoteSenderCount(projectId, from);
-  // A zero delta is the heartbeat: it moves this sender's deadline and leaves
-  // its count alone, and says nothing about a sender with nothing running.
+  // A zero delta is the heartbeat: it renews this sender's deadline only, and
+  // says nothing about a sender with nothing running.
   if (delta === 0 && current === 0) return;
   setRemoteProjectWork(projectId, from, Math.max(0, current + delta));
 }
 
-/** An absolute count a tab reports: for work it started before this one was
- * listening, and on every heartbeat after. Recorded against that tab alone:
- * every other tab answers the same query separately, and their deltas are
- * already counted under their own ids. Always renews the deadline, and never
- * lowers a count a delta has raised in the meantime, so a heartbeat both keeps
- * live work counted and revives an entry this tab has already let lapse. */
+/** An absolute count a tab reports, for work it started before this tab was
+ * listening and on every heartbeat after. Recorded against that tab alone, since
+ * the others answer separately. Always renews the deadline and never lowers a
+ * count a delta raised, so a heartbeat also revives a lapsed entry. */
 function seedRemoteProjectWork(
   projectId: string,
   from: string,
@@ -538,11 +520,10 @@ const MAX_FOLDER_JOB_READ_FAILURES = 20;
 
 const watchedFolderJobs = new Set<string>();
 
-/** Count a folder sync as work on its project until the backend job ends.
- * Tied to the job rather than to whoever started it: leaving the Sources tab
- * aborts that component's event stream but not the job, and the composer has to
- * stay gated until the sources it is adding are actually in. Bounded, so a job
- * that never reports a terminal state cannot gate a project for the session. */
+/** Count a folder sync as work on its project until the backend job ends. Tied
+ * to the job, not its starter: leaving the Sources tab aborts that component's
+ * stream but not the sync. Bounded, so a job that never reports a terminal state
+ * cannot gate a project for the session. */
 export function watchProjectFolderJob(projectId: string, jobId: string): void {
   if (watchedFolderJobs.has(jobId)) {
     return;
@@ -550,10 +531,8 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
   watchedFolderJobs.add(jobId);
   noteProjectWork(projectId, 1);
   void (async () => {
-    // A read that fails is not a job that ended: a backend restart answers a
-    // tick or two while the sync runs on. Give up only once the reads stop
-    // coming back at all, or the project is released with sources still
-    // indexing and the composer becomes sendable through them.
+    // A read that fails is not a job that ended: a backend restart misses a
+    // tick or two while the sync runs on. Give up only once they stop coming.
     let consecutiveFailures = 0;
     try {
       for (let attempt = 0; attempt < 600; attempt += 1) {
@@ -565,9 +544,7 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
           }
         } catch (error) {
           // An answered 4xx is the job being gone, not a read that failed:
-          // unlinking a folder deletes its job rows, and so does the history
-          // prune. Waiting out the retries there gates the composer for a
-          // minute on a job that already ended.
+          // unlinking deletes its job rows, and so does the history prune.
           if (isRagClientError(error)) break;
           consecutiveFailures += 1;
           if (consecutiveFailures >= MAX_FOLDER_JOB_READ_FAILURES) {
@@ -587,10 +564,9 @@ export function watchProjectFolderJob(projectId: string, jobId: string): void {
   })();
 }
 
-/** When a project may be looked at again. Two bars mount on the same project at
- * once, so a bare per-call lookup would double every open; a permanent marker
- * would instead miss every job the backend starts later, and it starts one per
- * auto-syncing folder on a timer. */
+/** When a project may be looked at again: a bare per-call lookup doubles every
+ * open (two bars mount at once), and a permanent one misses every job the
+ * backend's timer starts later. */
 const folderReconcileNotBefore = new Map<string, number>();
 
 /** Shorter than the backend's own scan interval, so a periodic caller is never
@@ -611,9 +587,8 @@ export async function reconcileProjectFolderJobs(
   const now = Date.now();
   if ((folderReconcileNotBefore.get(projectId) ?? 0) > now) return;
   folderReconcileNotBefore.set(projectId, now + FOLDER_RECONCILE_MIN_GAP_MS);
-  // Every look, not just the first: the backend starts a job per auto-syncing
-  // folder on its own timer, and one scans before it writes any row, so a list
-  // the composer already has does not prove there is nothing to wait for.
+  // Every look, not just the first: a scan writes no row until it is underway,
+  // so the list the composer already has proves nothing.
   noteProjectWork(projectId, 1);
   try {
     const folders = await listLinkedFolders({ type: "project", id: projectId });
@@ -627,8 +602,7 @@ export async function reconcileProjectFolderJobs(
     // recording a project as reconciled on an answer that never came.
     folderReconcileNotBefore.delete(projectId);
   } finally {
-    // After the watchers above, which take their own leases, so the two overlap
-    // rather than leaving a gap.
+    // After the watchers above, which take their own leases, so the two overlap.
     noteProjectWork(projectId, -1);
   }
 }

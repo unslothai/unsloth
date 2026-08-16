@@ -2,12 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A project source mutation invalidates before and after itself, and each
-// invalidation starts a list request. Those can complete out of order, and an
-// earlier one landing last would put the pre-mutation list back: the composer's
-// bar would show no sources and, worse, report nothing indexing, so a send could
-// go out before the file it is meant to use finished indexing.
-//
-// This pins the latest-request rule useRagDocuments.refresh applies.
+// invalidation starts a list request that can complete out of order. An earlier
+// one landing last restores the pre-mutation list and reports nothing indexing,
+// so a send goes out before the file it needs is in. This pins the
+// latest-request rule useRagDocuments.refresh applies.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -91,10 +89,9 @@ test("a lone refresh still publishes", async () => {
   assert.deepEqual(published, [INDEXING]);
 });
 
-// Leaving a project for a chat with no project clears the scope, and a cleared
-// scope issues no replacement request. Without a ticket taken on the way out,
-// the project's own response lands afterwards and puts its sources back, in a
-// chat that is not in that project.
+// Leaving a project clears the scope and issues no replacement request, so
+// without a ticket taken on the way out the project's own response lands
+// afterwards and puts its sources back in a chat that is not in it.
 test("a response for a scope that has been cleared does not publish", async () => {
   const published: Row[][] = [];
   const refresh = makeRefresher(published);
@@ -123,9 +120,8 @@ test("the scope-change effect takes a ticket on the way out", () => {
   );
 });
 
-// A superseded request's failure describes a scope that is no longer shown, and
-// a host where the vector extension cannot load answers 503 to every project
-// source request: neither is worth a toast per composer opened.
+// A superseded failure describes a scope no longer shown, and a host without the
+// vector extension 503s every one of these: no toast per composer opened.
 test("a failure is only reported for the request still being awaited", () => {
   const source = readFileSync(
     new URL(
@@ -140,10 +136,9 @@ test("a failure is only reported for the request still being awaited", () => {
   );
 });
 
-// The composer mounts a project scope for every project chat, so a host that
-// cannot run RAG would issue and fail one request per chat opened. The check is
-// on projectId itself, not just the hook's scope, so the attach controls and the
-// target menu go with it rather than offering an upload that can only 503.
+// The composer mounts a project scope per project chat, so a host without RAG
+// would fail one request per chat opened. Checked on projectId itself, so the
+// attach controls and target menu go with it rather than offering a certain 503.
 test("no project scope is opened where RAG cannot run", () => {
   const source = readFileSync(
     new URL(
@@ -159,11 +154,10 @@ test("no project scope is opened where RAG cannot run", () => {
   assert.match(source, /projectId \? \{ type: "project", projectId \} : null/);
 });
 
-// A project's sources change from the Sources panel as well as the composer:
-// an upload the panel invalidates before as well as after, and a folder sync
-// that only reports at start and completion. The composer holds no row for
-// either while it runs, so re-listing alone left it reporting nothing indexing,
-// and a send could go out that those sources could not reach.
+// A project's sources also change from the Sources panel: an upload invalidated
+// before and after, and a folder sync reporting at start and completion only.
+// The composer holds no row for either while it runs, so re-listing alone left
+// it reporting nothing indexing and a send could go out without them.
 test("work in the other instance counts as indexing", () => {
   const inFlight = new Map<string, number>();
   const note = (projectId: string, delta: number) => {
@@ -237,9 +231,8 @@ test("the composer reads indexing from the hooks, not the listed rows", () => {
 });
 
 // A list slower than the poll interval used to retire itself: each tick took a
-// newer ticket before the previous response landed, so every response was
-// dropped. The row being watched never reached completed and a queued send
-// waited on it forever.
+// newer ticket before the previous response landed, so nothing ever published
+// and the row being watched never reached completed.
 test("a poll tick is skipped while one is still out", () => {
   let inFlight = false;
   let started = 0;
@@ -313,9 +306,8 @@ test("an invalidation crosses tabs", () => {
   assert.match(hook, /subscribeProjectSourcesBroadcast\(\);/);
 });
 
-// The tab that started the work is the only one that can report it finished,
-// and it may be closed or reloaded first. A count taken on its word alone would
-// gate the project for the session, so what it reports lapses.
+// Only the tab that started the work can report it finished, and it may be
+// closed first, so what it reports lapses rather than gating for the session.
 test("work reported by another tab lapses", () => {
   const api = readFileSync(
     new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
@@ -392,9 +384,8 @@ test("overlapping remote work is counted, not flagged", () => {
   assert.equal(remote.has("proj-1"), false);
 });
 
-// The composer says the source is gone the moment it is clicked, but it is
-// still there until the DELETE returns, and the sources probe is only
-// invalidated after that.
+// The composer says the source is gone on click, but it is there until the
+// DELETE returns, and the probe is invalidated only after that.
 test("a project delete is work on the project", () => {
   const hook = readFileSync(
     new URL(
@@ -423,10 +414,9 @@ test("the newest request owns the loading flag", () => {
   );
 });
 
-// The mutation releases its own work lease when its POST returns, and the
-// invalidation it fires afterwards triggers a quiet refresh, which takes no
-// loading gate. Between the two the composer would report nothing indexing
-// while the rows it is about to receive are still being indexed.
+// The mutation releases its lease when its POST returns, and the invalidation it
+// fires afterwards triggers a quiet refresh, which takes no loading gate: between
+// the two the composer would report nothing indexing.
 test("the refresh an invalidation triggers is counted as work", () => {
   const hook = readFileSync(
     new URL(
@@ -447,9 +437,8 @@ test("the refresh an invalidation triggers is counted as work", () => {
   );
 });
 
-// One failed read is not a finished job. A backend restart answers a tick or
-// two while the durable sync runs on, and releasing there lets the composer
-// send through sources that are still indexing.
+// One failed read is not a finished job: a backend restart misses a tick or two
+// while the durable sync runs on.
 test("a folder job watcher rides out a failed read", () => {
   const api = readFileSync(
     new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
@@ -788,8 +777,7 @@ test("a project composer picks up a folder sync already running", () => {
 });
 
 // Unlinking a folder deletes its job rows, and so does the history prune, so a
-// detached watcher can be left polling a job id that will never answer again.
-// Riding that out holds the project gate for the whole retry budget.
+// detached watcher can poll a job id that will never answer again.
 test("a folder job watcher stops on an answered 4xx", () => {
   const api = readFileSync(
     new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
@@ -815,10 +803,8 @@ test("a folder job watcher stops on an answered 4xx", () => {
   assert.equal(run(false), retryBudget - 1, "a network failure still rides out");
 });
 
-// A queued prompt waiting on a project source outlives the bar that watched it.
-// isIndexing() only answers while that bar is mounted and current, and project
-// sources are retrieved whatever the Docs pill says, so the queue has to ask
-// for the project itself rather than reading the thread scope alone.
+// A queued prompt outlives the bar that watched it, and isIndexing() answers only
+// while that bar is mounted, so the queue has to ask for the project itself.
 test("a background prompt queue checks the project it will send to", () => {
   const thread = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
@@ -841,10 +827,8 @@ test("a background prompt queue checks the project it will send to", () => {
   );
 });
 
-// A queue started in a chat that has no row yet cannot look its project up: the row is
-// not there, and the store holds whichever project is on screen when the poll lands,
-// which is not this one once the user navigates away. Without the project the poll
-// dispatches the prompt while a project source is still indexing.
+// A queue in a chat with no row yet cannot look its project up: the row is not
+// there, and the store holds whichever project is on screen when the poll lands.
 test("a queue in a chat with no row still waits on its project", () => {
   const src = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
@@ -866,9 +850,9 @@ test("a queue in a chat with no row still waits on its project", () => {
   assert.match(src, /if \(threadId && item\.target\.usesThreadDocuments\) \{/);
 });
 
-// Unlinking a folder deletes its rows whatever this hook is showing by the time the
-// DELETE returns, so an announcement gated on the scope still being current leaves
-// every other composer, and every other tab, listing files that are gone.
+// Unlinking deletes the rows whatever this hook shows by the time the DELETE
+// returns, so an announcement gated on the current scope leaves every other
+// composer, and every other tab, listing files that are gone.
 test("unlinking a folder announces for the project it was for", () => {
   const hook = readFileSync(
     new URL(
@@ -885,10 +869,9 @@ test("unlinking a folder announces for the project it was for", () => {
   );
 });
 
-// A failed read of the chat's own row is not proof that the chat has no project.
-// Recording one as the answer files the next attachment into the chat instead of
-// the project, and nothing re-runs the lookup until the chat or the open project
-// changes.
+// A failed read of the chat's own row is not proof it has no project: recording
+// one files the next attachment into the chat, and nothing re-runs the lookup
+// until the chat or the open project changes.
 test("a failed project lookup leaves the scope unresolved", () => {
   const bar = readFileSync(
     new URL(
@@ -912,9 +895,8 @@ test("a failed project lookup leaves the scope unresolved", () => {
   assert.match(bar, /uploading \|\| projectUploading \|\| projectUnresolved/);
 });
 
-// A row the probe could not read is not a chat with no project. Answering null
-// there reports indexing as finished and dispatches the queued prompt, bypassing
-// the retry the surrounding catch exists for.
+// A row the probe could not read is not a chat with no project: answering null
+// dispatches the queued prompt and bypasses the retry the catch exists for.
 test("a failed row read holds a queued prompt instead of releasing it", () => {
   const adapter = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -942,9 +924,8 @@ test("a failed row read holds a queued prompt instead of releasing it", () => {
   );
 });
 
-// A knowledge base replaces every other scope in the adapter's rag_scope, project
-// sources included, so a queue scoped to one cannot be affected by a project
-// upload or a folder sync and must not wait for either.
+// A knowledge base replaces every other scope in rag_scope, so a queue scoped to
+// one cannot be affected by a project upload or a folder sync.
 test("a knowledge-base queue does not wait on project sources", () => {
   const thread = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
@@ -972,10 +953,9 @@ test("a knowledge-base queue does not wait on project sources", () => {
   );
 });
 
-// A retry sleeps for a second or more, and the closure it resumes into still
-// holds the lister and the ticket of the project it started for. Retrying after
-// the user has moved on publishes that project's documents into the composer
-// showing another one, chips, remove actions and all.
+// A retry sleeps for a second or more and resumes into a closure holding the
+// lister of the project it started for, so after the user moves on it publishes
+// that project's documents into the composer showing another one.
 test("a retry stops when the scope it started for is gone", () => {
   const hook = readFileSync(
     new URL(

@@ -1773,9 +1773,9 @@ async function resolveChatInstructions(
 }
 
 // A run resolves the project separately for the sandbox, the RAG scope and the
-// instructions. While a fresh thread's row is still being written they all take
-// the composer fallback, so it is answered once per thread and reused, or
-// navigation between those calls could mix two projects into one request.
+// instructions, and while a fresh thread's row is still being written they all
+// take the composer fallback. Answered once per thread and reused, or a
+// navigation between those calls mixes two projects into one request.
 const composerProjectByPendingThread = new Map<string, string | null>();
 
 /** The project the run started in, kept for the whole run. Only the first send
@@ -1795,14 +1795,12 @@ function rememberComposerProjectForRun(
 export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
-  // A caller that gates on the answer (the prompt queue's indexing probe) has to
-  // tell "no project" from "could not read the row": the first is a reason to
-  // send, the second is a reason to wait and ask again.
+  // A caller that gates on the answer (the queue's indexing probe) has to tell
+  // "no project" from "could not read the row": one sends, the other waits.
   opts?: { rethrowReadFailure?: boolean },
 ): Promise<string | null> {
-  // Read before the await: a send survives navigation, so consulting the store
-  // after the lookup could hand this request whichever project the user moved
-  // to in the meantime.
+  // Read before the await: a send survives navigation, so a store read after the
+  // lookup could hand this request the project the user moved to.
   const composerProjectId = useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
     let thread: ThreadRecord | undefined;
@@ -1819,9 +1817,8 @@ export async function resolveProjectId(
       return thread.projectId ?? null;
     }
     // No row yet: initialize() does not await the write, so a fresh chat's first
-    // send can read ahead of its own row and drop the project's sources,
-    // instructions and sandbox. Fall back to the composer's project. An incognito
-    // thread is never persisted, so its missing row is the real answer.
+    // send can read ahead of it and drop the project's sources, instructions and
+    // sandbox. An incognito thread is never persisted, so its miss is the answer.
     if (isThreadIncognito(threadId)) {
       return null;
     }
@@ -1829,10 +1826,9 @@ export async function resolveProjectId(
     if (pending !== undefined) {
       return pending;
     }
-    // Deliberately not recorded here. The send records it, and this function is
-    // also called off a run (the prompt queue's indexing probe, the token-count
-    // extras), where the store holds whichever project is on screen now: a poll
-    // landing mid-navigation would otherwise pin the run to the wrong project.
+    // Not recorded here: the send records it, and this also runs off a run (the
+    // queue probe, the token-count extras), where a poll landing mid-navigation
+    // would pin the run to whichever project is on screen.
   }
   return composerProjectId ?? null;
 }
@@ -3576,10 +3572,9 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
-      // Before the first await: hydration and a model load both run before the
-      // first resolveProjectId, and a send survives navigation, so reading the
-      // composer's project later can hand this run the project the user moved
-      // to. Only consulted while the thread's own row is still missing.
+      // Before the first await: hydration and a model load both run ahead of the
+      // first resolveProjectId, and a send survives navigation. Only consulted
+      // while the thread's own row is still missing.
       const composerProjectIdAtSend =
         useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();

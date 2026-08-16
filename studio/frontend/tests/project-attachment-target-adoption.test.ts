@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The attach target can be chosen before the chat exists, so it is parked under
-// a pending key until one does. A chat is created by sending a message just as
-// often as by attaching a file, and only the second path went through
-// ensureThreadId: the choice was dropped, and the next new chat inherited it.
+// The attach target can be chosen before the chat exists, so it is parked under a
+// pending key. A chat is created by sending as often as by attaching, and only the
+// attach path went through ensureThreadId: the choice was dropped and inherited.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -151,10 +150,9 @@ test("the run keeps the project it started in", () => {
   );
 });
 
-// A composer abandoned while its chat is materializing has its own pending
-// entry dropped by its cleanup. The next composer's choice lands under the same
-// key, and the abandoned promise resolving would hand that to the dead chat and
-// delete it, leaving the live composer on the default.
+// A composer abandoned mid-materialization has its own pending entry dropped by
+// its cleanup, and the next composer's lands under the same key: the abandoned
+// promise resolving would hand that to the dead chat and delete it.
 test("an abandoned composer cannot consume the next composer's choice", () => {
   let claim = 0;
   let byThread: Record<string, Target> = {};

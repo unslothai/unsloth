@@ -54,10 +54,9 @@ export function useLinkedFolders(
   const folderSnapshot = useRef<LinkedFolder[] | null>(null);
   const notifiedJobs = useRef(new Set<string>());
 
-  // The backend creates and starts the job before it answers, so the window
-  // between the request going out and trackJob registering it is time the
-  // project is being changed with nothing gating on it. trackJob takes its own
-  // lease inside this one, so the two overlap rather than leaving a gap.
+  // The backend starts the job before it answers, so the window before trackJob
+  // registers it is the project changing with nothing gating on it. trackJob
+  // takes its own lease inside this one, so the two overlap.
   const projectWorkScopeId = scopeType === "project" ? scopeId : null;
   const withProjectWork = useCallback(
     async <T>(run: () => Promise<T>): Promise<T> => {
@@ -93,9 +92,8 @@ export function useLinkedFolders(
   const trackJob = useCallback(
     (initial: FolderSyncJob) => {
       if (controllers.current.has(initial.id)) return;
-      // A sync only reports at start and completion, and the rows it creates
-      // appear as it goes, so the project composer has nothing to gate on for
-      // the length of the job. Counting it follows the job, not this component:
+      // A sync reports at start and completion only, so the composer has nothing
+      // to gate on in between. The count follows the job, not this component:
       // leaving the Sources tab aborts the stream below but not the sync.
       if (scopeType === "project" && scopeId) {
         watchProjectFolderJob(scopeId, initial.id);
@@ -311,10 +309,9 @@ export function useLinkedFolders(
     async (folderId: string, mode: "sync" | "rebuild") => {
       const operationScopeKey = scopeKey;
       try {
-        // Watched inside the request's lease, and before the scope guard: the
-        // job runs on the project it was started for whether or not this hook
-        // still shows it, and returning without a watcher would drop that
-        // project's count to zero with the sync still going. Deduped, so
+        // Inside the request's lease and before the scope guard: the job runs on
+        // the project it started for whatever this hook shows, and returning
+        // without a watcher drops that count to zero mid-sync. Deduped, so
         // trackJob's own call is a no-op.
         const { job } = await withProjectWork(async () => {
           const started =
@@ -355,9 +352,9 @@ export function useLinkedFolders(
       const unlinkedProjectId = projectWorkScopeId;
       try {
         await withProjectWork(() => deleteLinkedFolder(folderId, removeIndex));
-        // The rows are gone whatever this hook is showing by now, and every
-        // other composer on that project is still listing them. Announce for
-        // the project the unlink was for, not for the scope on screen.
+        // The rows are gone whatever this hook shows by now, and every other
+        // composer on that project still lists them. Announce for the project
+        // the unlink was for, not for the scope on screen.
         if (unlinkedProjectId) announceProjectSourcesUpdated(unlinkedProjectId);
         if (currentScopeKey.current !== operationScopeKey) return;
         onSourcesChanged?.();

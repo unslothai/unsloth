@@ -502,12 +502,10 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
     if (item.target.usesKnowledgeBase) {
       return false;
     }
-    // The chat's project sources are retrieved whatever the Docs pill says
-    // (chat-adapter's rag_scope), and isIndexing() above only answers while the
-    // bar that watches them is mounted and current. A queue waiting in the
-    // background has neither, so ask for the project directly. A chat still
-    // waiting for its own row has no project to resolve, so the queue falls
-    // back to the one it was started in.
+    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
+    // rag_scope), and isIndexing() above only answers while the bar that watches
+    // them is mounted, which a background queue has not. So ask directly, and
+    // for a chat with no row yet use the project the queue was started in.
     // Rethrowing: a row this probe could not read is not a chat with no project,
     // and the catch below is what holds the prompt and asks again.
     const projectId = threadId
@@ -523,9 +521,8 @@ async function targetHasIndexingDocuments(item: PromptQueueItem) {
       const projectDocuments = await listProjectDocuments(projectId);
       return projectDocuments.some(indexingDocument);
     } catch (error) {
-      // A project the server will not list is not a project this send can wait
-      // for: a deleted project, or a server that predates the route. The retry
-      // below would hold the prompt for the rest of the session.
+      // A project the server will not list (deleted, or a server predating the
+      // route) is not one to wait for: the retry below never ends.
       if (isRagClientError(error)) {
         return false;
       }
@@ -2868,9 +2865,8 @@ const Composer: FC<{
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
-    // A chat whose row does not exist yet has no project to look up, and the
-    // store holds whichever project is on screen when the queue polls, which is
-    // not this one after the user navigates away. Read it here instead.
+    // A chat with no row yet has no project to look up, and the store holds
+    // whichever project is on screen when the queue polls. Read it here.
     const projectIdAtQueueStart = incognitoAtQueueStart
       ? null
       : (chatStateAtQueueStart.activeProjectId ?? null);

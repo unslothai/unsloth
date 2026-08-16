@@ -106,11 +106,10 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
-  // Refreshes are fired from several places at once (a mutation invalidates
-  // before and after, the poll ticks, the scope changes). Two list requests can
-  // complete out of order, so only the newest is allowed to publish: an earlier
-  // one landing last would put the pre-mutation list back and, with it, drop the
-  // indexing state the composer gates sends on.
+  // Refreshes fire from several places at once (a mutation invalidates before
+  // and after, the poll ticks, the scope changes) and can complete out of order,
+  // so only the newest publishes: an earlier one landing last would restore the
+  // pre-mutation list and drop the indexing state sends are gated on.
   const refreshSeq = useRef(0);
   const refreshInFlight = useRef(false);
 
@@ -262,9 +261,8 @@ export function useRagDocuments(
         });
         return true;
       } catch (err) {
-        // A superseded request's failure describes a scope that is no longer
-        // shown, and a host where RAG cannot run answers 503 to every one of
-        // these: neither is worth a toast per composer opened.
+        // A superseded failure describes a scope no longer shown, and a host
+        // without RAG 503s every one of these: no toast per composer opened.
         if (refreshSeq.current !== requestId) return true;
         if (
           !opts?.silentErrors &&
@@ -276,9 +274,8 @@ export function useRagDocuments(
         }
         return false;
       } finally {
-        // Whoever is newest clears it. A superseded request clearing it would
-        // report the list as known while the one that will publish is still
-        // out, and the composer gates sends on that.
+        // The newest clears it: a superseded request would report the list as
+        // known while the one that will publish is still out.
         if (refreshSeq.current === requestId) {
           refreshInFlight.current = false;
           setLoading(false);
@@ -288,10 +285,9 @@ export function useRagDocuments(
     [scopeKey, lister],
   );
 
-  // Retry a project list that came back empty because the request failed. One
-  // failed read leaves the composer with no rows, nothing indexing and nothing
-  // polling, while the source it is missing is still being chunked. Counted as
-  // work throughout, so a send waits for the answer rather than for the toast.
+  // Retry a project list whose request failed: one failed read leaves the
+  // composer with no rows, nothing indexing and nothing polling while a source
+  // is still being chunked. Counted as work, so a send waits for the answer.
   const loadProjectSources = useCallback(
     async (projectId: string, opts?: { quiet?: boolean }) => {
       const startedFor = `project:${projectId}`;
@@ -306,10 +302,9 @@ export function useRagDocuments(
           await new Promise((resolve) =>
             setTimeout(resolve, 1000 * (attempt + 1)),
           );
-          // This closure keeps the lister and the ticket of the scope it started
-          // for. Retrying after the user has moved on would take a ticket behind
-          // the new scope's request and publish this project's documents into
-          // the composer showing another one.
+          // This closure keeps the lister of the scope it started for, so a
+          // retry after the user moves on would take a ticket behind the new
+          // scope's request and publish into the composer showing it.
           if (liveScopeKeyRef.current !== startedFor) return;
         }
       } finally {
@@ -430,11 +425,9 @@ export function useRagDocuments(
       const changed = (event as CustomEvent<{ projectId?: string }>).detail
         ?.projectId;
       if (changed !== projectScopeId) return;
-      // The refresh an invalidation triggers is quiet, so it does not take the
-      // loading gate, and the mutation that fired it has already released its
-      // own. Count it as work for as long as it runs, or between the two this
-      // instance reports nothing indexing and lets a send go out ahead of the
-      // rows it is about to receive.
+      // The refresh an invalidation triggers is quiet, so it takes no loading
+      // gate, and the mutation that fired it has released its own. Counted as
+      // work while it runs, or nothing gates the send between the two.
       void loadProjectSources(projectScopeId, { quiet: true });
     };
     subscribeProjectSourcesBroadcast();

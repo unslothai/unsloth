@@ -152,13 +152,10 @@ function InheritedProjectSources({
   );
 }
 
-/**
- * The project the displayed chat belongs to. Read from the chat's own row, not
- * the global activeProjectId: the chat page updates that only after its own
- * async lookup, so during a navigation it still names the project the user just
- * left. `undefined` while unresolved, which holds the attach controls instead
- * of reading as "not in a project" and filing the file into the chat.
- */
+/** The project the displayed chat belongs to, read from the chat's own row: the
+ * global activeProjectId still names the project being left during a navigation.
+ * `undefined` while unresolved, which holds the attach controls rather than
+ * reading as "not in a project". */
 /** Reads of the chat's own row before the scope is left unresolved. */
 const PROJECT_LOOKUP_RETRIES = 3;
 
@@ -174,19 +171,17 @@ function useThreadProjectId(
     projectId: string | null;
   } | null>(null);
 
-  // activeProjectId is a trigger, not the answer: moving the open chat to another
-  // project updates its row and this value without changing the thread id, so the
-  // lookup has to run again and re-read the row.
+  // activeProjectId is a trigger, not the answer: moving the open chat updates
+  // its row and this value without changing the thread id.
   useEffect(() => {
     if (!threadId || isThreadIncognito(threadId)) {
       return;
     }
     let cancelled = false;
     void (async () => {
-      // A failed read is not proof of no project, and recording one as the
-      // answer would file the next attachment into the chat behind the user's
-      // back. Retry, and leave the scope unresolved if it never comes: nothing
-      // else re-runs this until the chat or the open project changes.
+      // A failed read is not proof of no project, and recording one would file
+      // the next attachment into the chat. Retry, then leave it unresolved:
+      // nothing re-runs this until the chat or the open project changes.
       for (let attempt = 0; attempt < PROJECT_LOOKUP_RETRIES; attempt += 1) {
         try {
           const thread = await getStoredChatThread(threadId);
@@ -369,9 +364,8 @@ export function ThreadDocumentsBar({
     if (!threadId) {
       return;
     }
-    // A plain send creates the chat too, without going through ensureThreadId.
-    // Hand the choice made before it existed to the chat that just got an id,
-    // or it falls back to the default and the next new chat inherits the pick.
+    // A plain send creates the chat too, without ensureThreadId. Hand the
+    // earlier choice to the chat that just got an id, or the next one inherits it.
     if (!hadThreadId) {
       useChatRuntimeStore.getState().adoptPendingProjectAttachmentTarget(threadId);
     }
@@ -380,9 +374,9 @@ export function ThreadDocumentsBar({
     initPromiseRef.current = null;
   }, [threadId]);
 
-  // A composer abandoned before it became a chat leaves its choice under the
-  // pending key, where the next new chat would read it as its own. Adoption
-  // already removes the key, so this only ever drops an unclaimed one.
+  // An abandoned composer leaves its choice under the pending key, where the
+  // next new chat would claim it. Adoption removes the key, so this drops only
+  // what nobody claimed.
   useEffect(
     () => () =>
       useChatRuntimeStore.getState().clearPendingProjectAttachmentTarget(),
@@ -392,8 +386,7 @@ export function ThreadDocumentsBar({
   // Mirrors chat-adapter's rag_scope: an active KB replaces the project scope,
   // but a KB preference left over while the pill is off does not.
   const threadProjectId = useThreadProjectId(effectiveThreadId);
-  // Until the chat's row has been read, which project it belongs to is unknown.
-  // Attaching in that window would file the file by guess.
+  // Attaching before the row has been read would file the file by guess.
   const projectUnresolved = threadProjectId === undefined;
   // A host where the vector extension cannot load answers 503 to every project
   // source request, so do not open a scope it can only fail.
@@ -455,9 +448,8 @@ export function ThreadDocumentsBar({
   // send until retrieval covers them (Composer.enqueueSend). For KB / RAG-off scope
   // is null, so both lists are empty and this reads false.
   // From the hooks, not the rows: work started in the Sources panel is in flight
-  // before either instance has a row for it. Reopening a project is the same
-  // question unanswered: a job may already be running, and its row arrives with
-  // the first list, so hold the gate until that lands.
+  // before either instance has a row for it, and a job already running on a
+  // reopened project arrives with the first list, so hold until that lands.
   // Both scopes hold on their first list, for the same reason: reopening a chat
   // whose own attachment was still indexing lists nothing until it lands either.
   const hasIndexing =
@@ -520,10 +512,9 @@ export function ThreadDocumentsBar({
     return pending;
   }, [aui, effectiveThreadId]);
 
-  // One entry point for the picker and desktop drops: project files go straight to
-  // the project, per-chat files materialize the thread first. The sources probe
-  // caches for 30s, so invalidate both sides of a project upload or a message sent
-  // mid-index keeps answering from a cached "no sources".
+  // One entry point for the picker and desktop drops: project files go straight
+  // there, per-chat files materialize the thread first. The probe caches for 30s,
+  // so invalidate both sides or a send mid-index reads a stale "no sources".
   const attach = useCallback(
     (items: Parameters<typeof upload>[0]) => {
       if (sharesWithProject && projectId) {
@@ -535,8 +526,8 @@ export function ThreadDocumentsBar({
         );
         return;
       }
-      // Pass the id as a promise so upload() flips its in-flight guard before
-      // materialization re-renders us; on the first click `scope` is still null.
+      // The id as a promise, so upload() flips its in-flight guard before
+      // materialization re-renders us: on the first click `scope` is null.
       const threadScope = ensureThreadId().then((id) =>
         id ? ({ type: "thread", threadId: id } as const) : null,
       );
@@ -603,9 +594,8 @@ export function ThreadDocumentsBar({
 
   const chipScrollRef = useRef<HTMLDivElement>(null);
   const [chipsOverflow, setChipsOverflow] = useState(false);
-  // Removing a project source from here deletes it for every chat in the
-  // project, and the chip sits beside this chat's own, whose X is undoable by
-  // re-attaching. Confirm, as the Sources tab and Settings already do.
+  // Removing a project source here deletes it for every chat, beside a chat chip
+  // whose X is undoable. Confirm, as the Sources tab and Settings do.
   const [removingShared, setRemovingShared] = useState<RagDocument | null>(null);
   const updateChipFade = useCallback(() => {
     const el = chipScrollRef.current;
@@ -627,10 +617,10 @@ export function ThreadDocumentsBar({
   if (ragEnabled && ragSource.type === "kb") {
     return <KnowledgeBaseSourceChip kbId={ragSource.kbId} />;
   }
-  // Project sources retrieve whenever the project has them, Docs pill or not
-  // (chat-adapter's projectRagEnabled), so keep them listed with the pill off
-  // rather than letting the model answer from files the user cannot see. The
-  // attach controls stay behind the pill: with it off, thread scope is inert.
+  // Project sources retrieve whether the Docs pill is on or not (chat-adapter's
+  // projectRagEnabled), so list them either way rather than letting the model
+  // answer from files the user cannot see. The attach controls stay behind the
+  // pill: with it off, thread scope is inert.
   if (!ragEnabled) {
     return projectDocuments.length > 0 ? (
       <InheritedProjectSources documents={projectDocuments} />

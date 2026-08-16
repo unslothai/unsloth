@@ -1358,9 +1358,8 @@ function ProjectLanding({
   // (adoptPendingProjectAttachmentTarget only adopts on an exact claim match.)
   const NO_SUCH_CLAIM = -1;
 
-  // The claim the composer on screen recorded its attach choice under. Every
-  // fresh composer shares one pending key, so the claim is what tells one
-  // composer's choice from the next one's.
+  // The claim the composer on screen recorded its attach choice under: every
+  // fresh composer shares one pending key, so only the claim tells them apart.
   const pendingTargetClaimRef = useRef<{
     nonce: string;
     claim: number;
@@ -1370,9 +1369,8 @@ function ProjectLanding({
       const pending =
         state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
       if (pending === undefined) return;
-      // By claim, not by the stored value: picking the same destination twice
-      // writes the same string under a new claim, and a capture that skipped it
-      // would then be refused as somebody else's.
+      // By claim, not by value: picking the same destination twice rewrites the
+      // same string under a new claim, and skipping it reads as somebody else's.
       const claim = readPendingAttachmentTargetClaim();
       const captured = pendingTargetClaimRef.current;
       if (captured?.nonce === newThreadNonce && captured.claim === claim) {
@@ -1395,14 +1393,11 @@ function ProjectLanding({
     if (activeThreadId === initialActiveThreadRef.current) {
       return;
     }
-    // Hand the composer's attach choice to the chat it just created. Setting
-    // this swaps ProjectComposer for Thread, so the bar that holds the choice
-    // unmounts without ever seeing the id, and its cleanup drops it.
-    //
-    // Only this composer's own choice: a send that materializes after the user
-    // has opened another fresh composer would otherwise consume that composer's
-    // choice, leaving it on the default and this chat on a scope nobody picked.
-    // An unrecognised claim is refused rather than adopted.
+    // Hand the composer's attach choice to the chat it just created: setting
+    // this swaps ProjectComposer for Thread, so the bar holding the choice
+    // unmounts without seeing the id and its cleanup drops it. Its own choice
+    // only, or a send materializing after another composer opened would consume
+    // that one's pick; an unrecognised claim is refused.
     const captured = pendingTargetClaimRef.current;
     useChatRuntimeStore
       .getState()

@@ -2182,9 +2182,8 @@ type ChatRuntimeStore = {
   ragSource: RagSource;
   /** Default composer attachment scope for chats inside a project. */
   projectAttachmentTarget: ProjectAttachmentTarget;
-  /** Per-chat override of that default, so picking a target in one chat does not
-   * change every other chat in the project. Session-only: the menu always shows
-   * the target in force, and a reload falls back to the saved default. */
+  /** Per-chat override of that default, so a pick in one chat does not redirect
+   * the rest. Session-only: a reload falls back to the saved default. */
   projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
@@ -4049,10 +4048,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   adoptPendingProjectAttachmentTarget: (threadId, claim) =>
     set((state) => {
-      // The entry under the shared key need not be the one the caller set: a
-      // composer abandoned mid-materialization has had its own dropped, and the
-      // next composer's choice is sitting there instead. Handing that to the
-      // abandoned chat consumes it, and the new one falls back to the default.
+      // The entry under the shared key need not be the caller's: an abandoned
+      // composer has had its own dropped and the next one's is sitting there,
+      // which handing it over would consume.
       if (claim !== undefined && claim !== pendingAttachmentTargetClaim) {
         return state;
       }

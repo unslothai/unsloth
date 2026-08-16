@@ -7,9 +7,9 @@ import test from "node:test";
 
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
-// The store now reaches a relative import written without its extension, which
-// bare node only resolves through this. Registered before the dynamic import,
-// since a static one would be linked first.
+// The store reaches a relative import written without its extension, which bare
+// node resolves only through this. Registered before the dynamic import, since a
+// static one is linked first.
 registerBundlerResolver();
 const { useChatPreferencesStore } = await import(
   "../src/features/chat/stores/chat-preferences-store.ts"
