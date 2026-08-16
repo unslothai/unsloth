@@ -709,7 +709,6 @@ def install_wall_clock_watchdog(
         # which the message alone did not.
         try:
             import faulthandler
-
             faulthandler.dump_traceback(file = sys.stderr, all_threads = True)
             sys.stderr.flush()
         except Exception:
