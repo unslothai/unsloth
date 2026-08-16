@@ -194,6 +194,10 @@ export {
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  forkCountFor,
+  subscribeForkCounts,
+} from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,

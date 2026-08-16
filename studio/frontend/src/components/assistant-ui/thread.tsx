@@ -66,11 +66,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  CHAT_HISTORY_UPDATED_EVENT,
-  forkChatThread,
-  getForkCount,
-} from "@/features/chat/api/chat-api";
+import { forkChatThread } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
   sentAudioNames,
@@ -170,6 +166,8 @@ import {
   type PromptQueueUIItemStatus,
   type PromptQueueUIState,
   usePromptQueueUI,
+  forkCountFor,
+  subscribeForkCounts,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -270,6 +268,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -5940,34 +5939,19 @@ const AssistantMessage: FC = () => {
 const COPY_RESET_MS = 2000;
 
 const ForkCountBadge: FC = () => {
-  const aui = useAui();
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
   const messageId = useAuiState(({ message }) => message.id);
-  const [count, setCount] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      const remoteId = aui.threadListItem().getState().remoteId;
-      if (!remoteId) {
-        if (!cancelled) setCount(0);
-        return;
-      }
-      void getForkCount(remoteId, messageId)
-        .then((n) => {
-          if (!cancelled) setCount(n);
-        })
-        .catch(() => {
-          /* swallow: badge is non-critical */
-        });
-    };
-    refresh();
-    const handler = () => refresh();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    };
-  }, [aui, messageId]);
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      remoteId ? subscribeForkCounts(remoteId, onChange) : () => {},
+    [remoteId],
+  );
+  const getSnapshot = useCallback(
+    () => (remoteId ? forkCountFor(remoteId, messageId) : 0),
+    [remoteId, messageId],
+  );
+  const count = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   if (count <= 0) return null;
   return (
