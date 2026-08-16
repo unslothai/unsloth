@@ -85,7 +85,9 @@ def main() -> None:
                     expect(pane).to_be_visible(timeout = 15_000)
                     text = pane.inner_text()
                     info(f"{section} text: {text!r}")
-                    assert text == "file.txt\nerror", f"{section} rendered unexpected text: {text!r}"
+                    assert (
+                        text == "file.txt\nerror"
+                    ), f"{section} rendered unexpected text: {text!r}"
                     assert ESC not in text, f"{section} still contains ESC"
                     assert "[32m" not in text, f"{section} still shows SGR garbage"
             except Exception:

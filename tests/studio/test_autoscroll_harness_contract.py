@@ -82,9 +82,9 @@ def test_harnesses_report_why_the_page_failed() -> None:
         "playwright_research_freeze.py",
         "playwright_strip_ansi_smoke.py",
     ):
-        assert "echo_browser_errors(page, info)" in source(name), (
-            f"{name} discards pageerror and console.error, so a crashed page reads as a timeout"
-        )
+        assert "echo_browser_errors(page, info)" in source(
+            name
+        ), f"{name} discards pageerror and console.error, so a crashed page reads as a timeout"
 
 
 def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
