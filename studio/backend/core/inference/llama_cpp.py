@@ -14597,6 +14597,29 @@ class LlamaCppBackend:
                             "is left for model layers."
                         )
 
+                    # Whether the drafter-drop probe below is allowed to run, hoisted
+                    # because the projector pin has to know it: the pin is decided
+                    # first, and "the drafter may yet be dropped" is the difference
+                    # between a placement it can reach and one it cannot. One
+                    # expression, read twice, so the two cannot drift apart.
+                    _mtp_drop_probe_applies = bool(
+                        _mtp_will_engage
+                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
+                        and not _user_mtp_via_extras
+                        and not _user_draft_via_extras
+                        and not _extra_args_set_spec_type(extra_args)
+                        # A bare --model-draft / --spec-draft-hf sets neither flag above
+                        # (both key off --spec-type), yet llama.cpp loads whatever it
+                        # names anyway: load_model gates the draft on has_dft(). Dropping
+                        # here would free the reserve for a drafter that still loads.
+                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
+                        and not _draft_cpu_no_embedded
+                        and not tensor_parallel
+                        and gpus
+                        and effective_ctx > 0
+                        and self._can_estimate_kv()
+                    )
+
                     # The projector holds VRAM that would otherwise hold model layers.
                     # It runs once per image; layers run once per token, so when the
                     # projector's presence is what pushes layers onto the CPU, moving
@@ -14650,11 +14673,37 @@ class LlamaCppBackend:
                         and not _extra_args_set_mmproj_offload(extra_args)
                     ):
 
-                        def _mmproj_fits(with_projector: bool, n: int, subset: list) -> bool:
+                        # A drafter that is GPU-resident holds VRAM the fit charges and
+                        # this probe used to ignore, priced here exactly as the fit
+                        # prices it below: _MTP_DRAFT_COMPUTE_BYTES into the soft
+                        # overhead (_soft_overhead), the flat fraction off the budget
+                        # (_pin_fraction) when the byte reserve cannot size the draft
+                        # KV, and _mtp_bytes at the context. Left out, the probe
+                        # answered for a card ~1.5 GB larger than the one the placement
+                        # then tested, in BOTH directions: it declined to pin loads the
+                        # pin would have kept whole, and it pinned loads that went out
+                        # `--fit on` anyway, paying the per-image cost for a residency
+                        # the launch never received.
+                        _mm_mtp_on_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
+                        _mm_mtp_soft = self._MTP_DRAFT_COMPUTE_BYTES if _mm_mtp_on_gpu else 0
+                        _mm_mtp_frac = _vram_frac - (
+                            _MTP_VRAM_RESERVE_FRAC
+                            if (_mm_mtp_on_gpu and (mtp_overhead_fn is None or _mtp_kv_unsized))
+                            else 0.0
+                        )
+
+                        def _mmproj_fits(
+                            with_projector: bool,
+                            with_drafter: bool,
+                            n: int,
+                            subset: list,
+                        ) -> bool:
                             _mm = mmproj_size if with_projector else 0
                             _soft = self._CUDA_CONTEXT_RESERVE_BYTES
                             if _mm > 0:
                                 _soft += int(_mm * (self._MMPROJ_VRAM_SAFETY - 1.0))
+                            if with_drafter:
+                                _soft += _mm_mtp_soft
                             _need = (
                                 gguf_size
                                 + _mm
@@ -14668,16 +14717,44 @@ class LlamaCppBackend:
                             # that leaves today's behaviour alone when unsure.
                             if effective_ctx > 0:
                                 _need += _kv_bytes(effective_ctx) + _cc_bytes(effective_ctx, n)
-                            return _need / (1024 * 1024) <= _pool_budget_mib(subset, _vram_frac)
+                                if with_drafter:
+                                    _need += _mtp_bytes(effective_ctx)
+                            return _need / (1024 * 1024) <= _pool_budget_mib(
+                                subset, _mm_mtp_frac if with_drafter else _vram_frac
+                            )
 
                         # Fewest GPUs first over the same ranking the placement loop
                         # walks, so the answer is about placements it could choose.
                         _mm_ranked = sorted(gpus, key = lambda g: _gpu_usable(g), reverse = True)
                         _mm_subsets = [_mm_ranked[:_n] for _n in range(1, len(_mm_ranked) + 1)]
-                        _mm_fits_on_gpu = any(
-                            _mmproj_fits(True, _n + 1, _s) for _n, _s in enumerate(_mm_subsets)
-                        )
-                        # Only when moving it actually buys full residency. The
+
+                        def _mm_any(with_projector: bool, with_drafter: bool) -> bool:
+                            return any(
+                                _mmproj_fits(with_projector, with_drafter, _n + 1, _s)
+                                for _n, _s in enumerate(_mm_subsets)
+                            )
+
+                        # Rank the placement each side of the choice actually reaches:
+                        # 2 = every layer resident WITH the drafter, 1 = resident only
+                        # after the probe below drops it, 0 = partial offload. Ranking
+                        # rather than one boolean because both features mutate this same
+                        # decision and their orders of preference agree: a per-token loss
+                        # (layers on the CPU, then the drafter) outweighs the projector's
+                        # bounded per-image cost.
+                        #
+                        # Rank 1 is only on the table when the probe below is allowed to
+                        # run. Where it is not -- forced mtp / mtp+ngram, a user-owned
+                        # --spec-type, no KV estimate -- the reserve survives to the fit
+                        # whatever this decides, so pretending the drafter can be dropped
+                        # would pin against a placement that cannot happen.
+                        def _mm_rank(with_projector: bool) -> int:
+                            if _mm_any(with_projector, _mm_mtp_on_gpu):
+                                return 2
+                            if _mm_mtp_on_gpu and _mtp_drop_probe_applies:
+                                return 1 if _mm_any(with_projector, False) else 0
+                            return 0
+
+                        # Only when moving it actually buys a better placement. The
                         # projector is then demonstrably the thing tipping the model
                         # over, and the trade is a clean win: every layer on the GPU
                         # against a slower image encode.
@@ -14687,10 +14764,7 @@ class LlamaCppBackend:
                         # on a stack that is mostly on the CPU already that is a couple
                         # of percent per token bought with a silent 3.6x on every
                         # image, and being wrong in that direction is expensive.
-                        _mm_fits_pinned = any(
-                            _mmproj_fits(False, _n + 1, _s) for _n, _s in enumerate(_mm_subsets)
-                        )
-                        if not _mm_fits_on_gpu and _mm_fits_pinned:
+                        if _mm_rank(False) > _mm_rank(True):
                             _mmproj_cpu_pinned = True
                             _mmproj_auto_pinned = True
                             # Kept so the two arms that must not spend this refund can
@@ -14722,23 +14796,7 @@ class LlamaCppBackend:
                     # this probe may clear and running it first would be circular. The
                     # gate reads the user's choice, not _mtp_effective, which by here is
                     # the kind Auto resolved and can no longer tell the two apart.
-                    if (
-                        _mtp_will_engage
-                        and (_canonicalize_spec_mode(speculative_type) or "auto") == "auto"
-                        and not _user_mtp_via_extras
-                        and not _user_draft_via_extras
-                        and not _extra_args_set_spec_type(extra_args)
-                        # A bare --model-draft / --spec-draft-hf sets neither flag above
-                        # (both key off --spec-type), yet llama.cpp loads whatever it
-                        # names anyway: load_model gates the draft on has_dft(). Dropping
-                        # here would free the reserve for a drafter that still loads.
-                        and not _extra_args_mtp_draft_path(extra_args, env = _spec_env)
-                        and not _draft_cpu_no_embedded
-                        and not tensor_parallel
-                        and gpus
-                        and effective_ctx > 0
-                        and self._can_estimate_kv()
-                    ):
+                    if _mtp_drop_probe_applies:
 
                         def _probe_frac(drafter: bool) -> float:
                             # The flat fraction is the reserve whenever _mtp_bytes is 0.
@@ -15486,6 +15544,37 @@ class LlamaCppBackend:
                             # smaller micro-batch than the one this was sized at. Re-derive
                             # it, or the recorded _n_ubatch describes a graph never built.
                             _effective_ubatch = _ubatch_for_slots(n_parallel)
+
+                    # The automatic pin is a bet on the placement, and this is where the
+                    # placement is finally known. `--fit on` here means the bet lost:
+                    # llama-server is free to spill layers again, so the projector was
+                    # moved to host RAM (~3.6x per image) for a residency the launch
+                    # never received. Hand it back, exactly as the except arm below
+                    # does for the same reason -- that arm only covers a raised fit,
+                    # and a fit that ran to completion and still could not place the
+                    # model is the same outcome.
+                    #
+                    # _mmproj_fits is a pooled prediction and cannot be made to agree
+                    # with the loop in every case (the loop also enforces a per-device
+                    # reserve and a min-GPU floor, and can exhaust its candidates), so
+                    # the premise is verified rather than trusted.
+                    #
+                    # Only the automatic reason stands down: the paravirtual pin is
+                    # about a device whose vision output is corrupt, and the user's own
+                    # --no-mmproj-offload is an instruction. Neither is contingent on
+                    # the fit, and neither sets this flag.
+                    if _mmproj_auto_pinned and use_fit:
+                        _mmproj_cpu_pinned = False
+                        _mmproj_auto_pinned = False
+                        mmproj_size = _mmproj_auto_pin_bytes
+                        model_size = gguf_size + _mmproj_auto_pin_bytes
+                        _mmproj_auto_pin_bytes = 0
+                        _mmproj_pinned_bytes = 0
+                        logger.info(
+                            "Keeping the vision projector on the GPU after all: the "
+                            "placement still needs --fit on, so the pin would not buy "
+                            "full residency."
+                        )
 
                     # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
