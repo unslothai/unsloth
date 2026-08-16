@@ -147,10 +147,7 @@ def planner_quantization_kwargs(
     kwargs = {"load_in_4bit": load_in_4bit, "load_in_8bit": load_in_8bit}
     if load_in_4bit or load_in_8bit:
         from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
-
-        kwargs["llm_int8_skip_modules"] = (
-            SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
-        )
+        kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
     return kwargs
 
 

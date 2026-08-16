@@ -332,10 +332,7 @@ def test_a_16bit_load_is_planned_without_a_skip_list():
     """Nothing is being quantized, so there is nothing to keep out of it. A stray
     llm_int8_skip_modules would reach AutoConfig as an attribute of the model config."""
     ns = _load()
-    assert ns["planner_quantization_kwargs"]() == {
-        "load_in_4bit": False,
-        "load_in_8bit": False,
-    }
+    assert ns["planner_quantization_kwargs"]() == {"load_in_4bit": False, "load_in_8bit": False}
 
 
 def test_the_modules_unsloth_keeps_in_compute_dtype_are_sized_that_way():
@@ -403,6 +400,5 @@ def test_the_leaf_loaders_derive_the_planner_quantization_from_the_config():
                 if kw.arg is None and isinstance(kw.value, ast.Call)
             ]
             assert any(
-                getattr(call.func, "id", None) == "planner_quantization_kwargs"
-                for call in unpacked
+                getattr(call.func, "id", None) == "planner_quantization_kwargs" for call in unpacked
             ), f"{name}:{node.lineno}"
