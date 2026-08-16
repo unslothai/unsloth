@@ -3601,7 +3601,6 @@ class UnslothTrainer:
             return
         try:
             from utils.datasets.online_tokenization import release_train_dataloader
-
             released = release_train_dataloader(trainer)
         except Exception as exc:  # noqa: BLE001 - cleanup must never fail a finished run
             logger.warning(f"Online tokenization worker shutdown failed: {exc}")

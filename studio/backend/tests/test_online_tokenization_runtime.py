@@ -47,7 +47,13 @@ class _Tokenizer:
     bos_token = None
     chat_template = ""
 
-    def __call__(self, texts, truncation = True, max_length = 8, add_special_tokens = True):
+    def __call__(
+        self,
+        texts,
+        truncation = True,
+        max_length = 8,
+        add_special_tokens = True,
+    ):
         if isinstance(texts, str):
             texts = [texts]
         return {"input_ids": [[len(t)] * min(len(t), max_length) for t in texts]}
@@ -78,7 +84,11 @@ class _FakeTrainer:
     ``memoize_train_dataloader`` exists.
     """
 
-    def __init__(self, dataset, shuffle = False):
+    def __init__(
+        self,
+        dataset,
+        shuffle = False,
+    ):
         self.dataset = dataset
         self.shuffle = shuffle
         self.calls = 0

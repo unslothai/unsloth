@@ -51,9 +51,7 @@ def main() -> int:
         required = True,
         help = "Parquet/JSONL split, or a Hugging Face dataset id, carrying a text column",
     )
-    parser.add_argument(
-        "--model", default = "unsloth/Qwen3-0.6B", help = "Model id or local path"
-    )
+    parser.add_argument("--model", default = "unsloth/Qwen3-0.6B", help = "Model id or local path")
     parser.add_argument("--max-steps", type = int, default = 30)
     parser.add_argument("--batch-size", type = int, default = 2)
     parser.add_argument("--grad-accum", type = int, default = 4)

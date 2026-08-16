@@ -292,7 +292,6 @@ def text_column_defect(dataset: Any, text_field: str) -> Optional[str]:
     """
     try:
         from datasets import Value
-
         features = getattr(dataset, "features", None) or {}
         feature = features.get(text_field)
     except Exception:  # noqa: BLE001 - unreadable schema stays eager
@@ -672,9 +671,7 @@ def _nested_loaders(loader: Any):
         if current is None or any(current is item for item in seen):
             break
         seen.append(current)
-        current = getattr(current, "base_dataloader", None) or getattr(
-            current, "dataloader", None
-        )
+        current = getattr(current, "base_dataloader", None) or getattr(current, "dataloader", None)
     return seen
 
 
