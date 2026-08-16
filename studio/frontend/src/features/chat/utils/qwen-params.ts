@@ -5,8 +5,8 @@ import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 
 /**
  * Apply Qwen3-family recommended sampling parameters when the Think toggle
- * changes. Qwen3.5 and Qwen3.6 also need a presence_penalty bump on top of
- * the Qwen3 defaults.
+ * changes. Qwen3.8 has its own thinking-mode defaults; Qwen3.5 and Qwen3.6
+ * also need a presence_penalty bump on top of the Qwen3 defaults.
  *
  * Used by both the thread assistant UI and the shared chat composer so the
  * two call sites stay in sync.
@@ -18,6 +18,27 @@ export function applyQwenThinkingParams(thinkingOn: boolean): void {
     !checkpoint.includes("qwen3") ||
     store.activePresetSource !== "builtin-default"
   ) {
+    return;
+  }
+  if (checkpoint.includes("qwen3.8")) {
+    const params = thinkingOn
+      ? {
+          temperature: 1.0,
+          topP: 0.95,
+          topK: 20,
+          minP: 0.0,
+          repetitionPenalty: 1.0,
+          presencePenalty: 0.0,
+        }
+      : {
+          temperature: 0.7,
+          topP: 0.8,
+          topK: 20,
+          minP: 0.0,
+          repetitionPenalty: 1.0,
+          presencePenalty: 1.5,
+        };
+    store.setParams({ ...store.params, ...params });
     return;
   }
   const needsPresencePenalty =

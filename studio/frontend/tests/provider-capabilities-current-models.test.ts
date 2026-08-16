@@ -163,6 +163,34 @@ test("generic Custom connections use only their explicit max-output override", (
   );
 });
 
+test("Qwen3.8 self-hosted models expose their exact reasoning ladder", () => {
+  for (const provider of ["custom", "llama_cpp", "vllm"]) {
+    const caps = getExternalReasoningCapabilities(
+      provider,
+      "qwen/qwen3.8-27b",
+      provider === "vllm" ? { isReasoningProvider: true } : undefined,
+    );
+    assert.equal(caps.supportsReasoning, true, provider);
+    assert.equal(caps.reasoningStyle, "reasoning_effort", provider);
+    assert.equal(caps.supportsReasoningOff, false, provider);
+    assert.deepEqual(
+      [...caps.reasoningEffortLevels],
+      ["low", "medium", "xhigh"],
+      provider,
+    );
+  }
+});
+
+test("Qwen3.8 does not expose xhigh through Ollama's incompatible enum", () => {
+  const caps = getExternalReasoningCapabilities("ollama", "qwen3.8:27b");
+  assert.equal(caps.supportsReasoning, false);
+});
+
+test("Qwen3-8B is not mistaken for Qwen3.8", () => {
+  const caps = getExternalReasoningCapabilities("custom", "Qwen/Qwen3-8B");
+  assert.equal(caps.supportsReasoning, false);
+});
+
 test("Custom overrides cannot alter documented caps for other providers", () => {
   assert.equal(getExternalMaxOutputTokens("openai", "gpt-5.6-sol", 64), 128000);
   assert.equal(getExternalMaxOutputTokens("anthropic", "claude-opus-5", 64), 128000);

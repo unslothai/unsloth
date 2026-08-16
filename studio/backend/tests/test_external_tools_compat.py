@@ -309,6 +309,43 @@ def test_response_format_is_forwarded_verbatim_when_requested(monkeypatch):
     assert captured["body"]["response_format"] == {"type": "json_object"}
 
 
+@pytest.mark.parametrize(
+    ("provider_type", "reasoning_effort"),
+    [
+        ("custom", "xhigh"),
+        ("vllm", "xhigh"),
+        ("llama_cpp", "xhigh"),
+        ("ollama", "medium"),
+    ],
+)
+def test_self_hosted_reasoning_effort_is_forwarded_when_requested(
+    monkeypatch, provider_type, reasoning_effort
+):
+    """Qwen3.8's per-turn effort must reach an OpenAI-compatible local server."""
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "http://local.example/v1",
+            api_key = "",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "qwen/qwen3.8-27b",
+                reasoning_effort = reasoning_effort,
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning_effort"] == reasoning_effort
+    if provider_type == "llama_cpp":
+        assert captured["body"]["chat_template_kwargs"]["reasoning_effort"] == reasoning_effort
+
+
 # ── 5. response_format reaches the native provider shapes ────────────
 
 

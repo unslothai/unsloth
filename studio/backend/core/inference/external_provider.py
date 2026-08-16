@@ -35,6 +35,9 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
 # a template applies: sweeping a hosted API costs a space in delimiter-like text, not
 # sweeping a local one costs a forged turn.
 _TEMPLATE_APPLYING_PROVIDERS = frozenset({"vllm", "llama_cpp", "ollama", "custom"})
+_SELF_HOSTED_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
 
 # The subset documenting "continue_final_message" + "add_generation_prompt" on
 # /v1/chat/completions.
@@ -1149,6 +1152,24 @@ class ExternalProviderClient:
                 tpl_kw = {}
             tpl_kw["enable_thinking"] = bool(enable_thinking)
             body["chat_template_kwargs"] = tpl_kw
+
+        # LM Studio, vLLM, and Ollama expose OpenAI-compatible reasoning_effort
+        # on /v1/chat/completions. Keep this opt-in: strict
+        # custom servers may reject unknown fields, so an ordinary request must
+        # remain byte-for-byte unchanged unless the caller selected an effort.
+        if (
+            self.provider_type in _TEMPLATE_APPLYING_PROVIDERS
+            and reasoning_effort in _SELF_HOSTED_REASONING_EFFORTS
+        ):
+            body["reasoning_effort"] = reasoning_effort
+            if self.provider_type == "llama_cpp":
+                # llama.cpp currently applies non-"none" levels only when they
+                # are supplied to the model's Jinja template explicitly.
+                tpl_kw = body.get("chat_template_kwargs")
+                if not isinstance(tpl_kw, dict):
+                    tpl_kw = {}
+                tpl_kw["reasoning_effort"] = reasoning_effort
+                body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.
         # Some routes (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.

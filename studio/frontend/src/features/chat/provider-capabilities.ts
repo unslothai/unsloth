@@ -670,6 +670,8 @@ export function getProviderCapabilities(
 }
 
 const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+// Ollama's OpenAI shim currently rejects Qwen3.8's required `xhigh` value.
+const QWEN38_EFFORT_PROVIDER_TYPES = new Set(["custom", "llama_cpp", "vllm"]);
 const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
   "google/gemini-pro-latest",
   "baidu/cobuddy:free",
@@ -681,6 +683,12 @@ function isOpenRouterMandatoryReasoningModel(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
   const canonical = normalized.startsWith("~") ? normalized.slice(1) : normalized;
   return OPENROUTER_MANDATORY_REASONING_MODELS.has(canonical);
+}
+
+function isQwen38Model(modelId: string): boolean {
+  // Keep the dot in the version mandatory: Qwen3-8B is the older 8B model,
+  // not Qwen3.8. Accept publisher-prefixed and quantized self-hosted ids.
+  return /(?:^|[\/_-])qwen-?3\.8(?:$|[\/:_-])/.test(modelId);
 }
 type ReasoningCaps = {
   supportsReasoning: boolean;
@@ -1008,11 +1016,28 @@ export function getExternalReasoningCapabilities(
     normalizedProvider,
     options,
   );
+  if (!normalizedModel) {
+    return connectionLevel ?? withEnableThinkingStyle();
+  }
+
+  // Qwen3.8 publishes a per-request OpenAI-compatible reasoning_effort knob.
+  // Self-hosted catalogs do not advertise that capability through /v1/models,
+  // so infer it from the model id and expose only the template's exact ladder.
+  // Do not synthesize an Off entry: Qwen's template controls that separately
+  // through enable_thinking, while reasoning_effort rejects "none".
+  if (
+    QWEN38_EFFORT_PROVIDER_TYPES.has(normalizedProvider) &&
+    isQwen38Model(normalizedModel)
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "xhigh"] as const,
+    });
+  }
+
   if (connectionLevel) {
     return connectionLevel;
-  }
-  if (!normalizedModel) {
-    return withEnableThinkingStyle();
   }
 
   // Some OpenRouter-routed ids are mandatory-reasoning and must stay on even
