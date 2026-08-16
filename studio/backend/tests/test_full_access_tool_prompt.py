@@ -405,6 +405,11 @@ def test_count_request_reads_the_flag_when_omitted():
     """The count route reaches for payload.bypass_permissions unconditionally,
     so the field has to exist rather than arrive via extra='allow'."""
     assert _count_request().bypass_permissions is None
+    assert _count_request().session_id is None
+
+
+def test_count_request_accepts_session_id():
+    assert _count_request(session_id = "__LOCALID_count01").session_id == "__LOCALID_count01"
 
 
 @pytest.mark.parametrize(

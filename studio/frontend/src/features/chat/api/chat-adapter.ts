@@ -1637,6 +1637,7 @@ export async function buildLocalTokenCountExtras(
   if (!supportsTools) return {};
 
   const ragProjectId = await resolveProjectId(threadId);
+  const sandboxSessionId = await resolveSandboxSessionId(threadId);
   const projectRagEnabled = ragProjectId
     ? await projectHasSources(ragProjectId)
     : false;
@@ -1660,6 +1661,7 @@ export async function buildLocalTokenCountExtras(
 
   return {
     enable_tools: true,
+    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
     // Full access swaps the python/terminal descriptions and adds a nudge

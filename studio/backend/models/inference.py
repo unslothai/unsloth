@@ -1916,6 +1916,10 @@ class ChatCountTokensRequest(BaseModel):
         description = "[x-unsloth] Equivalent of permission_mode='full'. Declared explicitly (not "
         "left to extra='allow') so an omitted flag reads as None instead of raising AttributeError.",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Session/thread ID for scoping tool execution sandbox.",
+    )
 
     @field_validator("permission_mode", mode = "before")
     @classmethod
