@@ -1426,9 +1426,7 @@ def test_mask_packed_boundary_labels_is_idempotent_on_trl_masked_labels():
 def test_mask_packed_boundary_labels_is_a_noop_without_packing():
     labels = torch.arange(6, dtype = torch.long).view(1, 6)
     assert mask_packed_boundary_labels(labels, None) is labels
-    assert mask_packed_boundary_labels(
-        labels, torch.tensor([], dtype = torch.int32)
-    ) is labels
+    assert mask_packed_boundary_labels(labels, torch.tensor([], dtype = torch.int32)) is labels
     assert mask_packed_boundary_labels(None, torch.tensor([2, 4])) is None
 
 
