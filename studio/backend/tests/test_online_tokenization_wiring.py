@@ -89,7 +89,6 @@ def _single_process_launch(monkeypatch):
     passing on a set of variables the other never clears.
     """
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
-
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
 
@@ -448,7 +447,11 @@ def test_world_size_scales_the_rows_a_step_consumes(monkeypatch):
 _EIGHT_RANK_STEPS = 200
 
 
-def _eight_ranks(monkeypatch, expect_enabled = False, **env):
+def _eight_ranks(
+    monkeypatch,
+    expect_enabled = False,
+    **env,
+):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     original = _dataset()
