@@ -74,16 +74,19 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
     n_cpu_moe: 0,
-    requested_gpu_ids: [0],
+    // A default load requests no particular GPU, so the echo is null. The set comparison
+    // on a real placement pool has its own test below; here a non-null pool would make
+    // BLANK disagree, since an unset pick resolves to Automatic rather than to "any".
+    requested_gpu_ids: null,
     tensor_parallel: false,
   },
   "amd-rocm": {
     gpu_memory_mode: "auto",
     gpu_layers: -1,
     n_cpu_moe: 0,
-    // ROCm placement is physical indices, and several of them is the common case this
-    // compares as a SET. The split flag stays off so BLANK agrees with every base.
-    requested_gpu_ids: [0, 1],
+    // Left unrequested for the same reason as above; the ROCm-shaped pool of several
+    // physical indices, compared as a SET, has its own test below.
+    requested_gpu_ids: null,
     tensor_parallel: false,
   },
   // A host with no GPU still reports the invocation it was ASKED for, not what llama.cpp
@@ -97,9 +100,11 @@ const ACCELERATORS: Record<string, Record<string, unknown>> = {
     requested_gpu_ids: null,
     tensor_parallel: false,
   },
-  // An MLX server records a KV width and none of the llama.cpp placement fields at all.
+  // An MLX server records a KV width and none of the llama.cpp placement fields at all. A
+  // default load leaves the width unrequested; a pinned width is swept below like any other
+  // field, and is not part of the base for the same reason placement is not.
   "apple-mlx": {
-    mlx_kv_bits_requested: 8,
+    mlx_kv_bits_requested: null,
   },
 };
 
@@ -256,13 +261,23 @@ test("placement compares as a set on a multi-GPU host, not as an order", () => {
   );
 });
 
-test("automatic placement pins nothing, so it adopts any pool", () => {
+test("automatic placement is a request of its own, not a wildcard", () => {
+  // The applier turns an absent or null selection into a null selection, and the load sends
+  // that as Automatic. Automatic is not "whatever is running": a server the user placed on
+  // four specific GPUs was invoked differently and has to be reloaded.
   for (const ids of [null, undefined]) {
     assert.equal(
       residentRuntimeMatchesConfig(
         { ...ACCELERATORS["nvidia-cuda"], requested_gpu_ids: [0, 1, 2, 3] },
         { ...BLANK, selectedGpuIds: ids },
       ),
+      false,
+    );
+    assert.equal(
+      residentRuntimeMatchesConfig(ACCELERATORS["nvidia-cuda"], {
+        ...BLANK,
+        selectedGpuIds: ids,
+      }),
       true,
     );
   }

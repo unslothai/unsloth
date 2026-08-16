@@ -72,9 +72,8 @@ export type StandingConfigDefaults = {
 
 /**
  * One setting the resident load can disagree about. `pinned` is whether the config has an
- * opinion at all, `agrees` whether the running server satisfies it. Keeping them apart is
- * the point: an unset field must not read as a demand for the default, except the four
- * above, which the applier always resolves and so are always pinned.
+ * opinion at all, `agrees` whether the running server satisfies it. The pair survives for
+ * `llamaExtraArgs`, the only field the applier leaves unresolved.
  */
 type SettingCheck = {
   pinned: (config: PerModelConfig) => boolean;
@@ -85,23 +84,34 @@ type SettingCheck = {
   ) => boolean;
 };
 
-const set = (value: unknown): boolean => value != null;
+const cleanTemplate = (value: string | null | undefined): string | null =>
+  value?.trim() ? value : null;
 
-/** Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
- * `_mlx_runtime_settings_match` compares. */
+/**
+ * Mirrors the fields `_runtime_matches_intent` reloads for, plus the MLX pair
+ * `_mlx_runtime_settings_match` compares.
+ *
+ * Nearly every check is unconditionally pinned. A config reaches here only after
+ * `applyModelLoadConfigToRuntime` wrote it over the runtime store (`chat-page.tsx:3242`,
+ * `hub-page.tsx:1329`), and that applier resolves each of these with `?? null`, so the
+ * snapshot `performLoad` takes reads null rather than inheriting the resident value: an
+ * unset field asks for the default, not for whatever is running. Only `llamaExtraArgs` is
+ * genuinely optional, being the one field with no `?? null` fallback.
+ */
 const SETTING_CHECKS: SettingCheck[] = [
   {
-    pinned: (c) => set(c.customContextLength),
+    pinned: () => true,
     agrees: (c, s) =>
-      c.customContextLength === (s.requested_context_length ?? null),
+      (c.customContextLength ?? null) === (s.requested_context_length ?? null),
   },
   {
-    pinned: (c) => set(c.kvCacheDtype),
-    agrees: (c, s) => c.kvCacheDtype === (s.cache_type_kv ?? null),
+    pinned: () => true,
+    agrees: (c, s) => (c.kvCacheDtype ?? null) === (s.cache_type_kv ?? null),
   },
   {
-    pinned: (c) => set(c.mlxKvBits),
-    agrees: (c, s) => c.mlxKvBits === (s.mlx_kv_bits_requested ?? null),
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.mlxKvBits ?? null) === (s.mlx_kv_bits_requested ?? null),
   },
   {
     // Always pinned: an unset mode resolves to the standing preference, and the load sends
@@ -114,20 +124,21 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType),
   },
   {
-    pinned: (c) => set(c.specDraftNMax),
-    agrees: (c, s) => c.specDraftNMax === (s.spec_draft_n_max ?? null),
+    pinned: () => true,
+    agrees: (c, s) => (c.specDraftNMax ?? null) === (s.spec_draft_n_max ?? null),
   },
   {
-    pinned: (c) => set(c.nParallel),
-    agrees: (c, s) => c.nParallel === (s.requested_parallel_slots ?? null),
+    pinned: () => true,
+    agrees: (c, s) =>
+      (c.nParallel ?? null) === (s.requested_parallel_slots ?? null),
   },
   {
-    pinned: (c) => set(c.nBatch),
-    agrees: (c, s) => c.nBatch === (s.requested_n_batch ?? null),
+    pinned: () => true,
+    agrees: (c, s) => (c.nBatch ?? null) === (s.requested_n_batch ?? null),
   },
   {
-    pinned: (c) => set(c.nUbatch),
-    agrees: (c, s) => c.nUbatch === (s.requested_n_ubatch ?? null),
+    pinned: () => true,
+    agrees: (c, s) => (c.nUbatch ?? null) === (s.requested_n_ubatch ?? null),
   },
   {
     // Not nullable, so it always has an opinion; a status omitting it ran without.
@@ -135,9 +146,11 @@ const SETTING_CHECKS: SettingCheck[] = [
     agrees: (c, s) => c.tensorParallel === (s.tensor_parallel ?? false),
   },
   {
-    pinned: (c) => set(c.chatTemplateOverride),
+    // Blank-trimmed on both ends: the applier and the load both send "" as null.
+    pinned: () => true,
     agrees: (c, s) =>
-      c.chatTemplateOverride === (s.chat_template_override ?? null),
+      cleanTemplate(c.chatTemplateOverride) ===
+      cleanTemplate(s.chat_template_override),
   },
   {
     // undefined: never read the stored value. null: the user cleared the box, which agrees
@@ -165,8 +178,10 @@ const SETTING_CHECKS: SettingCheck[] = [
       (c.nCpuMoe ?? standing.nCpuMoe) === (s.n_cpu_moe ?? standing.nCpuMoe),
   },
   {
-    // null or absent is Automatic, which pins nothing and so agrees with any placement.
-    pinned: (c) => set(c.selectedGpuIds),
+    // Absent resolves to a null selection in the applier, and a null selection is sent as
+    // Automatic, so this is pinned like the rest: an unset pick does not adopt a server
+    // that was placed on a chosen GPU.
+    pinned: () => true,
     agrees: (c, s) => sameGpuSet(c.selectedGpuIds, s.requested_gpu_ids),
   },
 ];
@@ -176,8 +191,11 @@ const SETTING_CHECKS: SettingCheck[] = [
  *
  * Identity is not the whole of a load: `LlamaCppBackend` reuses a running server only when
  * the request also agrees on context, KV dtype, slots, batch sizes, placement, speculative
- * mode, chat template and pass-through args. An unset field expresses no opinion and agrees
- * with whatever is running, which is what keeps the common case (no config at all) working.
+ * mode, chat template and pass-through args. An unset field is still an opinion, since the
+ * applier resolves it before the load reads it: unset asks for the default, not for whatever
+ * is running. What keeps the common case working is the other door: a model the user never
+ * configured arrives with no config at all, and a model they did configure carries what
+ * `currentRuntimePerModelConfig` wrote from the load that made it resident.
  *
  * The bias is one-sided on purpose. "Differs" costs one reload, which is what happened
  * before any of this existed; a wrong "matches" leaves the user on settings they did not

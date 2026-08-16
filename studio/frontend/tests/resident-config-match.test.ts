@@ -227,11 +227,14 @@ test("GPU placement compares as a set, not as an order", () => {
   );
 });
 
-test("automatic placement agrees with whatever the resident load pinned", () => {
+test("automatic placement does not adopt a load pinned to chosen GPUs", () => {
+  // Automatic is what the applier resolves an unset selection to, and it is what the load
+  // would then send, so it disagrees with a server placed on a chosen pool.
   assert.equal(
     matches({ requested_gpu_ids: [0, 1] }, { ...BLANK, selectedGpuIds: null }),
-    true,
+    false,
   );
+  assert.equal(matches({}, { ...BLANK, selectedGpuIds: null }), true);
 });
 
 /** The three states of llamaExtraArgs are load-bearing; see PerModelConfig. */
@@ -441,6 +444,67 @@ test("no config at all still adopts, whatever the resident runtime is", () => {
         n_cpu_moe: 12,
       },
       null,
+    ),
+    true,
+  );
+});
+
+/**
+ * The nullable per-model settings are pinned for the same reason the standing four are, and
+ * the reason is the applier rather than the field's type. `applyModelLoadConfigToRuntime`
+ * writes the config over the runtime store before `selectModel` runs (`chat-page.tsx:3242`,
+ * `hub-page.tsx:1329`) and resolves each of these with `?? null`, so the snapshot
+ * `performLoad` takes reads null rather than inheriting the resident model's value. A pick
+ * that leaves the box empty is asking for the default, not for silence.
+ */
+test("unset nullable settings ask for the default, not for the resident value", () => {
+  const pinnedResident = {
+    ...DEFAULTS,
+    requested_context_length: 8192,
+    cache_type_kv: "q8_0",
+    mlx_kv_bits_requested: 4,
+    spec_draft_n_max: 16,
+    requested_parallel_slots: 4,
+    requested_n_batch: 2048,
+    requested_n_ubatch: 512,
+    chat_template_override: "{{ bos }}",
+  };
+  assert.equal(matches(pinnedResident, BLANK), false);
+  // Field by field, so a regression names itself rather than reporting one false.
+  for (const [key, value] of Object.entries({
+    requested_context_length: 8192,
+    cache_type_kv: "q8_0",
+    mlx_kv_bits_requested: 4,
+    spec_draft_n_max: 16,
+    requested_parallel_slots: 4,
+    requested_n_batch: 2048,
+    requested_n_ubatch: 512,
+    chat_template_override: "{{ bos }}",
+  })) {
+    assert.equal(
+      matches({ ...DEFAULTS, [key]: value }, BLANK),
+      false,
+      `${key} pinned on the resident load must not be adopted by a blank config`,
+    );
+  }
+  // And the default-against-default case still adopts, which is the whole point of #8893.
+  assert.equal(matches(DEFAULTS, BLANK), true);
+});
+
+test("a blank chat template agrees with a load that has none", () => {
+  // Both ends trim: the applier's cleanTemplate and the load both send "" as null, so an
+  // all-whitespace override is not a difference.
+  assert.equal(
+    matches({ ...DEFAULTS, chat_template_override: "" }, BLANK),
+    true,
+  );
+  assert.equal(
+    matches(
+      { ...DEFAULTS, chat_template_override: null },
+      {
+        ...BLANK,
+        chatTemplateOverride: "   ",
+      },
     ),
     true,
   );
