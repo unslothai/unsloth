@@ -1484,6 +1484,7 @@ class FastModel(FastBaseModel):
                 full_finetuning = full_finetuning,
                 token = token,
                 device_map = device_map,
+                device_map_planner_kwargs = device_map_planner_kwargs,
                 trust_remote_code = trust_remote_code,
                 revision = base_revision,
                 **kwargs,

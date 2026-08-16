@@ -26,6 +26,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
 from ._utils import is_bfloat16_supported, maybe_prefetch_hf_snapshot
 from .llama import logger
+from .loader_utils import requested_device_map, resolve_unsloth_device_map
 
 __all__ = ["FastDiffusionModel", "DIFFUSION_MODEL_TYPES", "is_diffusion_model_type"]
 
@@ -140,6 +141,8 @@ class FastDiffusionModel:
         full_finetuning = False,
         token = None,
         device_map = "auto",
+        # Planner hints for device_map = "unsloth"; see resolve_unsloth_device_map.
+        device_map_planner_kwargs = None,
         trust_remote_code = False,
         attn_implementation = "eager",  # exact match with the reference golden logits
         revision = None,
@@ -194,6 +197,21 @@ class FastDiffusionModel:
             use_safetensors = kwargs.get("use_safetensors"),
             # Forward variant (e.g. "fp16") so the warm keeps variant weights.
             variant = kwargs.get("variant"),
+        )
+
+        # Same leaf-level resolution as llama.py and vision.py. Without it an opt-in
+        # "unsloth" reaches transformers, which turns an unknown device_map string into
+        # torch.device("unsloth") and raises instead of loading.
+        device_map = resolve_unsloth_device_map(
+            requested_device_map(device_map),
+            model_name,
+            full_finetuning = full_finetuning,
+            planner_kwargs = device_map_planner_kwargs,
+            token = token,
+            trust_remote_code = trust_remote_code,
+            revision = revision,
+            load_in_4bit = load_in_4bit,
+            load_in_8bit = load_in_8bit,
         )
 
         load_kwargs = dict(

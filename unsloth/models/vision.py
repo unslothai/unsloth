@@ -1173,6 +1173,9 @@ class FastBaseModel:
             planner_kwargs = device_map_planner_kwargs,
             token = token,
             trust_remote_code = trust_remote_code,
+            # The pin the config and weights below use. Planning against the default
+            # branch would size a different checkpoint than the one being loaded.
+            revision = _revision,
             load_in_4bit = load_in_4bit,
             load_in_8bit = load_in_8bit,
         )
