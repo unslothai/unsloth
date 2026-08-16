@@ -4799,13 +4799,21 @@ const ComposerToolsMenu: FC<{
           aui
             .composer()
             .addAttachment(file)
-            .catch(() => {
-              // The adapter shows its own toast for every refusal it raises (no
-              // model loaded, Vision switched off, unsupported type), so there is
-              // nothing to add here. Without the catch the rejection escapes as an
-              // unhandled promise rejection -- a red console error next to a toast
-              // that already said everything. Same contract as the page-wide drop
-              // handler above.
+            .catch((error: unknown) => {
+              // Same split as the paste path. A refusal the adapter has already
+              // toasted (no model loaded, Vision switched off) carries nothing
+              // new, and letting it escape only leaves an unhandled rejection in
+              // the console beside the toast that said everything. The rest --
+              // the 20 MB image cap, an unaccepted file type, a composer with no
+              // attachment support -- reject SILENTLY, so picking one of those
+              // from this menu used to fail with no feedback at all.
+              if (isAttachmentRejectionAlreadyToasted(error)) return;
+              toast.error("Could not attach that file.", {
+                description:
+                  error instanceof Error
+                    ? error.message
+                    : "The file is unsupported, unreadable, or exceeds its size limit.",
+              });
             });
         }
       }

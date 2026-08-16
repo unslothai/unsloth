@@ -1711,7 +1711,14 @@ export function useChatModelRuntime() {
                   // selection carried a remembered config, so on a bare model id
                   // this is the only thing that takes the failed target's value off
                   // the switch.
-                  disableVision: rollbackResponse.disable_vision ?? false,
+                  //
+                  // The pre-switch value, NOT the echo: the request above replays
+                  // loadedVisionDisabledByUser, which the backend gates on the model
+                  // having a projector, so a text-only GGUF the user had switched
+                  // off reports false and the echo would quietly switch Vision back
+                  // on. What is being restored is the user's setting, which the
+                  // rollback did not change.
+                  disableVision: stateBeforeUnload.disableVision,
                   loadedVisionDisabledByUser:
                     rollbackResponse.vision_disabled_by_user ?? false,
                   loadedVisionOnCpu: rollbackResponse.vision_on_cpu ?? false,
