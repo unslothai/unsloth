@@ -797,7 +797,13 @@ class _MLXTrainerAdapter:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        max_train_rows: Optional[int] = None,
+        max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
+        # Signature must match UnslothTrainer, which hands back this adapter on an
+        # MLX host. The MLX worker loads its own data and derives the row bound from
+        # its config, so the two bound arguments are accepted and deliberately not
+        # forwarded: a copy here would be a second source of truth.
         self._dataset_config = {
             "hf_dataset": dataset_source or "",
             "local_datasets": local_datasets,

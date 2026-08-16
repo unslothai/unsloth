@@ -324,18 +324,20 @@ def test_compat_local_inventory_preserves_minimax_music3_audio_type(monkeypatch,
         ),
         encoding = "utf-8",
     )
-    sources = types.SimpleNamespace(
+    sources = models_route._CompatLocalInventorySources(
         hf_cache_dir = models_dir,
         legacy_hf = tmp_path / "legacy",
         hf_default = tmp_path / "default",
-        lm_dirs = [],
+        lm_dirs = (),
+        known_hf_caches = (),
     )
 
-    async def scan(_models_root, _sources):
+    def scan(_models_root, *, custom_folders, sources):
         return [_local(d, model_format = "safetensors", id = str(d))]
 
     monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: sources)
-    monkeypatch.setattr(models_route, "_shared_compat_local_inventory_scan", scan)
+    monkeypatch.setattr(models_route, "collect_local_models", scan)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
     response = asyncio.run(
         models_route.list_local_models(models_dir = str(models_dir), current_subject = "test")

@@ -97,6 +97,8 @@ export const de = {
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
+      showMore: "Mehr anzeigen",
+      showLess: "Weniger anzeigen",
       settings: "Einstellungen",
       api: "API",
       lightMode: "Heller Modus",
@@ -110,6 +112,44 @@ export const de = {
       title: "Seite nicht gefunden",
       description: "{path} existiert nicht.",
       backToChat: "Zurück zum Chat",
+    },
+    selection: {
+      pinProjects: "Projekte anheften",
+      unpinProjects: "Projekte lösen",
+      deleteProjects: "Projekte löschen",
+      deleteProjectsTitle: "Projekte löschen",
+      deleteProjectsDescription:
+        "{count} Projekte löschen? Ihre Chats werden dauerhaft gelöscht.",
+      deleteProjectsFilesDescription:
+        "Der Arbeitsbereich-Ordner jedes Projekts wird von der Festplatte entfernt.",
+      countSelected: "{count} ausgewählt",
+      pinChats: "Chats anheften",
+      unpinChats: "Chats lösen",
+      archiveChats: "Chats archivieren",
+      markUnread: "Als ungelesen markieren",
+      deleteChats: "Chats löschen",
+      deleteTitle: "Chats löschen",
+      deleteDescription: "{count} Chats löschen? Das lässt sich nicht rückgängig machen.",
+      deleteFilesDescription:
+        "Der eigene Sandbox-Ordner jedes Chats wird von der Festplatte entfernt. Dateien, die sie in einem Projekt erstellt haben, bleiben im Arbeitsbereich dieses Projekts.",
+      deleteFilesLabel: "Dateien und Sandbox-Ordner löschen",
+      deleteChatFilesDescription:
+        "Der eigene Sandbox-Ordner dieses Chats wird von der Festplatte entfernt. Dateien, die er in einem Projekt geschrieben hat, bleiben im Arbeitsbereich des Projekts.",
+    },
+    organize: {
+      sidebarHeading: "Seitenleiste organisieren",
+      byProject: "Nach Projekt",
+      inOneList: "In einer Liste",
+      sortChatsBy: "Chats sortieren nach",
+      sortPinnedBy: "Angeheftete sortieren nach",
+      priority: "Priorität",
+      lastUpdated: "Zuletzt aktualisiert",
+      manualOrder: "Manuelle Reihenfolge",
+      moveUp: "Nach oben",
+      moveDown: "Nach unten",
+      organizeChats: "Chats organisieren",
+      organizeProjects: "Projekte organisieren",
+      sortPinnedChats: "Angeheftete Chats sortieren",
     },
     dialog: {
       deleteChat: {
@@ -407,6 +447,9 @@ export const de = {
           "Gibt VRAM nach der angegebenen Anzahl von Sekunden ohne Aktivität frei. Bei 0 bleibt das Modell geladen; der Mindestwert ist 60.",
         idleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen in Sekunden",
+        mediaEnable: "Bild- und Videomodell je Anfrage wechseln",
+        mediaEnableDescription:
+          "Lädt vor der Generierung ein darin angegebenes, bereits heruntergeladenes Bild- oder Videomodell aus einer API-Anfrage. Eine eigene Einstellung: Die Einstellung darüber gilt nur für das Chat-Modell. Standardmäßig deaktiviert.",
         mediaIdleUnload:
           "Automatisches Entladen bei Inaktivität für Bild und Video",
         mediaIdleUnloadDescription:
@@ -414,7 +457,7 @@ export const de = {
         mediaIdleSecondsAriaLabel:
           "Inaktivitätsdauer bis zum automatischen Entladen von Bild und Video in Sekunden",
         mediaIdlePaused:
-          "Pausiert, solange „Modell im GPU-Speicher behalten“ oder „Nur über die API geladene Modelle entladen“ aktiv ist.",
+          "Pausiert, solange „Modell im GPU-Speicher behalten“ aktiv ist.",
         idleNeedsEnable: "Aktivieren Sie zuerst „Modell je Anfrage wechseln“.",
         idleActiveViaEnv:
           "Automatisches Entladen bei Inaktivität ist über die Umgebungsvariable UNSLOTH_MODEL_IDLE_TTL aktiv.",
@@ -971,6 +1014,9 @@ export const de = {
       },
     },
     chat: {
+      projectsSection: "Projektbereich anzeigen",
+      projectsSectionDescription:
+        "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       title: "Chat",
       description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
       modelSelection: {
@@ -992,6 +1038,9 @@ export const de = {
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
       },
+      pastedTextThreshold: "Lange Einfügungen verdichten",
+      pastedTextThresholdDescription: "Eingefügter Text, der länger ist, wird zu einem .txt-Anhang, statt das Nachrichtenfeld zu füllen.",
+      pastedTextThresholdOff: "Aus",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
@@ -1114,6 +1163,9 @@ export const de = {
       confirmBeforeDeleting: "Vor dem Löschen bestätigen",
       confirmBeforeDeletingDescription:
         "Fragt vor dem Löschen eines Chats nach einer Bestätigung. Deaktivieren, um sofort zu löschen.",
+      alwaysDeleteFiles: "Dateien immer löschen",
+      alwaysDeleteFilesDescription:
+        "Beim Löschen eines Chats wird auch dessen eigener Sandbox-Ordner von der Festplatte entfernt. Dateien, die er in einem Projekt erstellt hat, bleiben im Arbeitsbereich dieses Projekts.",
       filesSection: "Dateien",
       uploadedFiles: "Hochgeladene Dateien",
       uploadedFilesDescription:

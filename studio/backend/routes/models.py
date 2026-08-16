@@ -1080,6 +1080,22 @@ async def _shared_compat_local_inventory_scan(
 
     requested_sources = sources
 
+    def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+        # Tag each model with its task and native-audio type for the model pickers.
+        # Inside the shared flight so overlapping callers reuse one classified result
+        # instead of each repeating the GGUF header reads.
+        from core.inference.native_audio import native_audio_type_from_local_path
+
+        return [
+            model.model_copy(
+                update = {
+                    "task": _local_model_task(model),
+                    "audio_type": native_audio_type_from_local_path(model.path),
+                }
+            )
+            for model in models
+        ]
+
     async def collect(
         expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
     ) -> List[LocalModelInfo]:
@@ -1091,7 +1107,11 @@ async def _shared_compat_local_inventory_scan(
         )
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _CompatLocalCacheChanged(models)
-        return models
+        classified = await asyncio.to_thread(classify, models)
+        # That hop is an await point of its own, so a mutation can land after the check above.
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _CompatLocalCacheChanged(models)
+        return classified
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[List[LocalModelInfo]] = None
@@ -1130,7 +1150,7 @@ async def _shared_compat_local_inventory_scan(
     # current. Answer with the freshest one (the loop only reaches here through
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
-    return superseded
+    return await asyncio.to_thread(classify, superseded)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -1176,19 +1196,6 @@ async def list_local_models(
 
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
-        # Tag each model with its task so the Images picker can filter to diffusion.
-        from core.inference.native_audio import native_audio_type_from_local_path
-
-        models = [
-            m.model_copy(
-                update = {
-                    "task": _local_model_task(m),
-                    "audio_type": native_audio_type_from_local_path(m.path),
-                }
-            )
-            for m in models
-        ]
-
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -4032,10 +4039,8 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
-    from utils.models.gguf_metadata import read_gguf_general_metadata
-
-    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
-    return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(path)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:

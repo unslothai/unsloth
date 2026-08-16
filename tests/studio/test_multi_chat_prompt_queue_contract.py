@@ -163,7 +163,10 @@ def test_composer_only_queues_behind_the_current_chat():
     assert "livePreStreamRunActive" in submit
     assert "liveThreadIsRunning || livePreStreamRunActive" in submit
     assert "startHydratedPromptQueue(" in submit
-    assert "aui.composer().getState().text.trim() !== queuedPrompt" in submit
+    # Read into a local first: the send guard arms on the untrimmed value too,
+    # since that is what a late DOM write carries.
+    assert "const cleared = aui.composer().getState().text" in submit
+    assert "cleared.trim() !== queuedPrompt" in submit
     assert "promptQueueStartPendingRef.current" in THREAD
     assert "promptQueueStartPendingRef.current.has(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
@@ -741,8 +744,10 @@ def test_clear_all_invalidates_and_removes_late_fresh_thread_initialization():
     assert CLEAR_ALL_CHATS.index("chatHistoryClearBoundary.advance();") < CLEAR_ALL_CHATS.index(
         "requestPromptQueueStop();"
     )
+    # Matched on the call prefix, not the whole call: #8932 gave clearStoredChats an options
+    # argument, which changes nothing about the ordering this pins.
     assert CLEAR_ALL_CHATS.index("requestPromptQueueStop();") < CLEAR_ALL_CHATS.index(
-        "return await clearStoredChats();"
+        "return await clearStoredChats("
     )
     assert "const historyClearGeneration = chatHistoryClearBoundary.capture();" in RUNTIME_PROVIDER
     assert "await throwIfHistoryWasCleared(initialized.remoteId);" in RUNTIME_PROVIDER
