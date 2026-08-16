@@ -94,6 +94,8 @@ export const ar = {
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
+      showMore: "عرض المزيد",
+      showLess: "عرض أقل",
       settings: "الإعدادات",
       api: "API",
       lightMode: "الوضع الفاتح",
@@ -107,6 +109,44 @@ export const ar = {
       title: "الصفحة غير موجودة",
       description: "{path} غير موجود.",
       backToChat: "العودة إلى المحادثة",
+    },
+    selection: {
+      pinProjects: "تثبيت المشاريع",
+      unpinProjects: "إلغاء تثبيت المشاريع",
+      deleteProjects: "حذف المشاريع",
+      deleteProjectsTitle: "حذف المشاريع",
+      deleteProjectsDescription:
+        "هل تريد حذف {count} مشاريع؟ ستُحذف محادثاتها نهائيًا.",
+      deleteProjectsFilesDescription:
+        "يُحذف مجلد مساحة عمل كل مشروع من القرص.",
+      countSelected: "{count} محددة",
+      pinChats: "تثبيت المحادثات",
+      unpinChats: "إلغاء تثبيت المحادثات",
+      archiveChats: "أرشفة المحادثات",
+      markUnread: "وضع علامة كغير مقروءة",
+      deleteChats: "حذف المحادثات",
+      deleteTitle: "حذف المحادثات",
+      deleteDescription: "هل تريد حذف {count} محادثة؟ لا يمكن التراجع عن ذلك.",
+      deleteFilesDescription:
+        "يُحذف مجلد بيئة العزل الخاص بكل محادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+      deleteFilesLabel: "حذف الملفات ومجلد بيئة العزل",
+      deleteChatFilesDescription:
+        "يُزال مجلد بيئة العزل الخاص بهذه المحادثة من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
+    },
+    organize: {
+      sidebarHeading: "تنظيم الشريط الجانبي",
+      byProject: "حسب المشروع",
+      inOneList: "في قائمة واحدة",
+      sortChatsBy: "ترتيب المحادثات حسب",
+      sortPinnedBy: "ترتيب المثبتة حسب",
+      priority: "الأولوية",
+      lastUpdated: "آخر تحديث",
+      manualOrder: "ترتيب يدوي",
+      moveUp: "تحريك لأعلى",
+      moveDown: "تحريك لأسفل",
+      organizeChats: "تنظيم المحادثات",
+      organizeProjects: "تنظيم المشاريع",
+      sortPinnedChats: "ترتيب المحادثات المثبتة",
     },
     dialog: {
       deleteChat: {
@@ -394,13 +434,16 @@ export const ar = {
           "حرّر ذاكرة VRAM بعد هذا العدد من ثواني الخمول. تُبقي القيمة 0 النموذج محمّلًا، والحد الأدنى 60 ثانية.",
         idleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول",
+        mediaEnable: "تبديل نموذج الصور والفيديو حسب الطلب",
+        mediaEnableDescription:
+          "تحميل نموذج صور أو فيديو منزّل ومذكور في طلب API قبل التوليد. إعداد مستقل: الإعداد أعلاه يخص نموذج المحادثة فقط. مُعطّل افتراضيًا.",
         mediaIdleUnload: "التفريغ التلقائي عند الخمول للصور والفيديو",
         mediaIdleUnloadDescription:
           "حرّر ذاكرة VRAM بتفريغ نموذجَي الصور والفيديو بعد هذا العدد من ثواني الخمول. إنه إعداد مستقل: الإعداد أعلاه يخصّ نموذج المحادثة فقط. تُبقي القيمة 0 النموذجين محمَّلين، والحد الأدنى 60 ثانية.",
         mediaIdleSecondsAriaLabel:
           "عدد الثواني قبل التفريغ التلقائي عند الخمول للصور والفيديو",
         mediaIdlePaused:
-          "متوقف مؤقتًا ما دام «إبقاء النموذج في ذاكرة كرت الرسوميات» أو «تفريغ النماذج التي حمّلتها واجهة API فقط» مفعّلًا.",
+          "متوقف مؤقتًا أثناء تفعيل إبقاء النموذج في ذاكرة وحدة معالجة الرسوميات.",
         idleNeedsEnable: "فعّل «تبديل النموذج حسب الطلب» أولًا.",
         idleActiveViaEnv:
           "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
@@ -936,6 +979,9 @@ export const ar = {
       },
     },
     chat: {
+      projectsSection: "إظهار قسم المشاريع",
+      projectsSectionDescription:
+        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -957,6 +1003,9 @@ export const ar = {
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
       },
+      pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
+      pastedTextThresholdDescription: "النص الملصق الأطول من هذا الحد يصبح مرفق \u200e.txt بدلاً من ملء مربع الرسالة.",
+      pastedTextThresholdOff: "إيقاف",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -1075,6 +1124,9 @@ export const ar = {
       confirmBeforeDeleting: "التأكيد قبل الحذف",
       confirmBeforeDeletingDescription:
         "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      alwaysDeleteFiles: "حذف الملفات دائمًا",
+      alwaysDeleteFilesDescription:
+        "حذف المحادثة يزيل أيضًا مجلد بيئة العزل الخاص بها من القرص. أما الملفات التي كتبتها داخل مشروع فتبقى في مساحة عمل ذلك المشروع.",
       filesSection: "الملفات",
       uploadedFiles: "الملفات المرفوعة",
       uploadedFilesDescription:

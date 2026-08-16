@@ -89,6 +89,8 @@ from .training import (
     should_use_mlx_training_backend,
 )
 
+from .dataset_bounds import bound_dataset_rows
+
 logger = get_logger(__name__)
 
 # Streaming eval has no __len__, so an unbounded eval would iterate the whole
@@ -2572,12 +2574,17 @@ class UnslothTrainer:
         dataset_local_path: Optional[str] = None,
         dataset_revision: Optional[str] = None,
         require_exact_resume_resources: bool = False,
+        max_train_rows: Optional[int] = None,
+        max_train_rows_seed: int = 3407,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
 
         Strategy: format first, then split — ensures both train and eval
         portions are formatted and templated.
+
+        max_train_rows bounds the rows kept before formatting, for a max_steps
+        run that cannot reach the whole dataset; see max_steps_dataset_rows.
 
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
@@ -3015,6 +3022,33 @@ class UnslothTrainer:
                 )
                 self._update_progress(
                     status_message = f"Sliced dataset to {len(dataset)} rows (indices {start}-{end})"
+                )
+
+            # Bound before the formatting/template/tokenization passes, which map over
+            # every row. Skipped when streaming (bounded lazily above) or when the user
+            # named an explicit range, including a bracketed split like train[1000:2000]:
+            # those are already the rows they asked for, not a corpus to sample from.
+            if (
+                (not dataset_streaming)
+                and dataset_slice_start is None
+                and dataset_slice_end is None
+                and "[" not in (train_split or "")
+            ):
+
+                def _log_bound(kept, total):
+                    logger.info(
+                        f"Bounded dataset to {kept} of {total} rows for a "
+                        f"max_steps run (seed {max_train_rows_seed})\n"
+                    )
+                    self._update_progress(
+                        status_message = f"Using {kept} of {total} rows (max_steps run)"
+                    )
+
+                dataset = bound_dataset_rows(
+                    dataset,
+                    max_train_rows,
+                    max_train_rows_seed,
+                    on_bound = _log_bound,
                 )
 
             if self.should_stop:

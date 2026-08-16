@@ -13,6 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+// Direct import, not via the @/features/chat barrel: the barrel is in an import cycle with this
+// file, so this key would still be in its temporal dead zone when the module-scope list below
+// reads it ("Cannot access ... before initialization"), killing the whole module graph.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
@@ -89,6 +93,8 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  // Grouping, sort and the manual row order.
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
   // Chat runtime prefs

@@ -97,6 +97,8 @@ export const fr = {
       export: "Exporter",
       recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
+      showMore: "Afficher plus",
+      showLess: "Afficher moins",
       settings: "Paramètres",
       api: "API",
       lightMode: "Mode clair",
@@ -110,6 +112,44 @@ export const fr = {
       title: "Page introuvable",
       description: "{path} n'existe pas.",
       backToChat: "Retour à la discussion",
+    },
+    selection: {
+      pinProjects: "Épingler les projets",
+      unpinProjects: "Détacher les projets",
+      deleteProjects: "Supprimer les projets",
+      deleteProjectsTitle: "Supprimer les projets",
+      deleteProjectsDescription:
+        "Supprimer {count} projets ? Leurs discussions seront supprimées définitivement.",
+      deleteProjectsFilesDescription:
+        "Le dossier de travail de chaque projet est retiré du disque.",
+      countSelected: "{count} sélectionnés",
+      pinChats: "Épingler les discussions",
+      unpinChats: "Détacher les discussions",
+      archiveChats: "Archiver les discussions",
+      markUnread: "Marquer comme non lu",
+      deleteChats: "Supprimer les discussions",
+      deleteTitle: "Supprimer les discussions",
+      deleteDescription: "Supprimer {count} discussions ? Cette action est irréversible.",
+      deleteFilesDescription:
+        "Le dossier bac à sable propre à chaque discussion est supprimé du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
+      deleteFilesLabel: "Supprimer les fichiers et le dossier bac à sable",
+      deleteChatFilesDescription:
+        "Le dossier bac à sable propre à cette discussion est retiré du disque. Les fichiers écrits dans un projet restent dans l'espace de travail du projet.",
+    },
+    organize: {
+      sidebarHeading: "Organiser la barre latérale",
+      byProject: "Par projet",
+      inOneList: "Dans une seule liste",
+      sortChatsBy: "Trier les discussions par",
+      sortPinnedBy: "Trier les épinglés par",
+      priority: "Priorité",
+      lastUpdated: "Dernière mise à jour",
+      manualOrder: "Ordre manuel",
+      moveUp: "Monter",
+      moveDown: "Descendre",
+      organizeChats: "Organiser les discussions",
+      organizeProjects: "Organiser les projets",
+      sortPinnedChats: "Trier les discussions épinglées",
     },
     dialog: {
       deleteChat: {
@@ -405,6 +445,9 @@ export const fr = {
           "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
         idleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique, en secondes",
+        mediaEnable: "Changer de modèle d’image et de vidéo par requête",
+        mediaEnableDescription:
+          "Charger, avant la génération, un modèle d’image ou de vidéo téléchargé indiqué dans une requête API. Réglage distinct : celui ci-dessus ne concerne que le modèle de discussion. Désactivé par défaut.",
         mediaIdleUnload:
           "Déchargement automatique en cas d’inactivité pour l’image et la vidéo",
         mediaIdleUnloadDescription:
@@ -412,7 +455,7 @@ export const fr = {
         mediaIdleSecondsAriaLabel:
           "Délai d’inactivité avant le déchargement automatique de l’image et de la vidéo, en secondes",
         mediaIdlePaused:
-          "En pause tant que « Conserver le modèle dans la mémoire du GPU » ou « Décharger uniquement les modèles chargés par l'API » est activé.",
+          "En pause tant que « Conserver le modèle en mémoire GPU » est activé.",
         idleNeedsEnable:
           "Activez d’abord « Changer de modèle par requête ».",
         idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",
@@ -968,6 +1011,9 @@ export const fr = {
       },
     },
     chat: {
+      projectsSection: "Afficher la section Projets",
+      projectsSectionDescription:
+        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
@@ -989,6 +1035,9 @@ export const fr = {
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
       },
+      pastedTextThreshold: "Condenser les collages longs",
+      pastedTextThresholdDescription: "Le texte collé plus long que cette valeur devient une pièce jointe .txt au lieu de remplir le champ de message.",
+      pastedTextThresholdOff: "Désactivé",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -1112,6 +1161,9 @@ export const fr = {
       confirmBeforeDeleting: "Confirmer avant de supprimer",
       confirmBeforeDeletingDescription:
         "Demande une confirmation avant de supprimer une discussion. Désactivez cette option pour supprimer immédiatement.",
+      alwaysDeleteFiles: "Toujours supprimer les fichiers",
+      alwaysDeleteFilesDescription:
+        "La suppression d'une discussion retire aussi son dossier bac à sable du disque. Les fichiers écrits dans un projet restent dans l'espace de travail de ce projet.",
       filesSection: "Fichiers",
       uploadedFiles: "Fichiers importés",
       uploadedFilesDescription:

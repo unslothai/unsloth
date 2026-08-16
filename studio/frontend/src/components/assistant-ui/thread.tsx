@@ -125,7 +125,10 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
-import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  settleThreadScopedSettingsForCopy,
+  useChatRuntimeStore,
+} from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
@@ -2128,6 +2131,9 @@ const Composer: FC<{
   const setPendingImageEditReference = useChatRuntimeStore(
     (s) => s.setPendingImageEditReference,
   );
+  const pastedTextMinChars = useChatPreferencesStore(
+    (state) => state.pastedTextMinChars,
+  );
   // Read by both writers that could put the sent text back: the input handlers
   // and the draft restore. Armed by every path that clears the composer.
   const justSentRef = useRef<SentTextGuard | null>(null);
@@ -2171,6 +2177,7 @@ const Composer: FC<{
           toast.error("Could not attach the pasted text.", {
             description: "Paste it again, or paste it in smaller pieces.",
           }),
+        pastedTextMinChars,
       );
       if (attachedPastedText) return;
       pasteClipboardFiles(
@@ -2186,7 +2193,7 @@ const Composer: FC<{
           }),
       );
     },
-    [aui, overlay],
+    [aui, overlay, pastedTextMinChars],
   );
 
   const composerText = useAuiState(({ composer }) => composer.text);
@@ -2629,11 +2636,10 @@ const Composer: FC<{
     const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    // A save that raced the send still holds the sent text; restoring it would
-    // undo the clear. Keyed on the thread that sent, so another thread's
-    // identical draft still restores. Drop it and show this thread's real
-    // state, which is empty: returning early would leave whatever the previous
-    // thread put in the shared composer on screen under this thread.
+    // A save that raced the send still holds the sent text, so restoring it
+    // would undo the clear. Keyed on the sending thread, so another thread's
+    // identical draft still restores. Clear rather than return early, which
+    // would leave the previous thread's text on screen under this one.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
@@ -2647,16 +2653,12 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftKey, aui]);
-  // Code outside the composer fills it directly, the saved-prompt menu and the
-  // prompt storage dialog being the two, and those writes never pass the guard.
-  // Text appearing while the sending thread is still on screen was put there
-  // deliberately, so the guard retires and the draft it autosaves survives. The
-  // thread check is what makes this safe: another thread's restored draft
-  // arrives under its own key and leaves the guard armed. Read live rather than
-  // from the render, so a pending render cannot retire it on stale text.
-  // Must stay declared after the restore above. Coming back to the sending
-  // thread runs both, and the restore has to clear the raced draft first, or
-  // this one would see the previous thread's text and retire on it.
+  // The saved-prompt menu and the prompt storage dialog fill the composer
+  // directly, bypassing the guard. Text appearing while the sending thread is
+  // on screen was put there deliberately, so retire; the draftKey check keeps
+  // another thread's restored draft from doing the same. Read live, or a
+  // pending render retires it on stale text. Must stay after the restore
+  // above, which clears the raced draft this would otherwise retire on.
   useEffect(() => {
     const guard = justSentRef.current;
     if (guard === null || guard.draftKey !== draftKey) return;
@@ -2830,6 +2832,11 @@ const Composer: FC<{
   const [pendingSend, setPendingSend] = useState(false);
   const pendingSendRef = useRef(false);
   const waitToastRef = useRef<string | number | null>(null);
+  // This chat's own settings are still on their way; a send now would run on the
+  // installation defaults showing in their place.
+  const threadScopedSettingsPending = useChatRuntimeStore(
+    (s) => s.threadScopedSettingsPending,
+  );
 
   const handleIndexingChange = useCallback((active: boolean) => {
     indexingActiveRef.current = active;
@@ -3232,7 +3239,7 @@ const Composer: FC<{
   cancelQueuedSendRef.current = cancelQueuedSend;
 
   const enqueueSend = useCallback(
-    (waitingOn: "indexing" | "images" | "audio" = "indexing") => {
+    (waitingOn: "indexing" | "images" | "audio" | "settings" = "indexing") => {
       if (pendingSendRef.current) return;
       pendingSendRef.current = true;
       setPendingSend(true);
@@ -3241,7 +3248,9 @@ const Composer: FC<{
           ? "Waiting for dropped images"
           : waitingOn === "audio"
             ? "Waiting for dropped audio"
-            : "Waiting for documents to finish indexing";
+            : waitingOn === "settings"
+              ? "Loading this chat's settings"
+              : "Waiting for documents to finish indexing";
       waitToastRef.current = toast(title, {
         description: "Your message will send automatically once they are ready.",
         duration: Infinity,
@@ -3353,6 +3362,15 @@ const Composer: FC<{
         enqueueSend();
         return true;
       }
+      // This chat's own settings have been asked for and have not arrived, so the store
+      // is showing the installation defaults and the run would be captured with them:
+      // a chat stored as "ask" could run tools without asking. Park it like any other
+      // wait, so the click still counts and the send fires once the snapshot lands.
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
+        return true;
+      }
       return false;
     },
     [
@@ -3360,6 +3378,7 @@ const Composer: FC<{
       shouldBlockSend,
       indexingActive,
       overlay,
+      threadScopedSettingsPending,
       enqueueSend,
       parkIfWaitingOnAttachments,
     ],
@@ -3376,6 +3395,7 @@ const Composer: FC<{
       !pendingSend ||
       !pendingSendRef.current ||
       indexingActive ||
+      threadScopedSettingsPending ||
       hasMaterializingImageAttachments ||
       hasMaterializingAudioAttachments
     ) {
@@ -3392,6 +3412,7 @@ const Composer: FC<{
   }, [
     pendingSend,
     indexingActive,
+    threadScopedSettingsPending,
     hasMaterializingImageAttachments,
     hasMaterializingAudioAttachments,
     aui,
@@ -3526,6 +3547,14 @@ const Composer: FC<{
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
+        return;
+      }
+      // Before the queue branch below, not after it: a prompt queued while this chat's
+      // own settings are still on their way is snapshotted from the installation
+      // defaults on screen, so a chat stored as "ask" would queue as "off".
+      if (threadScopedSettingsPending && !overlay) {
+        event.preventDefault();
+        enqueueSend("settings");
         return;
       }
 
@@ -3673,10 +3702,12 @@ const Composer: FC<{
       disableQueue,
       hasAttachments,
       hasPendingAudio,
+      enqueueSend,
       interceptSend,
       isResearchActive,
       overlay,
       parkIfWaitingOnAttachments,
+      threadScopedSettingsPending,
       promptQueueActive,
       promptQueueThreadIds,
       preStreamThreadIds,
@@ -6075,6 +6106,22 @@ const useForkMessageAction = () => {
     }
     setPending(true);
     try {
+      // The fork copies settings_json inside its own transaction, so anything not yet
+      // in the row is not in the copy: a pill toggled moments ago and still in the
+      // 400ms debounce, or one held because this chat's own read has not landed. The
+      // fork would otherwise open on the modes the chat had before, not the ones on
+      // screen when it was made.
+      try {
+        await settleThreadScopedSettingsForCopy(remoteId);
+      } catch {
+        // The row does not hold what is on screen, so a fork made now would carry the
+        // pre-edit modes and look like it had lost the change. Better to say so.
+        toast.error("Could not fork this chat", {
+          description:
+            "Its settings could not be saved, so the fork would not match. Please retry.",
+        });
+        return;
+      }
       const result = await forkChatThread(remoteId, {
         messageId,
         newThreadId: crypto.randomUUID(),
