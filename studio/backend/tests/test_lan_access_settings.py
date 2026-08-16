@@ -334,6 +334,16 @@ def _free_port_is_bindable(port: int) -> bool:
     return True
 
 
+def _wait_for_trust(expected: bool, timeout: float = 5.0) -> bool:
+    """The flag clears on a drain thread once the stopped listener's requests end."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if host_policy.remote_connector_active() is expected:
+            return True
+        time.sleep(0.02)
+    return host_policy.remote_connector_active() is expected
+
+
 def _require_lan_address() -> str:
     """The address these tests bind, or a skip on a host with no network address."""
     addresses = lan_access.detect_lan_addresses()
@@ -574,7 +584,7 @@ def test_a_stop_that_cannot_confirm_the_port_keeps_the_host_marked_reachable(mon
         lingering.close()
         settled = lan_settings.stop_lan_access(app)
         assert settled["state"] == "off" and settled["error"] is None
-        assert host_policy.remote_connector_active() is False
+        assert _wait_for_trust(False)
     finally:
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout = 5)
@@ -640,7 +650,7 @@ def test_start_and_stop_track_the_beyond_loopback_trust_flag(live_server):
     stopped = lan_settings.stop_lan_access(app)
     assert stopped["state"] == "off" and stopped["managed_by"] is None
     assert stopped["can_start"] is True
-    assert host_policy.remote_connector_active() is False
+    assert _wait_for_trust(False)
 
 
 @pytest.mark.allow_network
@@ -652,6 +662,37 @@ def test_auto_start_brings_the_listener_up_at_boot(live_server, stored_settings)
     # stopping now must not silently clear the preference
     lan_settings.stop_lan_access(app)
     assert lan_settings.get_lan_access_auto_start() is True
+
+
+def test_trust_outlives_the_sockets_until_accepted_requests_drain(monkeypatch):
+    """Stop closes the listening sockets, but uvicorn then drains the connections it
+    already accepted, and a request that arrived on the LAN stays a remote caller."""
+    connections = {object()}
+    server = SimpleNamespace(server_state = SimpleNamespace(connections = connections))
+    host_policy.set_lan_connector_active(True)
+    monkeypatch.setattr(lan_access, "_DRAIN_TIMEOUT", 5.0)
+
+    drain = threading.Thread(target = lan_access._clear_trust_after_drain, args = (server,))
+    drain.start()
+    try:
+        time.sleep(0.2)
+        assert host_policy.remote_connector_active() is True, "cleared while a request ran"
+        connections.clear()
+        drain.join(timeout = 5)
+        assert host_policy.remote_connector_active() is False
+    finally:
+        connections.clear()
+        drain.join(timeout = 5)
+        host_policy.set_lan_connector_active(False)
+
+
+def test_a_drain_that_finishes_after_a_restart_leaves_the_new_listener_trusted(monkeypatch):
+    server = SimpleNamespace(server_state = SimpleNamespace(connections = set()))
+    monkeypatch.setattr(lan_access, "_server", SimpleNamespace(should_exit = False))
+    host_policy.set_lan_connector_active(True)
+    lan_access._clear_trust_after_drain(server)
+    assert host_policy.remote_connector_active() is True
+    host_policy.set_lan_connector_active(False)
 
 
 def test_the_trust_flag_moves_with_the_listener_under_one_lock():
@@ -670,7 +711,11 @@ def test_the_trust_flag_moves_with_the_listener_under_one_lock():
         if "set_lan_connector_active" in body:
             holders.add(node.name)
     # only the two helpers that run under _lock may touch it
-    assert holders == {"start_lan_listener", "_release_listener_state"}, holders
+    assert holders == {
+        "start_lan_listener",
+        "_release_listener_state",
+        "_clear_trust_after_drain",
+    }, holders
 
 
 def test_start_refuses_while_a_block_is_in_force():
@@ -751,9 +796,9 @@ def test_management_rejects_api_keys():
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
     assert len(gated) == 4, f"expected 4 lan-access handlers, found {sorted(gated)}"
-    assert all(
-        gated.values()
-    ), f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    assert all(gated.values()), (
+        f"ungated lan-access handlers: {sorted(k for k, v in gated.items() if not v)}"
+    )
 
 
 def test_the_desktop_frontend_gate_admits_the_lan_listener():

@@ -42,6 +42,10 @@ _START_TIMEOUT = 10.0
 # kept under the ~5s Windows console-close budget run.py's shutdown path works to
 _STOP_TIMEOUT = 3.0
 
+# a LAN request already accepted can run for minutes, and it stays a remote caller
+# for all of them; on expiry the trust flag is left active rather than downgraded
+_DRAIN_TIMEOUT = 300.0
+
 # uvicorn's own default, so a burst queues on the LAN socket as it does on loopback
 _LISTEN_BACKLOG = 2048
 
@@ -255,19 +259,42 @@ def start_lan_listener(app, loop, port: int) -> tuple[str, ...]:
     return _bound_addresses
 
 
-def _release_listener_state() -> None:
-    """Drop the listener references and the trust flag. The caller holds ``_lock``.
+def _release_listener_state(*, clear_trust: bool = True) -> None:
+    """Drop the listener references. The caller holds ``_lock``.
 
     The beyond-loopback flag moves with the listener state under the same lock:
     updating it from a caller let a concurrent start and stop interleave into a
-    live listener that ``remote_connector_active()`` reported as absent.
+    live listener that ``remote_connector_active()`` reported as absent. Pass
+    ``clear_trust=False`` when connections accepted by the old listener may still
+    be running, and hand the flag to :func:`_clear_trust_after_drain`.
     """
     global _server, _serve_loop, _sockets, _port
 
     _server = _serve_loop = None
     _sockets = ()
     _port = None
-    set_lan_connector_active(False)
+    if clear_trust:
+        set_lan_connector_active(False)
+
+
+def _clear_trust_after_drain(server) -> None:
+    """Hold the beyond-loopback flag until the stopped listener's requests finish.
+
+    Closing the listening sockets stops new connections, but uvicorn then drains
+    the accepted ones, and a request that started on the LAN is still a remote
+    caller for its whole life.
+    """
+    state = getattr(server, "server_state", None)
+    deadline = time.monotonic() + _DRAIN_TIMEOUT
+    while state is not None and state.connections and time.monotonic() < deadline:
+        time.sleep(0.05)
+    with _lock:
+        if state is not None and state.connections:
+            logger.warning("LAN access left the trust flag on: connections did not drain")
+            return
+        # a listener started again while the old one drained, so it owns the flag now
+        if _server is None:
+            set_lan_connector_active(False)
 
 
 def _close_sockets(sockets) -> None:
@@ -315,7 +342,13 @@ def stop_lan_listener() -> bool:
             logger.info("LAN access stopped with its server loop")
             return True
         if _wait_until(lambda: all(sock.fileno() == -1 for sock in sockets), _STOP_TIMEOUT):
-            _release_listener_state()
+            _release_listener_state(clear_trust = False)
+            threading.Thread(
+                target = _clear_trust_after_drain,
+                args = (server,),
+                name = "lan-access-drain",
+                daemon = True,
+            ).start()
             logger.info("LAN access stopped")
             return True
         # ownership is kept so a retry waits on these same sockets, and so a second
