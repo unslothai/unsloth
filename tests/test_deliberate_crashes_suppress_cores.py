@@ -93,21 +93,14 @@ _FATAL_SIGNAL_RE = re.compile(r"\b(?:" + "|".join(_FATAL_SIGNALS) + r")\b")
 
 _PR_SET_DUMPABLE = 4
 
-# Raw-text prefilter, run before any parsing. The AST is a subset of the source, so a
-# file whose text holds none of these cannot match and parsing it is wasted work. This
-# is what keeps the check cheap: 32 of ~1050 files are actually parsed. Measured at
-# ~1.5s for the whole suite against ~9s with every file parsed. The scope and alias
-# analysis added since is what accounts for the difference from the 496ms this once
-# cost; the prefilter itself still admits the same 32 files.
-# Deliberately looser than `_CRASH_MARKERS`: matching `string_at(0)` exactly meant
-# `string_at( 0)` was skipped before it was ever parsed. The prefilter only decides what
-# to parse, so it should over-match and let the AST checks be the precise ones.
+# Raw-text prefilter, so only files that could match are parsed (32 of ~1050, ~1.5s
+# against ~9s). Deliberately looser than `_CRASH_MARKERS`: it only decides what to
+# parse, so it should over-match and leave precision to the AST checks. Matching
+# `string_at(0)` exactly once skipped `string_at( 0)` before it was ever parsed.
 _PREFILTER = ("string_at(", "abort(", "_sigsegv(") + _SIGNAL_DIRECTED
-# An aliased import carries none of the call shapes above: `from os import abort as die`
-# then `die()` has no "abort(" anywhere, so the prefilter skipped the file and the alias
-# resolution that would have caught it never ran. The import spelling is the one piece of
-# text such a file must contain, so match on that too. Costs one more scan of files that
-# import these names and nothing else.
+# An aliased import carries none of the shapes above: `from os import abort as die`
+# then `die()` has no "abort(" anywhere. The import spelling is the one text such a
+# file must contain, so match that too.
 _PREFILTER += ("import abort", "import string_at", "import raise_signal", "import kill")
 
 
@@ -239,11 +232,10 @@ def _assigned_pair(node):
 def _string_env(tree):
     """Name to foldable string, per scope, so same-named locals cannot collide.
 
-    One flat map let an unrelated function's `SCRIPT = "print(1)"` overwrite a
-    module-level `SCRIPT` that really does crash, and the executed script then went
-    unchecked. Functions are seeded from the module bindings and shadow them locally.
-    Annotated constants and strings assembled inside a test are folded either way,
-    so `_SAFE = _SUPPRESS + "ctypes.string_at(0)"` is still judged as what it becomes.
+    One flat map let an unrelated `SCRIPT = "print(1)"` overwrite a module-level
+    `SCRIPT` that really crashes. Functions are seeded from the module bindings and
+    shadow them locally; concatenations fold, so `_SUPPRESS + "string_at(0)"` is
+    judged as what it becomes.
     """
     owner = _enclosing_scopes(tree)
     module_env, scoped = {}, {}
@@ -295,10 +287,9 @@ def _rebound_names(scope):
 def _sequence_env(tree, owner):
     """Name to the elements of a list/tuple it is bound to.
 
-    Separate from `_string_env` because that one folds to a string and a command
-    vector does not fold. Flat by name rather than per scope: a false name collision
-    here can only add candidate strings to read, and reading one extra string is a
-    cheaper mistake than missing the script a child actually runs.
+    Separate from `_string_env`, which folds to a string; a command vector does not.
+    Flat by name rather than per scope: a collision only adds a candidate string to
+    read, which is cheaper than missing the script a child runs.
     """
     out = {}
     for node in ast.walk(tree):
@@ -314,11 +305,9 @@ def _sequence_env(tree, owner):
 def _snippets(tree):
     """Strings that actually reach a child interpreter.
 
-    A string only counts if it is passed as a call argument, directly or through a
-    name, a list/tuple, or a concatenation. That is what `subprocess.run([exe, "-c",
-    SCRIPT])` looks like. Treating every string literal as a candidate script meant an
-    ordinary expectation such as `assert "ctypes.string_at(0)" in text` was reported as
-    a deliberate crash, which would fail CI over a string nothing executes.
+    Only a call argument counts, directly or via a name, list/tuple or concatenation,
+    as in `subprocess.run([exe, "-c", SCRIPT])`. Counting every literal flagged
+    ordinary assertions over a string nothing executes.
     """
     owner, module_env, scoped = _string_env(tree)
     sequences = _sequence_env(tree, owner)
@@ -379,13 +368,10 @@ def _snippets(tree):
 def _crash_aliases(tree):
     """Names imported directly from a crashing module, e.g. `from os import abort`.
 
-    Needed so an aliased call is still recognised. A bare `abort()` is only fatal if it
-    came from `os` or `ctypes`; Playwright's `route.abort()` keeps its receiver and is
-    still correctly ignored.
-
-    Keyed by the name the call site uses and valued by the name the rules are written
-    against, because `from os import abort as die` binds `die` and a lookup of `die` in
-    `_CRASH_CALLS` finds nothing. Without the mapping an aliased import was invisible.
+    A bare `abort()` is only fatal from `os` or `ctypes`; Playwright's `route.abort()`
+    keeps its receiver and stays ignored. Keyed by the call-site name and valued by the
+    name the rules use, since `from os import abort as die` binds `die`, which finds
+    nothing in `_CRASH_CALLS`.
     """
     out = {}
     for node in ast.walk(tree):
