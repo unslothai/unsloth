@@ -244,10 +244,16 @@ test("the project composer's choice survives the swap to a thread", () => {
   );
   // The swap: this is what unmounts the composer.
   assert.match(page, /\{pendingNewThreadId \? \(/);
-  // Adopted before it, in the path that learns the id.
+  // Adopted before it, in the path that learns the id, and only for the choice
+  // this composer recorded: a later composer's choice is refused, not consumed.
   assert.match(
     page,
-    /adoptPendingProjectAttachmentTarget\(activeThreadId\);\s*setPendingNewThreadId\(activeThreadId\);/,
+    /adoptPendingProjectAttachmentTarget\(\s*activeThreadId,\s*captured\?\.nonce === newThreadNonce \? captured\.claim : NO_SUCH_CLAIM,\s*\);\s*setPendingNewThreadId\(activeThreadId\);/,
+  );
+  assert.match(page, /const NO_SUCH_CLAIM = -1;/);
+  assert.match(
+    page,
+    /claim: readPendingAttachmentTargetClaim\(\),/,
   );
 
   // Why the bar cannot cover it: the Thread's bar starts with an id, so the

@@ -192,9 +192,11 @@ import {
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+  PENDING_CHAT_ATTACHMENT_KEY,
   hasGgufSource,
   isDownloadableHubRepo,
   loadOptionalBool,
+  readPendingAttachmentTargetClaim,
   threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1352,6 +1354,35 @@ function ProjectLanding({
     [projectId],
   );
 
+  // No composer ever records under this, so passing it refuses the adoption.
+  // (adoptPendingProjectAttachmentTarget only adopts on an exact claim match.)
+  const NO_SUCH_CLAIM = -1;
+
+  // The claim the composer on screen recorded its attach choice under. Every
+  // fresh composer shares one pending key, so the claim is what tells one
+  // composer's choice from the next one's.
+  const pendingTargetClaimRef = useRef<{
+    nonce: string;
+    claim: number;
+  } | null>(null);
+  useEffect(() => {
+    return useChatRuntimeStore.subscribe((state, previous) => {
+      const pending =
+        state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
+      if (
+        pending === undefined ||
+        pending ===
+          previous.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY]
+      ) {
+        return;
+      }
+      pendingTargetClaimRef.current = {
+        nonce: newThreadNonce,
+        claim: readPendingAttachmentTargetClaim(),
+      };
+    });
+  }, [newThreadNonce]);
+
   useEffect(() => {
     if (!activeThreadId) {
       // Leaving a created chat for a new one: rotate the nonce so the runtime
@@ -1368,11 +1399,20 @@ function ProjectLanding({
     // Hand the composer's attach choice to the chat it just created. Setting
     // this swaps ProjectComposer for Thread, so the bar that holds the choice
     // unmounts without ever seeing the id, and its cleanup drops it.
+    //
+    // Only this composer's own choice: a send that materializes after the user
+    // has opened another fresh composer would otherwise consume that composer's
+    // choice, leaving it on the default and this chat on a scope nobody picked.
+    // An unrecognised claim is refused rather than adopted.
+    const captured = pendingTargetClaimRef.current;
     useChatRuntimeStore
       .getState()
-      .adoptPendingProjectAttachmentTarget(activeThreadId);
+      .adoptPendingProjectAttachmentTarget(
+        activeThreadId,
+        captured?.nonce === newThreadNonce ? captured.claim : NO_SUCH_CLAIM,
+      );
     setPendingNewThreadId(activeThreadId);
-  }, [activeThreadId, pendingNewThreadId]);
+  }, [activeThreadId, pendingNewThreadId, newThreadNonce]);
 
   useEffect(() => {
     let cancelled = false;
