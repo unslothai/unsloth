@@ -5908,87 +5908,86 @@ print('PEPCMP=' + ('ge' if _ok else 'lt'))
         if ($_pepProbe.Ok -and $_pepProbe.Output -match '(?m)^PEPCMP=(ge|lt)\s*$') {
             $_updateOk = ($Matches[1] -eq "ge")
         } else {
-            # PEP 440's public-version grammar. The probe above rejects anything that
-            # is not a version, and its rejection lands here, so this fallback has to
-            # refuse it too: stripping the tail off 999garbage would compare it as
-            # 999.0 and confirm a malformed distribution. A version that fails this
-            # leaves $_updateOk false, which is the warning outcome below, not a pass.
-            $_pep440 = '^(\d+!)?\d+(\.\d+)*([-._]?(a|b|c|rc|alpha|beta|pre|preview)[-._]?\d*)?' +
-                       '([-._]?(post|rev|r)[-._]?\d*|-\d+)?([-._]?dev[-._]?\d*)?' +
-                       '(\+[a-z0-9]+([-._][a-z0-9]+)*)?$'
-            # the epoch orders above everything in the release: 1!0.1 > 2.0
-            # PEP 440 allows a leading v: v2.0 == 2.0
-            $_postTrim = $PostVer.Trim() -replace '^[vV]', ''
-            $_latestTrim = $LatestVer.Trim() -replace '^[vV]', ''
-            $_postEpoch = 0; $_latestEpoch = 0
-            if ($_postTrim -match '^(\d+)!') { $_postEpoch = [int]$Matches[1] }
-            if ($_latestTrim -match '^(\d+)!') { $_latestEpoch = [int]$Matches[1] }
-            $_postBody = $_postTrim -replace '^\d+!', ''
-            $_latestBody = $_latestTrim -replace '^\d+!', ''
-            $_postNum = ($_postBody -replace '[^0-9.].*$', '').TrimEnd('.')
-            $_latestNum = ($_latestBody -replace '[^0-9.].*$', '').TrimEnd('.')
-            # 1.0.0 == 1.0 per PEP 440: strip trailing zero segments, then re-pad to
-            # the two components [version] requires
-            $_postNum = $_postNum -replace '(\.0)+$', ''
-            $_latestNum = $_latestNum -replace '(\.0)+$', ''
-            if ($_postNum -and $_postNum -notmatch '\.') { $_postNum = "$_postNum.0" }
-            if ($_latestNum -and $_latestNum -notmatch '\.') { $_latestNum = "$_latestNum.0" }
-            if ($_postNum -match '^\d+\.\d+' -and $_latestNum -match '^\d+\.\d+' -and
-                ($_postTrim -imatch $_pep440) -and ($_latestTrim -imatch $_pep440)) {
-                try {
-                    if ($_postEpoch -ne $_latestEpoch) {
-                        $_updateOk = ($_postEpoch -gt $_latestEpoch)
-                    } elseif ([version]$_postNum -gt [version]$_latestNum) {
-                        $_updateOk = $true
-                    } elseif ([version]$_postNum -eq [version]$_latestNum) {
-                        # equal numeric prefixes: pre/dev orders BELOW the final release
-                        # and post ABOVE it, on either side -- an announced 1.0.post1 is
-                        # not satisfied by an installed 1.0, and within a class the
-                        # trailing number decides
-                        $_sufRank = {
-                            param($_v)
-                            # class, stage, number, then the compound tail: dev < a < b <
-                            # c/rc < final < post, and a suffix AFTER the first stage
-                            # still orders (1.0rc1.dev1 < 1.0rc1 < 1.0rc1.post1)
-                            # separators kept first: PEP 440's implicit post release is a
-                            # bare -N after the release (1.0-1 == 1.0.post1)
-                            $_sep = ($_v -replace '^[0-9.]+', '').ToLower()
-                            $_ipn = -1
-                            if ($_sep -match '^-(\d+)') { $_ipn = [int]$Matches[1] }
-                            $_rest = $_sep -replace '^[-._]+', ''
-                            $_t = ''; $_n = 0; $_tail = $_rest
-                            # r and rev also spell post, both after rc so a release
-                            # candidate never matches them
-                            if ($_rest -match '^(dev|post|rev|alpha|beta|preview|pre|rc|a|b|c|r)[-._]?(\d*)') {
-                                $_t = $Matches[1]
-                                if ($Matches[2]) { $_n = [int]$Matches[2] }
-                                $_tail = $_rest.Substring($Matches[0].Length)
-                            }
-                            $_trail = 0; $_tn = 0
-                            if ($_tail -match '(dev|post)[-._]?(\d*)') {
-                                $_trail = if ($Matches[1] -eq 'dev') { -1 } else { 1 }
-                                if ($Matches[2]) { $_tn = [int]$Matches[2] }
-                            }
-                            if ($_ipn -ge 0) { return @(1, 0, $_ipn, $_trail, $_tn) }
-                            switch ($_t) {
-                                'dev'  { return @(-3, 0, $_n, $_trail, $_tn) }
-                                { $_ -in @('post', 'rev', 'r') } { return @(1, 0, $_n, $_trail, $_tn) }
-                                { $_ -in @('a', 'alpha') } { return @(-2, 0, $_n, $_trail, $_tn) }
-                                { $_ -in @('b', 'beta') } { return @(-2, 1, $_n, $_trail, $_tn) }
-                                { $_ -in @('c', 'rc', 'pre', 'preview') } { return @(-2, 2, $_n, $_trail, $_tn) }
-                            }
-                            return @(0, 0, $_n, $_trail, $_tn)
-                        }
-                        $_pr = & $_sufRank $_postBody
-                        $_lr = & $_sufRank $_latestBody
-                        $_updateOk = $false
-                        for ($_ri = 0; $_ri -lt 5; $_ri++) {
-                            if ($_pr[$_ri] -gt $_lr[$_ri]) { $_updateOk = $true; break }
-                            if ($_pr[$_ri] -lt $_lr[$_ri]) { break }
-                            if ($_ri -eq 4) { $_updateOk = $true }
-                        }
+            # Last resort: python ran the probe above but could not run the comparator.
+            # A full port of _pep440_key rather than another hand-rolled rank -- the
+            # scalar version kept tying compound suffixes (1.0a1.post1.dev1 with
+            # 1.0a1.post1). Returns $null for anything that is not a PEP 440 version,
+            # which leaves $_updateOk false: the warning outcome below, never a pass.
+            $_pepKey = {
+                param($_v)
+                # "$_v" not $_v ?? '': the null-coalescing operator is PowerShell 7
+                # syntax and this script is parsed by Windows PowerShell 5.1
+                $_s = "$_v".Trim()
+                $_s = ($_s -replace '^[vV]', '').ToLower()
+                $_ep = 0
+                if ($_s -match '^(\d+)!') { $_ep = [int]$Matches[1]; $_s = $_s.Substring($Matches[0].Length) }
+                if ($_s -notmatch '^\d+(\.\d+)*') { return $null }
+                $_relStr = $Matches[0]
+                $_s = $_s.Substring($_relStr.Length)
+                $_rel = [System.Collections.ArrayList]@()
+                foreach ($_seg in $_relStr.Split('.')) { [void]$_rel.Add([int]$_seg) }
+                while ($_rel.Count -gt 0 -and $_rel[$_rel.Count - 1] -eq 0) { $_rel.RemoveAt($_rel.Count - 1) }
+                # the local label is split off before the stage scan and never ranked
+                # here: PyPI forbids local versions, so the announced side never has one
+                $_loc = ''
+                $_plus = $_s.IndexOf('+')
+                if ($_plus -ge 0) {
+                    $_loc = $_s.Substring($_plus + 1)
+                    $_s = $_s.Substring(0, $_plus)
+                    if ($_loc -notmatch '^[a-z0-9]+([-._][a-z0-9]+)*$') { return $null }
+                }
+                $_pre = $null; $_post = $null; $_dev = $null; $_seen = 0
+                while ($_s) {
+                    # the implicit post release: a bare -N, valid after the release and
+                    # after a prerelease, with only dev allowed to follow it
+                    if ($_s -match '^-(\d+)($|[-._]|dev)') {
+                        if ($_seen -ge 2) { return $null }
+                        $_seen = 2; $_post = [int]$Matches[1]
+                        $_s = $_s.Substring(1 + $Matches[1].Length)
+                        continue
                     }
-                } catch {}
+                    if ($_s -notmatch '^[-._]?(alpha|beta|preview|pre|rc|a|b|c|post|rev|r|dev)[-._]?(\d*)') { break }
+                    $_tok = $Matches[1]
+                    $_num = if ($Matches[2]) { [int]$Matches[2] } else { 0 }
+                    $_rank = if ($_tok -eq 'dev') { 3 } elseif ($_tok -in @('post', 'rev', 'r')) { 2 } else { 1 }
+                    # PEP 440 allows each of pre, post and dev once, in that order
+                    if ($_rank -le $_seen) { return $null }
+                    $_seen = $_rank
+                    if ($_rank -eq 2) { $_post = $_num }
+                    elseif ($_rank -eq 3) { $_dev = $_num }
+                    else {
+                        $_stage = switch ($_tok) {
+                            { $_ -in @('a', 'alpha') } { 0; break }
+                            { $_ -in @('b', 'beta') } { 1; break }
+                            default { 2 }
+                        }
+                        $_pre = @($_stage, $_num)
+                    }
+                    $_s = $_s.Substring($Matches[0].Length)
+                }
+                # anything left over is not a version at all (999garbage)
+                if ($_s) { return $null }
+                if ($null -eq $_pre) {
+                    # an absent pre sorts ABOVE any pre unless this is a bare dev build
+                    $_pre = if ($null -eq $_post -and $null -ne $_dev) { @(-1, 0) } else { @(9, 0) }
+                }
+                # release padded so 1.0 and 1.0.1 compare segment by segment
+                $_key = [System.Collections.ArrayList]@($_ep)
+                for ($_i = 0; $_i -lt 6; $_i++) { [void]$_key.Add($(if ($_i -lt $_rel.Count) { $_rel[$_i] } else { 0 })) }
+                [void]$_key.Add($_pre[0]); [void]$_key.Add($_pre[1])
+                [void]$_key.Add($(if ($null -eq $_post) { -1 } else { $_post }))
+                # dev numbers are unbounded, so an absent dev needs a real infinity
+                [void]$_key.Add($(if ($null -eq $_dev) { [double]::PositiveInfinity } else { [double]$_dev }))
+                return $_key.ToArray()
+            }
+            $_pk = & $_pepKey $PostVer
+            $_lk = & $_pepKey $LatestVer
+            if ($null -ne $_pk -and $null -ne $_lk) {
+                for ($_ri = 0; $_ri -lt $_pk.Count; $_ri++) {
+                    if ($_pk[$_ri] -gt $_lk[$_ri]) { $_updateOk = $true; break }
+                    if ($_pk[$_ri] -lt $_lk[$_ri]) { break }
+                    if ($_ri -eq $_pk.Count - 1) { $_updateOk = $true }
+                }
             }
         }
         if (-not $_updateOk -and $pypiJson -and $pypiJson.releases) {
