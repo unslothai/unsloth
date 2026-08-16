@@ -138,6 +138,7 @@ import { isMultimodalResponse } from "../types/api";
 import type {
   CpuFallbackReason,
   GgufVariantDetail,
+  OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
   OpenAIMessageContent,
@@ -334,6 +335,7 @@ function isServerSideBuiltinToolPart(
 }
 
 const FIRST_THREAD_SAVE_TIMEOUT_MS = 250;
+const rollingContextNoticeThreads = new Set<string>();
 
 type ThreadAutosaveHandle = {
   registerFirstSave(threadId: string, promise: Promise<void>): Promise<void>;
@@ -4600,6 +4602,7 @@ export function createOpenAIStreamAdapter(
       // STREAMED yield is what gets saved.
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
+      let contextTruncation: OpenAIChatChunk["context_truncated"];
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -4609,6 +4612,7 @@ export function createOpenAIStreamAdapter(
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
+        contextTruncation,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5273,6 +5277,9 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context-usage bar
             // and tok/s readout populate (backend gates it on include_usage).
             stream_options: { include_usage: true },
+            ...(activeModel?.isGguf === true
+              ? { context_overflow: "truncate_oldest" as const }
+              : {}),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,
@@ -5424,6 +5431,25 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.context_truncated) {
+                contextTruncation = chunk.context_truncated;
+                const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                if (
+                  resolvedThreadId &&
+                  activeThreadId === resolvedThreadId &&
+                  !rollingContextNoticeThreads.has(resolvedThreadId)
+                ) {
+                  rollingContextNoticeThreads.add(resolvedThreadId);
+                  toast.info("Older turns omitted from model context", {
+                    description:
+                      "The full conversation is still visible and saved. " +
+                      "Studio removed complete older turns from this request so the chat can continue.",
+                    duration: 8000,
+                  });
+                }
                 continue;
               }
 
@@ -6355,6 +6381,7 @@ export function createOpenAIStreamAdapter(
               // Persisted so Continue survives a reload; cleared on a normal end.
 
               openaiCodexReasoning: codexReasoningLedger,
+              contextTruncation,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -6433,6 +6460,7 @@ export function createOpenAIStreamAdapter(
                 timing: partialTiming,
                 custom: {
                   ...reasoningDurationTracker.metadata(),
+                  contextTruncation,
                   // This partial is unfinished too, so it also offers Continue.
                   incomplete: {
                     reason:

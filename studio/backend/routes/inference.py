@@ -53,6 +53,11 @@ from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
 )
+from core.inference.context_window import (
+    estimate_message_tokens as _estimate_message_tokens,
+    estimate_messages_tokens as _estimate_messages_tokens,
+    truncate_oldest_messages as _truncate_oldest_messages,
+)
 from core.inference.orchestrator import (
     AUDIO_GENERATION_MAX_TOKENS,
     GenStreamError,
@@ -640,13 +645,32 @@ _OVERFLOW_TRUNCATE_MAX_RETRIES = 3
 _OVERFLOW_PROMPT_TARGET_FRACTION = 0.75
 
 
+def _overflow_truncation_policy(payload) -> Optional[str]:
+    requested = getattr(payload, "context_overflow", None)
+    if requested is not None:
+        return requested if requested in ("truncate_middle", "truncate_oldest") else None
+    server_default = os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower()
+    return server_default if server_default in ("truncate_middle", "truncate_oldest") else None
+
+
 def _overflow_truncation_requested(payload) -> bool:
     """True when the request (or the UNSLOTH_CONTEXT_OVERFLOW server default,
     for clients that cannot send custom fields) opted into truncation."""
-    requested = getattr(payload, "context_overflow", None)
-    if requested is not None:
-        return requested == "truncate_middle"
-    return os.environ.get("UNSLOTH_CONTEXT_OVERFLOW", "").strip().lower() == "truncate_middle"
+    return _overflow_truncation_policy(payload) is not None
+
+
+def _context_truncated_sse_chunk(
+    completion_id: str, model_name: str, truncation: dict
+) -> str:
+    data = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model_name,
+        "choices": [],
+        "context_truncated": truncation,
+    }
+    return f"data: {json.dumps(data)}\n\n"
 
 
 def _parse_overflow_counts(err_text: str):
@@ -657,24 +681,6 @@ def _parse_overflow_counts(err_text: str):
     if m_prompt and m_ctx:
         return int(m_prompt.group(1)), int(m_ctx.group(1))
     return None
-
-
-def _estimate_message_tokens(msg: dict) -> int:
-    try:
-        return max(1, len(json.dumps(msg, ensure_ascii = False)) // 4)
-    except Exception:
-        return 1
-
-
-def _estimate_messages_tokens(messages: list) -> int:
-    """Conservatively estimate a complete message list.
-
-    Templates disagree about when historical ``reasoning_content`` renders,
-    and arbitrary GGUFs can carry custom templates. Counting the serialized
-    field avoids a retry that still exceeds context. The overflow recovery path
-    clips large reasoning traces before it evicts conversation turns.
-    """
-    return sum(_estimate_message_tokens(msg) for msg in messages)
 
 
 def _truncate_middle_messages(messages: list, keep_ratio: float):
@@ -792,14 +798,16 @@ def _clip_long_contents(messages: list, target_est: int) -> int:
     return clipped
 
 
-def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
+def _apply_overflow_truncation(
+    body: dict, err_text: str, policy: str = "truncate_middle"
+) -> bool:
     """Shrink a passthrough body after an upstream context overflow: drop
     middle turn-groups, clip still-oversized contents, clamp ``max_tokens``
     to the generation headroom. Returns False when nothing could shrink."""
     counts = _parse_overflow_counts(err_text)
     messages = body.get("messages") or []
     pre_clip_est = _estimate_messages_tokens(messages)
-    clipped = _clip_reasoning_contents(messages)
+    clipped = 0 if policy == "truncate_oldest" else _clip_reasoning_contents(messages)
     total_est = _estimate_messages_tokens(messages)
     if counts:
         n_prompt, n_ctx = counts
@@ -819,10 +827,16 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     # Scale the server-token target into char-estimate units.
     target_est = int(total_est * keep_ratio)
 
-    new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
+    truncate = (
+        _truncate_oldest_messages if policy == "truncate_oldest" else _truncate_middle_messages
+    )
+    new_messages, dropped = truncate(messages, keep_ratio)
     if dropped:
         body["messages"] = new_messages
-    if _estimate_messages_tokens(body.get("messages") or []) > target_est:
+    if (
+        policy != "truncate_oldest"
+        and _estimate_messages_tokens(body.get("messages") or []) > target_est
+    ):
         clipped += _clip_long_contents(body.get("messages") or [], target_est)
     if not dropped and not clipped:
         return False
@@ -831,8 +845,9 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
         cur_max = body.get("max_tokens")
         body["max_tokens"] = min(cur_max, headroom) if cur_max else headroom
     logger.warning(
-        "context_overflow=truncate_middle: dropped %d middle messages, clipped "
+        "context_overflow=%s: dropped %d messages, clipped "
         "%d contents (keep_ratio %.2f); retrying within the real window",
+        policy,
         dropped,
         clipped,
         keep_ratio,
@@ -13836,6 +13851,7 @@ async def openai_chat_completions(
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
+                    context_overflow = _overflow_truncation_policy(payload),
                 )
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
@@ -14030,6 +14046,14 @@ async def openai_chat_completions(
                         if event["type"] == "reasoning_summary":
                             # Forward server-side reasoning timing to the UI.
                             yield f"data: {json.dumps(event)}\n\n"
+                            continue
+
+                        if event["type"] == "context_truncated":
+                            yield _context_truncated_sse_chunk(
+                                completion_id,
+                                model_name,
+                                {key: value for key, value in event.items() if key != "type"},
+                            )
                             continue
 
                         # "content" type -- cumulative text. Sanitize the full
@@ -14510,6 +14534,7 @@ async def openai_chat_completions(
                 continue_final_message = _continue_final_message(payload),
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
+                context_overflow = _overflow_truncation_policy(payload),
             )
 
         _gguf_sentinel = object()
@@ -14599,6 +14624,16 @@ async def openai_chat_completions(
                                 # Diffusion frame (per-step canvas): pass through as a raw SSE line on the
                                 # tool_status channel. No assistant text, so it never enters the cumulative diff.
                                 yield f"data: {json.dumps(cumulative)}\n\n"
+                            elif cumulative.get("type") == "context_truncated":
+                                yield _context_truncated_sse_chunk(
+                                    completion_id,
+                                    model_name,
+                                    {
+                                        key: value
+                                        for key, value in cumulative.items()
+                                        if key != "type"
+                                    },
+                                )
                             else:
                                 logger.warning(
                                     "gguf_stream_chunks: unexpected dict event: %s",
@@ -22127,9 +22162,17 @@ async def _openai_passthrough_stream_admitted(
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
         )
-        _truncate_budget = (
-            _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
-        )
+        _truncate_policy = _overflow_truncation_policy(payload)
+        _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
+        _truncated_messages = 0
+
+        def _apply_passthrough_truncation(err_text: str) -> bool:
+            nonlocal _truncated_messages
+            before = len(body.get("messages") or [])
+            if not _apply_overflow_truncation(body, err_text, _truncate_policy):
+                return False
+            _truncated_messages += max(0, before - len(body.get("messages") or []))
+            return True
 
         while True:
             try:
@@ -22214,7 +22257,7 @@ async def _openai_passthrough_stream_admitted(
             if (
                 _truncate_budget > 0
                 and _classify_llama_generation_error(Exception(err_text))
-                and _apply_overflow_truncation(body, err_text)
+                and _apply_passthrough_truncation(err_text)
             ):
                 _truncate_budget -= 1
                 continue
@@ -22445,7 +22488,7 @@ async def _openai_passthrough_stream_admitted(
                     if (
                         _truncate_budget > 0
                         and _classify_llama_generation_error(Exception(err_text))
-                        and _apply_overflow_truncation(body, err_text)
+                        and _apply_passthrough_truncation(err_text)
                     ):
                         _truncate_budget -= 1
                         req = client.build_request(
@@ -22476,6 +22519,15 @@ async def _openai_passthrough_stream_admitted(
                     yield _openai_stream_error_sse(error_payload)
                     return
 
+                if _truncated_messages:
+                    yield _context_truncated_sse_chunk(
+                        completion_id,
+                        model_name,
+                        {
+                            "dropped_messages": _truncated_messages,
+                            "fits": True,
+                        },
+                    )
                 cancel_watcher = asyncio.create_task(_await_cancel_then_close(cancel_event, resp))
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, cancel_event)
@@ -22901,9 +22953,17 @@ async def _openai_passthrough_non_streaming_upstream(
     body["stream"] = False
     body.pop("stream_options", None)
 
-    _truncate_budget = (
-        _OVERFLOW_TRUNCATE_MAX_RETRIES if _overflow_truncation_requested(payload) else 0
-    )
+    _truncate_policy = _overflow_truncation_policy(payload)
+    _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
+    _truncated_messages = 0
+
+    def _apply_nonstream_truncation(err_text: str) -> bool:
+        nonlocal _truncated_messages
+        before = len(body.get("messages") or [])
+        if not _apply_overflow_truncation(body, err_text, _truncate_policy):
+            return False
+        _truncated_messages += max(0, before - len(body.get("messages") or []))
+        return True
 
     async def _post(body_to_send):
         if cancel_event is None and request is None:
@@ -22977,7 +23037,7 @@ async def _openai_passthrough_non_streaming_upstream(
         if (
             _truncate_budget > 0
             and _classify_llama_generation_error(Exception(resp.text))
-            and _apply_overflow_truncation(body, resp.text)
+            and _apply_nonstream_truncation(resp.text)
         ):
             _truncate_budget -= 1
             continue
@@ -23037,6 +23097,12 @@ async def _openai_passthrough_non_streaming_upstream(
             logger.warning("tool-call nudge retry failed; keeping original: %s", exc)
 
     changed = False
+    if _truncated_messages and isinstance(data, dict):
+        data["context_truncated"] = {
+            "dropped_messages": _truncated_messages,
+            "fits": True,
+        }
+        changed = True
     for choice in data.get("choices", []):
         if not isinstance(choice, dict):
             continue

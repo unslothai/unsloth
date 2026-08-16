@@ -49,6 +49,7 @@ from typing import (
 
 import httpx
 
+from core.inference.context_window import fit_rolling_context, messages_have_media
 from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -19635,6 +19636,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        context_overflow: Optional[str] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -19690,6 +19692,33 @@ class LlamaCppBackend:
             if max_tokens is not None
             else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
         )
+        if (
+            context_overflow == "truncate_oldest"
+            and self._effective_context_length
+            and not messages_have_media(openai_messages)
+        ):
+            try:
+                openai_messages, truncation = fit_rolling_context(
+                    openai_messages,
+                    context_length = self._effective_context_length,
+                    max_tokens = payload["max_tokens"],
+                    count_tokens = lambda fitted: self.count_chat_tokens(
+                        fitted,
+                        None,
+                        None,
+                        strict = True,
+                        chat_template_kwargs = _reasoning_kw,
+                        continue_final_message = continue_final_message,
+                        should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                    ),
+                )
+                payload["messages"] = neutralize_control_markup_in_messages(
+                    openai_messages, None, self.markup_profile
+                )
+                if truncation and truncation["fits"]:
+                    yield {"type": "context_truncated", **truncation}
+            except Exception as exc:
+                logger.warning("Could not preflight the rolling context window: %s", exc)
         if stop:
             payload["stop"] = stop
         if seed is not None:
@@ -19841,6 +19870,7 @@ class LlamaCppBackend:
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
+                    context_overflow = context_overflow,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -19885,6 +19915,7 @@ class LlamaCppBackend:
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        context_overflow: Optional[str] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -19926,6 +19957,11 @@ class LlamaCppBackend:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+        _rolling_anchor_ids: set[int] = set()
+        for message in reversed(conversation):
+            if message.get("role") == "user":
+                _rolling_anchor_ids.add(id(message))
+                break
 
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
@@ -20164,6 +20200,37 @@ class LlamaCppBackend:
                 neutralize_control_markup_in_messages,
             )
 
+            _reasoning_kw = self._request_reasoning_kwargs(
+                enable_thinking, reasoning_effort, preserve_thinking
+            )
+            if (
+                context_overflow == "truncate_oldest"
+                and self._effective_context_length
+                and not messages_have_media(conversation)
+            ):
+                try:
+                    conversation, truncation = fit_rolling_context(
+                        conversation,
+                        context_length = self._effective_context_length,
+                        max_tokens = max_tokens,
+                        count_tokens = lambda fitted: self.count_chat_tokens(
+                            fitted,
+                            None,
+                            safe_tools,
+                            strict = True,
+                            chat_template_kwargs = _reasoning_kw,
+                            continue_final_message = bool(
+                                continue_final_message and trailing_assistant_text(fitted)
+                            ),
+                            should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                        ),
+                        protected_message_ids = _rolling_anchor_ids,
+                    )
+                    if truncation and truncation["fits"]:
+                        yield {"type": "context_truncated", **truncation}
+                except Exception as exc:
+                    logger.warning("Could not preflight the rolling context window: %s", exc)
+
             payload = {
                 # Re-run every iteration: tool results land in ``conversation`` as the
                 # loop goes, and a forged turn in one would render for real (#7066).
@@ -20188,9 +20255,6 @@ class LlamaCppBackend:
             if safe_tools:
                 payload["tools"] = safe_tools
                 payload["tool_choice"] = "auto"
-            _reasoning_kw = self._request_reasoning_kwargs(
-                enable_thinking, reasoning_effort, preserve_thinking
-            )
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
             # Re-checked per iteration: once a tool result is appended the partial is
@@ -21388,6 +21452,39 @@ class LlamaCppBackend:
         # Final streaming pass with the full conversation context.
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
+        _reasoning_kw = self._request_reasoning_kwargs(
+            enable_thinking, reasoning_effort, preserve_thinking
+        )
+        _final_max_tokens = (
+            max_tokens
+            if max_tokens is not None
+            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
+        )
+        if (
+            context_overflow == "truncate_oldest"
+            and self._effective_context_length
+            and not messages_have_media(conversation)
+        ):
+            try:
+                conversation, truncation = fit_rolling_context(
+                    conversation,
+                    context_length = self._effective_context_length,
+                    max_tokens = _final_max_tokens,
+                    count_tokens = lambda fitted: self.count_chat_tokens(
+                        fitted,
+                        None,
+                        None,
+                        strict = True,
+                        chat_template_kwargs = _reasoning_kw,
+                        should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
+                    ),
+                    protected_message_ids = _rolling_anchor_ids,
+                )
+                if truncation and truncation["fits"]:
+                    yield {"type": "context_truncated", **truncation}
+            except Exception as exc:
+                logger.warning("Could not preflight the rolling context window: %s", exc)
+
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
                 conversation, None, self.markup_profile
@@ -21400,16 +21497,9 @@ class LlamaCppBackend:
             "repeat_penalty": repetition_penalty,
             "presence_penalty": presence_penalty,
         }
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
-        )
         if _reasoning_kw is not None:
             stream_payload["chat_template_kwargs"] = _reasoning_kw
-        stream_payload["max_tokens"] = (
-            max_tokens
-            if max_tokens is not None
-            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR)
-        )
+        stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
         if seed is not None:
@@ -21556,6 +21646,7 @@ class LlamaCppBackend:
         tools = None,
         strict: bool = False,
         chat_template_kwargs = None,
+        continue_final_message: bool = False,
         should_abort = None,
     ) -> int:
         """Count prompt tokens for a chat request via llama-server.
@@ -21656,6 +21747,9 @@ class LlamaCppBackend:
                     # Layered over the load-time --chat-template-kwargs: only keys sent here move.
                     if chat_template_kwargs:
                         template_body["chat_template_kwargs"] = chat_template_kwargs
+                    if continue_final_message:
+                        template_body["continue_final_message"] = True
+                        template_body["add_generation_prompt"] = False
                     resp = client.post(
                         f"{self.base_url}/apply-template",
                         json = template_body,

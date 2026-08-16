@@ -579,6 +579,8 @@ export interface OpenAIChatCompletionsRequest {
   /** Run the selected tools here rather than as the provider's hosted builtins. */
   run_tools_locally?: boolean;
   nudge_tool_calls?: boolean;
+  /** Local GGUF overflow policy. Rolling mode preserves the transcript but omits oldest turns. */
+  context_overflow?: "error" | "truncate_middle" | "truncate_oldest";
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
@@ -652,4 +654,11 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  context_truncated?: {
+    dropped_messages: number;
+    prompt_tokens_before?: number;
+    prompt_tokens_after?: number;
+    context_length?: number;
+    fits: boolean;
+  };
 }

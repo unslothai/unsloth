@@ -12,6 +12,7 @@ the real post-readback context window.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -25,12 +26,15 @@ from routes.inference import (
     _apply_overflow_truncation,
     _clip_long_contents,
     _CLIP_MARKER,
+    _context_truncated_sse_chunk,
     _estimate_message_tokens,
     _openai_model_objects,
     _overflow_truncation_requested,
     _parse_overflow_counts,
     _truncate_middle_messages,
+    _truncate_oldest_messages,
 )
+from core.inference.context_window import fit_rolling_context, messages_have_media
 import routes.inference as routes_mod
 
 
@@ -150,6 +154,169 @@ def test_truncation_noop_when_only_protected_turns_remain():
     assert new == msgs
 
 
+def test_rolling_truncation_drops_complete_oldest_turns():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "tool question"},
+        *_tool_turn(1),
+        {"role": "assistant", "content": "tool answer"},
+        {"role": "user", "content": "latest question"},
+    ]
+
+    new, dropped = _truncate_oldest_messages(messages, keep_ratio = 0.5)
+
+    assert dropped > 0
+    assert new[0] == messages[0]
+    assert new[-1] == messages[-1]
+    assert "old question" not in {message.get("content") for message in new}
+    # The tool exchange is either retained as a whole or removed as a whole.
+    surviving_call_ids = {
+        call["id"]
+        for message in new
+        for call in (message.get("tool_calls") or [])
+    }
+    assert all(
+        message.get("tool_call_id") in surviving_call_ids
+        for message in new
+        if message.get("role") == "tool"
+    )
+
+
+def test_rolling_truncation_can_evict_old_tool_rounds_from_one_user_task():
+    task = {"role": "user", "content": "do the task"}
+    first_round = _tool_turn(1, result_chars = 4000)
+    second_round = _tool_turn(2, result_chars = 4000)
+    messages = [
+        {"role": "system", "content": "system"},
+        task,
+        *first_round,
+        *second_round,
+    ]
+
+    new, dropped = _truncate_oldest_messages(
+        messages,
+        keep_ratio = 0.6,
+        protected_message_ids = {id(task)},
+    )
+
+    assert dropped == len(first_round)
+    assert task in new
+    assert first_round[0] not in new and first_round[1] not in new
+    assert second_round[0] in new and second_round[1] in new
+
+
+def test_rolling_truncation_keeps_task_when_a_synthetic_user_nudge_is_latest():
+    task = {"role": "user", "content": "actual task"}
+    tool_round = _tool_turn(1, result_chars = 4000)
+    nudge = {"role": "user", "content": "Use an available tool now."}
+    messages = [task, *tool_round, nudge]
+
+    new, dropped = _truncate_oldest_messages(
+        messages,
+        keep_ratio = 0.2,
+        protected_message_ids = {id(task)},
+    )
+
+    assert dropped == len(tool_round)
+    assert [message["role"] for message in new] == ["user", "assistant", "user"]
+    assert new[0] is task
+    assert new[-1] is nudge
+
+
+def test_rolling_media_detection_covers_image_and_audio_parts():
+    assert messages_have_media(
+        [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]
+    )
+    assert messages_have_media(
+        [{"role": "user", "content": [{"type": "input_audio", "input_audio": {}}]}]
+    )
+    assert not messages_have_media([{"role": "user", "content": "text only"}])
+
+
+def test_rolling_truncation_preserves_nonleading_system_messages():
+    later_system = {"role": "system", "content": "new higher-priority instruction"}
+    messages = [
+        {"role": "user", "content": "old" * 1000},
+        {"role": "assistant", "content": "answer" * 1000},
+        later_system,
+        {"role": "user", "content": "latest"},
+    ]
+
+    new, dropped = _truncate_oldest_messages(messages, keep_ratio = 0.2)
+
+    assert dropped == 2
+    assert later_system in new
+
+
+def test_rolling_fit_recounts_until_the_real_template_fits():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "one" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "two" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    def count_tokens(candidate):
+        return sum(len(str(message.get("content", ""))) for message in candidate)
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = count_tokens,
+    )
+
+    assert info is not None
+    assert info["dropped_messages"] == 2
+    assert info["prompt_tokens_before"] > 400
+    assert info["prompt_tokens_after"] <= 400
+    assert fitted[0] == messages[0]
+    assert fitted[-1] == messages[-1]
+
+
+def test_rolling_fit_never_clips_an_irreducible_latest_turn():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "latest" * 200},
+    ]
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = lambda candidate: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    assert fitted == messages
+    assert info is None
+
+
+def test_rolling_fit_reports_when_protected_messages_still_do_not_fit():
+    latest = {"role": "user", "content": "latest" * 200}
+    messages = [
+        {"role": "user", "content": "old" * 100},
+        {"role": "assistant", "content": "answer" * 100},
+        latest,
+    ]
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = lambda candidate: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    assert fitted == [latest]
+    assert info is not None
+    assert info["fits"] is False
+
+
 # ---------------------------------------------------------------------------
 # _apply_overflow_truncation
 # ---------------------------------------------------------------------------
@@ -173,6 +340,36 @@ def test_apply_overflow_truncation_returns_false_when_nothing_droppable():
         "max_tokens": 32000,
     }
     assert _apply_overflow_truncation(body, _NICK_ERROR) is False
+
+
+def test_rolling_overflow_never_clips_the_latest_request():
+    latest = "latest" * 10000
+    body = {
+        "messages": [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": latest},
+        ]
+    }
+
+    assert _apply_overflow_truncation(body, _NICK_ERROR, "truncate_oldest") is True
+    assert body["messages"][-1]["content"] == latest
+    # A second recovery has no old turn left to drop and must fail cleanly.
+    assert _apply_overflow_truncation(body, _NICK_ERROR, "truncate_oldest") is False
+
+
+def test_context_truncation_notice_is_an_openai_compatible_empty_chunk():
+    line = _context_truncated_sse_chunk(
+        "chatcmpl-test",
+        "model",
+        {"dropped_messages": 4, "fits": True},
+    )
+    payload = json.loads(line.removeprefix("data: ").strip())
+
+    assert payload["object"] == "chat.completion.chunk"
+    assert payload["choices"] == []
+    assert payload["context_truncated"] == {"dropped_messages": 4, "fits": True}
 
 
 def test_apply_overflow_truncation_clips_giant_protected_tool_results():
@@ -227,8 +424,12 @@ def test_overflow_truncation_requested_reads_field(monkeypatch):
     class _Q:
         context_overflow = None
 
+    class _R:
+        context_overflow = "truncate_oldest"
+
     assert _overflow_truncation_requested(_P()) is True
     assert _overflow_truncation_requested(_Q()) is False
+    assert _overflow_truncation_requested(_R()) is True
     assert _overflow_truncation_requested(object()) is False
 
 
@@ -247,6 +448,8 @@ def test_overflow_truncation_server_default_env(monkeypatch):
     assert _overflow_truncation_requested(_ExplicitError()) is False
     monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "error")
     assert _overflow_truncation_requested(_Unset()) is False
+    monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "truncate_oldest")
+    assert _overflow_truncation_requested(_Unset()) is True
 
 
 # ---------------------------------------------------------------------------
