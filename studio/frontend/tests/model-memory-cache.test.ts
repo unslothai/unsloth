@@ -84,6 +84,33 @@ test("concurrent reads share one request", async () => {
   assert.deepEqual(b, c);
 });
 
+test("a 404 is an absent route, not a failed read", async () => {
+  // The resident-model shortcut treats the two oppositely: an older backend has no such
+  // setting to disagree about, while a read that could not be made says nothing, and
+  // assuming it said no is how a saved policy goes missing.
+  calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("{}", { status: 404 })) as typeof fetch;
+  await assert.rejects(
+    loadModelMemorySettings({ force: true }),
+    (error: Error) => {
+      assert.equal(error.name, "SettingsRouteAbsentError");
+      return true;
+    },
+  );
+  globalThis.fetch = (async () =>
+    new Response("boom", { status: 503 })) as typeof fetch;
+  await assert.rejects(
+    loadModelMemorySettings({ force: true }),
+    (error: Error) => {
+      assert.notEqual(error.name, "SettingsRouteAbsentError");
+      return true;
+    },
+  );
+  globalThis.fetch = original;
+});
+
 test("a forced read does not join one already in flight", async () => {
   // Sharing is right for two panels painting the same answer and wrong for the
   // resident-model shortcut: a read that started before a policy save describes the

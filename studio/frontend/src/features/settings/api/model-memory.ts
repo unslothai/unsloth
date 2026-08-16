@@ -3,6 +3,8 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+
+import { SettingsRouteAbsentError } from "./settings-route-absent";
 import { invalidateOpenAIAutoSwitchSettings } from "./openai-auto-switch";
 
 const MODEL_MEMORY_EVENT = "unsloth-model-memory-change";
@@ -76,6 +78,11 @@ function publishModelMemory(settings: ModelMemorySettings) {
 
 async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
   const res = await authFetch("/api/settings/model-memory");
+  if (res.status === 404) {
+    // Told apart from a failed read: a caller deciding whether it may skip a load has to
+    // treat "this backend has no such setting" and "could not ask" oppositely.
+    throw new SettingsRouteAbsentError("/api/settings/model-memory");
+  }
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to load model memory settings"),

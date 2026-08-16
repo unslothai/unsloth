@@ -7,7 +7,11 @@ import { toast } from "@/lib/toast";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { defaultInferenceParams } from "../presets/preset-policy";
-import { serverWideReloadRequired } from "../lib/server-wide-reload";
+import {
+  type ReloadHint,
+  serverWideReloadRequired,
+} from "../lib/server-wide-reload";
+import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import {
@@ -131,16 +135,29 @@ export type SelectedModelInput = {
 
 // Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
 // the pinned approval the worker requires instead of being blocked.
+/** An absent route is not a failed read: only the second one withholds an answer. */
+async function readReloadHint(
+  read: () => Promise<{ reloadRequired: boolean } | null>,
+): Promise<ReloadHint> {
+  try {
+    return (await read()) ?? "unsupported";
+  } catch (error) {
+    return isSettingsRouteAbsent(error) ? "unsupported" : "unknown";
+  }
+}
+
 /** The two settings reads `serverWideReloadRequired` judges, fetched together. */
 async function readServerWideReloadHints(): Promise<boolean> {
   const [modelMemory, vramBudget] = await Promise.all([
     // Forced, like the budget below: a read that started before a save answers about
     // the policy it replaced, and a false from that would suppress the very reload the
     // save was made for.
-    loadModelMemorySettings({ force: true }).catch(() => null),
-    // Forced: a shared read that started before the last load answers about the child
-    // being replaced, not about the one resident now.
-    loadVramBudgetSettings({ force: true }).catch(() => null),
+    readReloadHint(() => loadModelMemorySettings({ force: true })),
+    // rethrow, or a failed read is indistinguishable from an absent route: this reader
+    // answers null for both, which every other caller is right to treat alike.
+    readReloadHint(() =>
+      loadVramBudgetSettings({ force: true, rethrow: true }),
+    ),
   ]);
   return serverWideReloadRequired({ modelMemory, vramBudget });
 }

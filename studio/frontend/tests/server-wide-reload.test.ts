@@ -22,8 +22,8 @@ const { serverWideReloadRequired } = await import(
   "../src/features/chat/lib/server-wide-reload.ts"
 );
 
-const NO = { reloadRequired: false };
-const YES = { reloadRequired: true };
+const NO = { reloadRequired: false } as const;
+const YES = { reloadRequired: true } as const;
 
 test("either signal alone declines the shortcut", () => {
   assert.equal(
@@ -47,16 +47,38 @@ test("a settled server adopts", () => {
   );
 });
 
-test("an answer that could not be had is not a reload", () => {
-  // The endpoints ship with the backend that carries the predicates, so a null here is a
-  // failed read or an older install. Declining on it would turn one flaky GET into the
-  // stop-chats prompt this PR removes.
+test("a route this backend does not serve is not a reload", () => {
+  // An older install has no such state to disagree about, so the shortcut keeps working.
   assert.equal(
-    serverWideReloadRequired({ modelMemory: null, vramBudget: null }),
+    serverWideReloadRequired({
+      modelMemory: "unsupported",
+      vramBudget: "unsupported",
+    }),
     false,
   );
   assert.equal(
-    serverWideReloadRequired({ modelMemory: null, vramBudget: YES }),
+    serverWideReloadRequired({ modelMemory: "unsupported", vramBudget: NO }),
+    false,
+  );
+});
+
+test("an answer that could not be had declines the shortcut", () => {
+  // Not symmetric with the case above. One extra reload costs the prompt this PR
+  // removes; adopting on a read that failed right after a policy save leaves the child
+  // on the old policy with nothing on screen to say so.
+  assert.equal(
+    serverWideReloadRequired({ modelMemory: "unknown", vramBudget: NO }),
+    true,
+  );
+  assert.equal(
+    serverWideReloadRequired({ modelMemory: NO, vramBudget: "unknown" }),
+    true,
+  );
+  assert.equal(
+    serverWideReloadRequired({
+      modelMemory: "unknown",
+      vramBudget: "unsupported",
+    }),
     true,
   );
 });
