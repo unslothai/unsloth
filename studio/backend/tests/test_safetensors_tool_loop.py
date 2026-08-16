@@ -3764,6 +3764,8 @@ class TestGGUFSafetensorsHealingParity:
             # the question is the lookup the model just promised, not something only the user knows.
             "I'll search the advisories now. Is this package vulnerable to CVE-2026-1234?",
             "I'll explain why you should use the pinned version.",
+            # the ask is the user's own words echoed back, not the model asking for anything.
+            'You asked, "Can you provide the latest CUDA release?" I\'ll search the web now.',
         ):
             assert shared_fn(closing), f"helper missed {closing!r}"
 

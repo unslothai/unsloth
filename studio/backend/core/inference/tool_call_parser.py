@@ -220,6 +220,8 @@ _CLARIFICATION_REQUEST = re.compile(
     r"(?:(?:is|are|was|were)\s+you\b|(?:is|are|was|were)\s+(?:this|that|it)\s+about\b)"
     r")"
 )
+# a quoted span is the user's words echoed back, so an ask inside one is not the model asking
+_QUOTED_SPAN = re.compile(r"[\"“][^\"”]{0,300}[\"”]")
 # Matches GGUF's established default (llama_cpp.py has re-prompted up to 3
 # times since #5620); safetensors and MLX inherit the same cap from here.
 MAX_ACT_REPROMPTS = 3
@@ -233,7 +235,7 @@ def is_short_intent_without_action(text: str) -> bool:
     stripped = text.strip()
     if not 0 < len(stripped) < REPROMPT_MAX_CHARS:
         return False
-    if _CLARIFICATION_REQUEST.search(stripped):
+    if _CLARIFICATION_REQUEST.search(_QUOTED_SPAN.sub(" ", stripped)):
         return False
     return INTENT_SIGNAL.search(stripped) is not None
 
