@@ -4920,16 +4920,23 @@ _paths = [p for p in dict.fromkeys([sysconfig.get_path('purelib'), sysconfig.get
 _norm = lambda s: re.sub('[-_.]+', '-', (s or '').lower())
 _shared = frozenset(('test', 'tests', 'doc', 'docs', 'example', 'examples', 'benchmark', 'benchmarks', 'sample', 'samples', 'scripts'))
 _rewritten = frozenset(('package-lock.json',))
-# Which DISTRIBUTIONS claim each path, by normalized name. Names, not dist-info
-# directories: an interrupted upgrade leaves two dist-infos for the same package,
-# and those are the same owner -- only a genuinely foreign claimant makes a
-# recorded size ambiguous.
+# Which DISTRIBUTIONS claim each path, as (normalized name, version). Both halves
+# are needed and they answer different questions: a recorded SIZE is ambiguous only
+# when a different PACKAGE claims the path (two dist-infos of the same package are
+# one owner there, which is what lets the selected candidate's own size apply),
+# while OWNERSHIP of a resolved module has to be exact -- a file claimed only by
+# the 1.0 dist-info is not the payload of the 2.0 the probe selected.
 owners = {}
 cands = []
-_me = None
 for x in importlib.metadata.distributions(path=_paths):
     try:
         name = x.metadata['Name']
+    except Exception:
+        continue
+    try:
+        # once per distribution, never per row: x.version re-reads the metadata, and
+        # the row loop below runs thousands of times across a real environment
+        _xver = x.version
     except Exception:
         continue
     try:
@@ -4937,7 +4944,6 @@ for x in importlib.metadata.distributions(path=_paths):
     except Exception:
         record = ''
     if _norm(name) == _norm(_pkg):
-        _me = _norm(name)
         cands.append((x, record))
     for r in csv.reader(record.splitlines()):
         rel = r[0] if r else ''
@@ -4949,7 +4955,7 @@ for x in importlib.metadata.distributions(path=_paths):
         if f.is_absolute() or '..' in f.parts:
             continue
         key = os.path.normcase(str(x.locate_file(f)))
-        owners.setdefault(key, set()).add(_norm(name))
+        owners.setdefault(key, set()).add((_norm(name), _xver))
 def _pep440_key(v):
     # A port of packaging.version's own comparison key, used only when packaging
     # itself cannot import. Hand-rolled stage ranking kept springing leaks
@@ -5078,7 +5084,7 @@ def _verdict(d, d_record):
         # _has_module rather than inside _spec: _has_module calls it too, and Python's
         # lexical scoping does not reach a sibling function.
         _o = owners.get(os.path.normcase(os.path.abspath(p)))
-        return bool(_o) and _me not in _o
+        return bool(_o) and _mine not in _o
     def _has_module(_p, _depth):
         try:
             _entries = os.listdir(_p)
@@ -5126,6 +5132,10 @@ def _verdict(d, d_record):
     # (xxhash declares _xxhash). A cut landing inside the last field or exactly on a
     # line boundary stays undetectable here.
     damaged = bool(d_record) and not _edit and (not selfrec or flen != 3)
+    try:
+        _mine = (_norm(d.metadata['Name']), d.version)
+    except Exception:
+        _mine = None
     if not _edit and rows:
         # A PEP 660 editable whose direct_url.json is gone or corrupt still has its
         # .pth and finder shims, and those are its ENTIRE payload -- a plain file
@@ -5164,7 +5174,7 @@ def _verdict(d, d_record):
             # foreign claimant still makes the size ambiguous -- whichever copy
             # landed says nothing about either RECORD -- and larger than recorded
             # is a collision, not damage.
-            if (len(owners.get(key, ())) <= 1 and sz.isdigit()
+            if (len(set(_n for _n, _v in owners.get(key, ()))) <= 1 and sz.isdigit()
                     and f.name not in _rewritten and st.st_size < int(sz)):
                 damaged = True
                 break
