@@ -2176,13 +2176,6 @@ const Composer: FC<{
           }),
         pastedTextMinChars,
       );
-      // A paste is a gesture, so it retires the guard and re-pasting the sent
-      // prompt goes through. Only once inline text is actually going in: a
-      // files-only paste writes nothing, and dropping the guard for it would
-      // leave the next queued write free to refill the composer.
-      if (pastedText.length > 0 && !attachedPastedText) {
-        justSentRef.current = null;
-      }
       if (attachedPastedText) return;
       pasteClipboardFiles(
         event,
@@ -2196,6 +2189,14 @@ const Composer: FC<{
             description: "The clipboard item is unsupported, unreadable, or exceeds its size limit.",
           }),
       );
+      // A paste is a gesture, so it retires the guard and re-pasting the sent
+      // prompt goes through. Last, and only if the browser will really insert
+      // the text: a payload carrying files is preventDefaulted above, so it
+      // writes nothing, and retiring for it would leave the next queued write
+      // free to refill the composer.
+      if (pastedText.length > 0 && !event.defaultPrevented) {
+        justSentRef.current = null;
+      }
     },
     [aui, overlay, pastedTextMinChars],
   );
@@ -3951,10 +3952,15 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// An autocorrect commit, never a keystroke, a paste or an undo. Its value can
-// differ from what was sent, so equality alone would let it through.
+// The engine replacing text rather than the user inserting it: an autocorrect
+// commit, or an IME finalising a composition. Both can carry a converted value
+// that equality would never match, and neither can start from an empty
+// composer, since there would be nothing to replace or convert.
 function isTextReplacement(event: Event | undefined) {
-  return inputTypeOf(event) === "insertReplacementText";
+  return (
+    inputTypeOf(event) === "insertReplacementText" ||
+    event?.type === "compositionend"
+  );
 }
 
 // Input types only a gesture produces, so they apply even when they carry the
