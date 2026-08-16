@@ -195,6 +195,7 @@ import {
   hasGgufSource,
   isDownloadableHubRepo,
   loadOptionalBool,
+  threadScopedOverride,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { useChatPreferencesStore } from "./stores/chat-preferences-store";
@@ -2268,16 +2269,19 @@ export function ChatPage({
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
         provider?.providerType === "openai");
-    const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
-    const storedCodeToolsEnabled = loadOptionalBool(
-      CHAT_CODE_TOOLS_ENABLED_KEY,
-    );
-    const storedImageToolsEnabled = loadOptionalBool(
-      CHAT_IMAGE_TOOLS_ENABLED_KEY,
-    );
-    const storedWebFetchToolsEnabled = loadOptionalBool(
-      CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
-    );
+    // the open chat's own pills win, or selecting a model would revert them to the global ones.
+    const storedToolsEnabled =
+      threadScopedOverride("toolsEnabled") ??
+      loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+    const storedCodeToolsEnabled =
+      threadScopedOverride("codeToolsEnabled") ??
+      loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+    const storedImageToolsEnabled =
+      threadScopedOverride("imageToolsEnabled") ??
+      loadOptionalBool(CHAT_IMAGE_TOOLS_ENABLED_KEY);
+    const storedWebFetchToolsEnabled =
+      threadScopedOverride("webFetchToolsEnabled") ??
+      loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
     // Studio runs Search and Code itself for any provider that advertises the
     // capability, so a self-hosted connection has no hosted builtin to key off.
     // Keying the pill state on the hosted flags alone discarded the user's saved
@@ -2807,16 +2811,19 @@ export function ChatPage({
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
             selectedProvider?.providerType === "openai");
-        const storedToolsEnabled = loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
-        const storedCodeToolsEnabled = loadOptionalBool(
-          CHAT_CODE_TOOLS_ENABLED_KEY,
-        );
-        const storedImageToolsEnabled = loadOptionalBool(
-          CHAT_IMAGE_TOOLS_ENABLED_KEY,
-        );
-        const storedWebFetchToolsEnabled = loadOptionalBool(
-          CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
-        );
+        // mirror of the sibling effect: the open chat's own pills win over the global ones.
+        const storedToolsEnabled =
+          threadScopedOverride("toolsEnabled") ??
+          loadOptionalBool(CHAT_TOOLS_ENABLED_KEY);
+        const storedCodeToolsEnabled =
+          threadScopedOverride("codeToolsEnabled") ??
+          loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY);
+        const storedImageToolsEnabled =
+          threadScopedOverride("imageToolsEnabled") ??
+          loadOptionalBool(CHAT_IMAGE_TOOLS_ENABLED_KEY);
+        const storedWebFetchToolsEnabled =
+          threadScopedOverride("webFetchToolsEnabled") ??
+          loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
         // Same rule as the selection handler above: a self-hosted connection has
         // no hosted builtin, so keying the pills on those flags threw away the
         // user's saved preference every time this ran.

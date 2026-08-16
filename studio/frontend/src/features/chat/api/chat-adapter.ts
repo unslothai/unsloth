@@ -122,6 +122,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -3527,11 +3528,28 @@ export function createOpenAIStreamAdapter(
       unstable_assistantMessageId,
     }) {
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
+      const runThreadId =
+        unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      // Refused rather than run on whatever the store holds now: the wait only runs out
+      // for a chat the user left mid-read, and the settings on screen are then some
+      // other chat's. The run is recoverable by reopening the chat; a message sent with
+      // another chat's tools and permission level is not.
+      if (!(await awaitThreadScopedPairing(runThreadId))) {
+        throw new Error(
+          "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
+        );
+      }
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
-      const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+      const resolvedThreadId = (runThreadId ?? runtime.activeThreadId) || undefined;
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),
