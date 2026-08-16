@@ -16652,18 +16652,19 @@ class LlamaCppBackend:
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
-                    Retries once with --fit off when the first attempt
-                    crashes during startup and run_cmd is eligible (see
-                    _fit_off_retry_eligible). A HIP/ROCR symbol lookup
-                    (#8998) retries with the bundled HIP only instead:
-                    flipping --fit cannot load a missing ROCr symbol.
+                    Up to three launches: the first, one HIP/ROCR env
+                    correction (#8998), and one --fit recovery. Separate
+                    flags so a library mix does not spend the fit slot, and
+                    a later VRAM crash after bundled HIP can still fit-retry.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
                     # read below an UnboundLocalError instead.
                     nonlocal _last_spawn_cmd, _mem_host_resident
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
-                    for _spawn_attempt in (0, 1):
+                    _did_rocm_retry = False
+                    _did_fit_retry = False
+                    for _spawn_attempt in (0, 1, 2):
                         # Defensive kill: drop an orphan Popen a concurrent load may
                         # have stored before we overwrite the reference (#5161).
                         # Also reaps the crashed first attempt on the retry pass.
@@ -16729,7 +16730,7 @@ class LlamaCppBackend:
                         _split_axis_crash = self._is_tensor_split_assert(_startup_output)
                         _hip_rocr_mismatch = self._is_bundled_hip_rocr_mismatch(_startup_output)
                         if (
-                            _spawn_attempt == 0
+                            not _did_rocm_retry
                             and _startup_crashed
                             and not _split_axis_crash
                             and _hip_rocr_mismatch
@@ -16756,9 +16757,10 @@ class LlamaCppBackend:
                                     self._llama_log_path,
                                 )
                                 env["LD_LIBRARY_PATH"] = _retry_ld
+                                _did_rocm_retry = True
                                 continue
                         if (
-                            _spawn_attempt == 0
+                            not _did_fit_retry
                             and fully_gpu_offloaded
                             and _startup_crashed
                             and not _split_axis_crash
@@ -16806,9 +16808,10 @@ class LlamaCppBackend:
                                 )
                             run_cmd = _run
                             self._memory_state = resolve_effective_memory_state(_run, env)
+                            _did_fit_retry = True
                             continue
                         if (
-                            _spawn_attempt == 0
+                            not _did_fit_retry
                             and _fit_retry_allowed
                             and _startup_crashed
                             and not _split_axis_crash
@@ -16856,6 +16859,7 @@ class LlamaCppBackend:
                                         "the --fit off retry; it offloads every layer."
                                     )
                                 self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                            _did_fit_retry = True
                             continue
                         return False
 

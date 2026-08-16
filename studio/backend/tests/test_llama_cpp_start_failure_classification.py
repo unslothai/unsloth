@@ -560,7 +560,8 @@ class TestBundledHipRocrMismatch:
 
     def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
         # load_model's _spawn_and_wait used the one retry slot on --fit on
-        # for this 127, which cannot load a missing ROCr symbol.
+        # for this 127, which cannot load a missing ROCr symbol. ROCm and
+        # --fit now have separate flags and a three-launch budget.
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         text = src.read_text(encoding = "utf-8")
         spawn_start = text.index("def _spawn_and_wait(")
@@ -570,6 +571,9 @@ class TestBundledHipRocrMismatch:
             "retrying once with --fit on so it can offload"
         )
         assert "use_system_rocm = False" in body
+        assert "for _spawn_attempt in (0, 1, 2)" in body
+        assert "not _did_rocm_retry" in body
+        assert "not _did_fit_retry" in body
 
 
 # Real dyld output. macOS says none of the things glibc says, so before #8566
