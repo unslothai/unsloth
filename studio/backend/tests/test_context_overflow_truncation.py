@@ -256,9 +256,7 @@ def test_rolling_truncation_can_drop_assistant_after_instruction(instruction_rol
     greeting = {"role": "assistant", "content": "historical greeting" * 1000}
     latest = {"role": "user", "content": "latest question"}
 
-    new, dropped = _truncate_oldest_messages(
-        [instruction, greeting, latest], keep_ratio = 0.1
-    )
+    new, dropped = _truncate_oldest_messages([instruction, greeting, latest], keep_ratio = 0.1)
 
     assert dropped == 1
     assert new == [instruction, latest]
