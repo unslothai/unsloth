@@ -1856,6 +1856,7 @@ _rewritten = frozenset(('package-lock.json',))
 # recorded size ambiguous.
 owners = {}
 cands = []
+_me = None
 for x in importlib.metadata.distributions(path=_paths):
     try:
         name = x.metadata['Name']
@@ -1866,6 +1867,7 @@ for x in importlib.metadata.distributions(path=_paths):
     except Exception:
         record = ''
     if _norm(name) == _norm(sys.argv[1]):
+        _me = _norm(name)
         cands.append((x, record))
     for r in csv.reader(record.splitlines()):
         rel = r[0] if r else ''
@@ -2006,7 +2008,7 @@ def _verdict(d, d_record):
             _f = os.path.join(_p, _e)
             if os.path.isdir(_f):
                 _subs.append(_f)
-            elif _e.endswith(_imp):
+            elif _e.endswith(_imp) and not _foreign(_f):
                 return True
         # nested namespaces are legitimate, so recurse -- bounded, since the first
         # module found answers and only a module-less tree walks to the bottom
@@ -2100,13 +2102,21 @@ def _verdict(d, d_record):
         # payload that is gone -- for a plain install and an editable one alike. An
         # empty root means nothing can be bound and only presence is checked.
         _base = os.path.normcase(os.path.abspath(root)) if root else None
+        def _foreign(p):
+            # Claimed by a DIFFERENT distribution's RECORD. Being inside the managed
+            # root is not ownership: another package installed there can provide the
+            # same import name, and after our payload is deleted its copy would
+            # answer for us. A path no RECORD claims is not foreign -- that is the
+            # RECORD-less case this check exists alongside, not evidence against us.
+            _o = owners.get(os.path.normcase(os.path.abspath(p)))
+            return bool(_o) and _me not in _o
         def _inside(p):
             # normcase on both sides: Windows paths are case-insensitive, and a
             # checkout recorded as C:\Repo whose spec origin resolves as c:\repo
             # would otherwise read as living outside itself
             return _base is None or os.path.normcase(os.path.abspath(p)).startswith(_base + os.sep)
         if s.origin and s.origin != 'namespace':
-            return _inside(s.origin)
+            return _inside(s.origin) and not _foreign(s.origin)
         # A namespace spec is not payload on its own: an emptied package directory
         # still answers find_spec with its own path, so require an importable module.
         for _p in list(getattr(s, 'submodule_search_locations', None) or []):
