@@ -12,11 +12,13 @@ interface DocumentPreviewState {
   chunkId: string | null;
   filename: string | null;
   page: number | null;
+  source: "platform" | "local" | null;
   openPreview: (args: {
     documentId: string;
     chunkId?: string | null;
     filename?: string | null;
     page?: number | null;
+    source?: "platform" | "local" | null;
   }) => void;
   closePreview: () => void;
 }
@@ -27,13 +29,15 @@ export const useDocumentPreviewStore = create<DocumentPreviewState>((set) => ({
   chunkId: null,
   filename: null,
   page: null,
-  openPreview: ({ documentId, chunkId, filename, page }) =>
+  source: null,
+  openPreview: ({ documentId, chunkId, filename, page, source }) =>
     set({
       open: true,
       documentId,
       chunkId: chunkId ?? null,
       filename: filename ?? null,
       page: page ?? null,
+      source: source ?? null,
     }),
   closePreview: () => set({ open: false }),
 }));

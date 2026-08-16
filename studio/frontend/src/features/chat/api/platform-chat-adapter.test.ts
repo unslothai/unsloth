@@ -11,6 +11,7 @@ import {
   mapPlatformChatToProject,
   mapPlatformSessionMessages,
   mapPlatformSessionToThread,
+  updatePlatformChatDatasetScope,
   updatePlatformProjectForChat,
 } from "./platform-chat-adapter";
 import {
@@ -79,10 +80,28 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
       create_time: 100,
       messages: [
         { id: "turn-1", role: "user", content: "Question" },
-        { id: "turn-1", role: "assistant", content: "Answer" },
+        {
+          id: "turn-1",
+          role: "assistant",
+          content: "Answer [ID:0].",
+        },
         { role: "assistant", content: "Prologue" },
       ],
-      reference: [{ chunks: ["chunk-1"] }, null],
+      reference: [
+        {
+          chunks: [
+            {
+              id: "chunk-1",
+              document_id: "doc-1",
+              document_name: "Guide.pdf",
+              content: "Evidence",
+              positions: [[3, 0]],
+              similarity: 0.91,
+            },
+          ],
+        },
+        null,
+      ],
     });
 
     expect(messages.map((message) => message.id)).toEqual([
@@ -92,12 +111,81 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
     ]);
     expect(messages[1]).toMatchObject({
       parentId: "turn-1:user:0",
+      content: [{ type: "text", text: "Answer." }],
       metadata: {
+        platformChatId: "chat-1",
+        platformSessionId: "session-1",
         platformMessageId: "turn-1",
-        platformReference: { chunks: ["chunk-1"] },
+        platformStreamCompleted: true,
+        responseDetails: {
+          providerName: "Rag Platform",
+          providerType: "platform",
+          sessionId: "session-1",
+        },
+        platformReference: {
+          chunks: [
+            expect.objectContaining({
+              chunkId: "chunk-1",
+              documentId: "doc-1",
+              filename: "Guide.pdf",
+            }),
+          ],
+        },
+        platformCitations: [
+          expect.objectContaining({
+            chunkId: "chunk-1",
+            documentId: "doc-1",
+            filename: "Guide.pdf",
+          }),
+        ],
       },
     });
     expect(messages[2].parentId).toBe("turn-1:assistant:1");
+  });
+
+  it("does not shift answer references when history starts with an id-less prologue", () => {
+    const messages = mapPlatformSessionMessages({
+      id: "session-1",
+      chat_id: "chat-1",
+      create_time: 100,
+      messages: [
+        { role: "assistant", content: "Welcome" },
+        { id: "turn-1", role: "user", content: "First question" },
+        { id: "turn-1", role: "assistant", content: "First answer [ID:0]" },
+        { id: "turn-2", role: "user", content: "Second question" },
+        { id: "turn-2", role: "assistant", content: "Second answer [ID:0]" },
+      ],
+      reference: [
+        {
+          chunks: [
+            {
+              id: "chunk-1",
+              document_id: "doc-1",
+              document_name: "First.pdf",
+              content: "First evidence",
+            },
+          ],
+        },
+        {
+          chunks: [
+            {
+              id: "chunk-2",
+              document_id: "doc-2",
+              document_name: "Second.pdf",
+              content: "Second evidence",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(messages[0].metadata?.platformReference).toBeUndefined();
+    expect(messages[2].metadata?.platformReference).toMatchObject({
+      chunks: [expect.objectContaining({ documentId: "doc-1" })],
+    });
+    expect(messages[4].metadata?.platformReference).toMatchObject({
+      chunks: [expect.objectContaining({ documentId: "doc-2" })],
+    });
   });
 
   it("bounds and records the Chat-to-Session N+1 fan-out", async () => {
@@ -220,5 +308,40 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
       dataset_ids: ["dataset-2"],
       prompt_config: { system: "New", prologue: "Welcome", quote: true },
     });
+  });
+
+  it("updates the reserved General Chat scope for chats outside a project", async () => {
+    const general = {
+      id: "general-chat",
+      name: GENERAL_CHAT_NAME,
+      dataset_ids: [],
+      prompt_config: { system: "Answer with evidence." },
+      create_time: 1,
+      update_time: 2,
+    };
+    let patch: unknown;
+    platformTestServer.use(
+      http.get("http://platform.test/api/v1/chats", () =>
+        ok({ chats: [general], total: 1 }),
+      ),
+      http.get("http://platform.test/api/v1/chats/general-chat", () =>
+        ok(general),
+      ),
+      http.patch(
+        "http://platform.test/api/v1/chats/general-chat",
+        async ({ request }) => {
+          patch = await request.json();
+          return ok({ ...general, dataset_ids: ["dataset-1"] });
+        },
+      ),
+    );
+
+    await expect(
+      updatePlatformChatDatasetScope(null, ["dataset-1", "dataset-1"]),
+    ).resolves.toMatchObject({
+      id: "general-chat",
+      datasetIds: ["dataset-1"],
+    });
+    expect(patch).toEqual({ dataset_ids: ["dataset-1"] });
   });
 });

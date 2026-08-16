@@ -1,11 +1,12 @@
-
-
-
 "use client";
 
 import { useMessage } from "@assistant-ui/react";
 import type { FC } from "react";
 
+import {
+  platformChatCitations as citationsFromPlatformReference,
+  mapPlatformChatReference,
+} from "@/integrations/platform-backend";
 import { type Citation, parseCitations } from "./citation-utils";
 import { CitationBadge } from "./tool-ui-knowledge-base";
 
@@ -48,6 +49,38 @@ export const RagSourcesGroup: FC = () => {
   const message = useMessage();
 
   const sources: Citation[] = [];
+  const metadata = message.metadata as
+    | {
+        custom?: {
+          platformCitations?: unknown;
+          platformReference?: unknown;
+        };
+        platformCitations?: unknown;
+        platformReference?: unknown;
+      }
+    | undefined;
+  const platformCitations =
+    metadata?.custom?.platformCitations ?? metadata?.platformCitations;
+  if (Array.isArray(platformCitations)) {
+    sources.push(
+      ...parseCitations(platformCitations).map((citation) => ({
+        ...citation,
+        source: "platform" as const,
+      })),
+    );
+  } else {
+    const platformReference =
+      metadata?.custom?.platformReference ?? metadata?.platformReference;
+    if (platformReference !== undefined && platformReference !== null) {
+      sources.push(
+        ...parseCitations(
+          citationsFromPlatformReference(
+            mapPlatformChatReference(platformReference),
+          ),
+        ),
+      );
+    }
+  }
   for (const part of message.content ?? []) {
     if (
       part.type === "tool-call" &&

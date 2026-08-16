@@ -10,8 +10,9 @@ import { PlatformModelsSettings } from "../components/platform-models-settings";
 export function ConnectionsTab() {
   const providers = useExternalProvidersStore((s) => s.providers);
   const setProviders = useExternalProvidersStore((s) => s.setProviders);
+  const platformAuthEnabled = isPlatformAuthEnabled();
   const platformModelsEnabled =
-    isPlatformAuthEnabled() && isPlatformModelToolsEnabled();
+    platformAuthEnabled && isPlatformModelToolsEnabled();
   const [platformRevision, setPlatformRevision] = useState(0);
   const [platformSummary, setPlatformSummary] = useState({
     connections: 0,
@@ -24,13 +25,11 @@ export function ConnectionsTab() {
   );
 
   return (
-    <div
-      data-testid="connections-tab-content"
-      className="pb-8 sm:pb-10"
-    >
+    <div data-testid="connections-tab-content" className="pb-8 sm:pb-10">
       <ChatProvidersSettings
         providers={providers}
         onProvidersChange={setProviders}
+        legacyBackendSyncEnabled={!platformAuthEnabled}
         platformConnectionCount={platformSummary.connections}
         platformModelCount={platformSummary.models}
         platformConnection={

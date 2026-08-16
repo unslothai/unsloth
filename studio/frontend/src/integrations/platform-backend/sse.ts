@@ -121,17 +121,29 @@ export class PlatformSseParser {
 
 export async function* parsePlatformSseStream(
   stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
 ): AsyncGenerator<PlatformSseEvent> {
   const parser = new PlatformSseParser();
   const reader = stream.getReader();
+  let completed = false;
+  const onAbort = () => {
+    void reader.cancel(signal?.reason).catch(() => undefined);
+  };
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       for (const event of parser.feed(value)) yield event;
     }
+    completed = true;
     for (const event of parser.end()) yield event;
   } finally {
+    signal?.removeEventListener("abort", onAbort);
+    if (!completed) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 }

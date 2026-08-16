@@ -78,6 +78,7 @@ import type {
   ChatLoraSummary,
   ChatModelSummary,
 } from "../types/runtime";
+import { modelRefreshErrorMessage } from "./model-refresh-error";
 
 export type SelectedModelInput = {
   id: string;
@@ -297,6 +298,7 @@ let syncGeneration = 0;
 async function syncInferenceStatusToStore(options?: {
   signal?: AbortSignal;
   includeLoras?: boolean;
+  surfaceErrors?: boolean;
 }): Promise<void> {
   const signal = options?.signal;
   const includeLoras = options?.includeLoras ?? true;
@@ -398,8 +400,19 @@ async function syncInferenceStatusToStore(options?: {
     // A superseded refresh reports nothing, or a stale failure would raise a
     // toast about a read whose answer would have been discarded anyway.
     if (signal?.aborted || superseded()) return;
-    const message =
-      error instanceof Error ? error.message : "Failed to load models";
+    // Rag Platform chat has its own remote model inventory and error surface.
+    // Its background compatibility refresh may legitimately find no local
+    // Studio inference server; do not turn that optional dependency into a
+    // misleading 502 chip/toast. Explicit local-model actions keep the default
+    // behavior and still surface their failures.
+    const message = modelRefreshErrorMessage(
+      error,
+      options?.surfaceErrors ?? true,
+    );
+    if (!message) {
+      setModelsError(null);
+      return;
+    }
     setModelsError(message);
     toast.error("Failed to refresh models", {
       description: message,
@@ -513,7 +526,11 @@ export function useChatModelRuntime() {
   );
 
   const refresh = useCallback(
-    (options?: { signal?: AbortSignal; includeLoras?: boolean }) =>
+    (options?: {
+      signal?: AbortSignal;
+      includeLoras?: boolean;
+      surfaceErrors?: boolean;
+    }) =>
       syncInferenceStatusToStore(options),
     [],
   );

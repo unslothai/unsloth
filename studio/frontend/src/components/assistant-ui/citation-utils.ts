@@ -11,6 +11,8 @@ export interface Citation {
   text: string;
   documentId?: string | null;
   chunkId?: string | null;
+  datasetId?: string | null;
+  source?: "platform" | "local";
 }
 
 function asNumber(value: unknown): number | null {
@@ -34,6 +36,8 @@ function parseSentinelSources(result: unknown): Citation[] | null {
     const r = (row ?? {}) as Record<string, unknown>;
     const documentId = typeof r.documentId === "string" ? r.documentId : null;
     const chunkId = typeof r.chunkId === "string" ? r.chunkId : null;
+    const datasetId = typeof r.datasetId === "string" ? r.datasetId : null;
+    const source = r.source === "platform" ? "platform" : undefined;
     const filename =
       typeof r.filename === "string" ? r.filename : `Source ${i + 1}`;
     return {
@@ -44,6 +48,8 @@ function parseSentinelSources(result: unknown): Citation[] | null {
       text: typeof r.text === "string" ? r.text : "",
       documentId,
       chunkId,
+      datasetId,
+      source,
     };
   });
 }
@@ -93,12 +99,20 @@ export function parseCitations(result: unknown): Citation[] {
           : `Source ${i + 1}`;
     const chunkId =
       typeof r.chunkId === "string" ? r.chunkId : `${filename}-${i}`;
+    const documentId =
+      typeof r.documentId === "string" ? r.documentId : null;
+    const datasetId = typeof r.datasetId === "string" ? r.datasetId : null;
+    const source = r.source === "platform" ? "platform" : undefined;
     citations.push({
       id: chunkId,
       filename,
       page: asNumber(r.page),
       score: asNumber(r.score),
       text,
+      documentId,
+      chunkId,
+      datasetId,
+      source,
     });
   });
   return citations;

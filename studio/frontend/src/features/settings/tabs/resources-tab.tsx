@@ -1,6 +1,3 @@
-
-
-
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -11,15 +8,20 @@ import {
   pickHuggingFaceCacheDir,
 } from "@/features/native-intents";
 import {
+  type GpuDevice,
   aggregateGpuMemoryTotalGb,
   useSystemInfo,
-  type GpuDevice,
 } from "@/hooks/use-system";
+import { useT } from "@/i18n";
+import {
+  isPlatformAuthEnabled,
+  usePlatformConnectionStore,
+} from "@/integrations/platform-backend";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { useT } from "@/i18n";
+import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   type HuggingFaceCacheSettings,
@@ -31,7 +33,6 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useMonitorOverlayStore } from "../stores/monitor-overlay-store";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import { CopyIcon, FolderOpenIcon, LayersIcon } from "lucide-react";
 
 const POLL_MS = 3000;
 
@@ -184,6 +185,93 @@ function deviceOrdinal(device: GpuDevice): number | undefined {
 }
 
 export function ResourcesTab() {
+  return isPlatformAuthEnabled() ? (
+    <PlatformResourcesTab />
+  ) : (
+    <LegacyResourcesTab />
+  );
+}
+
+function PlatformResourcesTab() {
+  const t = useT();
+  const status = usePlatformConnectionStore((state) => state.status);
+  const version = usePlatformConnectionStore((state) => state.version);
+  const health = usePlatformConnectionStore((state) => state.health);
+  const error = usePlatformConnectionStore((state) => state.error);
+  const lastCheckedAt = usePlatformConnectionStore(
+    (state) => state.lastCheckedAt,
+  );
+  const checkConnection = usePlatformConnectionStore(
+    (state) => state.checkConnection,
+  );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void checkConnection(controller.signal);
+    return () => controller.abort();
+  }, [checkConnection]);
+
+  const statusLabel =
+    status === "connected"
+      ? "Bağlı"
+      : status === "degraded"
+        ? "Kısmi hizmet"
+        : status === "checking" || status === "idle"
+          ? "Kontrol ediliyor"
+          : status === "unauthorized"
+            ? "Yetki gerekli"
+            : "Bağlantı yok";
+  const services = Object.entries(health ?? {}).filter(
+    ([key, value]) => key !== "status" && key !== "_meta" && value != null,
+  );
+
+  return (
+    <div className="flex flex-col gap-6">
+      <header className="flex min-w-0 flex-col gap-1">
+        <h1 className="text-xl font-semibold font-heading">
+          {t("settings.resources.title")}
+        </h1>
+        <p className="text-xs text-muted-foreground">
+          Rag Platform servis durumu ve bu dağıtımın desteklediği kaynak
+          bilgileri.
+        </p>
+      </header>
+
+      <SettingsSection title="Rag Platform durumu">
+        <InfoRow label="Bağlantı" value={statusLabel} />
+        <InfoRow label="Sürüm" value={version ?? "—"} />
+        {services.map(([name, value]) => (
+          <InfoRow
+            key={name}
+            label={name.replaceAll("_", " ")}
+            value={String(value)}
+          />
+        ))}
+        {lastCheckedAt && (
+          <InfoRow
+            label="Son kontrol"
+            value={new Date(lastCheckedAt).toLocaleString()}
+          />
+        )}
+        {error && (
+          <p role="alert" className="py-2 text-xs text-destructive">
+            {error.message}
+          </p>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Kaynak telemetrisi">
+        <p className="py-3 text-sm text-muted-foreground">
+          CPU, RAM, disk, GPU ve model belleği telemetrisi bu Rag Platform
+          dağıtımında sunulmuyor. Yanıltıcı sıfır değerler yerine yalnızca
+          backend tarafından doğrulanan servis durumu gösterilir.
+        </p>
+      </SettingsSection>
+    </div>
+  );
+}
+
+function LegacyResourcesTab() {
   const t = useT();
   const liveUpdates = useSettingsPanelPrefsStore((s) => s.resourcesLiveUpdates);
   const setLiveUpdates = useSettingsPanelPrefsStore(

@@ -23,7 +23,7 @@ import {
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { getDocumentFileUrl, getPreviewTarget } from "../api/rag-api";
+import { resolveDocumentPreview } from "../api/document-preview-adapter";
 import type { PdfRegion, PreviewTarget } from "../types/rag";
 import { useDocumentPreviewStore } from "./preview-store";
 
@@ -329,7 +329,7 @@ function persistPreviewWidth(w: number) {
 }
 
 export function DocumentPreviewSheet() {
-  const { open, documentId, chunkId, filename, page, closePreview } =
+  const { open, documentId, chunkId, filename, page, source, closePreview } =
     useDocumentPreviewStore();
   const [target, setTarget] = useState<PreviewTarget | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
@@ -376,30 +376,44 @@ export function DocumentPreviewSheet() {
 
   useEffect(() => {
     if (!open || !documentId) return;
+    const controller = new AbortController();
     let cancelled = false;
+    let dispose: () => void = () => undefined;
     setLoading(true);
     setError(null);
     setTarget(null);
     setFileUrl(null);
     (async () => {
       try {
-        const t = await getPreviewTarget(documentId, chunkId ?? undefined);
-        if (cancelled) return;
-        setTarget(t);
-        if (t.mediaKind === "pdf") {
-          const url = await getDocumentFileUrl(documentId);
-          if (!cancelled) setFileUrl(url);
+        const resolved = await resolveDocumentPreview({
+          documentId,
+          chunkId: chunkId ?? undefined,
+          filename,
+          page,
+          source,
+          signal: controller.signal,
+        });
+        if (cancelled) {
+          resolved.dispose();
+          return;
         }
+        dispose = resolved.dispose;
+        setTarget(resolved.target);
+        setFileUrl(resolved.fileUrl);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled && !controller.signal.aborted) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
+      controller.abort();
+      dispose();
     };
-  }, [open, documentId, chunkId]);
+  }, [open, documentId, chunkId, filename, page, source]);
 
   const headerName = target?.filename ?? filename ?? "Document";
   const headerPage = target?.targetPage ?? page ?? null;

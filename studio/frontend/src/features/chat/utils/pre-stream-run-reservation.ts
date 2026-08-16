@@ -185,6 +185,23 @@ export function releasePreStreamRunReservation(token: symbol): boolean {
   return true;
 }
 
+/** Releases the composer reservation for every terminal generator path. */
+export async function* yieldWithReleasedPreStreamRunReservation<T>(
+  result: AsyncIterable<T> | PromiseLike<T> | T | null | undefined,
+  token: symbol | null,
+): AsyncGenerator<T, void, unknown> {
+  try {
+    if (result == null) return;
+    if (typeof result === "object" && Symbol.asyncIterator in result) {
+      yield* result as AsyncIterable<T>;
+      return;
+    }
+    yield await result;
+  } finally {
+    if (token) releasePreStreamRunReservation(token);
+  }
+}
+
 export function releasePreStreamRunForThreadIds(
   threadIds: Iterable<string | null | undefined>,
 ): boolean {

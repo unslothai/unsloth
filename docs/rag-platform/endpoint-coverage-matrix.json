@@ -35,9 +35,9 @@
       "internal": 4
     },
     "by_status": {
-      "implemented": 82,
+      "implemented": 88,
       "contract-verified": 45,
-      "planned": 386,
+      "planned": 380,
       "runtime-disabled": 302,
       "not-proxied": 6
     },
@@ -9568,11 +9568,22 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat → assistant yanıtı → Read aloud / Stop reading",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#synthesizePlatformChatSpeech",
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -9600,11 +9611,22 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat composer → microphone → Stop / discard",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#transcribePlatformChatAudio",
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -9632,11 +9654,24 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "contract-verified",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Sidebar → Chat → composer → Gönder / Yanıtı durdur",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#streamPlatformChatCompletion",
       "test_evidence": [
-        "`fixtures/stream.json` #stream.completion"
+        "`fixtures/stream.json` #stream.completion",
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)",
+        "../rag-backend/internal/engine/elasticsearch/chunk_helpers_test.go#TestHybridSearchKeepsLexicalQueryOutOfKNNFilter"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -9696,11 +9731,22 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat → assistant yanıtı → Mindmap → incele / JSON dışa aktar",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#generatePlatformMindMap",
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -9760,11 +9806,22 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat → assistant yanıtı → Takip önerileri → composer taslağına ekle",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#getPlatformRecommendations",
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -9932,6 +9989,7 @@
         "`fixtures/cleanup.json` #cleanup.chat",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10000,6 +10058,7 @@
         "`fixtures/chat.json` #chat.list",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10069,6 +10128,7 @@
         "`fixtures/chat.json` #chat.create",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10168,6 +10228,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10198,12 +10259,13 @@
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
       "status": "implemented",
-      "ui_path": "Projects → project → Sources / instructions",
+      "ui_path": "Chat header → Chat sources; Projects → project → Sources / instructions",
       "typed_service": "src/integrations/platform-backend/chat-api.ts#getPlatformChat",
       "test_evidence": [
         "`fixtures/chat.json` #chat.get",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10234,11 +10296,12 @@
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
       "status": "implemented",
-      "ui_path": "Projects → project menu → Rename; Project → Sources → Save scope",
+      "ui_path": "Chat header → Chat sources → Save; Projects → project menu → Rename; Project → Sources → Save scope",
       "typed_service": "src/integrations/platform-backend/chat-api.ts#updatePlatformChat",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10274,6 +10337,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10309,6 +10373,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10345,6 +10410,7 @@
         "`fixtures/session.json` #session.list",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10381,6 +10447,7 @@
         "`fixtures/session.json` #session.create",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10417,6 +10484,7 @@
         "`fixtures/session.json` #session.get",
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10452,6 +10520,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10487,6 +10556,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -10516,11 +10586,22 @@
       "auth": "session",
       "auth_role": "tenant-user",
       "consumer": "rag-platform-frontend",
-      "status": "planned",
-      "ui_path": "pending (Faz 8)",
-      "typed_service": null,
+      "status": "implemented",
+      "ui_path": "Chat → assistant yanıtı → Yararlı / Yararlı değil → Gönder",
+      "typed_service": "src/integrations/platform-backend/chat-completion-api.ts#updatePlatformMessageFeedback",
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -10676,11 +10757,23 @@
       "auth": "login_required",
       "auth_role": "tenant-user",
       "consumer": "legacy API client",
-      "status": "planned",
-      "ui_path": "—",
+      "status": "contract-verified",
+      "ui_path": "— (deprecated native alias; UI uses active /api/v1/chat/completions)",
       "typed_service": null,
       "test_evidence": [
-        "pending (Faz 8)"
+        "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+        "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+        "src/features/chat/components/platform-chat-enrichments.test.tsx",
+        "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+        "src/features/chat/adapters/platform-voice-adapters.test.ts",
+        "src/components/assistant-ui/citation-utils.test.tsx",
+        "src/components/assistant-ui/rag-sources.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts",
+        "src/integrations/platform-backend/__tests__/sse.test.ts",
+        "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+        "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+        "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)",
+        "docs/rag-platform/route-inventory.md (deprecated compatibility registration)"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -10874,6 +10967,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -12925,7 +13019,8 @@
         "`fixtures/document.json` #document.parse_status",
         "`fixtures/document.json` #document.parse_status.retry1",
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Nested collection or detail read that backs its own tab or panel inside the owning screen.",
       "is_alternate": false,
@@ -12990,7 +13085,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#downloadDatasetDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Binary attachment action in Documents → Dataset documents. Metadata comes from the collection response; the authenticated Blob is never placed in persistent storage and its object URL is revoked after use.",
       "is_alternate": false,
@@ -13023,7 +13119,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#updateDatasetDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -14338,7 +14435,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#deleteDatasetDocuments",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -14404,7 +14502,8 @@
       "test_evidence": [
         "`fixtures/document.json` #document.upload",
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own. The active Go v0.26.4 upload is runtime-incompatible with the deployed SQL schema because it inserts document.meta_fields. The generated hybrid proxy uses the ownership-checked Python equivalent on 9380; live PDF/TXT/DOCX multi-upload passed through that canonical target. The Go implementation is classified as a runtime-disabled alternate.",
       "is_alternate": false,
@@ -14501,7 +14600,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#updateDatasetDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -14930,7 +15030,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#parseDatasetDocuments",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own. The generated runtime override selects Python 9380 so canonical document_ids jobs are consumed by the deployed Python task executor. The Go alternate is runtime-disabled for this deployment; live PDF/TXT/DOCX tasks reached 100%.",
       "is_alternate": false,
@@ -14963,7 +15064,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#stopDatasetDocuments",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -16052,7 +16154,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#removeDatasetIngestionTasks",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "The v0.26.4 GET handler requires a JSON body, which browser Fetch forbids, while dataset document stop is safely available through POST /datasets/{id}/documents/stop. Task list/stop/remove remain typed protocol contracts and are not duplicated as unsafe browser controls.",
       "is_alternate": false,
@@ -16086,7 +16189,8 @@
       "test_evidence": [
         "docs/rag-platform/runtime-disabled.md (Phase 5 functional runtime gap)",
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "The v0.26.4 GET handler requires a JSON body, which browser Fetch forbids, while dataset document stop is safely available through POST /datasets/{id}/documents/stop. Task list/stop/remove remain typed protocol contracts and are not duplicated as unsafe browser controls. Phase 5 functional runtime gap: the active v0.26.4 handler calls ShouldBindJSON for dataset_id on a GET request. Browser Fetch rejects GET bodies, and the handler does not read the query parameter. The UI polls dataset document state and uses the reachable Python POST /datasets/{dataset_id}/documents/stop contract instead.",
       "is_alternate": false,
@@ -16119,7 +16223,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#stopDatasetIngestionTasks",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "The v0.26.4 GET handler requires a JSON body, which browser Fetch forbids, while dataset document stop is safely available through POST /datasets/{id}/documents/stop. Task list/stop/remove remain typed protocol contracts and are not duplicated as unsafe browser controls.",
       "is_alternate": false,
@@ -16536,7 +16641,8 @@
       "typed_service": null,
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence. Upstream note: Internal API only for GO.",
       "is_alternate": false,
@@ -16569,7 +16675,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#downloadDatasetDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -16602,7 +16709,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#fetchDocumentPreview",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -16635,7 +16743,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#listDatasetDocuments",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -16668,7 +16777,8 @@
       "typed_service": null,
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -16701,7 +16811,8 @@
       "typed_service": null,
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -16767,7 +16878,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#createGenericDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "The low-level create contract requires an explicit created_by principal and does not accept file bytes. The product upload path is dataset-scoped POST /datasets/{id}/documents; exposing caller-supplied ownership in the UI would violate the Phase 5 ownership boundary. Exact request/response and auth tests retain this service contract.",
       "is_alternate": false,
@@ -16800,7 +16912,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#deleteGenericDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -16835,7 +16948,8 @@
         "docs/rag-platform/runtime-disabled.md (Phase 5 functional security gap)",
         "src/features/documents/document-library-page.tsx (disabled-state UI)",
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Nested collection or detail read that backs its own tab or panel inside the owning screen. Phase 5 functional security gap: the active v0.26.4 Go handler authenticates the session but discards the principal and returns GetDocumentByID directly, without dataset ownership/Accessible verification. The typed contract is kept under tests, but the frontend does not expose the unsafe read action and renders an explicit runtime-disabled explanation. PUT and DELETE independently enforce dataset ownership before mutation.",
       "is_alternate": false,
@@ -16868,7 +16982,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#updateGenericDocument",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -16929,11 +17044,12 @@
       "auth_role": "tenant-user / api-key / embed-token",
       "consumer": "rag-platform-frontend",
       "status": "implemented",
-      "ui_path": "Sidebar → Documents → document name / Önizle",
+      "ui_path": "Sidebar → Documents → document name / Önizle; Chat → assistant yanıtı → kaynak belge kartı",
       "typed_service": "src/integrations/platform-backend/document-api.ts#fetchDocumentPreview",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Nested collection or detail read that backs its own tab or panel inside the owning screen.",
       "is_alternate": false,
@@ -16998,7 +17114,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#fetchDocumentArtifact",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence.",
       "is_alternate": false,
@@ -17063,7 +17180,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#fetchDocumentImage",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Reachable Go mutation or sub-read invoked from within the owning screen; no dedicated route of its own. Phase implementation must still provide a typed service, UI path and test evidence. The active image handler authenticates but does not independently repeat document ownership lookup. The UI only derives image ids from the authenticated thumbnail response and never accepts an arbitrary image id; this residual backend limitation is recorded in the Phase 5 result report.",
       "is_alternate": false,
@@ -17128,7 +17246,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#ingestGenericDocuments",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -17193,7 +17312,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#inspectDocumentUploads",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -22886,6 +23006,7 @@
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/chat-api.test.ts",
         "src/features/chat/api/platform-chat-adapter.test.ts",
+        "src/features/chat/components/platform-chat-sources-button.test.tsx",
         "src/features/rag/components/dataset-scope-selector.test.tsx",
         "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)"
       ],
@@ -24301,7 +24422,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#stopPlatformTask",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Generic ingest returns only a boolean and no task id, so the document UI cannot safely invent a task identity. The exact PATCH stop and POST cancel contracts are typed and tested for clients that already possess an authorized task id.",
       "is_alternate": false,
@@ -24334,7 +24456,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#cancelPlatformTask",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Generic ingest returns only a boolean and no task id, so the document UI cannot safely invent a task identity. The exact PATCH stop and POST cancel contracts are typed and tested for clients that already possess an authorized task id.",
       "is_alternate": false,
@@ -24911,7 +25034,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#listDocumentThumbnails",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Mutation or sub-read invoked from within the owning screen; no dedicated route of its own.",
       "is_alternate": false,
@@ -26279,7 +26403,8 @@
       "typed_service": null,
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,
@@ -26312,7 +26437,8 @@
       "typed_service": "src/integrations/platform-backend/document-api.ts#inspectDocumentUploads",
       "test_evidence": [
         "src/integrations/platform-backend/__tests__/document-api.test.ts",
-        "src/features/documents/use-document-library.test.tsx"
+        "src/features/documents/use-document-library.test.tsx",
+        "src/features/rag/api/document-preview-adapter.test.ts"
       ],
       "justification": "Deprecated shim kept by upstream for older clients; its own docstring names the replacement route, which carries the product class. No UI is built on it; contract + auth tests only. Upstream note: backward-compat shim retained by upstream for older clients.",
       "is_alternate": false,

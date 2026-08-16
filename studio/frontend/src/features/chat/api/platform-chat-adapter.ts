@@ -10,8 +10,15 @@ import {
   isPlatformApiError,
   listAllPlatformChats,
   listAllPlatformSessions,
+  generatePlatformMindMap,
+  getPlatformRecommendations,
+  mapPlatformChatReference,
+  platformChatCitations,
+  updatePlatformMessageFeedback,
   updatePlatformChat,
   updatePlatformSession,
+  type PlatformFeedbackRequest,
+  type PlatformMindMapNode,
   type PlatformChatDto,
   type PlatformSessionDto,
   type PlatformSessionMessageDto,
@@ -26,6 +33,7 @@ import {
   setPlatformProjectOverlay,
   setPlatformThreadOverlay,
 } from "./platform-chat-overlay";
+import { stripPlatformCitationMarkers } from "./platform-citation-markers";
 
 export const GENERAL_CHAT_NAME = "General";
 export const PLATFORM_CHAT_FANOUT_CONCURRENCY = 4;
@@ -44,6 +52,7 @@ let latestFanoutMetrics: PlatformChatFanoutMetrics = {
   durationMs: 0,
 };
 const sessionChatCache = new Map<string, string>();
+const platformChatCache = new Map<string, ProjectRecord>();
 const generalChatIds = new Set<string>();
 
 export function getPlatformChatFanoutMetrics(): PlatformChatFanoutMetrics {
@@ -60,7 +69,11 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-function timestamp(value: unknown, date: unknown, fallback = Date.now()): number {
+function timestamp(
+  value: unknown,
+  date: unknown,
+  fallback = Date.now(),
+): number {
   const numeric = typeof value === "number" ? value : Number(value);
   if (Number.isFinite(numeric) && numeric > 0) return numeric;
   if (typeof date === "string") {
@@ -85,7 +98,7 @@ export function mapPlatformChatToProject(dto: PlatformChatDto): ProjectRecord {
   if (name === GENERAL_CHAT_NAME) generalChatIds.add(id);
   const createdAt = timestamp(dto.create_time, dto.create_date);
   const overlay = getPlatformProjectOverlay(id);
-  return {
+  const project: ProjectRecord = {
     id,
     name,
     instructions: stringValue(promptConfig(dto.prompt_config).system),
@@ -97,6 +110,8 @@ export function mapPlatformChatToProject(dto: PlatformChatDto): ProjectRecord {
     createdAt,
     updatedAt: timestamp(dto.update_time, dto.update_date, createdAt),
   };
+  platformChatCache.set(id, project);
+  return project;
 }
 
 export function mapPlatformSessionToThread(
@@ -106,7 +121,9 @@ export function mapPlatformSessionToThread(
   const id = stringValue(dto.id);
   const chatId = stringValue(dto.chat_id) || fallbackChatId || "";
   if (!id || !chatId) {
-    throw new TypeError("Rag Platform Session yanıtında id veya chat_id eksik.");
+    throw new TypeError(
+      "Rag Platform Session yanıtında id veya chat_id eksik.",
+    );
   }
   sessionChatCache.set(id, chatId);
   const overlay = getPlatformThreadOverlay(id);
@@ -128,9 +145,29 @@ export function mapPlatformSessionToThread(
   };
 }
 
-function normalizedContent(value: unknown): MessageRecord["content"] {
-  if (Array.isArray(value)) return value as MessageRecord["content"];
-  if (typeof value === "string") return [{ type: "text", text: value }];
+function normalizedContent(
+  value: unknown,
+  stripCitationMarkers = false,
+): MessageRecord["content"] {
+  if (Array.isArray(value)) {
+    const content = value as MessageRecord["content"];
+    if (!stripCitationMarkers) return content;
+    return content.map((part) =>
+      part.type === "text"
+        ? { ...part, text: stripPlatformCitationMarkers(part.text) }
+        : part,
+    ) as MessageRecord["content"];
+  }
+  if (typeof value === "string") {
+    return [
+      {
+        type: "text",
+        text: stripCitationMarkers
+          ? stripPlatformCitationMarkers(value)
+          : value,
+      },
+    ];
+  }
   if (value == null) return [];
   return [{ type: "text", text: JSON.stringify(value) }];
 }
@@ -144,6 +181,7 @@ export function mapPlatformSessionMessages(
     ? (session.messages as PlatformSessionMessageDto[])
     : [];
   const references = Array.isArray(session.reference) ? session.reference : [];
+  const platformChatId = stringValue(session.chat_id) || null;
   const baseTime = timestamp(session.create_time, session.create_date);
   let parentId: string | null = null;
   let assistantIndex = 0;
@@ -155,21 +193,57 @@ export function mapPlatformSessionMessages(
     const id = platformMessageId
       ? `${platformMessageId}:${role}:${index}`
       : `${threadId}:${role}:${index}`;
-    const reference = role === "assistant" ? references[assistantIndex++] : undefined;
+    // The backend can prepend an id-less assistant prologue. References are
+    // emitted only for generated answer turns, so consuming an entry for that
+    // prologue shifts every historical citation to the previous message.
+    const previousRole =
+      index > 0 ? stringValue(rawMessages[index - 1]?.role) : "";
+    const consumesReference =
+      role === "assistant" &&
+      (platformMessageId !== null || previousRole === "user");
+    const reference = consumesReference
+      ? references[assistantIndex++]
+      : undefined;
+    const normalizedReference =
+      reference === undefined ? undefined : mapPlatformChatReference(reference);
     const message: MessageRecord = {
       id,
       threadId,
       parentId,
       role,
-      content: normalizedContent(raw.content),
+      content: normalizedContent(raw.content, role === "assistant"),
       createdAt: timestamp(
         raw.create_time ?? raw.created_at,
         undefined,
         baseTime + index,
       ),
       metadata: {
+        platformChatId,
+        platformSessionId: threadId,
         platformMessageId,
-        ...(reference === undefined ? {} : { platformReference: reference }),
+        ...(role === "assistant"
+          ? {
+              responseDetails: {
+                providerName: "Rag Platform",
+                providerType: "platform",
+                sessionId: threadId,
+                toolCalls: [],
+              },
+              platformStreamCompleted: true,
+            }
+          : {}),
+        ...(normalizedReference === undefined
+          ? {}
+          : {
+              platformReference: normalizedReference,
+              platformCitations: platformChatCitations(normalizedReference),
+            }),
+        ...(typeof raw.thumbup === "boolean"
+          ? { platformThumbup: raw.thumbup }
+          : {}),
+        ...(typeof raw.feedback === "string" && raw.feedback
+          ? { platformFeedback: raw.feedback }
+          : {}),
       },
     };
     parentId = id;
@@ -205,9 +279,11 @@ async function mapBounded<T, R>(
   return { values: output, peak };
 }
 
-export async function listPlatformProjectsForChat(args: {
-  includeArchived?: boolean;
-} = {}): Promise<ProjectRecord[]> {
+export async function listPlatformProjectsForChat(
+  args: {
+    includeArchived?: boolean;
+  } = {},
+): Promise<ProjectRecord[]> {
   return (await listAllPlatformChats())
     .filter((chat) => stringValue(chat.name) !== GENERAL_CHAT_NAME)
     .map(mapPlatformChatToProject)
@@ -216,9 +292,10 @@ export async function listPlatformProjectsForChat(args: {
 
 export async function getPlatformProjectForChat(
   projectId: string,
+  signal?: AbortSignal,
 ): Promise<ProjectRecord | null> {
   try {
-    return mapPlatformChatToProject(await getPlatformChat(projectId));
+    return mapPlatformChatToProject(await getPlatformChat(projectId, signal));
   } catch (error) {
     if (isPlatformApiError(error) && error.httpStatus === 404) return null;
     throw error;
@@ -232,8 +309,14 @@ export async function createPlatformProjectForChat(input: {
 }): Promise<ProjectRecord> {
   const name = input.name.trim();
   if (!name) throw new Error("Project name is required.");
-  if (name.localeCompare(GENERAL_CHAT_NAME, undefined, { sensitivity: "accent" }) === 0) {
-    throw new Error(`“${GENERAL_CHAT_NAME}” is reserved for chats outside a project.`);
+  if (
+    name.localeCompare(GENERAL_CHAT_NAME, undefined, {
+      sensitivity: "accent",
+    }) === 0
+  ) {
+    throw new Error(
+      `“${GENERAL_CHAT_NAME}” is reserved for chats outside a project.`,
+    );
   }
   return mapPlatformChatToProject(
     await createPlatformChat({
@@ -249,6 +332,7 @@ export async function createPlatformProjectForChat(input: {
 export async function updatePlatformProjectForChat(
   projectId: string,
   patch: Partial<ProjectRecord>,
+  signal?: AbortSignal,
 ): Promise<ProjectRecord> {
   if (
     patch.name !== undefined &&
@@ -283,25 +367,29 @@ export async function updatePlatformProjectForChat(
     if (!current) throw new Error(`Project ${projectId} was not found.`);
     return current;
   }
-  const raw = await getPlatformChat(projectId);
+  const raw = await getPlatformChat(projectId, signal);
   const currentPrompt = promptConfig(raw.prompt_config);
-  const updated = await updatePlatformChat(projectId, {
-    ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
-    ...(patch.datasetIds !== undefined
-      ? { dataset_ids: [...new Set(patch.datasetIds)] }
-      : {}),
-    ...(patch.platformLlmId !== undefined
-      ? { llm_id: patch.platformLlmId ?? "" }
-      : {}),
-    ...(patch.instructions !== undefined
-      ? {
-          prompt_config: {
-            ...currentPrompt,
-            system: patch.instructions.trim(),
-          },
-        }
-      : {}),
-  });
+  const updated = await updatePlatformChat(
+    projectId,
+    {
+      ...(patch.name !== undefined ? { name: patch.name.trim() } : {}),
+      ...(patch.datasetIds !== undefined
+        ? { dataset_ids: [...new Set(patch.datasetIds)] }
+        : {}),
+      ...(patch.platformLlmId !== undefined
+        ? { llm_id: patch.platformLlmId ?? "" }
+        : {}),
+      ...(patch.instructions !== undefined
+        ? {
+            prompt_config: {
+              ...currentPrompt,
+              system: patch.instructions.trim(),
+            },
+          }
+        : {}),
+    },
+    signal,
+  );
   return mapPlatformChatToProject(updated);
 }
 
@@ -312,24 +400,56 @@ export async function deletePlatformProjectForChat(
   deletePlatformProjectOverlay(projectId);
 }
 
-export async function ensureGeneralPlatformChat(): Promise<ProjectRecord> {
+export async function ensureGeneralPlatformChat(
+  signal?: AbortSignal,
+): Promise<ProjectRecord> {
   const findGeneral = (chats: PlatformChatDto[]) =>
     chats.find((chat) => stringValue(chat.name) === GENERAL_CHAT_NAME);
-  const existing = findGeneral(await listAllPlatformChats());
+  const existing = findGeneral(await listAllPlatformChats(signal));
   if (existing) return mapPlatformChatToProject(existing);
   try {
     return mapPlatformChatToProject(
-      await createPlatformChat({ name: GENERAL_CHAT_NAME, dataset_ids: [] }),
+      await createPlatformChat(
+        { name: GENERAL_CHAT_NAME, dataset_ids: [] },
+        signal,
+      ),
     );
   } catch (error) {
     // A second tab may have won the unique-name race. Re-read before failing.
-    const raced = findGeneral(await listAllPlatformChats());
+    const raced = findGeneral(await listAllPlatformChats(signal));
     if (raced) return mapPlatformChatToProject(raced);
     throw error;
   }
 }
 
-async function resolveChatIdForSession(sessionId: string): Promise<string | null> {
+/** Resolves the server-backed dataset scope used by the active chat surface. */
+export async function getPlatformChatDatasetScope(
+  projectId: string | null | undefined,
+  signal?: AbortSignal,
+): Promise<ProjectRecord> {
+  if (!projectId) return ensureGeneralPlatformChat(signal);
+  const project = await getPlatformProjectForChat(projectId, signal);
+  if (!project) throw new Error(`Project ${projectId} was not found.`);
+  return project;
+}
+
+/** Persists the dataset scope used by every Session in the active Chat. */
+export async function updatePlatformChatDatasetScope(
+  projectId: string | null | undefined,
+  datasetIds: string[],
+  signal?: AbortSignal,
+): Promise<ProjectRecord> {
+  const chat = await getPlatformChatDatasetScope(projectId, signal);
+  return updatePlatformProjectForChat(
+    chat.id,
+    { datasetIds: [...new Set(datasetIds)] },
+    signal,
+  );
+}
+
+async function resolveChatIdForSession(
+  sessionId: string,
+): Promise<string | null> {
   const cached = sessionChatCache.get(sessionId);
   if (cached) return cached;
   const chats = await listAllPlatformChats();
@@ -353,18 +473,80 @@ async function resolveChatIdForSession(sessionId: string): Promise<string | null
   return values.find((value): value is string => Boolean(value)) ?? null;
 }
 
-export async function listPlatformThreadsForChat(args: {
-  projectId?: string | null;
-  includeArchived?: boolean;
-  pairId?: string;
-  modelType?: ThreadRecord["modelType"];
-} = {}): Promise<ThreadRecord[]> {
+export async function resolvePlatformChatIdForSession(
+  sessionId: string,
+): Promise<string | null> {
+  return resolveChatIdForSession(sessionId);
+}
+
+export async function resolvePlatformChatContextForSession(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<ProjectRecord | null> {
+  const chatId = await resolveChatIdForSession(sessionId);
+  if (!chatId) return null;
+  const cached = platformChatCache.get(chatId);
+  if (cached) return { ...cached };
+  return getPlatformProjectForChat(chatId, signal);
+}
+
+export async function submitPlatformMessageFeedbackForChat(
+  sessionId: string,
+  messageId: string,
+  payload: PlatformFeedbackRequest,
+  signal?: AbortSignal,
+): Promise<void> {
+  const chatId = await resolveChatIdForSession(sessionId);
+  if (!chatId) throw new Error("Rag Platform sohbet bağlamı bulunamadı.");
+  await updatePlatformMessageFeedback(
+    chatId,
+    sessionId,
+    messageId,
+    payload,
+    signal,
+  );
+}
+
+async function platformChatDatasetIds(sessionId: string): Promise<string[]> {
+  const chatId = await resolveChatIdForSession(sessionId);
+  if (!chatId) return [];
+  const chat = await getPlatformChat(chatId);
+  return stringArray(chat.dataset_ids);
+}
+
+export async function generatePlatformMindMapForChat(
+  sessionId: string,
+  question: string,
+  signal?: AbortSignal,
+): Promise<PlatformMindMapNode | null> {
+  const datasetIds = await platformChatDatasetIds(sessionId);
+  if (datasetIds.length === 0) {
+    throw new Error("Mindmap için projeye en az bir dataset bağlayın.");
+  }
+  return generatePlatformMindMap(question, datasetIds, signal);
+}
+
+export function getPlatformRecommendationsForChat(
+  question: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  return getPlatformRecommendations(question, signal);
+}
+
+export async function listPlatformThreadsForChat(
+  args: {
+    projectId?: string | null;
+    includeArchived?: boolean;
+    pairId?: string;
+    modelType?: ThreadRecord["modelType"];
+  } = {},
+): Promise<ThreadRecord[]> {
   const started = performance.now();
   const chats =
     args.projectId === null
       ? [await ensureGeneralPlatformChat()]
       : args.projectId
-        ? [(await getPlatformProjectForChat(args.projectId))].filter(
+        ? [await getPlatformProjectForChat(args.projectId)].filter(
             (chat): chat is ProjectRecord => Boolean(chat),
           )
         : (await listAllPlatformChats()).map(mapPlatformChatToProject);
@@ -388,8 +570,7 @@ export async function listPlatformThreadsForChat(args: {
     .filter((thread) => !args.pairId || thread.pairId === args.pairId)
     .filter((thread) => !args.modelType || thread.modelType === args.modelType)
     .sort(
-      (a, b) =>
-        (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
+      (a, b) => (b.updatedAt ?? b.createdAt) - (a.updatedAt ?? a.createdAt),
     );
 }
 

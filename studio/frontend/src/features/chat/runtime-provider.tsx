@@ -1,6 +1,3 @@
-
-
-
 import { authFetch } from "@/features/auth";
 import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
@@ -38,10 +35,12 @@ import {
 import { toast } from "sonner";
 import { StudioDictationAdapter } from "./adapters/studio-dictation-adapter";
 import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis-adapter";
+import { PlatformSpeechSynthesisAdapter } from "./adapters/platform-speech-synthesis-adapter";
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { createPlatformChatRuntimeAdapter } from "./api/platform-chat-runtime-adapter";
 import { getResearchThreadState } from "./api/research-api";
 import {
   ingestResearchUpdate,
@@ -75,6 +74,7 @@ import {
   isPreStreamRunReservationCancelled,
   preStreamRunThreadIdsForRuntime,
   releasePreStreamRunReservation,
+  yieldWithReleasedPreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import {
@@ -82,6 +82,7 @@ import {
   chatContentPartAttachmentSignature,
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
+import { prepareChatHistoryMessages } from "./utils/chat-history-order";
 import {
   refreshContextUsage,
   setActiveBranchReader,
@@ -107,12 +108,10 @@ import { fallbackTitleFromUserText } from "./utils/chat-title";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { isThreadAttached } from "./utils/thread-identity";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingThreadCreateByLocalId = new Map<
-  string,
-  Promise<ThreadRecord>
->();
+const pendingThreadCreateByLocalId = new Map<string, Promise<ThreadRecord>>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
 const pendingRunStartReadyByMessageId = new Map<
   string,
@@ -428,7 +427,9 @@ class OpenDocumentAttachmentAdapter implements AttachmentAdapter {
 
   async *add({
     file,
-  }: { file: File }): AsyncGenerator<PendingAttachment, void> {
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
     const id = crypto.randomUUID();
     this.active.add(id);
     const attachment = {
@@ -628,8 +629,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
     };
   }
   const savedTiming = custom.timing as
-    | import("@assistant-ui/react").MessageTiming
-    | undefined;
+    import("@assistant-ui/react").MessageTiming | undefined;
   return {
     id: m.id,
     createdAt: new Date(m.createdAt),
@@ -769,8 +769,7 @@ function createStudioDbAdapter(
       return {
         threads: threads.map((t) => ({
           status: (t.archived ? "archived" : "regular") as
-            | "archived"
-            | "regular",
+            "archived" | "regular",
           remoteId: t.id,
           title: t.title,
         })),
@@ -853,7 +852,9 @@ function createStudioDbAdapter(
       const firstAssistant =
         firstUserIndex === -1
           ? undefined
-          : messages.find((m, i) => m.role === "assistant" && i > firstUserIndex);
+          : messages.find(
+              (m, i) => m.role === "assistant" && i > firstUserIndex,
+            );
       const userText = extractTextParts(firstUser) || defaultTitle;
       const assistantText = extractTextParts(firstAssistant);
 
@@ -878,10 +879,11 @@ function createStudioDbAdapter(
           const running = useChatRuntimeStore.getState().runningByThreadId;
           if (running[paired.id]) {
             setTimeout(() => {
-              void createStudioDbAdapter(modelType, pairId, projectId).generateTitle(
-                remoteId,
-                messages,
-              );
+              void createStudioDbAdapter(
+                modelType,
+                pairId,
+                projectId,
+              ).generateTitle(remoteId, messages);
             }, 600);
             return streamTitle(thread.title || defaultTitle);
           }
@@ -978,7 +980,9 @@ async function waitForRunStartHistoryAppend(
     return;
   }
   const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
-  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(
+    userMessage.id,
+  );
   if (runStartReady === undefined && historyAppendReady === undefined) {
     return undefined;
   }
@@ -1003,7 +1007,9 @@ async function waitForRunStartHistoryAppend(
   return adoptedThreadId;
 }
 
-function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
+function createPersistedRunAdapter(
+  adapter: ChatModelAdapter,
+): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
@@ -1030,10 +1036,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       };
       throwIfReservationCancelled();
       const persistedRunThreadIds = preStreamRunThreadIdsForRuntime(
-        [
-          ...reservationThreadIds,
-          ...trackedRunStartThreadIds,
-        ],
+        [...reservationThreadIds, ...trackedRunStartThreadIds],
         undefined,
       );
       let adoptedThreadId: string | undefined;
@@ -1068,14 +1071,7 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
           ? { ...options, unstable_threadId: adoptedThreadId }
           : options,
       );
-      if (!result) {
-        return;
-      }
-      if (typeof result === "object" && Symbol.asyncIterator in result) {
-        yield* result;
-        return;
-      }
-      yield await result;
+      yield* yieldWithReleasedPreStreamRunReservation(result, reservationToken);
     },
   };
 }
@@ -1171,8 +1167,7 @@ function useStudioRuntimeAdapters(
                     ...(Array.isArray(attachments)
                       ? {
                           attachments: attachments.filter(
-                            (attachment) =>
-                              attachment.id !== attachmentId,
+                            (attachment) => attachment.id !== attachmentId,
                           ),
                         }
                       : {}),
@@ -1195,9 +1190,7 @@ function useStudioRuntimeAdapters(
             ).attachments;
             if (
               Array.isArray(attachments) &&
-              attachments.some(
-                (attachment) => attachment.id === attachmentId,
-              )
+              attachments.some((attachment) => attachment.id === attachmentId)
             ) {
               changed = true;
               return {
@@ -1255,11 +1248,6 @@ function useStudioRuntimeAdapters(
         if (!remoteId) {
           return { messages: [] };
         }
-        const roleOrder: Record<string, number> = {
-          system: 0,
-          user: 1,
-          assistant: 2,
-        };
         let msgs: MessageRecord[];
         try {
           msgs = await listStoredChatMessages(remoteId);
@@ -1271,9 +1259,9 @@ function useStudioRuntimeAdapters(
         }
         // Durable research can outlive this runtime. Reattach its server-owned
         // assistant message to the inline card after navigation or refresh.
-        const researchThreadState = await getResearchThreadState(remoteId).catch(
-          () => null,
-        );
+        const researchThreadState = await getResearchThreadState(
+          remoteId,
+        ).catch(() => null);
         if (researchThreadState) {
           useResearchRunStore
             .getState()
@@ -1295,13 +1283,8 @@ function useStudioRuntimeAdapters(
             };
           }
         }
-        msgs.sort((a, b) => {
-          if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
-          const aOrder = roleOrder[a.role] ?? 99;
-          const bOrder = roleOrder[b.role] ?? 99;
-          if (aOrder !== bOrder) return aOrder - bOrder;
-          return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-        });
+        const preparedHistory = prepareChatHistoryMessages(msgs);
+        msgs = preparedHistory.messages;
 
         // Restore context usage from last assistant message if model matches.
         const lastAssistant = [...msgs]
@@ -1357,18 +1340,12 @@ function useStudioRuntimeAdapters(
         // retries/regenerations load as branches rather than a flat list. For
         // mixed legacy/new threads, infer sequential parents for old messages to
         // preserve the chain. Fall back to fromArray for fully legacy threads.
-        const hasParentIds = msgs.some((m) => m.parentId != null);
-        if (hasParentIds) {
-          let previousId: string | null = null;
+        if (preparedHistory.hasParentIds) {
           return {
-            messages: msgs.map((m) => {
-              const parentId = m.parentId != null ? m.parentId : previousId;
-              previousId = m.id;
-              return {
-                parentId,
-                message: toThreadMessage(m),
-              };
-            }),
+            messages: msgs.map((m) => ({
+              parentId: m.parentId ?? null,
+              message: toThreadMessage(m),
+            })),
           };
         }
         return ExportedMessageRepository.fromArray(msgs.map(toThreadMessage));
@@ -1378,9 +1355,7 @@ function useStudioRuntimeAdapters(
         const localThreadId = aui.threadListItem().getState().id;
         const historyClearGeneration = chatHistoryClearBoundary.capture();
         const throwIfHistoryWasCleared = async (remoteId: string) => {
-          if (
-            chatHistoryClearBoundary.capture() === historyClearGeneration
-          ) {
+          if (chatHistoryClearBoundary.capture() === historyClearGeneration) {
             return;
           }
           markChatThreadDeleted(remoteId);
@@ -1440,7 +1415,9 @@ function useStudioRuntimeAdapters(
           }
           const content = cloneContent(message.content);
           const attachments =
-            message.role === "user" ? cloneAttachments(message.attachments) : [];
+            message.role === "user"
+              ? cloneAttachments(message.attachments)
+              : [];
           const custom = message.metadata?.custom;
           const storedMessages = await listStoredChatMessages(remoteId);
           await throwIfHistoryWasCleared(remoteId);
@@ -1450,15 +1427,17 @@ function useStudioRuntimeAdapters(
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-              Date.now();
+            Date.now();
           const existingMetadata = existingMessage?.metadata;
           const incomingRevision = Number(
-            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+            (custom as Record<string, unknown> | undefined)?.serverRevision ??
+              -1,
           );
-          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const existingRevision = Number(
+            existingMetadata?.serverRevision ?? -1,
+          );
           const incomingMetadata = custom as
-            | Record<string, unknown>
-            | undefined;
+            Record<string, unknown> | undefined;
           const sameResearchRun =
             typeof existingMetadata?.researchRunId === "string" &&
             existingMetadata.researchRunId === incomingMetadata?.researchRunId;
@@ -1501,9 +1480,12 @@ function useStudioRuntimeAdapters(
   const dictation = useMemo(() => new StudioDictationAdapter(), []);
   const speech = useMemo(
     () =>
-      StudioSpeechSynthesisAdapter.isSupported()
-        ? new StudioSpeechSynthesisAdapter()
-        : undefined,
+      isPlatformChatPersistenceEnabled() &&
+      PlatformSpeechSynthesisAdapter.isSupported()
+        ? new PlatformSpeechSynthesisAdapter()
+        : StudioSpeechSynthesisAdapter.isSupported()
+          ? new StudioSpeechSynthesisAdapter()
+          : undefined,
     [],
   );
   const attachments = useMemo(
@@ -1544,7 +1526,9 @@ function useRuntimeHook(
   const persistedChatAdapter = useMemo(
     () =>
       createPersistedRunAdapter(
-        createOpenAIStreamAdapter({ modelType, pairId }),
+        isPlatformChatPersistenceEnabled()
+          ? createPlatformChatRuntimeAdapter()
+          : createOpenAIStreamAdapter({ modelType, pairId }),
       ),
     [modelType, pairId],
   );
@@ -1552,7 +1536,9 @@ function useRuntimeHook(
 }
 
 function createRuntimeHook(modelType: ModelType, pairId?: string) {
-  return function useConfiguredRuntimeHook(): ReturnType<typeof useLocalRuntime> {
+  return function useConfiguredRuntimeHook(): ReturnType<
+    typeof useLocalRuntime
+  > {
     return useRuntimeHook(modelType, pairId);
   };
 }
@@ -1567,9 +1553,17 @@ function ThreadAutoSwitch({
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const remoteThreadId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  const targetThreadAttached = isThreadAttached({
+    targetThreadId: threadId,
+    mainThreadId,
+    remoteThreadId,
+  });
 
   useEffect(() => {
-    if (!isLoading && mainThreadId !== threadId) {
+    if (!isLoading && !targetThreadAttached) {
       // Saved chats keep running in the background, but a temporary chat is
       // unreachable after this switch and must not retain an active queue.
       requestTemporaryPromptQueueStop();
@@ -1585,21 +1579,23 @@ function ThreadAutoSwitch({
         });
       }
     }
-  }, [aui, isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [aui, isLoading, syncActiveThreadId, targetThreadAttached, threadId]);
 
   useEffect(() => {
-    if (!syncActiveThreadId || isLoading || mainThreadId !== threadId) {
+    if (!syncActiveThreadId || isLoading || !targetThreadAttached) {
       return;
     }
     useChatRuntimeStore.getState().setActiveThreadId(threadId);
-  }, [isLoading, mainThreadId, syncActiveThreadId, threadId]);
+  }, [isLoading, syncActiveThreadId, targetThreadAttached, threadId]);
 
   return null;
 }
 
 function ThreadNewChatSwitch({
   nonce,
-}: { nonce: string }): ReactElement | null {
+}: {
+  nonce: string;
+}): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
@@ -1644,14 +1640,23 @@ function ThreadNewChatSwitch({
     // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
     // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
     // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
-  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
+  }, [
+    checkpoint,
+    ggufContextLength,
+    isLoading,
+    modelLoading,
+    nonce,
+    runActive,
+  ]);
 
   return null;
 }
 
 function ActiveThreadSync({
   enabled,
-}: { enabled: boolean }): ReactElement | null {
+}: {
+  enabled: boolean;
+}): ReactElement | null {
   const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
   const setActiveThreadId = useChatRuntimeStore(
     (state) => state.setActiveThreadId,
@@ -1671,7 +1676,9 @@ function ActiveThreadSync({
 // none, and a retried thread's newest stored leaf is not what the runtime would send.
 function ActiveBranchRegistrar({
   enabled,
-}: { enabled: boolean }): ReactElement | null {
+}: {
+  enabled: boolean;
+}): ReactElement | null {
   const aui = useAui();
 
   useEffect(() => {
@@ -1698,7 +1705,9 @@ function ActiveBranchRegistrar({
 // before the other, so neither independently timed callback counts.
 function ThreadContextUsageRecount({
   enabled,
-}: { enabled: boolean }): ReactElement | null {
+}: {
+  enabled: boolean;
+}): ReactElement | null {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
@@ -1749,7 +1758,11 @@ function CancelRegistrar(): ReactElement | null {
     if (!mainThreadId) return;
     const runtime = aui.threads().__internal_getAssistantRuntime?.();
     const threadIds = Array.from(
-      new Set([mainThreadId, remoteThreadId].filter((id): id is string => Boolean(id))),
+      new Set(
+        [mainThreadId, remoteThreadId].filter((id): id is string =>
+          Boolean(id),
+        ),
+      ),
     );
     const cancel = () => {
       for (const threadId of threadIds) {
@@ -1790,9 +1803,7 @@ function CancelRegistrar(): ReactElement | null {
           return;
         }
         for (const threadId of threadIds) {
-          useChatRuntimeStore
-            .getState()
-            .clearThreadCancel(threadId, cancel);
+          useChatRuntimeStore.getState().clearThreadCancel(threadId, cancel);
         }
         unsubscribe();
       });

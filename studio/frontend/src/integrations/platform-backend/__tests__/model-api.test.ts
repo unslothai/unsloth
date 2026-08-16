@@ -356,6 +356,50 @@ describe("Rag Platform Phase 3 model service", () => {
     ]);
   });
 
+  it("decodes the Go model_type bitmask for every supported capability", async () => {
+    platformTestServer.use(
+      http.get("http://platform.test/api/v1/models", () =>
+        success([
+          {
+            model_id: "all-capabilities",
+            name: "multi-purpose-model",
+            provider_name: "VLLM",
+            instance_name: "primary",
+            model_type: 127,
+            status: "active",
+          },
+          {
+            model_id: "numeric-string",
+            name: "chat-and-embedding",
+            provider_name: "VLLM",
+            instance_name: "primary",
+            model_type: ["1", "2"],
+            status: "active",
+          },
+        ]),
+      ),
+    );
+
+    await expect(listTenantModels()).resolves.toMatchObject([
+      {
+        id: "all-capabilities",
+        capabilities: [
+          "chat",
+          "embedding",
+          "asr",
+          "vision",
+          "rerank",
+          "tts",
+          "ocr",
+        ],
+      },
+      {
+        id: "numeric-string",
+        capabilities: ["chat", "embedding"],
+      },
+    ]);
+  });
+
   it("discovers remote instance models through the server-held credential", async () => {
     platformTestServer.use(
       http.get(

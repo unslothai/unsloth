@@ -52,9 +52,95 @@ type ContextUsageMetadata = {
 type MessageCustomMetadata = {
   responseDetails?: ResponseDetailsMetadata;
   contextUsage?: ContextUsageMetadata;
+  platformUsage?: ContextUsageMetadata | null;
   serverTimings?: Record<string, unknown>;
   reasoningDuration?: number;
+  platformChatId?: string | null;
+  platformSessionId?: string | null;
+  platformMessageId?: string | null;
+  platformReference?: unknown;
+  platformCitations?: unknown;
+  platformStreamCompleted?: boolean;
+  platformThumbup?: boolean;
+  platformFeedback?: string;
+  [key: string]: unknown;
 };
+
+const SAFE_USAGE_KEYS = new Set([
+  "prompttokens",
+  "completiontokens",
+  "totaltokens",
+  "cachedtokens",
+  "cachewritetokens",
+  "tokencount",
+]);
+
+function isSensitiveMetadataKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  if (SAFE_USAGE_KEYS.has(normalized)) return false;
+  return (
+    normalized === "token" ||
+    /(?:authorization|cookie|password|passwd|secret|apikey|providerkey|accesstoken|refreshtoken|idtoken|authtoken|bearertoken|csrftoken|credential|privatekey)/.test(
+      normalized,
+    )
+  );
+}
+
+function safeMetadataValue(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): unknown {
+  if (
+    value == null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function" || typeof value === "symbol") {
+    return `[${typeof value}]`;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "object") return String(value);
+  if (seen.has(value)) return "[Circular]";
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => safeMetadataValue(item, seen));
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      isSensitiveMetadataKey(key)
+        ? "[REDACTED]"
+        : safeMetadataValue(item, seen),
+    ]),
+  );
+}
+
+function metadataJson(custom: MessageCustomMetadata | undefined): string | null {
+  if (!custom || Object.keys(custom).length === 0) return null;
+  return JSON.stringify(safeMetadataValue(custom), null, 2);
+}
+
+function platformReferenceCounts(value: unknown): {
+  chunks: number | undefined;
+  documents: number | undefined;
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { chunks: undefined, documents: undefined };
+  }
+  const reference = value as Record<string, unknown>;
+  return {
+    chunks: Array.isArray(reference.chunks) ? reference.chunks.length : undefined,
+    documents: Array.isArray(reference.documentAggregations)
+      ? reference.documentAggregations.length
+      : Array.isArray(reference.doc_aggs)
+        ? reference.doc_aggs.length
+        : undefined,
+  };
+}
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
@@ -231,7 +317,7 @@ function useResponseModelDisplay() {
     message.metadata as Record<string, unknown> | undefined
   )?.custom as MessageCustomMetadata | undefined;
   const responseDetails = custom?.responseDetails;
-  const usage = custom?.contextUsage;
+  const usage = custom?.contextUsage ?? custom?.platformUsage ?? undefined;
   const serverTimings = custom?.serverTimings;
 
   const recordedModelId =
@@ -306,6 +392,7 @@ export const MessageResponseDetailsSheet: FC<{
   const timing = useMessageTiming();
   const {
     message,
+    custom,
     responseDetails,
     usage,
     serverTimings,
@@ -326,12 +413,25 @@ export const MessageResponseDetailsSheet: FC<{
   const totalTime =
     responseDetails?.durationMs ?? timing?.totalStreamTime ?? undefined;
   const summaryLabel =
-    modelLabel === "Not recorded" ? "Model not recorded" : `Used ${modelLabel}`;
+    modelLabel === "Not recorded"
+      ? providerLabel
+        ? `${providerLabel} response`
+        : "Model not recorded"
+      : `Used ${modelLabel}`;
   const messageToolCalls = toolCallsFromContent(message.content);
   const toolCalls =
     responseDetails?.toolCalls && responseDetails.toolCalls.length > 0
       ? responseDetails.toolCalls
       : messageToolCalls;
+  const referenceCounts = platformReferenceCounts(custom?.platformReference);
+  const rawMetadata = open ? metadataJson(custom) : null;
+  const hasPlatformDetails = Boolean(
+    custom?.platformChatId ||
+      custom?.platformSessionId ||
+      custom?.platformMessageId ||
+      custom?.platformReference ||
+      custom?.platformStreamCompleted !== undefined,
+  );
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -382,6 +482,11 @@ export const MessageResponseDetailsSheet: FC<{
             />
             <DetailRow label="Provider" value={providerLabel} />
             <DetailRow label="Message ID" value={message.id} mono={true} />
+            <DetailRow
+              label="Backend message ID"
+              value={custom?.platformMessageId}
+              mono={true}
+            />
             <DetailRow label="Created" value={formatDate(message.createdAt)} />
             <DetailRow
               label="Started"
@@ -392,6 +497,61 @@ export const MessageResponseDetailsSheet: FC<{
               value={formatDate(responseDetails?.finishedAt)}
             />
           </DetailSection>
+
+          {hasPlatformDetails ? (
+            <DetailSection title="Rag Platform">
+              <DetailRow label="Chat ID" value={custom?.platformChatId} mono />
+              <DetailRow
+                label="Session ID"
+                value={custom?.platformSessionId}
+                mono
+              />
+              <DetailRow
+                label="Message ID"
+                value={custom?.platformMessageId}
+                mono
+              />
+              <DetailRow
+                label="Stream"
+                value={
+                  custom?.platformStreamCompleted === true
+                    ? "Completed"
+                    : custom?.platformStreamCompleted === false
+                      ? "Incomplete"
+                      : null
+                }
+              />
+              <DetailRow
+                label="Reference chunks"
+                value={formatNumber(referenceCounts.chunks)}
+                mono
+              />
+              <DetailRow
+                label="Reference documents"
+                value={formatNumber(referenceCounts.documents)}
+                mono
+              />
+              <DetailRow
+                label="Reasoning"
+                value={formatMs(custom?.reasoningDuration)}
+                mono
+              />
+              <DetailRow
+                label="Feedback"
+                value={custom?.platformFeedback}
+              />
+              <DetailRow
+                label="Thumbs up"
+                value={
+                  custom?.platformThumbup === true
+                    ? "Yes"
+                    : custom?.platformThumbup === false
+                      ? "No"
+                      : null
+                }
+              />
+            </DetailSection>
+          ) : null}
 
           <DetailSection title="Tokens">
             <DetailRow label="Prompt" value={formatNumber(promptTokens)} mono />
@@ -481,6 +641,17 @@ export const MessageResponseDetailsSheet: FC<{
             <DetailRow label="Session" value={responseDetails?.sessionId} mono />
             <DetailRow label="Run ID" value={responseDetails?.cancelId} mono />
           </DetailSection>
+
+          {rawMetadata ? (
+            <DetailSection title="Metadata (sensitive values redacted)">
+              <pre
+                aria-label="Response metadata"
+                className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border/70 bg-background p-3 font-mono text-[11px] leading-5 text-foreground"
+              >
+                {rawMetadata}
+              </pre>
+            </DetailSection>
+          ) : null}
         </div>
       </SheetContent>
     </Sheet>

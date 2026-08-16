@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PlatformSseParser } from "../sse";
+import { PlatformSseParser, parsePlatformSseStream } from "../sse";
 
 describe("PlatformSseParser", () => {
   it("parses CRLF, fragmented frames and multi-line data", () => {
@@ -34,5 +34,23 @@ describe("PlatformSseParser", () => {
     expect(parser.end()).toEqual([
       expect.objectContaining({ data: "final", terminal: false }),
     ]);
+  });
+
+  it("cancels the response reader when a consumer stops before EOF", async () => {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("data: first\n\n"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    for await (const event of parsePlatformSseStream(stream)) {
+      expect(event.data).toBe("first");
+      break;
+    }
+    expect(cancelled).toBe(true);
   });
 });

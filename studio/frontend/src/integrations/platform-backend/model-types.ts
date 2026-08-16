@@ -102,6 +102,49 @@ export function stringArray(value: unknown): string[] {
     : [];
 }
 
+const MODEL_TYPE_CAPABILITIES = [
+  [1, "chat"],
+  [2, "embedding"],
+  [4, "asr"],
+  [8, "vision"],
+  [16, "rerank"],
+  [32, "tts"],
+  [64, "ocr"],
+] as const;
+
+/**
+ * The current Go model store represents model_type as a bitmask, while older
+ * and catalog endpoints return a string or string array. Keep that transport
+ * variation inside the adapter so chat and embedding consumers always receive
+ * the same capability names.
+ */
+export function modelCapabilities(value: unknown): string[] {
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [value];
+  const labels: string[] = [];
+  let numericMask = 0;
+  for (const item of values) {
+    const numericValue =
+      typeof item === "number"
+        ? item
+        : typeof item === "string" && /^\d+$/.test(item.trim())
+          ? Number(item)
+          : null;
+    if (numericValue !== null && Number.isSafeInteger(numericValue)) {
+      numericMask |= numericValue;
+      continue;
+    }
+    if (typeof item === "string" && item.trim()) labels.push(item.trim());
+  }
+  const decoded = MODEL_TYPE_CAPABILITIES.flatMap(([bit, capability]) =>
+    (numericMask & bit) !== 0 ? [capability] : [],
+  );
+  return [...new Set([...labels, ...decoded])];
+}
+
 export function mapProvider(value: unknown): PlatformProvider | null {
   const dto = asRecord(value);
   const name = stringValue(dto.name || dto.provider_name).trim();
@@ -147,7 +190,7 @@ export function mapModel(value: unknown): PlatformModel | null {
     providerName: stringValue(dto.provider_name).trim(),
     instanceId: stringValue(dto.instance_id).trim(),
     instanceName: stringValue(dto.instance_name).trim(),
-    capabilities: stringArray(dto.model_type || dto.model_types),
+    capabilities: modelCapabilities(dto.model_type ?? dto.model_types),
     status: stringValue(dto.status).trim(),
     maxTokens: numberValue(dto.max_tokens || dto.max_output),
   };

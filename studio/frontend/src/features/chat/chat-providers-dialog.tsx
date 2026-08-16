@@ -18,8 +18,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowLeft02Icon,
@@ -31,7 +31,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Eye, EyeOff } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ApiProviderLogo } from "./api-provider-logo";
 import {
@@ -45,16 +45,16 @@ import {
 } from "./api/providers-api";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
+  LEGACY_CUSTOM_PROVIDER_TYPE,
   allowsManualModelIdsWithCatalog,
+  customPresetSkipsApiKeyField,
   customProviderBaseUrlPlaceholder,
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
-  customPresetSkipsApiKeyField,
   getExternalProviderApiKey,
   isCustomProviderType,
-  LEGACY_CUSTOM_PROVIDER_TYPE,
-  CUSTOM_PROVIDER_DISPLAY_NAME,
   removeExternalProviderApiKey,
   setExternalProviderApiKey,
   supportsProviderReasoningToggle,
@@ -144,10 +144,12 @@ interface ChatProvidersSettingsProps {
   providers: ExternalProviderConfig[];
   onProvidersChange: (providers: ExternalProviderConfig[]) => void;
   platformConnection?:
-    ReactNode | ((actions: { close: () => void }) => ReactNode);
+    | ReactNode
+    | ((actions: { close: () => void }) => ReactNode);
   platformConnections?: ReactNode;
   platformConnectionCount?: number;
   platformModelCount?: number;
+  legacyBackendSyncEnabled?: boolean;
 }
 
 export function ChatProvidersSettings({
@@ -157,6 +159,7 @@ export function ChatProvidersSettings({
   platformConnections,
   platformConnectionCount = 0,
   platformModelCount = 0,
+  legacyBackendSyncEnabled = true,
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
@@ -292,6 +295,11 @@ export function ChatProvidersSettings({
   );
 
   useEffect(() => {
+    if (!legacyBackendSyncEnabled) {
+      setRegistryLoading(false);
+      setSyncingProviders(false);
+      return;
+    }
     let isMounted = true;
     const syncFromBackend = async ({
       showSpinner = true,
@@ -361,7 +369,7 @@ export function ChatProvidersSettings({
         );
       }
     };
-  }, [onProvidersChange]);
+  }, [legacyBackendSyncEnabled, onProvidersChange]);
 
   function resetForm() {
     setEditingProviderId(null);

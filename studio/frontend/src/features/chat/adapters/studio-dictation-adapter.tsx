@@ -2,6 +2,7 @@
 
 
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend";
 import {
   type DictationEngine,
   useVoiceSettingsStore,
@@ -17,6 +18,7 @@ import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
+import { PlatformDictationAdapter } from "./platform-dictation-adapter";
 
 // The one live dictation session, so Escape can discard it without going
 // through assistant-ui (which only exposes stop, i.e. transcribe). Cancelling
@@ -52,6 +54,9 @@ export class StudioDictationAdapter implements DictationAdapter {
     dictationEngine: DictationEngine = useVoiceSettingsStore.getState()
       .dictationEngine,
   ): boolean {
+    if (isPlatformChatPersistenceEnabled()) {
+      return PlatformDictationAdapter.isSupported();
+    }
     return usesModelRecording(dictationEngine)
       ? StudioModelDictationAdapter.isSupported()
       : StudioWebSpeechDictationAdapter.isSupported();
@@ -76,6 +81,9 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
+    if (isPlatformChatPersistenceEnabled()) {
+      return new PlatformDictationAdapter({ chatId: this.chatId }).listen();
+    }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesModelRecording(dictationEngine)) {
       if (StudioModelDictationAdapter.isSupported()) {

@@ -1,0 +1,29 @@
+{
+  "phase": 8,
+  "source_evidence": [
+    "rag-backend/internal/handler/chat_session.go:153",
+    "rag-backend/internal/service/chat_session.go:1442",
+    "rag-backend/api/apps/chat_app.py:1230",
+    "rag-backend/api/apps/chat_api.py:1493"
+  ],
+  "request": {
+    "chat_id": "chat-1",
+    "session_id": "session-1",
+    "question": "What is retrieval?",
+    "stream": true,
+    "legacy": false
+  },
+  "incremental_frames": [
+    { "code": 0, "data": { "id": "turn-1", "answer": "Retrieval ", "session_id": "session-1" } },
+    { "code": 0, "data": { "id": "turn-1", "start_to_think": true, "answer": "Check evidence." } },
+    { "code": 0, "data": { "id": "turn-1", "end_to_think": true } },
+    { "code": 0, "data": { "id": "turn-1", "answer": "finds context.", "reference": { "chunks": [{ "id": "chunk-1", "document_id": "doc-1", "document_name": "Guide.pdf", "content": "Relevant passage", "positions": [[3, 0]], "similarity": 0.91 }] }, "usage": { "prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12 }, "final": true } },
+    { "code": 0, "data": true, "message": "success" }
+  ],
+  "legacy_cumulative_frames": [
+    { "code": 0, "data": { "id": "turn-2", "answer": "One" } },
+    { "code": 0, "data": { "id": "turn-2", "answer": "One two" } },
+    { "code": 0, "data": true }
+  ],
+  "business_error": { "code": 100, "message": "No default model is configured", "data": false }
+}

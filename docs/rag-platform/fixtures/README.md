@@ -24,6 +24,14 @@ the run created.
 | `stream.json` | 1 | completion with `stream: true` |
 | `cleanup.json` | 2 | delete chat, delete dataset |
 
+`phase-6-chunk-retrieval-contract.json` and
+`phase-8-chat-contract.json` are deliberately separate from these live capture
+files. They are source-verified deterministic protocol fixtures used where the
+local runtime has no configured embedding/chat/audio provider. Phase 8 records
+its exact backend source locations in the fixture and tests fragmentation,
+reasoning, references, usage, cumulative prefixes, terminal frames and business
+errors. It is not presented as a live provider-success capture.
+
 ## Provenance
 
 Every file stamps what it was captured against:
@@ -97,7 +105,9 @@ as a single envelope` — the request was rejected before streaming began, so no
 SSE frame shape was captured either. The phase that implements the completion
 client must capture the SSE envelope itself rather than infer it from this file.
 
-To close this caveat: configure an embedding model and a default chat model on
+The source-verified Phase 8 fixture closes the parser/adapter test gap but not
+the live-provider evidence gap. To close the latter caveat: configure an
+embedding model and a default chat model on
 the tenant, then re-run the capture. The four interactions above are the ones to
 re-check.
 

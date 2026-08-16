@@ -1614,6 +1614,7 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
 const PHASE5_TEST_EVIDENCE = [
   "src/integrations/platform-backend/__tests__/document-api.test.ts",
   "src/features/documents/use-document-library.test.tsx",
+  "src/features/rag/api/document-preview-adapter.test.ts",
 ];
 
 Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
@@ -1682,7 +1683,8 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "python-api|GET /api/v1/documents/{p}/preview": {
     status: "implemented",
-    uiPath: "Sidebar → Documents → document name / Önizle",
+    uiPath:
+      "Sidebar → Documents → document name / Önizle; Chat → assistant yanıtı → kaynak belge kartı",
     typedService:
       "src/integrations/platform-backend/document-api.ts#fetchDocumentPreview",
     evidence: PHASE5_TEST_EVIDENCE,
@@ -1987,6 +1989,7 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
 const PHASE7_TEST_EVIDENCE = [
   "src/integrations/platform-backend/__tests__/chat-api.test.ts",
   "src/features/chat/api/platform-chat-adapter.test.ts",
+  "src/features/chat/components/platform-chat-sources-button.test.tsx",
   "src/features/rag/components/dataset-scope-selector.test.tsx",
   "scripts/rag-platform/phase-7-runtime-smoke.mjs (authenticated hybrid runtime)",
 ];
@@ -2016,7 +2019,8 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "go-api|GET /api/v1/chats/{p}": {
     status: "implemented",
-    uiPath: "Projects → project → Sources / instructions",
+    uiPath:
+      "Chat header → Chat sources; Projects → project → Sources / instructions",
     typedService:
       "src/integrations/platform-backend/chat-api.ts#getPlatformChat",
     evidence: PHASE7_TEST_EVIDENCE,
@@ -2024,7 +2028,7 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   "go-api|PATCH /api/v1/chats/{p}": {
     status: "implemented",
     uiPath:
-      "Projects → project menu → Rename; Project → Sources → Save scope",
+      "Chat header → Chat sources → Save; Projects → project menu → Rename; Project → Sources → Save scope",
     typedService:
       "src/integrations/platform-backend/chat-api.ts#updatePlatformChat",
     evidence: PHASE7_TEST_EVIDENCE,
@@ -2098,6 +2102,79 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
     typedService:
       "src/integrations/platform-backend/chat-api.ts#getPlatformRelatedQuestionsCompatibility",
     evidence: PHASE7_TEST_EVIDENCE,
+  },
+});
+
+const PHASE8_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/chat-completion-api.test.ts",
+  "src/features/chat/api/platform-chat-runtime-adapter.test.ts",
+  "src/features/chat/components/platform-chat-enrichments.test.tsx",
+  "src/components/assistant-ui/message-response-details-sheet.test.tsx",
+  "src/features/chat/adapters/platform-voice-adapters.test.ts",
+  "src/components/assistant-ui/citation-utils.test.tsx",
+  "src/components/assistant-ui/rag-sources.test.tsx",
+  "src/features/rag/api/document-preview-adapter.test.ts",
+  "src/integrations/platform-backend/__tests__/sse.test.ts",
+  "docs/rag-platform/fixtures/phase-8-chat-contract.json",
+  "docs/adr/0009-native-chat-stream-and-client-only-cancellation.md",
+  "scripts/rag-platform/phase-8-runtime-smoke.mjs (authenticated hybrid route smoke)",
+];
+
+Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "go-api|POST /api/v1/chat/completions": {
+    status: "implemented",
+    uiPath: "Sidebar → Chat → composer → Gönder / Yanıtı durdur",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#streamPlatformChatCompletion",
+    evidence: [
+      ...PHASE8_TEST_EVIDENCE,
+      "../rag-backend/internal/engine/elasticsearch/chunk_helpers_test.go#TestHybridSearchKeepsLexicalQueryOutOfKNNFilter",
+    ],
+  },
+  "go-api|PUT /api/v1/chats/{p}/sessions/{p}/messages/{p}/feedback": {
+    status: "implemented",
+    uiPath: "Chat → assistant yanıtı → Yararlı / Yararlı değil → Gönder",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#updatePlatformMessageFeedback",
+    evidence: PHASE8_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chat/mindmap": {
+    status: "implemented",
+    uiPath: "Chat → assistant yanıtı → Mindmap → incele / JSON dışa aktar",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#generatePlatformMindMap",
+    evidence: PHASE8_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chat/recommendation": {
+    status: "implemented",
+    uiPath: "Chat → assistant yanıtı → Takip önerileri → composer taslağına ekle",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#getPlatformRecommendations",
+    evidence: PHASE8_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chat/audio/speech": {
+    status: "implemented",
+    uiPath: "Chat → assistant yanıtı → Read aloud / Stop reading",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#synthesizePlatformChatSpeech",
+    evidence: PHASE8_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chat/audio/transcription": {
+    status: "implemented",
+    uiPath: "Chat composer → microphone → Stop / discard",
+    typedService:
+      "src/integrations/platform-backend/chat-completion-api.ts#transcribePlatformChatAudio",
+    evidence: PHASE8_TEST_EVIDENCE,
+  },
+  "python-api|POST /api/v1/chats/{p}/completions": {
+    status: "contract-verified",
+    uiPath:
+      "— (deprecated native alias; UI uses active /api/v1/chat/completions)",
+    typedService: null,
+    evidence: [
+      ...PHASE8_TEST_EVIDENCE,
+      "docs/rag-platform/route-inventory.md (deprecated compatibility registration)",
+    ],
   },
 });
 

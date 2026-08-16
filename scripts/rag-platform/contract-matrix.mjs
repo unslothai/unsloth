@@ -513,15 +513,15 @@ const MAPPINGS = {
 
   // --- completions and cancellation (Faz 8) ----------------------------
   "POST /v1/chat/completions": {
-    to: "POST /api/v1/chats/<chat_id>/completions",
+    to: "POST /api/v1/chat/completions",
     transform:
-      "Studio speaks OpenAI chat-completions. The platform's own completion route is assistant-scoped and streams its own SSE envelope carrying `reference` blocks; the OpenAI-compatible surface (`chats_openai/<chat_id>/chat/completions`) exists but drops those references, so Faz 8 uses the native route and adapts the stream.",
+      "Studio speaks OpenAI chat-completions. Faz 8 instead sends explicit `chat_id`, `session_id` and `question` to the active native Go route, then normalizes its SSE envelope and `reference` blocks. The deprecated chat-scoped Python alias and external OpenAI-compatible surface are not used.",
     phase: 8,
   },
   "POST /api/inference/cancel": {
     to: null,
     transform:
-      "No server-side cancellation route. Aborting the fetch is the only stop, which leaves the backend generation running. Decision record required by plan line 424.",
+      "No server-side cancellation route. Aborting the fetch is the only stop, which may leave backend generation running. ADR 0009 requires explicit user-facing disclosure and forbids presenting the stop as server cancellation.",
     phase: 8,
   },
 

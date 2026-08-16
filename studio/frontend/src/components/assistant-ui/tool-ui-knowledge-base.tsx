@@ -43,6 +43,7 @@ export function CitationBadge({
       chunkId: citation.chunkId,
       filename: citation.filename,
       page: citation.page,
+      source: citation.source,
     });
   };
 

@@ -1,22 +1,20 @@
-
-
-
+import { isPlatformChatPersistenceEnabled } from "@/integrations/platform-backend/config";
 import {
-  getChatSettings,
-  saveChatSettingsPatch,
   type PersistedChatPreset,
   type PersistedChatSettings,
   type PersistedInferenceParams,
+  getChatSettings,
+  saveChatSettingsPatch,
 } from "../api/chat-settings-api";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
+  type ChatPresetSource,
+  type Preset,
   defaultInferenceParams,
   getPresetOwnedConfigKey,
   getUniquePresetName,
   normalizeCustomPresets,
-  type ChatPresetSource,
-  type Preset,
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 
@@ -37,6 +35,7 @@ const CHAT_PRESETS_KEY = "unsloth_chat_custom_presets";
 const LEGACY_CHAT_SYSTEM_PROMPTS_KEY = "unsloth_chat_system_prompts";
 const LEGACY_CHAT_SETTINGS_IMPORT_KEY =
   "unsloth_chat_settings_imported_to_studio_db";
+const PLATFORM_CHAT_SETTINGS_KEY = "rag_platform_chat_settings";
 
 const NUMERIC_INFERENCE_FIELDS = [
   "temperature",
@@ -267,6 +266,31 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   return settings;
 }
 
+function mergeChatSettings(
+  base: PersistedChatSettings,
+  patch: PersistedChatSettings,
+): PersistedChatSettings {
+  return sanitizeChatSettings({
+    ...base,
+    ...patch,
+    inferenceParams:
+      base.inferenceParams || patch.inferenceParams
+        ? { ...base.inferenceParams, ...patch.inferenceParams }
+        : undefined,
+  });
+}
+
+function loadPlatformChatSettings(): PersistedChatSettings {
+  return sanitizeChatSettings(
+    parseJson(getStorageItem(PLATFORM_CHAT_SETTINGS_KEY)),
+  );
+}
+
+function persistPlatformChatSettings(settings: PersistedChatSettings): void {
+  if (!canUseStorage()) return;
+  localStorage.setItem(PLATFORM_CHAT_SETTINGS_KEY, JSON.stringify(settings));
+}
+
 function loadLegacySystemPromptPresets(
   existingPresets: PersistedChatPreset[],
 ): PersistedChatPreset[] {
@@ -348,7 +372,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const autoTitle = loadBool(AUTO_TITLE_KEY);
   const preserveThinking = loadBool(PRESERVE_THINKING_KEY);
   const collapseHtmlArtifacts = loadBool(COLLAPSE_HTML_ARTIFACTS_KEY);
-  const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
+  const allowArtifactNetworkAccess = loadBool(
+    ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+  );
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
   const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
@@ -389,6 +415,13 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
 }
 
 export async function loadChatSettingsWithLegacyImport(): Promise<PersistedChatSettings> {
+  if (isPlatformChatPersistenceEnabled()) {
+    return mergeChatSettings(
+      loadLegacyChatSettings(),
+      loadPlatformChatSettings(),
+    );
+  }
+
   let dbSettings: PersistedChatSettings;
   try {
     dbSettings = sanitizeChatSettings(await getChatSettings());
@@ -443,6 +476,15 @@ export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
+  if (isPlatformChatPersistenceEnabled()) {
+    const merged = mergeChatSettings(
+      mergeChatSettings(loadLegacyChatSettings(), loadPlatformChatSettings()),
+      sanitizeChatSettings(patch),
+    );
+    persistPlatformChatSettings(merged);
+    return merged;
+  }
+
   return sanitizeChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );

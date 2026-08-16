@@ -34,6 +34,12 @@ export interface PlatformRequestOptions {
   redirectOnUnauthorized?: boolean;
 }
 
+export interface PlatformOpenResponse {
+  response: Response;
+  /** Clears the request timeout/listeners after the response body is consumed. */
+  close: () => void;
+}
+
 const RETRYABLE_HTTP_STATUSES = new Set([502, 503, 504]);
 const MAX_GET_RETRIES = 2;
 
@@ -315,6 +321,101 @@ export async function platformRequest<TData>(
         });
       }
     }
+  }
+}
+
+/**
+ * Opens a response whose body must be consumed incrementally (SSE/audio).
+ * Authentication, timeout, 401 handling and typed transport errors stay in the
+ * central platform client; protocol parsing remains in the owning adapter.
+ */
+export async function platformOpenResponse(
+  endpoint: string,
+  options: PlatformRequestOptions = {},
+): Promise<PlatformOpenResponse> {
+  if (options.json !== undefined && options.body !== undefined) {
+    throw new TypeError(
+      "Rag Platform isteğinde json ve body birlikte kullanılamaz.",
+    );
+  }
+
+  const method = (options.method ?? "GET").toUpperCase();
+  const config = options.config ?? getPlatformBackendConfig();
+  const url = appendQuery(
+    resolvePlatformUrl(endpoint, options.pathMode ?? "api", config),
+    options.query,
+  );
+  const headers = new Headers(options.headers);
+  const token =
+    options.token === undefined ? getPlatformSessionToken() : options.token;
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  let body = options.body;
+  if (options.json !== undefined) {
+    headers.set("Content-Type", "application/json");
+    body = JSON.stringify(options.json);
+  }
+
+  const abortContext = createAbortContext(
+    options.signal,
+    Math.max(1, options.timeoutMs ?? config.requestTimeoutMs),
+  );
+  try {
+    const response = await fetch(url, {
+      method,
+      headers,
+      body,
+      signal: abortContext.signal,
+      credentials: options.credentials ?? "same-origin",
+    });
+    options.onResponse?.(response);
+    if (!response.ok) {
+      const text = await response.text();
+      const parsed = text ? parseJson(text) : undefined;
+      const error = new PlatformApiError(
+        backendErrorMessage(parsed, response.status),
+        {
+          httpStatus: response.status,
+          code: errorCode(parsed, response.status),
+          endpoint,
+          requestId: requestIdFrom(response),
+        },
+      );
+      if (
+        token &&
+        options.redirectOnUnauthorized !== false &&
+        response.status === 401
+      ) {
+        clearPlatformSessionAndRedirectToLogin();
+      }
+      throw error;
+    }
+    return { response, close: abortContext.cleanup };
+  } catch (error) {
+    abortContext.cleanup();
+    if (isPlatformApiError(error)) throw error;
+    if (abortContext.didTimeOut()) {
+      throw new PlatformApiError("Rag Platform isteği zaman aşımına uğradı.", {
+        httpStatus: null,
+        code: "CLIENT_TIMEOUT",
+        endpoint,
+        cause: error,
+      });
+    }
+    if (options.signal?.aborted || abortContext.signal.aborted) {
+      throw new PlatformApiError("Rag Platform isteği iptal edildi.", {
+        httpStatus: null,
+        code: "CLIENT_ABORTED",
+        endpoint,
+        cause: error,
+      });
+    }
+    throw new PlatformApiError("Rag Platform bağlantısı kurulamadı.", {
+      httpStatus: null,
+      code: "NETWORK_ERROR",
+      endpoint,
+      cause: error,
+    });
   }
 }
 

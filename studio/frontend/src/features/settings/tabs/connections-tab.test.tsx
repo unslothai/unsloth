@@ -8,14 +8,19 @@ vi.mock("@/features/chat/chat-providers-dialog", () => ({
   ChatProvidersSettings: ({
     platformConnection,
     platformConnections,
+    legacyBackendSyncEnabled,
   }: {
     platformConnection?:
       | ReactNode
       | ((actions: { close: () => void }) => ReactNode);
     platformConnections?: ReactNode;
+    legacyBackendSyncEnabled?: boolean;
   }) => (
     <div>
       Legacy connection list
+      <div data-testid="legacy-sync-enabled">
+        {String(legacyBackendSyncEnabled)}
+      </div>
       <div data-testid="platform-connection-slot">
         {typeof platformConnection === "function"
           ? platformConnection({ close: vi.fn() })
@@ -51,6 +56,9 @@ describe("ConnectionsTab", () => {
     render(<ConnectionsTab />);
 
     expect(screen.getByText("Legacy connection list")).toBeVisible();
+    expect(screen.getByTestId("legacy-sync-enabled")).toHaveTextContent(
+      "false",
+    );
     expect(screen.getByTestId("platform-connection-slot")).toBeVisible();
     expect(screen.getByText("Platform model management: create")).toBeVisible();
     expect(screen.getByText("Platform model management: manage")).toBeVisible();

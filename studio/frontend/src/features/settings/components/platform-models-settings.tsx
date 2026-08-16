@@ -396,11 +396,11 @@ function ProviderConfiguration({
       aria-labelledby="platform-connection-heading"
       className="overflow-hidden rounded-[8px] border border-border/70 bg-muted/[0.12]"
     >
-      {!canManage ? (
+      {canManage ? null : (
         <output className="block border-border/60 border-b bg-muted/20 px-4 py-3 text-xs text-muted-foreground">
           Yeni bağlantı eklemek için owner veya admin yetkisi gerekir.
         </output>
-      ) : null}
+      )}
       <div className="divide-y divide-border/60">
         <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
           <div className="flex min-w-0 flex-col gap-0.5">
@@ -1014,12 +1014,12 @@ function PlatformConnectionRows({
               </section>
             ) : (
               <>
-                {!canManage ? (
+                {canManage ? null : (
                   <p role="status" className="text-sm text-muted-foreground">
                     Model ve varsayılan değişiklikleri owner veya admin yetkisi
                     gerektirir.
                   </p>
-                ) : null}
+                )}
                 <ModelConfiguration
                   busy={busy}
                   canManage={canManage}
@@ -1364,7 +1364,7 @@ function ModelConfiguration({
           <div
             className={`grid items-end gap-2.5 p-3 ${fixedTarget ? "@min-[600px]:grid-cols-[minmax(0,1.45fr)_minmax(10rem,0.75fr)_auto]" : "@min-[520px]:grid-cols-2 @min-[720px]:grid-cols-[minmax(11rem,0.9fr)_minmax(0,1.35fr)_minmax(9rem,0.65fr)_auto]"}`}
           >
-            {!fixedTarget ? (
+            {fixedTarget ? null : (
               <div className="space-y-1.5">
                 <Label htmlFor="model-provider-instance">Bağlantı</Label>
                 <Select
@@ -1397,7 +1397,7 @@ function ModelConfiguration({
                   </SelectContent>
                 </Select>
               </div>
-            ) : null}
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="platform-model-name">Model</Label>
               <Select

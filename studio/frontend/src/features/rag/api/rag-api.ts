@@ -34,12 +34,13 @@ function parseErrorText(status: number, body: unknown): string {
 
 async function ragRequest<T>(
   path: string,
-  init?: { method?: string; body?: object },
+  init?: { method?: string; body?: object; signal?: AbortSignal },
 ): Promise<T> {
   const response = await authFetch(`${RAG_BASE}${path}`, {
     method: init?.method,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
     body: init?.body ? JSON.stringify(init.body) : undefined,
+    signal: init?.signal,
   });
   if (response.status === 204) {
     noteRagResponse(204, null);
@@ -208,19 +209,25 @@ export async function deleteDocument(
 export function getPreviewTarget(
   documentId: string,
   chunkId?: string,
+  signal?: AbortSignal,
 ): Promise<PreviewTarget> {
   const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
   return ragRequest(
     `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
+    { signal },
   );
 }
 
 // Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because
 // consumers bypass authFetch, and a relative path under Tauri resolves against
 // the webview origin.
-export async function getDocumentFileUrl(documentId: string): Promise<string> {
+export async function getDocumentFileUrl(
+  documentId: string,
+  signal?: AbortSignal,
+): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,
+    { signal },
   );
   return apiUrl(data.url);
 }

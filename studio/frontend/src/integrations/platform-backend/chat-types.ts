@@ -41,6 +41,8 @@ export interface PlatformSessionMessageDto {
   content?: unknown;
   create_time?: unknown;
   created_at?: unknown;
+  thumbup?: unknown;
+  feedback?: unknown;
   [key: string]: unknown;
 }
 

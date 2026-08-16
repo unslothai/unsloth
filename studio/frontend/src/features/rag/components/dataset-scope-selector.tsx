@@ -56,7 +56,7 @@ export function DatasetScopeSelector({
         <div>
           <p className="text-sm font-medium">Dataset scope</p>
           <p className="text-xs text-muted-foreground">
-            Selected datasets are persisted on this Rag Platform project.
+            Selected datasets are persisted on this Rag Platform chat.
           </p>
         </div>
         {selectedIds.length > 0 ? (
