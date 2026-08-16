@@ -2428,6 +2428,8 @@ exit 0
     $studioNeedsRuntimeLock = $true
     $studioUsesLegacyLayout = ($StudioRedirectMode -ne 'env') -or $studioUsesTauriManagedRoot
     $studioAutoStartProcess = $null
+    $previousUvCacheDir = $env:UV_CACHE_DIR
+    $hadPreviousUvCacheDir = ($null -ne $previousUvCacheDir)
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -3226,6 +3228,7 @@ exit 0
     # Keep uv's install cache with Studio's managed cache tree rather than the
     # user-wide LOCALAPPDATA default. A regular file left at this managed path
     # would otherwise make uv fail before it can create the virtual environment.
+    # The outer install finally restores the caller's value after every exit path.
     if ([string]::IsNullOrWhiteSpace($env:UV_CACHE_DIR)) {
         $env:UV_CACHE_DIR = Join-Path (Join-Path $StudioHome "cache") "uv"
         if (Test-Path -LiteralPath $env:UV_CACHE_DIR -PathType Leaf) {
@@ -5762,6 +5765,11 @@ exit 0
         Write-StudioLine ""
     }
     } finally {
+        if ($hadPreviousUvCacheDir) {
+            $env:UV_CACHE_DIR = $previousUvCacheDir
+        } else {
+            Remove-Item Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+        }
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
