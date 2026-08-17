@@ -1042,7 +1042,6 @@ def _manifest_hash_split(
         return set(), set()
     try:
         from hub.utils.gguf_plan import plan_from_expected_files
-
         plan = plan_from_expected_files(variant, manifest.expected_files)
     except Exception as exc:  # noqa: BLE001 - an unsplittable manifest promises nothing
         logger.debug("Could not split manifest hashes for %s [%s]: %s", repo_id, variant, exc)
