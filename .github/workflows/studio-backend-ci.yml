@@ -91,7 +91,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio httpx \
+            'numpy<3' pytest pytest-asyncio pytest-xdist httpx \
             soundfile librosa
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
@@ -120,7 +120,7 @@ jobs:
         #   - test_returns_cuda_when_cuda_available / test_calls_cuda_cache_when_cuda:
         #       assume CUDA-capable GPU
         run: |
-          python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/test_studio_api.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
