@@ -351,9 +351,9 @@ def test_the_floor_lint_covers_every_tree_the_matrix_legs_run():
     # What it would hand to vermin, not what its source says it aims at.
     scanned = [str(Path(name).relative_to(REPO).as_posix()) for name in module.targets()]
     for tree in ("studio/backend", "unsloth_cli"):
-        assert tree in workflow, (
-            f"{tree} is no longer run by {WORKFLOW.name}; drop it from the lint's ROOTS too"
-        )
+        assert (
+            tree in workflow
+        ), f"{tree} is no longer run by {WORKFLOW.name}; drop it from the lint's ROOTS too"
         assert any(name.startswith(tree + "/") for name in scanned), (
             f"{WORKFLOW.name} still executes {tree} on the matrix, but the floor lint does "
             f"not scan it, so a post-floor stdlib name there passes the pull request and "

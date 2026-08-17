@@ -135,10 +135,7 @@ def main() -> int:
             "the job that runs this, rather than letting the check quietly pass."
         )
     files = targets()
-    print(
-        f"[floor] {len(files)} files must run on Python {target}, "
-        f"the declared floor"
-    )
+    print(f"[floor] {len(files)} files must run on Python {target}, " f"the declared floor")
     command = [
         vermin,
         "--no-tips",
