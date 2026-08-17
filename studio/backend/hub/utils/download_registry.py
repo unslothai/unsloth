@@ -1001,9 +1001,7 @@ def is_resumable_partial(
     """
     if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
         return False
-    resumable = incomplete_blob_hashes(
-        repo_type, repo_id, active_only = True, resumable_only = True
-    )
+    resumable = incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True)
     if not resumable or variant is None:
         return bool(resumable)
     return bool(resumable & _manifest_blob_hashes(repo_type, repo_id, variant))
