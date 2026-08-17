@@ -999,3 +999,40 @@ test("a queue with no row yet falls back to its own project, not the store", () 
   // The row and the pending map still outrank it.
   assert.match(adapter, /if \(thread\) \{\s*composerProjectByPendingThread\.delete\(threadId\);/);
 });
+
+// One timer covers the project, so arming it for a full TTL on every update
+// pushes it past the deadline of a tab that reported earlier. That tab can close
+// mid-upload, and its stale count then gates a mounted composer until some later
+// event happens to publish.
+test("the work timer is armed for the earliest sender deadline", () => {
+  const api = readFileSync(
+    new URL("../src/features/rag/api/rag-api.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    api,
+    /let earliest = Number\.POSITIVE_INFINITY;\s*for \(const entry of bySender\.values\(\)\) \{\s*earliest = Math\.min\(earliest, entry\.until\);/,
+  );
+  assert.match(api, /Math\.max\(0, earliest - Date\.now\(\)\)/);
+  // Fired, it drops what lapsed and arms for the next deadline rather than
+  // leaving the remaining senders with no wake-up at all.
+  assert.match(api, /if \(entry\.until <= now\) live\.delete\(sender\);/);
+  assert.match(
+    api,
+    /publishProjectWorkChanged\(projectId\);\s*armRemoteWorkExpiry\(projectId\);/,
+  );
+
+  // The scheduling rule itself: two senders, the later update must not push the
+  // earlier one's wake-up out.
+  const TTL = 120_000;
+  const senders = new Map<string, number>();
+  const armFor = () => Math.min(...senders.values());
+  senders.set("tab-a", 1_000 + TTL);
+  assert.equal(armFor(), 1_000 + TTL);
+  // Tab B reports 30s later. The timer still has to fire for A first.
+  senders.set("tab-b", 31_000 + TTL);
+  assert.equal(armFor(), 1_000 + TTL, "A's deadline still owns the timer");
+  // A lapses and is dropped; the next wake-up is B's.
+  senders.delete("tab-a");
+  assert.equal(armFor(), 31_000 + TTL);
+});

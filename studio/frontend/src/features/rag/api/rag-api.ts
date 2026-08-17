@@ -440,15 +440,37 @@ function armRemoteWorkExpiry(projectId: string): void {
   if (timer !== undefined) {
     clearTimeout(timer);
   }
-  // Re-publish when the deadline passes, or a listener holds a count nothing
-  // comes back to clear. One timer per project, renewed rather than stacked.
-  remoteWorkTimers.set(
-    projectId,
-    setTimeout(() => {
+  remoteWorkTimers.delete(projectId);
+  const bySender = remoteProjectWork.get(projectId);
+  if (!bySender || bySender.size === 0) return;
+  // The earliest deadline among the senders, not a fresh TTL: one timer covers
+  // the project, so arming it for the tab that just reported would leave a tab
+  // that has since closed counted until some later event happens to publish.
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const entry of bySender.values()) {
+    earliest = Math.min(earliest, entry.until);
+  }
+  const expiry = setTimeout(
+    () => {
       remoteWorkTimers.delete(projectId);
+      // Drop what has actually lapsed, tell the listeners, then arm for the next
+      // deadline, or a listener holds a count nothing comes back to clear.
+      const now = Date.now();
+      const live = remoteProjectWork.get(projectId);
+      if (live) {
+        for (const [sender, entry] of live) {
+          if (entry.until <= now) live.delete(sender);
+        }
+        if (live.size === 0) remoteProjectWork.delete(projectId);
+      }
       publishProjectWorkChanged(projectId);
-    }, REMOTE_WORK_TTL_MS),
+      armRemoteWorkExpiry(projectId);
+    },
+    Math.max(0, earliest - Date.now()),
   );
+  // As with the channel: a pending timer would hold a Node test run open.
+  (expiry as { unref?: () => void }).unref?.();
+  remoteWorkTimers.set(projectId, expiry);
 }
 
 function setRemoteProjectWork(
