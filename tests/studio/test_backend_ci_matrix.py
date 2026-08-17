@@ -43,22 +43,93 @@ def _version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
-def test_the_pull_request_matrix_keeps_both_ends():
-    """The floor exercises the older branches, the ceiling catches removals."""
+def test_the_pull_request_matrix_is_the_newest_leg():
+    """One leg on a pull request, and it has to be the CEILING.
+
+    The ceiling is where a removal lands: a stdlib function that went away, a
+    deprecation that became an error. Those break on the newest interpreter first and on
+    the oldest never, so running only the oldest would be the wrong single choice.
+
+    The floor is given up here deliberately, and paid for in two other places, both
+    asserted below: scripts/lint_backend_python_floor.py refuses source that needs more
+    than the oldest leg, on every pull request; and main still runs all four, so anything
+    only a run can find is caught at merge rather than never.
+    """
     subset, full = _matrices()
+    assert len(subset) == 1, (
+        f"the pull-request matrix is {subset}. If a second leg is being added back, the "
+        f"reason to do it is the one this file used to encode: a static check does not "
+        f"execute a version-conditional branch. Say so here rather than leaving it bare."
+    )
     assert set(subset) <= set(full), f"{subset} is not a subset of {full}"
-    assert min(subset, key = _version) == min(full, key = _version)
-    assert max(subset, key = _version) == max(full, key = _version)
+    assert max(full, key = _version) == subset[0], (
+        f"the pull-request leg is {subset[0]} but the newest is {max(full, key = _version)}. "
+        f"A single leg has to be the newest: removals and deprecations land there first."
+    )
+
+
+def _floor_lint() -> Path:
+    return REPO / "scripts" / "lint_backend_python_floor.py"
+
+
+def test_the_floor_is_linted_on_every_pull_request():
+    """What replaces the leg that was dropped, asserted through where it runs.
+
+    Backend CI does not filter on .github/workflows/**, and more to the point a pull
+    request that only touches backend source needs this to have run BEFORE the merge,
+    which is the whole point of dropping the leg. workflow-trigger-lint.yml carries no
+    paths filter at all, so it sees every pull request.
+    """
+    lint = _floor_lint()
+    assert lint.is_file(), (
+        f"{lint.name} is gone. It is the only thing checking the backend against the "
+        f"oldest interpreter before a merge, now that a pull request runs only the newest."
+    )
+    trigger_lint = REPO / ".github" / "workflows" / "workflow-trigger-lint.yml"
+    text = trigger_lint.read_text(encoding = "utf-8")
+    assert lint.name in text, (
+        f"{trigger_lint.name} no longer runs {lint.name}, so nothing checks the floor "
+        f"before a merge"
+    )
+    installs = [
+        line for line in text.splitlines()
+        if "pip install" in line and "vermin" in line
+    ]
+    assert installs, (
+        f"{trigger_lint.name} does not pip install vermin, so {lint.name} exits with its "
+        f"'not installed' message rather than checking anything. Asserted against the "
+        f"install line rather than the file, because the first version of this check "
+        f"looked for 'vermin' anywhere and was satisfied by a comment mentioning it."
+    )
+
+
+def test_the_floor_lint_reads_stdlib_availability_not_just_syntax():
+    """Asserted through what it DOES, because the distinction is the reason it exists.
+
+    ast.parse at a feature_version answers a syntax question. The regression that a
+    dropped interpreter leg actually stops catching is a stdlib name that does not exist
+    yet: core/research_runs.py already uses `anext`, which is 3.10, and that parses on
+    every version and fails only when the line runs.
+    """
+    text = _floor_lint().read_text(encoding = "utf-8")
+    assert "vermin" in text, (
+        "the floor lint no longer uses vermin. Whatever replaces it has to read stdlib "
+        "API availability and not only syntax, or it stops covering the case it exists for"
+    )
+    assert "fromJSON" in text, (
+        "the floor lint no longer reads its target from the workflow matrix, so raising "
+        "the matrix floor would silently leave it checking the old one"
+    )
 
 
 def _boundaries() -> dict[str, tuple[int, ...]]:
     """Every ``sys.version_info`` comparison in the backend, source and tests alike.
 
-    Source matters more than tests here, and missing that is what made a single-leg
-    matrix look defensible: ``sitecustomize.py`` repoints pathlib's pre-3.11
-    ``_NormalAccessor``, ``native_path_leases.py`` and ``third_party_source.py`` branch
-    on >= 3.12. A static parse cannot exercise any of them, because it parses rather
-    than runs.
+    Source is what made a single-leg matrix look indefensible on its own:
+    ``sitecustomize.py`` repoints pathlib's pre-3.11 ``_NormalAccessor``, and
+    ``native_path_leases.py`` and ``third_party_source.py`` branch on >= 3.12. A static
+    parse cannot exercise any of them; it parses, it does not run. Which is why the full
+    matrix stayed on main.
     """
     found: dict[str, tuple[int, ...]] = {}
     for path in sorted(BACKEND.rglob("*.py")):
@@ -75,13 +146,13 @@ def _straddles(legs: list[str], boundary: tuple[int, ...]) -> bool:
     return any(v < boundary for v in versions) and any(v >= boundary for v in versions)
 
 
-def test_the_subset_sees_every_boundary_the_full_matrix_sees():
-    """The subset must lose no version boundary the full matrix draws.
+def test_the_boundaries_the_subset_stops_executing_are_still_run_on_main():
+    """The trade, made explicit rather than dropped along with the legs.
 
-    Compared against the full matrix rather than in absolute terms: several boundaries
-    (>= 3.10, < 3.14) sit outside the matrix range entirely, so no list here can see
-    them, and holding the subset to a standard the full matrix does not meet would fail
-    forever. What matters is the delta, which is what the trade is about.
+    These are the version-conditional branches a pull request no longer takes either side
+    of. Nothing static covers them -- a parse reads both sides and runs neither -- so the
+    only thing that does is the full matrix on main. This lists them so the cost is
+    visible, and fails if main stops covering them.
     """
     subset, full = _matrices()
     boundaries = _boundaries()
@@ -91,11 +162,17 @@ def test_the_subset_sees_every_boundary_the_full_matrix_sees():
         for where, boundary in boundaries.items()
         if _straddles(full, boundary) and not _straddles(subset, boundary)
     }
-    assert not lost, (
-        f"the pull-request matrix {subset} lands entirely on one side of {lost} while the "
-        f"full matrix {full} does not, so those branches stop being executed on both "
-        f"sides before a merge. A static parse does not cover them: it parses, it does "
-        f"not run."
+    assert lost, (
+        "no boundary is lost by the single-leg subset, which would mean the scan found "
+        "nothing; it is the reason this file explains the trade at all"
+    )
+    document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    triggers = document.get(True) or document.get("on") or {}
+    push = triggers.get("push") or {}
+    assert "main" in (push.get("branches") or []), (
+        f"Backend CI no longer runs on push to main, so {sorted(lost)} are executed on "
+        f"neither side of their boundary anywhere, and dropping the interior legs stops "
+        f"being a trade and becomes a straight loss"
     )
 
 

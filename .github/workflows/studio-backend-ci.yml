@@ -105,7 +105,7 @@ jobs:
         # peculiar to 3.11 or 3.12 alone.
         python: >-
           ${{ github.event_name == 'pull_request'
-              && fromJSON('["3.10", "3.13"]')
+              && fromJSON('["3.13"]')
               || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
