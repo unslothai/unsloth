@@ -6373,6 +6373,7 @@ def _estimate_gguf_required_gb(
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
     is_diffusion: bool = False,
+    disable_vision: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -6495,7 +6496,12 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
-        _sized_attrs = ["gguf_mmproj_file"]
+        # Same gate as the remote branch's include_mmproj below, and for the same
+        # reason: llama_cpp.py resolves no projector when vision is switched off, so
+        # the file is never opened and the guard must not refuse a chat load over
+        # bytes it provably does not take. A constrained machine is exactly where the
+        # switch gets used and exactly where this guard bites.
+        _sized_attrs = [] if disable_vision else ["gguf_mmproj_file"]
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")
@@ -6590,7 +6596,10 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                include_mmproj = bool(has_vision),
+                # Matches the launch path's own gate: the load fetches no projector
+                # when vision is switched off, so charging for one here would refuse
+                # a chat load over bytes it never downloads.
+                include_mmproj = bool(has_vision) and not disable_vision,
                 # Remote, so which sidecar the repo ships is unknown until the
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
@@ -7454,6 +7463,9 @@ def _guard_chat_load_against_training(
             n_devices = guard_n_devices,
             # a confirmed diffusion runner ignores the batch flags, so no reserve for it
             is_diffusion = diffusion_kind is True,
+            # getattr for the same reason as the batch flags above: an older caller
+            # hands this guard a bare request double that does not carry the field.
+            disable_vision = bool(getattr(request, "disable_vision", False)),
         )
         if is_gguf
         else None

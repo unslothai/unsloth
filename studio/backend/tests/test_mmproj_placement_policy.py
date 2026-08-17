@@ -4,8 +4,10 @@
 """The vision-projector placement policy: GPU, CPU, or not loaded at all.
 
 Model + speculative decoding + projector + 4096 context in VRAM if they fit;
-drop speculative decoding first; pin the projector to the CPU only as a last
-resort; load no projector at all when vision is switched off.
+otherwise pin the projector to the CPU; if that is still not enough, drop
+speculative decoding as well; and load no projector at all, on either device,
+when vision is switched off. Also covers the two fields the client reseeds the
+switch from, which no single-side test exercises.
 """
 
 from __future__ import annotations
@@ -14,11 +16,19 @@ import os
 import struct
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from models.inference import InferenceStatusResponse, LoadResponse
+from routes.inference import (
+    _estimate_gguf_required_gb,
+    _guard_chat_load_against_training,
+    _llama_runtime_fields,
+    _LoadPlacement,
+)
 
 MIB = 1024 * 1024
 GIB = 1024**3
@@ -48,15 +58,21 @@ def _backend(
     model_bytes: int = 6 * GIB,
     mmproj_bytes: int = 1 * GIB,
     drafter_bytes: int = 0,
+    native_ctx: int = NATIVE_CTX,
 ):
-    """A GGUF vision load with the fit inputs pinned to known numbers."""
+    """A GGUF vision load with the fit inputs pinned to known numbers.
+
+    ``native_ctx`` is lowered for the drafter tests: the drop probe prices the
+    reserve at the context the target alone would reach, so a 262144 native
+    length makes the draft KV, not the placement, decide every one of them.
+    """
     backend = LlamaCppBackend()
     gguf = _write_gguf(tmp_path / "model.gguf")
     mmproj = _write_gguf(tmp_path / "mmproj-F16.gguf")
     drafter = _write_gguf(tmp_path / "mtp.gguf")
 
     def read_metadata(_path):
-        backend._context_length = NATIVE_CTX
+        backend._context_length = native_ctx
         backend._n_layers = 32
         backend._n_heads = 32
         backend._n_kv_heads = 8
@@ -115,17 +131,20 @@ def _launch(backend, gguf, **load_kwargs):
             },
         )()
 
+    intent_kwargs = {
+        "is_vision": True,
+        # Auto context, the mode the policy is about: 0 resolves to the model's
+        # native length and lets the placement loop shrink it. A request pinned at
+        # 4096 would hide the whole floor question.
+        "n_ctx": 0,
+        **load_kwargs,
+    }
     with patch.object(subprocess, "Popen", side_effect = fake_popen):
         assert backend.load_model(
             GgufLoadIntent(
                 gguf_path = str(gguf),
                 model_identifier = "test",
-                is_vision = True,
-                # Auto context, the mode the policy is about: 0 resolves to the
-                # model's native length and lets the placement loop shrink it. A
-                # request pinned at 4096 would hide the whole floor question.
-                n_ctx = 0,
-                **load_kwargs,
+                **intent_kwargs,
             )
         )
     return captured
@@ -214,26 +233,203 @@ def test_shared_memory_pools_are_not_charged_as_discrete(tmp_path, memory, label
     assert "--no-mmproj-offload" not in cmd, label
 
 
-def test_speculative_decoding_is_dropped_before_the_projector_is_pinned(tmp_path):
-    """The drafter's reserve is not what the projector is asked to make room for.
+# The drafter tests share one shape: a small native context so the drop probe
+# prices the reserve near the floor, and a 2 GiB drafter. Only the budget moves.
+DRAFTER_NATIVE_CTX = 8192
 
-    Model + projector fit at the floor; the drafter on top of them does not. The
-    projector stays on the GPU and speculative decoding gives way instead.
-    """
-    backend, gguf = _backend(
+
+def _drafter_backend(tmp_path, memory):
+    return _backend(
         tmp_path,
-        memory = [(0, 9_400, 24_000)],
+        memory = memory,
         drafter_bytes = 2 * GIB,
+        native_ctx = DRAFTER_NATIVE_CTX,
     )
 
-    cmd = _launch(
+
+def _launch_with_drafter(backend, gguf, tmp_path):
+    return _launch(
         backend,
         gguf,
         mtp_draft_path = str(tmp_path / "mtp.gguf"),
         speculative_type = "auto",
     )["cmd"]
 
-    # The premise: Auto gave the drafter up, so its reserve is not part of the
-    # footprint the projector is measured against.
+
+def test_the_projector_is_pinned_before_the_drafter_is_dropped(tmp_path):
+    """The projector is the first thing given up, not the last.
+
+    A bounded per-image cost is cheaper to concede than speculative decoding's
+    per-token speedup, so the order is pin the projector, then drop the drafter
+    only if that was not enough. Here it is enough: an unsized draft KV costs
+    five points of fraction, so the budget is 12470 - 8% of 24000 = 10550 MiB,
+    model + drafter + projector needs about 10682, and the pin gives back the
+    projector's 1434 so the drafter survives.
+
+    Deliberately tight. Every term of the drafter's charge is decisive at this
+    budget, including its 224 MiB decode graph, so dropping any one of them from
+    the predicate shows up here rather than passing on slack.
+    """
+    backend, gguf = _drafter_backend(tmp_path, [(0, 12_470, 24_000)])
+
+    cmd = _launch_with_drafter(backend, gguf, tmp_path)
+
+    assert "--no-mmproj-offload" in cmd
+    assert "--model-draft" in cmd
+
+
+def test_both_are_given_up_when_pinning_alone_is_not_enough(tmp_path):
+    """Step 3: the drafter goes too, but only after the projector has moved and
+    the load still does not fit. Budget 8200 MiB against about 9250 for model +
+    drafter with the projector already pinned."""
+    backend, gguf = _drafter_backend(tmp_path, [(0, 8_692, 16_384)])
+
+    cmd = _launch_with_drafter(backend, gguf, tmp_path)
+
+    assert "--no-mmproj-offload" in cmd
     assert "--model-draft" not in cmd
-    assert "--no-mmproj-offload" not in cmd
+
+
+def test_the_drafters_vram_is_part_of_the_pin_decision(tmp_path):
+    """The pin runs with speculative decoding still live, so the drafter has to
+    be charged or the predicate answers for a machine that does not exist.
+
+    Differential, on one budget: the only thing that changes between the two
+    loads is whether a drafter is present. Model + projector alone is about 8410
+    MiB against a 10080 MiB budget and fits comfortably, so a predicate that
+    leaves the drafter out cannot pin either load, and the asymmetry below is
+    exactly the drafter's roughly 2272 MiB of weights and draft graph.
+    """
+    memory = [(0, 12_000, 24_000)]
+
+    with_drafter, gguf = _drafter_backend(tmp_path, memory)
+    pinned = _launch_with_drafter(with_drafter, gguf, tmp_path)
+
+    without_drafter, gguf2 = _backend(
+        tmp_path, memory = memory, native_ctx = DRAFTER_NATIVE_CTX
+    )
+    unpinned = _launch(without_drafter, gguf2)["cmd"]
+
+    assert "--no-mmproj-offload" in pinned
+    assert "--model-draft" in pinned
+    # Same card, same model, same projector: only the drafter differs.
+    assert "--no-mmproj-offload" not in unpinned
+
+
+@pytest.mark.parametrize(
+    "is_vision,disable_vision,expect_disabled,expect_by_user",
+    [
+        # A vision GGUF with the switch on: the projector exists and the user
+        # turned it off, so both are true.
+        (True, True, True, True),
+        # A GGUF that never had a projector, switch on. The request still has to
+        # round-trip or the toggle reseeds itself to off after every load, but
+        # nothing was taken away from the user, so the narrow field stays false.
+        (False, True, True, False),
+        (True, False, False, False),
+        (False, False, False, False),
+    ],
+)
+def test_load_and_status_both_report_the_vision_toggle(
+    tmp_path, is_vision, disable_vision, expect_disabled, expect_by_user
+):
+    """Both fields must reach the client on both responses.
+
+    The frontend coalesces each with ``?? false``, so a field the backend omits
+    reads as "vision is on" instead of raising: the switch silently reseeds to
+    off after every load. Presence is therefore asserted on its own, not just
+    the value.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    _launch(backend, gguf, is_vision = is_vision, disable_vision = disable_vision)
+
+    # The shared resolver both responses are built from, drift guard included.
+    fields = _llama_runtime_fields(backend)
+    load = LoadResponse(
+        status = "loaded", model = "test", display_name = "test", inference = {}, **fields
+    ).model_dump()
+    status = InferenceStatusResponse(active_model = "test", **fields).model_dump()
+
+    for payload, where in ((load, "load"), (status, "status")):
+        assert "disable_vision" in payload, where
+        assert "vision_disabled_by_user" in payload, where
+        assert payload["disable_vision"] is expect_disabled, where
+        assert payload["vision_disabled_by_user"] is expect_by_user, where
+
+
+def test_the_training_guard_does_not_charge_a_projector_the_load_will_not_open(tmp_path):
+    """The switch is used on constrained machines, which is exactly where this
+    guard bites: charging VRAM the load provably never takes would refuse a chat
+    load for the memory the user just freed."""
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"\x00" * (1 * MIB))
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = str(mmproj),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+    charged = _estimate_gguf_required_gb(config)
+    freed = _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert charged is not None and freed is not None
+    # Exactly the projector, and nothing else moved.
+    assert round((charged - freed) * 1024) == 1
+    assert freed < charged
+
+
+def test_the_training_guard_forwards_the_switch_to_its_estimator(tmp_path):
+    """The gate above is only worth having if the request reaches it.
+
+    Asserts on the keyword the guard hands the estimator, not on the verdict, so
+    the test stays about the wiring and not about the rest of the guard.
+    """
+    seen = {}
+
+    def capture(_config, **kwargs):
+        seen.update(kwargs)
+        return 0.0
+
+    training = SimpleNamespace(is_training_active = lambda: True)
+    request = SimpleNamespace(
+        hf_token = None,
+        max_seq_length = 0,
+        speculative_type = None,
+        cache_type_kv = None,
+        gpu_memory_mode = "auto",
+        gpu_layers = -1,
+        tensor_parallel = False,
+        n_parallel = 1,
+        disable_vision = True,
+    )
+    config = SimpleNamespace(is_gguf = True, gguf_file = None, gguf_hf_repo = None)
+    placement = _LoadPlacement(
+        requested_gpu_ids = None,
+        resolved_gpu_ids = None,
+        gpu_ids_are_vulkan_ordinals = False,
+        diffusion_kind = False,
+    )
+
+    with (
+        patch("core.training.get_training_backend", lambda: training),
+        patch("routes.inference._estimate_gguf_required_gb", side_effect = capture),
+        patch.object(LlamaCppBackend, "_find_llama_server_binary", lambda *_a, **_k: None),
+        patch.object(LlamaCppBackend, "_effective_gpu_count", lambda *_a, **_k: 1),
+    ):
+        try:
+            _guard_chat_load_against_training(
+                config, request, load_in_4bit = False, placement = placement
+            )
+        except Exception:
+            # The verdict is not what this test is about; the forwarded keyword is,
+            # and it is already captured by the time anything downstream can fail.
+            pass
+
+    assert seen.get("disable_vision") is True
