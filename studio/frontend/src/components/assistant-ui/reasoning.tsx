@@ -18,11 +18,7 @@ import {
   startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
-import {
-  nextReasoningExpandEnd,
-  nextReasoningWindowStart,
-  widenReasoningWindowStart,
-} from "@/features/chat/utils/reasoning-window";
+import { nextReasoningWindowStart } from "@/features/chat/utils/reasoning-window";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -277,54 +273,42 @@ function ReasoningText({
   );
 }
 
-/**
- * How long after the stream ends before a finished block starts mounting the rest of itself.
- *
- * The group closes itself when the round finishes and Radix unmounts closed content, so in the
- * ordinary case this timer is cleaned up before it fires and the rest of the body never mounts at
- * all. That is where most of the win is: mounting 90,000 characters of thinking on the completion
- * frame, only to unmount it 200ms later, was measured at a 5.8 SECOND frame on a machine with no
- * headroom.
- *
- * It fires for the reader who opened the block by hand and is therefore still looking at it.
- */
-const SETTLE_DELAY_MS = ANIMATION_DURATION + 50;
-
-/** How near the top of the pane the reader has to get before the window widens, in pixels. */
-const WIDEN_TRIGGER_PX = 200;
-
 /** How near the bottom still counts as following the stream, in pixels. */
 const AT_BOTTOM_PX = 24;
 
 /**
- * How long after a widen the reader's position keeps being restored, in milliseconds.
+ * How long the reader's place keeps being held after the body is restored, in milliseconds.
  *
- * Not one frame. The content mounted above the reader reaches its final height only once Shiki
- * has highlighted its fences, which is asynchronous and lands over several frames, so a single
- * correction is made against a body that is still growing and drifts as it settles.
+ * Not one frame. The content mounted above them reaches its final height only as Shiki finishes
+ * with its fences, which lands over several frames, so a single correction is made against a body
+ * that is still growing.
  */
-const ANCHOR_SETTLE_MS = 400;
+const RESTORE_SETTLE_MS = 400;
 
 /**
- * The thinking body: as much of it as is worth mounting, and all of it whenever the reader asks.
+ * The thinking body: a bounded tail of it while it streams and the reader is watching the end,
+ * and all of it the moment that stops being true.
  *
- * Three states, and they are genuinely different problems:
+ * The window exists for exactly one situation, which happens to be the one the whole complaint is
+ * about: a block streaming into a 256px pane that auto-follows its own bottom, where the reader
+ * cannot see what is above and the mounted nodes above them are pure cost. Measured on the
+ * capture's own fixture, the page's frame rate tracks that node count with r = -0.88 in sample
+ * windows where almost nothing is mutating, so it is the nodes existing that costs, not the work
+ * of building them.
  *
- *   STREAMING, READER AT THE END. Mount a tail window. The reader is watching the newest text and
- *   cannot see what is above it, so the start may advance. This is where the cost is and where
- *   the win is.
+ * Two things end the window, and both restore the body whole and leave it whole:
  *
- *   STREAMING, READER SCROLLED BACK. Stop advancing, and WIDEN when they reach the top of what is
- *   mounted. Nothing above the reader is ever unmounted, because unmounting above a reader is
- *   what produces scroll jumps.
+ *   THE READER SCROLLS BACK. They have said they want to read it, so give them all of it, once,
+ *   and stop windowing for the rest of the round. Their place is held across the restore.
  *
- *   FINISHED AND EXPANDED BY HAND. Mount from the head and grow downward a step per frame. A
- *   finished group has no height cap -- `streaming` is false -- so it is not a 256px scroller at
- *   all, and a reader opening a finished thinking block wants its beginning, not its end. Growing
- *   downward also needs no anchoring, since appending below the reader cannot move what is above.
+ *   THE ROUND FINISHES. A finished block is never windowed. It mounts exactly what it mounts
+ *   today.
  *
- * In every state, repeated asking reaches the whole body. That is a correctness property rather
- * than a performance one, and features/chat/utils/reasoning-window.ts carries the tests for it.
+ * It restores in one step rather than widening progressively because Streamdown 2.5.0 keys blocks
+ * positionally, so prepending remounts the whole body however little it adds; see
+ * features/chat/utils/reasoning-window.ts. Widening was built and measured first, and it cost
+ * frames of 207, 280, 646 and 846ms across four gestures. One restore is one of those, and it is
+ * the last one: afterwards the pane is what it would have been without any of this.
  */
 function ReasoningBody() {
   const { text, status } = useMessagePartText();
@@ -332,88 +316,55 @@ function ReasoningBody() {
 
   const hostRef = useRef<HTMLDivElement>(null);
   const startRef = useRef(0);
-  // Set once the reader scrolls back, which freezes the start. Cleared when they return to the
-  // bottom, which lets it follow the stream again.
-  const pinnedRef = useRef(false);
-  // How much of the text the pane shows while the reader is scrolled back.
-  //
-  // The tail is FROZEN for as long as they are detached, and that is not only politeness. It is
-  // what makes the scroll anchor valid: the place a widen has to hold still is measured as a
-  // distance from the BOTTOM of the body, and while the stream is still appending below, the
-  // bottom moves, so holding a distance from it drags the reader downwards. Measured before this
-  // was added, the reader's distance from the bottom walked 17,042px to 46,125px across eight
-  // widens. Freezing the tail makes the bottom static, which makes the distance exact.
-  //
-  // Nothing is lost: the text is still in the part, and returning to the bottom shows all of it.
-  const frozenEndRef = useRef<number | null>(null);
-  // What the restore loop last wrote, so a scroll it did not cause can be told from one it did.
-  const wroteRef = useRef<number | null>(null);
+  // Once set, the whole body is mounted for the rest of this round.
+  const restoredRef = useRef(false);
   const settleRef = useRef<number | null>(null);
   const [, forceRender] = useState(0);
-
-  const [settled, setSettled] = useState(!isRunning);
-  const [expandEnd, setExpandEnd] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (isRunning) {
-      setSettled(false);
-      setExpandEnd(null);
-      return;
-    }
-    const timeout = window.setTimeout(() => setSettled(true), SETTLE_DELAY_MS);
-    return () => window.clearTimeout(timeout);
-  }, [isRunning]);
 
   const scroller = useCallback(
     () => hostRef.current?.closest<HTMLElement>('[data-slot="reasoning-text"]') ?? null,
     [],
   );
 
-  // Grow a finished, hand-expanded block one step per frame until it is whole. Stepping rather
-  // than committing it all at once is what keeps the expand off a single long frame, and it
-  // finishes on its own, so the reader never has to scroll to be given the rest.
-  useEffect(() => {
-    if (!settled || isRunning) return;
-    if (expandEnd !== null && expandEnd >= text.length) return;
-    const handle = window.requestAnimationFrame(() => {
-      setExpandEnd((current) => nextReasoningExpandEnd(text, current ?? 0));
-    });
-    return () => window.cancelAnimationFrame(handle);
-  }, [settled, isRunning, expandEnd, text]);
+  // A regenerate reuses this instance, so a new round has to start windowed again rather than
+  // inheriting the last round's restore.
+  const [wasRunning, setWasRunning] = useState(isRunning);
+  if (wasRunning !== isRunning) {
+    setWasRunning(isRunning);
+    if (isRunning && !wasRunning) {
+      startRef.current = 0;
+      restoredRef.current = false;
+    }
+  }
+
+  useEffect(
+    () => () => {
+      if (settleRef.current !== null) cancelAnimationFrame(settleRef.current);
+    },
+    [],
+  );
 
   /**
-   * Hold the reader's place across a widen, measured as DISTANCE FROM THE BOTTOM.
+   * Hold the reader's place across the restore, measured as a distance from the BOTTOM.
    *
-   * PR 9058 holds a mounted row still in viewport space, and that is the right technique there
-   * because its rows survive the commit that inserts more above them. Here they do not: widening
+   * PR 9058 holds a mounted row still in viewport space, which is right for the thread because
+   * its rows survive the commit that inserts more above them. They do not survive here: restoring
    * hands `IncrementalMarkdownCache` a string that is not an extension of the last one, which
-   * drops its retained blocks and re-keys Streamdown, so the entire body remounts and any node
-   * captured beforehand is gone by the time a layout effect could measure it. `isConnected` would
-   * be false and the correction would silently never run.
+   * drops its retained blocks and re-keys Streamdown, so anything captured beforehand is detached
+   * by the time a layout effect could measure it and the correction would silently never run.
    *
-   * Distance from the bottom survives that, because widening changes nothing below the reader:
-   * the tail is character-for-character what it was. It is also immune to the double-correction
-   * that makes document space wrong in 9058, since a full remount leaves the browser's own scroll
-   * anchoring nothing to anchor to.
-   *
-   * Re-applied for ANCHOR_SETTLE_MS rather than once, because the newly mounted fences reach
-   * their real height only as Shiki finishes with them, and it stops the moment the reader
-   * scrolls themselves.
+   * Distance from the bottom survives that, because the restore only adds content ABOVE the
+   * reader: everything below them is character-for-character what it was. It is also immune to
+   * the double-correction that makes document space wrong in 9058, since a full remount leaves
+   * the browser's own scroll anchoring nothing to anchor to.
    */
   const holdPlace = useCallback(
     (distanceFromBottom: number) => {
-      if (settleRef.current !== null) window.cancelAnimationFrame(settleRef.current);
-      const deadline = performance.now() + ANCHOR_SETTLE_MS;
+      const deadline = performance.now() + RESTORE_SETTLE_MS;
       const step = () => {
         const element = scroller();
         if (!element) {
           settleRef.current = null;
-          return;
-        }
-        // The reader moved it themselves since the last write, so stop: their scroll wins.
-        if (wroteRef.current !== null && Math.abs(element.scrollTop - wroteRef.current) > 1) {
-          settleRef.current = null;
-          wroteRef.current = null;
           return;
         }
         const target = Math.max(
@@ -421,93 +372,44 @@ function ReasoningBody() {
           element.scrollHeight - element.clientHeight - distanceFromBottom,
         );
         if (Math.abs(element.scrollTop - target) >= 1) element.scrollTop = target;
-        wroteRef.current = element.scrollTop;
         settleRef.current =
-          performance.now() < deadline ? window.requestAnimationFrame(step) : null;
+          performance.now() < deadline ? requestAnimationFrame(step) : null;
       };
-      wroteRef.current = null;
-      settleRef.current = window.requestAnimationFrame(step);
+      settleRef.current = requestAnimationFrame(step);
     },
     [scroller],
-  );
-
-  useEffect(
-    () => () => {
-      if (settleRef.current !== null) window.cancelAnimationFrame(settleRef.current);
-    },
-    [],
   );
 
   useEffect(() => {
     const element = scroller();
     if (!(element && isRunning)) return;
     const onScroll = () => {
-      // Our own correction fires scroll events too. Without this the settle loop's write reads as
-      // the reader arriving at the top again and widens once more, which widens again, and the
-      // pane walks back to its whole size in three gestures: measured at 2,690 pane elements
-      // before the first widen and 12,875 after the third, with a 671ms frame in the middle.
-      if (
-        wroteRef.current !== null &&
-        Math.abs(element.scrollTop - wroteRef.current) <= 1
-      ) {
-        return;
-      }
+      if (restoredRef.current || startRef.current <= 0) return;
       const distanceFromBottom =
         element.scrollHeight - element.scrollTop - element.clientHeight;
-      const wasPinned = pinnedRef.current;
-      pinnedRef.current = distanceFromBottom > AT_BOTTOM_PX;
-      if (pinnedRef.current && !wasPinned) {
-        // Just detached. Freeze what is shown at exactly what is on screen now.
-        frozenEndRef.current = text.length;
-      } else if (!pinnedRef.current && wasPinned) {
-        // Back at the bottom: follow the stream again, and show all of it.
-        frozenEndRef.current = null;
-        forceRender((n) => n + 1);
-      }
-      if (!pinnedRef.current || startRef.current <= 0) return;
-      if (element.scrollTop > WIDEN_TRIGGER_PX) return;
-      // One widen at a time. While the settle loop is still holding the reader's place the body
-      // is still reaching its final height, so a second widen would be triggered against a
-      // measurement that has not finished.
-      if (settleRef.current !== null) return;
-      const next = widenReasoningWindowStart(text, startRef.current);
-      if (next >= startRef.current) return;
-      startRef.current = next;
-      // Captured here, synchronously, so the reader's own scroll is already inside the baseline
-      // rather than spanning it. 9058 skips any frame a gesture landed in; that guard cannot be
-      // reused here, because here the gesture is what TRIGGERS the widen and skipping would skip
-      // every correction.
+      if (distanceFromBottom <= AT_BOTTOM_PX) return;
+      // Scrolled back. Give them everything and stop windowing for this round. Nothing here can
+      // run twice: `restoredRef` is checked first and set before the correction starts, so the
+      // hold's own scroll writes cannot re-enter this.
+      restoredRef.current = true;
       holdPlace(distanceFromBottom);
       forceRender((n) => n + 1);
     };
     element.addEventListener("scroll", onScroll, { passive: true });
     return () => element.removeEventListener("scroll", onScroll);
-  }, [scroller, isRunning, text, holdPlace]);
+  }, [scroller, isRunning, holdPlace]);
 
-  const body = (() => {
-    if (isRunning) {
-      // Advanced during render, not in an effect: while the reader is at the end the start is a
-      // pure function of the text, and computing it after the commit would render one frame of
-      // the previous window against the new text every time it moves.
-      if (!pinnedRef.current) {
-        startRef.current = nextReasoningWindowStart(text, startRef.current);
-      }
-      const end = pinnedRef.current ? (frozenEndRef.current ?? text.length) : text.length;
-      if (startRef.current === 0 && end >= text.length) return text;
-      return text.slice(startRef.current, end);
-    }
-    if (!settled) {
-      // The completion frame. Keep exactly what was mounted rather than growing on the frame the
-      // collapse animation is running.
-      return startRef.current === 0 ? text : text.slice(startRef.current);
-    }
-    const end = expandEnd ?? 0;
-    return end >= text.length ? text : text.slice(0, end);
-  })();
+  // Advanced during render, not in an effect: while the reader is at the end the start is a pure
+  // function of the text, and computing it after the commit would render one frame of the
+  // previous window against the new text every time it moves.
+  if (isRunning && !restoredRef.current) {
+    startRef.current = nextReasoningWindowStart(text, startRef.current);
+  }
+  const windowed = isRunning && !restoredRef.current && startRef.current > 0;
 
   return (
     <div ref={hostRef} className="contents">
-      <MarkdownText text={body === text ? undefined : body} />
+      <MarkdownText text={windowed ? text.slice(startRef.current) : undefined} />
     </div>
   );
 }

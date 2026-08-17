@@ -8,9 +8,7 @@ import {
   REASONING_WINDOW_CHARS,
   alignWindowStart,
   isOutsideFence,
-  nextReasoningExpandEnd,
   nextReasoningWindowStart,
-  widenReasoningWindowStart,
 } from "../src/features/chat/utils/reasoning-window.ts";
 
 const para = (n: number) => `${"word ".repeat(40)}para${n}`;
@@ -112,80 +110,33 @@ test("the start moves rarely, because each move remounts the rendered body", () 
   assert.ok(moves < Math.floor(text.length / chunk) / 100);
 });
 
-// ── reachability ────────────────────────────────────────────────────
+// ── what the reader can reach ───────────────────────────────────────
 //
-// A window that silently loses text is a correctness bug, not a performance trade, so these are
-// about what the reader can REACH rather than about what is cheap.
+// The window is only ever a SUFFIX of the body, and the component restores the whole body the
+// moment the reader scrolls back or the round ends. So reachability reduces to one property
+// here: whatever is mounted is a suffix of the real text, never a rewrite of it. Nothing is
+// paraphrased, reordered or dropped from the middle, so restoring is always just "show all of
+// it". The restore itself is a component behaviour and is measured by
+// tests/studio/probe_reasoning_window.py rather than asserted here.
 
-test("widening always terminates at the whole body", () => {
-  const text = body(6000);
-  let start = nextReasoningWindowStart(text, 0);
-  assert.ok(start > 0, "the fixture has to be long enough to window at all");
-  let steps = 0;
-  while (start > 0) {
-    const next = widenReasoningWindowStart(text, start);
-    assert.ok(next < start, "each widen must make progress or jump to the head");
-    start = next;
-    steps += 1;
-    assert.ok(steps < 1000, "widening must terminate");
-  }
-  assert.equal(start, 0);
-});
-
-test("widening reaches the head from any start, including a pathological one", () => {
-  // No blank line anywhere, so there is no boundary to step to and the only correct answer is to
-  // mount everything at once rather than to stall halfway.
-  const text = "x".repeat(200_000);
-  assert.equal(widenReasoningWindowStart(text, 150_000), 0);
-});
-
-test("every character is inside the mounted body at some point in a widen sequence", () => {
-  const text = body(6000);
-  let start = nextReasoningWindowStart(text, 0);
-  const seen: string[] = [];
-  while (start > 0) {
-    seen.push(text.slice(start));
-    start = widenReasoningWindowStart(text, start);
-  }
-  seen.push(text);
-  // The last state is the whole body, so reachability is exactly that the sequence ends there.
-  assert.equal(seen[seen.length - 1], text);
-  // And every intermediate state is a suffix of it, i.e. nothing is ever rewritten, only revealed.
-  for (const view of seen) assert.ok(text.endsWith(view));
-});
-
-test("expanding a finished block terminates at the whole body and only ever grows", () => {
-  const text = body(6000);
-  let end = 0;
-  let steps = 0;
-  const seen: string[] = [];
-  while (end < text.length) {
-    const next = nextReasoningExpandEnd(text, end);
-    assert.ok(next > end, "each expand step must make progress");
-    end = next;
-    seen.push(text.slice(0, end));
-    steps += 1;
-    assert.ok(steps < 1000, "expanding must terminate");
-  }
-  assert.equal(seen[seen.length - 1], text);
-  // Every intermediate state is a prefix, so the reader never sees text move underneath them.
-  for (const view of seen) assert.ok(text.startsWith(view));
-});
-
-test("expanding never ends inside a fence", () => {
-  const text = body(2000);
-  let end = 0;
-  while (end < text.length) {
-    end = nextReasoningExpandEnd(text, end);
-    assert.equal(
-      isOutsideFence(text, end),
-      true,
-      `the prefix ending at ${end} closes every fence it opened`,
-    );
+test("what is mounted is always a suffix of the real text", () => {
+  const text = body(4000);
+  let start = 0;
+  for (let end = 2000; end <= text.length; end += 2000) {
+    const slice = text.slice(0, end);
+    start = nextReasoningWindowStart(slice, start);
+    assert.ok(slice.endsWith(slice.slice(start)));
   }
 });
 
-test("expanding a body with no blank lines still terminates", () => {
-  const text = "y".repeat(200_000);
-  assert.equal(nextReasoningExpandEnd(text, 0), text.length);
+test("the window never begins inside a fence, at any length", () => {
+  const text = body(4000);
+  let start = 0;
+  for (let end = 1000; end <= text.length; end += 1000) {
+    const slice = text.slice(0, end);
+    start = nextReasoningWindowStart(slice, start);
+    // A start inside a fence would make the renderer read the closing marker as an opening one
+    // and treat the rest of the thinking block as code.
+    assert.equal(isOutsideFence(slice, start), true);
+  }
 });

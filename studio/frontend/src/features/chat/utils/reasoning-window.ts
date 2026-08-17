@@ -20,14 +20,22 @@
 // existing. The two look similar from a distance and the measurement says they are not the same
 // thing at all.
 //
-// NOTHING IS EVER LOST, AND NOTHING ABOVE THE READER IS EVER UNMOUNTED
+// NOTHING IS EVER LOST, AND THE WINDOW ONLY EXISTS WHILE NOBODY IS READING PAST IT
 //
-// The window only ever advances while the reader is pinned to the bottom, i.e. while they are
-// watching the newest text and cannot see what is above. The moment they scroll back it stops
-// advancing, and reaching the top of what is mounted WIDENS it -- the start moves backwards and
-// content is added above. It never slides forward under a reader who has scrolled back, because
-// unmounting content above a reader is what produces scroll jumps. Repeated widening always
-// terminates at 0, i.e. at the whole body, so every character remains reachable.
+// The window applies in exactly one situation: the block is streaming AND the reader is pinned to
+// the bottom of the pane, watching the newest text, unable to see what is above. The moment they
+// scroll back, the whole body is restored in one step and the window is off for the rest of the
+// round. A finished block is never windowed at all.
+//
+// It restores in ONE step rather than widening a bit at a time, and that is forced by the
+// renderer rather than chosen. Streamdown 2.5.0 keys its blocks positionally --
+// `Rn = J.map((k, A) => `${_}-${A}`)` with `_` a `useId()`, applied as `jsx(f, {...}, Rn[A])` --
+// and it also passes `index: A` and compares `e.index !== t.index` in the Block memo. Prepending
+// blocks shifts both for every block that was already mounted, so a widen remounts the entire
+// body no matter how little it adds. Measured: four widens cost frames of 207, 280, 646 and
+// 846ms. Neither the React key nor the index is reachable through `BlockComponent` or
+// `parseMarkdownIntoBlocksFn`, which are the only seams Streamdown exposes. Appending is free;
+// prepending is a full remount. That asymmetry is why the window grows downward or not at all.
 
 /** Characters of thinking text kept mounted while the block streams and the reader is at the end. */
 export const REASONING_WINDOW_CHARS = 12_000;
@@ -43,12 +51,6 @@ export const REASONING_WINDOW_CHARS = 12_000;
  * the problem being solved.
  */
 export const REASONING_WINDOW_SLACK = 0.5;
-
-/** How much more of the body to mount each time the reader reaches the top of the window. */
-export const REASONING_WIDEN_CHARS = 24_000;
-
-/** How much more to mount per step when a finished block is expanded by hand. */
-export const REASONING_EXPAND_STEP_CHARS = 24_000;
 
 /**
  * Whether an offset is outside a fenced code block.
@@ -93,23 +95,6 @@ export function alignWindowStart(text: string, target: number): number {
 }
 
 /**
- * The first block boundary at or after `target` that leaves the PREFIX ending outside a fence.
- *
- * Returns `text.length` when there is none, which mounts the rest.
- */
-export function alignWindowEnd(text: string, target: number): number {
-  if (target >= text.length) return text.length;
-  let cursor = Math.max(0, target);
-  while (cursor < text.length) {
-    const boundary = text.indexOf("\n\n", cursor);
-    if (boundary === -1) return text.length;
-    if (isOutsideFence(text, boundary)) return boundary;
-    cursor = boundary + 2;
-  }
-  return text.length;
-}
-
-/**
  * Where the mounted window should start, given where it starts now, while the reader is at the
  * end of a streaming block.
  *
@@ -126,46 +111,4 @@ export function nextReasoningWindowStart(
   if (rendered <= windowChars * (1 + slack)) return currentStart;
   const aligned = alignWindowStart(text, text.length - windowChars);
   return Math.max(currentStart, aligned);
-}
-
-/**
- * Where the window should start after the reader has reached the top of it and wants more.
- *
- * Strictly decreasing, and it reaches 0 in a bounded number of steps: if a step cannot find a
- * boundary that actually moves the start backwards, it mounts the whole body rather than
- * stalling. That bound is what makes "the reader can reach everything" true rather than likely.
- */
-export function widenReasoningWindowStart(
-  text: string,
-  currentStart: number,
-  widenChars: number = REASONING_WIDEN_CHARS,
-): number {
-  if (currentStart <= 0) return 0;
-  const target = currentStart - widenChars;
-  if (target <= 0) return 0;
-  const aligned = alignWindowStart(text, target);
-  // No progress available means the next safe boundary is the one we are already at, so there is
-  // nothing between here and the head that can be mounted in a step. Mount all of it.
-  return aligned >= currentStart ? 0 : aligned;
-}
-
-/**
- * How much of a FINISHED block to mount, one step at a time, when the reader expands it.
- *
- * Head first and growing downward, not a tail window. A finished group is not inside the 256px
- * scroller -- `streaming` is false, so the height cap is gone and the body lays out at full
- * height in the thread -- and a reader who opens a finished thinking block is looking for its
- * beginning. Growing downward also needs no scroll anchoring at all, because appending below the
- * reader cannot move what is above them.
- *
- * Strictly increasing, and it reaches `text.length`.
- */
-export function nextReasoningExpandEnd(
-  text: string,
-  currentEnd: number,
-  stepChars: number = REASONING_EXPAND_STEP_CHARS,
-): number {
-  if (currentEnd >= text.length) return text.length;
-  const aligned = alignWindowEnd(text, currentEnd + stepChars);
-  return aligned <= currentEnd ? text.length : aligned;
 }
