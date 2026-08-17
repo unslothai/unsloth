@@ -58,6 +58,15 @@ def test_only_the_pin_file_names_diffusers():
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path == PIN_FILE:
             continue
+        # Checked-in requirements files only. install_python_stack._filter_requirements
+        # writes `.{stem}-filtered-XXXX.txt` BESIDE the source on purpose, so relative
+        # -r/-c includes still resolve, and it does not delete it. So a copy of the pin
+        # file can be sitting here while this runs -- transiently under pytest-xdist,
+        # where another worker is exercising that function, and durably on any machine
+        # that has run a real install. Either way it is a generated temp, not a second
+        # source of the pin, and reporting it is a false failure.
+        if path.name.startswith("."):
+            continue
         named = [line for line in _requirements(path) if line.lower().startswith("diffusers")]
         if named:
             offenders[str(path.relative_to(REPO_ROOT))] = named
