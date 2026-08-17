@@ -337,8 +337,7 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
             break
         nodes = list(_runtime_nodes(statement))
         if any(
-            isinstance(node, ast.Call)
-            and _helper_installs_stub(_callee_name(node), helpers, named)
+            isinstance(node, ast.Call) and _helper_installs_stub(_callee_name(node), helpers, named)
             for node in nodes
         ):
             return True
