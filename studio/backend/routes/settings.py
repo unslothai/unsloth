@@ -1844,9 +1844,7 @@ def update_preview_sharing(
     return PreviewSharingResponse(enabled = enabled)
 
 
-def _require_ui_session_for_keyless(
-    via_api_key: bool = Depends(authenticated_via_api_key),
-) -> None:
+def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
     """Only a signed-in UI session may change who needs a key.
 
     An sk-unsloth key must not be able to switch authentication off for the whole

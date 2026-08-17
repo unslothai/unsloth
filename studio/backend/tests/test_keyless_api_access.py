@@ -59,7 +59,12 @@ def seed_user():
     )
 
 
-def asgi_scope(*, headers = None, app_state = None, path = "/v1/chat/completions"):
+def asgi_scope(
+    *,
+    headers = None,
+    app_state = None,
+    path = "/v1/chat/completions",
+):
     """A real ASGI scope, so header casing behaves the way uvicorn delivers it."""
     return {
         "type": "http",
@@ -289,7 +294,6 @@ def test_reachable_servers_are_reported(state, expected):
 
 def test_a_live_tunnel_is_reported_without_a_url_on_state(monkeypatch):
     from utils import host_policy
-
     monkeypatch.setattr(host_policy, "_remote_connector_active", True)
     assert access_exposure(SimpleNamespace(bind_host = "127.0.0.1")) == "public_url"
 
@@ -342,9 +346,7 @@ def test_a_jwt_shaped_dummy_key_is_ignored_too():
     """A token that merely parses as a JWT names no session here."""
     seed_user()
     set_keyless_api_access("full")
-    stranger = jwt.encode(
-        {"sub": "someone-else"}, secrets.token_urlsafe(64), algorithm = "HS256"
-    )
+    stranger = jwt.encode({"sub": "someone-else"}, secrets.token_urlsafe(64), algorithm = "HS256")
     assert subject_of(request_for(headers = {"Authorization": f"Bearer {stranger}"})) == (
         storage.DEFAULT_ADMIN_USERNAME
     )

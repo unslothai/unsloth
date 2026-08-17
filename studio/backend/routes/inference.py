@@ -2347,7 +2347,6 @@ def _request_used_api_key(request: Any) -> bool:
     if token is None:
         # keyless traffic is someone using Unsloth as an API server too
         from auth.authentication import admitted_without_session
-
         return admitted_without_session(request)
     try:
         return not auth_storage.is_internal_api_key(token)
