@@ -449,6 +449,12 @@ class AnthropicStreamEmitter:
         # heuristic (test doubles / callers without provenance).
         self._think_provenance = think_provenance
         self._wraps_consumed: int = 0
+        # Active wrap entry ({"len": N} from the generator) while a provenance
+        # -backed thinking block streams: the block spans exactly N reasoning
+        # chars, so a literal "</think>" INSIDE the trace never ends it early.
+        self._active_wrap: Optional[dict] = None
+        self._wrap_chars: int = 0
+        self._close_skip: int = 0
         self._usage: dict = {}
 
     def start(
@@ -588,10 +594,43 @@ class AnthropicStreamEmitter:
                     # The generator did not wrap this tag: literal model text.
                     events.extend(self._emit_text_delta(data))
                     break
+                wraps = (
+                    self._think_provenance.get("wraps")
+                    if self._think_provenance is not None
+                    else None
+                )
+                self._active_wrap = (
+                    wraps[self._wraps_consumed]
+                    if wraps and self._wraps_consumed < len(wraps)
+                    else None
+                )
+                self._wrap_chars = 0
                 self._wraps_consumed += 1
                 data = data[i + len(open_tag) :]
                 self._route_mode = "thinking"
             else:
+                if self._close_skip:
+                    skip = min(self._close_skip, len(data))
+                    self._close_skip -= skip
+                    data = data[skip:]
+                    if self._close_skip == 0:
+                        self._route_mode = "text"
+                        self._think_consumed = True
+                        self._active_wrap = None
+                    continue
+                if self._active_wrap is not None:
+                    # Provenance-backed span: consume exactly the generator's
+                    # reasoning length, then skip its closing tag. A literal
+                    # "</think>" inside the trace stays part of the thinking.
+                    remaining = int(self._active_wrap.get("len", 0)) - self._wrap_chars
+                    if remaining > 0:
+                        take = min(remaining, len(data))
+                        events.extend(self._emit_thinking_delta(data[:take]))
+                        self._wrap_chars += take
+                        data = data[take:]
+                        continue
+                    self._close_skip = len("</think>")
+                    continue
                 close_tag = "</think>"
                 i = data.find(close_tag)
                 if i == -1:
@@ -742,6 +781,9 @@ class AnthropicStreamEmitter:
         self._route_mode = "text"
         self._think_consumed = False
         self._turn_has_text = False
+        self._active_wrap = None
+        self._wrap_chars = 0
+        self._close_skip = 0
         return events
 
     def _alloc_block_index(self) -> None:

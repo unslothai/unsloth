@@ -251,6 +251,41 @@ def test_split_think_segments_only_parses_leading_block():
     ]
 
 
+def test_anthropic_emitter_keeps_embedded_close_tag_in_trace():
+    # Genuine reasoning ABOUT the </think> syntax contains the literal tag; the
+    # generator-recorded length keeps the whole trace in the thinking block and
+    # the real closing marker never leaks into the answer.
+    trace = "the tag </think> ends a block"
+    prov = {"wrapped": 1, "wraps": [{"len": 0}]}
+    emitter = AnthropicStreamEmitter(think_provenance = prov)
+    events = emitter.start("msg_1", "m")
+    prov["wraps"][0]["len"] = len("the tag </think>")
+    events += emitter.feed({"type": "content", "text": "<think>the tag </think>"})
+    prov["wraps"][0]["len"] = len(trace)
+    events += emitter.feed({"type": "content", "text": f"<think>{trace}"})
+    events += emitter.feed({"type": "content", "text": f"<think>{trace}</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == trace
+    assert _emitter_client_text(events) == "Answer."
+
+
+def test_split_think_segments_wrap_length_beats_embedded_tag():
+    from routes.inference import _split_think_segments
+
+    trace = "quote </think> inside"
+    text = f"<think>{trace}</think>Visible."
+    assert _split_think_segments(text, {"len": len(trace)}) == [
+        ("thinking", trace),
+        ("text", "Visible."),
+    ]
+    # Without provenance the first marker still closes (heuristic fallback).
+    assert _split_think_segments(text) == [
+        ("thinking", "quote "),
+        ("text", " inside</think>Visible."),
+    ]
+
+
 def test_anthropic_emitter_holds_back_partial_think_tag():
     # A tag split across deltas must not leak fragments into the wrong block.
     emitter = AnthropicStreamEmitter()

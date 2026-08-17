@@ -20867,7 +20867,7 @@ def _anthropic_message_json_response(
     )
 
 
-def _split_think_segments(text: str) -> list:
+def _split_think_segments(text: str, wrap: Optional[dict] = None) -> list:
     """Ordered ``("thinking" | "text", segment)`` pairs from ``<think>`` markup.
 
     The local generator folds reasoning_content into the visible text as a
@@ -20882,15 +20882,22 @@ def _split_think_segments(text: str) -> list:
         return [("text", text)] if text else []
     lead_ws = text[: len(text) - len(stripped)]
     rest = stripped[len("<think>") :]
-    close = rest.find("</think>")
+    if wrap is not None:
+        # Provenance-backed span: the generator recorded the exact reasoning
+        # length, so a literal "</think>" INSIDE the trace never ends it early.
+        n = int(wrap.get("len", 0))
+        thinking, after = rest[:n], rest[n:]
+        if after.startswith("</think>"):
+            after = after[len("</think>") :]
+    else:
+        close = rest.find("</think>")
+        if close == -1:
+            thinking, after = rest, ""
+        else:
+            thinking, after = rest[:close], rest[close + len("</think>") :]
     segments: list = []
     if lead_ws:
         segments.append(("text", lead_ws))
-    if close == -1:
-        if rest:
-            segments.append(("thinking", rest))
-        return segments
-    thinking, after = rest[:close], rest[close + len("</think>") :]
     if thinking:
         segments.append(("thinking", thinking))
     if after:
@@ -20898,10 +20905,10 @@ def _split_think_segments(text: str) -> list:
     return segments
 
 
-def _think_markup_to_blocks(text: str) -> list:
+def _think_markup_to_blocks(text: str, wrap: Optional[dict] = None) -> list:
     """Expand one text run into ordered thinking / text response blocks."""
     blocks: list = []
-    for kind, seg in _split_think_segments(text):
+    for kind, seg in _split_think_segments(text, wrap):
         if kind == "thinking":
             if seg.strip():
                 blocks.append(AnthropicResponseThinkingBlock(thinking = seg))
@@ -20999,13 +21006,17 @@ async def _anthropic_tool_non_streaming(
         _wrap_budget = (
             None if think_provenance is None else int(think_provenance.get("wrapped", 0))
         )
+        _wrap_entries = (think_provenance or {}).get("wraps") or []
+        _wrap_i = 0
         _expanded: list = []
         for block in content_blocks:
             leading_think = isinstance(
                 block, AnthropicResponseTextBlock
             ) and block.text.lstrip().startswith("<think>")
             if leading_think and (_wrap_budget is None or _wrap_budget > 0):
-                _expanded.extend(_think_markup_to_blocks(block.text))
+                _wrap = _wrap_entries[_wrap_i] if _wrap_i < len(_wrap_entries) else None
+                _wrap_i += 1
+                _expanded.extend(_think_markup_to_blocks(block.text, _wrap))
                 if _wrap_budget is not None:
                     _wrap_budget -= 1
             else:
@@ -21070,9 +21081,12 @@ async def _anthropic_plain_non_streaming(
     # With provenance, only parse the leading <think> the generator actually
     # wrapped from reasoning_content; a literal leading tag stays text.
     _wrapped = think_provenance is None or think_provenance.get("wrapped", 0) > 0
+    _wrap_entries = (think_provenance or {}).get("wraps") or []
     content_blocks: list = []
     if full_text and parse_think and _wrapped:
-        content_blocks = _think_markup_to_blocks(full_text)
+        content_blocks = _think_markup_to_blocks(
+            full_text, _wrap_entries[0] if _wrap_entries else None
+        )
     elif full_text:
         content_blocks = [AnthropicResponseTextBlock(text = full_text)]
 

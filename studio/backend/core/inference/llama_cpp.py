@@ -20324,6 +20324,7 @@ class LlamaCppBackend:
                 buffer = ""
                 has_content_tokens = False
                 reasoning_text = ""
+                _prov_entry = None
                 for raw_chunk in self._iter_text_cancellable(
                     response,
                     cancel_event,
@@ -20341,6 +20342,7 @@ class LlamaCppBackend:
                                 if has_content_tokens:
                                     # Real thinking + content: close the tag
                                     cumulative += "</think>"
+                                    _prov_entry = None
                                     yield cumulative
                                 else:
                                     # Only reasoning_content, no content:
@@ -20353,6 +20355,7 @@ class LlamaCppBackend:
                                         _metadata_finish_reason,
                                         promote_reasoning_only,
                                     )
+                                    _prov_entry = None
                                     yield cumulative
                             _stream_done = True
                             break  # exit inner while
@@ -20396,9 +20399,15 @@ class LlamaCppBackend:
                                             reasoning_provenance["wrapped"] = (
                                                 reasoning_provenance.get("wrapped", 0) + 1
                                             )
+                                            _prov_entry = {"len": 0}
+                                            reasoning_provenance.setdefault("wraps", []).append(
+                                                _prov_entry
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning
+                                    if _prov_entry is not None:
+                                        _prov_entry["len"] += len(reasoning)
                                     yield cumulative
 
                                 token = delta.get("content", "")
@@ -20407,6 +20416,7 @@ class LlamaCppBackend:
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False
+                                        _prov_entry = None
                                     cumulative += token
                                     yield cumulative
                         except json.JSONDecodeError:
@@ -20670,13 +20680,17 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking
+            nonlocal cumulative_display, in_thinking, _prov_entry
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
+                _prov_entry = None
             elif reasoning_accum:
                 if reasoning_provenance is not None and not cumulative_display:
                     reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
+                    reasoning_provenance.setdefault("wraps", []).append(
+                        {"len": len(reasoning_accum)}
+                    )
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
 
@@ -20684,11 +20698,12 @@ class LlamaCppBackend:
             """Close a live-streamed <think> before a tool call drains, so
             consumers without a reasoning extractor (Anthropic) get a balanced
             block. Returns True when the caller should yield the result."""
-            nonlocal cumulative_display, in_thinking, _last_emitted
+            nonlocal cumulative_display, in_thinking, _last_emitted, _prov_entry
             if not in_thinking:
                 return False
             cumulative_display += "</think>"
             in_thinking = False
+            _prov_entry = None
             if len(cumulative_display) > len(_last_emitted) and not _suppress_visible_output:
                 _last_emitted = cumulative_display
                 return True
@@ -20844,6 +20859,7 @@ class LlamaCppBackend:
                 content_buffer = ""  # Raw content held during BUFFERING
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
+                _prov_entry = None
                 # Time each reasoning pass so final answers can replace tool timing.
                 _reasoning_started_at = None
                 _reasoning_summary_emitted = False
@@ -20901,6 +20917,7 @@ class LlamaCppBackend:
                                 if detect_state == _S_STREAMING and in_thinking:
                                     if has_content_tokens:
                                         cumulative_display += "</think>"
+                                        _prov_entry = None
                                         if not _suppress_visible_output:
                                             yield {
                                                 "type": "content",
@@ -20916,6 +20933,7 @@ class LlamaCppBackend:
                                             _iter_finish_reason,
                                             promote_reasoning_only,
                                         )
+                                        _prov_entry = None
                                         if not _suppress_visible_output:
                                             yield {
                                                 "type": "content",
@@ -21120,9 +21138,15 @@ class LlamaCppBackend:
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
+                                                _prov_entry = {"len": 0}
+                                                reasoning_provenance.setdefault(
+                                                    "wraps", []
+                                                ).append(_prov_entry)
                                             cumulative_display += "<think>"
                                             in_thinking = True
                                         cumulative_display += reasoning
+                                        if _prov_entry is not None:
+                                            _prov_entry["len"] += len(reasoning)
                                         if not _suppress_visible_output:
                                             yield {
                                                 "type": "content",
@@ -21213,6 +21237,7 @@ class LlamaCppBackend:
                                         if in_thinking:
                                             cumulative_display += "</think>"
                                             in_thinking = False
+                                            _prov_entry = None
                                         cumulative_display += token
                                         cleaned = _strip_tool_markup_streaming(cumulative_display)
                                         # Hold a trailing bare active-tool-name (split rehearsal)
@@ -21437,6 +21462,7 @@ class LlamaCppBackend:
                                 _iter_finish_reason,
                                 promote_reasoning_only,
                             )
+                            _prov_entry = None
                             if not _suppress_visible_output:
                                 yield {
                                     "type": "content",
@@ -22055,6 +22081,7 @@ class LlamaCppBackend:
         in_thinking = False
         has_content_tokens = False
         reasoning_text = ""
+        _prov_entry = None
         _final_reasoning_started_at: Optional[float] = None
         _final_reasoning_summary_emitted = False
         _metadata_usage = None
@@ -22090,6 +22117,7 @@ class LlamaCppBackend:
                                     yield _reasoning_summary_event(_final_reasoning_started_at)
                                 if has_content_tokens:
                                     cumulative += "</think>"
+                                    _prov_entry = None
                                     yield {
                                         "type": "content",
                                         "text": _strip_tool_markup(cumulative, final = True),
@@ -22101,6 +22129,7 @@ class LlamaCppBackend:
                                         _metadata_finish_reason,
                                         promote_reasoning_only,
                                     )
+                                    _prov_entry = None
                                     yield {"type": "content", "text": cumulative}
                             _stream_done = True
                             break  # exit inner while
@@ -22135,9 +22164,15 @@ class LlamaCppBackend:
                                             reasoning_provenance["wrapped"] = (
                                                 reasoning_provenance.get("wrapped", 0) + 1
                                             )
+                                            _prov_entry = {"len": 0}
+                                            reasoning_provenance.setdefault("wraps", []).append(
+                                                _prov_entry
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning
+                                    if _prov_entry is not None:
+                                        _prov_entry["len"] += len(reasoning)
                                     yield {"type": "content", "text": cumulative}
 
                                 token = delta.get("content", "")
@@ -22152,6 +22187,7 @@ class LlamaCppBackend:
                                     if in_thinking:
                                         cumulative += "</think>"
                                         in_thinking = False
+                                        _prov_entry = None
                                     cumulative += token
                                     cleaned = (
                                         _final_answer_stripper.strip(cumulative)
