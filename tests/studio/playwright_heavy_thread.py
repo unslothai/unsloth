@@ -1028,11 +1028,19 @@ def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
                     numeric_keys.add(key)
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
-        # Values that are not numbers are proofs the action really happened, not timings, so the
-        # last repetition's is kept verbatim rather than aggregated.
+        # Values that are not numbers are proofs the action really happened, not timings, so they
+        # cannot be aggregated. The last repetition's is kept for the table, and EVERY
+        # repetition's is kept beside it, because these are the only evidence the interaction
+        # happened at all: a repetition whose proof failed still put its timing into the median
+        # above, so a verdict that reads rows[-1] alone passes on a median that carries an
+        # interaction which did not occur. Same shape as `dropped_repetitions` below, which is
+        # what keeps a headline timeout from being reported as a median of three.
         for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
+            values = [r.get(key) for r in rows]
+            if any(value is not None for value in values):
+                merged[f"{key}_per_repetition"] = values
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
@@ -1813,13 +1821,20 @@ def harness_failures(results: dict, report: dict) -> list[str]:
         # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
         # across sizes is comparing columns measured on different mechanisms.
         for table in TABLES:
-            layers = {
-                as_table(results["by_engine"][engine]["by_size"][str(size)], table)["actions"]
-                .get("menu", {})
-                .get("bodyPointerEvents")
-                for size in results["sizes"]
-                if "crashed" not in results["by_engine"][engine]["by_size"][str(size)]
-            }
+            layers = set()
+            for size in results["sizes"]:
+                cell = results["by_engine"][engine]["by_size"][str(size)]
+                if "crashed" in cell:
+                    continue
+                menu_row = as_table(cell, table)["actions"].get("menu", {})
+                # Every repetition, not the collapsed last one: a run that opened a modal menu on
+                # repetition 1 and a non-modal one on repetition 3 has measured two mechanisms
+                # under one median, and reading the last repetition alone cannot see it.
+                layers.update(
+                    menu_row.get(
+                        "bodyPointerEvents_per_repetition", [menu_row.get("bodyPointerEvents")]
+                    )
+                )
             if len(layers) > 1:
                 failures.append(
                     f"on {engine} ({table}) the menu put the body on "
@@ -1862,12 +1877,19 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
         # own. Only the runtime's copy shows the keystroke reached React rather than just
         # the textarea, and a keystroke that reached nothing still reports the ~33ms
         # paint floor, which reads as a plausible timing.
-        if keystroke["runtimeText"] != keystroke["domText"]:
-            failures.append(
-                f"{where} typed {keystroke['domText']!r} into the DOM but the runtime "
-                f"holds {keystroke['runtimeText']!r}; the keystroke never reached the "
-                "composer state"
-            )
+                # Per repetition, not just the last one. An earlier repetition that typed into
+                # a dead composer contributed its timing to the median all the same.
+                dom_texts = keystroke.get("domText_per_repetition", [keystroke["domText"]])
+                runtime_texts = keystroke.get(
+                    "runtimeText_per_repetition", [keystroke["runtimeText"]]
+                )
+                for index, (dom, runtime) in enumerate(zip(dom_texts, runtime_texts)):
+                    if runtime != dom:
+                        failures.append(
+                            f"{where} typed {dom!r} into the DOM on repetition {index + 1} but "
+                            f"the runtime holds {runtime!r}; the keystroke never reached the "
+                            "composer state, and that repetition is inside the median"
+                        )
         # Sitting on the paint floor is NOT a harness failure here, and the reason is a
         # finding rather than an excuse: the character reaches the composer and paints on
         # the very next frame at every size, while the thread churns for another 180ms
@@ -1903,8 +1925,27 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
             failures.append(f"{where} never opened the message action menu")
         elif menu["closeMs"] is None:
             failures.append(f"{where} opened the action menu and it never closed")
-        elif menu["bodyPointerEventsAfterClose"] == "none":
-            failures.append(f"{where} left the body on the modal layer after closing the menu")
+        elif "none" in menu.get(
+            "bodyPointerEventsAfterClose_per_repetition",
+            [menu["bodyPointerEventsAfterClose"]],
+        ):
+            # Every repetition, not the collapsed last one. A repetition that left the body stuck
+            # on the modal layer still put its timing into the median, so reading the last one
+            # alone passes a median that carries a run the verdict is meant to reject.
+            stuck = [
+                index + 1
+                for index, value in enumerate(
+                    menu.get(
+                        "bodyPointerEventsAfterClose_per_repetition",
+                        [menu["bodyPointerEventsAfterClose"]],
+                    )
+                )
+                if value == "none"
+            ]
+            failures.append(
+                f"{where} left the body on the modal layer after closing the menu on "
+                f"repetition(s) {stuck}"
+            )
         # An empty popover satisfies "the menu opened" and costs nothing to render.
         elif not menu["itemsWhileOpen"]:
             failures.append(f"{where} opened an action menu with no items in it")

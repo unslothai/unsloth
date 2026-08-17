@@ -128,8 +128,29 @@ def test_the_verdict_asserts_the_fixture_and_not_just_its_size() -> None:
 def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
     # The DOM value is what the harness itself wrote. A keystroke that reached nothing still
     # reports the ~33ms paint floor, which reads as a plausible timing.
+    #
+    # Checked per repetition, not on the collapsed last one. `summarise` keeps only the LAST
+    # repetition's copy of each non-numeric proof, while the median above it is taken over every
+    # repetition, so a keystroke that reached a dead composer on repetition 1 still contributed
+    # its timing to the reported number and a verdict reading the last repetition alone passes it.
     decision = verdict()
-    assert 'keystroke["runtimeText"] != keystroke["domText"]' in decision
+    assert 'domText_per_repetition' in decision
+    assert 'runtimeText_per_repetition' in decision
+    assert "for index, (dom, runtime) in enumerate(zip(dom_texts, runtime_texts)):" in decision
+
+
+def test_every_non_numeric_proof_is_kept_for_every_repetition() -> None:
+    # The four non-numeric fields are the only evidence each interaction happened at all, and
+    # collapsing them to the last repetition is what makes the check above possible to defeat.
+    # Same shape as `dropped_repetitions`, which stops a headline timeout being reported as a
+    # median of three.
+    text = source(HARNESS)
+    summarise_body = section(text, "def summarise(", "class SeededPage")
+    assert 'merged[f"{key}_per_repetition"] = values' in summarise_body
+    # And the two verdicts that read them must read the per-repetition form.
+    decision = verdict()
+    assert "bodyPointerEventsAfterClose_per_repetition" in decision
+    assert "bodyPointerEvents_per_repetition" in decision
 
 
 def test_the_paint_floor_is_measured_and_subtracted() -> None:
