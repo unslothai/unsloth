@@ -96,7 +96,14 @@ export function isCovered(current: MountWindow): boolean {
  */
 export function widen(current: MountWindow, count: number): MountWindow {
   if (current == null) return null;
-  const start = Math.max(0, Math.min(current.start, count) - CHUNK_MESSAGES);
+  // A window whose start is at or past the end of the thread cannot withhold anything, and the
+  // caller has already rendered every row because of that. Clamping to `count` and then
+  // subtracting a chunk would move `start` BACKWARDS relative to what is on screen: {start: 204}
+  // against a thread that shrank to 100 becomes {start: 68}, and rows 0 to 67, which are mounted,
+  // are unmounted again. Nothing in this design is allowed to unmount a row, so the window is
+  // dropped instead.
+  if (current.start >= count) return null;
+  const start = Math.max(0, current.start - CHUNK_MESSAGES);
   if (start <= 0) return null;
   return { start };
 }

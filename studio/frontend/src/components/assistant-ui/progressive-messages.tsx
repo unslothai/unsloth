@@ -204,6 +204,15 @@ function useProgressiveMountWindow(
     }
   }
 
+  // A thread that shrank at or past the live window's start is reconciled HERE, during render,
+  // rather than left for the next widening. Rendering every row (below) is only half of it: the
+  // STATE still says start 204, and a widen against a 100-message thread would then produce
+  // start 68 and unmount the 68 rows this render just mounted. Measured before the render-time
+  // fallback existed, the same stale state painted an empty column for 2 to 8 frames.
+  if (mountWindow != null && mountWindow.start >= count) {
+    setMountWindow(null);
+  }
+
   // A run that starts mid-widening drops the window immediately. Streaming writes to the same
   // scroll position the widening does, and a reply must never commit into a tree that has not
   // reached it. The remaining rows land in one commit, which is what would have happened without

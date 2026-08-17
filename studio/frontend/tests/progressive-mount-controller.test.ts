@@ -189,3 +189,30 @@ test("a frame that inserted nothing is a no-op whatever the reader did", () => {
 test("sub-pixel movement is never acted on", () => {
   assert.equal(anchorCorrection(sample(-500.0, 20000), sample(-499.4, 20000)), null);
 });
+
+test("a window past the end of a shrunken thread is dropped, never narrowed", () => {
+  // The failure this rules out: {start: 204} against a thread that shrank to 100. Clamping to
+  // count and then subtracting a chunk gives {start: 68}, and the caller has ALREADY rendered all
+  // 100 rows because start was past the end, so rows 0 to 67 would be unmounted again. Nothing in
+  // this design is allowed to unmount a row.
+  assert.equal(widen({ start: 204 }, 100), null);
+  assert.equal(widen({ start: 204 }, 0), null);
+  assert.equal(widen({ start: 100 }, 100), null);
+  // One below the end still widens normally.
+  assert.deepEqual(widen({ start: 99 }, 100), { start: 99 - CHUNK_MESSAGES });
+});
+
+test("widening is monotone in start for every reachable window and count", () => {
+  // The property behind the case above, stated for everything rather than for one example: the
+  // next window never withholds more than the current one does.
+  for (let count = 0; count <= 300; count += 7) {
+    for (let start = 0; start <= 300; start += 5) {
+      const next = widen({ start }, count);
+      if (next == null) continue;
+      assert.ok(
+        next.start < start,
+        `widen({start:${start}}, ${count}) returned {start:${next.start}}, which withholds more`,
+      );
+    }
+  }
+});

@@ -301,6 +301,13 @@ test("a thread that shrank under a live window drops the restriction, it does no
     /mountWindow == null \|\| mountWindow\.start >= count/,
     "start >= count must drop the window, not clamp it to count",
   );
+  // And the STATE is reconciled, not just the local `first`. Rendering every row is half of it:
+  // leaving the window at start 204 against a 100-message thread lets the next widen produce
+  // start 68 and unmount the 68 rows that render just mounted.
+  assert.match(
+    GLUE,
+    /if \(mountWindow != null && mountWindow\.start >= count\) \{\s*setMountWindow\(null\);/,
+  );
   assert.doesNotMatch(
     GLUE,
     /Math\.min\(Math\.max\(mountWindow\.start, 0\), count\)/,
