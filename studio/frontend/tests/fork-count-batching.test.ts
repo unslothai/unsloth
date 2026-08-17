@@ -118,6 +118,29 @@ test("a burst of history events collapses into one refresh", async (t) => {
   assert.equal(requests.length, 3, "an unmounted thread stops fetching");
 });
 
+test("badges churning under the hover autohide do not refetch the thread", async () => {
+  const { store, requests } = freshStore({ m7: 3 });
+  // The thread subscribes for as long as it is on screen. Its badges live inside action bars
+  // that autohide, so they come and go with the pointer and none of them exists at rest.
+  const thread = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+  assert.deepEqual(requests, ["thread-a"]);
+
+  for (let i = 0; i < 10; i++) {
+    const badge = store.subscribeForkCounts("thread-a", () => {});
+    // Already there on the first render, so the badge does not arrive a round trip after the
+    // bar it sits in and shift the buttons beside it.
+    assert.equal(store.forkCountFor("thread-a", "m7"), 3);
+    badge();
+  }
+  await flush();
+  assert.equal(requests.length, 1, "hovering ten messages refetched the whole thread");
+
+  // Closing the thread is what drops the counts.
+  thread();
+  assert.equal(store.forkCountFor("thread-a", "m7"), 0);
+});
+
 test("two threads on screen cost one request each", async () => {
   const { store, requests } = freshStore();
   const a = store.subscribeForkCounts("thread-a", () => {});
@@ -136,4 +159,7 @@ test("the badge no longer owns a listener or a per-message request", () => {
   assert.doesNotMatch(thread, /getForkCount\(/);
   assert.doesNotMatch(thread, /addEventListener\(CHAT_HISTORY_UPDATED_EVENT/);
   assert.match(thread, /subscribeForkCounts\(remoteId, onChange\)/);
+  // The badges all unmount at rest, so the thread has to hold the subscription itself.
+  assert.match(thread, /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/);
+  assert.match(thread, /^ {2}useThreadForkCounts\(\);$/m);
 });

@@ -1511,6 +1511,7 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
+  useThreadForkCounts();
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -6594,6 +6595,23 @@ const AssistantMessage: FC = () => {
 };
 
 const COPY_RESET_MS = 2000;
+
+/**
+ * One fork-count subscription for as long as the thread is on screen.
+ *
+ * The badges below sit inside action bars that autohide, so at rest not one of them is
+ * mounted. Left to them, the last badge leaving would drop the thread's counts and the next
+ * hover would fetch them all again -- one whole-thread request per message the pointer crosses,
+ * with the badge arriving a round trip after the bar it sits in.
+ */
+const useThreadForkCounts = (): void => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
+  useEffect(() => {
+    if (!remoteId) return;
+    return subscribeForkCounts(remoteId, () => {});
+  }, [remoteId]);
+};
 
 const ForkCountBadge: FC = () => {
   const remoteId =
