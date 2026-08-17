@@ -11917,27 +11917,36 @@ _MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
     r":[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 
+# Mistral rejects any replayed tool-call id not matching ^[a-zA-Z0-9]{9}$
+# ("Tool call id was ... but must be a-z, A-Z, 0-9, with a length of 9").
+_MISTRAL_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9]{9}")
 
-def _replay_tool_call_id(value: Any) -> Any:
+
+def _replay_tool_call_id(value: Any, provider_type: Optional[str] = None) -> Any:
     """Restore the provider's original tool-call id for replay; hash-shorten
     anything else over 64 chars (same scheme as openai_codex_client._codex_call_id,
-    so call/output pairs shorten identically)."""
+    so call/output pairs shorten identically). Mistral only accepts 9-char
+    alphanumeric ids, so foreign ids get a stable 9-char hex mapping instead."""
     if not isinstance(value, str):
         return value
     base = _MINTED_TOOL_CALL_ID_SUFFIX.sub("", value)
+    if provider_type == "mistral":
+        if _MISTRAL_TOOL_CALL_ID.fullmatch(base):
+            return base
+        return _hashlib.sha256(base.encode("utf-8")).hexdigest()[:9]
     if len(base) <= 64:
         return base
     digest = _hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
     return f"{base[:31]}_{digest}"
 
 
-def _replay_tool_call_ids(tool_calls: Any) -> Any:
+def _replay_tool_call_ids(tool_calls: Any, provider_type: Optional[str] = None) -> Any:
     if not isinstance(tool_calls, list):
         return tool_calls
     out = []
     for tc in tool_calls:
         if isinstance(tc, dict) and isinstance(tc.get("id"), str):
-            fixed = _replay_tool_call_id(tc["id"])
+            fixed = _replay_tool_call_id(tc["id"], provider_type)
             if fixed != tc["id"]:
                 tc = {**tc, "id": fixed}
         out.append(tc)
@@ -12255,9 +12264,9 @@ def _build_external_messages(
                 result.append(entry)
     for entry in result:
         if entry.get("tool_calls"):
-            entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"])
+            entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], provider_type)
         if isinstance(entry.get("tool_call_id"), str):
-            entry["tool_call_id"] = _replay_tool_call_id(entry["tool_call_id"])
+            entry["tool_call_id"] = _replay_tool_call_id(entry["tool_call_id"], provider_type)
     return result
 
 
