@@ -604,9 +604,9 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-// Video goes higher: a container carries far more bytes per second. Still
-// bounded, since a clip past this would not fit a context window as frames.
-const MAX_NATIVE_VIDEO_BYTES: u64 = 64 * 1024 * 1024;
+// Covers the largest client-side video limit (a reference clip, 72 MB raw
+// under its 96 MiB base64 cap). Each caller still enforces its own tighter one.
+const MAX_NATIVE_VIDEO_BYTES: u64 = 96 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
