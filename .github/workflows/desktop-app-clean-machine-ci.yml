@@ -35,6 +35,7 @@ on:
       - 'tests/security/test_release_desktop_appimage.py'
       - 'tests/studio/appimage_test_support.py'
       - 'tests/studio/appimage_portability_smoke.py'
+      - 'tests/studio/appimage_media_pipeline_probe.py'
       - 'tests/studio/appimage_model_download_webdriver.py'
   workflow_dispatch:
     inputs:
@@ -796,6 +797,9 @@ jobs:
         run: |
           set -euo pipefail
           studio/src-tauri/linux/verify-complete-appimage.sh "$APPIMAGE_PATH"
+          # Whether a bundled plugin can load depends on the host it runs on, so
+          # this belongs in the per-host matrix rather than in the build check.
+          python3 tests/studio/appimage_media_pipeline_probe.py
           python3 tests/studio/appimage_portability_smoke.py
 
       - name: Upload portability evidence

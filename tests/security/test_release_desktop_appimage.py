@@ -127,6 +127,10 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     assert no_gles["install_gles"] is False
     assert "libGLESv2.so.2" in source
 
+    # A bundled plugin whose host dependency is absent loads as nothing, which
+    # only the host it runs on can show.
+    assert "appimage_media_pipeline_probe.py" in source
+
     linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
     webdriver_source = yaml.safe_dump(workflow["jobs"]["appimage-model-download"])
     for package in (
