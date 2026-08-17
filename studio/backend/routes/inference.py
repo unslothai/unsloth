@@ -2943,9 +2943,7 @@ def _anthropic_reasoning_args(payload) -> dict:
     }
 
 
-def _reasoning_template_kwargs(
-    llama_backend, enable_thinking, reasoning_effort, preserve_thinking
-):
+def _reasoning_template_kwargs(llama_backend, enable_thinking, reasoning_effort, preserve_thinking):
     """chat_template_kwargs matching the loaded model's reasoning style.
 
     The backend knows whether the template takes ``enable_thinking`` or

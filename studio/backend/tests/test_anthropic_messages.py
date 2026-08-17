@@ -1432,9 +1432,7 @@ class TestAnthropicPassthroughStreamAdapter:
         real_async_client = httpx.AsyncClient
 
         def _client(*args, **kwargs):
-            return real_async_client(
-                transport = transport, timeout = kwargs.get("timeout", 600)
-            )
+            return real_async_client(transport = transport, timeout = kwargs.get("timeout", 600))
 
         monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
         # Echo the request kwargs back the way the real backend does, so the
@@ -1488,9 +1486,7 @@ class TestReasoningContentReachesTheClient:
 
         emitter = AnthropicPassthroughEmitter()
         emitter.start("msg_1", "test-model")
-        out = emitter.feed_chunk(
-            {"choices": [{"delta": {"reasoning_content": "step one"}}]}
-        )
+        out = emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "step one"}}]})
         out += emitter.feed_chunk({"choices": [{"delta": {"content": "the answer"}}]})
         blob = "".join(out)
 
@@ -1506,9 +1502,7 @@ class TestReasoningContentReachesTheClient:
 
         emitter = AnthropicPassthroughEmitter()
         emitter.start("msg_1", "test-model")
-        blob = "".join(
-            emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "only"}}]})
-        )
+        blob = "".join(emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "only"}}]}))
         assert "thinking_delta" in blob and "only" in blob
 
     def test_non_streaming_builds_thinking_block(self):
@@ -1539,7 +1533,6 @@ class TestAnthropicReasoningArgs:
     @staticmethod
     def _payload(**kwargs):
         from models.inference import AnthropicMessagesRequest
-
         return AnthropicMessagesRequest(
             model = "m",
             max_tokens = 16,
@@ -1567,7 +1560,6 @@ class TestAnthropicReasoningArgs:
 
     def test_reasoning_args_reach_the_generators(self):
         from routes.inference import _anthropic_reasoning_args
-
         payload = self._payload(
             thinking = {"type": "enabled"},
             reasoning_effort = "high",
@@ -1614,15 +1606,11 @@ class TestAnthropicReasoningArgs:
                 },
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
-                    ],
+                    "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}],
                 },
             ],
         )
-        converted = anthropic_messages_to_openai(
-            [m.model_dump() for m in payload.messages]
-        )
+        converted = anthropic_messages_to_openai([m.model_dump() for m in payload.messages])
         assistant = next(m for m in converted if m["role"] == "assistant")
         # Thinking is dropped from the prompt; the tool call survives.
         assert "thinking" not in json.dumps(assistant)

@@ -323,7 +323,6 @@ class TestResponsesReasoning:
     @staticmethod
     def _chat_req(reasoning):
         from routes.inference import _build_chat_request
-
         payload = ResponsesRequest(input = "hi", reasoning = reasoning)
         return _build_chat_request(payload, [ChatMessage(role = "user", content = "hi")], stream = False)
 
