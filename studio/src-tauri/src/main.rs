@@ -21,6 +21,7 @@ mod preflight;
 mod process;
 mod process_identity;
 mod update;
+mod webview_permissions;
 mod windows_job;
 mod x11_threads;
 
@@ -1868,6 +1869,7 @@ fn main() {
             native_intents::register_artifact_path,
             native_intents::reveal_path_token,
             native_intents::open_path_token,
+            webview_permissions::reset_microphone_permission,
             has_saved_window_state,
             was_launched_hidden,
             mark_in_app_relaunch,

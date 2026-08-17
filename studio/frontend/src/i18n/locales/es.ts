@@ -288,6 +288,8 @@ export const es = {
         allowMicrophone: "Permitir el acceso al micrófono",
         micAccessBlocked:
           "Se bloqueó el acceso al micrófono. Permite el acceso al micrófono para esta página de Unsloth e inténtalo de nuevo.",
+        micAccessBlockedDesktop:
+          "Se bloqueó el acceso al micrófono. Inténtalo de nuevo y elige Permitir, o activa el micrófono en la configuración de privacidad del sistema.",
         micAccessUnsupported:
           "El acceso al micrófono no es compatible con este navegador o contexto.",
         systemDefault: "Predeterminado del sistema",
