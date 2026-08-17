@@ -554,7 +554,7 @@ def test_layer_preserve_hint_replayed_on_respawn():
     respawn keeps the downgraded model multi-GPU (Codex review on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer" in src
-    assert "self._last_load_intent = intent" in src
+    assert "self._last_load_intent = replace(intent" in src
 
 
 def test_should_record_tensor_split_abort_decision():

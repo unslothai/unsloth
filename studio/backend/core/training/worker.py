@@ -54,6 +54,16 @@ activate_native_tls()
 
 from utils.hardware import apply_gpu_ids
 from utils.hf_dataset_options import hf_dataset_split_instruction_names
+
+# Light module on purpose: the MLX branch below runs on torch-less hosts, so it
+# cannot reach these through core.training.trainer.
+from core.training.dataset_bounds import (
+    bound_dataset_rows,
+    max_train_rows_for_config,
+    record_row_bound,
+    row_bound_for_resume,
+    world_size_from_env,
+)
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -69,6 +79,50 @@ def _output_dir_from_resume_checkpoint(resume_from_checkpoint: str | None) -> st
         return None
     path = Path(resume_from_checkpoint)
     return str(path.parent if path.name.startswith("checkpoint-") else path)
+
+
+def _data_parallel_world_size() -> int:
+    """Replicas that each draw a full batch of rows per optimizer step.
+
+    Two things multiply row consumption and only one of them is in the env: a
+    distributed launch (torchrun, accelerate, mpirun, mlx.launch), and plain
+    DataParallel, which transformers reaches for whenever a non-distributed run
+    sees more than one CUDA device -- it sets n_gpu to the visible device count and
+    scales the train batch by it, so an extra visible GPU eats rows exactly as an
+    extra rank does. XPU and MPS stay at one device there, so only CUDA counts.
+
+    The larger of the two, never the sum: a distributed run forces n_gpu to 1, and a
+    model-parallel one (device_map="balanced", which is what Studio's own multi-GPU
+    load uses) forces it to 1 as well. Rounding up when the model turns out to be
+    sharded rather than replicated only tokenizes a larger subset of a corpus this
+    bound is orders of magnitude below anyway; rounding down means the run silently
+    re-reads rows it has already trained on.
+
+    torch is read out of sys.modules rather than imported: this also runs on the MLX
+    path, on hosts where no torch exists, and a process that never imported it has
+    no CUDA devices to count either.
+    """
+    sizes = [world_size_from_env()]
+    torch_module = sys.modules.get("torch")
+    if torch_module is not None:
+        try:
+            distributed = getattr(torch_module, "distributed", None)
+            if (
+                distributed is not None
+                and distributed.is_available()
+                and distributed.is_initialized()
+            ):
+                sizes.append(int(distributed.get_world_size()))
+        except Exception:
+            # A stubbed or half-initialised torch.distributed must not fail a run.
+            pass
+        try:
+            sizes.append(int(torch_module.cuda.device_count()))
+        except Exception:
+            # A CPU-only build answers 0, which the filter below drops; a broken or
+            # stubbed torch.cuda raises instead, and that must not fail a run either.
+            pass
+    return max([size for size in sizes if size > 0], default = 1)
 
 
 def _model_local_files_only(config: dict) -> bool:
@@ -2779,14 +2833,50 @@ def _run_mlx_training(event_queue, stop_queue, config):
     slice_end = config.get("dataset_slice_end")
     config["_dataset_loaded_from_exact_snapshot"] = False
 
+    # A max_steps run cannot reach the whole dataset, and everything below here
+    # (formatting, templating, tokenization) maps over every row. Recomputed from
+    # the config, never carried over from the parent, so a bound can never be stale.
+    # The vision branch is gated on `not raw_text_mode`, so a raw or CPT run takes
+    # the text path, which honours the requested packing.
+    mlx_raw_text_mode = (
+        training_type == "Continued Pretraining" or config.get("format_type") == "raw"
+    )
+    # An mlx.launch run shards the batch across its processes the same way DDP does,
+    # and it advertises the count in the env this reads.
+    mlx_max_train_rows = max_train_rows_for_config(
+        config,
+        branch_never_packs = is_vlm and not mlx_raw_text_mode,
+        world_size = _data_parallel_world_size(),
+    )
+    # MLXTrainer resumes by jumping a batch cursor into a schedule rebuilt from
+    # whatever dataset it is handed, so bounding a checkpoint written without one
+    # continues on unrelated rows. Same marker, same rule as the CUDA path.
+    mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
+        resume_from_checkpoint, mlx_max_train_rows, random_seed
+    )
+
+    # A bracketed split names rows the same way the numeric fields do.
+    mlx_split_names_rows = "[" in (config.get("train_split") or "")
+
     def _slice(ds):
         if slice_start is not None or slice_end is not None:
             start = slice_start if slice_start is not None else 0
             end = slice_end if slice_end is not None else len(ds) - 1
             if end < start:
                 return ds.select([])
-            ds = ds.select(range(start, min(end + 1, len(ds))))
-        return ds
+            # The user named these rows; the bound below defers to that.
+            return ds.select(range(start, min(end + 1, len(ds))))
+        if mlx_split_names_rows:
+            return ds
+        return bound_dataset_rows(
+            ds,
+            mlx_max_train_rows,
+            mlx_max_train_rows_seed,
+            on_bound = lambda kept, total: _send(
+                "status",
+                status_message = f"Using {kept} of {total} rows (max_steps run)",
+            ),
+        )
 
     def _load_local(file_paths):
         from datasets import load_from_disk
@@ -2993,6 +3083,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
     ensure_dir(Path(output_dir))
     _emit_output_dir(event_queue, output_dir)
+    # Pin the subset before any checkpoint lands here; a resume reads it back.
+    if not record_row_bound(output_dir, mlx_max_train_rows, mlx_max_train_rows_seed) and (
+        mlx_max_train_rows
+    ):
+        _send(
+            "warning",
+            message = (
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded"
+            ),
+        )
 
     # ── 6. Create trainer ──
     raw_eval_steps = config.get("eval_steps", 0)
@@ -4084,6 +4185,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         is_cpt_for_dataset = training_type == "Continued Pretraining"
 
+        # Filled in below, after the model probe; the closure runs after both.
+        max_train_rows = None
+        max_train_rows_seed = config.get("random_seed", 3407)
+
         def _load_training_dataset():
             result = trainer.load_and_format_dataset(
                 dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
@@ -4107,6 +4212,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     config.get("require_exact_resume_resources")
                     or config.get("require_exact_dataset_resource")
                 ),
+                max_train_rows = max_train_rows,
+                max_train_rows_seed = max_train_rows_seed,
             )
             if isinstance(result, tuple):
                 loaded_dataset, loaded_eval_dataset = result
@@ -4164,6 +4271,50 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
+
+        # 4a has probed the model, so the packing opt-out can read the real branch
+        # instead of guessing from the client's dataset flags. Streaming and explicit
+        # train-split ranges opt out inside load_and_format_dataset.
+        # Audio codecs are chosen before the raw-text bypass and use plain Trainers
+        # with no packing argument, so they hold either way; the vision and audio-VLM
+        # branches are gated on `not raw_text_mode`, so a raw or CPT run takes the
+        # text path, which honours packing.
+        raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
+        branch_never_packs = bool(getattr(trainer, "_audio_type", None)) or (
+            bool(getattr(trainer, "is_vlm", False) or getattr(trainer, "is_audio_vlm", False))
+            and not raw_text_mode
+        )
+        # Every replica draws its own batch per step, so the subset has to cover all of
+        # them; sized here rather than in the config because it is a property of this
+        # machine's launch. Model probing is done, so torch and the GPU mask are settled.
+        max_train_rows = max_train_rows_for_config(
+            config,
+            branch_never_packs = branch_never_packs,
+            world_size = _data_parallel_world_size(),
+        )
+        # A resume trains on the rows its first start chose, read back from the marker
+        # beside the checkpoints. No marker means the checkpoint predates the bound and
+        # trained on the whole dataset; since the trainer fast-forwards by batch count
+        # over the current dataloader, bounding it now would continue on unrelated rows.
+        resumed_rows, max_train_rows_seed = row_bound_for_resume(
+            config.get("resume_from_checkpoint"), max_train_rows, max_train_rows_seed
+        )
+        if resumed_rows != max_train_rows:
+            logger.info(
+                "Resuming with the row bound recorded at the original start "
+                f"({resumed_rows} rows) instead of {max_train_rows}\n"
+            )
+            if resumed_rows and max_train_rows and resumed_rows < max_train_rows:
+                # Sized for fewer replicas than this machine has: the recorded subset
+                # is what the run trained on and re-deriving it would continue on
+                # unrelated rows, so it stays, but say that the extra ranks may reach
+                # the end of it and start over.
+                logger.info(
+                    "That subset was sized for a smaller data-parallel world than this "
+                    "one, so the added replicas may re-read rows; start a new run "
+                    "instead of resuming to size it for this machine\n"
+                )
+        max_train_rows = resumed_rows
 
         # ── 4b. Load and format dataset (LLM helper may use VRAM briefly) ──
         _send_status(event_queue, "Loading and formatting dataset...")
@@ -4463,6 +4614,15 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
         _emit_output_dir(event_queue, output_dir)
+        # Pin the subset before any checkpoint lands here, so a resume reads it back
+        # rather than deriving it from a config the user may have edited in between.
+        if not record_row_bound(output_dir, max_train_rows, max_train_rows_seed) and max_train_rows:
+            # Not fatal, and nothing to fall back to: the dataset is already bounded.
+            # Say it, so a later resume reading this run as unbounded is explainable.
+            logger.warning(
+                f"Could not record the max_steps row bound in {output_dir}: "
+                "resuming this run later will read it as unbounded\n"
+            )
 
         tensorboard_dir = config.get("tensorboard_dir")
         if config.get("enable_tensorboard", False):
