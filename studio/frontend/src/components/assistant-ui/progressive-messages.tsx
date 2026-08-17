@@ -296,8 +296,12 @@ function useProgressiveMountWindow(
       },
       viewportCompensatesInsertionsAbove(viewport),
     );
-    // The hook decides whether this is acted on; see adjustForContentInsertedAbove.
-    if (shift !== null) adjustForContentInsertedAbove(shift);
+    // Called on EVERY widening commit, including the ones with nothing to apply: a zero
+    // correction still has to resync the hook's scroll bookkeeping past the offset native scroll
+    // anchoring moved, or the scroll event that anchoring fires arrives as a downward scroll the
+    // reader did not make. The hook decides whether anything is written; see
+    // adjustForContentInsertedAbove.
+    adjustForContentInsertedAbove(shift ?? 0);
   }, [
     mountWindow,
     adjustForContentInsertedAbove,

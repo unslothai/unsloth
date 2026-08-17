@@ -187,7 +187,7 @@ test("the mount window never writes scrollTop itself", () => {
   assert.doesNotMatch(glue, /scrollTop\s*=[^=]/);
   assert.doesNotMatch(glue, /\.scrollTo\(/);
   assert.doesNotMatch(glue, /scrollIntoView\(/);
-  assert.match(glue, /adjustForContentInsertedAbove\(shift\)/);
+  assert.match(glue, /adjustForContentInsertedAbove\(shift \?\? 0\)/);
 });
 
 test("the hook's correction stands down while the user is following", () => {
@@ -195,10 +195,7 @@ test("the hook's correction stands down while the user is following", () => {
   // and because widening only prepends that is the same pixel. Correcting as well would be a
   // second writer for no gain.
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
-  assert.match(
-    body,
-    /if \(!userDetachedRef\.current \|\| deltaPx === 0\) \{\s*return;/,
-  );
+  assert.match(body, /if \(!userDetachedRef\.current\) \{\s*return;/);
 });
 
 test("the hook's correction is instant, because the viewport is scroll-smooth", () => {
@@ -294,4 +291,29 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
   // and the document held 16 of 220 rows two frames later.
   assert.match(GLUE, /for \(let pass = 0; pass < 8; pass \+= 1\)/);
   assert.match(GLUE, /if \(activeCompleters\.size === 0\) return;/);
+});
+
+test("the hook is told about every widening, including the ones with nothing to apply", () => {
+  // A widening that native scroll anchoring absorbed in full needs no scroll write, but the
+  // browser still moved scrollTop by the whole insertion and still fires a scroll event for it:
+  // measured, one event carrying the new offset on Chromium 151, WebKit 26.5 and Firefox 153.
+  // Returning early there left the hook's lastScrollTop a whole insertion behind, and that event
+  // then read as a large downward scroll, re-attaching a reader parked within 24px of the bottom.
+  assert.match(GLUE, /adjustForContentInsertedAbove\(shift \?\? 0\)/);
+  const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
+  assert.doesNotMatch(
+    body,
+    /deltaPx === 0\) \{\s*return;/,
+    "a zero correction must still resync the bookkeeping",
+  );
+  assert.match(body, /lastScrollTop = el\.scrollTop;/);
+});
+
+test("every scroll the hook did not make counts as a user gesture", () => {
+  // A scrollbar drag, PageUp, the arrow keys and middle-click autoscroll reach this hook as
+  // nothing but a `scroll` event, and they detach the reader, so a correction measured across
+  // them reverses their own movement. The hook's own writes and native anchoring adjustments are
+  // excluded by arithmetic, not by a flag: both advance lastScrollTop, so both read as delta 0.
+  const scroll = section(HOOK, "const onScroll = ", "const stabilize = ");
+  assert.match(scroll, /if \(!sizeChanged && delta !== 0\) \{\s*userGestureSeqRef\.current \+= 1;/);
 });

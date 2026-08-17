@@ -404,16 +404,30 @@ export function useIntentAwareAutoScroll(): {
       // list carries `scroll-smooth`, so an animated write would still be in
       // flight when the next widening frame issued the next one.
       adjustImplRef.current = (deltaPx: number) => {
-        if (!userDetachedRef.current || deltaPx === 0) {
+        if (!userDetachedRef.current) {
           return;
         }
-        el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
-        // Advance the intent bookkeeping with the write so the scroll event it
-        // provokes reads as no movement. Without this the `delta > 0` branch of
-        // onScroll sees a downward scroll it did not cause; a user parked near
-        // the bottom (detachFromBottom does exactly that when the composer
-        // grows) would be silently re-attached by their own correction, and the
-        // next widening frame would yank them to the bottom.
+        if (deltaPx !== 0) {
+          el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
+        }
+        // Advance the intent bookkeeping whether or not anything was written,
+        // and that is two fixes rather than one.
+        //
+        // With a write, it stops the scroll event the write provokes from
+        // reading as movement the reader made: the `delta > 0` branch below
+        // would otherwise re-attach a user parked near the bottom
+        // (detachFromBottom puts them exactly there when the composer grows)
+        // and the next widening frame would yank them to the bottom.
+        //
+        // WITHOUT a write it matters just as much, which is the part that was
+        // missing. When native scroll anchoring absorbs a widening in full the
+        // correction above is zero, but the browser still moved scrollTop by
+        // the whole inserted height and still fires a scroll event for it:
+        // measured, one event carrying the new offset on Chromium 151, WebKit
+        // 26.5 and Firefox 153. Returning early there left lastScrollTop a
+        // whole insertion behind, so that event arrived as a large downward
+        // scroll nobody made. Layout effects run before the event is
+        // dispatched, so resyncing here is what makes it read as zero.
         lastScrollTop = el.scrollTop;
         lastDistanceFromBottom = distanceFromBottom();
       };
@@ -457,6 +471,20 @@ export function useIntentAwareAutoScroll(): {
 
         const delta = scrollTop - lastScrollTop;
         const distanceNow = distanceFromBottom();
+
+        // Every scroll that is not one of ours counts as a gesture, not just wheel and
+        // touchmove. A scrollbar drag, PageUp, the arrow keys and middle-click autoscroll all
+        // reach this hook as nothing but a `scroll` event, and they detach the reader through
+        // the accumulator below, so a caller measuring a layout shift across two frames has to
+        // see them or it reads the reader's own movement as a shift and reverses it.
+        //
+        // The two scrolls that are NOT gestures are already excluded by arithmetic rather than
+        // by a flag: the corrective write in adjustImplRef advances lastScrollTop with itself,
+        // and a native scroll-anchoring adjustment is advanced past the same way, so both
+        // arrive here with delta 0.
+        if (!sizeChanged && delta !== 0) {
+          userGestureSeqRef.current += 1;
+        }
 
         // Viewport resizes can clamp scrollTop and produce spurious
         // direction signals. Only flip intent on deliberate scrolls.
