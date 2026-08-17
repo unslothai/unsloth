@@ -158,6 +158,24 @@ function displayMathMarkers(line: string): { toggles: number; opens: number; clo
 const LINK_DEFINITION = /^ {0,3}\[[^\]]+\]:/;
 
 /**
+ * HTML blocks that a blank line does NOT end, with the string that does end each.
+ *
+ * CommonMark closes most HTML blocks at the next blank line, which makes them safe here for free.
+ * Types 1 to 5 are the exceptions: they run until a specific terminator and swallow blank lines on
+ * the way. Slicing inside one drops its opener, and the renderer then reads the body and the
+ * closing marker as ordinary Markdown, so a `</script>` becomes visible text and everything inside
+ * stops being code.
+ */
+const HTML_BLOCK_STARTS: ReadonlyArray<{ open: RegExp; close: RegExp }> = [
+  { open: /^ {0,3}<(?:script|pre|style|textarea)(?:[\s>]|$)/i,
+    close: /<\/(?:script|pre|style|textarea)>/i },
+  { open: /^ {0,3}<!--/, close: /-->/ },
+  { open: /^ {0,3}<\?/, close: /\?>/ },
+  { open: /^ {0,3}<![A-Za-z]/, close: />/ },
+  { open: /^ {0,3}<!\[CDATA\[/, close: /\]\]>/ },
+];
+
+/**
  * The state a scan of the text so far leaves the renderer in.
  *
  * Fences and display math are both "the marker that closes me reads as the marker that opens you",
@@ -169,6 +187,7 @@ type ScanState = {
   fence: { char: string; length: number; prefix: number } | null;
   mathOpen: boolean;
   bracketMath: boolean;
+  html: RegExp | null;
 };
 
 function advance(state: ScanState, line: string): void {
@@ -196,6 +215,17 @@ function advance(state: ScanState, line: string): void {
     return;
   }
   if (state.fence !== null) return;
+  if (state.html !== null) {
+    if (state.html.test(line)) state.html = null;
+    return;
+  }
+  for (const block of HTML_BLOCK_STARTS) {
+    if (block.open.test(line)) {
+      // A block that also closes on its opening line never opened as far as this is concerned.
+      if (!block.close.test(line)) state.html = block.close;
+      return;
+    }
+  }
   const math = displayMathMarkers(line);
   if (math.toggles % 2 === 1) state.mathOpen = !state.mathOpen;
   if (math.opens > math.closes) state.bracketMath = true;
@@ -203,9 +233,9 @@ function advance(state: ScanState, line: string): void {
 }
 
 const neutral = (state: ScanState): boolean =>
-  state.fence === null && !state.mathOpen && !state.bracketMath;
+  state.fence === null && !state.mathOpen && !state.bracketMath && state.html === null;
 
-const freshState = (): ScanState => ({ fence: null, mathOpen: false, bracketMath: false });
+const freshState = (): ScanState => ({ fence: null, mathOpen: false, bracketMath: false, html: null });
 
 /**
  * Whether an offset is outside every construct a slice must not land inside.
@@ -308,7 +338,24 @@ export function linkDefinitionsBefore(text: string, start: number): string {
     // still a document-wide definition, and carried WITHOUT the prefix so it cannot drag a stray
     // blockquote into the suffix.
     const bare = neutral(state) ? stripContainers(line).body : "";
-    if (bare && LINK_DEFINITION.test(bare)) definitions.push(bare);
+    if (bare && LINK_DEFINITION.test(bare)) {
+      // CommonMark lets the destination and the optional title sit on continuation lines, and half
+      // a definition is worse than none: `[spec]:` alone is not a definition, so it would render as
+      // literal text at the top of the window. Take the indented lines that belong to it.
+      const parts = [bare];
+      let scan = lineEnd + 1;
+      while (scan < start) {
+        let scanEnd = text.indexOf("\n", scan);
+        if (scanEnd === -1 || scanEnd > start) scanEnd = start;
+        const raw = text.slice(scan, scanEnd);
+        const body = stripContainers(raw).body;
+        // A continuation is indented and not blank. Anything at column zero starts something else.
+        if (body.trim() === "" || !/^\s/.test(body)) break;
+        parts.push(body);
+        scan = scanEnd + 1;
+      }
+      definitions.push(parts.join("\n"));
+    }
     advance(state, line);
     lineStart = lineEnd + 1;
   }

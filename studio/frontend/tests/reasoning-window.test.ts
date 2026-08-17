@@ -376,3 +376,54 @@ test("backing off never delays the window by more than the retry step", () => {
     `engaged at ${engagedAt}`,
   );
 });
+
+// ── round four: blocks a blank line does not end ────────────────────
+
+test("a blank line does not end a script block", () => {
+  const text = "intro\n\n<script>\nlet a = 1;\n\nlet b = 2;\n</script>\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("let b")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside a script block", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}<script>\nlet a = 1;\n\nlet b = 2;\n</script>\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("let a"));
+  assert.ok(!text.slice(start).startsWith("let b"), text.slice(start, start + 20));
+});
+
+test("a blank line does not end an HTML comment", () => {
+  const text = "intro\n\n<!-- a note\n\nstill the note\n-->\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("still the note")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("an HTML block that opens and closes on one line is not left open", () => {
+  // The control against overcorrecting: <!-- x --> on one line must not swallow the rest.
+  const text = "intro\n\n<!-- a note -->\n\ntail\n\nmore\n";
+  assert.equal(isOutsideFence(text, text.length), true);
+  const start = alignWindowStart(text, text.indexOf("tail"));
+  assert.ok(start > 0, "no boundary was offered at all");
+});
+
+test("an ordinary HTML block still ends at its blank line", () => {
+  // <div> is CommonMark type 6, which a blank line DOES end, so it must stay windowable.
+  const text = "intro\n\n<div>\nsomething\n</div>\n\n" + "filler\n\n".repeat(40);
+  assert.equal(isOutsideFence(text, text.length), true);
+  const start = alignWindowStart(text, text.indexOf("filler"));
+  assert.ok(start > 0, "an ordinary HTML block blocked the window");
+});
+
+test("a reference definition continued on the next line is carried whole", () => {
+  const text =
+    "[spec]:\n    https://example.com/spec\n    \"The Spec\"\n\n" +
+    "filler\n\n".repeat(50) +
+    "see [spec]\n";
+  const start = alignWindowStart(text, 200);
+  assert.ok(start > 0);
+  const carried = linkDefinitionsBefore(text, start);
+  assert.ok(carried.includes("[spec]:"), carried);
+  // Half a definition is worse than none: `[spec]:` alone renders as literal text.
+  assert.ok(carried.includes("https://example.com/spec"), carried);
+  assert.ok(carried.includes('"The Spec"'), carried);
+});
