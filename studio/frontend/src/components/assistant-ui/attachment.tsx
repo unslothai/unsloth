@@ -251,9 +251,9 @@ const PastedTextPreviewDialog: FC<
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild={true}>{children}</DialogTrigger>
-      <DialogContent className="aui-pasted-text-dialog flex max-h-[80dvh] w-[min(46rem,92vw)] max-w-none flex-col gap-3 overflow-hidden">
+      <DialogContent className="aui-pasted-text-dialog flex max-h-[88dvh] w-[min(68rem,94vw)] max-w-none flex-col gap-3 overflow-hidden">
         <DialogTitle className="truncate pr-8 text-sm">{name}</DialogTitle>
-        <pre className="aui-pasted-text-dialog-body max-h-[64dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
+        <pre className="aui-pasted-text-dialog-body max-h-[72dvh] overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 text-left font-mono text-xs leading-relaxed">
           {preview?.text ?? "Loading…"}
         </pre>
         {preview && preview.remaining > 0 ? (
