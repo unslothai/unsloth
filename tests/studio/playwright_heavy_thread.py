@@ -577,6 +577,9 @@ async (samples) => {
 
 
 def median(values: list[float]) -> float | None:
+    """None is DROPPED, so a repetition whose action timed out does not poison the column. What
+    stops that going silent is `dropped_repetitions` in summarise() and the check on it in
+    harness_failures(): a median over two samples must not be reported as a median over three."""
     ordered = sorted(v for v in values if v is not None)
     if not ordered:
         return None
@@ -683,9 +686,43 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
     return out
 
 
-def one_repetition(page, cdp) -> dict[str, dict]:
-    """The five scripted actions, once, in the order a user meets them."""
+def fixture_census(page) -> dict[str, int]:
+    """What is actually on screen right now. Cheap enough to run once per repetition."""
+    return page.evaluate(
+        """() => ({
+            messages: document.querySelectorAll("[data-role]").length,
+            domNodes: document.getElementsByTagName("*").length,
+            highlightedTokens: document.querySelectorAll("pre code span").length,
+        })"""
+    )
+
+
+def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
+    """The five scripted actions, once, in the order a user meets them.
+
+    RE-SEEDED first, every time but the first. `delete` removes the last assistant message from
+    the RUNTIME, and re-open deliberately preserves the runtime, so without this repetition N
+    measures a thread N-1 messages shorter than the one the pre-action census passed -- and a
+    different content mix, because the message it takes is a different KIND each time. Measured
+    on chromium: at 300K the thread went 220 -> 219 -> 218 messages and 35086 -> 34438 highlighted
+    tokens across the default three repetitions (-0.9%/rep, -1.8% of tokens); at 25K, where one
+    cycle is the whole fixture, it went 20 -> 19 -> 18 messages and 3216 -> 2520 -> 2520 tokens,
+    which is 22% of the highlighting gone by repetition two.
+
+    The re-seed also puts every message back into a freshly-mounted state, and that is NOT free:
+    measured on chromium at 300K, the menu open+close median moved 71.9ms -> 352.0ms, because
+    without it repetitions 2 and 3 open a menu on a thread that has already been through one.
+    Both numbers are honest; only one of them is the number the table claims to report, which is
+    "the median of three repetitions of the seeded fixture".
+    """
     rep: dict[str, dict] = {}
+    if not first:
+        plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
+        page.wait_for_function(
+            "(n) => window.__heavyThread.messageCount() >= n",
+            arg = plan["messages"],
+            timeout = SEED_TIMEOUT_MS,
+        )
     # The previous repetition ended by re-opening the thread, which throws away every highlighted
     # fence and starts Shiki again. Without this wait, repetitions 2 and 3 measure a thread that
     # is still building itself: measured on Chromium at 300K, the scroll gesture read 667ms on
@@ -782,6 +819,10 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
+        # How many repetitions produced no headline value at all. The action still "ran" -- the
+        # script returned -- but its settle loop hit the timeout, so median() silently took the
+        # median of the rest and `repetitions` above would over-state the sample count.
+        merged["dropped_repetitions"] = sum(1 for v in merged["per_repetition"] if v is None)
         out[action] = merged
     return out
 
@@ -857,9 +898,12 @@ def measure_cell(context, engine: str, size: int) -> dict:
         result["paint_floor_ms"] = round(page.evaluate(PAINT_FLOOR_JS, 9), 2)
 
         reps = []
+        censuses = []
         for index in range(REPEATS):
             info(f"  {engine} {size} chars: repetition {index + 1}/{REPEATS}")
-            reps.append(one_repetition(page, cdp))
+            reps.append(one_repetition(page, cdp, size, first = index == 0))
+            censuses.append(fixture_census(page))
+        result["per_repetition_census"] = censuses
         result["repetitions"] = REPEATS
         result["actions"] = summarise(reps)
         result["raw_repetitions"] = reps
@@ -1274,6 +1318,22 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             for name in ACTIONS:
                 if not actions[name].get("ran"):
                     failures.append(f"{where} could not run the {name} action at all")
+                elif actions[name].get("dropped_repetitions"):
+                    failures.append(
+                        f"{where} reports the {name} column as a median of "
+                        f"{actions[name]['repetitions']} repetitions, but "
+                        f"{actions[name]['dropped_repetitions']} of them produced no timing at "
+                        f"all ({actions[name]['per_repetition']}); the headline is a median over "
+                        "fewer samples than the table claims"
+                    )
+            # The fixture the pre-action census passed has to be the fixture every repetition
+            # measured, or the median combines threads of different sizes wearing one label.
+            censuses = row.get("per_repetition_census") or []
+            if censuses and any(c["messages"] != censuses[0]["messages"] for c in censuses):
+                failures.append(
+                    f"{where} measured {[c['messages'] for c in censuses]} messages across its "
+                    "repetitions; the median is over more than one fixture"
+                )
             keystroke = actions["keystroke"]
             if keystroke.get("ran"):
                 # The DOM value is what the harness itself wrote, so it proves nothing on its

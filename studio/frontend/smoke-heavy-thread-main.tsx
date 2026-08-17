@@ -72,8 +72,13 @@ window.fetch = (input, init) => {
   const url =
     typeof input === "string" ? input : ((input as Request).url ?? String(input));
   if (url.includes("/api/")) {
+    // `{"count":0}`, not `{}`. getForkCount reads `data.count`, so `{}` sets the badge's count
+    // to undefined, and `undefined <= 0` is false, so ForkCountBadge renders a pill and a
+    // git-branch icon on EVERY message with a mounted action bar -- 110 of them at 300K, which
+    // real Studio never shows for an unforked message. Measured: 550 DOM nodes, 1.3% of the
+    // fixture, and a badge the harness is not supposed to be able to produce.
     return Promise.resolve(
-      new Response("{}", {
+      new Response('{"count":0}', {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
