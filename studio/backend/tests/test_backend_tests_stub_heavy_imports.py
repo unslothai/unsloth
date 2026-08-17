@@ -121,6 +121,28 @@ def _heavy_backend_modules() -> frozenset[str]:
     return frozenset(tainted)
 
 
+# What an `except` clause has to name for an unstubbed import under it to be a
+# deliberate guard rather than an omission. ModuleNotFoundError is a SUBCLASS of
+# ImportError, so it does not belong here: it catches strictly less, and a stub whose
+# absence raises plain ImportError would go through it.
+_CATCHES_IMPORT_ERROR = frozenset({"ImportError", "Exception", "BaseException"})
+
+
+def _catches_import_error(node: ast.AST) -> bool:
+    """Whether this ``except`` clause's type catches a plain ``ImportError``.
+
+    Compared as whole dotted names, and only the last component of one, so
+    ``builtins.ImportError`` counts and ``MyImportError`` does not.
+    """
+    if isinstance(node, ast.Tuple):
+        return any(_catches_import_error(element) for element in node.elts)
+    if isinstance(node, ast.Name):
+        return node.id in _CATCHES_IMPORT_ERROR
+    if isinstance(node, ast.Attribute):
+        return node.attr in _CATCHES_IMPORT_ERROR
+    return False
+
+
 def _guarded_by_import_error(tree: ast.Module) -> set[int]:
     """Ids of nodes inside a ``try`` whose handler catches ``ImportError``.
 
@@ -128,15 +150,19 @@ def _guarded_by_import_error(tree: ast.Module) -> set[int]:
     or falls back, so an unstubbed import there cannot take collection down.
     ``test_chat_eos_template_refresh.py`` and ``test_generation_timing.py`` are both
     written that way.
+
+    The exception names are compared whole rather than searched for as substrings.
+    ``except MyImportError:`` and ``except ExceptionGroup:`` both contain one of the
+    names and catch neither a plain ``ImportError`` nor anything above it, so a
+    substring test exempted a ``try`` that does not in fact guard the import, and the
+    collection it kills is the one this guard exists to report. Reported on this PR.
     """
     guarded: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try):
             continue
         catches = any(
-            handler.type is None
-            or "ImportError" in ast.unparse(handler.type)
-            or "Exception" in ast.unparse(handler.type)
+            handler.type is None or _catches_import_error(handler.type)
             for handler in node.handlers
         )
         if catches:
@@ -319,6 +345,115 @@ def _helper_installs_stub(
     )
 
 
+_BLOCK_FIELDS = ("body", "orelse", "finalbody")
+
+
+def _end_line(node: ast.AST) -> int:
+    return getattr(node, "end_lineno", None) or node.lineno
+
+
+def _tests_sys_modules(node: ast.AST, flags: frozenset[str]) -> bool:
+    """Whether this ``if`` test asks whether something is already in ``sys.modules``.
+
+    ``test_training_progress_callback.py`` installs its stubs under
+    ``if not _TRAINER_PRE_IMPORTED:``, where the flag is
+    ``"core.training.trainer" in sys.modules``. Skipping the stubs on the other branch
+    is not an omission: the import resolves out of ``sys.modules`` there and never
+    reaches the real dependency, which is the whole reason the file is written that
+    way. Read through a module-level flag as well as the direct form, since that is
+    how it is spelled.
+    """
+    for child in ast.walk(node):
+        if isinstance(child, ast.Compare) and any(
+            isinstance(op, (ast.In, ast.NotIn)) for op in child.ops
+        ):
+            if any(_is_sys_modules(comparator) for comparator in child.comparators):
+                return True
+        if isinstance(child, ast.Name) and child.id in flags:
+            return True
+    return False
+
+
+def _sys_modules_flags(tree: ast.Module) -> frozenset[str]:
+    """Module-level names bound to an "is it already imported" test."""
+    return frozenset(
+        name
+        for statement in tree.body
+        if isinstance(statement, (ast.Assign, ast.AnnAssign))
+        and statement.value is not None
+        and _tests_sys_modules(statement.value, frozenset())
+        for name in _bound_names(statement)
+    )
+
+
+def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
+    """``_runtime_nodes``, minus what only MIGHT run.
+
+    A stub inside ``if something():`` above the import is not a stub the import can
+    rely on, and reading it as one meant an optional stub counted as a guaranteed
+    one. ``while`` and ``except`` bodies go the same way. ``for`` bodies stay: the
+    loop over a table is the idiom these files use, and an empty table would not
+    name ``unsloth`` in the first place, so it cannot pass this check anyway. The
+    "already imported" guard stays too, for the reason in ``_tests_sys_modules``.
+    """
+    if (
+        isinstance(node, ast.If)
+        and _constant_test(node) is None
+        and not _tests_sys_modules(node.test, flags)
+    ):
+        return
+    if isinstance(node, ast.While):
+        for child in node.orelse:
+            yield from _certain_nodes(child, flags)
+        return
+    if isinstance(node, ast.Try):
+        for field in ("body", "finalbody"):
+            for child in getattr(node, field):
+                yield from _certain_nodes(child, flags)
+        return
+    yield from _runtime_nodes(node)
+
+
+def _running_before(body: list[ast.stmt], line: int, flags: frozenset[str] = frozenset()):
+    """``(statement, nodes)`` for everything that has run once ``line`` is reached.
+
+    Line order alone merges branches that exclude each other:
+
+        if enabled:
+            _stub_if_missing("unsloth", ())
+        else:
+            import core.inference.inference
+
+    puts the stub above the import while the two can never both run, and the guard
+    called that file stubbed. Reported on this PR. What is walked instead is the
+    import's own chain: at each level, only the block that CONTAINS the line is
+    descended into, and only the statements above the line inside it. Everything
+    there did run, because the import running means its branch was taken.
+    """
+    for statement in body:
+        if statement.lineno >= line:
+            return
+        if _end_line(statement) < line:
+            yield statement, list(_certain_nodes(statement, flags))
+            continue
+        # This statement encloses the line. Its header ran; its blocks did not,
+        # except for the one holding the line.
+        header = [
+            node
+            for field, value in ast.iter_fields(statement)
+            if field not in _BLOCK_FIELDS and field != "handlers"
+            for child in (value if isinstance(value, list) else [value])
+            if isinstance(child, ast.AST)
+            for node in _certain_nodes(child, flags)
+        ]
+        yield statement, header
+        blocks = [getattr(statement, field, None) or [] for field in _BLOCK_FIELDS]
+        blocks += [handler.body for handler in getattr(statement, "handlers", None) or []]
+        for block in blocks:
+            if block and block[0].lineno <= line <= _end_line(block[-1]):
+                yield from _running_before(block, line, flags)
+
+
 def _stubs_before(tree: ast.Module, line: int | None) -> bool:
     """Whether a stub naming ``unsloth`` is INSTALLED at module scope before ``line``.
 
@@ -345,19 +480,7 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
         return True
     named: frozenset[str] = frozenset()
     helpers = _stub_helpers(tree)
-    for statement in tree.body:
-        if statement.lineno >= line:
-            break
-        # Only the part of the statement that runs BEFORE the import. A compound
-        # statement starts above the import line while its own body straddles it, so
-        # taking the whole subtree read
-        #     if True:
-        #         import core.inference.inference
-        #         _stub_if_missing("unsloth", ())
-        # as stubbed, when Python attempts that import first and collection dies.
-        # Reported on this PR, against the version that widened the search into
-        # compound statements without narrowing this side to match.
-        nodes = [node for node in _runtime_nodes(statement) if getattr(node, "lineno", 0) < line]
+    for statement, nodes in _running_before(tree.body, line, _sys_modules_flags(tree)):
         if any(
             isinstance(node, ast.Call) and _helper_installs_stub(_callee_name(node), helpers, named)
             for node in nodes
@@ -1429,6 +1552,57 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(stub_that_never_runs, heavy), stub_that_never_runs
+
+    # A stub on a branch the import cannot be on. Line order alone put it above the
+    # import while the two exclude each other.
+    other_branch = (
+        "if enabled():\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "else:\n"
+        "    from core.inference import inference\n"
+    )
+    assert _is_offender(other_branch, heavy), other_branch
+    # The same shape with the import on the stub's own branch is fine.
+    same_branch = (
+        "if enabled():\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "    from core.inference import inference\n"
+    )
+    assert not _is_offender(same_branch, heavy), same_branch
+
+    # A stub that only MIGHT have run is not one the import can rely on.
+    optional = (
+        'if enabled():\n    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(optional, heavy), optional
+
+    # ...except the one condition that makes skipping the stubs safe, which is how
+    # test_training_progress_callback.py is written: on the branch that skips them the
+    # import resolves out of sys.modules and never reaches the real dependency.
+    already_imported = (
+        "import sys\n"
+        '_PRE = "core.training.trainer" in sys.modules\n'
+        "if not _PRE:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert not _is_offender(already_imported, heavy), already_imported
+
+    # An except clause is matched by what it CATCHES, not by what its name contains.
+    for not_guarded in (
+        "try:\n    from core.training import trainer as t\nexcept MyImportError:\n    t = None\n",
+        "try:\n    from core.training import trainer as t\nexcept ExceptionGroup:\n    t = None\n",
+    ):
+        assert _is_offender(not_guarded, heavy), not_guarded
+    for guarded in (
+        "try:\n    from core.training import trainer as t\nexcept ImportError:\n    t = None\n",
+        "try:\n    from core.training import trainer as t\n"
+        "except (ValueError, ImportError):\n    t = None\n",
+        "import builtins\ntry:\n    from core.training import trainer as t\n"
+        "except builtins.ImportError:\n    t = None\n",
+    ):
+        assert not _is_offender(guarded, heavy), guarded
 
     # And a stub that lands too late does not count.
     too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'
