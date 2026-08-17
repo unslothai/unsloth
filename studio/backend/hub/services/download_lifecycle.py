@@ -233,7 +233,6 @@ def spawn_worker(
             # a sibling starting in this window sizes against the remainder. A spawn that raised
             # passes None, which drops the reservation instead of leaking it.
             from utils import hf_xet_fallback
-
             hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
