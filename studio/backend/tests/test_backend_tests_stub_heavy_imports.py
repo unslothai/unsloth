@@ -791,7 +791,7 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
     """Whether the module imports ``target`` under live stubs, at module scope, before ``line``.
 
     A file may install the stubs, import the heavy module under them, then drop the
-    stubs -- which is the shape this PR's fix uses and the shape the sibling files
+    stubs, which is the shape test_safetensors_reasoning_stream.py and its siblings
     use. A later ``importorskip`` then resolves out of ``sys.modules`` and never
     touches the real dependency. Without this, a copy of that file that forgot the
     eager import would read as stubbed and still raise at test time.
