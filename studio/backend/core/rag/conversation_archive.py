@@ -372,9 +372,12 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 raise
             conn.commit()
             written += 1
+            if _INGEST_FAILED:
+                globals()["_INGEST_FAILED"] = False
     except Exception:
         # A chat that cannot archive is worse off than one that can, but far better off
         # than one that raises. Whatever was written before the failure stays searchable.
+        globals()["_INGEST_FAILED"] = True
         logger.warning("conversation_archive.ingest_failed thread_id=%s", thread_id, exc_info = True)
     finally:
         if conn is not None:
@@ -398,6 +401,23 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# Set when an archive write fails, cleared by the next one that succeeds. Process-wide on
+# purpose: what fails here is the embedder or the store, not one thread.
+_INGEST_FAILED = False
+
+
+def degraded() -> bool:
+    """Whether the last archive attempt failed outright.
+
+    The rolling window holds room back for a recall BEFORE any of this runs, and every
+    failure in ``archive_turns`` is swallowed so a chat that cannot archive can still
+    answer. Together that means a machine where the embedder cannot start pays the
+    reserve on every compaction and gets nothing back for it, forgetting substantially
+    more than plain rolling eviction would. The caller checks this and stops reserving.
+    """
+    return _INGEST_FAILED
 
 
 def has_archive(thread_id: str) -> bool:

@@ -27,6 +27,24 @@ test("the transport preserves standard chunks with context metadata", () => {
   assert.match(adapter, /contextTruncation = mergeContextTruncation\(/);
 });
 
+test("the compaction boundary takes the latest value, never the sum", () => {
+  // dropped_messages counts what each fit removed from the conversation IN FRONT OF IT,
+  // tool messages this turn created included. Summing those and re-applying the total to
+  // the next request's saved transcript advances the boundary past the turns actually
+  // evicted, so the boundary is carried separately and absolutely.
+  const combined = mergeContextTruncation(
+    mergeContextTruncation(undefined, {
+      dropped_messages: 4,
+      boundary_messages: 4,
+      fits: true,
+    }),
+    { dropped_messages: 4, boundary_messages: 4, fits: true },
+  );
+
+  assert.equal(combined.dropped_messages, 8);
+  assert.equal(combined.boundary_messages, 4);
+});
+
 test("tool-loop truncation metadata accumulates across stream events", () => {
   const first = mergeContextTruncation(undefined, {
     dropped_messages: 2,

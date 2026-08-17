@@ -483,6 +483,13 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         # conversation survived instead of 1,615.
         if not conversation_archive.can_archive(thread_id):
             return 0
+        # And whether it is actually working. sqlite-vec can be present and the thread
+        # persisted while the embedder cannot start, in which case archiving fails
+        # quietly and the recall injects nothing -- so the room held back is pure loss,
+        # on every compaction, and this failure mode forgets more history than having the
+        # feature turned off.
+        if conversation_archive.degraded():
+            return 0
         return max(0, int(rag_config.CONVERSATION_RECALL_RESERVE_TOKENS))
     except Exception:
         return 0
@@ -497,6 +504,27 @@ def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optiona
         return conversation_archive.branch_message_texts(branch_messages)
     except Exception:
         return None
+
+
+def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> int:
+    """How many of the REQUEST's own leading messages a fit has evicted.
+
+    The boundary is persisted and re-applied to the NEXT request's saved transcript, so it
+    has to be counted in those terms. ``dropped_messages`` is not: the tool loop refits on
+    every iteration and the client sums the counts, so a long agent run adds the tool
+    exchanges this turn created -- messages the next request's transcript does not contain
+    -- and the boundary advances far past the turns that were actually evicted.
+
+    Counted by identity, and only from the front, because a fit drops from the front and
+    an inline recall rewrites the newest user message in place.
+    """
+    live = {id(message) for message in conversation}
+    count = 0
+    for message in branch or ():
+        if id(message) in live:
+            break
+        count += 1
+    return count
 
 
 def _archive_message_text(content) -> str:
@@ -593,7 +621,14 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            boundaries.append(max(0, int(truncation.get("dropped_messages") or 0)))
+            # Counted against the request's own transcript, which is what this is about
+            # to be applied to. `dropped_messages` is the fallback for turns saved before
+            # that was recorded: it is the same number for a single fit, and too large for
+            # a turn that refit several times.
+            recorded = truncation.get("boundary_messages")
+            if recorded is None:
+                recorded = truncation.get("dropped_messages")
+            boundaries.append(max(0, int(recorded or 0)))
         return min(boundaries) if boundaries else 0
     except Exception:
         return 0
@@ -20080,6 +20115,11 @@ class LlamaCppBackend:
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
+                if truncation and truncation.get("fits"):
+                    truncation = {
+                        **truncation,
+                        "boundary_messages": _branch_boundary(openai_messages, _before_fit),
+                    }
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
@@ -20716,6 +20756,11 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
+                    if truncation and truncation.get("fits"):
+                        truncation = {
+                            **truncation,
+                            "boundary_messages": _branch_boundary(conversation, _request_branch),
+                        }
                     # `fits` False too, as on the other paths: it carries the diagnosis
                     # for a request that cannot be made to fit.
                     if truncation:
@@ -20821,6 +20866,9 @@ class LlamaCppBackend:
                         conversation, _markup_cache, self.markup_profile
                     )
                     if truncation and truncation["fits"]:
+                        truncation["boundary_messages"] = _branch_boundary(
+                            conversation, _request_branch
+                        )
                         _respawn_truncations.append(truncation)
                 except Exception as exc:
                     logger.warning("Could not refit rolling context after respawn: %s", exc)
@@ -22114,6 +22162,11 @@ class LlamaCppBackend:
                             _rolling_anchor_ids.add(id(_message))
                         for _ev in _recalled["events"]:
                             yield _ev
+                if truncation and truncation.get("fits"):
+                    truncation = {
+                        **truncation,
+                        "boundary_messages": _branch_boundary(conversation, _request_branch),
+                    }
                 # `fits` False too: it carries the diagnosis for a request that cannot
                 # be made to fit, and the client needs it to explain WHY. Without it the
                 # user only sees llama-server's error, which reports the size of the
@@ -22197,6 +22250,9 @@ class LlamaCppBackend:
                     conversation, None, self.markup_profile
                 )
                 if truncation and truncation["fits"]:
+                    truncation["boundary_messages"] = _branch_boundary(
+                        conversation, _request_branch
+                    )
                     _final_respawn_truncations.append(truncation)
             except Exception as exc:
                 logger.warning("Could not refit rolling context after respawn: %s", exc)

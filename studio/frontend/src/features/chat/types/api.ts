@@ -670,6 +670,10 @@ export interface OpenAIChatChunk {
     // whether "shorten the conversation" is useful advice or a dead end.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // Where the compaction boundary sits in the messages THIS request was sent with.
+    // Unlike dropped_messages it is absolute, so re-sending it after a turn that refit
+    // several times cannot advance the boundary past the turns actually evicted.
+    boundary_messages?: number;
     // Whose message that is. A tool loop refits with the tool result appended, so the
     // last message is often a tool result rather than anything the user typed.
     latest_turn_role?: string;

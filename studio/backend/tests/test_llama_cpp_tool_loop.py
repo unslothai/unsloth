@@ -5682,3 +5682,79 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
     # 2,800 of the 3,584-token budget is catalogue and framing the estimator cannot see,
     # so what is left is hundreds of tokens, not the thousands it would have claimed.
     assert 0 <= budget < 1000
+
+
+def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatch):
+    """dropped_messages is summed by the client, and it counts THIS request's messages.
+
+    A tool loop refits every iteration, so a long agent run adds the tool exchanges the
+    turn itself created -- messages the next request's saved transcript does not contain.
+    Re-applying that total as a count of leading saved messages advances the compaction
+    boundary far past the turns actually evicted, so the boundary is carried separately
+    and measured against the messages the request was sent with.
+    """
+    calls = 6
+    streams = []
+    for index in range(calls):
+        streams.append(
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": f"c{index}",
+                                "function": {
+                                    "name": "python",
+                                    "arguments": '{"code": "step %d"}' % index,
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ]
+        )
+    streams.append([_sse({"content": "done."}), _finish("stop"), _done()])
+
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._effective_context_length = 4000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        )
+        // 4,
+    )
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_k: "R" * 3200
+    )
+
+    branch = [
+        {"role": "user", "content": "u" * 1200},
+        {"role": "assistant", "content": "a" * 1200},
+        {"role": "user", "content": "u2" * 600},
+        {"role": "assistant", "content": "a2" * 600},
+        {"role": "user", "content": "keep going"},
+    ]
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = branch,
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tokens = 400,
+            max_tool_iterations = calls + 1,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    notices = [
+        event for event in events if event.get("type") == "context_truncated" and event.get("fits")
+    ]
+    assert len(notices) > 1, "the fixture must refit more than once"
+    # Summed, this passes the number of evictable messages the branch ever had.
+    assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
+    # The boundary does not: it is where the branch was cut, however many refits it took.
+    assert {notice["boundary_messages"] for notice in notices} == {4}

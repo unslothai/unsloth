@@ -1165,3 +1165,30 @@ def test_an_edit_past_the_probe_cutoff_still_retires_the_turn(conn):
     found = conversation_archive.recall("tail-edit-thread", "OLDSTEP-7777")
 
     assert found is None or "OLDSTEP-7777" not in found[0]
+
+
+def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
+    """And a later success clears it, so one bad moment is not permanent."""
+    from core.rag import embeddings
+
+    thread_id = "degraded-archive"
+    _save_thread(thread_id, [{"role": "user", "content": "hi"}])
+    turn = [
+        {"role": "user", "content": "what is the deploy code"},
+        {"role": "assistant", "content": "the deploy code is 5150"},
+    ]
+
+    assert conversation_archive.degraded() is False
+
+    real = embeddings.encode_with_identity
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("no embedding model could be started")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 0
+    assert conversation_archive.degraded() is True
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", real)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
+    assert conversation_archive.degraded() is False

@@ -483,6 +483,75 @@ def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(m
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 9
 
 
+def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
+    """A turn that refit several times persists a dropped count larger than the branch.
+
+    The counts are summed by the client and include the tool exchanges the turn itself
+    created, which the next request's saved transcript does not contain. The boundary
+    recorded against the request's own messages is the one to restore.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {
+                    "custom": {
+                        "contextTruncation": {
+                            "fits": True,
+                            "dropped_messages": 12,
+                            "boundary_messages": 4,
+                        }
+                    }
+                },
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 4
+
+
+def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(monkeypatch):
+    """Rows written by an earlier build carry only the dropped count."""
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 6}}
+                },
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 6
+
+
+def test_the_recall_reserve_is_dropped_once_archiving_has_failed(monkeypatch):
+    """sqlite-vec present and the thread saved, but the embedder cannot start.
+
+    archive_turns swallows that, and recall then injects nothing, so the room the fit held
+    back is pure loss -- on every compaction. This failure mode forgot substantially more
+    history than having the feature turned off.
+    """
+    from core.inference import llama_cpp
+    from core.rag import conversation_archive as archive
+
+    monkeypatch.setattr(archive, "can_archive", lambda _tid: True)
+    monkeypatch.setattr(archive, "degraded", lambda: False)
+    assert llama_cpp._conversation_recall_reserve("t1") > 0
+
+    monkeypatch.setattr(archive, "degraded", lambda: True)
+    assert llama_cpp._conversation_recall_reserve("t1") == 0
+
+
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
     from core.inference import llama_cpp

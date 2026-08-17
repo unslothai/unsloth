@@ -38,6 +38,10 @@ export function mergeContextTruncation(
     ...spreadSum("recalled_chunks", current.recalled_chunks, incoming.recalled_chunks),
   };
 
+  // boundary_messages needs no rule here: it is absolute, measured against the messages
+  // the request was sent with, so the spread above already keeps the latest fit's value.
+  // Summing it, the way dropped_messages is summed, is exactly the bug it exists to fix.
+
   // The irreducible diagnosis describes ONE fit that gave up. The tool loop refits per
   // iteration, so an earlier failure followed by a later success would otherwise leave
   // those numbers on a result that did fit, where they describe nothing.
