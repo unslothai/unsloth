@@ -18,6 +18,7 @@ import pytest
 from utils.paths.scan_folder_health import (
     STATUS_MISSING,
     STATUS_OK,
+    STATUS_PARTIAL,
     STATUS_PERMISSION_DENIED,
     STATUS_UNREADABLE,
     annotate_scan_folders,
@@ -159,18 +160,106 @@ def test_annotate_does_not_mutate_the_database_rows():
     assert "status" not in rows[0]
 
 
-def test_a_folder_that_found_models_costs_no_syscall(monkeypatch):
-    """The healthy path is the hot one, so it must not probe anything."""
+def test_a_healthy_folder_costs_a_bounded_number_of_opens(tmp_path: Path, monkeypatch):
+    """The scan probes even when models were found, so the bound is the guarantee.
 
-    def _boom(*args, **kwargs):
-        raise AssertionError("a healthy scan folder touched the filesystem")
+    A denied model sits next to readable ones and nothing raises, so the only way
+    to know is to ask, and the only thing keeping that cheap is the open budget.
+    """
+    import utils.paths.scan_folder_health as health
 
-    for name in ("scandir", "listdir", "stat", "access"):
-        monkeypatch.setattr(os, name, _boom)
-    monkeypatch.setattr(os.path, "isdir", _boom)
+    for i in range(health._PROBE_OPEN_LIMIT * 4):
+        (tmp_path / f"model{i}").mkdir()
 
-    note_scan_folder_scanned("/models/never-probe-me", found = True)
-    assert scan_folder_status("/models/never-probe-me") == STATUS_OK
+    opened: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    note_scan_folder_scanned(str(tmp_path), found = True)
+    assert scan_folder_status(str(tmp_path)) == STATUS_OK
+    assert len(opened) <= health._PROBE_OPEN_LIMIT
+
+
+@requires_posix_permissions
+def test_a_folder_with_one_denied_model_says_so(tmp_path: Path):
+    """Partial denial hides models without the list looking wrong.
+
+    The readable model makes the scan succeed, so nothing raises and nothing is
+    empty, yet the denied one is silently absent.
+    """
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "model.gguf").write_bytes(b"stub")
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    bad.chmod(0o000)
+    try:
+        note_scan_folder_scanned(str(tmp_path), found = True)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PARTIAL
+    finally:
+        bad.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_a_partial_folder_is_not_reported_as_unreadable(tmp_path: Path):
+    """The folder works, so the copy must not claim it cannot be read."""
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    bad.chmod(0o000)
+    try:
+        note_scan_folder_scanned(str(tmp_path), found = True)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PARTIAL
+
+        note_scan_folder_scanned(str(tmp_path), found = False)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PERMISSION_DENIED
+    finally:
+        bad.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_the_recheck_keeps_a_partial_folder_partial(tmp_path: Path):
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    bad.chmod(0o000)
+    rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
+    try:
+        note_scan_folder_scanned(str(tmp_path), found = True)
+        refresh_failed_scan_folders(rows)
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PARTIAL
+    finally:
+        bad.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_the_real_scan_flags_a_folder_with_one_denied_model(tmp_path: Path):
+    from routes.models import collect_local_models
+
+    folder = tmp_path / "models"
+    good = folder / "good"
+    good.mkdir(parents = True)
+    (good / "model.gguf").write_bytes(b"stub")
+    (good / "config.json").write_text("{}", encoding = "utf-8")
+    bad = folder / "bad"
+    bad.mkdir()
+    (bad / "model.gguf").write_bytes(b"stub")
+    bad.chmod(0o000)
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+    try:
+        found = collect_local_models(tmp_path / "root", custom_folders = list(rows))
+        assert [m for m in found if m.source == "custom"], "the readable model still lists"
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PARTIAL
+    finally:
+        bad.chmod(stat.S_IRWXU)
+
+
+def test_a_healthy_folder_stays_ok_when_models_were_found(tmp_path: Path):
+    (tmp_path / "model.gguf").write_bytes(b"stub")
+    note_scan_folder_scanned(str(tmp_path), found = True)
+    assert scan_folder_status(str(tmp_path)) == STATUS_OK
 
 
 def test_a_folder_that_disappeared_reports_missing(tmp_path: Path):

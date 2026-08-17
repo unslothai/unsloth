@@ -12,7 +12,8 @@ export type ScanFolderStatus =
   | "ok"
   | "permission_denied"
   | "missing"
-  | "unreadable";
+  | "unreadable"
+  | "partial";
 
 export interface ScanFolderStatusCopy {
   title: string;
@@ -45,6 +46,11 @@ export function scanFolderStatusCopy(
     case "permission_denied":
       return {
         title: "Unsloth is not allowed to read this folder",
+        hint: permissionHint(userAgent),
+      };
+    case "partial":
+      return {
+        title: "Some models in this folder could not be read",
         hint: permissionHint(userAgent),
       };
     case "missing":

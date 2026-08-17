@@ -21,6 +21,9 @@ STATUS_PERMISSION_DENIED = "permission_denied"
 STATUS_MISSING = "missing"
 # Any other OSError: I/O error, dead network mount, symlink loop.
 STATUS_UNREADABLE = "unreadable"
+# The folder works, but something inside it is refused, so models are missing
+# from the list without the list looking wrong.
+STATUS_PARTIAL = "partial"
 
 
 # Deep enough for <root>/<publisher>/<model>, the LM Studio and HF cache shape.
@@ -97,8 +100,8 @@ def classify_scan_error(error: OSError) -> str:
     return STATUS_UNREADABLE
 
 
-# Written only when a scan fails and read only when the folder list is rendered,
-# so a healthy scan pays nothing. Bounded by the registered folder count.
+# Read on every folder list, written only when a probe finds something wrong.
+# Bounded by the registered folder count.
 _MAX_TRACKED = 256
 _failed: dict[str, str] = {}
 
@@ -119,18 +122,19 @@ def clear_scan_failure(path: str) -> None:
 def note_scan_folder_scanned(path: str, *, found: bool) -> None:
     """Record the outcome of a scan of ``path``.
 
-    A folder that yielded models is healthy, and costs nothing here. One that
-    yielded nothing is empty, gone, or refused, and the scanners return an empty
-    list for all three: some raise, some swallow the error. So ask the OS once,
-    and only for a folder that had no scan work to do anyway.
+    Empty, gone, refused, or working with one model refused: the scanners return
+    the same list for all of them, because they swallow the error per entry. So
+    ask the OS instead of trying to read it back out of them. Bounded by
+    ``_PROBE_OPEN_LIMIT`` opens per folder.
     """
-    if found:
-        clear_scan_failure(path)
-        return
     status = probe_status(path, children = True)
     if status == STATUS_OK:
         clear_scan_failure(path)
         return
+    # Models came back, so the folder itself is fine and only part of it is
+    # refused. Saying it cannot be read would contradict the rows on screen.
+    if found:
+        status = STATUS_PARTIAL
     if len(_failed) >= _MAX_TRACKED:
         _failed.clear()
     _failed[path] = status
@@ -160,6 +164,10 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
         status = probe_status(path, children = True)
         if status == STATUS_OK:
             _failed.pop(path, None)
+        elif previous == STATUS_PARTIAL:
+            # The probe cannot tell that models were found, so keep what the
+            # scan concluded rather than downgrading it to "cannot be read".
+            continue
         elif status != previous:
             _failed[path] = status
 

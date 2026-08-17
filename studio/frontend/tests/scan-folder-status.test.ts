@@ -54,10 +54,31 @@ test("a missing folder is not reported as a permission problem", () => {
   assert.doesNotMatch(copy.hint, /permission/i);
 });
 
+test("a partial folder does not claim the whole folder is blocked", () => {
+  const copy = scanFolderStatusCopy("partial", MAC);
+  assert.ok(copy);
+  assert.match(copy.title, /some models/i);
+  assert.doesNotMatch(copy.title, /not allowed/i);
+  // Same fix, so the same hint.
+  assert.match(copy.hint, /Files and Folders/);
+});
+
 test("an unreadable folder points at the drive", () => {
   const copy = scanFolderStatusCopy("unreadable", MAC);
   assert.ok(copy);
   assert.match(copy.hint, /drive/i);
+});
+
+test("the model picker renders the status on its folder rows too", async () => {
+  const source = await readFile(
+    new URL(
+      "../src/features/model-picker/components/model-selector/pickers.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(source, /scanFolderStatusCopy\(f\.status\)/);
+  assert.match(source, /\{problem\.title\}/);
 });
 
 test("the folders dialog renders the status on the row", async () => {
