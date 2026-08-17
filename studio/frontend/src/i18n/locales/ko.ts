@@ -1013,6 +1013,9 @@ export const ko = {
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "프로젝트에 속한 채팅에서 첨부한 파일의 기본 동작입니다. 프로젝트 전체에 색인하여 해당 프로젝트의 모든 채팅에서 사용할 수 있게 합니다. 채팅마다 첨부 메뉴에서 변경할 수 있습니다.",
+      rememberParamsPerModel: "모델별로 설정 기억",
+      rememberParamsPerModelDescription:
+        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:

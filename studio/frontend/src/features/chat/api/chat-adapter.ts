@@ -2043,6 +2043,8 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
+      // The model being stepped off is the one the background load put there.
+      persist: false,
     });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
@@ -2999,6 +3001,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
+          fromModelDefaults: true,
+          // A budget remembered from a larger context does not fit this load.
+          maxTokensCap:
+            candidate.kind === "gguf"
+              ? (loadResp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3379,6 +3387,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
+            fromModelDefaults: true,
+            maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
         const defaultModel: ChatModelSummary = {

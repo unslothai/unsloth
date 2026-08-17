@@ -1003,6 +1003,9 @@ export const ja = {
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
         "プロジェクトに属するチャットで添付したファイルの既定の扱いです。プロジェクト全体にインデックスし、そのプロジェクト内のどのチャットからも利用できるようにします。チャットごとに添付メニューから変更できます。",
+      rememberParamsPerModel: "モデルごとに設定を記憶",
+      rememberParamsPerModelDescription:
+        "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:

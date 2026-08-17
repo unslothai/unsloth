@@ -6,7 +6,7 @@ import { persist } from "zustand/middleware";
 import {
   PASTED_TEXT_DEFAULT_MIN_CHARS,
   PASTED_TEXT_THRESHOLD_CHOICES,
-} from "../utils/pasted-text";
+} from "../utils/pasted-text.ts";
 
 // Client-side chat UI prefs kept in localStorage, not the chat DB.
 // confirmDeleteChats: when off, deleting a chat skips the confirm dialog.

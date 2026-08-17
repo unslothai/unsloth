@@ -139,6 +139,12 @@ export function ChatTab() {
   const setProjectAttachmentTarget = useChatRuntimeStore(
     (state) => state.setProjectAttachmentTarget,
   );
+  const rememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.rememberParamsPerModel,
+  );
+  const setRememberParamsPerModel = useChatRuntimeStore(
+    (state) => state.setRememberParamsPerModel,
+  );
   const showGreetingSloth = useUserProfileStore((s) => s.showGreetingSloth);
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
@@ -318,6 +324,15 @@ export function ChatTab() {
             onCheckedChange={(checked) =>
               setProjectAttachmentTarget(checked ? "project" : "thread")
             }
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.rememberParamsPerModel")}
+          description={t("settings.chat.rememberParamsPerModelDescription")}
+        >
+          <Switch
+            checked={rememberParamsPerModel}
+            onCheckedChange={setRememberParamsPerModel}
           />
         </SettingsRow>
         <SettingsRow
