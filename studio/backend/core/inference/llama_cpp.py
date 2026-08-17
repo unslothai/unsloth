@@ -4553,9 +4553,7 @@ class LlamaCppBackend:
         # diffusion path: _start_diffusion_server ignores the switch and records it
         # False, so comparing it there makes every identical repeat request a
         # mismatch and tears down a runtime that was already the one asked for.
-        if not self._is_diffusion and bool(self._disable_vision) != bool(
-            intent.disable_vision
-        ):
+        if not self._is_diffusion and bool(self._disable_vision) != bool(intent.disable_vision):
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
