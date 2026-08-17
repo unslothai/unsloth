@@ -53,6 +53,38 @@
 //
 // Neither the block key nor the index is reachable through `BlockComponent` or
 // `parseMarkdownIntoBlocksFn`, which are the only seams Streamdown exposes.
+//
+// WHERE THE WINDOW IS ALLOWED TO START, AND WHY THIS NO LONGER PARSES MARKDOWN ITSELF
+//
+// It started as a hand-written scan for the constructs a slice must not land inside, and it grew
+// one construct per review round: indented fences, tilde fences, fences opened on a list marker,
+// fences opened in a quote, longer-run closers, info-string closers, container markers that stop
+// applying inside a fence, `$$` display math, `$$` inside inline code, loose list continuations,
+// and the five HTML block types a blank line does not end. Every round found another, and several
+// of them produced a WRONG boundary rather than merely a missed one.
+//
+// That is the wrong shape of answer, because the renderer already has the only definition of a
+// boundary that matters. Streamdown splits the document with `parseMarkdownIntoBlocks` and renders
+// each block INDEPENDENTLY -- that independence is what `BlockComponent` and the block memo are
+// for. So if block N is already parsed without reference to blocks 0..N-1, then dropping those
+// blocks cannot change how block N renders. Slicing on a block boundary is safe by construction,
+// and it is safe in the only sense that counts here: the mounted output matches what the
+// unwindowed tree shows, including in the places where Streamdown's own splitting is imperfect,
+// because the window and the renderer are then imperfect in exactly the same way.
+//
+// Verified against the splitter directly: it keeps whole, and rejoins losslessly, the indented
+// fence with a blank line in it, the tilde fence, the `10. ```js` fence whose closer is indented
+// four spaces, a quoted fence followed by a top-level one, `$$` display math, `<script>`, an HTML
+// comment, a loose list, and a four-backtick fence containing three. The two hand-written scans
+// this replaces got the ordered-list fence and the quoted-then-top-level fence wrong.
+//
+// ONE GUARD SURVIVES, because one transform runs BEFORE the split. `preprocessLaTeX` rewrites
+// `\[ ... \]` into `$$ ... $$` on the whole string, so bracket math is display math by the time
+// blocks are formed but is NOT bracket-delimited any more. A slice taken in raw source space can
+// still land inside one, and `preprocessLaTeX` would then meet an orphan `\]`. That is the only
+// construct the block boundaries cannot speak for, so it is the only one still tracked here.
+
+import { parseMarkdownIntoBlocks } from "streamdown";
 
 /** Characters of thinking text kept mounted while the block streams and the reader is at the end. */
 export const REASONING_WINDOW_CHARS = 12_000;
@@ -70,333 +102,92 @@ export const REASONING_WINDOW_CHARS = 12_000;
 export const REASONING_WINDOW_SLACK = 0.5;
 
 /**
- * A line with its container prefixes removed, so a fence opened inside a list item or a quote is
- * still seen as a fence.
- *
- * CommonMark opens a fence on `- ```js` exactly as it does on `  ```js`: the list marker is
- * container structure and the fence begins in the item's content. Matching only the indented form
- * catches the CLOSING marker of such a block and not its opener, which is worse than matching
- * neither, because the scanner then believes a fence opens where one closes.
- */
-const CONTAINER_PREFIX = / {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/y;
-
-function stripContainers(line: string): { body: string; prefix: number } {
-  let index = 0;
-  for (;;) {
-    CONTAINER_PREFIX.lastIndex = index;
-    const match = CONTAINER_PREFIX.exec(line);
-    if (!match || match[0].length === 0) return { body: line.slice(index), prefix: index };
-  index += match[0].length;
-  }
-}
-
-/**
- * The fence marker a line opens or closes, or null if the line is not a fence line.
- *
- * CommonMark, "Fenced code blocks": up to three leading spaces, then at least three backticks or
- * at least three tildes. Counting only bare ``` at column zero misses every shape that occurs in
- * real thinking text -- a fence indented because it sits in a list item, one opened on the list
- * marker line itself, and a ~~~ fence used because the code contains backticks -- and a missed
- * fence is not a missed optimisation, it is a slice into the middle of a code block.
- */
-function fenceMarker(
-  rawLine: string,
-): { char: string; length: number; info: string; prefix: number } | null {
-  const { body: line, prefix } = stripContainers(rawLine);
-  let index = 0;
-  while (index < 3 && line[index] === " ") index += 1;
-  const char = line[index];
-  if (char !== "`" && char !== "~") return null;
-  let length = 0;
-  while (line[index + length] === char) length += 1;
-  if (length < 3) return null;
-  return { char, length, info: line.slice(index + length), prefix };
-}
-
-/**
- * `line` with its inline code spans removed.
- *
- * A `$$` inside backticks is prose about display math, not display math, and counting it flips
- * parity so that the REAL opener that follows flips it back. The scan then believes it is outside
- * an equation while inside one, which is the failure this is all trying to avoid, reached by the
- * one line of text most likely to appear in reasoning that discusses formatting.
- * `updateDisplayMathParity` in streaming-render-schedule.ts skips inline code for the same reason.
- */
-const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
-
-/**
- * The display-math markers a line carries outside inline code.
- *
- * Two syntaxes, because `preprocessLaTeX` in lib/latex.ts accepts both: `$$` which TOGGLES, and
- * `\\[` ... `\\]` which opens and closes. The bracket form matters here for the same reason the
- * dollar form does, with one extra turn of the screw: `preprocessLaTeX` runs AFTER this slice, so
- * a suffix beginning inside a bracket equation reaches it as an orphan `\\]` and renders as broken
- * math with the surrounding text pulled into it. An escaped `\\\\[` is a literal bracket and is
- * skipped, matching the `(?<!\\\\)` in that file's own pattern.
- */
-function displayMathMarkers(line: string): { toggles: number; opens: number; closes: number } {
-  const bare = line.replace(INLINE_CODE, "");
-  let toggles = 0;
-  for (let index = bare.indexOf("$$"); index !== -1; index = bare.indexOf("$$", index + 2)) {
-    toggles += 1;
-  }
-  let opens = 0;
-  let closes = 0;
-  for (let index = bare.indexOf("\\"); index !== -1; index = bare.indexOf("\\", index + 1)) {
-    const next = bare[index + 1];
-    if (next === "\\") {
-      index += 1;
-      continue;
-    }
-    if (next === "[") opens += 1;
-    else if (next === "]") closes += 1;
-  }
-  return { toggles, opens, closes };
-}
-
-/** Whether a line is a link-reference definition, `[label]: destination`. */
-const LINK_DEFINITION = /^ {0,3}\[[^\]]+\]:/;
-
-/**
- * HTML blocks that a blank line does NOT end, with the string that does end each.
- *
- * CommonMark closes most HTML blocks at the next blank line, which makes them safe here for free.
- * Types 1 to 5 are the exceptions: they run until a specific terminator and swallow blank lines on
- * the way. Slicing inside one drops its opener, and the renderer then reads the body and the
- * closing marker as ordinary Markdown, so a `</script>` becomes visible text and everything inside
- * stops being code.
- */
-const HTML_BLOCK_STARTS: ReadonlyArray<{ open: RegExp; close: RegExp }> = [
-  { open: /^ {0,3}<(?:script|pre|style|textarea)(?:[\s>]|$)/i,
-    close: /<\/(?:script|pre|style|textarea)>/i },
-  { open: /^ {0,3}<!--/, close: /-->/ },
-  { open: /^ {0,3}<\?/, close: /\?>/ },
-  { open: /^ {0,3}<![A-Za-z]/, close: />/ },
-  { open: /^ {0,3}<!\[CDATA\[/, close: /\]\]>/ },
-];
-
-/**
- * The state a scan of the text so far leaves the renderer in.
- *
- * Fences and display math are both "the marker that closes me reads as the marker that opens you",
- * so a slice landing inside either one makes the renderer treat everything after it as that
- * construct. `streaming-render-schedule.ts` already refuses to commit a block on non-neutral
- * display-math parity for the same reason; this is the same rule applied to the window.
- */
-type ScanState = {
-  fence: { char: string; length: number; prefix: number } | null;
-  mathOpen: boolean;
-  bracketMath: boolean;
-  html: RegExp | null;
-};
-
-function advance(state: ScanState, line: string): void {
-  const marker = fenceMarker(line);
-  if (marker) {
-    if (state.fence === null) {
-      // A backtick fence's info string may not contain a backtick, which is what keeps inline
-      // ``` in prose from opening one.
-      if (!(marker.char === "`" && marker.info.includes("`"))) {
-        state.fence = { char: marker.char, length: marker.length, prefix: marker.prefix };
-      }
-      return;
-    }
-    if (
-      marker.char === state.fence.char &&
-      marker.length >= state.fence.length &&
-      marker.info.trim() === "" &&
-      // Container syntax is INACTIVE inside a fence, so a literal `> ```` line in a top-level
-      // code block is code, not a closer. Only a line no deeper in containers than the OPENER
-      // can close it.
-      marker.prefix <= state.fence.prefix
-    ) {
-      state.fence = null;
-    }
-    return;
-  }
-  if (state.fence !== null) return;
-  if (state.html !== null) {
-    if (state.html.test(line)) state.html = null;
-    return;
-  }
-  for (const block of HTML_BLOCK_STARTS) {
-    if (block.open.test(line)) {
-      // A block that also closes on its opening line never opened as far as this is concerned.
-      if (!block.close.test(line)) state.html = block.close;
-      return;
-    }
-  }
-  const math = displayMathMarkers(line);
-  if (math.toggles % 2 === 1) state.mathOpen = !state.mathOpen;
-  if (math.opens > math.closes) state.bracketMath = true;
-  else if (math.closes > math.opens) state.bracketMath = false;
-}
-
-const neutral = (state: ScanState): boolean =>
-  state.fence === null && !state.mathOpen && !state.bracketMath && state.html === null;
-
-const freshState = (): ScanState => ({ fence: null, mathOpen: false, bracketMath: false, html: null });
-
-/**
- * Whether an offset is outside every construct a slice must not land inside.
- *
- * Kept as its own export because it is what the tests assert against; the window itself uses the
- * single pass below rather than calling this per candidate.
- */
-export function isOutsideFence(text: string, offset: number): boolean {
-  const state = freshState();
-  let lineStart = 0;
-  while (lineStart < offset) {
-    let lineEnd = text.indexOf("\n", lineStart);
-    if (lineEnd === -1 || lineEnd > offset) lineEnd = Math.min(offset, text.length);
-    advance(state, text.slice(lineStart, lineEnd));
-    lineStart = lineEnd + 1;
-  }
-  return neutral(state);
-}
-
-/**
- * Whether the line at `offset` begins a block at the TOP level, with nothing indented about it.
- *
- * A blank line inside a loose list item is a block boundary, but the item is still open across it,
- * and the paragraph after it is INDENTED because that indentation is what keeps it inside the
- * item. Slice there and the marker is gone, so a four-space continuation that was ordinary list
- * text becomes an indented code block, and a two-space one becomes a paragraph that lost its
- * bullet. The container the reader can see is not in the slice, so there is nothing to carry it.
- *
- * Requiring column zero refuses every such boundary without having to model list containers: a
- * line that is indented at all is continuing something, and the window simply waits for the next
- * boundary that is not. Refusing too much only costs a later window; accepting one of these
- * changes what the reader is shown.
- */
-function startsTopLevelBlock(text: string, offset: number): boolean {
-  const character = text[offset];
-  return character !== undefined && character !== " " && character !== "\t";
-}
-
-/**
- * The first block boundary at or after `target` that leaves the remainder outside everything.
- *
- * ONE pass over the text, deliberately. The obvious shape -- walk the blank lines and ask
- * `isOutsideFence` about each -- rescans from byte zero for every candidate, and the case where
- * that bites is the exact case the window exists for: inside a still-open fence containing blank
- * lines, NO candidate is ever safe, so every blank line pays a full prefix scan and the whole
- * quadratic sum is repeated on every streamed token. On a 100,000-character unfinished fence that
- * is a frame or more per chunk, which would recreate the slowdown this is here to remove.
- *
- * Returns 0 when there is no safe boundary, which mounts the whole body. That is the right
- * failure: showing everything is correct and merely slow, whereas cutting into a fence is wrong.
- */
-export function alignWindowStart(text: string, target: number): number {
-  if (target <= 0) return 0;
-  const state = freshState();
-  let lineStart = 0;
-  const length = text.length;
-  while (lineStart < length) {
-    let lineEnd = text.indexOf("\n", lineStart);
-    if (lineEnd === -1) lineEnd = length;
-    const line = text.slice(lineStart, lineEnd);
-    const nextLine = lineEnd + 1;
-    // A blank line is a block boundary, and the boundary the renderer sees is the START of the
-    // line after it. Trimming rather than testing for "" also makes a whitespace-only line and a
-    // CRLF stream work, both of which the previous "\n\n" search silently declined to window.
-    if (
-      nextLine >= target &&
-      line.trim() === "" &&
-      neutral(state) &&
-      startsTopLevelBlock(text, nextLine)
-    ) {
-      return nextLine;
-    }
-    advance(state, line);
-    lineStart = nextLine;
-  }
-  return 0;
-}
-
-/**
- * The link-reference definitions before `start`, so a `[label]` left in the window still resolves.
- *
- * A definition is document-wide and invisible, so slicing it away turns a link in the mounted tail
- * into literal text. `IncrementalMarkdownCache` retains definitions for exactly this reason and
- * cannot recover ones this slice already removed, so they are carried across instead. They render
- * to nothing, so the visible text is unchanged.
- */
-export function linkDefinitionsBefore(text: string, start: number): string {
-  if (start <= 0) return "";
-  const definitions: string[] = [];
-  // Carrying the same scan state, because `[label]: value` inside a fence is code that happens to
-  // look like a definition, and hoisting it out of its block would put text on screen that the
-  // model wrote as an example.
-  const state = freshState();
-  let lineStart = 0;
-  while (lineStart < start) {
-    let lineEnd = text.indexOf("\n", lineStart);
-    if (lineEnd === -1 || lineEnd > start) lineEnd = start;
-    const line = text.slice(lineStart, lineEnd);
-    // Matched after the container prefix is removed, because `> [spec]: url` inside a quote is
-    // still a document-wide definition, and carried WITHOUT the prefix so it cannot drag a stray
-    // blockquote into the suffix.
-    const bare = neutral(state) ? stripContainers(line).body : "";
-    if (bare && LINK_DEFINITION.test(bare)) {
-      // CommonMark lets the destination and the optional title sit on continuation lines, and half
-      // a definition is worse than none: `[spec]:` alone is not a definition, so it would render as
-      // literal text at the top of the window. Take the indented lines that belong to it.
-      const parts = [bare];
-      let scan = lineEnd + 1;
-      while (scan < start) {
-        let scanEnd = text.indexOf("\n", scan);
-        if (scanEnd === -1 || scanEnd > start) scanEnd = start;
-        const raw = text.slice(scan, scanEnd);
-        const body = stripContainers(raw).body;
-        // A continuation is indented and not blank. Anything at column zero starts something else.
-        if (body.trim() === "" || !/^\s/.test(body)) break;
-        parts.push(body);
-        scan = scanEnd + 1;
-      }
-      definitions.push(parts.join("\n"));
-    }
-    advance(state, line);
-    lineStart = lineEnd + 1;
-  }
-  return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;
-}
-
-/**
  * How far the text must grow before an alignment that found nothing is attempted again.
  *
  * A failed alignment means there is no safe boundary at or after the target, and the target only
  * moves forward, so nothing already scanned can become safe: only newly arrived text can. Retrying
  * on the very next 24-character chunk therefore rescans the whole body to reach the same answer.
  * Measured on a 130,000-character stream that is one unterminated fence, where no boundary is ever
- * safe: 4,667 chunks past the threshold, 1,692ms of scanning in total. That is 0.363ms against a
- * 73ms chunk interval, so it drops no frame by itself, but it is pure overhead on the one path
- * where the window delivers nothing at all, and 2,000 characters of backoff removes about 98% of
- * it while delaying the window by at most a sixth of its own size.
+ * safe: 4,667 chunks past the threshold, 1,692ms of scanning in total against 29ms with this
+ * backoff. It drops no frame by itself at 0.363ms per chunk against a 73ms chunk interval, but it
+ * was pure overhead on the one path where the window delivers nothing at all.
  */
 export const REASONING_WINDOW_RETRY_CHARS = 2_000;
 
-/** Where the window starts, and the text length at which it is worth looking again. */
-export type ReasoningWindowState = { start: number; retryAt: number };
+/** A link-reference definition, `[label]: destination`, possibly inside a container. */
+const LINK_DEFINITION = /^ {0,3}>?\s*\[[^\]]+\]:\s*\S/;
 
-export const freshReasoningWindow = (): ReasoningWindowState => ({ start: 0, retryAt: 0 });
+/** Container prefixes, so `> [spec]: url` is recognised and carried without its quote marker. */
+const CONTAINER_PREFIX = /^ {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/;
 
-/**
- * The window state after `text`, skipping the scan when it provably cannot find anything new.
- *
- * The rule itself stays in `nextReasoningWindowStart`, which is pure and is what the tests hold;
- * this only decides whether it is worth asking.
- */
-export function advanceReasoningWindow(
-  text: string,
-  state: ReasoningWindowState,
-): ReasoningWindowState {
-  if (text.length < state.retryAt) return state;
-  const start = nextReasoningWindowStart(text, state.start);
-  if (start > state.start) return { start, retryAt: 0 };
-  return { start, retryAt: text.length + REASONING_WINDOW_RETRY_CHARS };
+function stripContainers(line: string): string {
+  let out = line;
+  for (;;) {
+    const match = CONTAINER_PREFIX.exec(out);
+    if (!match || match[0].length === 0) return out;
+    out = out.slice(match[0].length);
+  }
 }
 
+/**
+ * Whether `offset` sits inside a `\[ ... \]` equation.
+ *
+ * The one construct the block boundaries cannot speak for, because `preprocessLaTeX` turns it into
+ * `$$` before the document is split, so the split never sees it in this form. An escaped `\\[` is
+ * a literal bracket and is skipped, matching that file's own `(?<!\\)`.
+ */
+export function isOutsideBracketMath(text: string, offset: number): boolean {
+  let open = false;
+  let index = 0;
+  while (index < offset - 1) {
+    if (text[index] !== "\\") {
+      index += 1;
+      continue;
+    }
+    const next = text[index + 1];
+    if (next === "\\") {
+      index += 2;
+      continue;
+    }
+    if (next === "[") open = true;
+    else if (next === "]") open = false;
+    index += 2;
+  }
+  return !open;
+}
+
+/** The offset at which each block starts, taken from the renderer's own splitter. */
+function blockStarts(text: string): number[] {
+  const starts: number[] = [];
+  let offset = 0;
+  for (const block of parseMarkdownIntoBlocks(text)) {
+    starts.push(offset);
+    offset += block.length;
+  }
+  return starts;
+}
+
+/**
+ * The first block boundary at or after `target`.
+ *
+ * Returns 0 when there is none, which mounts the whole body. That is the right failure: showing
+ * everything is correct and merely slow, whereas cutting into a construct is wrong.
+ */
+export function alignWindowStart(text: string, target: number): number {
+  if (target <= 0) return 0;
+  for (const start of blockStarts(text)) {
+    if (start >= target && start > 0 && isOutsideBracketMath(text, start)) return start;
+  }
+  return 0;
+}
+
+/**
+ * Where the mounted window should start, given where it starts now, while the reader is at the
+ * end of a streaming block.
+ *
+ * Monotone: never less than `currentStart`, so the mounted body never grows backwards on its own
+ * and the renderer never sees the string it just rendered with a prefix glued back on.
+ */
 export function nextReasoningWindowStart(
   text: string,
   currentStart: number,
@@ -407,4 +198,69 @@ export function nextReasoningWindowStart(
   if (rendered <= windowChars * (1 + slack)) return currentStart;
   const aligned = alignWindowStart(text, text.length - windowChars);
   return Math.max(currentStart, aligned);
+}
+
+/**
+ * The link-reference definitions before `start`, so a `[label]` left in the window still resolves.
+ *
+ * A definition is document-wide and invisible, so slicing it away turns a link in the mounted tail
+ * into literal text. `IncrementalMarkdownCache` retains definitions for exactly this reason and
+ * cannot recover ones this slice already removed, so they are carried across instead. They render
+ * to nothing, so the visible text is unchanged.
+ *
+ * Taken a BLOCK at a time rather than a line at a time, which is what makes it correct for free in
+ * three ways a line scan had to be taught one by one: a definition whose destination or title sits
+ * on a continuation line is one block and is carried whole, so a bare `[spec]:` can never be
+ * hoisted on its own; and a definition written inside a fence or inside an HTML block is part of
+ * that larger block rather than a block of its own, so it is never mistaken for a real one.
+ */
+export function linkDefinitionsBefore(text: string, start: number): string {
+  if (start <= 0) return "";
+  const definitions: string[] = [];
+  let offset = 0;
+  for (const block of parseMarkdownIntoBlocks(text)) {
+    if (offset >= start) break;
+    const bare = stripContainers(block.trim());
+    if (LINK_DEFINITION.test(bare)) definitions.push(bare);
+    offset += block.length;
+  }
+  return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;
+}
+
+/**
+ * Where the window starts, when it is worth looking again, and the definitions to carry with it.
+ *
+ * The definitions live here because they change only when the START does, which is once every
+ * 6,000 characters, while renders arrive every frame. Recomputing them per render would rescan the
+ * whole immutable prefix each time, which is the quadratic shape this file has already had to
+ * remove once.
+ */
+export type ReasoningWindowState = {
+  start: number;
+  retryAt: number;
+  definitions: string;
+};
+
+export const freshReasoningWindow = (): ReasoningWindowState => ({
+  start: 0,
+  retryAt: 0,
+  definitions: "",
+});
+
+/**
+ * The window state after `text`, skipping the scan when it provably cannot find anything new.
+ *
+ * The rule itself stays in `nextReasoningWindowStart`, which is pure and is what the tests hold;
+ * this only decides whether it is worth asking, and caches what the answer implies.
+ */
+export function advanceReasoningWindow(
+  text: string,
+  state: ReasoningWindowState,
+): ReasoningWindowState {
+  if (text.length < state.retryAt) return state;
+  const start = nextReasoningWindowStart(text, state.start);
+  if (start > state.start) {
+    return { start, retryAt: 0, definitions: linkDefinitionsBefore(text, start) };
+  }
+  return { ...state, start, retryAt: text.length + REASONING_WINDOW_RETRY_CHARS };
 }

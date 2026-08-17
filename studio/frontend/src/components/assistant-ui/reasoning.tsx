@@ -21,7 +21,6 @@ import {
 import {
   advanceReasoningWindow,
   freshReasoningWindow,
-  linkDefinitionsBefore,
 } from "@/features/chat/utils/reasoning-window";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -303,6 +302,28 @@ const RESTORE_SETTLE_MS = 400;
 const COMPLETION_HOLD_MS = ANIMATION_DURATION + 60;
 
 /**
+ * Rounds whose reader has already asked for the whole body, by message id.
+ *
+ * The decision has to outlive the component that makes it. Closing a reasoning group unmounts its
+ * `CollapsibleContent`, and with it `ReasoningBody`, so a reader who scrolled back, collapsed the
+ * group and reopened it mid-stream would meet a windowed pane again and have to ask twice. "Off
+ * for the rest of the round" has to mean the round, not the mount.
+ *
+ * Bounded, because it is reached from a module and would otherwise hold a string per message for
+ * the life of the tab. Only an explicit scroll-back adds to it, so the cap is never close.
+ */
+const RESTORED_ROUNDS = new Set<string>();
+const RESTORED_ROUNDS_CAP = 64;
+
+function markRestored(messageId: string): void {
+  if (RESTORED_ROUNDS.size >= RESTORED_ROUNDS_CAP) {
+    const oldest = RESTORED_ROUNDS.values().next();
+    if (!oldest.done) RESTORED_ROUNDS.delete(oldest.value);
+  }
+  RESTORED_ROUNDS.add(messageId);
+}
+
+/**
  * The thinking body: a bounded tail of it while it streams and the reader is watching the end,
  * and all of it the moment that stops being true.
  *
@@ -334,10 +355,15 @@ function ReasoningBody() {
   const { text, status } = useMessagePartText();
   const isRunning = status.type === "running";
 
+  // Parts are keyed by index and nothing else, so switching threads hands THIS instance a
+  // different message (the same reason markdown-text.tsx re-keys its caches on the message id).
+  const messageId = useAuiState(({ message }) => message.id);
+
   const hostRef = useRef<HTMLDivElement>(null);
   const windowRef = useRef(freshReasoningWindow());
-  // Once set, the whole body is mounted for the rest of this round.
-  const restoredRef = useRef(false);
+  // Once set, the whole body is mounted for the rest of this round. Seeded from the round rather
+  // than from false, so it survives the group being collapsed and reopened.
+  const restoredRef = useRef(RESTORED_ROUNDS.has(messageId));
   // Whether the reader is still following the end. The pane starts pinned to its own bottom.
   const atBottomRef = useRef(true);
   const settleRef = useRef<number | null>(null);
@@ -348,17 +374,14 @@ function ReasoningBody() {
     [],
   );
 
-  // Parts are keyed by index and nothing else, so switching threads hands THIS instance a
-  // different message (the same reason markdown-text.tsx re-keys its caches on the message id).
-  // A start left over from a longer reasoning part would then be past the end of a shorter one,
-  // and `text.slice` would render an empty pane until the new round grew past it.
-  const messageId = useAuiState(({ message }) => message.id);
+  // A start left over from a longer reasoning part would be past the end of a shorter one, and
+  // `text.slice` would render an empty pane until the new round grew past it.
   const messageIdRef = useRef(messageId);
   if (messageIdRef.current !== messageId) {
     messageIdRef.current = messageId;
     windowRef.current = freshReasoningWindow();
     atBottomRef.current = true;
-    restoredRef.current = false;
+    restoredRef.current = RESTORED_ROUNDS.has(messageId);
     // Cancel any correction still in flight. It resolves the scroller afresh every frame, so a
     // settle left running across a thread switch would find the NEW thread's pane and drive it to
     // the old thread's distance from the bottom.
@@ -378,6 +401,7 @@ function ReasoningBody() {
       windowRef.current = freshReasoningWindow();
       atBottomRef.current = true;
       restoredRef.current = false;
+      RESTORED_ROUNDS.delete(messageId);
       setHoldingThroughCollapse(false);
     } else if (!isRunning && windowRef.current.start > 0 && !restoredRef.current) {
       setHoldingThroughCollapse(true);
@@ -461,12 +485,13 @@ function ReasoningBody() {
       // round. Nothing here can run twice: `restoredRef` is checked first and set before the
       // correction starts, so the hold's own scroll writes cannot re-enter this.
       restoredRef.current = true;
+      markRestored(messageId);
       holdPlace(distanceFromBottom);
       forceRender((n) => n + 1);
     };
     element.addEventListener("scroll", onScroll, { passive: true });
     return () => element.removeEventListener("scroll", onScroll);
-  }, [scroller, isRunning, holdPlace]);
+  }, [scroller, isRunning, holdPlace, messageId]);
 
   // Advanced during render, not in an effect: while the reader is at the end the start is a pure
   // function of the text, and computing it after the commit would render one frame of the
@@ -508,8 +533,7 @@ function ReasoningBody() {
         key={renderKey}
         text={
           windowed
-            ? linkDefinitionsBefore(text, windowRef.current.start) +
-              text.slice(windowRef.current.start)
+            ? windowRef.current.definitions + text.slice(windowRef.current.start)
             : undefined
         }
       />
