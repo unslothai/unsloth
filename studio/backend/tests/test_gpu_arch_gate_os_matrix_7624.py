@@ -822,9 +822,7 @@ def _run_auto_load(
     # about. A test that IS about it passes its own recording stub.
     backend._apu_ram_shortfall_message = apu_ram_stub or (lambda *_args, **_kwargs: None)
     # same, off: model_bytes here is sized to force --fit on, not to describe a host
-    backend._host_offload_shortfall_message = host_offload_stub or (
-        lambda *_args, **_kwargs: None
-    )
+    backend._host_offload_shortfall_message = host_offload_stub or (lambda *_args, **_kwargs: None)
     backend._find_llama_server_binary = lambda include_denied = False: binary
     backend._fit_off_retry_eligible = lambda *_args, **_kwargs: False
     backend.probe_server_capabilities = lambda _binary: {"found": True}
@@ -1250,9 +1248,9 @@ class TestArchCrashRetryEnv:
         )
 
         assert launches, "the first launch was refused, so the retry is not what was tested"
-        assert not [env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"], (
-            "the respawn on the narrowed pool was not refused"
-        )
+        assert not [
+            env for _c, env in launches if env.get("ROCR_VISIBLE_DEVICES") == "1"
+        ], "the respawn on the narrowed pool was not refused"
         assert "does not fit in GPU memory" in str(capture.get("error"))
 
 
