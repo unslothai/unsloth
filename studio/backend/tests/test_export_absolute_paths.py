@@ -216,6 +216,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     ):
         setattr(models_models, name, object)
     models_models.ModelType = str
+    models_models.LocalModelSource = str
     monkeypatch.setitem(sys.modules, "models.models", models_models)
 
     models_responses = types.ModuleType("models.responses")

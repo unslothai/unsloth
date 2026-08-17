@@ -275,6 +275,7 @@ def omlx_model_dirs() -> list[Path]:
 
     # oMLX lists LM Studio's directory among its own roots. That root is already
     # scanned as source="lmstudio", so claiming it here would scan it twice.
+    # Keep HF cache roots: models--* scanning misses oMLX's flat <publisher>__<model> folders.
     for other in lmstudio_model_dirs():
         try:
             seen.add(other.resolve())

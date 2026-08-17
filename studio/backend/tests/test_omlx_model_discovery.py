@@ -51,10 +51,67 @@ def _write_mlx_model(
     return model_dir
 
 
+def _write_hf_cache_repo(cache: Path, org: str, name: str) -> Path:
+    repo = cache / f"models--{org}--{name}"
+    blobs = repo / "blobs"
+    snapshot = repo / "snapshots" / "abc123"
+    blobs.mkdir(parents = True)
+    snapshot.mkdir(parents = True)
+    (repo / "refs").mkdir(parents = True)
+    (repo / "refs" / "main").write_text("abc123", encoding = "utf-8")
+    contents = {
+        "config.json": json.dumps({"model_type": "qwen3"}),
+        "tokenizer_config.json": "{}",
+        "model.safetensors": "weights",
+    }
+    for index, (filename, body) in enumerate(contents.items()):
+        blob = blobs / f"blob{index}"
+        blob.write_text(body, encoding = "utf-8")
+        (snapshot / filename).symlink_to(blob)
+    return snapshot
+
+
 def _write_settings(home: Path, payload: dict) -> None:
     omlx = home / ".omlx"
     omlx.mkdir(parents = True, exist_ok = True)
     (omlx / "settings.json").write_text(json.dumps(payload), encoding = "utf-8")
+
+
+@pytest.fixture(params = ["hub", "compat"])
+def collector(request, tmp_path):
+    empty = tmp_path / "_empty"
+    empty.mkdir(exist_ok = True)
+
+    def _hub(cache: Path, omlx_root: Path):
+        import asyncio
+        sources = local_inventory._LocalInventorySources(
+            cache, empty, empty, (), (omlx_root,), (), ()
+        )
+        return asyncio.run(
+            local_inventory._scan_local_models_response(str(empty), [], sources)
+        ).models
+
+    def _compat(cache: Path, omlx_root: Path):
+        import routes.models as models_route
+        sources = models_route._CompatLocalInventorySources(
+            hf_cache_dir = cache,
+            legacy_hf = empty,
+            hf_default = empty,
+            lm_dirs = (),
+            omlx_dirs = (omlx_root,),
+            known_hf_caches = (),
+        )
+        return models_route.collect_local_models(empty, custom_folders = [], sources = sources)
+
+    return _hub if request.param == "hub" else _compat
+
+
+def _link_model(root: Path, name: str, snapshot: Path) -> Path:
+    model = root / "mlx-community" / name
+    model.mkdir(parents = True)
+    for entry in snapshot.iterdir():
+        (model / entry.name).symlink_to(entry)
+    return model
 
 
 @pytest.fixture(params = [hub_paths, storage_roots], ids = ["hub", "storage_roots"])
@@ -205,39 +262,53 @@ class TestClassification:
 
 
 class TestHfCacheSymlinks:
-    """oMLX can symlink a model into the HF cache instead of copying it. The HF cache
-    scan already reports those, so the oMLX walk must not list them a second time."""
+    """A folder of links and the cache repo it points at are both listed.
 
-    def test_a_model_symlinked_into_the_hf_cache_is_skipped(self, tmp_path):
-        cache = tmp_path / "hf" / "hub" / "models--mlx-community--Shared-4bit"
-        snapshot = cache / "snapshots" / "abc123"
-        snapshot.mkdir(parents = True)
-        (snapshot / "config.json").write_text("{}", encoding = "utf-8")
-        (snapshot / "model.safetensors").write_bytes(b"weights")
+    Suppressing the folder needs proof another row represents it, and every proxy for that --
+    cache root, ``models--*`` path, enumerated repos, even a row's own path -- is wrong on some
+    input, leaving a duplicate or, worse, dropping a model nothing else reports.
+    """
 
-        model = tmp_path / "omlx" / "mlx-community" / "Shared-4bit"
-        model.mkdir(parents = True)
-        for name in ("config.json", "model.safetensors"):
-            (model / name).symlink_to(snapshot / name)
+    def test_a_model_symlinked_into_the_hf_cache_is_listed_with_the_repo(self, collector, tmp_path):
+        cache = tmp_path / "hf" / "hub"
+        snapshot = _write_hf_cache_repo(cache, "mlx-community", "Shared-4bit")
+        _link_model(tmp_path / "omlx", "Shared-4bit", snapshot)
 
-        found = local_inventory._scan_lmstudio_dir(
-            tmp_path / "omlx",
-            source = "omlx",
-            known_hf_caches = (tmp_path / "hf" / "hub",),
-        )
+        rows = collector(cache, tmp_path / "omlx")
 
-        assert found == []
+        assert [Path(m.path).name for m in rows if m.source == "omlx"] == ["Shared-4bit"]
+        assert any(m.source in ("hf_cache", "custom") for m in rows)
 
-    def test_a_model_with_real_files_is_still_listed(self, tmp_path):
+    def test_a_model_with_real_files_is_still_listed(self, collector, tmp_path):
+        cache = tmp_path / "hf" / "hub"
+        _write_hf_cache_repo(cache, "mlx-community", "Other-4bit")
         _write_mlx_model(tmp_path / "omlx", "mlx-community", "Own-4bit")
 
-        found = local_inventory._scan_lmstudio_dir(
-            tmp_path / "omlx",
-            source = "omlx",
-            known_hf_caches = (tmp_path / "hf" / "hub",),
-        )
+        rows = collector(cache, tmp_path / "omlx")
 
-        assert [m.source for m in found] == ["omlx"]
+        assert [Path(m.path).name for m in rows if m.source == "omlx"] == ["Own-4bit"]
+
+    def test_every_model_under_the_root_is_reported(self, collector, tmp_path):
+        cache = tmp_path / "hf" / "hub"
+        snapshot = _write_hf_cache_repo(cache, "mlx-community", "Shared-4bit")
+        loose = cache / "beside-the-repos.safetensors"
+        loose.write_bytes(b"weights")
+
+        root = tmp_path / "omlx"
+        _link_model(root, "Linked-4bit", snapshot)
+        _write_mlx_model(root, "mlx-community", "Own-4bit")
+        stray = root / "mlx-community" / "Stray-4bit"
+        stray.mkdir(parents = True)
+        (stray / "config.json").write_text("{}", encoding = "utf-8")
+        (stray / "model.safetensors").symlink_to(loose)
+
+        rows = collector(cache, root)
+
+        assert {Path(m.path).name for m in rows if m.source == "omlx"} == {
+            "Linked-4bit",
+            "Own-4bit",
+            "Stray-4bit",
+        }
 
 
 class TestCompatInventory:
@@ -286,4 +357,36 @@ class TestCompatInventory:
 
         assert [(m.source, m.model_id) for m in models] == [
             ("omlx", "mlx-community/OnlyInOmlx-4bit")
+        ]
+
+    def test_a_flat_publisher_folder_inside_the_cache_root_is_found(self, tmp_path):
+        """A real install keeps flat ``<publisher>__<model>`` folders inside the cache root,
+        where ``models--*`` scanning cannot see them."""
+        import routes.models as models_route
+
+        cache = tmp_path / "hub"
+        snapshot = _write_hf_cache_repo(cache, "mlx-community", "Shared-4bit")
+        flat = cache / "mlx-community__Shared-4bit"
+        flat.mkdir()
+        for entry in snapshot.iterdir():
+            (flat / entry.name).symlink_to(entry)
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        sources = models_route._CompatLocalInventorySources(
+            hf_cache_dir = cache,
+            legacy_hf = empty,
+            hf_default = empty,
+            lm_dirs = (),
+            omlx_dirs = (cache,),
+            known_hf_caches = (),
+        )
+
+        models = models_route.collect_local_models(
+            empty,
+            custom_folders = [],
+            sources = sources,
+        )
+
+        assert [Path(m.path).name for m in models if m.source == "omlx"] == [
+            "mlx-community__Shared-4bit"
         ]

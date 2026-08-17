@@ -201,6 +201,7 @@ from models.models import (
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
+    LocalModelSource,
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
@@ -525,12 +526,10 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
-def _scan_lmstudio_dir(lm_dir: Path, *, source: str = "lmstudio") -> List[LocalModelInfo]:
-    """Scan an LM Studio models directory for model files.
-
-    LM Studio uses a ``publisher/model-name`` folder structure with GGUF
-    files, or standalone GGUF files at the top level.
-    """
+def _scan_lmstudio_dir(
+    lm_dir: Path, *, source: LocalModelSource = "lmstudio"
+) -> List[LocalModelInfo]:
+    """Scan a host-app model root; ``source`` names which app it belongs to."""
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
@@ -973,8 +972,6 @@ def collect_local_models(
     for lm_dir in lm_dirs:
         local_models += _scan_lmstudio_dir(lm_dir)
 
-    # oMLX stores models in the same publisher/model layout, so the walk is shared and
-    # only the reported source differs.
     for omlx_dir in omlx_dirs:
         local_models += _scan_lmstudio_dir(omlx_dir, source = "omlx")
 
