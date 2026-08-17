@@ -6351,19 +6351,13 @@ const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
 /**
- * Part components for an assistant message, held at module scope on purpose.
+ * At module scope on purpose. The memo comparator in
+ * `MessagePrimitivePartByIndex` checks `components.tools` by identity, so an
+ * inline literal handed it a fresh object every render, failed the comparator
+ * and rebuilt every already-finished part of a streaming reply on each chunk.
  *
- * `MessagePrimitivePartByIndex` is memoized, and its comparator checks the
- * `components` fields one by one rather than the object as a whole. Every field
- * here is a module-level component, so all of them compare equal across renders
- * except `tools`, which as an inline object literal got a fresh identity on
- * every render. That one mismatch failed the comparator and re-rendered every
- * part of the message, so a streaming reply rebuilt all of its already-finished
- * parts on each chunk, and the cost grew with the length of the reply.
- *
- * Anything added here must stay referentially stable for the same reason. If a
- * future entry genuinely has to depend on props or state, it belongs in a
- * `useMemo`, not inline in the JSX.
+ * Anything added here must stay referentially stable; an entry that really
+ * depends on props or state belongs in a `useMemo`, not inline in the JSX.
  */
 const ASSISTANT_PART_COMPONENTS = {
   Text: MarkdownText,

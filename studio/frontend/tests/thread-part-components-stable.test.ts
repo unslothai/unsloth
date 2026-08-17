@@ -3,19 +3,12 @@
 
 /**
  * The `components` maps handed to assistant-ui primitives must be referentially
- * stable across renders.
+ * stable: the memo comparator in `MessagePrimitivePartByIndex` checks
+ * `components.tools` by identity, so an inline literal failed it and rebuilt
+ * every already-finished part of a streaming reply on each chunk.
  *
- * `MessagePrimitivePartByIndex` is memoized, and its comparator checks the
- * `components` fields one at a time rather than comparing the object as a
- * whole. Every field the thread passes is a module-level component and so
- * compares equal across renders, with one exception: `tools` was an inline
- * object literal, which meant a fresh identity on every render. That single
- * mismatch failed the comparator and re-rendered every part of the message, so
- * a streaming reply rebuilt all of its already-finished parts on each chunk and
- * the cost grew with the length of the reply.
- *
- * Putting the maps at module scope is a one-line fix that is invisible in
- * review and trivial to undo by accident, which is what this file is for.
+ * The fix is one line at module scope, invisible in review and easy to undo by
+ * accident, which is what this file guards.
  */
 
 import assert from "node:assert/strict";
@@ -28,15 +21,15 @@ const THREAD_SOURCE = readFileSync(
 );
 
 test("the assistant part components are not an inline object literal", () => {
-  // `components={{` is the exact shape of the regression: an object literal
-  // built inline in JSX, which is a new object on every render.
+  // `components={{` is the regression's exact shape: an inline JSX literal, so
+  // a new object every render.
   //
-  // Scoped to MessagePrimitive.Parts. ThreadPrimitive.Messages has the same
-  // shape but hoisting cannot fix it: the library turns a components map into
-  // `() => <ThreadMessageComponent components={...} />`, so the per-message
-  // element always carries props and never reaches the propless bail-out in
+  // Scoped to MessagePrimitive.Parts. ThreadPrimitive.Messages looks the same
+  // but hoisting cannot fix it: the library wraps a components map as
+  // `() => <ThreadMessageComponent components={...} />`, so the element always
+  // carries props and never hits the propless bail-out in
   // RenderChildrenWithAccessor. #9042 moves that call to the children form,
-  // which does reach it, and asserts the opposite of what a hoist would.
+  // which does, and asserts the opposite of what a hoist would.
   const inline = [
     ...THREAD_SOURCE.matchAll(/<MessagePrimitive\.Parts[^>]*components=\{\{/gs),
   ];
@@ -62,14 +55,14 @@ test("the assistant part components are a single module-scope object", () => {
 });
 
 test("the upstream memo still compares components.tools by identity", () => {
-  // This fix is only worth anything while the comparator behaves this way. If
-  // an assistant-ui upgrade starts comparing the map structurally, or stops
-  // reading `tools`, this test fails and says to re-measure rather than
-  // silently leaving a hoist that no longer buys anything.
-  // Read through a named variable so a missing file can be told apart from a
-  // changed comparator. A half-installed or relocated node_modules otherwise
-  // surfaces as a bare ENOENT stack, which reads like a real regression in this
-  // file; that happened once and cost a while to disbelieve.
+  // Pins upstream behaviour, so it passes with or without the hoist. The fix is
+  // only worth anything while the comparator works this way: if an upgrade
+  // compares the map structurally or stops reading `tools`, this fails and says
+  // to re-measure instead of leaving a hoist that buys nothing.
+  //
+  // Read through a named variable so a missing file is distinguishable from a
+  // changed comparator; a half-installed node_modules otherwise surfaces as a
+  // bare ENOENT that reads like a regression here.
   const comparatorPath = new URL(
     "../node_modules/@assistant-ui/core/dist/react/primitives/message/MessageParts.js",
     import.meta.url,
