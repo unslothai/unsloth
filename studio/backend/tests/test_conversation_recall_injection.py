@@ -1174,3 +1174,26 @@ def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, mon
     )
     assert roomy["recalled"] is True
     assert chars(roomy["conversation"]) > chars(conversation)
+
+
+def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
+    """A continued assistant message puts a prefill after the newest user turn.
+
+    Excluding only the branch's last element then leaves that user message in an
+    identity scan, and inline recall rewrites it into a new dict, so it reads as evicted.
+    The inflated boundary is persisted and costs the next request a live message.
+    """
+    from core.inference import llama_cpp
+
+    user_first = {"role": "user", "content": "first"}
+    answer_first = {"role": "assistant", "content": "first answer"}
+    user_latest = {"role": "user", "content": "latest question"}
+    prefill = {"role": "assistant", "content": "partial answer so far"}
+    branch = [user_first, answer_first, user_latest, prefill]
+
+    # The fit evicted the first turn; inline recall then rewrote the newest user message.
+    rewritten = {"role": "user", "content": "recalled turns\nlatest question"}
+
+    assert llama_cpp._branch_boundary([rewritten, prefill], branch) == 2
+    # And with the turn left alone, the same two messages are still the boundary.
+    assert llama_cpp._branch_boundary([user_latest, prefill], branch) == 2

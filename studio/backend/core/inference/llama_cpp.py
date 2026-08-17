@@ -512,10 +512,17 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
 
     Counted by identity. Instruction messages are skipped rather than treated as the front
     of the branch, or a Studio request (always system-prefixed) would report zero on every
-    compaction and the boundary would slide every turn again. The newest turn is excluded:
-    it is never evicted, and an inline recall rewrites it in place.
+    compaction and the boundary would slide every turn again. Everything from the newest
+    USER turn on is excluded: it is never evicted, and an inline recall rewrites that turn
+    into a new dict, which an identity scan reads as an eviction. Excluding just the last
+    message is not the same thing, since a continued assistant message follows it.
     """
-    messages = list(branch or ())[:-1]
+    messages = list(branch or ())
+    cutoff = max(
+        (index for index, message in enumerate(messages) if message.get("role") == "user"),
+        default = max(0, len(messages) - 1),
+    )
+    messages = messages[:cutoff]
     live = {id(message) for message in conversation}
     count = 0
     for message in messages:
