@@ -35,6 +35,18 @@ NOT_IN_CI = {
 }
 
 
+def _uncommented(text: str) -> str:
+    """``text`` with ``#`` comments removed, so a disabled command stops counting.
+
+    Commenting an invocation out is how one gets disabled, and the scan reads workflow
+    `run:` bodies and helper scripts verbatim, so `# python tests/studio/x.py` matched
+    as an invocation. Reported on PR #9060. Shell, YAML and Python all take `#` to end
+    of line, and a `#` inside a string only ever appears in prose here, which is not an
+    invocation either way.
+    """
+    return "\n".join(re.sub(r"(?:^|(?<=\s))#.*", "", line) for line in text.splitlines())
+
+
 def _invoked(name: str, text: str) -> bool:
     """Whether ``text`` RUNS ``name``, rather than merely mentioning it.
 
@@ -48,7 +60,7 @@ def _invoked(name: str, text: str) -> bool:
     an interpreter is being handed.
     """
     pattern = rf"(?:^|[\s;&|(])(?:python3?|node|bash|sh)\s+(?:-\S+\s+)*[^\s;&|<>'\"]*{re.escape(name)}\b"
-    return re.search(pattern, text, re.M) is not None
+    return re.search(pattern, _uncommented(text), re.M) is not None
 
 
 def _executable_text(path: Path) -> str:
