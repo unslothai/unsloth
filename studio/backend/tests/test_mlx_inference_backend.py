@@ -1428,11 +1428,38 @@ def test_mlx_vlm_exact_manager_delegates_to_upstream_with_a_memory_cap():
         )
         or True,
     )
-    manager = module._StudioVLMNativeExactManager(native, max_bytes = 100)
-    small = [SimpleNamespace(nbytes = 30)]
+    cloned = []
+
+    def clone(cache):
+        cloned.append(cache)
+        copied = copy.deepcopy(cache)
+        for source, target in zip(cache, copied):
+            if getattr(source, "expand_on_clone", False):
+                target.nbytes += 1
+        return copied
+
+    manager = module._StudioVLMNativeExactManager(native, max_bytes = 100, clone = clone)
+    small = [SimpleNamespace(nbytes = 4)]
+    manager.begin_request()
     assert manager.store_exact_cache([1, 2], small, extra_hash = 9)
-    assert stored == [([1, 2], small, 9)]
-    assert not manager.store_exact_cache([1, 2], [SimpleNamespace(nbytes = 43)])
+    assert not stored
+    manager.abort_request()
+    assert not manager._pending_stores
+    manager.begin_request()
+    assert manager.store_exact_cache([1, 2], small, extra_hash = 9)
+    manager.finish_request()
+    assert stored[0][0::2] == ([1, 2], 9)
+    assert stored[0][1][0].nbytes == 4
+    assert not manager.store_exact_cache([1, 2], [SimpleNamespace(nbytes = 5)])
+    assert not manager.store_exact_cache(
+        [1, 2],
+        [SimpleNamespace(nbytes = 4, expand_on_clone = True)],
+    )
+
+    expanding = SimpleNamespace(nbytes = 4, dequantize_for_apc = lambda: (None, None))
+    clone_count = len(cloned)
+    assert not manager.store_exact_cache([1, 2], [expanding])
+    assert len(cloned) == clone_count
 
     class Throwing:
         nbytes = property(lambda _self: (_ for _ in ()).throw(NotImplementedError))
@@ -1473,6 +1500,21 @@ def test_mlx_vlm_exact_cache_uses_upstream_manager_and_adapter_tenant(monkeypatc
     apc.APCManager = Native
     apc.model_apc_mode = lambda _model: "exact"
     image = bytearray(b"a")
+    control["mode"] = "error"
+    with pytest.raises(RuntimeError, match = "vlm failed"):
+        _cached_vlm_turn(backend, _VLM_TURN1, image, _adapter_state = False)
+    assert not backend._vlm_apc_manager._manager.entries
+    assert not backend._vlm_apc_manager._pending_stores
+    cancel = __import__("threading").Event()
+    control.update(mode = "cancel_after_update", cancel = cancel)
+    _cached_vlm_turn(backend, _VLM_TURN1, image, _adapter_state = False, cancel_event = cancel)
+    assert not backend._vlm_apc_manager._manager.entries
+    assert not backend._vlm_apc_manager._pending_stores
+    control["mode"] = "ok"
+    closing = _cached_vlm_turn(backend, _VLM_TURN1, image, _adapter_state = False, _consume = False)
+    next(closing), closing.close()
+    assert not backend._vlm_apc_manager._manager.entries
+    assert not backend._vlm_apc_manager._pending_stores
     _cached_vlm_turn(backend, _VLM_TURN1, image, _adapter_state = False)
     _cached_vlm_turn(backend, _VLM_TURN2, image, _adapter_state = False)
     assert backend._vlm_prompt_cache_history is None

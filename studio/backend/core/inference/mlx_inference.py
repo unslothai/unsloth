@@ -1145,11 +1145,13 @@ class _MLXVLMPromptCacheHistory:
 class _StudioVLMNativeExactManager:
     """Apply Studio's memory cap around mlx-vlm's native exact APC manager."""
 
-    def __init__(self, manager, max_bytes):
+    def __init__(self, manager, max_bytes, clone):
         self._manager = manager
         self._max_bytes = max_bytes
+        self._clone = clone
         self._request_reused = False
         self._request_stored = False
+        self._pending_stores = []
         # Upstream keeps a safe pre-generation checkpoint beside the full
         # prompt. Both are needed because a continued chat can replace the
         # original assistant boundary instead of literally extending it.
@@ -1161,6 +1163,7 @@ class _StudioVLMNativeExactManager:
     def begin_request(self):
         self._request_reused = False
         self._request_stored = False
+        self._pending_stores.clear()
 
     def lookup_exact_cache(self, token_ids, **kwargs):
         result = self._manager.lookup_exact_cache(token_ids, **kwargs)
@@ -1174,25 +1177,52 @@ class _StudioVLMNativeExactManager:
         *,
         extra_hash = 0,
     ):
+        if any(
+            callable(getattr(entry, "dequantize_for_apc", None))
+            for entry in _flatten_kv_entries(prompt_cache)
+        ):
+            logger.debug("MLX VLM exact cache: skipping clone-expanding quantized state")
+            return False
         state = SimpleNamespace(token_ids = token_ids, cache = prompt_cache)
-        nbytes = _vlm_prompt_cache_state_nbytes(state)
-        if nbytes is None or nbytes > self._max_bytes // 2:
+        source_nbytes = _vlm_prompt_cache_state_nbytes(state)
+        # Bound two published snapshots, two staged replacements, and the one
+        # transient clone made by native store_exact_cache during publication.
+        if source_nbytes is None or source_nbytes > self._max_bytes // 5:
             logger.debug("MLX VLM exact cache: skipping unbounded or over-budget state")
             return False
-        stored = self._manager.store_exact_cache(
-            token_ids,
-            prompt_cache,
-            extra_hash = extra_hash,
-        )
-        self._request_stored = self._request_stored or stored
-        return stored
+        copied = self._clone(prompt_cache)
+        if copied is None:
+            return False
+        state.cache = copied
+        stored_nbytes = _vlm_prompt_cache_state_nbytes(state)
+        if stored_nbytes is None or stored_nbytes > self._max_bytes // 5:
+            logger.debug("MLX VLM exact cache: skipping expanded or over-budget clone")
+            return False
+        self._pending_stores.append((list(token_ids), copied, extra_hash))
+        del self._pending_stores[:-2]
+        return True
 
     def finish_request(self):
+        pending, self._pending_stores = self._pending_stores, []
+        for token_ids, prompt_cache, extra_hash in pending:
+            try:
+                stored = self._manager.store_exact_cache(
+                    token_ids,
+                    prompt_cache,
+                    extra_hash = extra_hash,
+                )
+            except Exception as exc:
+                logger.debug("MLX VLM exact cache insert failed: %s", exc)
+                continue
+            self._request_stored = self._request_stored or stored
         # Native exact APC does not currently snapshot a warm request. Drop the
         # old boundary after a successful hit so the next turn cold-prefills and
         # publishes a newer pair. If upstream refreshes, preserve its snapshots.
         if self._request_reused and not self._request_stored:
             self._manager.clear()
+
+    def abort_request(self):
+        self._pending_stores.clear()
 
 
 def _build_vlm_generation_stats(response, cached_n):
@@ -1392,7 +1422,7 @@ class MLXInferenceBackend:
         if cache_mode == "exact":
             if self._vlm_apc_manager is None:
                 native = apc_cls(num_blocks = 1, block_size = 16)
-                self._vlm_apc_manager = _StudioVLMNativeExactManager(native, max_bytes)
+                self._vlm_apc_manager = _StudioVLMNativeExactManager(native, max_bytes, clone)
             self._vlm_apc_manager.begin_request()
             return None, None, [], self._vlm_apc_manager
         media_fingerprint = _vlm_media_fingerprint(image)
@@ -2251,6 +2281,7 @@ class MLXInferenceBackend:
                 cached_n = 0
                 completed = False
                 cache_abandoned = False
+                exact_finished = False
                 try:
                     # Emit any prefilled <think> block before the first token so the
                     # UI renders it during prefill, matching _generate_text. Done
@@ -2330,7 +2361,10 @@ class MLXInferenceBackend:
                         and final_response is not None
                     ):
                         exact_manager.finish_request()
+                        exact_finished = True
                 finally:
+                    if exact_manager is not None and not exact_finished:
+                        exact_manager.abort_request()
                     # mlx_vlm exposes the same stats fields as mlx_lm.
                     if final_response is not None:
                         self.last_generation_stats = _build_vlm_generation_stats(
