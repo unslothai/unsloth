@@ -309,16 +309,21 @@ def _import_time_nodes(node: ast.AST):
         yield from _import_time_nodes(child)
 
 
-def _eagerly_imports(tree: ast.Module, target: str) -> bool:
-    """Whether the module imports ``target`` itself, at module scope.
+def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
+    """Whether the module imports ``target`` itself, at module scope, before ``line``.
 
     A file may install the stubs, import the heavy module under them, then drop the
     stubs -- which is the shape this PR's fix uses and the shape the sibling files
-    use. A later lazy ``importorskip`` then resolves out of ``sys.modules`` and never
+    use. A later ``importorskip`` then resolves out of ``sys.modules`` and never
     touches the real dependency. Without this, a copy of that file that forgot the
     eager import would read as stubbed and still raise at test time.
+
+    Bounded by ``line`` for the same reason ``_stubs_before`` is: an eager import
+    BELOW an import-time ``importorskip`` has not run when that call is evaluated.
     """
     for statement in tree.body:
+        if statement.lineno >= line:
+            break
         for node in _runtime_nodes(statement):
             if isinstance(node, ast.Import):
                 if any(alias.name == target for alias in node.names):
@@ -374,15 +379,20 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     return calls
 
 
-def _drops_stubs(tree: ast.Module) -> bool:
-    """Whether the module removes its stubs again, at module scope.
+def _drops_stubs(tree: ast.Module, line: int) -> bool:
+    """Whether the module removes its stubs again, at module scope, before ``line``.
 
     The convention is ``sys.modules.pop(name, None)`` over the recorded list, so that
     the stubs do not outlive the module. A module that never drops them can reach a
-    heavy module lazily and still resolve, because the stub is still installed when
-    the test runs; one that drops them cannot, unless it imported the target first.
+    heavy module and still resolve, because the stub is still installed when the call
+    runs; one that drops them first cannot, unless it imported the target first.
+
+    Bounded by ``line`` because a pop below an import-time call has not happened yet
+    when that call runs, and a pop above one has.
     """
     for statement in tree.body:
+        if statement.lineno >= line:
+            break
         for node in _runtime_nodes(statement):
             if (
                 isinstance(node, ast.Call)
@@ -401,15 +411,18 @@ def _importorskip_offence(tree: ast.Module, heavy: frozenset[str]) -> bool:
     One entry point, used by the guard and by the test that pins it, so the pinned
     answers cannot drift away from the answers the guard actually gives.
     """
-    calls = _importorskip_calls(tree, heavy)
-    end = max((statement.lineno for statement in tree.body), default = 0) + 1
-    for target, boundary in calls:
+    for target, boundary in _importorskip_calls(tree, heavy):
         if not _stubs_before(tree, boundary):
             return True
-        # A lazy call runs after the module body, by which point a well-behaved
-        # module has dropped its stubs again. What makes it resolve then is the
-        # module having imported the target itself while they were live.
-        if boundary == end and _drops_stubs(tree) and not _eagerly_imports(tree, target):
+        # Installing the stub is not enough if the module has already dropped it again
+        # by the time the call runs. What makes the call resolve then is the module
+        # having imported the target itself while the stubs were live. Both questions
+        # are asked against the same boundary as the install, so an import-time call is
+        # judged on the pops above IT (a call between the install and the pop is fine,
+        # one below the pop is not) and a lazy call on the whole module body. Judging
+        # only lazy calls here let a module install, pop, then call at import time and
+        # still read as safe, while it raises during collection.
+        if _drops_stubs(tree, boundary) and not _eagerly_imports(tree, target, boundary):
             return True
     return False
 
@@ -555,6 +568,44 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert not _offender_free(stub_drop_no_import)
+
+    # The same trap at IMPORT time, which the drop check used to skip entirely: stub,
+    # pop, then call at module scope. The stub is installed above the call, so the
+    # install check is satisfied, but it is gone again by the time the call runs and
+    # collection dies. Reported on this PR.
+    drop_then_import_time_call = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert calls(drop_then_import_time_call) == [("core.inference.inference", 5)]
+    assert not _offender_free(drop_then_import_time_call)
+
+    # And its safe sibling: the pop comes AFTER the call, so the stub is live for it.
+    # Bounding the drop check by the call's line is what separates these two.
+    import_time_call_then_drop = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "inf = pytest.importorskip('core.inference.inference')\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+    )
+    assert _offender_free(import_time_call_then_drop)
+
+    # Eager import above the pop, import-time call below it: also safe, because the
+    # target is in sys.modules by then. The eager-import check has to be bounded by
+    # the call's line too, or the mirror image of this file would read as safe.
+    eager_then_drop_then_call = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(eager_then_drop_then_call)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
