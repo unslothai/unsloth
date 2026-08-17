@@ -32,6 +32,13 @@ NOT_IN_CI = {
     # through huggingface_hub; the UI workflows deliberately boot API-only with
     # one 254 MiB GGUF and no network model resolution.
     "playwright_train_pickers.py",
+    # A measurement harness rather than a gate: it prints the per-N cost table #8977
+    # was sized from and deliberately sets no budget, and the sizes that make the
+    # curve mean anything (to 500 messages under 6x CPU throttling) cost tens of
+    # minutes. Run by hand when that curve needs re-measuring. The part of it that
+    # can go wrong silently, the verdict in harness_failures, is driven without a
+    # browser by test_autoscroll_harness_contract.py, which CI does run.
+    "playwright_thread_weight.py",
 }
 
 
