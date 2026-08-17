@@ -29,6 +29,7 @@ from _playwright_robust import (  # noqa: E402
 )
 
 BASE = os.environ["BASE_URL"]
+OLD = os.environ["STUDIO_OLD_PW"]
 NEW = os.environ["STUDIO_NEW_PW"]
 ART_DIR = os.environ.get("PW_ART_DIR", "logs/playwright_ime")
 ART = Path(ART_DIR)
@@ -218,6 +219,10 @@ with sync_playwright() as p:
                 pass
             pw_field = page.locator("#new-password")
             pw_field.wait_for(state = "visible", timeout = 60_000)
+            # Served page no longer autofills the seed; fill Current password when shown.
+            cur_pw = page.locator("#current-password")
+            if cur_pw.count():
+                cur_pw.fill(OLD, timeout = 60_000)
             pw_field.fill(NEW, timeout = 60_000)
             page.fill("#confirm-password", NEW, timeout = 60_000)
             shoot("01-change-password-filled")

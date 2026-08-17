@@ -54,6 +54,7 @@ from _playwright_robust import (  # noqa: E402
 )
 
 BASE = os.environ["BASE_URL"]
+BOOTSTRAP_PW = os.environ.get("STUDIO_OLD_PW")
 NEW = os.environ.get("STUDIO_NEW_PW", "ModelCfg-NEW-2026!")
 # Attach mode: log into an already-provisioned Studio with an existing password
 # instead of the first-boot change-password dance. CI leaves STUDIO_LOGIN_PW unset
@@ -331,6 +332,8 @@ with sync_playwright() as p:
         page.goto(BASE, wait_until = "domcontentloaded", timeout = 60_000)
     else:
         step("setup: change-password")
+        if not BOOTSTRAP_PW:
+            raise RuntimeError("STUDIO_OLD_PW is required for the first-boot change-password flow")
         # 3-attempt retry: the form can re-render mid-fill on slow runners and
         # detach the password fields; each retry re-navigates with a fresh page.
         form_err: Exception | None = None
@@ -343,6 +346,11 @@ with sync_playwright() as p:
                     pass
                 pw_field = page.locator("#new-password")
                 pw_field.wait_for(state = "visible", timeout = 60_000)
+                # The served page no longer embeds the seed, so first boot
+                # requires the bootstrap password in the current-password field.
+                cur_pw = page.locator("#current-password")
+                if cur_pw.count():
+                    cur_pw.fill(BOOTSTRAP_PW, timeout = 60_000)
                 pw_field.fill(NEW, timeout = 60_000)
                 page.fill("#confirm-password", NEW, timeout = 60_000)
                 status, _ = click_and_wait_for_response(
