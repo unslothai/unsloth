@@ -395,7 +395,11 @@ class AnthropicStreamEmitter:
     """Converts generate_chat_completion_with_tools() events into Anthropic
     Messages SSE strings."""
 
-    def __init__(self) -> None:
+    def __init__(self, parse_think: bool = True) -> None:
+        # Off when the route knows reasoning markup cannot be genuine (thinking
+        # disabled or a non-reasoning model): literal <think> in prose then
+        # streams as ordinary text instead of being consumed as a trace.
+        self._parse_think = parse_think
         self.block_index: int = 0
         self._block_index_used: bool = False
         self._text_block_open: bool = False
@@ -520,6 +524,8 @@ class AnthropicStreamEmitter:
 
     def _route_text(self, new_text: str) -> list[str]:
         """Split ``<think>`` markup out of the delta into typed blocks."""
+        if not self._parse_think:
+            return self._emit_text_delta(new_text)
         events: list[str] = []
         data = self._tag_buf + new_text
         self._tag_buf = ""

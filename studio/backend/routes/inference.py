@@ -2943,6 +2943,30 @@ def _anthropic_reasoning_args(payload) -> dict:
     }
 
 
+def _think_parsing_expected(llama_backend, payload) -> bool:
+    """Whether <think> markup in this reply can be genuine reasoning.
+
+    Literal ``<think>`` in prose (a user asking for an XML example) must stay
+    text when the model cannot think, so the typed-thinking splitter only runs
+    when reasoning markup is expected: an always-on reasoning model, or a
+    reasoning-capable template with thinking not switched off by the request.
+    Attribute defaults keep test doubles (which lack the introspection) on the
+    parsing path.
+    """
+    if getattr(llama_backend, "reasoning_always_on", False):
+        return True
+    if not getattr(llama_backend, "supports_reasoning", True):
+        return False
+    enable_thinking = payload.resolved_enable_thinking()
+    reasoning_effort = payload.reasoning_effort
+    if enable_thinking is False or reasoning_effort == "none":
+        return False
+    if enable_thinking is None and reasoning_effort is None:
+        # Unspecified: the template's own default decides whether it thinks.
+        return bool(getattr(llama_backend, "reasoning_default", True))
+    return True
+
+
 def _reasoning_template_kwargs(llama_backend, enable_thinking, reasoning_effort, preserve_thinking):
     """chat_template_kwargs matching the loaded model's reasoning style.
 
@@ -20404,6 +20428,7 @@ async def anthropic_messages(
                     openai_messages = openai_messages,
                     openai_tools = openai_tools,
                     disable_parallel_tool_use = _disable_parallel,
+                    parse_think = _think_parsing_expected(llama_backend, payload),
                 )
             )
         return await _admitted_anthropic(
@@ -20413,6 +20438,7 @@ async def anthropic_messages(
                 model_name,
                 disable_parallel_tool_use = _disable_parallel,
                 openai_tools = openai_tools,
+                parse_think = _think_parsing_expected(llama_backend, payload),
             )
         )
 
@@ -20447,6 +20473,7 @@ async def anthropic_messages(
                 model_name,
                 llama_backend = llama_backend,
                 openai_messages = openai_messages,
+                parse_think = _think_parsing_expected(llama_backend, payload),
             )
         )
     return await _admitted_anthropic(
@@ -20454,6 +20481,7 @@ async def anthropic_messages(
             _run_plain_gen,
             message_id,
             model_name,
+            parse_think = _think_parsing_expected(llama_backend, payload),
         )
     )
 
@@ -20468,6 +20496,7 @@ async def _anthropic_tool_stream(
     openai_messages = None,
     openai_tools = None,
     disable_parallel_tool_use = False,
+    parse_think = True,
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
@@ -20494,7 +20523,7 @@ async def _anthropic_tool_stream(
         _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
-            emitter = AnthropicStreamEmitter()
+            emitter = AnthropicStreamEmitter(parse_think = parse_think)
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
 
@@ -20625,6 +20654,7 @@ async def _anthropic_plain_stream(
     model_name,
     llama_backend = None,
     openai_messages = None,
+    parse_think = True,
 ):
     """Streaming response for the no-tool path."""
     _sentinel = object()
@@ -20641,7 +20671,7 @@ async def _anthropic_plain_stream(
         _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
-            emitter = AnthropicStreamEmitter()
+            emitter = AnthropicStreamEmitter(parse_think = parse_think)
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
 
@@ -20803,6 +20833,7 @@ async def _anthropic_tool_non_streaming(
     model_name,
     disable_parallel_tool_use = False,
     openai_tools = None,
+    parse_think = True,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -20876,13 +20907,14 @@ async def _anthropic_tool_non_streaming(
 
     # Split <think> markup out of the accumulated text into typed thinking
     # blocks, preserving position relative to tool_use blocks.
-    _expanded: list = []
-    for block in content_blocks:
-        if isinstance(block, AnthropicResponseTextBlock) and "<think>" in block.text:
-            _expanded.extend(_think_markup_to_blocks(block.text))
-        else:
-            _expanded.append(block)
-    content_blocks = _expanded
+    if parse_think:
+        _expanded: list = []
+        for block in content_blocks:
+            if isinstance(block, AnthropicResponseTextBlock) and "<think>" in block.text:
+                _expanded.extend(_think_markup_to_blocks(block.text))
+            else:
+                _expanded.append(block)
+        content_blocks = _expanded
 
     # disable_parallel_tool_use: cap the response to at most one tool_use
     # block. Keep the first tool_use and drop any later ones.
@@ -20910,7 +20942,7 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
+async def _anthropic_plain_non_streaming(run_gen, message_id, model_name, parse_think = True):
     """Non-streaming response for the no-tool path."""
     text_parts = []
     usage = {}
@@ -20933,7 +20965,11 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
             text_parts.append(new)
 
     full_text = "".join(text_parts)
-    content_blocks = _think_markup_to_blocks(full_text) if full_text else []
+    content_blocks: list = []
+    if full_text and parse_think:
+        content_blocks = _think_markup_to_blocks(full_text)
+    elif full_text:
+        content_blocks = [AnthropicResponseTextBlock(text = full_text)]
 
     stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
 

@@ -113,6 +113,46 @@ def test_anthropic_emitter_splits_think_from_answer():
     assert _emitter_client_text(events) == "Answer."
 
 
+def test_anthropic_emitter_parse_think_off_keeps_literal_tags():
+    # A non-reasoning model quoting <think> markup (e.g. an XML example) must
+    # deliver it verbatim as text, not have it consumed into a thinking block.
+    emitter = AnthropicStreamEmitter(parse_think = False)
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "Use <think>like this</think> tags."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == ""
+    assert _emitter_client_text(events) == "Use <think>like this</think> tags."
+
+
+def test_think_parsing_expected_gates_on_capability_and_request():
+    from routes.inference import _think_parsing_expected
+
+    class _Backend:
+        def __init__(self, supports = True, always_on = False, default = True):
+            self.supports_reasoning = supports
+            self.reasoning_always_on = always_on
+            self.reasoning_default = default
+
+    # Non-reasoning model never parses; always-on always does.
+    assert _think_parsing_expected(_Backend(supports = False), _basic_payload()) is False
+    assert (
+        _think_parsing_expected(_Backend(supports = False, always_on = True), _basic_payload())
+        is True
+    )
+    # Request-level off wins on a switchable model.
+    assert (
+        _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = False)) is False
+    )
+    assert (
+        _think_parsing_expected(_Backend(), _basic_payload(reasoning_effort = "none")) is False
+    )
+    # Unspecified follows the template default; explicit on parses.
+    assert _think_parsing_expected(_Backend(default = False), _basic_payload()) is False
+    assert _think_parsing_expected(_Backend(), _basic_payload()) is True
+    assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = True)) is True
+
+
 def test_anthropic_emitter_holds_back_partial_think_tag():
     # A tag split across deltas must not leak fragments into the wrong block.
     emitter = AnthropicStreamEmitter()
