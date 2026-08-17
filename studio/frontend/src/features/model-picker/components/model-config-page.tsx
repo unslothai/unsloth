@@ -84,6 +84,13 @@ import {
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import {
+  CONTEXT_LENGTH_FINE_STEP,
+  CONTEXT_LENGTH_SLIDER_STEPS,
+  type ContextLengthSliderStep,
+  getContextLengthSliderBounds,
+  snapContextLengthToStep,
+} from "../model-config/context-length-step";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CONTEXT_LENGTH_MIN,
@@ -1567,6 +1574,8 @@ export function ModelConfigPage({
     advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
+  const [contextSliderStep, setContextSliderStep] =
+    useState<ContextLengthSliderStep>(CONTEXT_LENGTH_FINE_STEP);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
   const moeLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -1997,7 +2006,51 @@ export function ModelConfigPage({
     ),
     maxContext,
   );
-  const setContextLength = (v: number) => update({ customContextLength: v });
+  const contextSliderBounds = getContextLengthSliderBounds(
+    minContext,
+    maxContext,
+    contextSliderStep,
+  );
+  const contextSliderValue = snapContextLengthToStep(
+    contextValue,
+    minContext,
+    maxContext,
+    contextSliderStep,
+  );
+  const setContextLength = (v: number) =>
+    update({
+      customContextLength: snapContextLengthToStep(
+        v,
+        minContext,
+        maxContext,
+        contextSliderStep,
+      ),
+    });
+  const handleContextSliderStepChange = (rawStep: string) => {
+    const next = CONTEXT_LENGTH_SLIDER_STEPS.find(
+      ({ value }) => String(value) === rawStep,
+    );
+    if (next == null) {
+      return;
+    }
+    const committedContext = contextInputRef.current?.commit();
+    const currentContextValue = committedContext ?? contextValue;
+    setContextSliderStep(next.value);
+    if (next.value !== CONTEXT_LENGTH_FINE_STEP) {
+      const snappedValue = snapContextLengthToStep(
+        currentContextValue,
+        minContext,
+        maxContext,
+        next.value,
+      );
+      if (snappedValue === currentContextValue) {
+        return;
+      }
+      update({
+        customContextLength: snappedValue,
+      });
+    }
+  };
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
@@ -2284,10 +2337,10 @@ export function ModelConfigPage({
                 </div>
                 <NumericValueInput
                   ref={contextInputRef}
-                  value={contextValue}
-                  min={minContext}
-                  max={maxContext}
-                  step={1}
+                  value={contextSliderValue}
+                  min={contextSliderBounds.min}
+                  max={contextSliderBounds.max}
+                  step={contextSliderStep}
                   onChange={setContextLength}
                   displayValue={
                     config.customContextLength == null &&
@@ -2302,15 +2355,36 @@ export function ModelConfigPage({
                 />
               </div>
               {nativeContextLength != null ? (
-                <Slider
-                  min={minContext}
-                  max={maxContext}
-                  step={128}
-                  value={[contextValue]}
-                  onValueChange={([v]) => setContextLength(v)}
-                  className="panel-slider"
-                  aria-label="Context Length"
-                />
+                <div className="flex items-center gap-2">
+                  <Slider
+                    min={contextSliderBounds.min}
+                    max={contextSliderBounds.max}
+                    step={contextSliderStep}
+                    value={[contextSliderValue]}
+                    onValueChange={([v]) => setContextLength(v)}
+                    className="panel-slider min-w-0 flex-1"
+                    aria-label="Context Length"
+                  />
+                  <Select
+                    value={String(contextSliderStep)}
+                    onValueChange={handleContextSliderStepChange}
+                  >
+                    <SelectTrigger
+                      size="sm"
+                      className="shrink-0"
+                      aria-label="Context Length slider adjustment"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                      {CONTEXT_LENGTH_SLIDER_STEPS.map(({ value, label }) => (
+                        <SelectItem key={value} value={String(value)}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               ) : null}
               <p className="text-ui-11 leading-relaxed text-muted-foreground">
                 Unsloth automatically fits the context to your device, using the
@@ -2459,3 +2533,4 @@ export function ModelConfigPage({
     </div>
   );
 }
+
