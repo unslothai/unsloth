@@ -466,7 +466,9 @@ function useCoalescedStreamingText(
     isStreaming &&
     displayed.messageId === messageId &&
     text.length >= displayed.text.length &&
-    text.startsWith(displayed.text)
+    // Not startsWith, which scans a growing reply. See hasPrefix in
+    // streaming-render-schedule.ts for the measurement.
+    text.slice(0, displayed.text.length) === displayed.text
   ) {
     return displayed.text;
   }
