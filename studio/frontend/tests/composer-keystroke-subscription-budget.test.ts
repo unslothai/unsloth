@@ -1,31 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Typing one character in the composer costs work proportional to the whole thread, and none of
-// it is rendering.
+// Typing one character in the composer costs work proportional to the whole thread, none of it
+// rendering.
 //
-// assistant-ui gives the client ONE notification manager. `useAuiState` subscribes every caller
-// to it through `useSyncExternalStore`, and the selector IS the getSnapshot, so a single store
-// write runs every selector in the tree. Writing one character calls `composer.setText`, so a
-// keystroke pays one pass over every subscription the thread holds. Measured by driving a
-// synthetic heavy thread (20, 80 and 220 assistant messages, up to 310K characters of finished
-// replies) with the notification manager instrumented to count live subscriptions and selector
-// runs:
+// assistant-ui has ONE notification manager. `useAuiState` subscribes to it through
+// `useSyncExternalStore` with the selector AS getSnapshot, so a single store write runs every
+// selector in the tree, and writing a character calls `composer.setText`. Measured on a synthetic
+// heavy thread with the manager instrumented to count live subscriptions and selector runs:
 //
 //     20 messages   955 subscriptions   1,020 selector runs per keystroke    1.8ms
 //     80 messages  3,726 subscriptions  3,791 selector runs per keystroke    7.2ms
 //    220 messages 10,193 subscriptions 10,258 selector runs per keystroke   19.6ms
 //
-// Layout and style recalculation are flat across the same range (1.8ms -> 2.1ms layout, 1.7ms ->
-// 1.6ms style), so this fan-out, not the DOM, is what grows.
+// Layout and style are flat across the same range, so the fan-out, not the DOM, is what grows.
 //
-// The two seams below are what stops a subscription being minted per markdown BLOCK and per
-// non-newest message. Neither is visible in the rendered output: undo either and the thread
-// still renders identically, every other test here still passes, and the keystroke goes back to
-// carrying the extra subscriptions. So, as chat-autoscroll-frame-budget.test.ts and
-// drag-costs-no-render.test.ts do, the wiring is pinned at the source. The counts above are the
-// reason the seams exist, not something asserted here: these are source-shape assertions, and a
-// regression in the counts alone would not fail them.
+// The two seams below stop a subscription being minted per markdown BLOCK and per non-newest
+// message. Neither shows in the output -- undo either and the thread renders identically and
+// every other test passes -- so, like chat-autoscroll-frame-budget.test.ts and
+// drag-costs-no-render.test.ts, the wiring is pinned at the source. The counts above are the
+// motivation, not an assertion: a regression in them alone would not fail these source-shape
+// checks.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -54,8 +49,8 @@ test("a markdown block reads the render_html presence from context, not the stor
     "function StreamdownBlockContent(props: BlockProps) {",
   );
   assert.match(block, /useContext\(\s*RenderHtmlToolPresenceContext,?\s*\)/);
-  // The block component is mounted once per markdown block: 800 of the 10,193 subscriptions at
-  // 300K characters came from this one call, and each re-scanned message.parts per keystroke.
+  // Mounted once per markdown block: 800 of the 10,193 subscriptions at 300K characters, each
+  // re-scanning message.parts per keystroke.
   assert.doesNotMatch(
     block,
     /useAuiState\(/,
@@ -91,9 +86,9 @@ test("the continue bar subscribes once on a message that is not the newest", () 
 });
 
 test("the composer asks the thread-wide research question through the cache", () => {
-  // The one subscription the composer itself holds walked every message on every keystroke.
-  // thread-research-presence.test.ts covers what the answer is; this covers that the composer is
-  // the caller, since an orphaned helper would leave the scan exactly where it was.
+  // The composer's own subscription walked every message per keystroke. The answer's semantics
+  // live in thread-research-presence.test.ts; this pins the composer as the caller, since an
+  // orphaned helper would leave the scan where it was.
   assert.match(
     thread,
     /useAuiState\(\(\{ thread \}\) =>\s*threadHasResearchMessage\(thread\.messages\),?\s*\)/,
@@ -106,8 +101,8 @@ test("the composer asks the thread-wide research question through the cache", ()
 });
 
 test("the newest message still gets the whole continue bar", () => {
-  // The gate must delegate to the full component rather than having deleted its work: the bar
-  // that Max Tokens, Stop and a dropped stream rely on is the one below the gate.
+  // The gate must delegate rather than have deleted the work: the bar Max Tokens, Stop and a
+  // dropped stream rely on is the one below it.
   const full = body(
     thread,
     "const ContinueMessageBarForLastMessage: FC = () => {",

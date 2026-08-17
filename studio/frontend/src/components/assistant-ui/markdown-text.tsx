@@ -296,20 +296,17 @@ function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
 }
 
 /**
- * Whether this message carries a renderable render_html tool part, answered once per message
- * part rather than once per markdown block.
+ * Whether this message carries a renderable render_html tool part, asked once per message part
+ * instead of once per markdown block.
  *
- * The value is a property of the MESSAGE, but the block component asking for it is mounted once
- * per markdown block, so subscribing there put one store subscription on every block in the
- * thread: measured on the heavy-thread fixture at 300K characters, 800 of the 10,193
- * subscriptions, each re-scanning `message.parts` on every store update. Every keystroke in the
- * composer is a store update, so a thread of finished replies was paying that scan per block per
- * character typed. One subscription in MarkdownTextImpl and a context read in the block gives
- * the same answer to the same blocks.
+ * The value belongs to the MESSAGE, but the block component is mounted per block, so subscribing
+ * there minted a subscription per block (800 of 10,193 on the 300K-character heavy thread), each
+ * re-scanning `message.parts` on every store update -- and every keystroke is a store update.
+ * One subscription in MarkdownTextImpl plus a context read gives the same blocks the same answer.
  *
- * `false` is the right default for a block rendered outside a message part (nothing renders one
- * today): no render_html tool part is visible, which is what the artifact collapse below assumes
- * when it has no evidence either way.
+ * `false` is the right default for a block rendered outside a message part (nothing does today):
+ * no render_html part is visible, which is what the artifact collapse below assumes absent
+ * evidence.
  */
 const RenderHtmlToolPresenceContext = createContext(false);
 

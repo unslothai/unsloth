@@ -2,13 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The composer's "has this thread used research already" answer, which gates whether deep
-// research is still offerable. It is asked inside a useAuiState selector, so it is asked once per
-// store notification, and a keystroke in the composer IS a store notification: before this cache
-// the composer walked all 220 messages of the heavy-thread fixture on every character typed.
+// research is still offerable. It is asked inside a useAuiState selector, so once per store
+// write, and a keystroke IS a store write: before this cache the composer walked all 220 messages
+// of the heavy-thread fixture per character typed.
 //
-// The semantics are what gates the product feature, so they are tested first and the cache
-// second: a memoization bug here silently turns deep research back on in a thread that has
-// already used it, or off in one that has not.
+// Semantics first, cache second: a memoization bug here silently turns deep research back on in a
+// thread that already used it, or off in one that has not.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,8 +34,8 @@ test("a thread with no research reply answers false", () => {
 });
 
 test("only a string run id counts, which is what the composer's gate meant", () => {
-  // A run id that is not a string is how a half-written metadata blob shows up, and treating it
-  // as a research reply would switch deep research off in a thread that never used it.
+  // A non-string run id is how a half-written metadata blob shows up; counting it would switch
+  // deep research off in a thread that never used it.
   for (const id of [undefined, null, 0, 1, true, {}, ["run_1"]]) {
     assert.equal(messageHasResearchRunId(withRun(id)), false, String(id));
     assert.equal(threadHasResearchMessage([withRun(id)]), false, String(id));
@@ -68,12 +67,12 @@ test("the answer is cached on the message array, not recomputed per call", () =>
 });
 
 test("a new message array is a new answer", () => {
-  // assistant-ui rebuilds the array on every repository change, which is the whole basis for
-  // keying on it: a cache that outlived the array would answer for the previous thread.
+  // assistant-ui rebuilds the array on every repository change, which is why it is the key: a
+  // cache outliving the array would answer for the previous thread.
   const before = [{ metadata: {} }];
   assert.equal(threadHasResearchMessage(before), false);
   const after = [...before, withRun("run_1")];
   assert.equal(threadHasResearchMessage(after), true);
-  // And the old array still answers what it did, rather than being invalidated by the new one.
+  // The old array still answers what it did, rather than being invalidated by the new one.
   assert.equal(threadHasResearchMessage(before), false);
 });
