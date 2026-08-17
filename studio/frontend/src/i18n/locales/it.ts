@@ -255,6 +255,8 @@ export const it = {
         allowMicrophone: "Consenti l'accesso al microfono",
         micAccessBlocked:
           "L'accesso al microfono è stato bloccato. Consenti l'accesso al microfono per questa pagina di Unsloth, poi riprova.",
+        micAccessBlockedDesktop:
+          "L'accesso al microfono è stato bloccato. Riprova e scegli Consenti, oppure abilita il microfono nelle impostazioni di privacy del sistema.",
         micAccessUnsupported:
           "L'accesso al microfono non è supportato in questo browser o contesto.",
         systemDefault: "Predefinito di sistema",
@@ -1012,6 +1014,12 @@ export const it = {
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      projectAttachments: "Condividi i file nel progetto",
+      projectAttachmentsDescription:
+        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+      rememberParamsPerModel: "Ricorda le impostazioni per modello",
+      rememberParamsPerModelDescription:
+        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
       thinking: {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:

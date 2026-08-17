@@ -156,6 +156,23 @@ function sanitizeInferenceParams(
   return hasKeys(params) ? params : undefined;
 }
 
+// Not capped. The server merge never removes keys and keeps an existing key in
+// its original position, so a load-time trim would permanently hide the oldest
+// entries: editing one of those models would write an update that the next
+// reload silently drops again. Entries are a dozen numbers each.
+function sanitizeInferenceParamsByModel(
+  value: unknown,
+): Record<string, PersistedInferenceParams> | undefined {
+  if (!isRecord(value)) return undefined;
+  const byModel: Record<string, PersistedInferenceParams> = {};
+  for (const [modelId, params] of Object.entries(value)) {
+    if (!modelId) continue;
+    const sanitized = sanitizeInferenceParams(params);
+    if (sanitized) byModel[modelId] = sanitized;
+  }
+  return hasKeys(byModel) ? byModel : undefined;
+}
+
 function toFullPreset(preset: PersistedChatPreset): Preset {
   const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
@@ -227,6 +244,10 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
 
   const settings: PersistedChatSettings = {};
   const inferenceParams = sanitizeInferenceParams(value.inferenceParams);
+  const inferenceParamsByModel = sanitizeInferenceParamsByModel(
+    value.inferenceParamsByModel,
+  );
+  const rememberParamsPerModel = sanitizeBool(value.rememberParamsPerModel);
   const customPresets = sanitizeCustomPresets(value.customPresets);
   const activePresetSource = sanitizePresetSource(value.activePresetSource);
   const reasoningEffort = sanitizeReasoningEffort(value.reasoningEffort);
@@ -242,6 +263,12 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
+  if (inferenceParamsByModel) {
+    settings.inferenceParamsByModel = inferenceParamsByModel;
+  }
+  if (rememberParamsPerModel !== undefined) {
+    settings.rememberParamsPerModel = rememberParamsPerModel;
+  }
   if (customPresets !== undefined) settings.customPresets = customPresets;
   if (typeof value.activePreset === "string" && value.activePreset.trim()) {
     settings.activePreset = value.activePreset.trim();
@@ -315,6 +342,8 @@ function loadLegacySystemPromptPresets(
 export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
   return (
     (!settings.inferenceParams || !hasKeys(settings.inferenceParams)) &&
+    settings.inferenceParamsByModel === undefined &&
+    settings.rememberParamsPerModel === undefined &&
     settings.customPresets === undefined &&
     settings.activePreset === undefined &&
     settings.activePresetSource === undefined &&
