@@ -6599,10 +6599,11 @@ const COPY_RESET_MS = 2000;
 /**
  * One fork-count subscription for as long as the thread is on screen.
  *
- * The badges below sit inside action bars that autohide, so at rest not one of them is
- * mounted. Left to them, the last badge leaving would drop the thread's counts and the next
- * hover would fetch them all again -- one whole-thread request per message the pointer crosses,
- * with the badge arriving a round trip after the bar it sits in.
+ * The badges below sit inside action bars that autohide, so at rest at most the newest reply
+ * has one, and none at all while the thread is running or while its last message is a prompt.
+ * Left to them, the last badge leaving would drop the thread's counts and the next hover would
+ * fetch them all again -- one whole-thread request per message the pointer crosses, with the
+ * badge arriving a round trip after the bar it sits in.
  */
 const useThreadForkCounts = (): void => {
   const remoteId =
@@ -6940,9 +6941,15 @@ const AssistantActionBar: FC = () => {
         hideWhenRunning={!speaking}
         // Unmounts the bar on every message that is not hovered, as the user bar already does.
         // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
-        // every menu open fanned out across the whole thread. "never" while speaking because
-        // this bar carries the only Stop reading control, which hover must not take away.
-        autohide={speaking ? "never" : "always"}
+        // every menu open fanned out across the whole thread.
+        //
+        // "not-last", not "always": an unmounted bar is out of the tab order too, and these are
+        // the only Copy, Refresh, Read aloud and More controls a message has. The newest reply
+        // keeps its bar, so a keyboard user still reaches the message they are acting on, and
+        // the other N-1 still go: 8 tooltip subscriptions on a 500-message thread instead of
+        // ~250. "never" while speaking because this bar carries the only Stop reading control,
+        // which neither hover nor a later reply must take away.
+        autohide={speaking ? "never" : "not-last"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />

@@ -121,7 +121,7 @@ test("a burst of history events collapses into one refresh", async (t) => {
 test("badges churning under the hover autohide do not refetch the thread", async () => {
   const { store, requests } = freshStore({ m7: 3 });
   // The thread subscribes for as long as it is on screen. Its badges live inside action bars
-  // that autohide, so they come and go with the pointer and none of them exists at rest.
+  // that autohide, so they come and go with the pointer and at rest at most one is left.
   const thread = store.subscribeForkCounts("thread-a", () => {});
   await flush();
   assert.deepEqual(requests, ["thread-a"]);

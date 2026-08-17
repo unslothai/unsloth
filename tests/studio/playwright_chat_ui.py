@@ -1289,9 +1289,10 @@ with sync_playwright() as p:
     # A content-based replacement would be flakier than what it replaces, because
     # an empty completion is the model's behaviour, not a defect in Studio.
     #
-    # It matters now because the assistant action bar autohides on hover, so the
-    # labels are no longer in the subtree and the clause finally started
-    # reporting what it was actually measuring: a hidden hover affordance.
+    # It matters now because the assistant action bar autohides on every reply but
+    # the newest, so for the older of the two this reads, the labels are no longer in
+    # the subtree and the clause finally started reporting what it was actually
+    # measuring: a hidden hover affordance.
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
