@@ -44,6 +44,7 @@ from core.research.citations import (
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
     _AGENT_SYSTEM_PROMPT,
+    _REPORT_BOUNDARY_MARKER,
     _REPORT_SYSTEM_PROMPT,
     _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
     _planner_system_prompt,
@@ -112,6 +113,11 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+
+
+def _after_output_boundary(text: str, boundary: str) -> str | None:
+    marker = text.rfind(boundary)
+    return None if marker < 0 else text[marker + len(boundary) :].strip()
 
 
 def _auto_scrape_default() -> int:
@@ -1126,6 +1132,7 @@ class ResearchSupervisor:
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
         preview_labels: bool = False,
+        output_boundary: str | None = None,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
         expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
@@ -1183,6 +1190,7 @@ class ResearchSupervisor:
             payload["response_format"] = {"type": "json_object"}
         report = ""
         reasoning = ""
+        ordered_output = ""
         pending_report = ""
         pending_reasoning = ""
         pending_reasoning_offset = 0
@@ -1386,15 +1394,20 @@ class ResearchSupervisor:
                             continue
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
+                            if output_boundary is not None:
+                                ordered_output += thought
                             semantic_output_at = loop.time()
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
                             reasoning += thought
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
+                            if output_boundary is not None:
+                                ordered_output += text
                             semantic_output_at = loop.time()
                             report += text
-                            pending_report += text
+                            if output_boundary is None:
+                                pending_report += text
                             # only a closing quote completes a title; per-token rescans cost ~170ms.
                             if preview_labels and '"' in text:
                                 emitted_labels = await self._emit_preview_labels(
@@ -1434,6 +1447,15 @@ class ResearchSupervisor:
                                 exc_info = True,
                             )
             await flush_progress()
+            if output_boundary is not None:
+                bounded_report = _after_output_boundary(ordered_output, output_boundary)
+                if bounded_report is not None:
+                    # Preserve marker-only as an internal signal so the caller does not recover
+                    # and publish an earlier Summary section from private reasoning.
+                    report = bounded_report or output_boundary
+                if report_progress and report != output_boundary:
+                    pending_report = report
+                    await flush_progress()
             return report, reasoning, finish_reason, usage
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ModelWallClockTimeout(
@@ -2283,6 +2305,7 @@ class ResearchSupervisor:
             synthesis_messages,
             phase = "synthesis",
             max_tokens = 16384,
+            output_boundary = _REPORT_BOUNDARY_MARKER,
         )
         await self._check_active(run["id"])
         if synthesis_finish_reason == "length":
@@ -2314,6 +2337,7 @@ class ResearchSupervisor:
                 phase = "synthesis_recovery",
                 max_tokens = 16384,
                 enable_thinking = False,
+                output_boundary = _REPORT_BOUNDARY_MARKER,
             )
             synthesis_reasoning += recovery_reasoning
             report = recovered_report
@@ -2327,7 +2351,10 @@ class ResearchSupervisor:
                         requested_max_tokens = recovery_max_tokens,
                     )
                 )
-        if not report.strip():
+        marked_but_empty = report == _REPORT_BOUNDARY_MARKER
+        if marked_but_empty:
+            report = ""
+        elif not report.strip():
             report = _recover_report_from_reasoning(synthesis_reasoning)
         if not report:
             raise ValueError("Local model returned an empty report")

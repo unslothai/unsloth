@@ -352,6 +352,8 @@ def test_report_prompt_requires_comprehensive_evidence_based_detail():
     from core import research_runs as worker
 
     prompt = worker._REPORT_SYSTEM_PROMPT
+    assert worker._REPORT_BOUNDARY_MARKER in prompt
+    assert "Before writing any report content" in prompt
     assert "detailed, comprehensive report" in prompt
     assert "every material dimension in the approved plan" in prompt
     assert "implications, tradeoffs, limitations" in prompt

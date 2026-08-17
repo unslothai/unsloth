@@ -787,6 +787,12 @@ def _stream_body() -> str:
     return f"data: {chunk}\n\ndata: [DONE]\n\n"
 
 
+def _delta_stream_body(deltas: list[tuple[str, str]]) -> str:
+    chunks = [json.dumps({"choices": [{"delta": {field: text}}]}) for field, text in deltas]
+    chunks.append(json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}))
+    return "".join(f"data: {chunk}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+
+
 def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
     return asyncio.run(
         supervisor._stream_completion(
@@ -795,6 +801,153 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             report_progress = False,
         )
     )
+
+
+@pytest.mark.parametrize(
+    "deltas",
+    (
+        pytest.param(
+            [
+                ("reasoning_content", "I will organize the answer.\n"),
+                (
+                    "reasoning_content",
+                    research_runs._REPORT_BOUNDARY_MARKER + "\n## Zusammenfassung\nBericht",
+                ),
+            ],
+            id = "reasoning-only",
+        ),
+        pytest.param(
+            [
+                (
+                    "content",
+                    research_runs._REPORT_BOUNDARY_MARKER + "\n## Overview\nReport",
+                )
+            ],
+            id = "content-only",
+        ),
+        pytest.param(
+            [
+                ("reasoning_content", "Private analysis.\n"),
+                ("content", research_runs._REPORT_BOUNDARY_MARKER),
+                ("reasoning_content", "\n### Findings\nMixed-channel report"),
+            ],
+            id = "marker-in-content-report-in-reasoning",
+        ),
+        pytest.param(
+            [
+                ("reasoning_content", "Private analysis.\n"),
+                ("content", research_runs._REPORT_BOUNDARY_MARKER[:12]),
+                ("reasoning_content", research_runs._REPORT_BOUNDARY_MARKER[12:]),
+                ("content", "\n# Results\nSplit-marker report"),
+            ],
+            id = "marker-split-across-channels",
+        ),
+    ),
+)
+def test_stream_completion_recovers_marked_report_in_arrival_order(monkeypatch, deltas):
+    stream = _delta_stream_body(deltas)
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    monkeypatch.setattr(
+        research_runs.db,
+        "append_worker_event",
+        lambda *_args, **_kwargs: 1,
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, _reasoning, finish_reason, _usage = asyncio.run(
+        supervisor._stream_completion(
+            _waiting_run(30.0),
+            [{"role": "user"}],
+            report_progress = False,
+            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
+        )
+    )
+
+    assert "Private analysis" not in report
+    assert "organize the answer" not in report
+    assert research_runs._REPORT_BOUNDARY_MARKER not in report
+    assert report.lower().endswith("report") or report.endswith("Bericht")
+    assert finish_reason == "stop"
+
+
+def test_stream_completion_keeps_content_when_model_omits_boundary(monkeypatch):
+    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, _reasoning, _finish, _usage = asyncio.run(
+        supervisor._stream_completion(
+            _waiting_run(30.0),
+            [{"role": "user"}],
+            report_progress = False,
+            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
+        )
+    )
+
+    assert report == "report"
+
+
+def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
+    stream = _delta_stream_body(
+        [
+            ("content", "Private analysis that must not become report progress.\n"),
+            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n# Result\nPublic report"),
+        ]
+    )
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    monkeypatch.setattr(
+        research_runs.db,
+        "append_worker_event",
+        lambda *_args, **_kwargs: 1,
+    )
+    progress_writes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        research_runs.db,
+        "set_report_progress",
+        lambda _run_id, report, delta, _worker_id: (
+            progress_writes.append((report, delta)) or True
+        ),
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, _reasoning, _finish, _usage = asyncio.run(
+        supervisor._stream_completion(
+            _waiting_run(30.0),
+            [{"role": "user"}],
+            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
+        )
+    )
+
+    assert report == "# Result\nPublic report"
+    assert progress_writes == [(report, report)]
+
+
+def test_empty_marked_stream_cannot_fall_back_to_private_summary(monkeypatch):
+    private_summary = "## Summary\n" + ("Private chain of thought. " * 30)
+    stream = _delta_stream_body(
+        [
+            ("reasoning_content", private_summary),
+            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n"),
+        ]
+    )
+    _install_fake_client(monkeypatch, [_response(200, body = stream)])
+    monkeypatch.setattr(
+        research_runs.db,
+        "append_worker_event",
+        lambda *_args, **_kwargs: 1,
+    )
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, reasoning, _finish, _usage = asyncio.run(
+        supervisor._stream_completion(
+            _waiting_run(30.0),
+            [{"role": "user"}],
+            report_progress = False,
+            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
+        )
+    )
+
+    assert report == research_runs._REPORT_BOUNDARY_MARKER
+    assert research_runs._recover_report_from_reasoning(reasoning) == private_summary.strip()
 
 
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
