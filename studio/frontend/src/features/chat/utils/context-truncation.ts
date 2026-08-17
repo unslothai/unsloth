@@ -16,6 +16,18 @@ function spreadSum(
   return { [key]: (a ?? 0) + (b ?? 0) };
 }
 
+export function compactionBoundary(
+  truncation: ContextTruncation | undefined,
+): number {
+  if (!truncation?.fits) return 0;
+  // boundary_messages is where the boundary actually sits in the saved transcript.
+  // dropped_messages is the accumulated count of what each fit removed from the request
+  // in front of it, so a tool-heavy turn reports far more than it moved the boundary by,
+  // and a later real advance would then look like no advance at all. Fallback only, for
+  // turns saved before the boundary was recorded.
+  return truncation.boundary_messages ?? truncation.dropped_messages ?? 0;
+}
+
 export function mergeContextTruncation(
   current: ContextTruncation | undefined,
   incoming: ContextTruncation,

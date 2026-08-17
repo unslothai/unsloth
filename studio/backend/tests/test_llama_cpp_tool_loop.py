@@ -5734,6 +5734,10 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     )
 
     branch = [
+        # Studio always prepends one, and a fit never evicts it. Counting it as the front
+        # of the branch reported a boundary of zero on every compaction, which is the
+        # same as not having one.
+        {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "u" * 1200},
         {"role": "assistant", "content": "a" * 1200},
         {"role": "user", "content": "u2" * 600},
@@ -5756,5 +5760,6 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     assert len(notices) > 1, "the fixture must refit more than once"
     # Summed, this passes the number of evictable messages the branch ever had.
     assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
-    # The boundary does not: it is where the branch was cut, however many refits it took.
+    # The boundary does not: it is where the branch was cut, however many refits it took,
+    # and it counts the evicted turns rather than stopping at the preserved system prompt.
     assert {notice["boundary_messages"] for notice in notices} == {4}

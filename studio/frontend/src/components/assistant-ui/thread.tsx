@@ -10,7 +10,10 @@ import {
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
-import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
+import {
+  compactionBoundary,
+  type ContextTruncation,
+} from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -5829,7 +5832,7 @@ const AssistantMessage: FC = () => {
           | { custom?: { contextTruncation?: unknown } }
           | undefined
       )?.custom?.contextTruncation as ContextTruncation | undefined;
-      const dropped = value?.fits ? (value.dropped_messages ?? 0) : 0;
+      const dropped = compactionBoundary(value);
       if (dropped > previousDropped) {
         if (message.id === messageId) return true;
         previousDropped = dropped;

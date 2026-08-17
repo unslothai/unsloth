@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { mergeContextTruncation } from "../src/features/chat/utils/context-truncation.ts";
+import {
+  compactionBoundary,
+  mergeContextTruncation,
+} from "../src/features/chat/utils/context-truncation.ts";
 
 const adapter = readFileSync(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
@@ -25,6 +28,23 @@ test("the transport preserves standard chunks with context metadata", () => {
   assert.doesNotMatch(transport, /parsed\.type === "context_truncated"/);
   assert.match(adapter, /chunk\.context_truncated/);
   assert.match(adapter, /contextTruncation = mergeContextTruncation\(/);
+});
+
+test("the compaction notice follows the boundary, not the accumulated drops", () => {
+  // A tool-heavy turn reports 12 drops while the boundary moved to 4. Recording 12 as
+  // the high-water mark means the next two real advances, to 8 and to 10, are silent.
+  assert.equal(
+    compactionBoundary({ dropped_messages: 12, boundary_messages: 4, fits: true }),
+    4,
+  );
+  // Turns saved before the boundary existed still report something.
+  assert.equal(compactionBoundary({ dropped_messages: 6, fits: true }), 6);
+  // A fit that gave up moved no boundary at all.
+  assert.equal(
+    compactionBoundary({ dropped_messages: 0, boundary_messages: 0, fits: false }),
+    0,
+  );
+  assert.equal(compactionBoundary(undefined), 0);
 });
 
 test("the compaction boundary takes the latest value, never the sum", () => {

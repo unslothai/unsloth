@@ -515,12 +515,20 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     exchanges this turn created -- messages the next request's transcript does not contain
     -- and the boundary advances far past the turns that were actually evicted.
 
-    Counted by identity, and only from the front, because a fit drops from the front and
-    an inline recall rewrites the newest user message in place.
+    Counted by identity. Instruction messages are skipped rather than treated as the
+    front of the branch: a fit never evicts them, so a Studio request -- which always
+    prepends a system prompt -- would otherwise report a boundary of zero on every
+    compaction, and the boundary would slide forward on every single turn again.
+
+    The newest turn is excluded because it is never evicted and an inline recall rewrites
+    it in place, which would read as an eviction.
     """
+    messages = list(branch or ())[:-1]
     live = {id(message) for message in conversation}
     count = 0
-    for message in branch or ():
+    for message in messages:
+        if message.get("role") in ("system", "developer"):
+            continue
         if id(message) in live:
             break
         count += 1
