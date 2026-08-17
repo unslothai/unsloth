@@ -12,11 +12,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
+// Where the AppRun parks the host LD_LIBRARY_PATH it must keep away from the bundle.
+#[cfg(target_os = "linux")]
+const APPIMAGE_HOST_LIBRARY_PATH: &str = "UNSLOTH_HOST_LD_LIBRARY_PATH";
+
 // Keep AppImage GUI paths and Python overrides out of managed host Python.
 #[cfg(target_os = "linux")]
 fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
     let appdir = std::env::var_os("APPDIR")?;
-    let library_path = std::env::var_os("LD_LIBRARY_PATH")?;
+    let library_path = std::env::var_os("LD_LIBRARY_PATH")
+        .or_else(|| std::env::var_os(APPIMAGE_HOST_LIBRARY_PATH))?;
     let host_paths: Vec<_> = std::env::split_paths(&library_path)
         .filter(|path| !path.starts_with(&appdir))
         .collect();
@@ -29,6 +34,7 @@ fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
 
 #[cfg(target_os = "linux")]
 fn apply_scrubbed_appimage_library_path(cmd: &mut Command) {
+    cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
     match scrub_appimage_library_path() {
         Some(library_path) => {
             cmd.env("LD_LIBRARY_PATH", library_path);
@@ -148,6 +154,7 @@ pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Res
 #[cfg(target_os = "linux")]
 pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
     if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove(APPIMAGE_HOST_LIBRARY_PATH);
         match scrub_appimage_library_path() {
             Some(library_path) => {
                 cmd.env("LD_LIBRARY_PATH", library_path);
@@ -231,6 +238,33 @@ mod appimage_environment_tests {
             ("PATH", old_path),
         ] {
             match old_value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn managed_child_recovers_the_library_path_the_apprun_parked() {
+        let _guard = env_lock();
+        let old = ["APPIMAGE", "APPDIR", "LD_LIBRARY_PATH", APPIMAGE_HOST_LIBRARY_PATH]
+            .map(|key| (key, std::env::var_os(key)));
+        std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
+        std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
+        // The AppRun cleared it so the host copies could not outrank the bundle.
+        std::env::remove_var("LD_LIBRARY_PATH");
+        std::env::set_var(
+            APPIMAGE_HOST_LIBRARY_PATH,
+            "/tmp/.mount_Unsloth/usr/lib:/opt/rocm/lib",
+        );
+        let mut cmd = Command::new("/usr/bin/env");
+        scrub_appimage_python_env(&mut cmd);
+        let output = cmd.output().expect("run managed child");
+        let env = String::from_utf8(output.stdout).unwrap();
+        assert!(env.lines().any(|line| line == "LD_LIBRARY_PATH=/opt/rocm/lib"), "{env}");
+        assert!(!env_contains_name(&env, APPIMAGE_HOST_LIBRARY_PATH), "{env}");
+        for (key, value) in old {
+            match value {
                 Some(value) => std::env::set_var(key, value),
                 None => std::env::remove_var(key),
             }

@@ -16,6 +16,8 @@ VERIFIER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "verify-complete-appim
 
 FINALIZER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "finalize-complete-appimage.sh"
 
+APPRUN = REPO_ROOT / "studio" / "src-tauri" / "linux" / "appimage-apprun.sh"
+
 
 def _workflow():
     return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
@@ -236,7 +238,10 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     (appdir / ".DirIcon").symlink_to("Unsloth.png")
     apprun = appdir / "AppRun"
     apprun.write_text(
-        '#!/bin/sh\n. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\nexit 0\n',
+        "#!/bin/sh\n"
+        '. "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh"\n'
+        "unset LD_LIBRARY_PATH\n"
+        "exit 0\n",
         encoding = "utf-8",
     )
     apprun.chmod(0o755)
@@ -386,6 +391,44 @@ def test_complete_appimage_verifier_rejects_global_library_path_and_missing_orig
     assert "$ORIGIN-relative RUNPATH" in result.stderr
 
 
+def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
+    """The loader reads LD_LIBRARY_PATH before the bundle's own $ORIGIN RUNPATHs."""
+
+    appdir = tmp_path / "AppDir"
+    binary = appdir / "usr/bin/unsloth-studio"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("#!/bin/sh\nexec /usr/bin/env\n", encoding = "utf-8")
+    binary.chmod(0o755)
+    apprun = appdir / "AppRun"
+    apprun.write_bytes(APPRUN.read_bytes())
+    apprun.chmod(0o755)
+
+    result = subprocess.run(
+        [apprun],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", "LD_LIBRARY_PATH": "/opt/conda/lib:/opt/rocm/lib"},
+    )
+    printed = result.stdout.splitlines()
+    assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
+    assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
+
+
+def test_complete_appimage_verifier_rejects_a_launcher_that_keeps_the_host_library_path(tmp_path):
+    appdir = _fake_complete_appdir(tmp_path)
+    apprun = appdir / "AppRun"
+    apprun.write_text(
+        apprun.read_text(encoding = "utf-8").replace("unset LD_LIBRARY_PATH\n", ""),
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "inherited LD_LIBRARY_PATH" in result.stderr
+
+
 def test_complete_appimage_verifier_rejects_additive_host_gio_modules(tmp_path):
     appdir = _fake_complete_appdir(tmp_path)
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
@@ -438,7 +481,8 @@ def test_managed_appimage_children_preserve_host_library_paths():
         source_root / "desktop_auth.rs": ("scrub_appimage_python_env_tokio(&mut cmd)", 1),
         source_root / "install.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
         source_root / "preflight/managed.rs": ("scrub_appimage_python_env_tokio(&mut cmd)", 2),
-        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 3),
+        # One spawn path plus the unit tests that live in the same file.
+        source_root / "process.rs": ("scrub_appimage_python_env(&mut cmd)", 4),
         source_root / "update.rs": ("scrub_appimage_python_env(&mut cmd)", 1),
     }
     assert "scrub_appimage_library_path" in process_source
@@ -446,6 +490,10 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert "starts_with(&appdir)" in process_source
     assert 'cmd.env_remove("PYTHONHOME")' in process_source
     assert 'cmd.env_remove("PYTHONPATH")' in process_source
+
+    # The AppRun parks the host value under the name process.rs restores it from.
+    assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in APPRUN.read_text(encoding = "utf-8")
+    assert "UNSLOTH_HOST_LD_LIBRARY_PATH" in process_source
 
     # Cover std children, Tokio children, and host launchers.
     production_source = process_source.split('#[cfg(all(test, target_os = "linux"))]', 1)[0]

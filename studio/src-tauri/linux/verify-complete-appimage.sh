@@ -42,6 +42,13 @@ if grep -aEq '^[[:space:]]*(export[[:space:]]+)?LD_LIBRARY_PATH=' "${launchers[@
   exit 1
 fi
 
+# An inherited LD_LIBRARY_PATH outranks the $ORIGIN RUNPATHs below.
+if ! grep -aEq '^[[:space:]]*unset[[:space:]]+LD_LIBRARY_PATH([[:space:]]|$)' \
+  "${launchers[@]}" 2>/dev/null; then
+  echo "Complete AppImage does not clear an inherited LD_LIBRARY_PATH" >&2
+  exit 1
+fi
+
 if ! grep -Rqs 'GIO_MODULE_DIR=' \
   "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
   echo "Complete AppImage does not isolate bundled GIO modules" >&2
