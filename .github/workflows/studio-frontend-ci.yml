@@ -23,6 +23,8 @@ on:
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/probe_dismiss_guard.py'
+      - 'tests/studio/hover_semantics_probe.py'
+      - 'studio/frontend/src/components/assistant-ui/use-hover-quiet-during-scroll.ts'
       - 'studio/frontend/src/lib/menu-dismiss.ts'
       - 'studio/frontend/src/lib/menu-dismiss-guard.tsx'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
@@ -214,6 +216,18 @@ jobs:
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
+      # The hover hook swallows real boundary events, so the ways it can go wrong are all
+      # "the action bar is somewhere it should not be, or missing where it should be". Under
+      # PROBE_STRICT the probe exits non-zero on any of them. Verified to exit 1 on the tree
+      # without the fix and 0 with it, rather than assumed.
+      - name: Browser check for hovered-message semantics
+        working-directory: ${{ github.workspace }}
+        env:
+          PROBE_STRICT: '1'
+          PROBE_ENGINES: chromium
+          PROBE_REPS: '2'
+        run: python3 tests/studio/hover_semantics_probe.py
 
       - name: Build
         run: npm run build

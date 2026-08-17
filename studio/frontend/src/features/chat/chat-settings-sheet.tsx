@@ -1098,7 +1098,12 @@ export function ChatSettingsPanel({
                 Measured on chromium at 420x900 with the pointer never moving: the menu mounted
                 at t=33 ms and was gone by t=208 ms, so it could not be opened at all. Staying
                 modal there costs nothing, because the Sheet has already parked
-                pointer-events:none on the body and there is no second invalidation to save. */}
+                pointer-events:none on the body and there is no second invalidation to save.
+
+                Note the MenuDismissGuard below is still mounted in the mobile case. Radix mounts
+                content whenever the menu is open, modal or not, so the guard arms alongside the
+                shield rather than instead of it. Both swallow the same dismissing click, which
+                is harmless: dismissal still costs exactly one click, as it always has. */}
                 <DropdownMenu modal={isMobile}>
                   <DropdownMenuTrigger asChild={true}>
                     <div

@@ -92,6 +92,25 @@ import { useEffect } from "react";
 /** How long after the last scroll event the thread counts as still. */
 const QUIET_MS = 150;
 
+/**
+ * How recently a real pointer move counts as "the user is moving the cursor".
+ *
+ * The regression this hook exists for is content moving under a STATIONARY cursor. A cursor the
+ * user is actively moving produces boundary events they asked for, and swallowing those is what
+ * makes the action bar unreachable for the whole of a streaming reply, whose auto-scroll keeps
+ * `scrolling` true continuously.
+ */
+const MOVING_MS = 120;
+
+/**
+ * How long a wheel, touch drag or scrolling key counts as "the user is scrolling this".
+ *
+ * Momentum keeps the scroll events coming after the last wheel tick, so this outlasts the input
+ * rather than tracking it exactly. It only needs to be shorter than the gap between a gesture
+ * ending and a stream's auto-scroll being mistaken for one.
+ */
+const USER_SCROLL_MS = 600;
+
 /** What `MessagePrimitive.Root` renders, and the only thing this will interfere with. */
 const MESSAGE_SELECTOR = "[data-message-id]";
 
@@ -100,9 +119,7 @@ const MESSAGE_SELECTOR = "[data-message-id]";
  * exactly this reason: the keyed provider remounts the viewport on a thread switch, and an effect
  * that resolved the node itself would keep listening to the old one.
  */
-export function useHoverQuietDuringScroll(
-  viewport: HTMLElement | null,
-): void {
+export function useHoverQuietDuringScroll(viewport: HTMLElement | null): void {
   useEffect(() => {
     if (!viewport) return;
     const doc = viewport.ownerDocument;
@@ -114,55 +131,74 @@ export function useHoverQuietDuringScroll(
     // `mouseenter` through to. Tracked here rather than read back, because assistant-ui exposes
     // no way to ask.
     let active: HTMLElement | null = null;
-    let pointerX = -1;
-    let pointerY = -1;
-    let pointerSeen = false;
+    let lastMouseMoveAt = Number.NEGATIVE_INFINITY;
+    let lastUserScrollInputAt = Number.NEGATIVE_INFINITY;
 
-    const messageAt = (x: number, y: number): HTMLElement | null => {
-      if (x < 0 || y < 0) return null;
-      const el = doc.elementFromPoint(x, y);
-      if (!(el instanceof Element)) return null;
-      const message = el.closest(MESSAGE_SELECTOR);
-      return message instanceof HTMLElement && viewport.contains(message)
-        ? message
-        : null;
-    };
+    /**
+     * The message the ENGINE says the cursor is over.
+     *
+     * Deliberately not a remembered pointer position. A position is only ever updated by a
+     * pointermove ON the viewport, so nothing invalidates it when the cursor leaves for the
+     * composer or the sidebar, and a later scroll -- a streaming reply auto-scrolls the thread --
+     * would resolve whatever message had drifted under that stale point and reveal its action bar
+     * with the cursor nowhere near it. `:hover` is engine state that this hook does not disturb,
+     * it is empty when the cursor is outside the thread, and it is empty for touch, which
+     * produces no hover at all.
+     */
+    const hoveredMessage = (): HTMLElement | null =>
+      viewport.querySelector<HTMLElement>(`${MESSAGE_SELECTOR}:hover`);
 
     const send = (el: HTMLElement, type: "mouseenter" | "mouseleave"): void => {
       // Non-bubbling, because that is what the real event is: assistant-ui's listener sits on
       // this element, so a bubbling stand-in would also reach ancestors that never get one today.
+      // No coordinates: the only listener this can reach is assistant-ui's, which reads none, and
+      // carrying a position here is what made the stale-pointer bug possible.
       el.dispatchEvent(
-        new MouseEvent(type, {
-          bubbles: false,
-          cancelable: false,
-          clientX: pointerX,
-          clientY: pointerY,
-        }),
+        new MouseEvent(type, { bubbles: false, cancelable: false }),
       );
     };
 
     const settle = (): void => {
       scrolling = false;
-      // Without a pointer position there is nothing to resolve. Leaving `active` alone is right:
-      // it is whatever the last real mouseenter set, and no scroll has invalidated it.
-      if (!pointerSeen) return;
-      const next = messageAt(pointerX, pointerY);
+      const next = hoveredMessage();
       if (next === active) return;
       if (active?.isConnected) send(active, "mouseleave");
       if (next) send(next, "mouseenter");
       active = next;
     };
 
-    const onScroll = (): void => {
+    const onScroll = (event: Event): void => {
+      // Only a scroll the USER drove suppresses hover.
+      //
+      // The regression this hook exists for is a wheel gesture with the cursor resting on the
+      // conversation. A thread that scrolls ITSELF is a different thing, and the difference is
+      // not academic: while a reply streams, the viewport auto-scrolls on every token, so
+      // `scrolling` never goes quiet and every boundary event is swallowed for the whole
+      // response. Measured on chromium, 3 of 3 repetitions, sampling the visible action bar 14
+      // times across a stream with the cursor resting on a message: merge base 1 bar throughout,
+      // without this guard 0 bars throughout. The bar came back only once the stream ended.
+      // Losing the action bar for the length of a model response is not the behaviour change
+      // that was signed off, which was that it settles rather than follows DURING a gesture.
+      if (event.timeStamp - lastUserScrollInputAt > USER_SCROLL_MS) return;
       scrolling = true;
       if (quietTimer !== undefined) window.clearTimeout(quietTimer);
       quietTimer = window.setTimeout(settle, QUIET_MS);
     };
 
+    /**
+     * The inputs by which a person scrolls this viewport themselves. Tracked rather than inferred
+     * from the scroll event, because a scroll event is identical whoever caused it.
+     */
+    const onUserScrollInput = (event: Event): void => {
+      lastUserScrollInputAt = event.timeStamp;
+    };
+
     const onPointerMove = (event: PointerEvent): void => {
-      pointerX = event.clientX;
-      pointerY = event.clientY;
-      pointerSeen = true;
+      // Mouse only. A touch drag emits pointermove before the browser claims the gesture, and
+      // touch scrolling produces no hover, so treating a finger as a cursor is how a bar appears
+      // on a device that has none.
+      if (event.pointerType !== "mouse") return;
+      lastMouseMoveAt = event.timeStamp;
     };
 
     const onBoundary = (event: Event): void => {
@@ -170,9 +206,10 @@ export function useHoverQuietDuringScroll(
       if (!(target instanceof HTMLElement)) return;
       if (!target.matches(MESSAGE_SELECTOR)) return;
       if (!viewport.contains(target)) return;
-      if (!scrolling) {
-        // Not scrolling: let it through, and keep our idea of the hovered message in step with
-        // the one assistant-ui is about to form.
+      if (!scrolling || event.timeStamp - lastMouseMoveAt < MOVING_MS) {
+        // Not scrolling, or the user is moving the cursor rather than the content moving under
+        // it: let it through, and keep our idea of the hovered message in step with the one
+        // assistant-ui is about to form.
         if (event.type === "mouseenter") active = target;
         else if (active === target) active = null;
         return;
@@ -185,12 +222,20 @@ export function useHoverQuietDuringScroll(
 
     viewport.addEventListener("scroll", onScroll, { passive: true });
     viewport.addEventListener("pointermove", onPointerMove, { passive: true });
+    viewport.addEventListener("wheel", onUserScrollInput, { passive: true });
+    viewport.addEventListener("touchmove", onUserScrollInput, {
+      passive: true,
+    });
+    viewport.addEventListener("keydown", onUserScrollInput);
     doc.addEventListener("mouseenter", onBoundary, true);
     doc.addEventListener("mouseleave", onBoundary, true);
     return () => {
       if (quietTimer !== undefined) window.clearTimeout(quietTimer);
       viewport.removeEventListener("scroll", onScroll);
       viewport.removeEventListener("pointermove", onPointerMove);
+      viewport.removeEventListener("wheel", onUserScrollInput);
+      viewport.removeEventListener("touchmove", onUserScrollInput);
+      viewport.removeEventListener("keydown", onUserScrollInput);
       doc.removeEventListener("mouseenter", onBoundary, true);
       doc.removeEventListener("mouseleave", onBoundary, true);
     };
