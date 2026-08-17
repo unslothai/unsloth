@@ -439,6 +439,7 @@ async function syncInferenceStatusToStore(options?: {
         residentCheckpoint: null,
         modelRequiresTrustRemoteCode: false,
         loadedIsMultimodal: false,
+        loadedVisionDisabledByUser: null,
         loadedIsDiffusion: false,
       });
       // Known resident a moment ago, and nothing loading now. Both matter: a
@@ -1167,6 +1168,12 @@ export function useChatModelRuntime() {
             ? false
             : (pendingLoadConfig?.tensorParallel ??
               stateBeforeUnload.tensorParallel);
+          // The diffusion runner has no projector to skip, so the toggle is inert
+          // there for the same reason tensorParallel is.
+          const loadDisableVision = targetIsDiffusion
+            ? false
+            : (pendingLoadConfig?.disableVision ??
+              stateBeforeUnload.disableVision);
           const loadActivePresetSource = stateBeforeUnload.activePresetSource;
           const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
           const loadGpuMemoryMode =
@@ -1284,6 +1291,7 @@ export function useChatModelRuntime() {
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_ids: validateGpuIds ?? undefined,
               ...(isGguf
                 ? {
@@ -1518,6 +1526,7 @@ export function useChatModelRuntime() {
                 ? { n_ubatch: loadNUbatch }
                 : {}),
               tensor_parallel: loadTensorParallel,
+              disable_vision: loadDisableVision,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,
               n_cpu_moe: loadNCpuMoe,
@@ -1686,6 +1695,15 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              // Repaired from the echo like the knob above: loadDisableVision
+              // forces the flag off for a diffusion target without writing the
+              // store, so a Vision-off GGUF followed by a diffusion load would
+              // otherwise leave the switch off over a load that never sent it.
+              disableVision: loadResponse.disable_vision ?? false,
+              // Set alongside loadedIsMultimodal so the composer can say WHY
+              // images are unavailable.
+              loadedVisionDisabledByUser:
+                loadResponse.vision_disabled_by_user ?? false,
               ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
@@ -1860,6 +1878,9 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  // Restore the vision placement the previous model was running.
+                  disable_vision:
+                    stateBeforeUnload.loadedVisionDisabledByUser ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
@@ -1909,6 +1930,12 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  // The pre-switch value, NOT the echo: the replayed request is
+                  // gated on the model having a projector, so a text-only GGUF the
+                  // user switched off echoes false and would flip Vision back on.
+                  disableVision: stateBeforeUnload.disableVision,
+                  loadedVisionDisabledByUser:
+                    rollbackResponse.vision_disabled_by_user ?? false,
                   customContextLength:
                     stateBeforeUnload.loadedCustomContextLength,
                   loadedCustomContextLength:

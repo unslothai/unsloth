@@ -592,6 +592,9 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const loadedVisionDisabledByUser = useChatRuntimeStore(
+    (s) => s.loadedVisionDisabledByUser,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -671,6 +674,7 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    visionDisabledByUser: loadedVisionDisabledByUser,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -1168,6 +1172,7 @@ export function SharedComposer({
       const store = useChatRuntimeStore.getState();
       const trustRemoteCode = store.params.trustRemoteCode ?? false;
       const fallbackTensorParallel = store.tensorParallel;
+      const fallbackDisableVision = store.disableVision;
       const specSettings = resolveSpeculativeSettingsForLoad({
         usePersistedPreference: true,
       });
@@ -1350,6 +1355,13 @@ export function SharedComposer({
           : ownRemembered
             ? ownConfig.tensorParallel
             : fallbackTensorParallel;
+        // The diffusion runner has no projector to skip, so the toggle is inert
+        // there for the same reason tensorParallel is.
+        const effectiveDisableVision = resolvedIsDiffusion
+          ? false
+          : ownRemembered
+            ? ownConfig.disableVision
+            : fallbackDisableVision;
         if (ownConfig.selectedGpuIds != null) {
           await ensureGpuDeviceCache();
         }
@@ -1417,6 +1429,7 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           cache_type_kv: ownConfig.kvCacheDtype ?? null,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           // Scope the validate to the picked GPUs. GGUF-only, like the load
           // below: a non-GGUF target must not inherit a hidden GGUF GPU pick.
           ...(targetIsGguf
@@ -1506,6 +1519,7 @@ export function SharedComposer({
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
           tensor_parallel: effectiveTensorParallel,
+          disable_vision: effectiveDisableVision,
           force_cancel_active:
             compareStopDecision?.forceCancelActive ?? false,
           ...(targetIsGguf
@@ -1607,6 +1621,10 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          // Adopted from the echo like the knob above: this pane loaded its own
+          // model, so the editable value must follow it or Advanced Settings
+          // shows the other pane's Vision state.
+          disableVision: resp.disable_vision ?? false,
           defaultChatTemplate: resp.chat_template ?? null,
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -1621,6 +1639,9 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          // Set alongside loadedIsMultimodal so the composer can say WHY images
+          // are unavailable in compare mode too.
+          loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use

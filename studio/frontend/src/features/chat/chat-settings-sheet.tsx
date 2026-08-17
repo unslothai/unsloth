@@ -539,6 +539,7 @@ export function ChatSettingsPanel({
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
+  const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const nBatch = useChatRuntimeStore((s) => s.nBatch);
@@ -678,6 +679,7 @@ export function ChatSettingsPanel({
     gpuLayers,
     nCpuMoe,
     tensorParallel,
+    disableVision,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -700,6 +702,7 @@ export function ChatSettingsPanel({
       gpuLayers,
       nCpuMoe,
       tensorParallel,
+      disableVision,
       speculativeType,
       specDraftNMax,
       nParallel,

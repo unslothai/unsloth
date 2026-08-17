@@ -2341,6 +2341,11 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
+  disableVision: boolean;
+  /** Backend-reported: image input is off by request, not by absence of a
+   *  projector. Null until first hydrated. */
+  loadedVisionDisabledByUser: boolean | null;
   /** GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and context
    *  to fit; "manual" = you own the offload (gpuLayers < 0 = Auto/--fit, >= 0
    *  pins layers + nCpuMoe). */
@@ -3404,6 +3409,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedNUbatch: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  disableVision: false,
+  loadedVisionDisabledByUser: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
   loadedCpuFallback: false,
@@ -4115,6 +4122,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedNUbatch: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+      disableVision: false,
+      loadedVisionDisabledByUser: null,
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,

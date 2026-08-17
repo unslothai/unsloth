@@ -310,6 +310,7 @@ export async function validateModel(
       load_in_4bit: payload.load_in_4bit,
       cache_type_kv: payload.cache_type_kv ?? null,
       tensor_parallel: payload.tensor_parallel ?? false,
+      disable_vision: payload.disable_vision ?? false,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp --fit, a pinned
       // layer count is owned by the user. Tell validate so it applies the same policy as /load.

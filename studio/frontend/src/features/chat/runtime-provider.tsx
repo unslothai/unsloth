@@ -218,6 +218,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       loadedIsMultimodal: state.loadedIsMultimodal,
       modelLoaded,
       loadError: state.lastModelLoadError,
+      visionDisabledByUser: state.loadedVisionDisabledByUser,
     });
     if (unavailableReason) {
       toast.error(unavailableReason);
