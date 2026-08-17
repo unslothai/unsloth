@@ -13,8 +13,8 @@ import { preprocessLaTeX } from "../src/lib/latex.ts";
 const processStreamingText = (text: string): string =>
   stabilizeStreamingMarkdown(preprocessLaTeX(text), true);
 
-// Rebuilding the retained prefix produces the same block list it discarded, so
-// nothing the cache returns records that it happened. The counter does.
+// A rebuild produces the same block list it discarded, so only the counter
+// records that it happened.
 const rebuilds = (cache: IncrementalMarkdownCache): number =>
   (cache as unknown as { retainedPrefixRebuilds: number })
     .retainedPrefixRebuilds;
@@ -24,14 +24,14 @@ const rebuilds = (cache: IncrementalMarkdownCache): number =>
 const rewound = (cache: IncrementalMarkdownCache): number =>
   (cache as unknown as { rewoundCharacters: number }).rewoundCharacters;
 
-// `parseMarkdownIntoBlocks("")` splits to nothing, so calling the cache's own
-// callback with an empty string returns exactly the blocks it has retained.
+// `parseMarkdownIntoBlocks("")` splits to nothing, so passing an empty string
+// returns exactly the blocks the cache has retained.
 const retainedBlocks = (render: {
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 }): string[] => render.parseMarkdownIntoBlocks("");
 
-// Prose, inline math, display math, a list, a fenced block and currency, which
-// is what an answer to a modelling question actually looks like.
+// Prose, inline math, display math, a list, a fence and currency: what an
+// answer to a modelling question actually looks like.
 const REPLY_UNITS = [
   "The residual term \\(r_i = y_i - \\hat{y}_i\\) shrinks as the fit improves.\n\n",
   "Rewriting gives\n\n\\[ L(\\theta) = \\sum_i (y_i - \\theta x_i)^2 \\]\n\nwhich is convex.\n\n",
@@ -47,8 +47,8 @@ const buildReply = (units: number): string =>
     (_, index) => REPLY_UNITS[index % REPLY_UNITS.length],
   ).join("");
 
-// The same reply with every rewritten construct spelled out, so the pipeline
-// output only ever grows. This is the control arm.
+// Control arm: every rewritten construct spelled out, so the pipeline output
+// only ever grows.
 const plainVariant = (reply: string): string =>
   reply
     .replaceAll("\\(", "(")
@@ -75,10 +75,9 @@ function streamReply(
 }
 
 test("a LaTeX or currency rewrite never rebuilds the retained prefix", () => {
-  // `\(...\)` becoming `$...$`, `\[...\]` becoming a `$$` block and `$1,200`
-  // becoming `\$1,200` each rewrite text an earlier frame already emitted. Every
-  // one of those edits lands in the live tail, so no retained block is affected
-  // and the prefix has to survive all of them.
+  // `\(...\)` -> `$...$`, `\[...\]` -> a `$$` block and `$1,200` -> `\$1,200`
+  // each rewrite text an earlier frame emitted, but all land in the live tail,
+  // so the prefix has to survive every one.
   const reply = buildReply(120);
   assert.ok(reply.length > 8_000, `fixture too small: ${reply.length}`);
 
@@ -89,15 +88,15 @@ test("a LaTeX or currency rewrite never rebuilds the retained prefix", () => {
     0,
     `retained prefix rebuilt ${rebuilds(cache)} times over ${frames} frames`,
   );
-  // Never rebuilding is also what never retaining looks like, and that would be
-  // the whole reply repaired and lexed on every frame. Pin the retention too.
+  // Never rebuilding also looks like never retaining, which would re-lex the
+  // whole reply every frame. Pin the retention too.
   assert.ok(
     retained > reply.length * 0.8,
     `retained only ${retained} of ${reply.length} characters`,
   );
 
-  // The control. A discard here would mean the fixture, not the rewrite, is
-  // what the first assertion measures.
+  // Control: a discard here would mean the first assertion measures the
+  // fixture, not the rewrite.
   const plain = streamReply(plainVariant(reply), 24);
   assert.equal(rebuilds(plain.cache), 0);
   assert.ok(plain.retained > reply.length * 0.8);
@@ -105,9 +104,8 @@ test("a LaTeX or currency rewrite never rebuilds the retained prefix", () => {
 
 test("a rewrite behind the live tail keeps the blocks it cannot reach", () => {
   // `LATEX_DELIM_RE` lets an inline span run 4,096 characters across newlines,
-  // so a `\(` that only closes several paragraphs later rewrites text that has
-  // already been committed. Everything before the opener is untouched by that
-  // rewrite and has to survive it.
+  // so a `\(` closing several paragraphs later rewrites already committed text.
+  // Everything before the opener is untouched and has to survive.
   const lead = Array.from(
     { length: 30 },
     (_, index) => `Lead paragraph ${index}.\n\n`,
@@ -151,12 +149,10 @@ test("a rewrite behind the live tail keeps the blocks it cannot reach", () => {
     `kept ${atClose.length} characters, past the ${lead.length} the rewrite ` +
       "cannot reach",
   );
-  // It also may not give back the whole prefix, which is what a rebuild looks
-  // like from the outside. The rewind stops a rollback window short of the
-  // change, so the bound is the text before the opener minus that window, not
-  // the text before the opener. The retained prefix alone cannot show
-  // over-rewinding, because the same update re-commits what it gave back; the
-  // counter is what does not recover.
+  // Giving back the whole prefix is what a rebuild looks like from outside. The
+  // rewind stops a rollback window short of the change, so the bound is the text
+  // before the opener minus that window. Only the counter shows over-rewinding:
+  // the same update re-commits what the retained prefix gave back.
   assert.ok(
     atClose.length > lead.length * 0.7,
     `expected most of the ${lead.length} characters before the opener to ` +
@@ -169,9 +165,9 @@ test("a rewrite behind the live tail keeps the blocks it cannot reach", () => {
 });
 
 test("a closing fence rewrites its own body without a rebuild", () => {
-  // A fence closing turns its body into code, so a `$1` inside it stops being
-  // escaped. The opener is never behind the commit boundary, because an open
-  // fence lexes to a single live block, so this rewind keeps everything.
+  // A closing fence turns its body into code, so a `$1` inside stops being
+  // escaped. An open fence lexes to a single live block, so the opener is never
+  // behind the commit boundary and this rewind keeps everything.
   const lead = Array.from(
     { length: 40 },
     (_, index) =>
@@ -209,11 +205,10 @@ test("a closing fence rewrites its own body without a rebuild", () => {
 });
 
 test("retaining across a rewrite still matches a full Streamdown split", () => {
-  // The output guard. Whatever the cache retains, the block list it hands
-  // Streamdown has to stay the one a whole-document parse produces. This is the
-  // assertion that would catch a rewind keeping a block the edit did reach.
-  // The third shape is the one that makes the rewind drop blocks rather than
-  // just reseat the tail, which is the branch with something to get wrong.
+  // The output guard: whatever is retained, the block list handed to Streamdown
+  // must match a whole-document parse. Catches a rewind keeping a block the edit
+  // reached. The third shape makes the rewind drop blocks rather than just
+  // reseat the tail, which is the branch with something to get wrong.
   const spanning = `${Array.from(
     { length: 12 },
     (_, index) => `Lead paragraph ${index}.\n\n`,
@@ -222,16 +217,15 @@ test("retaining across a rewrite still matches a full Streamdown split", () => {
     (_, index) => `span line ${index}\n\n`,
   ).join("")}\\) done\n\n`;
 
-  // Two spans in a row, so a second rewind has to land on commit points the
-  // first one already trimmed.
+  // Two spans in a row, so a second rewind lands on commit points the first
+  // already trimmed.
   const twice = `${spanning}${spanning}`;
 
   // A `\[...\]` whose body spans blank lines. Closing it emits `\n$$\n`, whose
-  // leading newline lands against the blank line in front of the opener, and
-  // Marked reads a run of blank lines as ONE separator block, so the block
-  // before the rewrite is re-segmented even though its own characters never
-  // moved. The body needs enough blank-line-separated chunks for the separator
-  // in front of the opener to have been committed at all.
+  // leading newline lands against the blank line before the opener, and Marked
+  // reads a run of blank lines as ONE separator block, so the block before the
+  // rewrite is re-segmented though its characters never moved. The body needs
+  // enough chunks for that separator to have been committed at all.
   const displayBody = `${Array.from(
     { length: 5 },
     (_, index) => `s${index}\n\n`,
@@ -260,11 +254,11 @@ test("retaining across a rewrite still matches a full Streamdown split", () => {
 });
 
 test("a rewind restores the repair context of the commit it lands on", () => {
-  // Rewinding the block list is only half of it. `advanceContext` accumulates
-  // the emphasis markers the retained prefix carries into the tail repair and
-  // cannot be undone, so the commit's own context has to come back with it.
-  // The span body opens single underscores, which is what makes the context
-  // after the rewind differ from the context before the span.
+  // Rewinding the block list is only half of it: `advanceContext` accumulates
+  // the emphasis markers the prefix carries into the tail repair and cannot be
+  // undone, so the commit's own context has to come back too. The span body
+  // opens single underscores, which makes the context after the rewind differ
+  // from the one before the span.
   const tail =
     "Then _under first_ and **bold second** mixed\n\n`code *star* span`\n\nend\n\n";
   const reply = `${Array.from(
@@ -288,13 +282,12 @@ test("a rewind restores the repair context of the commit it lands on", () => {
 });
 
 test("an edit that closes up a blank line cannot keep the block before it", () => {
-  // Unchanged characters are not enough to keep a block. Marked reads
-  // `paragraph 0\n` followed by new text as a lazy continuation, so an edit at
-  // exactly a commit boundary re-segments the paragraph in front of it even
-  // though that paragraph's own characters never moved. `preprocessLaTeX` does
-  // not produce this today, because every rewrite it makes diverges on a `\` or
-  // a `$` and neither can join two lines, but nothing downstream of it is
-  // required to keep that true, so the boundary rule has to stand on its own.
+  // Unchanged characters are not enough to keep a block: Marked reads
+  // `paragraph 0\n` plus new text as a lazy continuation, so an edit at exactly
+  // a commit boundary re-segments the paragraph before it though that
+  // paragraph's characters never moved. `preprocessLaTeX` cannot produce this
+  // today (its rewrites diverge on a `\` or `$`, neither of which joins two
+  // lines), but nothing downstream owes us that, so the rule stands alone.
   const paragraphs = Array.from(
     { length: 60 },
     (_, index) => `paragraph ${index}\n\n`,
@@ -328,19 +321,19 @@ test("an edit that closes up a blank line cannot keep the block before it", () =
 });
 
 test("a reply with math streams near the cost of one without", () => {
-  // The rebuild is invisible in the output and only shows as time, so pin the
-  // time too. The arms are interleaved and the reported figure is a ratio,
-  // because absolute milliseconds move with whatever else the host is running.
-  // The rebuild costs the whole reply, so the gap only opens up with length.
-  // At 4,600 characters it is 1.7x and this would prove nothing.
+  // The rebuild shows only as time, so pin the time too. The arms are
+  // interleaved and the figure is a ratio, because absolute milliseconds move
+  // with whatever else the host runs. The rebuild costs the whole reply, so the
+  // gap only opens with length: at 4,600 characters it is 1.7x and proves
+  // nothing.
   const reply = buildReply(300);
   assert.ok(reply.length > 20_000, `fixture too small: ${reply.length}`);
   const plain = plainVariant(reply);
   const mathTimes: number[] = [];
   const plainTimes: number[] = [];
 
-  // Untimed. The math arm runs first every repeat, so without this it pays the
-  // JIT warmup for both and reads about 1.7x instead of about 1.2x.
+  // Untimed warmup. The math arm runs first every repeat, so without this it
+  // pays the JIT cost for both and reads about 1.7x instead of about 1.2x.
   streamReply(reply, 24);
   streamReply(plain, 24);
 
@@ -351,17 +344,17 @@ test("a reply with math streams near the cost of one without", () => {
     started = performance.now();
     streamReply(plain, 24);
     plainTimes.push(performance.now() - started);
-    // Both arms have to be doing the retained-prefix work for the ratio to
-    // measure the rewind rather than two equally slow paths.
+    // Both arms must be doing the retained-prefix work, or the ratio compares
+    // two equally slow paths.
     assert.ok(math.retained > reply.length * 0.8);
   }
 
-  // The minimum is the un-preempted cost, which is the one comparable figure on
-  // a host running other work.
+  // The minimum is the un-preempted cost, the one comparable figure on a host
+  // running other work.
   const fastest = (values: number[]): number => Math.min(...values);
   const ratio = fastest(mathTimes) / fastest(plainTimes);
-  // Measured at 9.8x on this fixture before the rewind and 1.1x to 1.2x after,
-  // so a threshold of 4 has room on a loaded host in both directions.
+  // Measured 9.8x before the rewind and 1.1x-1.2x after, so a threshold of 4
+  // has room in both directions on a loaded host.
   assert.ok(
     ratio < 4,
     `math reply cost ${ratio.toFixed(1)}x the plain reply ` +

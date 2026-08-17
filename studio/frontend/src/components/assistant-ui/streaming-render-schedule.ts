@@ -596,8 +596,8 @@ type CommitBoundary = {
 };
 
 // Where one commit left the retained prefix. `advanceContext` only ever adds
-// facts, so a context cannot be undone; keeping the value each commit produced
-// is what lets the prefix be rewound to an earlier boundary.
+// facts and cannot be undone, so each commit's context is stored to allow a
+// rewind to an earlier boundary.
 type CommitPoint = {
   blockCount: number;
   length: number;
@@ -614,11 +614,11 @@ function sharedPrefixLength(left: string, right: string): number {
 }
 
 // Does `text` end at a blank line, counting the start of the document as one?
-// Unchanged characters are not enough to keep a block across a rewrite: Marked
-// reads `paragraph\n` followed by new text as a lazy continuation, so an edit
-// that closes up a blank line re-segments the paragraph before it even though
-// that paragraph's own characters never moved. `\r` counts as line-ending
-// whitespace, so a CRLF reply is read the same way as an LF one.
+// Unchanged characters alone cannot keep a block across a rewrite: Marked reads
+// `paragraph\n` plus new text as a lazy continuation, so an edit that closes up
+// a blank line re-segments the paragraph before it even though that paragraph's
+// characters never moved. `\r` counts as line-ending whitespace, so CRLF reads
+// the same as LF.
 function endsAtBlankLine(text: string, end: number): boolean {
   if (end === 0) {
     return true;
@@ -638,12 +638,11 @@ function endsAtBlankLine(text: string, end: number): boolean {
   return true;
 }
 
-// The last blank line at or before `limit`, or 0 for none. A commit boundary
-// does not have to land on the blank line itself: an untouched blank line
-// between the boundary and the rewrite carries most of the insulation, and a
-// commit often ends on the block before its separator. It is not the whole of
-// it: see `rewindToRewrite`, which also keeps the rollback window's worth of
-// blocks between the boundary it lands on and the first changed character.
+// The last blank line at or before `limit`, or 0 for none. An untouched blank
+// line between the boundary and the rewrite carries most of the insulation, so
+// the boundary need not land on the blank line itself. Not all of it: see
+// `rewindToRewrite`, which also keeps a rollback window of blocks between the
+// boundary and the first changed character.
 function lastBlankLineEnd(text: string, limit: number): number {
   for (let end = limit; end > 0; end -= 1) {
     if (endsAtBlankLine(text, end)) {
@@ -702,11 +701,10 @@ export class IncrementalMarkdownCache {
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
   private droppedRetainedBlocks = false;
-  // How often a rewrite discarded the whole retained prefix, and how many of
-  // its characters a rewind handed back to the live tail. Both redo work whose
-  // result is identical to what they discarded, and the next update commits the
-  // same boundary again, so time is the only thing that shows either happening.
-  // Tests read these to hold the rewind path in place.
+  // How often a rewrite discarded the whole retained prefix, and how many
+  // characters a rewind handed back to the live tail. Both redo work with an
+  // identical result, so time is the only other evidence they happened. Tests
+  // read these to hold the rewind path in place.
   private retainedPrefixRebuilds = 0;
   private rewoundCharacters = 0;
   // Bumped only when the Markdown string alone cannot signal a changed render.
@@ -746,26 +744,25 @@ export class IncrementalMarkdownCache {
     return this.render(remend(markdown));
   }
 
-  // The text handed to the cache is not always an extension of the last one.
-  // `preprocessLaTeX` rewrites a span it already emitted whenever a `\(...\)`
-  // closes, a `\[...\]` becomes a `$$` block, or a currency `$` turns out not to
-  // open math; a closing fence rewrites its own body the same way. Each of those
-  // edits one span, so rewind the retained prefix to the last commit the rewrite
-  // can neither reach nor re-segment instead of discarding the whole prefix.
-  // Returns false when nothing survives and the caller has to start over.
-  // Mutates nothing before that answer is known, so the reset fallback never
-  // sees a half-rewound cache. `fullDocumentMode` cannot be set here: it is only
-  // raised by `renderFullDocument`, which clears `commitPoints` first, so the
-  // guard below has already returned.
+  // The text handed to the cache is not always an extension of the last one:
+  // `preprocessLaTeX` rewrites an already emitted span when a `\(...\)` closes,
+  // a `\[...\]` becomes a `$$` block or a currency `$` turns out not to open
+  // math, and a closing fence rewrites its own body. Each edits one span, so
+  // rewind to the last commit the rewrite can neither reach nor re-segment
+  // rather than discarding the whole prefix. Returns false when nothing
+  // survives and the caller has to start over; mutates nothing before then, so
+  // the reset fallback never sees a half-rewound cache. `fullDocumentMode`
+  // cannot be set here: only `renderFullDocument` raises it, and it clears
+  // `commitPoints` first, so the guard below has already returned.
   private rewindToRewrite(markdown: string): boolean {
     if (this.commitPoints.length === 0) {
       return false;
     }
 
-    // Characters the rewrite left alone. The usual case is a rewrite inside the
-    // live tail, and `slice` on a long string shares the original's characters,
-    // so that case costs one native comparison plus a scan of the tail, which
-    // is about to be re-lexed anyway, rather than a scan of the reply.
+    // Characters the rewrite left alone. Usually the rewrite is inside the live
+    // tail, and `slice` shares the original's characters, so that case costs
+    // one native comparison plus a scan of the tail (about to be re-lexed
+    // anyway) rather than a scan of the whole reply.
     const committedPrefix = this.source.slice(0, this.committedLength);
     const shared = markdown.startsWith(committedPrefix)
       ? this.committedLength +
@@ -776,14 +773,13 @@ export class IncrementalMarkdownCache {
     // at the last blank line the rewrite left intact.
     const safeLimit = lastBlankLineEnd(this.source, shared);
 
-    // A blank line is still not enough on its own. A blank line is not a wall:
-    // Marked merges a run of them into one separator block, so a rewrite that
-    // inserts a newline (which `\[...\]` -> `\n$$\n` does) re-segments the
-    // separator in front of it, and a list or an indented code block reopens
-    // across one. The append path already answers this: it only trusts a
-    // boundary once ROLLBACK_BLOCKS blocks sit behind it. Ask the rewind for
-    // the same margin, measured from the first changed character. Counting
-    // backwards from the end costs only the blocks the rewrite is near.
+    // A blank line is not a wall either: Marked merges a run of them into one
+    // separator block, so inserting a newline (as `\[...\]` -> `\n$$\n` does)
+    // re-segments the separator in front of it, and a list or indented code
+    // block reopens across one. So demand the same margin the append path
+    // requires -- ROLLBACK_BLOCKS blocks behind the boundary -- measured from
+    // the first changed character. Counting backwards costs only the blocks
+    // near the rewrite.
     let blocksBeforeLimit = this.committedBlocks.length;
     let scanned = this.committedLength;
     while (blocksBeforeLimit > 0 && scanned > safeLimit) {
