@@ -435,6 +435,22 @@ test("the reply only grows through the one call that keeps the trackers in step"
   }
 });
 
+/** Anchors and shapes this file matches against the adapter source. */
+const SSE_LOOP_START = "for await (const chunk of stream) {";
+const SSE_LOOP_END = "} catch (streamError) {";
+const STRIP_CALL_SITE = "stripTrailingTemplatePlaceholder(cumulativeText)";
+const STRIP_CALL_SITES = /stripTrailingTemplatePlaceholder\(cumulativeText\)/g;
+const STRIP_GATE_HEAD =
+  /if \(\s*isExternalRequest &&\s*producedReplyText &&\s*placeholderWatch\.isCandidate\(\)\s*\) \{/;
+const STRIP_GATE =
+  /if \(\s*isExternalRequest &&\s*producedReplyText &&\s*placeholderWatch\.isCandidate\(\)\s*\) \{\s*const stripped =\s*$/;
+const STRIP_ANYWHERE = /stripTrailingTemplatePlaceholder\(/;
+const FLAG_WRITES = /producedReplyText = true;/g;
+const CUT_GUARD = /if \(stripped\.length !== cumulativeText\.length\) \{/;
+const CUT_KEPT = /cumulativeText = stripped;/;
+const FLAG_NEXT_TO_APPEND =
+  /streamedChars \+= reasoning\.length \+ delta\.length;\s*producedReplyText = true;/;
+
 /** The adapter between two anchors, without its comments. */
 function regionOf(from: string, to: string, maxChars = 60_000): string {
   const start = ADAPTER.indexOf(from);
@@ -466,32 +482,15 @@ test("the arrival loop touches the reply only in ways that cannot flatten it", (
     "} catch (streamError) {",
   );
 
-  // The strip is the one step allowed to flatten, so it and the repairs that
-  // follow a cut are checked as a block and then taken out of the scan below.
-  const stripStart = loop.indexOf(
-    "if (isExternalRequest && placeholderWatch.isCandidate()) {",
+  // Since #9098 the strip runs once on the finished reply rather than once per
+  // arrival, so nothing on this path is allowed to flatten at all and there is
+  // no carve-out. The strip block and its two tracker repairs are checked
+  // below the loop instead, in "the trailing strip runs on the finished reply".
+  assert.doesNotMatch(
+    loop,
+    STRIP_ANYWHERE,
+    "the strip is back inside the loop, where it both flattens the reply and sees prefixes of it rather than the reply",
   );
-  assert.notEqual(
-    stripStart,
-    -1,
-    "the strip is no longer gated by the watch, so it flattens on every arrival",
-  );
-  const stripEnd = loop.indexOf("\n              }", stripStart);
-  assert.notEqual(stripEnd, -1, "the strip block's end is gone");
-  const stripBlock = loop.slice(stripStart, stripEnd);
-  // Both trackers have to be repaired when a cut happens, and only then: a cut
-  // has already flattened the buffer, so reading it again there is free.
-  for (const repair of [
-    "thinkTags.retract(cumulativeText)",
-    "placeholderWatch.retract(cumulativeText)",
-  ]) {
-    assert.equal(
-      stripBlock.includes(repair),
-      true,
-      `${repair} is not inside the strip block, so it runs on arrivals that never cut`,
-    );
-  }
-  const outsideStrip = loop.slice(0, stripStart) + loop.slice(stripEnd);
 
   const allowed = [
     // `length` is stored on the cons string, so it never forces a copy.
@@ -499,7 +498,7 @@ test("the arrival loop touches the reply only in ways that cannot flatten it", (
   ];
 
   const mentions: string[] = [];
-  for (const line of outsideStrip.split("\n")) {
+  for (const line of loop.split("\n")) {
     if (!line.includes("cumulativeText")) {
       continue;
     }
@@ -514,17 +513,17 @@ test("the arrival loop touches the reply only in ways that cannot flatten it", (
     `these lines touch the accumulated reply on every arrival, which copies the whole reply each time:\n  ${mentions.join("\n  ")}`,
   );
 
-  // And the loop still does the work, so the list above cannot pass by the
-  // buffer having left the loop entirely.
+  // And the loop still handles the reply, so the empty list above cannot pass
+  // by the buffer having left the loop entirely.
   assert.equal(
-    stripBlock.includes("stripTrailingTemplatePlaceholder(cumulativeText)"),
-    true,
-    "the strip is gone from the loop; this test is no longer guarding anything",
-  );
-  assert.equal(
-    outsideStrip.includes("cumulativeText.length"),
+    loop.includes("cumulativeText.length"),
     true,
     "the loop no longer reads the reply's length; this test needs rewriting",
+  );
+  assert.equal(
+    loop.includes("appendCumulative(delta)"),
+    true,
+    "the loop no longer appends the delta; this test needs rewriting",
   );
 });
 
@@ -558,21 +557,104 @@ test("nothing on the arrival path is handed the accumulated reply", () => {
   }
 
   // The strip is the one step that has to touch the buffer when it fires, so
-  // it fires only when the watch says a fragment could be there.
+  // it still fires only when the watch says a fragment could be there. Since
+  // #9098 that is once per reply rather than once per arrival, which is why
+  // the ordering below is the watch and then the strip, both outside the loop.
   assert.match(
     source,
-    /if \(isExternalRequest && placeholderWatch\.isCandidate\(\)\) \{/,
+    STRIP_GATE_HEAD,
     "the strip is running unconditionally again",
   );
   const candidate = source.indexOf("placeholderWatch.isCandidate()");
   const strip = source.indexOf(
     "stripTrailingTemplatePlaceholder(cumulativeText)",
   );
-  const ask = source.indexOf("thinkTags.endsInsideThink()");
-  assert.equal(candidate !== -1 && strip !== -1 && ask !== -1, true);
+  assert.equal(candidate !== -1 && strip !== -1, true);
   assert.equal(
-    candidate < strip && strip < ask,
+    candidate < strip,
     true,
-    "the buffer must be asked about only after the strip has settled it",
+    "the buffer must not be touched before the watch has been asked",
+  );
+});
+
+test("the trailing strip runs on the finished reply, not on every arrival", () => {
+  // #9098. The pattern is anchored at the end, so running it once per arrival
+  // tested "ends with ${...}" against every PREFIX of the reply. The one
+  // arrival whose buffer ended at `...${name}` was cut, and reassigning the
+  // result made the cut permanent: "return `Hi, ${name}!`" arrived as
+  // "return `Hi,!`". Nothing about the pattern can fix that, only where it runs.
+  const source = withoutComments(ADAPTER);
+
+  const calls = source.match(STRIP_CALL_SITES) ?? [];
+  assert.equal(
+    calls.length,
+    1,
+    "one call site: the finished reply is stripped once, and a second site would be a second chance to cut a prefix",
+  );
+  const strip = source.indexOf(STRIP_CALL_SITE);
+
+  // After the loop and before the reply is turned into content, so the finished
+  // text is what gets stripped and what gets saved.
+  const loopEnd = source.indexOf(SSE_LOOP_END);
+  assert.notEqual(loopEnd, -1);
+  assert.equal(
+    loopEnd < strip,
+    true,
+    "the strip must sit after the SSE loop, not inside it",
+  );
+  const finalBuild = source.indexOf(
+    "buildAssistantContent(mergeContinuation(cumulativeText))",
+    strip,
+  );
+  assert.equal(
+    finalBuild > strip,
+    true,
+    "the finished reply is built before the strip runs, so the strip cannot reach what is saved",
+  );
+
+  // Still external-only, and still only where this run wrote reply text of its
+  // own. Local GGUF replies never leaked the fragment and must not start losing
+  // template literals to a strip that stopped being gated; a continuation that
+  // adds nothing holds the previous run's PARTIAL, which is a prefix, so
+  // trimming its tail would be #9098 one step in.
+  assert.match(
+    source.slice(Math.max(0, strip - 220), strip),
+    STRIP_GATE,
+    "the strip is no longer gated on an external request that produced text",
+  );
+
+  // The flag has to be set where the reply grows, not somewhere a skipped
+  // arrival can miss, and nowhere else.
+  const flagWrites = source.match(FLAG_WRITES) ?? [];
+  assert.equal(flagWrites.length, 1, "one place sets producedReplyText");
+  assert.match(
+    regionOf(SSE_LOOP_START, SSE_LOOP_END),
+    FLAG_NEXT_TO_APPEND,
+    "producedReplyText must be set next to the append, inside the loop",
+  );
+
+  // A cut still tells both trackers, and still only when it cuts.
+  const stripBlock = source.slice(strip, source.indexOf("\n        }", strip));
+  for (const repair of [
+    "thinkTags.retract(cumulativeText)",
+    "placeholderWatch.retract(cumulativeText)",
+  ]) {
+    assert.equal(
+      stripBlock.includes(repair),
+      true,
+      `${repair} is not inside the strip block`,
+    );
+  }
+  assert.match(
+    stripBlock,
+    CUT_GUARD,
+    "the trackers are repaired when nothing was cut",
+  );
+  // And the cut is kept. Dropping this line leaves a strip that computes the
+  // right answer and throws it away, which every other assertion here passes.
+  assert.match(
+    stripBlock,
+    CUT_KEPT,
+    "the strip's result is not assigned back, so nothing is actually removed",
   );
 });
