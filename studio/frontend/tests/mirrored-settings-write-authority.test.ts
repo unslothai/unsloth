@@ -113,6 +113,10 @@ test("a missing Deep Research timeout keeps the finite default", () => {
     loadTimeout,
     /if \(raw === null\) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;/,
   );
+  assert.match(
+    loadTimeout,
+    /catch \{\s*return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;\s*\}/,
+  );
 });
 
 test("only the legacy-storage fallback is non-authoritative", () => {
