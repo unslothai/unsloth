@@ -210,6 +210,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { useHoverQuietDuringScroll } from "@/components/assistant-ui/use-hover-quiet-during-scroll";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -1458,6 +1459,10 @@ export const Thread: FC<{
     },
     [viewportRef],
   );
+  // Wheel-scrolling with the cursor resting on the conversation changes the hovered message on
+  // every step, and each change costs about 90ms of main-thread work on a 300K-character thread.
+  // See use-hover-quiet-during-scroll.ts for the measurements and for why the cost is not local.
+  useHoverQuietDuringScroll(viewportEl);
 
   // Bottom spacer sizing. Invariant: chat never moves on its own on composer
   // resize.
