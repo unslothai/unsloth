@@ -75,15 +75,19 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
         health = xet_health()
     except Exception as exc:  # noqa: BLE001 - never let a health probe block a download
         logger.debug("Xet health probe failed, defaulting to Xet: %s", exc)
-        return (True, "Xet (health check unavailable)")
-    if health is None:
+        health, reason = None, "Xet (health check unavailable)"
+    else:
         # Older unsloth_zoo without the health module: no opinion, keep the existing default.
-        return (True, "Xet")
-    if health.use_xet:
-        pressure = _memory_pressure_reason()
-        if pressure is not None:
-            return (False, pressure)
-    return (bool(health.use_xet), str(health.reason))
+        reason = "Xet" if health is None else str(health.reason)
+    if health is not None and not health.use_xet:
+        return (False, reason)
+    # Health said Xet, or had no opinion at all. Free RAM is separate evidence, read from a
+    # different zoo module, so it still gets a say: a missing health module says nothing about
+    # whether this machine can afford Xet right now.
+    pressure = _memory_pressure_reason()
+    if pressure is not None:
+        return (False, pressure)
+    return (True, reason)
 
 
 def _memory_pressure_reason() -> Optional[str]:

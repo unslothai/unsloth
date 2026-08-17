@@ -675,3 +675,67 @@ def test_the_probe_survives_a_shim_without_the_free_ram_helper(monkeypatch):
     caps = download_registry.get_download_transport_capabilities(probe = True)
     assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
     assert caps.auto_reason == "Xet"
+
+
+def test_the_gate_runs_when_health_has_no_verdict(monkeypatch):
+    """Health lives in unsloth_zoo.hf_xet_health, free RAM in unsloth_zoo.hf_xet_tuning. A zoo too
+    old for the first says nothing about the second, so "no opinion" must not skip the RAM read."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: None
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "HTTP: only 2.0GB RAM free")
+
+
+def test_the_gate_runs_when_the_health_probe_raises(monkeypatch):
+    """Same for a health module that blows up: the failure is evidence about health, not about RAM."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = _boom
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "HTTP: only 2.0GB RAM free")
+
+
+def test_no_health_and_no_pressure_still_reads_as_xet(monkeypatch):
+    """The optimistic default survives when neither probe objects, including its wording."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    for health_fn, expected in (
+        (lambda **kw: None, "Xet"),
+        (_boom, "Xet (health check unavailable)"),
+    ):
+        fake = _types.ModuleType("utils.hf_xet_fallback")
+        fake.xet_health = health_fn
+        fake.free_ram_pressure_reason = lambda: None
+        monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+        assert dl.resolve_auto_use_xet() == (True, expected)
+
+
+def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
+    """Registry mirror of the above: the RAM read sits outside the health try, so a raising health
+    module cannot take the free-RAM verdict down with it."""
+
+    def _boom(**kw):
+        raise RuntimeError("no")
+
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = _boom
+    fake.xet_health = _boom
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
