@@ -321,10 +321,13 @@ const COMPLETION_HOLD_MS = ANIMATION_DURATION + 60;
  *   today.
  *
  * It restores in one step rather than widening progressively because Streamdown 2.5.0 keys blocks
- * positionally, so prepending remounts the whole body however little it adds; see
- * features/chat/utils/reasoning-window.ts. Widening was built and measured first, and it cost
- * frames of 207, 280, 646 and 846ms across four gestures. One restore is one of those, and it is
- * the last one: afterwards the pane is what it would have been without any of this.
+ * positionally. Not because that remounts them, which it does not -- prepending measures ZERO
+ * unmounts -- but because it shifts every block's content into a different slot, which re-parses
+ * all of them AND, through Streamdown's position-only memo on its default components, leaves some
+ * of them showing the text that used to be there. See features/chat/utils/reasoning-window.ts.
+ * Widening was built and measured first, and it cost frames of 207, 280, 646 and 846ms across four
+ * gestures. One restore is one of those, and it is the last one: afterwards the pane is what it
+ * would have been without any of this.
  */
 function ReasoningBody() {
   const { text, status } = useMessagePartText();

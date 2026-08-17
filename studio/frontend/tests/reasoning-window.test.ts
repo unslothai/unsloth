@@ -255,3 +255,16 @@ test("aligning inside a long unfinished fence does not rescan per blank line", (
   // Twenty aligns over a 140,000 character unfinished fence. Quadratic takes tens of seconds.
   assert.ok(elapsed < 4000, `${elapsed.toFixed(0)}ms for 20 aligns`);
 });
+
+test("a $$ inside inline code is prose about math, not math", () => {
+  const text = "Use `$$` delimiters.\n\n$$\na &= 1\n\nb &= 2\n$$\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("b &= 2")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("a link definition inside a fence is code, not a definition", () => {
+  const text = "```md\n[spec]: https://example.com/in-a-fence\n```\n\n" + "filler\n\n".repeat(50);
+  const start = alignWindowStart(text, 200);
+  assert.ok(start > 0);
+  assert.equal(linkDefinitionsBefore(text, start), "");
+});

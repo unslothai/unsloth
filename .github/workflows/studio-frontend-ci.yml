@@ -193,17 +193,23 @@ jobs:
       # chosen to sit ABOVE the 18,000 character point where the window engages, so CI exercises
       # the windowed path rather than only the short case.
       #
-      # SMOKE_RP_EXPECT_SPANS=0 is a recorded debt, not a shrug. The harness's span floor of
-      # 11,000 asserts the tree still builds highlight spans, and a windowed pane holds a bounded
-      # number of them by construction (about 2,600 here), so the floor cannot be met and cannot
-      # tell "windowed" from "highlighting broke". Restoring the guard needs a floor expressed
-      # against the pane's own mounted character count rather than against the whole body.
+      # SMOKE_RP_EXPECT_SPANS=0 turns off the span floor, which a windowed pane cannot meet: it
+      # holds a bounded number of spans by construction. That floor is the only check on the
+      # pane's CONTENT, and every other assertion in the harness is satisfied by a pane holding
+      # the whole body, so without a replacement this step would stay green with the window
+      # regressed away entirely and would measure nothing.
+      #
+      # SMOKE_RP_MAX_PANE_CHARS is that replacement, and it is the assertion that discriminates:
+      # 20,000 sits above the ~17,400 characters a windowed pane peaks at here and below the
+      # 22,500 an unwindowed one would hold, so this step is green only while the window bounds
+      # what stays mounted.
       - name: Browser smoke for the streaming thinking pane
         working-directory: ${{ github.workspace }}
         env:
           SMOKE_RP_CHARS: "22500"
           SMOKE_RP_ENGINES: chromium
           SMOKE_RP_EXPECT_SPANS: "0"
+          SMOKE_RP_MAX_PANE_CHARS: "20000"
         run: python3 tests/studio/playwright_reasoning_pane.py
 
       - name: Build

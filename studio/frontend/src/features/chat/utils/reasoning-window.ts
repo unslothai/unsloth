@@ -29,13 +29,30 @@
 //
 // It restores in ONE step rather than widening a bit at a time, and that is forced by the
 // renderer rather than chosen. Streamdown 2.5.0 keys its blocks positionally --
-// `Rn = J.map((k, A) => `${_}-${A}`)` with `_` a `useId()`, applied as `jsx(f, {...}, Rn[A])` --
-// and it also passes `index: A` and compares `e.index !== t.index` in the Block memo. Prepending
-// blocks shifts both for every block that was already mounted, so a widen remounts the entire
-// body no matter how little it adds. Measured: four widens cost frames of 207, 280, 646 and
-// 846ms. Neither the React key nor the index is reachable through `BlockComponent` or
-// `parseMarkdownIntoBlocksFn`, which are the only seams Streamdown exposes. Appending is free;
-// prepending is a full remount. That asymmetry is why the window grows downward or not at all.
+// `Rn = J.map((k, A) => `${_}-${A}`)` with `_` a `useId()`, applied as `jsx(f, {...}, Rn[A])`.
+//
+// The cost of prepending is NOT a remount, and it is worth saying so because the obvious reading
+// of positional keys is wrong. Prepend X to [A, B, C] and the keys stay `id-0`..`id-2` and gain
+// `id-3`; React matches by key, so every instance survives and only its `content` prop changes.
+// Measured directly against the shipped dist with a mount-counting BlockComponent: prepending one
+// block costs 2 mounts and ZERO unmounts, exactly the same as appending one. Upstream chose these
+// keys deliberately and says so in `index.tsx`: a content-hash key would remount the LAST block on
+// every streamed token, which is their common path.
+//
+// What prepending actually costs is that EVERY block's content prop changes, so every memo returns
+// false and every block re-parses and re-renders through the react-markdown pipeline, plus real
+// subtree replacement wherever the element type differs at its new position. Measured: four widens
+// cost frames of 207, 280, 646 and 846ms.
+//
+// And it is not only slow. Streamdown's DEFAULT Markdown components are memoised on the POSITION
+// of the node, `e.className === t.className && sameNodePosition(e.node, t.node)` over start and
+// end line and column only (vercel/streamdown#570, open). A block whose replacement happens to
+// occupy the same span keeps the output it already had, so the reader is shown text from elsewhere
+// in the reasoning. That is the reason this restores once and then stops, and it is why the
+// renderer is re-keyed on every window move rather than merely re-rendered.
+//
+// Neither the block key nor the index is reachable through `BlockComponent` or
+// `parseMarkdownIntoBlocksFn`, which are the only seams Streamdown exposes.
 
 /** Characters of thinking text kept mounted while the block streams and the reader is at the end. */
 export const REASONING_WINDOW_CHARS = 12_000;
@@ -94,10 +111,22 @@ function fenceMarker(rawLine: string): { char: string; length: number; info: str
   return { char, length, info: line.slice(index + length) };
 }
 
-/** How many `$$` markers a line carries, which is what flips display-math parity. */
+/**
+ * `line` with its inline code spans removed.
+ *
+ * A `$$` inside backticks is prose about display math, not display math, and counting it flips
+ * parity so that the REAL opener that follows flips it back. The scan then believes it is outside
+ * an equation while inside one, which is the failure this is all trying to avoid, reached by the
+ * one line of text most likely to appear in reasoning that discusses formatting.
+ * `updateDisplayMathParity` in streaming-render-schedule.ts skips inline code for the same reason.
+ */
+const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
+
+/** How many `$$` markers a line carries outside inline code, which is what flips parity. */
 function displayMathMarkers(line: string): number {
+  const bare = line.replace(INLINE_CODE, "");
   let count = 0;
-  for (let index = line.indexOf("$$"); index !== -1; index = line.indexOf("$$", index + 2)) {
+  for (let index = bare.indexOf("$$"); index !== -1; index = bare.indexOf("$$", index + 2)) {
     count += 1;
   }
   return count;
@@ -206,12 +235,17 @@ export function alignWindowStart(text: string, target: number): number {
 export function linkDefinitionsBefore(text: string, start: number): string {
   if (start <= 0) return "";
   const definitions: string[] = [];
+  // Carrying the same scan state, because `[label]: value` inside a fence is code that happens to
+  // look like a definition, and hoisting it out of its block would put text on screen that the
+  // model wrote as an example.
+  const state: ScanState = { fence: null, mathOpen: false };
   let lineStart = 0;
   while (lineStart < start) {
     let lineEnd = text.indexOf("\n", lineStart);
     if (lineEnd === -1 || lineEnd > start) lineEnd = start;
     const line = text.slice(lineStart, lineEnd);
-    if (LINK_DEFINITION.test(line)) definitions.push(line);
+    if (neutral(state) && LINK_DEFINITION.test(line)) definitions.push(line);
+    advance(state, line);
     lineStart = lineEnd + 1;
   }
   return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;

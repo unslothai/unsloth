@@ -189,6 +189,14 @@ INSTRUMENT = os.environ.get("SMOKE_RP_INSTRUMENT", "0") == "1"
 # right and the FIX was what removed the spans. What the fixture owes is that it SENT the content;
 # what the DOM does with it is the measurement.
 EXPECT_SPANS = os.environ.get("SMOKE_RP_EXPECT_SPANS", "1") == "1"
+# Upper bound on what the pane is allowed to keep mounted, in characters. Unset means no bound.
+#
+# The counterpart to EXPECT_SPANS, and the reason it exists: turning the span floor off to measure
+# a windowed tree removes the only check that the pane's CONTENT is what it should be, and every
+# other assertion here is satisfied by a pane holding the entire body. A run with the window
+# regressed away would then be green. This is the assertion that is false on the tree the window
+# is supposed to have fixed and true on the one it did.
+MAX_PANE_CHARS = int(os.environ.get("SMOKE_RP_MAX_PANE_CHARS", "0"))
 # Headed, under a real display, is not a nicety here.
 #
 # Headless has NO COMPOSITOR. Everything this file measures about layout and script is the same
@@ -775,6 +783,13 @@ def harness_failures(results: dict) -> list[str]:
                     "either the fixture is not the capture's content, or the tree under test "
                     "stopped building spans and this run wanted SMOKE_RP_EXPECT_SPANS=0"
                 )
+            peak_chars = max(r["reasoning_chars"] for r in rows)
+            if MAX_PANE_CHARS and peak_chars > MAX_PANE_CHARS:
+                bad.append(
+                    f"{where}: the pane peaked at {peak_chars:,} mounted characters against a "
+                    f"bound of {MAX_PANE_CHARS:,} over {size:,} sent; the window did not bound "
+                    "what stayed mounted, so this run measured an unwindowed tree"
+                )
             after = cell["after"]
             if after["reasoningCodeSpans"] != 0:
                 bad.append(
@@ -852,6 +867,7 @@ def main() -> int:
         "sample_ms": SAMPLE_MS,
         "instrumented": INSTRUMENT,
         "expect_spans": EXPECT_SPANS,
+        "max_pane_chars": MAX_PANE_CHARS,
         "headless": HEADLESS,
         "cpu_throttle": CPU_THROTTLE,
         "trace": TRACE,
