@@ -102,3 +102,24 @@ def test_an_unmarked_partial_is_not_resumable(cache):
     """No manifest and no marker: nothing attributes the partial to a writer that resumes."""
     _partial(cache, LEGACY_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+def test_a_siblings_resumable_partial_does_not_speak_for_this_one(cache):
+    """Two quants of one repo: this one's partial is nonce-named and doomed, the sibling's is
+    reopenable. The blob scan behind is_resumable_partial is repo-wide, so the sibling's bytes
+    must not answer for this row."""
+    _record("http", cache)
+    _partial(cache, NONCE_PARTIAL)
+    sibling = "b" * 64
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q8_0",
+        [ExpectedFile(path = "model-Q8_0.gguf", size = 4096, sha256 = sibling)],
+        "http",
+    )
+    download_registry._write_marker(cache, "http", "Q8_0")
+    _partial(cache, f"{sibling}{hf_cache_state.INCOMPLETE_SUFFIX}")
+
+    assert partial_resume_available("model", "Org/Model", "Q8_0") is True
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False

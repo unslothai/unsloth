@@ -993,10 +993,30 @@ def is_resumable_partial(
     from scratch, so the marker has to say HTTP. And an HTTP partial is only resumable while a
     writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
     the progress you already have", which must not be promised for bytes about to be swept.
+
+    With a ``variant`` the answer is about THAT variant: the blob scan is repo-wide, so a
+    sibling quant's reopenable partial would otherwise answer for a row of its own that is
+    about to be purged. The variant's manifest says which blobs are its own; without one there
+    is nothing to scope by, and an unscoped yes is the promise this guards against.
     """
     if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
         return False
-    return bool(incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True))
+    resumable = incomplete_blob_hashes(
+        repo_type, repo_id, active_only = True, resumable_only = True
+    )
+    if not resumable or variant is None:
+        return bool(resumable)
+    return bool(resumable & _manifest_blob_hashes(repo_type, repo_id, variant))
+
+
+def _manifest_blob_hashes(repo_type: str, repo_id: str, variant: Optional[str]) -> set[str]:
+    """Blob hashes the variant's own download manifest claims. Empty when unreadable."""
+    from hub.utils import download_manifest
+
+    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    if manifest is None:
+        return set()
+    return {file.sha256 for file in manifest.expected_files if file.sha256}
 
 
 def incomplete_blob_hashes(
