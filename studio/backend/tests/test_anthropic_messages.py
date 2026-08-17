@@ -2508,6 +2508,36 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
         )
 
 
+def test_user_thinking_block_rejected_not_silently_dropped():
+    # Thinking blocks are typed for assistant replay only; the converter drops
+    # them from user content, so accepting one there would lose the user turn.
+    from pydantic import ValidationError
+    for btype in ("thinking", "redacted_thinking"):
+        with pytest.raises(ValidationError):
+            AnthropicMessagesRequest(
+                model = "x",
+                max_tokens = 16,
+                messages = [{"role": "user", "content": [{"type": btype}]}],
+            )
+
+
+def test_think_markup_split_preserves_text_verbatim():
+    from routes.inference import _think_markup_to_blocks
+
+    # Reasoning-free output passes through untouched, whitespace included.
+    [block] = _think_markup_to_blocks("  indented\n  lines\n")
+    assert block.text == "  indented\n  lines\n"
+
+    # With markup, the trace and the answer keep their own bytes.
+    thinking, text = _think_markup_to_blocks("<think>why</think>\n\n  answer\n")
+    assert thinking.thinking == "why"
+    assert text.text == "\n\n  answer\n"
+
+    # Whitespace-only segments are dropped rather than emitted as empty blocks.
+    [only_thinking] = _think_markup_to_blocks("<think>why</think>\n\n")
+    assert only_thinking.thinking == "why"
+
+
 def test_user_null_content_rejected():
     # The null->"" leniency is assistant-only; a null user content must be rejected
     # at the boundary, not coerced into an empty prompt and forwarded to the model.

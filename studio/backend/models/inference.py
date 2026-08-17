@@ -2523,6 +2523,9 @@ class AnthropicToolResultBlock(BaseModel):
 _KNOWN_ANTHROPIC_BLOCK_TYPES = frozenset(
     {"text", "image", "tool_use", "tool_result", "thinking", "redacted_thinking"}
 )
+# Thinking blocks are replayed only in assistant turns; the converter drops them
+# from user content, so accepting them there would silently lose a user turn.
+_USER_ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_use", "tool_result"})
 
 
 class AnthropicUnknownBlock(BaseModel):
@@ -2637,7 +2640,7 @@ class AnthropicMessage(BaseModel):
                 # Guard the value: a non-string type is unsupported too, and a
                 # membership test on an unhashable value would raise TypeError
                 # (escaping as a 500 instead of a clean 400).
-                if not isinstance(btype, str) or btype not in _KNOWN_ANTHROPIC_BLOCK_TYPES:
+                if not isinstance(btype, str) or btype not in _USER_ANTHROPIC_BLOCK_TYPES:
                     raise ValueError(f"unsupported content block type {btype!r} in a user message")
         return data
 

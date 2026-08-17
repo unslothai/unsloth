@@ -20790,10 +20790,10 @@ def _think_markup_to_blocks(text: str) -> list:
         if kind == "thinking":
             if seg.strip():
                 blocks.append(AnthropicResponseThinkingBlock(thinking = seg))
-        else:
-            seg = seg.strip()
-            if seg:
-                blocks.append(AnthropicResponseTextBlock(text = seg))
+        elif seg.strip():
+            # Whitespace only decides emptiness; the delivered text stays
+            # verbatim so formatting-sensitive replies match the streamed path.
+            blocks.append(AnthropicResponseTextBlock(text = seg))
     return blocks
 
 
