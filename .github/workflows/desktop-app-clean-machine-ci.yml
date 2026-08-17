@@ -833,7 +833,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             python3 xvfb xauth webkit2gtk-driver libgles2 libgl1 libegl1 libgbm1 \
-            libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0
+            libwayland-client0 libharfbuzz0b libnghttp2-14 fontconfig libfribidi0 \
+            libasound2 libpulse0
           cargo install tauri-driver --version 2.0.6 --locked
 
       - name: Download the AppImage built from this PR

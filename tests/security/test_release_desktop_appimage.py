@@ -138,6 +138,10 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     ):
         assert package in linux_source
         assert package in webdriver_source
+    # The bundled media plugins reach the host's audio stack, so the lane that
+    # asserts media support has to provide it.
+    for package in ("libasound2", "libpulse0"):
+        assert package in webdriver_source
 
     for package in ("libwayland-client", "libxcb", "libXinerama", "libnghttp2"):
         assert package in source
