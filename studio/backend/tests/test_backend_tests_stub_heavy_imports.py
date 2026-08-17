@@ -503,13 +503,8 @@ def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
                     names.add(alias.asname or alias.name)
         elif isinstance(node, ast.Assign):
             value = node.value
-            if (
-                isinstance(value, ast.Attribute)
-                and value.attr == "importorskip"
-            ):
-                names.update(
-                    target.id for target in node.targets if isinstance(target, ast.Name)
-                )
+            if isinstance(value, ast.Attribute) and value.attr == "importorskip":
+                names.update(target.id for target in node.targets if isinstance(target, ast.Name))
     return frozenset(names)
 
 
