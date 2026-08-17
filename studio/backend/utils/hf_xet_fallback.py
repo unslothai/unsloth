@@ -379,6 +379,7 @@ def clamp_to_available_ram(
         written = {key: value for key, value in clamped.items() if key in sized}
         env.update(written)
         import logging as _logging
+
         _logging.getLogger(__name__).info(
             "Xet download buffers clamped to free RAM: %.2fGB -> %.2fGB "
             "(%.1fGB free of %.1fGB total)",

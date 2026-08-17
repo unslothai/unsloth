@@ -806,7 +806,12 @@ def _fake_profile_cls():
     return _Profile
 
 
-def _fake_tuning(total, available, *, calls = None):
+def _fake_tuning(
+    total,
+    available,
+    *,
+    calls = None,
+):
     """Stand-in zoo sized like the real one (an eighth of total RAM), recording the profile it was
     asked about so a test can prove the clamp re-asks rather than editing numbers itself."""
     import types
@@ -932,9 +937,9 @@ def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
         raise RuntimeError("no")
 
     raising = types.SimpleNamespace(xet_env_overrides = _boom, system_profile = _boom)
-    assert shim.clamp_to_available_ram({}, dict(sized), module = raising) == sized, (
-        "a clamp must never be the thing that breaks a download"
-    )
+    assert (
+        shim.clamp_to_available_ram({}, dict(sized), module = raising) == sized
+    ), "a clamp must never be the thing that breaks a download"
 
 
 def test_clamp_holds_against_the_real_zoo_formulas():
@@ -943,7 +948,7 @@ def test_clamp_holds_against_the_real_zoo_formulas():
     tuning = pytest.importorskip("unsloth_zoo.hf_xet_tuning")
 
     idle = tuning.SystemProfile(
-        total_ram_bytes = 32 * 1024 ** 3,
+        total_ram_bytes = 32 * 1024**3,
         available_ram_bytes = 30 * _GB,
         cpu_count = 24,
         ram_source = "psutil",
@@ -969,9 +974,9 @@ def test_clamp_holds_against_the_real_zoo_formulas():
             _RAM_FRACTION = tuning._RAM_FRACTION,
         )
 
-    assert shim.clamp_to_available_ram({}, dict(sized), module = _module_for(idle)) == sized, (
-        "30GB free must still buy the zoo's own 32GB-machine budget"
-    )
+    assert (
+        shim.clamp_to_available_ram({}, dict(sized), module = _module_for(idle)) == sized
+    ), "30GB free must still buy the zoo's own 32GB-machine budget"
 
     clamped = shim.clamp_to_available_ram({}, dict(sized), module = _module_for(loaded))
     assert int(clamped[_LIMIT]) <= 8 * _GB // 4, "a 27B model resident must shrink the budget"

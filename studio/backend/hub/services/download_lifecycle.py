@@ -96,7 +96,6 @@ def _memory_pressure_reason() -> Optional[str]:
     Xet."""
     try:
         from utils.hf_xet_fallback import available_ram_bytes
-
         available, floor = available_ram_bytes()
     except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
         logger.debug("Free-RAM probe failed, leaving the Xet verdict alone: %s", exc)

@@ -591,8 +591,8 @@ def test_free_ram_gate_never_decides_the_transport_by_failing(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
 
     for probe in (
-        None,                                          # older shim: attribute missing entirely
-        lambda: (None, 4_000_000_000),                 # psutil absent: RAM unmeasurable
+        None,  # older shim: attribute missing entirely
+        lambda: (None, 4_000_000_000),  # psutil absent: RAM unmeasurable
         lambda: (_ for _ in ()).throw(RuntimeError()),  # probe itself raises
     ):
         fake = _types.ModuleType("utils.hf_xet_fallback")
