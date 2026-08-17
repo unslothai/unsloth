@@ -317,10 +317,10 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     }
     for key, (minimum, maximum) in limits.items():
         if budgets[key] < minimum or (maximum is not None and budgets[key] > maximum):
-            range_label = f"at least {minimum}" if maximum is None else f"between {minimum} and {maximum}"
-            raise HTTPException(
-                status_code = 400, detail = f"{key} must be {range_label}"
+            range_label = (
+                f"at least {minimum}" if maximum is None else f"between {minimum} and {maximum}"
             )
+            raise HTTPException(status_code = 400, detail = f"{key} must be {range_label}")
     # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
     # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
     from core.research_runs import _auto_scrape_default
