@@ -32,9 +32,7 @@ def _history(tool_call_id):
                 ],
             }
         ),
-        ChatMessage.model_validate(
-            {"role": "tool", "tool_call_id": tool_call_id, "content": "ok"}
-        ),
+        ChatMessage.model_validate({"role": "tool", "tool_call_id": tool_call_id, "content": "ok"}),
     ]
 
 
@@ -78,6 +76,30 @@ def test_mistral_maps_foreign_ids_to_nine_alnum_chars():
         call_id, output_id = _replayed_ids(foreign, provider_type = "mistral")
         assert call_id == output_id
         assert re.fullmatch(r"[a-zA-Z0-9]{9}", call_id)
+
+
+def test_colliding_bases_keep_the_full_stored_ids():
+    a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
+    b = "call_0:11111111-2222-4333-8444-555555555555"
+    out = _build_external_messages(
+        _history(a) + _history(b), supports_vision = True, provider_type = "openai"
+    )
+    call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
+    output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
+    assert call_ids == output_ids == [a, b]
+
+
+def test_mistral_colliding_bases_stay_distinct():
+    a = "call_0:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
+    b = "call_0:11111111-2222-4333-8444-555555555555"
+    out = _build_external_messages(
+        _history(a) + _history(b), supports_vision = True, provider_type = "mistral"
+    )
+    call_ids = [m["tool_calls"][0]["id"] for m in out if m.get("tool_calls")]
+    output_ids = [m["tool_call_id"] for m in out if m["role"] == "tool"]
+    assert call_ids == output_ids
+    assert call_ids[0] != call_ids[1]
+    assert all(re.fullmatch(r"[a-zA-Z0-9]{9}", cid) for cid in call_ids)
 
 
 def test_mistral_native_ids_pass_through_unchanged():

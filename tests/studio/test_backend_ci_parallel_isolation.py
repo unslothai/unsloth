@@ -151,8 +151,10 @@ BENIGN_TIMING = {
     # A 600-second expiry checked against the wall clock. Reading both sides of that gap
     # late by whole seconds still leaves it true, and it only reaches this scan at all
     # because the widened operand walk now reads `x > time.time()` as a bound.
-    ("test_openai_codex_subscription.py",
-     "test_account_claim_and_token_response_are_validated_without_returning_raw_body"),
+    (
+        "test_openai_codex_subscription.py",
+        "test_account_claim_and_token_response_are_validated_without_returning_raw_body",
+    ),
 }
 
 
