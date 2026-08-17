@@ -279,6 +279,8 @@ export const zhCN = {
         allowMicrophone: "允许使用麦克风",
         micAccessBlocked:
           "麦克风访问已被阻止。请在浏览器中允许此 Unsloth 页面使用麦克风，然后重试。",
+        micAccessBlockedDesktop:
+          "麦克风访问已被阻止。请重试并选择允许，或在系统隐私设置中启用麦克风。",
         micAccessUnsupported: "此浏览器或环境不支持访问麦克风。",
         systemDefault: "系统默认",
         savedMicDisconnected: "已保存的麦克风（未连接）",
@@ -987,6 +989,12 @@ export const zhCN = {
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      projectAttachments: "在项目内共享文件",
+      projectAttachmentsDescription:
+        "属于某个项目的聊天中所附文件的默认行为：为整个项目建立索引，使该项目中的每个聊天都能使用。每个聊天都可以在附件菜单中单独更改。",
+      rememberParamsPerModel: "按模型记住设置",
+      rememberParamsPerModelDescription:
+        "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
