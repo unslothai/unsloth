@@ -48,4 +48,3 @@ export function snapContextLengthToStep(
   const snapped = Math.round(candidate / normalizedStep) * normalizedStep;
   return Math.min(Math.max(snapped, bounds.min), bounds.max);
 }
-

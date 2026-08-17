@@ -40,4 +40,3 @@ test("fixed adjustment keeps the highest representable value below a non-aligned
   });
   assert.equal(snapContextLengthToStep(32761, 128, 32761, 4096), 28672);
 });
-
