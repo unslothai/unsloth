@@ -220,6 +220,18 @@ def recall(
 ) -> Optional[tuple[str, list[dict]]]:
     """Most relevant archived turns for ``query``, rendered like any other RAG hit.
 
+    LEXICAL FIRST, then hybrid for the rest of the budget. Recalling your own conversation
+    is mostly an exact-match problem -- a name, a number, an identifier, a code someone
+    pasted twenty turns ago -- and those live or die on rare-token matching. Measured on a
+    real 30-turn document walkthrough where every turn shared the same boilerplate wrapper:
+    the one chunk holding the needle ranked 3rd lexically at any k, was never returned by
+    dense retrieval at all (near-identical text embeds near-identically, and a rare token
+    barely moves a 384-dim vector), and RRF fusion pushed it down to 16th because it had 30
+    useless dense hits to fuse with. Taking hybrid alone lost the answer outright.
+
+    Dense still earns its place for paraphrased recall ("that thing about pickling"), so it
+    fills whatever the lexical pass leaves.
+
     No relevance floor, unlike ``tool.search_for_autoinject``. That 0.70 cosine gate
     exists to keep off-topic document passages out of answers; here the passages ARE this
     conversation, and the alternative to a weak match is a model answering with no memory
@@ -236,20 +248,29 @@ def recall(
     try:
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
-        try:
-            hits = retrieval.retrieve_hybrid(
-                conn, scope, query, k = limit, model_name = model, mode = "hybrid"
-            )
-        except Exception:
-            # Dense retrieval raises rather than degrading when no embedder can start.
-            # The FTS rows written by earlier successful compactions still answer, so
-            # fall back rather than losing the archive entirely.
-            logger.warning(
-                "conversation_archive.dense_unavailable thread_id=%s", thread_id, exc_info = True
-            )
-            hits = retrieval.retrieve_hybrid(
-                conn, scope, query, k = limit, model_name = model, mode = "lexical"
-            )
+        hits = retrieval.retrieve_hybrid(
+            conn, scope, query, k = limit, model_name = model, mode = "lexical"
+        )
+        if len(hits) < limit:
+            try:
+                seen = {hit.chunk_id for hit in hits}
+                for hit in retrieval.retrieve_hybrid(
+                    conn, scope, query, k = limit, model_name = model, mode = "hybrid"
+                ):
+                    if hit.chunk_id not in seen:
+                        hits.append(hit)
+                        seen.add(hit.chunk_id)
+                    if len(hits) >= limit:
+                        break
+            except Exception:
+                # Dense retrieval raises rather than degrading when no embedder can start.
+                # The lexical hits above already stand on their own, so this is a top-up
+                # that is allowed to fail.
+                logger.warning(
+                    "conversation_archive.dense_unavailable thread_id=%s",
+                    thread_id,
+                    exc_info = True,
+                )
         if not hits:
             return None
         rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])

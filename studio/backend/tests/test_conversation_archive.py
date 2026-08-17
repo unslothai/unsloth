@@ -203,3 +203,38 @@ def test_delete_for_thread_drops_the_archive(conn):
 
     assert removed == 1
     assert store.list_documents(conn, store.conversation_archive_scope(THREAD)) == []
+
+
+def test_recall_finds_a_rare_token_buried_in_boilerplate(conn):
+    """Lexical first, because recalling a conversation is mostly exact matching.
+
+    Measured on a real 30-turn document walkthrough where every turn shared the same
+    wrapper text: the chunk holding the needle ranked 3rd lexically at any k, was never
+    returned by dense retrieval, and RRF fusion pushed it to 16th. Hybrid alone lost the
+    answer outright, so this pins the ordering rather than the plumbing.
+    """
+    for index in range(1, 9):
+        code = " Internal tracking code: VULPINE-9134-QK." if index == 1 else ""
+        _archive(
+            [
+                {
+                    "role": "user",
+                    "content": f"Here is section {index} of the climate change article."
+                    f"{code} Reply with one short sentence naming its main topic.",
+                },
+                {
+                    "role": "assistant",
+                    "content": f"Section {index} is about climate change impacts.",
+                },
+            ],
+            thread_id = "needle-thread",
+        )
+
+    found = conversation_archive.recall(
+        "needle-thread",
+        "Earlier I gave you section 1 and it carried an internal tracking code. "
+        "What was that exact tracking code?",
+    )
+
+    assert found is not None
+    assert "VULPINE-9134-QK" in found[0]
