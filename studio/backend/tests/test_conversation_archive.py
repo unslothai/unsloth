@@ -1188,3 +1188,46 @@ def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
     studio_db.delete_chat_threads([thread_id])
     chat_history._remove_conversation_archives([thread_id])
     assert conversation_archive.has_archive(thread_id) is False
+
+
+def test_an_answer_edited_by_appending_to_it_retires_the_archived_copy(conn):
+    """Keeping the old text and adding to it left every probe matching.
+
+    "No" becoming "No, correction: yes" is the ordinary way a person fixes an answer, and
+    the pre-edit copy stayed eligible: a later search could return "No" as the answer with
+    the correction nowhere in it.
+    """
+    rows = [{"text": "user: should I deploy on Friday\nassistant: No"}]
+    edited = conversation_archive.branch_message_texts(
+        [
+            {"role": "user", "content": "should I deploy on Friday"},
+            {"role": "assistant", "content": "No, correction: yes, the freeze lifted"},
+        ]
+    )
+    intact = conversation_archive.branch_message_texts(
+        [
+            {"role": "user", "content": "should I deploy on Friday"},
+            {"role": "assistant", "content": "No"},
+        ]
+    )
+
+    assert conversation_archive._document_matches_one_run(rows, edited, 2) is False
+    assert conversation_archive._document_matches_one_run(rows, intact, 2) is True
+
+
+def test_a_truncated_tool_result_may_still_end_mid_message(conn):
+    """render_turn cuts long tool results, so that probe is a prefix by design.
+
+    Demanding that the turn end where the live message does would retire every turn that
+    carried one.
+    """
+    marker = conversation_archive._TRUNCATION_MARKER
+    rows = [{"text": "user: run it\ntool result: " + "x" * 100 + marker}]
+    live = conversation_archive.branch_message_texts(
+        [
+            {"role": "user", "content": "run it"},
+            {"role": "tool", "content": "x" * 400},
+        ]
+    )
+
+    assert conversation_archive._document_matches_one_run(rows, live, 2) is True

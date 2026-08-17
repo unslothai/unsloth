@@ -511,8 +511,10 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
     )
 
 
-def _scan_probes(probes: list[str], messages: list[str], start: int, last: int) -> Optional[int]:
-    """Index of the message where ``probes`` finish matching in order, or None.
+def _scan_probes(
+    probes: list[str], messages: list[str], start: int, last: int
+) -> Optional[tuple[int, int]]:
+    """Message index and offset where ``probes`` finish matching in order, or None.
 
     An index rather than a bool so one document's chunks scan as a single pass, each
     continuing where the last stopped, which stops two chunks of a turn matching two
@@ -531,7 +533,7 @@ def _scan_probes(probes: list[str], messages: list[str], start: int, last: int) 
             cursor = 0
         else:
             return None
-    return index
+    return index, cursor
 
 
 def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
@@ -617,15 +619,30 @@ def _document_matches_one_run(
         else (_rendered_message_count(rows) or sum(len(probes) for probes in probe_lists))
     )
 
+    # Whether the document's last line was cut short when it was archived. Only tool
+    # results and tool arguments are, and their probes are prefixes by design, so those
+    # are the one case where the turn may end mid-message.
+    truncated_tail = any(
+        line.strip().endswith(_TRUNCATION_MARKER.strip())
+        for line in ((rows[-1]["text"] or "").splitlines() or [""])[-1:]
+    )
+
     def _one_run_from(start: int) -> bool:
         last = min(len(transcript), start + window)
         position = start
+        cursor = 0
         for probes in probe_lists:
             found = _scan_probes(probes, transcript, position, last)
             if found is None:
                 return False
-            position = found
-        return True
+            position, cursor = found
+        # And the turn has to END where the live message does. Editing a reply by keeping
+        # it and appending a correction ("No" becoming "No, correction: yes") leaves every
+        # probe matching, so the pre-edit copy stayed eligible and could be recalled as
+        # the answer -- with the correction nowhere in it.
+        return truncated_tail or cursor >= len(transcript[position])
+
+    return any(_one_run_from(start) for start in range(len(transcript)))
 
     return any(_one_run_from(start) for start in range(len(transcript)))
 
