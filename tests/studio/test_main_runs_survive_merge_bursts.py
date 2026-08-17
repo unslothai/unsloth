@@ -102,7 +102,13 @@ def _evaluate(expression: str, context: dict[str, str]) -> str:
     return _term(expression, context)
 
 
-def _render(group: str, *, ref: str, sha: str, event_name: str = "push") -> str:
+def _render(
+    group: str,
+    *,
+    ref: str,
+    sha: str,
+    event_name: str = "push",
+) -> str:
     """The literal group string GitHub would compute for one run."""
     context = {
         "github.workflow": "a-workflow",
