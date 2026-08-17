@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# The ELF sweep below parses readelf output, which is translated.
+export LC_ALL=C
+
 if [[ $# -ne 1 || ! -d "$1" ]]; then
   echo "Usage: $0 APPDIR" >&2
   exit 2

@@ -31,7 +31,7 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     )
     assert "appimage" in config["bundle"]["targets"]
     appimage = config["bundle"]["linux"]["appimage"]
-    assert appimage["bundleMediaFramework"] is False
+    assert appimage["bundleMediaFramework"] is True
     assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith("/libappindicator3.so.1")
 
     build = _step("Build Linux bundles")
@@ -191,6 +191,17 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
 
     assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
+    # The plugin copies every libgiognutls.so under /usr/lib*, and appends the
+    # host GTK module directories to GTK_PATH. Both hand the bundled runtime a
+    # foreign object to load, so both are corrected before the plugin runs.
+    assert "-path '*/gio/modules/*' -type f -print0" in tool_script
+    assert 'export GTK_PATH="\\$APPDIR/' in tool_script
+
+    # linuxdeploy does not promise a plugin order, and each plugin deploys its
+    # own dependency closure, so the finalizer runs from every one of them.
+    assert tool_script.count('"$plugin_dir/finalize-complete-appimage.sh" "$APPDIR"') == 1
+    assert "for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh" in tool_script
+
 
 def _compile_fixture_elf(path: Path, *, origin_runpath: bool) -> None:
     args = ["cc", "-x", "c", "-", "-o", path]
@@ -222,7 +233,9 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
     hook.parent.mkdir()
     hook.write_text(
-        'unset GIO_EXTRA_MODULES\nexport GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n',
+        "unset GIO_EXTRA_MODULES\n"
+        'export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"\n'
+        'export GTK_PATH="$APPDIR/usr/lib/gtk-3.0"\n',
         encoding = "utf-8",
     )
     runtime = appdir / "usr/lib"
@@ -243,7 +256,34 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "libwebkit2gtkinjectedbundle.so",
     ):
         (runtime / name).touch()
+
+    gio_modules = runtime / "gio/modules"
+    gio_modules.mkdir(parents = True)
+    (gio_modules / "libgiognutls.so").touch()
+
+    # WebKit's media pipeline is the bundled GStreamer core plus these plugins.
+    gst_plugins = runtime / "gstreamer-1.0"
+    gst_plugins.mkdir()
+    for name in ("coreelements", "playback", "pulseaudio", "typefindfunctions"):
+        (gst_plugins / f"libgst{name}.so").touch()
+    for index in range(60):
+        (gst_plugins / f"libgstfixture{index}.so").touch()
+    scanner = runtime / "gstreamer1.0/gstreamer-1.0/gst-plugin-scanner"
+    scanner.parent.mkdir(parents = True)
+    scanner.touch()
     return appdir
+
+
+def _write_foreign_arch_elf(path: Path) -> None:
+    """An i386 ELF header, the shape a multilib build host contributes."""
+
+    header = bytearray(52)
+    header[0:8] = b"\x7fELF\x01\x01\x01\x00"
+    header[16:18] = (3).to_bytes(2, "little")  # e_type = ET_DYN
+    header[18:20] = (3).to_bytes(2, "little")  # e_machine = EM_386
+    header[20:24] = (1).to_bytes(4, "little")  # e_version
+    header[40:42] = (52).to_bytes(2, "little")  # e_ehsize
+    path.write_bytes(bytes(header))
 
 
 def test_complete_appimage_verifier_accepts_a_coherent_runtime(tmp_path):
@@ -254,6 +294,52 @@ def test_complete_appimage_verifier_accepts_a_coherent_runtime(tmp_path):
         text = True,
     )
     assert "Verified complete x86_64 AppImage runtime" in result.stdout
+
+
+def test_complete_appimage_verifier_rejects_host_gtk_module_directories(tmp_path):
+    appdir = _fake_complete_appdir(tmp_path)
+    hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
+    hook.write_text(
+        hook.read_text(encoding = "utf-8").replace(
+            'export GTK_PATH="$APPDIR/usr/lib/gtk-3.0"',
+            'export GTK_PATH="$APPDIR/usr/lib/gtk-3.0:/usr/lib64/gtk-3.0"',
+        ),
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "/usr/lib64/gtk-3.0" in result.stderr
+
+
+def test_complete_appimage_verifier_rejects_a_foreign_architecture_object(tmp_path):
+    appdir = _fake_complete_appdir(tmp_path)
+    _write_foreign_arch_elf(appdir / "usr/lib/gio/modules/libgiognutls.so")
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "wrong architecture" in result.stderr
+
+
+def test_complete_appimage_verifier_requires_the_bundled_media_pipeline(tmp_path):
+    appdir = _fake_complete_appdir(tmp_path)
+    for plugin in (appdir / "usr/lib/gstreamer-1.0").glob("libgstfixture*.so"):
+        plugin.unlink()
+    result = subprocess.run(
+        [VERIFIER, "--appdir", appdir], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "GStreamer plugins" in result.stderr
+
+    missing_scanner = _fake_complete_appdir(tmp_path / "no-scanner")
+    (missing_scanner / "usr/lib/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner").unlink()
+    result = subprocess.run(
+        [VERIFIER, "--appdir", missing_scanner], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "gst-plugin-scanner" in result.stderr
 
 
 def test_complete_appimage_verifier_rejects_global_library_path_and_missing_origin_runpath(

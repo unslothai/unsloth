@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# Every check below parses readelf output, which is translated.
+export LC_ALL=C
+
 usage() {
   echo "Usage: $0 APPIMAGE|--appdir APPDIR" >&2
   exit 2
@@ -50,6 +53,28 @@ if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
   echo "Complete AppImage does not reject host GIO_EXTRA_MODULES" >&2
   exit 1
 fi
+
+# Every module search path the hooks leave in place is a way for a host GLib,
+# GTK, or GIO object to be dlopened into the bundled Ubuntu 22.04 runtime. The
+# GTK plugin lists the host module directories in GTK_PATH by default.
+for module_path in GTK_PATH GIO_MODULE_DIR; do
+  value="$(grep -hs "^export ${module_path}=" "$appdir/apprun-hooks"/* 2>/dev/null |
+    tail -1 | sed "s/^export ${module_path}=//; s/^\"//; s/\"$//")"
+  if [[ -z "$value" ]]; then
+    echo "Complete AppImage does not pin $module_path to the bundle" >&2
+    exit 1
+  fi
+  IFS=':' read -ra entries <<<"$value"
+  for entry in "${entries[@]}"; do
+    case "$entry" in
+      '$APPDIR/'*) ;;
+      *)
+        echo "Bundled $module_path reaches a host module directory: $entry" >&2
+        exit 1
+        ;;
+    esac
+  done
+done
 # Desktop integration reads .DirIcon, so an absolute build-machine symlink
 # there ships an iconless launcher.
 [[ -e "$appdir/.DirIcon" ]] || { echo "Complete AppImage has no resolvable .DirIcon" >&2; exit 1; }
@@ -79,9 +104,21 @@ for component in \
   'libgtk-3.so*' 'libgdk-3.so*' 'libgdk_pixbuf-2.0.so*' \
   'libwebkit2gtk-4.1.so*' 'libjavascriptcoregtk-4.1.so*' 'libsoup-3.0.so*' \
   'libappindicator3.so*' 'WebKitNetworkProcess' 'WebKitWebProcess' \
-  'libwebkit2gtkinjectedbundle.so'; do
+  'libwebkit2gtkinjectedbundle.so' \
+  'libgiognutls.so' \
+  'libgstcoreelements.so' 'libgstplayback.so' 'libgstpulseaudio.so' \
+  'gst-plugin-scanner'; do
   require_basename "$component"
 done
+
+# The bundled GStreamer core rejects a host plugin built for another 1.x
+# release, so WebKit gets no media pipeline at all unless the plugins ship with
+# it: no <video>, no <audio>, and no microphone capture.
+gst_plugin_count="$(find "$appdir/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -name '*.so' 2>/dev/null | wc -l)"
+if [[ "$gst_plugin_count" -lt 50 ]]; then
+  echo "Complete AppImage bundles only $gst_plugin_count GStreamer plugins" >&2
+  exit 1
+fi
 
 # The bundle owns one coherent userspace web runtime, but the loader and
 # libraries coupled to host services, drivers, display servers, or later-loaded
@@ -108,6 +145,16 @@ dynamic_count=0
 runpath_failures=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
+  # A build host with foreign-architecture packages installed can contribute an
+  # object the target process cannot load ("wrong ELF class: ELFCLASS32"), and
+  # checking only the main executable does not see it.
+  object_machine="$(readelf -h "$object" 2>/dev/null |
+    sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+  if [[ "$object_machine" != "Advanced Micro Devices X86-64" ]]; then
+    echo "Bundled object has the wrong architecture (${object_machine:-unknown}): $object" >&2
+    ((runpath_failures += 1))
+    continue
+  fi
   dynamic="$(readelf -d "$object" 2>/dev/null || true)"
   grep -q 'Dynamic section' <<<"$dynamic" || continue
   ((dynamic_count += 1))

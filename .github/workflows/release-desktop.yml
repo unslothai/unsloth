@@ -612,8 +612,12 @@ jobs:
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
-          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== false) {
-            throw new Error('Linux AppImage bundleMediaFramework must stay false');
+          // WebKitGTK plays audio and video, and captures the microphone,
+          // through GStreamer. The bundle carries the GStreamer core libraries
+          // as WebKit dependencies, and that core refuses host plugins built
+          // for another 1.x release, so the plugins have to ship with it.
+          if (config.bundle?.linux?.appimage?.bundleMediaFramework !== true) {
+            throw new Error('Linux AppImage bundleMediaFramework must stay true');
           }
 
           const workflow = readFileSync('.github/workflows/release-desktop.yml', 'utf8');
