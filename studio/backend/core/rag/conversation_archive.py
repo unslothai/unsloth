@@ -503,6 +503,26 @@ def _probes_for(text: str) -> list[str]:
     return [probe for probe in probes if probe]
 
 
+def _probe_entries(text: str) -> list[tuple[str, bool]]:
+    """``_probes_for`` with a flag per line: was it cut short, or is it a tool call.
+
+    Both mean the live message may legitimately hold more than the probe: a cut line is a
+    prefix by construction, and a tool call is matched against a haystack that renders its
+    arguments twice, spaced and compact, so only one of the two can ever be covered.
+    """
+    entries = []
+    for line in (text or "").splitlines():
+        without_role = _ROLE_PREFIX.sub("", line)
+        is_call = bool(_TOOL_CALL_PREFIX.match(without_role.strip()))
+        stripped = _normalise(_TOOL_CALL_PREFIX.sub("", without_role))
+        truncated = stripped.endswith(_TRUNCATION_MARKER.strip())
+        if truncated:
+            stripped = stripped[: -len(_TRUNCATION_MARKER.strip())].strip()
+        if stripped:
+            entries.append((stripped, truncated or is_call))
+    return entries
+
+
 def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
     """Whether one archived chunk still exists in the saved thread."""
     probes = _probes_for(text)
@@ -522,9 +542,9 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
 
 
 def _scan_probes(
-    probes: list[str], messages: list[str], start: int, last: int
-) -> Optional[tuple[int, int, int]]:
-    """Message index, end offset, and the offset the run into it began at, or None.
+    entries: list[tuple[str, bool]], messages: list[str], start: int, last: int
+) -> Optional[tuple[int, int, int, bool]]:
+    """Where the probes finish: message index, end offset, opening offset, tail-is-partial.
 
     An index rather than a bool so one document's chunks scan as a single pass, each
     continuing where the last stopped, which stops two chunks of a turn matching two
@@ -533,27 +553,52 @@ def _scan_probes(
     """
     index = start
     cursor = 0
-    opened_at = 0
-    opened_index = -1
-    for probe in probes:
+    opened_at = None
+    partial = False
+    fresh = False
+    for probe, partial_ok in entries:
         while index < last:
             found = messages[index].find(probe, cursor)
             if found >= 0:
-                if index != opened_index:
-                    opened_index = index
-                    opened_at = found
+                # A message the run stepped INTO has to be accounted for from its first
+                # character: an edit that prepends to it ("no" becoming "correction: no")
+                # otherwise leaves every probe matching. A tool call is exempt, and the
+                # exemption then covers the rest of that message: the store keeps a call
+                # as a structured part, so the live text carries the tool name and BOTH
+                # spellings of its arguments while the archived copy has one line of one
+                # of them. Nothing there can line up character for character.
+                if fresh and found != 0 and not partial_ok:
+                    return None
+                if opened_at is None:
+                    # Same exemption at the front of the run as inside it.
+                    opened_at = 0 if partial_ok else found
                 cursor = found + len(probe)
+                partial = partial or partial_ok
+                fresh = False
                 break
+            # And leaving one it had entered: whatever is left over is text an edit added.
+            if cursor and not partial and cursor < len(messages[index]):
+                return None
             index += 1
             cursor = 0
+            partial = False
+            fresh = True
         else:
             return None
-    return index, cursor, opened_at
+    return index, cursor, (opened_at or 0), partial
 
 
 def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
     """Whether ``probes`` appear in order within ``messages[start:start + window]``."""
-    return _scan_probes(probes, messages, start, min(len(messages), start + window)) is not None
+    return (
+        _scan_probes(
+            [(probe, True) for probe in probes],
+            messages,
+            start,
+            min(len(messages), start + window),
+        )
+        is not None
+    )
 
 
 def _rendered_message_count(rows) -> int:
@@ -621,7 +666,7 @@ def _document_matches_one_run(
     """
     if not rows or not transcript:
         return False
-    probe_lists = [_probes_for(row["text"]) for row in rows]
+    probe_lists = [_probe_entries(row["text"]) for row in rows]
     if any(not probes for probes in probe_lists):
         return False
     # The messages the turn was rendered from, not the lines it produced: bounding by
@@ -634,37 +679,29 @@ def _document_matches_one_run(
         else (_rendered_message_count(rows) or sum(len(probes) for probes in probe_lists))
     )
 
-    # Whether the document's last line was cut short when it was archived. Only tool
-    # results and tool arguments are, and their probes are prefixes by design, so those
-    # are the one case where the turn may end mid-message.
-    truncated_tail = any(
-        line.strip().endswith(_TRUNCATION_MARKER.strip())
-        for line in ((rows[-1]["text"] or "").splitlines() or [""])[-1:]
-    )
-
     def _one_run_from(start: int) -> bool:
         last = min(len(transcript), start + window)
         position = start
         cursor = 0
-        opened_at = 0
+        opened_at = None
+        partial_tail = False
         for probes in probe_lists:
             found = _scan_probes(probes, transcript, position, last)
             if found is None:
                 return False
-            previous = position
-            position, cursor, chunk_opened_at = found
-            # Chunks overlap, so several can land in the final message; the run into it
-            # began at the earliest of them.
-            opened_at = chunk_opened_at if position != previous else min(opened_at, chunk_opened_at)
-        # And the turn has to cover the live message END TO END. An edit that keeps the
-        # old text and adds to it leaves every probe matching, whichever side it adds on:
-        # "No" becoming "No, correction: yes" or "Correction: no". Either way the pre-edit
-        # copy stayed eligible and could be recalled as the answer, correction and all
-        # missing. render_turn only ever cuts the tail, so the start is required
-        # unconditionally and the end is not.
-        if opened_at != 0:
+            position, cursor, chunk_opened_at, partial_tail = found
+            # Where the whole run opened, which is the first chunk's answer: an edit that
+            # prepends to the turn's FIRST message shows up here and nowhere else.
+            if opened_at is None:
+                opened_at = chunk_opened_at
+        # And the turn has to cover the messages it claims, end to end. An edit that
+        # keeps the old text and adds to it leaves every probe matching, whichever side it
+        # adds on and whichever message it touches: "No" becoming "No, correction: yes" or
+        # "Correction: no", or the question itself growing a clause. Either way the
+        # pre-edit copy stayed eligible and could be recalled as the answer.
+        if opened_at:
             return False
-        return truncated_tail or cursor >= len(transcript[position])
+        return partial_tail or cursor >= len(transcript[position])
 
     return any(_one_run_from(start) for start in range(len(transcript)))
 

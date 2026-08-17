@@ -1289,3 +1289,65 @@ def test_a_tool_exchange_archived_mid_request_is_recallable(conn):
         )
         is not None
     )
+
+
+def test_an_edit_to_any_message_of_a_turn_retires_the_archived_copy(conn):
+    """Anchoring only the final message left the question editable underneath it.
+
+    The turn is checked as a whole, so every message it claims has to be accounted for
+    from its first character to its last, wherever the edit landed.
+    """
+    rows = [{"text": "user: should I deploy on Friday\nassistant: No"}]
+
+    def _live(question, answer = "No"):
+        return conversation_archive.branch_message_texts(
+            [
+                {"role": "user", "content": question},
+                {"role": "assistant", "content": answer},
+            ]
+        )
+
+    match = conversation_archive._document_matches_one_run
+    # The question, either side.
+    assert match(rows, _live("Actually, should I deploy on Friday"), 2) is False
+    assert match(rows, _live("should I deploy on Friday or wait"), 2) is False
+    # The answer, either side.
+    assert match(rows, _live("should I deploy on Friday", "Correction: no"), 2) is False
+    assert match(rows, _live("should I deploy on Friday", "No, correction: yes"), 2) is False
+    # And the turn as it was archived is still live.
+    assert match(rows, _live("should I deploy on Friday"), 2) is True
+
+
+def test_a_tool_call_message_is_exempt_from_the_character_anchors(conn):
+    """The store keeps a call as a structured part, so nothing can line up exactly.
+
+    The live text carries the tool name and BOTH spellings of the arguments, spaced and
+    compact, while the archived copy has one line of one of them. Demanding coverage there
+    would retire every tool turn in the archive.
+    """
+    live = conversation_archive.branch_message_texts(
+        [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool-call",
+                        "toolCallId": "c1",
+                        "toolName": "terminal",
+                        "args": {"command": "alembic upgrade head"},
+                        "result": "migration applied cleanly",
+                    }
+                ],
+            }
+        ]
+    )
+    rows = [
+        {
+            "text": (
+                'assistant called terminal: {"command": "alembic upgrade head"}\n'
+                "tool result: migration applied cleanly"
+            )
+        }
+    ]
+
+    assert conversation_archive._document_matches_one_run(rows, live, 1) is True
