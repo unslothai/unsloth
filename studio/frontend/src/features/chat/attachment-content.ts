@@ -34,6 +34,19 @@ const ATTACHMENT_TAG_CLOSE = "\n</attachment>";
 const MAX_ATTACHMENT_WRAPPER_LENGTH = 4096;
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+// Shared with TextAttachmentAdapter so the preview applies the same first-match
+// dispatch before falling through to the document-specific adapters.
+export const TEXT_ATTACHMENT_ACCEPT = [
+  "text/plain,text/markdown,text/csv,text/xml,text/json,text/css",
+  "application/json,application/xml,image/svg+xml",
+  ".txt,.text,.log,.md,.markdown,.mdx,.rst,.csv,.tsv",
+  ".json,.jsonl,.ndjson,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.env,.properties",
+  ".css,.scss,.sass,.less,.svg",
+  ".js,.jsx,.mjs,.cjs,.ts,.tsx,.py,.pyi,.ipynb,.rb,.php,.go,.rs,.java,.kt,.kts,.scala,.swift",
+  ".c,.h,.cc,.cpp,.hpp,.cxx,.cs,.m,.mm",
+  ".sh,.bash,.zsh,.fish,.ps1,.bat,.lua,.pl,.pm,.r,.jl,.dart,.vue,.svelte,.astro",
+  ".sql,.graphql,.gql,.proto,.tf,.tfvars,.gradle,.dockerfile,.makefile,.cmake,.diff,.patch",
+].join(",");
 // mammoth picks the parts it parses out of the relationships, not out of the
 // filenames, so a target may be called anything ("payload.bin") and still be
 // inflated and parsed as XML, while an .xml part nothing points at (customXml,
@@ -289,6 +302,27 @@ export function isOpenDocumentAttachment(
   );
 }
 
+// CompositeAttachmentAdapter selects the first accept string that matches.
+// Text comes before the document-specific adapters, so previews must apply the
+// same MIME-or-extension match before looking at PDF/DOCX/HTML names.
+function isTextAttachment(
+  name: string,
+  contentType: string | undefined,
+): boolean {
+  const extension = `.${name.split(".").pop()?.toLowerCase() ?? ""}`;
+  const mime = contentType?.toLowerCase() ?? "";
+  return TEXT_ATTACHMENT_ACCEPT.split(",").some((entry) => {
+    const accepted = entry.trim().toLowerCase();
+    if (accepted.startsWith(".")) {
+      return accepted === extension;
+    }
+    if (accepted.endsWith("/*")) {
+      return mime.startsWith(`${accepted.slice(0, -1)}`);
+    }
+    return accepted === mime;
+  });
+}
+
 // unpdf and mammoth decode the whole file on the main thread, so both refuse a
 // document past the ceiling the OpenDocument path already enforces, and refuse
 // it before the read rather than after. The adapters call this from add() as
@@ -538,9 +572,13 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
     file.arrayBuffer().then((bytes) => new Uint8Array(bytes)),
   ]);
   const pdf = await getDocumentProxy(buffer);
-  // per page rather than merged: mergePages folds every newline pdf.js marks into one space
-  const { text } = await extractText(pdf);
-  return normalizeExtractedText(text.join("\n\n"));
+  try {
+    // per page rather than merged: mergePages folds every newline pdf.js marks into one space
+    const { text } = await extractText(pdf);
+    return normalizeExtractedText(text.join("\n\n"));
+  } finally {
+    await pdf.destroy();
+  }
 }
 
 export async function extractDocxAttachmentText(file: File): Promise<string> {
@@ -613,6 +651,9 @@ export async function readAttachmentText(
   name: string,
   contentType: string | undefined,
 ): Promise<AttachmentText> {
+  if (isTextAttachment(name, contentType)) {
+    return { label: null, ...(await readBoundedText(file)) };
+  }
   if (isPdfAttachment(name, contentType)) {
     return {
       label: "PDF",

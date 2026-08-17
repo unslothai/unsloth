@@ -22,6 +22,7 @@ const {
   attachmentTextLanguage,
   countAttachmentTextLines,
   extractHtmlAttachmentText,
+  extractPdfAttachmentText,
   getDocxAttachmentError,
   isAudioAttachment,
   parseAttachmentText,
@@ -29,6 +30,7 @@ const {
   repackDocxAttachmentArchive,
   truncateAttachmentPreviewText,
 } = await import("../src/features/chat/attachment-content.ts");
+const { definePDFJSModule } = await import("unpdf");
 
 type StubNode = {
   nodeType: number;
@@ -274,6 +276,25 @@ test("readAttachmentText reports truncation even when the slice extracts no text
   assert.equal(truncateAttachmentPreviewText(text).truncated, false);
 });
 
+// CompositeAttachmentAdapter checks TextAttachmentAdapter before the
+// document-specific adapters, so a browser-declared text MIME wins over a
+// misleading extension in both the sent payload and its preview.
+test("readAttachmentText follows text adapter precedence over document extensions", async () => {
+  for (const name of ["notes.pdf", "notes.docx", "notes.html"]) {
+    const file = new File([`plain text from ${name}`], name, {
+      type: "text/plain",
+    });
+    assert.deepEqual(
+      await readAttachmentText(file, file.name, file.type),
+      {
+        label: null,
+        text: `plain text from ${name}`,
+        truncated: false,
+      },
+    );
+  }
+});
+
 // Stored payloads have no size limit, so unwrapping must copy at most the
 // capped body rather than the whole attachment.
 test("parseAttachmentText caps the body it copies out of a wrapper", () => {
@@ -356,6 +377,54 @@ test("readAttachmentText refuses an oversized docx before reading it", async () 
     /DOCX file is too large: huge\.docx/,
   );
   assert.deepEqual(reads, []);
+});
+
+test("extractPdfAttachmentText destroys the PDF proxy after success and failure", async () => {
+  const destroyed: string[] = [];
+  const proxies = [
+    {
+      _pdfInfo: {},
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => ({
+          items: [
+            { str: "page one", hasEOL: true },
+            { str: "page two", hasEOL: false },
+          ],
+        }),
+      }),
+      destroy: async () => {
+        destroyed.push("success");
+      },
+    },
+    {
+      _pdfInfo: {},
+      numPages: 1,
+      getPage: async () => {
+        throw new Error("page extraction failed");
+      },
+      destroy: async () => {
+        destroyed.push("failure");
+      },
+    },
+  ];
+
+  await definePDFJSModule(async () => ({
+    getDocument: () => ({ promise: Promise.resolve(proxies.shift()) }),
+  }));
+  try {
+    const file = new File(["%PDF"], "small.pdf", {
+      type: "application/pdf",
+    });
+    assert.equal(await extractPdfAttachmentText(file), "page one\npage two");
+    await assert.rejects(
+      extractPdfAttachmentText(file),
+      /page extraction failed/,
+    );
+    assert.deepEqual(destroyed, ["success", "failure"]);
+  } finally {
+    await definePDFJSModule(() => import("unpdf/pdfjs"));
+  }
 });
 
 // The bytes are requested synchronously, so the extractor is reached without
