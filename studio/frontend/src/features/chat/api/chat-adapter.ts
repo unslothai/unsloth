@@ -95,6 +95,7 @@ import {
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
 } from "../lib/apply-inference-status-to-store";
+import { preserveThinkingDefaultFromLoad } from "../lib/resolve-preserve-thinking-default";
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
@@ -1941,6 +1942,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
@@ -1966,6 +1968,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "supportsReasoningOff",
   "reasoningEffortLevels",
   "supportsPreserveThinking",
+  "preserveThinking",
   "supportsTools",
   "toolsEnabled",
   "codeToolsEnabled",
@@ -2072,6 +2075,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
+    preserveThinking: state.preserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
@@ -3049,6 +3053,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: preserveThinkingDefaultFromLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3093,6 +3098,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...reasoningCapsFromLoad(loadResp),
           supportsPreserveThinking:
             loadResp.supports_preserve_thinking ?? false,
+          preserveThinking: preserveThinkingDefaultFromLoad(loadResp),
           supportsTools: loadResp.supports_tools ?? false,
           ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
           kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3410,6 +3416,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         reasoningEnabled: loadResp.supports_reasoning ?? false,
         ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
+        preserveThinking: preserveThinkingDefaultFromLoad(loadResp),
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
         kvCacheDtype: loadResp.cache_type_kv ?? null,
@@ -3507,6 +3514,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
+            preserveThinking: preserveThinkingDefaultFromLoad(status),
             ggufContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
@@ -3740,6 +3748,9 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
+                preserveThinking:
+                  queuedEmptyModelRuntime?.preserveThinking ??
+                  liveRuntime.preserveThinking,
                 ggufContextLength:
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
@@ -4081,6 +4092,9 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
+              preserveThinking:
+                queuedEmptyModelRuntime?.preserveThinking ??
+                liveRuntime.preserveThinking,
               ggufContextLength:
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.ggufContextLength

@@ -229,6 +229,7 @@ export interface LoadModelResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
   mlx_kv_bits?: number | null;
@@ -314,6 +315,7 @@ export interface InferenceStatusResponse {
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
+  preserve_thinking_default?: boolean;
   supports_tools?: boolean;
   chat_template?: string | null;
   context_length?: number | null;

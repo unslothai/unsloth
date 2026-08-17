@@ -712,7 +712,11 @@ class _InferenceRuntimeFields(BaseModel):
     )
     supports_preserve_thinking: bool = Field(
         False,
-        description = "Whether the template understands the optional preserve_thinking kwarg (Qwen3.6-style)",
+        description = "Whether the template understands the optional preserve_thinking kwarg",
+    )
+    preserve_thinking_default: bool = Field(
+        False,
+        description = "Default preserve_thinking value resolved for the active model family",
     )
     supports_tools: bool = Field(
         False,

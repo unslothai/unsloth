@@ -1036,6 +1036,11 @@ _TOOL_TEMPLATE_MARKERS = (
 # actually understands.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
+# Match a Qwen3.8 path/repo segment without treating future names such as
+# Qwen3.80 as part of the family. Official ids continue after the version with
+# a dash (for example Qwen3.8-27B-GGUF).
+_QWEN38_MODEL_RE = re.compile(r"(?:^|[^a-z0-9])qwen3\.8(?:$|[-_/\\])", re.IGNORECASE)
+
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
     """Return the reasoning_effort levels a template references, in canonical
@@ -1060,11 +1065,12 @@ def detect_reasoning_flags(
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
-    Returns the same six keys as the GGUF sniffer: ``supports_reasoning``,
+    Returns the same seven keys as the GGUF sniffer: ``supports_reasoning``,
     ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"`` |
     ``"enable_thinking_effort"``), ``reasoning_always_on``,
     ``reasoning_effort_levels``, ``supports_preserve_thinking``,
-    ``supports_tools``. A falsy ``chat_template`` yields the all-default dict.
+    ``preserve_thinking_default``, ``supports_tools``. A falsy
+    ``chat_template`` yields the all-default dict.
     Used by both the llama-server backend at load time and the
     safetensors/transformers paths in ``routes/inference`` so they agree on
     what the frontend sees.
@@ -1075,6 +1081,7 @@ def detect_reasoning_flags(
         "reasoning_always_on": False,
         "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
+        "preserve_thinking_default": False,
         "supports_tools": False,
     }
     if not chat_template:
@@ -1155,6 +1162,12 @@ def detect_reasoning_flags(
     # keeps historical <think> blocks in prior assistant turns.
     if "preserve_thinking" in tpl:
         flags["supports_preserve_thinking"] = True
+        # Qwen3.8 deliberately changed the family default from the off behavior
+        # used by Qwen3.6 and Gemma 4. Keep the product override family-scoped:
+        # other templates that happen to expose the same kwarg stay off.
+        flags["preserve_thinking_default"] = bool(
+            _QWEN38_MODEL_RE.search(model_identifier or "")
+        )
         logger.info(f"{prefix}model supports preserve_thinking")
 
     if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
@@ -3732,6 +3745,7 @@ class LlamaCppBackend:
         self._reasoning_style: str = "enable_thinking"
         self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
+        self._preserve_thinking_default: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
@@ -4278,6 +4292,10 @@ class LlamaCppBackend:
     @property
     def supports_preserve_thinking(self) -> bool:
         return self._supports_preserve_thinking
+
+    @property
+    def preserve_thinking_default(self) -> bool:
+        return self._preserve_thinking_default
 
     @property
     def reasoning_default(self) -> bool:
@@ -8787,6 +8805,7 @@ class LlamaCppBackend:
         self._reasoning_effort_levels = []
         self._reasoning_default = True
         self._supports_preserve_thinking = False
+        self._preserve_thinking_default = False
         self._supports_tools = False
         self._n_layers = None
         self._n_experts = None
@@ -9060,6 +9079,7 @@ class LlamaCppBackend:
                 self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                 self._reasoning_always_on = flags["reasoning_always_on"]
                 self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                self._preserve_thinking_default = flags["preserve_thinking_default"]
                 self._supports_tools = flags["supports_tools"]
         except Exception as e:
             logger.warning(f"Failed to read GGUF metadata: {e}")
@@ -15956,6 +15976,7 @@ class LlamaCppBackend:
                     self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                     self._reasoning_always_on = flags["reasoning_always_on"]
                     self._supports_preserve_thinking = flags["supports_preserve_thinking"]
+                    self._preserve_thinking_default = flags["preserve_thinking_default"]
                     self._supports_tools = flags["supports_tools"]
 
                     self._chat_template_file = tempfile.NamedTemporaryFile(
@@ -15998,13 +16019,12 @@ class LlamaCppBackend:
                                 thinking_default = False
                     self._reasoning_default = thinking_default
                     reasoning_kw = self._reasoning_kwargs(thinking_default)
-                    # preserve_thinking is an independent kwarg. Default it OFF
-                    # at launch so direct OpenAI-compatible callers that omit the
-                    # field match the UI's default-off behavior (the bundled
-                    # gemma-4 template also defaults it false; the frontend sends
-                    # preserve_thinking per request once toggled on).
+                    # preserve_thinking is independent of the thinking gate.
+                    # Qwen3.8 defaults it on; Qwen3.6, Gemma 4, and every other
+                    # supporting family keep the existing off default. The
+                    # frontend receives the same resolved value via load/status.
                     if self._supports_preserve_thinking:
-                        reasoning_kw["preserve_thinking"] = False
+                        reasoning_kw["preserve_thinking"] = self._preserve_thinking_default
                     cmd.extend(
                         [
                             "--chat-template-kwargs",
@@ -18464,6 +18484,7 @@ class LlamaCppBackend:
             self._reasoning_effort_levels = []
             self._reasoning_default = True
             self._supports_preserve_thinking = False
+            self._preserve_thinking_default = False
             self._supports_tools = False
             self._cache_type_kv = None
             # GPU-pin state describes the active runner only; clear it so an explicit

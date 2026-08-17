@@ -30,6 +30,7 @@ import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
+import { preserveThinkingDefaultFromLoad } from "./resolve-preserve-thinking-default";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
 
@@ -185,6 +186,7 @@ export function applyActiveModelStatusToStore(
       ? (status.reasoning_effort_levels as ReasoningEffort[])
       : (["low", "medium", "high"] as const);
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
+  const preserveThinkingDefault = preserveThinkingDefaultFromLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
   const currentGgufContextLength = status.is_gguf
@@ -343,6 +345,9 @@ export function applyActiveModelStatusToStore(
     reasoningEffortLevels,
     reasoningEffort: clampedReasoningEffort,
     supportsPreserveThinking,
+    ...(hydratingExistingModel && {
+      preserveThinking: preserveThinkingDefault,
+    }),
     supportsTools,
     ...resolveToolsEnabledOnLoad(supportsTools),
     reasoningEnabled: supportsReasoning
