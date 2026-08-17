@@ -1915,6 +1915,12 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     So `slotsModelChanged` is `hydratingExistingModel` with nothing subtracted, which is
     how every other load param at this call site already treats a changed checkpoint or
     variant.
+
+    Reseeding is only safe because the same flag gates the remembered lookup: it does
+    not blank the control, it re-reads THIS model's own saved config through
+    resolveResidentInitialConfig. That is what makes #8943 right rather than merely
+    different, so it is asserted here too -- a future change that reseeds without
+    re-reading would take the user's saved slot count away for real.
     """
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
     assert "const slotsModelChanged = hydratingExistingModel;" in status
@@ -1928,6 +1934,11 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     assert "loadedNParallel: status.requested_parallel_slots," in status
     # The batch pair is told the same thing, from the same local, so the two cannot drift.
     assert "modelChanged: slotsModelChanged," in status
+    # And the reseed re-reads this model's remembered config rather than blanking.
+    assert (
+        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
     # And the rollback that makes the reseed necessary is still ordered before the
     # hydration it protects, in the adopt path.
