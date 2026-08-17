@@ -384,41 +384,46 @@ def _end_line(node: ast.AST) -> int:
     return getattr(node, "end_lineno", None) or node.lineno
 
 
-def _tests_sys_modules(node: ast.AST, flags: frozenset[str]) -> bool:
-    """Whether this ``if`` test asks whether something is already in ``sys.modules``.
+def _true_when_imported(node: ast.AST, flags: dict[str, bool]) -> bool | None:
+    """Whether this expression is true when the module is ALREADY in ``sys.modules``.
 
+    None when it does not ask that question at all. The polarity is the point:
     ``test_training_progress_callback.py`` installs its stubs under
     ``if not _TRAINER_PRE_IMPORTED:``, where the flag is
-    ``"core.training.trainer" in sys.modules``. Skipping the stubs on the other branch
-    is not an omission: the import resolves out of ``sys.modules`` there and never
-    reaches the real dependency, which is the whole reason the file is written that
-    way. Read through a module-level flag as well as the direct form, since that is
-    how it is spelled.
+    ``"core.training.trainer" in sys.modules``. Skipping them on the other branch is
+    not an omission, because the import resolves out of ``sys.modules`` there and
+    never reaches the real dependency. Written the other way up, the stubs would be
+    installed only when they are not needed and skipped when they are, and the guard
+    accepted that too until this told the two apart. Reported on this PR.
     """
-    for child in ast.walk(node):
-        if isinstance(child, ast.Compare) and any(
-            isinstance(op, (ast.In, ast.NotIn)) for op in child.ops
-        ):
-            if any(_is_sys_modules(comparator) for comparator in child.comparators):
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        inner = _true_when_imported(node.operand, flags)
+        return None if inner is None else not inner
+    if isinstance(node, ast.Name):
+        return flags.get(node.id)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1:
+        if any(_is_sys_modules(comparator) for comparator in node.comparators):
+            if isinstance(node.ops[0], ast.In):
                 return True
-        if isinstance(child, ast.Name) and child.id in flags:
-            return True
-    return False
+            if isinstance(node.ops[0], ast.NotIn):
+                return False
+    return None
 
 
-def _sys_modules_flags(tree: ast.Module) -> frozenset[str]:
-    """Module-level names bound to an "is it already imported" test."""
-    return frozenset(
-        name
-        for statement in tree.body
-        if isinstance(statement, (ast.Assign, ast.AnnAssign))
-        and statement.value is not None
-        and _tests_sys_modules(statement.value, frozenset())
-        for name in _bound_names(statement)
-    )
+def _sys_modules_flags(tree: ast.Module) -> dict[str, bool]:
+    """Module-level names bound to an "is it already imported" test, with polarity."""
+    flags: dict[str, bool] = {}
+    for statement in tree.body:
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)) or statement.value is None:
+            continue
+        answer = _true_when_imported(statement.value, flags)
+        if answer is not None:
+            for name in _bound_names(statement):
+                flags[name] = answer
+    return flags
 
 
-def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
+def _certain_nodes(node: ast.AST, flags: dict[str, bool] | None = None):
     """``_runtime_nodes``, minus what only MIGHT run.
 
     A stub inside ``if something():`` above the import is not a stub the import can
@@ -426,17 +431,22 @@ def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
     one. ``while`` and ``except`` bodies go the same way. ``for`` bodies stay: the
     loop over a table is the idiom these files use, and an empty table would not
     name ``unsloth`` in the first place, so it cannot pass this check anyway. The
-    "already imported" guard stays too, for the reason in ``_tests_sys_modules``.
+    "already imported" guard stays too, for the reason in ``_true_when_imported``.
     """
-    if (
-        isinstance(node, ast.If)
-        and _constant_test(node) is None
-        and not _tests_sys_modules(node.test, flags)
-    ):
+    flags = flags or {}
+    if isinstance(node, ast.If) and _constant_test(node) is None:
+        imported = _true_when_imported(node.test, flags)
+        if imported is None:
+            return
+        # Only the branch that runs when the module is ABSENT: that is the one whose
+        # stubs the import needs, and on the other branch the import resolves out of
+        # sys.modules and cannot fail.
+        for child in node.orelse if imported else node.body:
+            yield from _certain_nodes(child, flags)
         return
     if isinstance(node, ast.While):
-        for child in node.orelse:
-            yield from _certain_nodes(child, flags)
+        # Not even the `else`: it is skipped when the loop leaves through `break`.
+        # Reported on this PR.
         return
     if isinstance(node, ast.Try):
         # Only the `finally`. A try body whose handler swallows the exception is
@@ -453,7 +463,7 @@ def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
 def _running_before(
     body: list[ast.stmt],
     line: int,
-    flags: frozenset[str] = frozenset(),
+    flags: dict[str, bool] | None = None,
 ):
     """``(statement, nodes)`` for everything that has run once ``line`` is reached.
 
@@ -712,12 +722,31 @@ def _skips_on_plain_import_error(node: ast.Call) -> bool:
 
 
 def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Module-level ``def``s by name."""
-    return {
-        statement.name: statement
-        for statement in tree.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    """Every ``def`` by name, nested ones included.
+
+    Nested bodies are still DEFERRED by default -- a function nothing calls does not
+    run, whatever it is written inside. They are here so that one which IS called at
+    import can be given the boundary of the call that reaches it: an outer helper the
+    module body calls, defining and calling an inner helper, runs that inner body
+    during collection. Leaving nested defs out of this map handed such a call the
+    end-of-module boundary, the lenient answer, so a stub installed after the outer
+    call read as being in time while the inner import had already run. Reported on
+    this PR.
+    """
+    functions: dict[str, ast.AST] = {}
+
+    def _collect(body):
+        for statement in body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.setdefault(statement.name, statement)
+                _collect(statement.body)
+            elif hasattr(statement, "body"):
+                _collect(statement.body)
+                _collect(getattr(statement, "orelse", []) or [])
+                _collect(getattr(statement, "finalbody", []) or [])
+
+    _collect(tree.body)
+    return functions
 
 
 def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
@@ -1070,6 +1099,47 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert safe(stub_in_time)
+
+    # A nested def is deferred only while nothing runs it. An outer helper the module
+    # body calls, which defines and calls an inner one, runs that inner body during
+    # collection, so the call inside it takes the OUTER call's line and a stub below
+    # that line is too late. Leaving nested defs out of the function map handed this
+    # the end-of-module boundary instead, the lenient answer.
+    nested_called_at_import = (
+        "import pytest, sys\n"
+        "def _outer():\n"
+        "    def _inner():\n"
+        "        return pytest.importorskip('core.inference.inference')\n"
+        "    return _inner()\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(nested_called_at_import) == [("core.inference.inference", 6)]
+    assert not safe(nested_called_at_import)
+
+    # ...and the same file with the stub above the call site is fine.
+    nested_stub_in_time = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "def _outer():\n"
+        "    def _inner():\n"
+        "        return pytest.importorskip('core.inference.inference')\n"
+        "    return _inner()\n"
+        "_outer()\n"
+    )
+    assert safe(nested_stub_in_time)
+
+    # A nested def nothing calls at import is still deferred: it runs at test time,
+    # by which point a stub anywhere in the module body is in place.
+    nested_deferred = (
+        "import pytest, sys\n"
+        "def _outer():\n"
+        "    def _inner():\n"
+        "        return pytest.importorskip('core.inference.inference')\n"
+        "    return _inner()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(nested_deferred)
 
     # A class body runs at import time, so a stub below it is too late, exactly like a
     # module-scope call. Only a function BODY is deferred.
@@ -1676,6 +1746,35 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert not _is_offender(already_imported, heavy), already_imported
+    # The direct form, without the flag.
+    assert not _is_offender(
+        "import sys\n"
+        'if "core.training.trainer" not in sys.modules:\n'
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n",
+        heavy,
+    )
+    # Written the other way up, the stubs are installed only when they are not needed
+    # and skipped when they are, so the polarity has to be read rather than the
+    # presence of a sys.modules test.
+    wrong_way_up = (
+        "import sys\n"
+        '_PRE = "core.training.trainer" in sys.modules\n'
+        "if _PRE:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(wrong_way_up, heavy), wrong_way_up
+
+    # A while-else is skipped when the loop leaves through break.
+    while_else = (
+        "while enabled():\n"
+        "    break\n"
+        "else:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(while_else, heavy), while_else
 
     # An except clause is matched by what it CATCHES, not by what its name contains.
     for not_guarded in (
