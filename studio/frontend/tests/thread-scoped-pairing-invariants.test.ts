@@ -681,3 +681,44 @@ test("the in-memory defaults follow the model defaults that were just written", 
   // and it is the fallback apply() actually reads
   assert.match(store, /stored\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/);
 });
+
+// setCheckpoint replays the destination model's remembered params on its own, without
+// going through setParams. An external switch has no load after it to correct the
+// result, so the chat silently adopts that model's prompt and sampling and keeps them.
+test("switching model in a chat keeps the chat's sampling, not the model's", () => {
+  const set = slice(store, "setCheckpoint: (modelId, ggufVariant, options)", "\n  setActiveThreadId:");
+  assert.match(
+    set,
+    /const restoredParams = checkpointChanged\s*\?\s*restoreThreadScopedParams\(nextParams\)\s*:\s*nextParams;/,
+  );
+  assert.match(set, /params: restoredParams,/);
+  // Persistence still reads the unrestored object, as in setParams: the model's own
+  // values reach the defaults even though the chat keeps running on its own.
+  assert.match(set, /getReplayStatePatch\(state, nextParams, outgoing, baseParams\)/);
+});
+
+// rememberOutgoingModel snapshots the live params, which inside a chat are that chat's.
+// Filtering the incoming edit cannot undo it: the outgoing snapshot is written first,
+// and on a model with no entry it is persisted whole.
+test("the model being left does not remember the open chat's values", () => {
+  const remember = slice(store, "function rememberOutgoingModel", "\n}");
+  assert.match(
+    remember,
+    /pickRememberedParams\(\s*withoutActiveThreadParams\(state, outgoing\),\s*\)/,
+  );
+  assert.doesNotMatch(
+    remember,
+    /pickRememberedParams\(outgoing\)/,
+    "the chat's sampling and prompt are stored as the model's own",
+  );
+  const strip = slice(store, "function withoutActiveThreadParams", "\n}");
+  // Only keys this chat owns, and what the model already knew beats the installation
+  // copy, so leaving a chat does not flatten a preference set outside one.
+  assert.match(strip, /if \(threadScopedOverride\(key\) === undefined\) continue;/);
+  assert.match(
+    strip,
+    /remembered\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/,
+  );
+  // With no chat open there is nothing of a chat's in the params.
+  assert.match(strip, /if \(threadScopedSettingsThreadId === null\) return params;/);
+});

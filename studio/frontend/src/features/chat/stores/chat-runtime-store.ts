@@ -874,6 +874,36 @@ function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
 }
 
 /**
+ * Take the open chat's own values back out of a snapshot about to be remembered
+ * against a model. They belong to the chat, not to the model, so leaving them in
+ * replays one chat's prompt and sampling into the next chat opened on it.
+ *
+ * What the model already remembered wins over the installation values, so
+ * stepping off a model inside a chat does not flatten a preference that model
+ * was given outside one.
+ */
+function withoutActiveThreadParams(
+  state: ChatRuntimeStore,
+  params: InferenceParams,
+): InferenceParams {
+  if (threadScopedSettingsThreadId === null) return params;
+  const remembered = params.checkpoint
+    ? state.paramsByModel[params.checkpoint]
+    : undefined;
+  const restored: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    // Only a key this chat actually owns; the rest are already the model's.
+    if (threadScopedOverride(key) === undefined) continue;
+    const own = remembered?.[key] ?? globalThreadScopedDefaults?.[key];
+    if (own === undefined || isSameThreadScopedValue(own, params[key])) {
+      continue;
+    }
+    restored[key] = own;
+  }
+  return hasKeys(restored) ? { ...params, ...restored } : params;
+}
+
+/**
  * Drop the sampling keys the open chat just took, so they reach neither the
  * installation defaults nor this model's memory: both are shared with every
  * other chat. A model's own values are never taken, so they pass straight
@@ -2898,6 +2928,9 @@ function persistReplayedParams(
   const changed = getChangedInferenceParams(nextParams, state.params);
   if (state.settingsHydrated && hasKeys(changed)) {
     saveSettingsPatch({ inferenceParams: changed });
+    // Same reason as the setParams write: the in-memory copy is what a chat with
+    // no snapshot falls back to, so it has to move with what was just stored.
+    noteThreadScopedDefaults(changed);
   }
 }
 
@@ -2968,7 +3001,9 @@ function rememberOutgoingModel(
   if (!state.settingsHydrated && outgoing.checkpoint) {
     modelLeftBeforeHydration = outgoing.checkpoint;
   }
-  const snapshot = pickRememberedParams(outgoing);
+  const snapshot = pickRememberedParams(
+    withoutActiveThreadParams(state, outgoing),
+  );
   // Only to seed a model with no entry: later changes are written key by key by
   // the edit that made them, and a full snapshot would put this browser's copy
   // of untouched keys over another tab's.
@@ -3945,8 +3980,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         checkpoint: modelId,
         maxTokens: nextMaxTokens,
       };
+      // The chat outranks the model it is switching to, so its pinned sampling
+      // and prompt go back over the replay. An external switch has no load after
+      // it to put them back, so without this the chat keeps the model's instead.
+      // Live store only: getReplayStatePatch still persists from the unrestored
+      // object, so the model's own values reach the installation defaults.
+      const restoredParams = checkpointChanged
+        ? restoreThreadScopedParams(nextParams)
+        : nextParams;
       return {
-        params: nextParams,
+        params: restoredParams,
         ...getReplayStatePatch(state, nextParams, outgoing, baseParams),
         activeGgufVariant: nextGgufVariant,
         ...(queuedSettingsChanged
