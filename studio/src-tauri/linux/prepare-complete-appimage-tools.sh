@@ -12,8 +12,7 @@ fi
 tools_dir="$1"
 mkdir -p "$tools_dir"
 
-APPRUN_URL="https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64"
-APPRUN_SHA256="f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
 LINUXDEPLOY_URL="https://github.com/tauri-apps/binary-releases/releases/download/linuxdeploy/linuxdeploy-x86_64.AppImage"
 LINUXDEPLOY_SHA256="e762bea85c8eb0d4b3508d46e5c1f037f717d0f9303ae3b4aafc8b04991fa1ef"
 GTK_PLUGIN_URL="https://raw.githubusercontent.com/tauri-apps/linuxdeploy-plugin-gtk/b5eb8d05b4c0ed40107fe2158c5d8527f94568ef/linuxdeploy-plugin-gtk.sh"
@@ -31,11 +30,22 @@ fetch() {
   chmod +x "$dest"
 }
 
-fetch "$APPRUN_URL" "$APPRUN_SHA256" AppRun-x86_64
 fetch "$LINUXDEPLOY_URL" "$LINUXDEPLOY_SHA256" linuxdeploy-x86_64.AppImage
 fetch "$GTK_PLUGIN_URL" "$GTK_PLUGIN_SHA256" linuxdeploy-plugin-gtk.sh
 fetch "$GSTREAMER_PLUGIN_URL" "$GSTREAMER_PLUGIN_SHA256" linuxdeploy-plugin-gstreamer.sh
 fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
+
+# Replace Tauri's legacy AppRun before bundling: that binary globally prepends
+# the AppDir to LD_LIBRARY_PATH and recreates #7953. linuxdeploy wraps this
+# launcher with its generated GTK hook runner.
+install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"
+
+# Harden the AppDir from the GTK plugin's final build-time hook. It runs after
+# GTK has deployed its dependency closure and before the output plugin packages
+# the generated AppRun.
+install -m 755 \
+  "$script_dir/finalize-complete-appimage.sh" \
+  "$tools_dir/finalize-complete-appimage.sh"
 
 
 # The pinned GTK plugin predates the repaired Wayland runtime boundary and
@@ -43,16 +53,20 @@ fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appima
 # GDK_BACKEND) so the same artifact can run natively on Wayland and under X11.
 sed -i '/export GDK_BACKEND=x11/d' "$tools_dir/linuxdeploy-plugin-gtk.sh"
 
-# Keep host-loaded display, networking, and C++ libraries on the host side of
-# the ABI boundary. Ubuntu 22.04 copies of these break Ubuntu 24.04/Mint 22 GIO,
-# curl, and Mesa modules when the host loads them after bundled WebKitGTK.
+# GIO_EXTRA_MODULES is additive, so inherited host entries must be removed.
+# Pin the default module directory to the bundled modules; otherwise host proxy
+# and dconf modules can be loaded into the bundled GLib process.
 cat >> "$tools_dir/linuxdeploy-plugin-gtk.sh" <<'SH'
-rm -f \
-  "$APPDIR"/usr/lib/libwayland-client.so* \
-  "$APPDIR"/usr/lib/libnghttp2.so* \
-  "$APPDIR"/usr/lib/libcurl*.so* \
-  "$APPDIR"/usr/lib/libstdc++.so* \
-  "$APPDIR"/usr/lib/libgcc_s.so*
+# APPIMAGE_EXTRACT_AND_RUN can pass a relative APPDIR. Canonicalize it before
+# the generated hook derives WebKit helper and GTK data paths from that value.
+sed -i '2i\
+case "${APPDIR:-}" in\
+  /*) ;;\
+  *) APPDIR="$(dirname "$(realpath "$0")")" ;;\
+esac\
+export APPDIR
+' "$HOOKFILE"
+
 
 # GIO_EXTRA_MODULES is additive, so inherited host entries must be removed.
 # Pin the default module directory to the bundled modules; otherwise host proxy
@@ -75,4 +89,8 @@ dir_icon_target="$(readlink "$APPDIR/.DirIcon" 2>/dev/null || true)"
 if [[ "$dir_icon_target" == /* ]]; then
   ln -sfn "${dir_icon_target##*/}" "$APPDIR/.DirIcon"
 fi
+
+plugin_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+"$plugin_dir/finalize-complete-appimage.sh" "$APPDIR"
+
 SH

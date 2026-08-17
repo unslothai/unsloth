@@ -29,6 +29,16 @@ fi
 [[ -d "$appdir" ]] || { echo "AppDir does not exist: $appdir" >&2; exit 1; }
 [[ -x "$appdir/AppRun" ]] || { echo "Complete AppImage has no executable AppRun" >&2; exit 1; }
 
+
+launchers=("$appdir/AppRun")
+[[ ! -e "$appdir/AppRun.wrapped" ]] || launchers+=("$appdir/AppRun.wrapped")
+if grep -aEq '^[[:space:]]*(export[[:space:]]+)?LD_LIBRARY_PATH=' "${launchers[@]}" \
+  "$appdir/apprun-hooks"/* 2>/dev/null || \
+  grep -aFq 'LD_LIBRARY_PATH=%s/usr/lib/' "${launchers[@]}" 2>/dev/null; then
+  echo "Complete AppImage must not set a global AppDir LD_LIBRARY_PATH (#7953)" >&2
+  exit 1
+fi
+
 if ! grep -Rqs 'GIO_MODULE_DIR=' \
   "$appdir/AppRun" "$appdir/apprun-hooks" "$appdir/usr/lib" 2>/dev/null; then
   echo "Complete AppImage does not isolate bundled GIO modules" >&2
@@ -73,20 +83,51 @@ for component in \
   require_basename "$component"
 done
 
-# The bundle owns one coherent userspace web runtime, but glibc, the loader,
-# Wayland client ABI, and graphics drivers must remain host-owned so an Ubuntu
-# 22.04 build can use a newer distribution's coherent EGL/Mesa/Wayland stack.
+# The bundle owns one coherent userspace web runtime, but the loader and
+# libraries coupled to host services, drivers, display servers, or later-loaded
+# host modules must stay host-owned. The finalizer removes them after all input
+# plugins, and this list prevents any future plugin from silently reintroducing
+# one.
 for forbidden in \
-  'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
-  'ld-linux*.so*' 'libGL.so*' 'libGLX*.so*' 'libEGL.so*' \
-  'libwayland-client.so*' \
-  'libnghttp2.so*' 'libcurl*.so*' 'libstdc++.so*' 'libgcc_s.so*' \
-  'libdrm.so*' 'libgbm.so*' 'libvulkan.so*' 'libcuda.so*'; do
+  'ld-linux*.so*' 'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
+  'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*' \
+  'libGL*.so*' 'libEGL*.so*' 'libGLES*.so*' 'libOpenGL*.so*' \
+  'libdrm.so*' 'libgbm.so*' 'libglapi.so*' 'libvulkan.so*' 'libcuda.so*' \
+  'libX11.so*' 'libX11-xcb.so*' 'libxcb*.so*' 'libXext.so*' \
+  'libXrandr.so*' 'libXi.so*' 'libXcursor.so*' 'libXfixes.so*' \
+  'libXrender.so*' 'libXcomposite.so*' 'libXdamage.so*' \
+  'libXinerama.so*' 'libXau.so*' 'libXdmcp.so*' 'libxshmfence.so*' \
+  'libwayland-*.so*' 'libasound.so*' 'libpulse*.so*' \
+  'libnghttp2.so*' 'libcurl*.so*' 'libstdc++.so*' 'libgcc_s.so*'; do
   if found="$(find "$appdir" \( -type f -o -type l \) -name "$forbidden" -print -quit)" && [[ -n "$found" ]]; then
     echo "Complete AppImage must leave host runtime component unbundled: $found" >&2
     exit 1
   fi
 done
+dynamic_count=0
+runpath_failures=0
+while IFS= read -r -d '' object; do
+  [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
+  dynamic="$(readelf -d "$object" 2>/dev/null || true)"
+  grep -q 'Dynamic section' <<<"$dynamic" || continue
+  ((dynamic_count += 1))
+  runpath="$(sed -n 's/.*\(RPATH\|RUNPATH\).*Library .*path: \[\(.*\)\].*/\2/p' <<<"$dynamic")"
+  case "$runpath" in
+    '$ORIGIN'|'$ORIGIN/'*) ;;
+    *)
+      echo "Dynamic AppImage object lacks an \$ORIGIN-relative RUNPATH: $object" >&2
+      ((runpath_failures += 1))
+      ;;
+  esac
+  if grep -Eq '\(NEEDED\).*Shared library: \[/' <<<"$dynamic"; then
+    echo "Dynamic AppImage object has an absolute DT_NEEDED entry: $object" >&2
+    ((runpath_failures += 1))
+  fi
+done < <(find "$appdir" -type f -print0)
+((dynamic_count > 0)) || { echo "Complete AppImage contains no dynamic ELF objects" >&2; exit 1; }
+((runpath_failures == 0)) || exit 1
+
+
 
 max_glibc="$({ readelf --version-info "$binary" 2>/dev/null || true; } |
   grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -Vu | tail -1)"

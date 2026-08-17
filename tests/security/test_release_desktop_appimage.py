@@ -2,7 +2,6 @@
 
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -14,6 +13,8 @@ WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
 
 CLEAN_MACHINE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "desktop-app-clean-machine-ci.yml"
 VERIFIER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "verify-complete-appimage.sh"
+
+FINALIZER = REPO_ROOT / "studio" / "src-tauri" / "linux" / "finalize-complete-appimage.sh"
 
 
 def _workflow():
@@ -98,6 +99,10 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
         "libegl1",
         "libgbm1",
         "libwayland-client0",
+        "libwayland-egl1",
+        "libxcb1",
+        "libxinerama1",
+        "libasound2t64",
         "libharfbuzz0b",
         "libnghttp2-14",
     ):
@@ -105,6 +110,14 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     assert "weston" in source
     assert "APPIMAGE_DISPLAY_BACKEND" in source
     assert "wayland" in source
+
+    no_gles = next(
+        lane
+        for lane in job["strategy"]["matrix"]["include"]
+        if lane["label"] == "ubuntu-22.04-no-gles"
+    )
+    assert no_gles["install_gles"] is False
+    assert "libGLESv2.so.2" in source
 
     linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
     webdriver_source = yaml.safe_dump(workflow["jobs"]["appimage-model-download"])
@@ -118,7 +131,7 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
         assert package in linux_source
         assert package in webdriver_source
 
-    for package in ("libwayland-client", "libnghttp2"):
+    for package in ("libwayland-client", "libxcb", "libXinerama", "libnghttp2"):
         assert package in source
 
 
@@ -129,8 +142,9 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     tool_script = (
         REPO_ROOT / "studio/src-tauri/linux/prepare-complete-appimage-tools.sh"
     ).read_text(encoding = "utf-8")
+
+    finalizer_source = FINALIZER.read_text(encoding = "utf-8")
     expected = {
-        "APPRUN": ("AppRun-x86_64", "AppRun-x86_64"),
         "LINUXDEPLOY": ("linuxdeploy-x86_64.AppImage", "linuxdeploy-x86_64.AppImage"),
         "GTK_PLUGIN": ("linuxdeploy-plugin-gtk.sh", "linuxdeploy-plugin-gtk.sh"),
         "GSTREAMER_PLUGIN": (
@@ -151,14 +165,26 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     ]
     assert len(fetch_calls) == len(expected)
     assert tool_script.index("sha256sum -c") < tool_script.index("chmod +x")
+
+    assert "apprun-old" not in tool_script
+    for local_tool in ("appimage-apprun.sh", "finalize-complete-appimage.sh"):
+        assert local_tool in tool_script
+
+    assert "patchelf --set-rpath" in finalizer_source
+    assert "$ORIGIN" in finalizer_source
+    assert 'case "${APPDIR:-}" in' in tool_script
+    assert 'APPDIR="$(dirname "$(realpath "$0")")"' in tool_script
     for host_library in (
-        "libwayland-client.so*",
+        "libwayland-*.so*",
+        "libGLES*.so*",
+        "libGL*.so*",
+        "libEGL*.so*",
         "libnghttp2.so*",
         "libcurl*.so*",
         "libstdc++.so*",
         "libgcc_s.so*",
     ):
-        assert host_library in tool_script
+        assert host_library in finalizer_source
     assert "GIO_MODULE_DIR" in tool_script
 
     assert "unset GIO_EXTRA_MODULES" in tool_script
@@ -166,11 +192,24 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
 
+def _compile_fixture_elf(path: Path, *, origin_runpath: bool) -> None:
+    args = ["cc", "-x", "c", "-", "-o", path]
+    if origin_runpath:
+        args.insert(-2, "-Wl,-rpath,$ORIGIN/../lib")
+    subprocess.run(
+        args,
+        input = "int main(void) { return 0; }\n",
+        check = True,
+        text = True,
+        capture_output = True,
+    )
+
+
 def _fake_complete_appdir(tmp_path: Path) -> Path:
     appdir = tmp_path / "AppDir"
     binary = appdir / "usr/bin/unsloth-studio"
     binary.parent.mkdir(parents = True)
-    shutil.copy2("/bin/true", binary)
+    _compile_fixture_elf(binary, origin_runpath = True)
 
     (appdir / "Unsloth.png").touch()
     (appdir / ".DirIcon").symlink_to("Unsloth.png")
@@ -217,6 +256,32 @@ def test_complete_appimage_verifier_accepts_a_coherent_runtime(tmp_path):
     assert "Verified complete x86_64 AppImage runtime" in result.stdout
 
 
+def test_complete_appimage_verifier_rejects_global_library_path_and_missing_origin_runpath(
+    tmp_path,
+):
+    global_path = _fake_complete_appdir(tmp_path / "global-path")
+    (global_path / "AppRun").write_text(
+        '#!/bin/sh\nexport LD_LIBRARY_PATH="$APPDIR/usr/lib:${LD_LIBRARY_PATH:-}"\n',
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        [VERIFIER, "--appdir", global_path], check = False, capture_output = True, text = True
+    )
+    assert result.returncode != 0
+    assert "LD_LIBRARY_PATH" in result.stderr
+
+    missing_runpath = _fake_complete_appdir(tmp_path / "missing-runpath")
+    _compile_fixture_elf(missing_runpath / "usr/lib/WebKitWebProcess", origin_runpath = False)
+    result = subprocess.run(
+        [VERIFIER, "--appdir", missing_runpath],
+        check = False,
+        capture_output = True,
+        text = True,
+    )
+    assert result.returncode != 0
+    assert "$ORIGIN-relative RUNPATH" in result.stderr
+
+
 def test_complete_appimage_verifier_rejects_additive_host_gio_modules(tmp_path):
     appdir = _fake_complete_appdir(tmp_path)
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
@@ -240,6 +305,10 @@ def test_complete_appimage_verifier_requires_webkit_and_rejects_host_abi_librari
     for library in (
         "libc.so.6",
         "libwayland-client.so.0",
+        "libwayland-cursor.so.0",
+        "libwayland-egl.so.1",
+        "libwayland-server.so.0",
+        "libGLESv2.so.2",
         "libnghttp2.so.14",
         "libcurl-gnutls.so.4",
         "libstdc++.so.6",
