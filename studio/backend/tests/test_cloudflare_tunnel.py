@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Cloudflare quick-tunnel helper and run.py wiring.
+"""Tests for the Cloudflare temporary-tunnel helper and run.py wiring.
 
 cloudflare_tunnel.py is stdlib-only (storage_roots is imported lazily), so it
 loads via spec_from_file_location without the studio venv. run.py defaults are
@@ -9,17 +9,22 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
 import ast
+import hashlib
 import importlib.util
 import io
 import os
+import subprocess
 import sys
 import tarfile
 import threading as _real_threading
+import time
 import types
 from pathlib import Path
 from typing import Optional
 
 import pytest
+
+from utils import process_lifetime
 
 _BACKEND = Path(__file__).resolve().parent.parent
 _CT_PY = _BACKEND / "cloudflare_tunnel.py"
@@ -34,6 +39,20 @@ def _load_ct():
 
 
 ct = _load_ct()
+
+
+def test_spawn_login_disables_cloudflared_browser_launcher(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(ct, "_spawn_child", lambda spawn: spawn())
+    monkeypatch.setattr(
+        ct.subprocess,
+        "Popen",
+        lambda argv, **kwargs: captured.update(argv = argv, **kwargs) or object(),
+    )
+    ct._spawn_login("/cloudflared", "operation-token")
+    assert captured["env"]["PATH"] == ""
+    assert captured["env"]["NoDefaultCurrentDirectoryInExePath"] == "1"
+    assert captured["env"][ct._TOKEN_VAR] == "operation-token"
 
 
 # ── URL parsing ──────────────────────────────────────────────────────
@@ -57,7 +76,7 @@ def test_url_regex_no_match_on_unrelated():
 
 def test_url_regex_ignores_api_endpoint():
     # cloudflared's failure line names its own API host; it must never be taken
-    # as the tunnel URL (it returns a 404 and is not a quick tunnel).
+    # as the tunnel URL (it returns a 404 and is not a temporary tunnel).
     line = (
         'failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": '
         "context deadline exceeded"
@@ -436,7 +455,7 @@ def test_reader_captures_url_and_registration():
     )
     assert t.url == "https://words-here-abc.trycloudflare.com"
     assert t.ready is True
-    assert t.wait_for_ready(0) == t.url
+    assert t.wait_for_ready(0) is None
     assert t.error == "cloudflared exited"
     assert exited == [t]
 
@@ -521,7 +540,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5) is True
     assert len(calls) == 3
     assert "name=words.trycloudflare.com" in calls[0]
     # The tunnel provider already knows the hostname it just issued; no one else does.
@@ -531,7 +550,7 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
 def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
     _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b'{"Status":3}'))
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 0.05) is False
 
 
 def test_wait_for_dns_retries_transient_doh_error(monkeypatch):
@@ -558,8 +577,29 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
 
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5) is None
     assert len(calls) == ct._DNS_MAX_DOH_ERRORS
+    # Blocking one of these services is how such a network is configured, so the
+    # attempts keep alternating rather than settling on whichever failed last.
+    assert [call.split("?")[0] for call in calls] == [
+        ct._DOH_URLS[index % len(ct._DOH_URLS)].split("?")[0]
+        for index in range(ct._DNS_MAX_DOH_ERRORS)
+    ]
+
+
+def test_wait_for_dns_takes_the_answer_of_whichever_service_is_reachable(monkeypatch):
+    asked = []
+
+    def handler(req):
+        asked.append(req.full_url)
+        if req.full_url.startswith(ct._DOH_URLS[0].split("?")[0]):
+            raise OSError("blocked")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"203.0.113.7"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._wait_for_dns("studio.example.com", ct.time.monotonic() + 5) is True
+    assert all("studio.example.com" in call for call in asked)
 
 
 def test_wait_for_dns_delays_first_query(monkeypatch):
@@ -893,6 +933,84 @@ def test_start_studio_tunnel_drops_url_that_is_not_publicly_reachable(monkeypatc
     assert ct.start_studio_tunnel(8080) is None
     assert attempts == [None]
     assert ct._active_tunnel is None
+
+
+def test_custom_start_explains_when_the_registered_hostname_is_unreachable(monkeypatch):
+    class _Reservation:
+        token = "token"
+
+        def release(self):
+            pass
+
+    class _Stub:
+        def __init__(self, _port, _binary, **kwargs):
+            self.url = kwargs["url"]
+
+        def start(self):
+            pass
+
+        def wait_for_ready(self, _timeout):
+            return self.url
+
+        def stop(self):
+            return True
+
+    identity = {
+        "hostname": "studio.example.com",
+        "tunnel_name": "unsloth-AB12CD",
+        "tunnel_id": _TUNNEL_ID,
+        "credentials": "/tmp/credentials.json",
+    }
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "read_identity", lambda: identity)
+    monkeypatch.setattr(ct, "identity_is_runnable", lambda _identity: True)
+    monkeypatch.setattr(ct, "reserve_connector", _Reservation)
+    monkeypatch.setattr(ct, "write_custom_ingress", lambda *_a, **_kw: Path("config.yml"))
+    monkeypatch.setattr(ct, "custom_tunnel_args", lambda *_a: [])
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda *_a, **_kw: False)
+
+    assert ct.start_studio_tunnel(8080, managed_by = "settings", kind = "custom") is None
+    assert ct.get_studio_tunnel_status()["error"] == "custom_hostname_unreachable"
+
+
+def test_starting_a_tunnel_starts_watching_its_hostname(monkeypatch):
+    watched = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+
+        def start(self):
+            self.url = "https://app.example.com"
+
+        def wait_for_ready(self, timeout):
+            return self.url
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    monkeypatch.setattr(ct, "verify_public_url", lambda url, **kw: True)
+    monkeypatch.setattr(
+        ct, "_watch_hostname_resolution", lambda url, generation: watched.append((url, generation))
+    )
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://app.example.com"
+        for _ in range(200):
+            if watched:
+                break
+            time.sleep(0.01)
+        assert [u for u, _g in watched] == ["https://app.example.com"]
+        assert watched[0][1] == ct._tunnel_generation
+    finally:
+        ct.stop_studio_tunnel()
 
 
 def test_start_studio_tunnel_returns_url_once_probe_passes(monkeypatch):
@@ -1521,3 +1639,809 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "requested but failed to start" in out
     assert "reachable from the public internet" in out
     assert "local network only" not in out
+
+
+class _WatchStopped(Exception):
+    pass
+
+
+def _one_watch_pass(monkeypatch, url, generation):
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: (_ for _ in ()).throw(_WatchStopped()))
+    try:
+        ct._watch_hostname_resolution(url, generation)
+    except _WatchStopped:
+        pass
+
+
+@pytest.mark.parametrize(
+    "kind,dns,usable",
+    [
+        ("custom", "unknown", False),
+        ("custom", "pending", False),
+        ("custom", "resolved", True),
+        # A temporary hostname is Cloudflare's own and resolves before the URL
+        # is ever reported, so there is nothing to wait for.
+        ("temporary", "unknown", True),
+    ],
+)
+def test_the_status_says_whether_the_url_can_be_offered_yet(monkeypatch, kind, dns, usable):
+    # Everyone offering the link was deciding this for itself; the tunnel is the
+    # one place that knows.
+    monkeypatch.setattr(ct, "_tunnel_kind", kind)
+    monkeypatch.setattr(ct, "_tunnel_generation", 21)
+    monkeypatch.setattr(ct, "_tunnel_dns", (21, dns))
+    status = ct.get_studio_tunnel_status()
+    assert status["dns"] == dns
+    assert status["url_usable"] is usable
+
+
+def test_a_slower_watcher_does_not_erase_a_newer_tunnels_answer(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_dns", (0, "unknown"))
+    monkeypatch.setattr(ct, "_tunnel_generation", 4)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://new.example.com")
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **k: True)
+    ct._watch_hostname_resolution("https://new.example.com", 4)
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **k: False)
+    _one_watch_pass(monkeypatch, "https://old.example.com", 3)
+    assert ct.get_studio_tunnel_status()["dns"] == "resolved"
+
+
+def test_an_expired_deadline_issues_no_request(monkeypatch):
+    calls = []
+
+    def blocked(req):
+        calls.append(1)
+        raise OSError("blocked")
+
+    _patch_urlopen(monkeypatch, blocked)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() - 1) is None
+    assert calls == []
+
+
+def test_the_readiness_probe_ignores_an_ambient_proxy(monkeypatch):
+    import urllib.request
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    openers = []
+    real_build = urllib.request.build_opener
+
+    def build_opener(*handlers):
+        opener = real_build(*handlers)
+        openers.append(opener)
+        opener.open = lambda *a, **k: (_ for _ in ()).throw(OSError("no connector here"))
+        return opener
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+    assert ct._connector_reports_ready("127.0.0.1:20241", 1.0) is False
+    assert openers
+    proxies = [
+        h.proxies for o in openers for h in o.handlers if isinstance(h, urllib.request.ProxyHandler)
+    ]
+    assert not any(proxies)
+
+
+def test_the_readiness_probe_answers_from_the_status_cloudflared_sends():
+    import json
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    connections = [0]
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def do_GET(self):  # noqa: N802
+            # cloudflared's own /ready: 200 once a connection is registered and
+            # 503 before that. The last case is the same connected tunnel behind
+            # a build that stopped reporting the count, which still serves.
+            status = 200 if connections[0] else 503
+            body = (
+                "OK"
+                if connections[0] == "counted out"
+                else json.dumps({"status": status, "readyConnections": connections[0]})
+            )
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    _real_threading.Thread(target = server.serve_forever, daemon = True).start()
+    address = f"127.0.0.1:{server.server_port}"
+    try:
+        assert ct._connector_reports_ready(address, 5.0) is False
+        connections[0] = 1
+        assert ct._connector_reports_ready(address, 5.0) is True
+        connections[0] = "counted out"
+        assert ct._connector_reports_ready(address, 5.0) is True
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_watch_deadline_does_not_drift_outward(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_generation", 12)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://h.example.com")
+    monkeypatch.setattr(ct, "_tunnel_dns", (0, "unknown"))
+    monkeypatch.setattr(ct, "_DNS_WATCH_TOTAL", 1.0)
+    given = []
+    clock = [0.0]
+
+    def monotonic():
+        clock[0] += 0.1
+        return clock[0]
+
+    def wait(host, deadline):
+        given.append(deadline)
+        return False
+
+    monkeypatch.setattr(ct, "_wait_for_dns", wait)
+    monkeypatch.setattr(ct.time, "monotonic", monotonic)
+    _one_watch_pass(monkeypatch, "https://h.example.com", 12)
+    assert given and all(d <= 0.1 + ct._DNS_WATCH_TOTAL for d in given)
+
+
+def test_a_watch_that_outran_its_total_publishes_nothing(monkeypatch):
+    monkeypatch.setattr(ct, "_tunnel_generation", 14)
+    monkeypatch.setattr(ct, "_tunnel_url", "https://h.example.com")
+    monkeypatch.setattr(ct, "_tunnel_dns", (14, "unknown"))
+    monkeypatch.setattr(ct, "_DNS_WATCH_TOTAL", 1.0)
+    clock = [0.0]
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+
+    def wait(host, deadline):
+        clock[0] += ct._DNS_WATCH_TOTAL + 1.0
+        return False
+
+    monkeypatch.setattr(ct, "_wait_for_dns", wait)
+    ct._watch_hostname_resolution("https://h.example.com", 14)
+    assert ct._tunnel_dns == (14, "unknown")
+
+
+_TUNNEL_ID = "11111111-2222-3333-4444-5555aabbccdd"
+_HOST = "studio.example.com"
+_LOGIN_URL, _PROMPT = "https://dash.fed.cloudflare.com/argotunnel?aud=x", "Please open this URL:"
+_API_REFUSAL = "code: 1000, reason: Invalid access token"
+_WRAP = (
+    "failed to provision routing, please create it manually via Cloudflare dashboard or UI; "
+    "most likely you already have a conflicting record there. You can also rerun this command "
+    "with --overwrite-dns to overwrite any existing DNS records for this hostname.: "
+)
+_COLLIDED = "failed to create tunnel: tunnel with name already exists"
+_OFFLINE = "INF Request failed\ndial tcp: i/o timeout"
+_ABSENT = "there should only be 1 non-deleted Tunnel named unsloth-AB12CD"
+
+
+class FakeLogin:
+    def __init__(
+        self,
+        cert,
+        *,
+        rc = 0,
+        alive = 0,
+        extra = "",
+    ):
+        self.pid, self.records = 999_000, []
+        self.stdout = iter([_PROMPT + "\n", _LOGIN_URL + "\n", extra])
+        self.returncode, self._cert, self._rc, self._alive = None, cert, rc, alive
+
+    def _write_cert(self, text):
+        if self._cert is not None:
+            self._cert.parent.mkdir(parents = True, exist_ok = True)
+            self._cert.write_text(text, encoding = "utf-8")
+
+    def poll(self):
+        self.records.append(ct._read(ct._RECORD))
+        if self.returncode is not None:
+            return self.returncode
+        self._write_cert("" if self._alive else "STUDIO-CERT")
+        if self._alive > 0:
+            self._alive -= 1
+            return None
+        self.returncode = self._rc
+        return self.returncode
+
+    def terminate(self):
+        self._write_cert("STUDIO-CERT")
+        self.returncode = -15
+
+    def wait(self, timeout = None):
+        return self.returncode
+
+
+class FakeCloudflared:
+    def __init__(self, cert_dir):
+        self.cert_dir, self.calls, self.deleted = cert_dir, [], []
+        self.cert_at_delete = []
+        self.create_outcomes = []
+        self.route_outcome = None
+        self.delete_outcome = None
+        self.login = lambda: FakeLogin(cert_dir / "cert.pem", alive = 1)
+        self.child = None
+
+    def spawn(self, binary, token):
+        self.spawned_with = token
+        self.child = self.login()
+        return self.child
+
+    def __call__(self, binary, *args):
+        self.calls.append(args)
+        outcome = (1, "unexpected command")
+        if args[0] == "create":
+            outcome = self.create_outcomes.pop(0) if self.create_outcomes else self._create(args[1])
+        elif args[0] == "route" and args[1] == "dns" and ct._NAME_RE.match(args[2]):
+            added = f"Added CNAME {args[-1]} which will route to this tunnel"
+            outcome = self.route_outcome or (0, added)
+        elif args[0] == "delete":
+            self.deleted.append(args[1])
+            self.cert_at_delete.append((self.cert_dir / "cert.pem").exists())
+            outcome = self.delete_outcome or (0, "")
+        out, err = ("", outcome[1]) if outcome[0] else (outcome[1], "")
+        return subprocess.CompletedProcess(args, outcome[0], out, err)
+
+    def _create(self, name):
+        assert name in (ct._read(ct._RECORD) or {}).get("tunnel_names", [])
+        credentials = self.cert_dir / "creds" / f"{_TUNNEL_ID}.json"
+        credentials.parent.mkdir(parents = True, exist_ok = True)
+        credentials.write_text("{}", encoding = "utf-8")
+        return 0, (
+            f"Created tunnel {name} with id {_TUNNEL_ID.upper()}\n"
+            f"Tunnel credentials written to {credentials}."
+        )
+
+
+@pytest.fixture
+def cf(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    cert_dir = tmp_path / "cloudflared"
+    monkeypatch.setattr(ct, "origin_cert_path", lambda: cert_dir / "cert.pem")
+    monkeypatch.setattr(ct, "_claim_path", lambda: tmp_path / "claim" / "claim.lock")
+    fake = FakeCloudflared(cert_dir)
+    monkeypatch.setattr(ct, "_cli", fake)
+    monkeypatch.setattr(ct, "_spawn_login", fake.spawn)
+    return fake
+
+
+def _provision(hostname = _HOST, **kwargs):
+    return ct.provision_custom_tunnel(hostname, binary = "cloudflared", **kwargs)
+
+
+def _settle(binary = "cloudflared"):
+    with ct.certificate_state_claim("cleanup"):
+        return ct._settle(binary)
+
+
+def _cert(cf):
+    return cf.cert_dir / "cert.pem"
+
+
+def _created(cf):
+    return [call[1] for call in cf.calls if call[0] == "create"]
+
+
+def test_a_successful_run_records_the_identity_and_removes_the_certificate(cf):
+    seen = []
+    identity = _provision("https://Studio.Example.COM/", on_login_url = seen.append)
+    assert seen == [_LOGIN_URL]
+    assert identity["hostname"] == _HOST
+    assert ct._NAME_RE.match(identity["tunnel_name"])
+    assert identity["tunnel_id"] == _TUNNEL_ID
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+    assert ct._string_list(ct._ORPHANS) == []
+    credentials = ct.state_root() / f"{_TUNNEL_ID}.json"
+    assert identity["credentials"] == str(credentials)
+    assert credentials.stat().st_mode & 0o777 == 0o600
+    assert not any({"--overwrite-dns", "-f"} & set(call) for call in cf.calls)
+    assert 999_000 not in process_lifetime._tracked_pids
+
+
+def test_a_tunnel_whose_credentials_never_arrived_is_refused_before_the_route(cf):
+    # Routing and writing an identity here would leave setup blocked by that
+    # identity while nothing could start the tunnel it names.
+    missing = cf.cert_dir / "creds" / f"{_TUNNEL_ID}.json"
+    cf.create_outcomes = [
+        (0, f"Created tunnel x with id {_TUNNEL_ID}\nTunnel credentials written to {missing}.")
+    ]
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "credentials_missing"
+    assert ct.read_identity() is None
+    assert not any(call[0] == "route" for call in cf.calls)
+    assert ct._string_list(ct._ORPHANS) == []
+
+
+def test_a_certificate_that_cannot_be_removed_keeps_the_record_that_owns_it(cf, monkeypatch):
+    # The digest is the only proof Studio wrote this account-wide file, so a
+    # failed deletion has to keep the record rather than strand the file.
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+
+    identity = _provision()
+    assert identity["hostname"] == _HOST
+    assert _cert(cf).exists()
+    record = ct._read(ct._RECORD)
+    assert record["cert_digest"]
+
+    # Once the file can be removed the retained record settles it at next launch.
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_credentials_a_failed_setup_cannot_remove_keep_the_record_that_names_them(cf, monkeypatch):
+    # The credentials authorize serving a tunnel that may have outlived the
+    # failure, and only this record carries the path to them.
+    credentials = ct.state_root() / f"{_TUNNEL_ID}.json"
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == credentials else real_unlink(path, **kw),
+    )
+    cf.route_outcome = (1, "failed to find zone")
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert credentials.exists()
+    assert ct._read(ct._RECORD)["credentials"] == str(credentials)
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not credentials.exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_teardown_carries_the_digest_of_a_certificate_setup_could_not_remove(cf, monkeypatch):
+    # Teardown replaces the retained record, so dropping the digest here would
+    # leave the certificate on disk with nothing that could ever claim it.
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+    _provision()
+    assert _cert(cf).exists()
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    assert ct.teardown_custom_tunnel() is True
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_teardown_removes_only_local_credentials_for_manual_cloudflare_cleanup(cf):
+    identity = _provision()
+    calls = list(cf.calls)
+    assert ct.teardown_custom_tunnel() is True
+    assert cf.calls == calls
+    assert ct.read_identity() is None
+    assert not Path(identity["credentials"]).exists()
+    assert ct.orphaned_hostnames() == [_HOST]
+
+
+def test_a_dns_conflict_is_refused_and_leaves_nothing_to_clean_up(cf):
+    cf.route_outcome = (1, "code: 1003, reason: A CNAME record with that host already exists")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "dns_conflict" and _HOST in excinfo.value.detail
+    assert not _cert(cf).exists()
+    assert cf.deleted == _created(cf)
+    assert ct.read_identity() is None
+    assert ct._string_list(ct._ORPHANS) == []
+    assert ct._read(ct._RECORD) is None
+    assert not (ct.state_root() / f"{_TUNNEL_ID}.json").exists()
+
+
+def test_a_record_created_outside_the_requested_zone_is_refused(cf):
+    # Authorizing the wrong zone does not fail the route. cloudflared takes the
+    # hostname as a label inside the zone it was given and reports success, so the
+    # name it says it created is the only thing that distinguishes the two.
+    cf.route_outcome = (0, f"Added CNAME {_HOST}.example.net which will route to this tunnel")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert (excinfo.value.code, excinfo.value.detail) == ("hostname_not_authorized", _HOST)
+    assert ct.read_identity() is None
+    # The route did succeed here, unlike the refusals cloudflared reports itself,
+    # so the name it created has to stay accounted for rather than be forgotten.
+    # The requested name was never created, so orphaning it would send the user
+    # looking for a record that does not exist.
+    assert ct.orphaned_hostnames() == [f"{_HOST}.example.net"]
+    assert ct._read(ct._RECORD) is None
+    assert len(cf.deleted) == 1
+
+
+@pytest.mark.parametrize(
+    "raw",
+    # Anything urlsplit would treat as a delimiter returns a shorter name than
+    # the one typed, and provisioning that name is worse than refusing it.
+    [
+        "studio@example.com",
+        "example.com:bad",
+        "a b.example.com",
+        "st#p.example.com",
+        "example",
+        "",
+        # A leading dot shortens the name to the apex domain the user only meant
+        # to put a subdomain under.
+        ".example.com",
+        "example.com..",
+        # The stdlib IDNA codec maps this to "fass.de", a separate registration,
+        # rather than encoding it. The A-label form below is the way in.
+        "studio.faß.de",
+    ],
+)
+def test_a_hostname_that_would_be_truncated_is_refused(raw):
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        ct.canonical_hostname(raw)
+    assert excinfo.value.code == "invalid_hostname"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Studio.Example.COM.", "studio.example.com"),
+        ("https://studio.example.com/path", "studio.example.com"),
+        ("  example.com  ", "example.com"),
+        ("bücher.example.com", "xn--bcher-kva.example.com"),
+        ("日本.example.com", "xn--wgv71a.example.com"),
+        # The escape hatch for a name the codec would map away.
+        ("studio.xn--fa-hia.de", "studio.xn--fa-hia.de"),
+        ("a-b.example.co.uk", "a-b.example.co.uk"),
+    ],
+)
+def test_a_hostname_a_user_would_enter_still_canonicalizes(raw, expected):
+    assert ct.canonical_hostname(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "reported",
+    # A trailing root label is the same name, and a version that reports nothing
+    # must not be read as a mismatch.
+    ["Added CNAME " + _HOST + ". which will route to this tunnel", "", "done"],
+)
+def test_a_route_that_matches_or_says_nothing_is_accepted(cf, reported):
+    cf.route_outcome = (0, reported)
+    _provision()
+    assert ct.read_identity()["hostname"] == _HOST
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to add route: code: 7003, reason: Failed to find zone",
+        "API request failed: zone could not be found",
+    ],
+)
+def test_route_rejects_authorization_for_a_different_domain(cf, message):
+    cf.route_outcome = (1, message)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert (excinfo.value.code, excinfo.value.detail) == ("hostname_not_authorized", _HOST)
+    assert ct.read_identity() is None
+    assert ct.orphaned_hostnames() == []
+
+
+@pytest.mark.parametrize("cause", [_API_REFUSAL, "Cannot add route: " + "detail " * 50, "", None])
+def test_a_route_failure_is_reported_as_itself_and_keeps_the_hostname_owned(cf, cause):
+    cf.route_outcome = (1, f"INF Request failed\n{_WRAP}{cause}" if cause is not None else _OFFLINE)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "route_failed"
+    assert excinfo.value.detail == (cause if cause is not None else "dial tcp: i/o timeout")[:300]
+    assert "--overwrite-dns" not in excinfo.value.detail
+    assert ct._string_list(ct._ORPHANS) == [_HOST]
+
+
+@pytest.mark.parametrize(
+    "fails, made, ours", [([_COLLIDED], 2, 1), ([_COLLIDED] * 2, 2, 0), ([_OFFLINE], 1, 1)]
+)
+def test_only_a_name_collision_regenerates_and_disowns_the_colliding_name(cf, fails, made, ours):
+    cf.create_outcomes = [(1, text) for text in fails]
+    cf.route_outcome = (1, _API_REFUSAL)
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert len(set(_created(cf))) == made
+    assert cf.deleted == _created(cf)[made - ours :]
+
+
+@pytest.mark.parametrize("delete_says, still_owed", [(_OFFLINE, True), (_ABSENT, False)])
+def test_only_a_tunnel_that_might_still_exist_is_written_down(cf, delete_says, still_owed):
+    cf.route_outcome = (1, _API_REFUSAL)
+    cf.delete_outcome = (1, delete_says)
+    with pytest.raises(ct.ProvisioningError):
+        _provision()
+    assert ct._string_list(ct._ABANDONED) == (_created(cf) if still_owed else [])
+    assert ct._read(ct._RECORD) is None and cf.cert_at_delete == [True]
+    assert ct._delete_tunnel(None, "unsloth-AB12CD") is False
+    assert ct._delete_tunnel(None, "prod-gateway") is True
+
+
+def test_a_pre_existing_certificate_is_refused_and_left_alone(cf):
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("USER-CERT", encoding = "utf-8")
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "certificate_exists"
+    assert _cert(cf).read_text(encoding = "utf-8") == "USER-CERT"
+    assert ct._read(ct._RECORD) is None
+    assert cf.calls == []
+
+
+@pytest.mark.parametrize("found", ["/etc/cloudflared/cert.pem", "/Users/A B/cert.pem", None])
+def test_a_certificate_that_appeared_during_login_is_not_adopted(cf, found):
+    what = f"an existing certificate at {found}" if found else "a certificate"
+    said = f"You have {what} which login would overwrite.\n"
+    cf.login = lambda: FakeLogin(_cert(cf), extra = said)
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision()
+    assert excinfo.value.code == "certificate_exists"
+    assert excinfo.value.detail == (found or str(ct.origin_cert_path()))
+    assert _cert(cf).read_text(encoding = "utf-8") == "STUDIO-CERT"
+
+
+@pytest.mark.parametrize("ending", ["cancelled", "login_timed_out", "raises"])
+def test_a_login_ended_early_leaves_no_certificate_behind(cf, monkeypatch, ending):
+    def explode():
+        raise RuntimeError("the flag this check read is gone")
+
+    if ending == "login_timed_out":
+        monkeypatch.setattr(ct, "_LOGIN_DEADLINE", 0.0)
+    cf.login = lambda: FakeLogin(_cert(cf), alive = 3)
+    stop = explode if ending == "raises" else (lambda: True) if ending == "cancelled" else None
+    with pytest.raises(RuntimeError if ending == "raises" else ct.ProvisioningError) as excinfo:
+        _provision(cancelled = stop)
+    assert ending == "raises" or excinfo.value.code == ending
+    assert cf.child.returncode == -15
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+@pytest.mark.parametrize("cancel_after", ["login", "create", "route"])
+def test_a_cancel_arriving_mid_setup_leaves_nothing_owned(cf, monkeypatch, cancel_after):
+    # Cancel used to be read once, after login, so one arriving during either of
+    # the CLI calls that follow still created a tunnel and a DNS record.
+    # Each case cancels as one step returns, so it lands on the gate guarding the
+    # next one and no two cases exercise the same gate.
+    done = []
+    for step, target in (
+        ("login", "_run_login"),
+        ("create", "_create_tunnel"),
+        ("route", "_route_hostname"),
+    ):
+        original = getattr(ct, target)
+
+        def wrapped(
+            *args,
+            _step = step,
+            _original = original,
+            **kwargs,
+        ):
+            result = _original(*args, **kwargs)
+            done.append(_step)
+            return result
+
+        monkeypatch.setattr(ct, target, wrapped)
+
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision(cancelled = lambda: cancel_after in done)
+    assert excinfo.value.code == "cancelled"
+    assert ct.read_identity() is None
+    assert ct._read(ct._RECORD) is None
+    # Whatever the run got as far as creating is deleted, and a DNS record it
+    # created cannot be, so that name is recorded instead of being forgotten.
+    assert cf.deleted == ([] if cancel_after == "login" else _created(cf))
+    assert ct.orphaned_hostnames() == ([_HOST] if cancel_after == "route" else [])
+
+
+def test_a_certificate_that_changed_since_it_was_recorded_is_left_alone(cf):
+    ct._write(ct._RECORD, {"hostname": _HOST, "cert_digest": "0" * 64})
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("USER-CERT", encoding = "utf-8")
+    _settle()
+    assert _cert(cf).read_text(encoding = "utf-8") == "USER-CERT"
+
+
+def test_the_orphan_is_recorded_before_the_run_is_discarded(cf):
+    ct._write(
+        ct._RECORD,
+        {
+            "hostname": _HOST,
+            "route_attempted": True,
+            "tunnel_names": ["prod-gateway", "unsloth-AB12CD"],
+        },
+    )
+    _settle()
+    assert ct._string_list(ct._ORPHANS) == [_HOST]
+    assert cf.deleted == ["unsloth-AB12CD"]
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_held_claim_blocks_every_other_operation_and_is_released_after(cf):
+    with ct.certificate_state_claim("teardown"):
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            with ct.certificate_state_claim("setup"):
+                pass
+        assert excinfo.value.code == "certificate_state_busy"
+        assert "teardown" in excinfo.value.detail
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            _provision()
+        assert excinfo.value.code == "certificate_state_busy"
+    with ct.certificate_state_claim("teardown"):
+        pass
+
+
+def test_a_claim_held_by_another_process_blocks_this_one(cf, tmp_path):
+    path = ct._claim_path()
+    ct._writable_dir(path.parent)
+    program = (
+        "import os,sys,time;"
+        f"sys.path.insert(0, {str(ct.Path(ct.__file__).parent)!r});"
+        "import cloudflare_tunnel as ct;"
+        f"ct._claim_path = lambda: ct.Path({str(path)!r});"
+        "ctx = ct.certificate_state_claim('setup');"
+        "ctx.__enter__();"
+        "print('held', flush = True);"
+        "time.sleep(30)"
+    )
+    holder = subprocess.Popen([sys.executable, "-c", program], stdout = subprocess.PIPE, text = True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        with pytest.raises(ct.ProvisioningError) as excinfo:
+            with ct.certificate_state_claim("cleanup"):
+                pass
+        assert excinfo.value.code == "certificate_state_busy"
+        holder.kill()
+        holder.wait(timeout = 5)
+        with ct.certificate_state_claim("cleanup"):
+            pass
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout = 5)
+
+
+def test_the_login_child_is_written_down_on_disk_while_it_runs(cf):
+    _provision()
+    seen = cf.child.records[0]
+    assert seen["login_pid"] == 999_000 and seen["login_token"]
+    assert seen["login_token"] == cf.spawned_with
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_login_that_ignores_termination_stays_named_in_the_record(cf, monkeypatch):
+    # Terminating is best effort, so cancelling a login that ignores it must not
+    # clear the pid and token: that is the same unowned certificate again, only
+    # reached before cleanup rather than during it.
+    class Unkillable(FakeLogin):
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return None
+
+    cf.login = lambda: Unkillable(None)
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+
+    with pytest.raises(ct.ProvisioningError) as excinfo:
+        _provision(cancelled = lambda: True)
+    assert excinfo.value.code == "cancelled"
+    record = ct._read(ct._RECORD)
+    assert (record["login_pid"], record["login_token"]) == (999_000, cf.spawned_with)
+
+
+def test_a_login_child_that_will_not_die_keeps_the_record_that_names_it(cf, monkeypatch):
+    # The record holds the pid and token, so discarding it while that login can
+    # still write cert.pem leaves a certificate nothing can be shown to own --
+    # which the deletion rule fails closed on, permanently.
+    ct._write(ct._RECORD, {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"})
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+
+    assert _settle() is False
+    assert ct._read(ct._RECORD) == {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"}
+
+    # Once it is gone the same record settles normally.
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: False)
+    _settle()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_certificate_rewritten_after_the_digest_is_still_claimed_by_the_reap(cf, monkeypatch):
+    # The digest is taken while the child can still write, so a login that
+    # outlived termination and then replaced what it had already written would
+    # otherwise leave a file this install created and could never name.
+    stale = hashlib.sha256(b"HALF-WRITTEN").hexdigest()
+    ct._write(
+        ct._RECORD,
+        {"hostname": _HOST, "login_pid": 999_000, "login_token": "t", "cert_digest": stale},
+    )
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: True)
+    monkeypatch.setattr(ct, "_pid_alive", lambda _pid: False)
+    monkeypatch.setattr(ct.os, "kill", lambda *_a: None)
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("STUDIO-CERT", encoding = "utf-8")
+    real_unlink = ct._unlink
+    monkeypatch.setattr(
+        ct,
+        "_unlink",
+        lambda path, **kw: None if path == _cert(cf) else real_unlink(path, **kw),
+    )
+
+    # A refresh only the running process knows about is no proof at all: the
+    # record it has to survive in is the one on disk.
+    assert _settle() is False
+    assert _cert(cf).exists()
+    assert ct._read(ct._RECORD)["cert_digest"] == hashlib.sha256(b"STUDIO-CERT").hexdigest()
+
+    monkeypatch.setattr(ct, "_unlink", real_unlink)
+    _settle()
+    assert not _cert(cf).exists()
+    assert ct._read(ct._RECORD) is None
+
+
+def test_a_certificate_beside_an_unidentifiable_login_is_left_alone(cf, monkeypatch):
+    # Nothing here shows who wrote this file. Claiming it would delete the one
+    # the user made with their own cloudflared login just as readily.
+    ct._write(ct._RECORD, {"hostname": _HOST, "login_pid": 999_000, "login_token": "t"})
+    monkeypatch.setattr(ct, "_same_process", lambda _token, _pid: False)
+    _cert(cf).parent.mkdir(parents = True, exist_ok = True)
+    _cert(cf).write_text("SOMEONE-ELSES-CERT", encoding = "utf-8")
+
+    _settle()
+    assert _cert(cf).read_text(encoding = "utf-8") == "SOMEONE-ELSES-CERT"
+
+
+@pytest.mark.parametrize("landing", ["adopting the pid", "starting the reader"])
+def test_an_interrupt_before_the_wait_still_ends_the_login_child(cf, monkeypatch, landing):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt("a shutdown lands with the child already spawned")
+
+    if landing == "adopting the pid":
+        monkeypatch.setattr(process_lifetime, "adopt_pid", interrupt)
+    else:
+
+        def only_the_login_reader(*args, **kwargs):
+            if kwargs.get("name") == "cloudflared-login":
+                interrupt()
+            return _real_threading.Thread(*args, **kwargs)
+
+        # Scoped to cloudflare_tunnel for the reason recorded above: patching
+        # threading.Thread itself reaches every other thread the backend starts.
+        class _ThreadingShim:
+            Thread = staticmethod(only_the_login_reader)
+
+            def __getattr__(self, name):
+                return getattr(_real_threading, name)
+
+        monkeypatch.setattr(ct, "threading", _ThreadingShim())
+    with pytest.raises(KeyboardInterrupt):
+        _provision()
+    assert cf.child is not None and cf.child.returncode == -15
+    assert 999_000 not in process_lifetime._tracked_pids
+
+
+def test_every_command_is_pinned_to_the_certificate_we_proved(monkeypatch):
+    monkeypatch.setenv("TUNNEL_ORIGIN_CERT", "/somewhere/else/cert.pem")
+    monkeypatch.setenv("TUNNEL_FORCE_PROVISIONING_DNS", "1")
+    sent = {}
+    monkeypatch.setattr(ct.subprocess, "run", lambda a, **k: sent.update(argv = a, env = k["env"]))
+    ct._cli("cloudflared", "route", "dns", "unsloth-AB12CD", _HOST)
+    argv = sent["argv"]
+    assert argv[argv.index("--origincert") + 1] == str(ct.origin_cert_path())
+    assert not {"--overwrite-dns", "-f"} & set(argv)
+    assert not any(key.startswith("TUNNEL_") for key in sent["env"])

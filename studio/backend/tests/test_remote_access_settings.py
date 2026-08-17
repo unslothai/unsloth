@@ -5,13 +5,16 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
+import sqlite3
 import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
@@ -37,23 +40,262 @@ def _state(
     )
 
 
+@pytest.fixture
+def idle_workers(monkeypatch):
+    """No operation in flight, password set, and one stable control token."""
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+
+
 def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
     stored = {}
-    monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda key, fallback: stored.get(key, fallback)
-    )
-    monkeypatch.setattr(studio_db, "upsert_app_settings", lambda values: stored.update(values))
-    assert remote_access.get_remote_access_auto_start() is False
+    malformed_json = object()
+
+    class StoredConnection:
+        def execute(self, _sql, _parameters):
+            rows = [
+                {
+                    "key": key,
+                    "value_json": "{" if value is malformed_json else json.dumps(value),
+                }
+                for key, value in stored.items()
+            ]
+            return SimpleNamespace(fetchall = lambda: rows)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(studio_db, "get_connection", StoredConnection)
+    assert remote_access.get_remote_access_auto_start_kind() is None
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = True
+    assert remote_access.get_remote_access_auto_start_kind() == "temporary"
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = False
+    assert remote_access.get_remote_access_auto_start_kind() is None
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = {"version": 1, "mode": "temporary"}
+    assert remote_access.get_remote_access_auto_start_kind() == "temporary"
     stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = "yes"
-    assert remote_access.get_remote_access_auto_start() is False
-    assert remote_access.set_remote_access_auto_start(True) is True
-    assert remote_access.get_remote_access_auto_start() is True
+    assert remote_access.get_remote_access_auto_start_kind() is None
+    for malformed in (
+        {"version": True, "mode": "custom"},
+        {"version": 1.0, "mode": "custom"},
+        {"version": 1, "mode": []},
+        {"version": 2, "mode": "custom"},
+        {"version": 1, "mode": "future"},
+        {"version": 1, "mode": "disabled"},
+    ):
+        stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = malformed
+        assert remote_access.get_remote_access_auto_start_kind() is None
+    stored[remote_access.REMOTE_ACCESS_METHOD_KEY] = "custom"
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = {"version": 1, "mode": "temporary"}
+    assert remote_access.get_remote_access_auto_start_kind() == "custom"
+    stored[remote_access.REMOTE_ACCESS_METHOD_KEY] = "future"
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = {"version": 1, "mode": "custom"}
+    assert remote_access.get_remote_access_method() == "temporary"
+    assert remote_access.get_remote_access_auto_start_kind() == "temporary"
+    stored[remote_access.REMOTE_ACCESS_METHOD_KEY] = malformed_json
+    assert remote_access.get_remote_access_method() == "temporary"
+    assert remote_access.get_remote_access_auto_start_kind() == "temporary"
+    stored.pop(remote_access.REMOTE_ACCESS_METHOD_KEY)
+    assert remote_access.get_remote_access_method() == "custom"
     with pytest.raises(ValueError):
         routes.RemoteAccessAutoStartPayload(enabled = "true")
-    monkeypatch.setattr(
-        studio_db, "get_app_setting", lambda *args: (_ for _ in ()).throw(OSError())
+    monkeypatch.setattr(studio_db, "get_connection", lambda: (_ for _ in ()).throw(OSError()))
+    assert remote_access.get_remote_access_auto_start_kind() is None
+
+
+def test_remote_access_method_is_persisted_and_keeps_auto_start_aligned(monkeypatch, tmp_path):
+    database = tmp_path / "settings.db"
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT)"
     )
-    assert remote_access.get_remote_access_auto_start() is False
+    conn.commit()
+    conn.close()
+
+    def _connect():
+        connection = sqlite3.connect(database)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    monkeypatch.setattr(studio_db, "get_connection", _connect)
+    assert remote_access.set_remote_access_method("custom") == "custom"
+    conn = _connect()
+    assert (
+        json.loads(
+            conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = ?",
+                (remote_access.REMOTE_ACCESS_METHOD_KEY,),
+            ).fetchone()["value_json"]
+        )
+        == "custom"
+    )
+    assert json.loads(
+        conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?",
+            (remote_access.REMOTE_ACCESS_AUTO_START_KEY,),
+        ).fetchone()["value_json"]
+    ) == {"version": 1, "mode": "disabled"}
+    conn.close()
+    assert remote_access.set_remote_access_auto_start(True)
+    assert remote_access.set_remote_access_method("temporary") == "temporary"
+    conn = _connect()
+    assert json.loads(
+        conn.execute(
+            "SELECT value_json FROM app_settings WHERE key = ?",
+            (remote_access.REMOTE_ACCESS_AUTO_START_KEY,),
+        ).fetchone()["value_json"]
+    ) == {"version": 1, "mode": "temporary"}
+    conn.close()
+    assert not remote_access.set_remote_access_auto_start(False)
+    with pytest.raises(ValueError):
+        remote_access.set_remote_access_method("future")
+    with pytest.raises(ValueError):
+        routes.RemoteAccessMethodPayload(method = "future")
+
+
+def test_remote_access_preference_updates_serialize_method_and_auto_start(monkeypatch, tmp_path):
+    database = tmp_path / "settings.db"
+    conn = sqlite3.connect(database)
+    conn.execute(
+        "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT)"
+    )
+    conn.executemany(
+        "INSERT INTO app_settings (key, value_json, updated_at) VALUES (?, ?, '')",
+        [
+            (remote_access.REMOTE_ACCESS_METHOD_KEY, json.dumps("temporary")),
+            (
+                remote_access.REMOTE_ACCESS_AUTO_START_KEY,
+                json.dumps({"version": 1, "mode": "temporary"}),
+            ),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    method_read = threading.Event()
+    allow_method_write = threading.Event()
+
+    class PausingConnection(sqlite3.Connection):
+        def execute(
+            self,
+            sql,
+            parameters = (),
+            /,
+        ):
+            result = super().execute(sql, parameters)
+            if threading.current_thread().name == "method-update" and sql.startswith("SELECT key"):
+                method_read.set()
+                assert allow_method_write.wait(1)
+            return result
+
+    def _connect():
+        connection = sqlite3.connect(database, timeout = 2, factory = PausingConnection)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    monkeypatch.setattr(studio_db, "get_connection", _connect)
+    method_thread = threading.Thread(
+        target = remote_access.set_remote_access_method,
+        args = ("custom",),
+        name = "method-update",
+    )
+    auto_thread = threading.Thread(
+        target = remote_access.set_remote_access_auto_start,
+        args = (False,),
+        name = "auto-update",
+    )
+    method_thread.start()
+    assert method_read.wait(1)
+    auto_thread.start()
+    allow_method_write.set()
+    method_thread.join(2)
+    auto_thread.join(2)
+    assert not method_thread.is_alive() and not auto_thread.is_alive()
+    conn = _connect()
+    values = {
+        row["key"]: json.loads(row["value_json"])
+        for row in conn.execute("SELECT key, value_json FROM app_settings")
+    }
+    conn.close()
+    assert values == {
+        remote_access.REMOTE_ACCESS_METHOD_KEY: "custom",
+        remote_access.REMOTE_ACCESS_AUTO_START_KEY: {"version": 1, "mode": "disabled"},
+    }
+
+
+@pytest.mark.parametrize(
+    "state,kind,dns,expected",
+    [
+        ("online", "custom", "pending", "starting"),
+        ("online", "custom", "unknown", "starting"),
+        ("online", "custom", "resolved", "online"),
+        # A temporary tunnel offers its URL as soon as it serves, so it has no
+        # resolution to wait for.
+        ("online", "temporary", "unknown", "online"),
+        # Only a tunnel that reached online is waiting on its hostname. One that
+        # never started, or failed, has no link pending and must keep its state.
+        ("off", "custom", "unknown", "off"),
+        ("error", "custom", "pending", "error"),
+    ],
+)
+def test_a_custom_tunnel_is_starting_until_its_hostname_resolves(
+    idle_workers, monkeypatch, state, kind, dns, expected
+):
+    # Online is what a caller reads as "there is a URL", and the link is withheld
+    # until the hostname resolves, so that wait belongs to starting.
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", lambda: (kind, False))
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": state,
+            "url": "https://studio.example.com",
+            "error": None,
+            "managed_by": "settings",
+            "kind": kind,
+            "dns": dns,
+            "url_usable": kind != "custom" or dns == "resolved",
+        },
+    )
+
+    status = remote_access.remote_access_status(_state(intent = "enabled"))
+    assert status["state"] == expected
+
+
+@pytest.mark.parametrize(
+    "tunnel_state,operation,expected_block",
+    [
+        ("off", "idle", "custom_tunnel_not_configured"),
+        # Start is removed in all three, but only the first is missing a setup:
+        # a running tunnel is not told to make one, and an operation already
+        # making one owns both the message and the reason a start refuses.
+        ("online", "idle", None),
+        ("off", "provisioning", None),
+        ("off", "tearing_down", None),
+    ],
+)
+def test_custom_without_a_tunnel_says_why_start_is_unavailable(
+    idle_workers, monkeypatch, tunnel_state, operation, expected_block
+):
+    monkeypatch.setattr(remote_access, "_custom_operation", operation)
+    if operation != "idle":
+        monkeypatch.setattr(remote_access, "_custom_worker", SimpleNamespace(is_alive = lambda: True))
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", lambda: ("custom", False))
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": tunnel_state,
+            "url": None,
+            "error": None,
+            "managed_by": "settings" if tunnel_state == "online" else None,
+        },
+    )
+
+    status = remote_access.remote_access_status(_state(intent = "enabled"))
+    assert status["block_reason"] == expected_block
+    assert status["can_start"] is False
 
 
 @pytest.mark.parametrize(
@@ -61,24 +303,29 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
     [(False, None, True), (True, "launch_managed", False)],
 )
 def test_enabled_intent_blocks_only_selected_launch_path(
-    monkeypatch, launch_managed, expected_block, can_start
+    idle_workers, monkeypatch, launch_managed, expected_block, can_start
 ):
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    preference_reads = []
+
+    def _preferences():
+        preference_reads.append(True)
+        return "temporary", False
+
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", _preferences)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
         lambda: {"state": "off", "url": None, "error": None, "managed_by": None},
     )
-    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
 
     state = _state(intent = "enabled", launch_managed = launch_managed)
     status = remote_access.remote_access_status(state)
     assert status["block_reason"] == expected_block
     assert status["can_start"] is can_start
     assert status["password_pending"] is False
+    assert status["method"] == "temporary"
+    assert status["auto_start"] is False
+    assert preference_reads == [True]
 
     # A pending password is reported on its own, even where another block hides it.
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: False)
@@ -87,11 +334,227 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     assert pending["block_reason"] == (expected_block or "admin_password_change_required")
 
 
-def test_failed_stop_remains_retryable(monkeypatch):
-    monkeypatch.setattr(remote_access, "_start_worker", None)
+def test_unconfigured_custom_method_is_not_startable(idle_workers, monkeypatch):
+    monkeypatch.setattr(remote_access, "_get_remote_access_preferences", lambda: ("custom", False))
+    monkeypatch.setattr(
+        remote_access,
+        "_custom_status",
+        lambda: {"custom_runnable": False, "custom_state": "unconfigured"},
+    )
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {"state": "off", "url": None, "error": None, "managed_by": None},
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 0))
+    status = remote_access.remote_access_status(_state(intent = "enabled"))
+    assert status["method"] == "custom" and status["can_start"] is False
+    with pytest.raises(RuntimeError, match = "custom_tunnel_not_configured"):
+        remote_access.start_remote_access(_state(intent = "enabled"))
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: False)
+    with pytest.raises(RuntimeError, match = "admin_password_change_required"):
+        remote_access.start_remote_access(_state(intent = "enabled"))
+
+
+def test_custom_status_exposes_the_owned_tunnel_name(monkeypatch):
+    identity = {
+        "hostname": "studio.example.com",
+        "tunnel_name": "unsloth-AB12CD",
+    }
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: identity)
+    monkeypatch.setattr(cloudflare_tunnel, "identity_is_runnable", lambda _identity: True)
+    monkeypatch.setattr(cloudflare_tunnel, "orphaned_hostnames", lambda: [])
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation", "idle")
+    monkeypatch.setattr(remote_access, "_custom_error", None)
+    status = remote_access._custom_status()
+    assert status["custom_hostname"] == "studio.example.com"
+    assert status["custom_tunnel_name"] == "unsloth-AB12CD"
+
+
+def test_custom_status_keeps_the_requested_hostname_during_setup(monkeypatch):
+    class PendingThread:
+        def __init__(self, *, target, daemon):
+            self.target = target
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: None)
+    monkeypatch.setattr(cloudflare_tunnel, "identity_is_runnable", lambda _identity: False)
+    monkeypatch.setattr(cloudflare_tunnel, "orphaned_hostnames", lambda: [])
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_revision", 4)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(
+        remote_access,
+        "threading",
+        SimpleNamespace(Event = threading.Event, Thread = PendingThread),
+    )
+    monkeypatch.setattr(
+        remote_access,
+        "remote_access_status",
+        lambda _state: remote_access._custom_status(),
+    )
+
+    status = remote_access.provision_custom_remote_access(_state(), "Studio.Example.com.")
+
+    assert status["custom_hostname"] == "studio.example.com"
+    assert status["custom_operation_revision"] == 5
+
+
+def test_custom_setup_publishes_login_url_from_its_reader_thread(monkeypatch):
+    published = threading.Event()
+    release = threading.Event()
+
+    def _provision(_hostname, *, binary, on_login_url, cancelled):
+        assert binary == "/cloudflared"
+        assert cancelled() is False
+        reader = threading.Thread(
+            target = lambda: on_login_url("https://dash.cloudflare.com/argotunnel/login")
+        )
+        reader.start()
+        reader.join()
+        published.set()
+        release.wait()
+
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: None)
+    monkeypatch.setattr(cloudflare_tunnel, "identity_is_runnable", lambda _identity: False)
+    monkeypatch.setattr(cloudflare_tunnel, "orphaned_hostnames", lambda: [])
+    monkeypatch.setattr(cloudflare_tunnel, "ensure_cloudflared", lambda: "/cloudflared")
+    monkeypatch.setattr(cloudflare_tunnel, "provision_custom_tunnel", _provision)
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(
+        remote_access,
+        "remote_access_status",
+        lambda _state: remote_access._custom_status(),
+    )
+
+    remote_access.provision_custom_remote_access(_state(), "studio.example.com")
+    try:
+        assert published.wait(1)
+        assert remote_access._custom_status()["login_url"] == (
+            "https://dash.cloudflare.com/argotunnel/login"
+        )
+        remote_access._custom_login_callback(
+            threading.Thread(), "https://dash.cloudflare.com/argotunnel/stale"
+        )
+        assert remote_access._custom_status()["login_url"] == (
+            "https://dash.cloudflare.com/argotunnel/login"
+        )
+    finally:
+        release.set()
+        remote_access._custom_worker.join(1)
+
+
+def test_custom_cancel_only_targets_the_displayed_operation(monkeypatch):
+    cancelled = threading.Event()
+    worker = SimpleNamespace(is_alive = lambda: True)
+    monkeypatch.setattr(remote_access, "_custom_worker", worker)
+    monkeypatch.setattr(remote_access, "_custom_cancel", cancelled)
+    monkeypatch.setattr(remote_access, "_custom_operation_revision", 6)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _state: {"state": "off"})
+
+    with pytest.raises(RuntimeError, match = "custom_operation_changed"):
+        remote_access.cancel_custom_remote_access(_state(), 5)
+    assert cancelled.is_set() is False
+
+    assert remote_access.cancel_custom_remote_access(_state(), 6) == {"state": "off"}
+    assert cancelled.is_set() is True
+
+
+def test_a_failed_setup_stays_retryable(monkeypatch):
+    # Unlike teardown, a setup that failed has removed nothing, so the card must
+    # keep offering another attempt.
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _state: {"state": "off"})
+    monkeypatch.setattr(cloudflare_tunnel, "ensure_cloudflared", lambda: None)
+    remote_access.provision_custom_remote_access(_state(), "studio.example.com")
+    remote_access._custom_worker.join(1)
+    assert remote_access._custom_error[0] == "cloudflared_unreachable"
+    assert remote_access._custom_error[3] is False
+
+
+@pytest.mark.parametrize("identity_left,settled", [(None, True), ({"hostname": "h.test"}, False)])
+def test_a_failed_teardown_is_settled_only_when_the_identity_is_gone(
+    monkeypatch, identity_left, settled
+):
+    # A teardown that failed after removing the identity has nothing left to
+    # retry, and the card must stop offering one.
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _state: {"state": "off"})
+    monkeypatch.setattr(remote_access, "clear_custom_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(
+        cloudflare_tunnel, "get_studio_tunnel_status", lambda: {"state": "off", "kind": "custom"}
+    )
+    identities = iter([{"hostname": "h.test"}, identity_left, identity_left])
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: next(identities, identity_left))
+
+    def _boom(*, clear_auto_start):
+        raise RuntimeError("teardown blew up")
+
+    monkeypatch.setattr(cloudflare_tunnel, "teardown_custom_tunnel", _boom)
+    remote_access.teardown_custom_remote_access(_state())
+    remote_access._custom_worker.join(1)
+    assert remote_access._custom_error[0] == "teardown_failed"
+    assert remote_access._custom_error[3] is settled
+
+
+@pytest.mark.parametrize("stop_succeeds", [True, False])
+def test_custom_teardown_stops_the_connector_before_local_cleanup(monkeypatch, stop_succeeds):
+    events = []
+    tunnel = {
+        "state": "online",
+        "kind": "custom",
+        "managed_by": "settings",
+        "stop_pending": False,
+    }
+    monkeypatch.setattr(remote_access, "_custom_worker", None)
     monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(remote_access, "_custom_operation_allowed", lambda _state: None)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _state: {"state": "off"})
+    monkeypatch.setattr(remote_access, "clear_custom_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(cloudflare_tunnel, "read_identity", lambda: {"hostname": "host.test"})
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_status", lambda: dict(tunnel))
+
+    def _stop(_state, *, kind):
+        events.append(("stop", kind))
+        if stop_succeeds:
+            tunnel.update(state = "off", managed_by = None)
+
+    def _teardown(*, clear_auto_start):
+        events.append(
+            (
+                "teardown",
+                clear_auto_start is remote_access.clear_custom_remote_access_auto_start,
+            )
+        )
+
+    monkeypatch.setattr(remote_access, "stop_remote_access", _stop)
+    monkeypatch.setattr(cloudflare_tunnel, "teardown_custom_tunnel", _teardown)
+    remote_access.teardown_custom_remote_access(_state())
+    remote_access._custom_worker.join(1)
+    assert events[0] == ("stop", "custom")
+    if stop_succeeds:
+        assert events[1] == ("teardown", True)
+        assert remote_access._custom_operation == "idle"
+    else:
+        assert events == [("stop", "custom")]
+        assert remote_access._custom_error[:3] == (
+            "connector_stop_failed",
+            "The Cloudflare connector could not be stopped.",
+            "teardown",
+        )
+
+
+def test_failed_stop_remains_retryable(idle_workers, monkeypatch):
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -103,7 +566,6 @@ def test_failed_stop_remains_retryable(monkeypatch):
             "stop_pending": True,
         },
     )
-    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
     status = remote_access.remote_access_status(_state())
     assert status["can_start"] is False and status["can_stop"] is True
     source = Path(remote_access.__file__).read_text(encoding = "utf-8")
@@ -117,7 +579,7 @@ def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
     monkeypatch.setattr(remote_access, "_stop_worker", stale_stop)
     monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 5))
     monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
     tunnel_status = {
         "state": "off",
@@ -175,7 +637,7 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
 
     monkeypatch.setattr(cloudflare_tunnel, "start_studio_tunnel", _delayed)
     monkeypatch.setattr(cloudflare_tunnel, "ensure_cloudflared", lambda: pytest.fail("stale start"))
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
     remote_access._stop_response_admission_open = False
     assert (
@@ -188,7 +650,7 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
     old_token = attempts[0]
     cloudflare_tunnel.close_studio_tunnel_lifecycle()
     cloudflare_tunnel.open_studio_tunnel_lifecycle()
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: True)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: "temporary")
     assert remote_access.maybe_auto_start_remote_access(_state()) and reopened.wait(1)
     release.set()
     old_worker.join(1)
@@ -209,13 +671,19 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         "managed_by": None,
         "can_start": True,
         "block_reason": None,
+        "method": "temporary",
+        "custom_state": "configured",
+        "custom_runnable": True,
     }
 
-    def _start(*_args, **_kwargs):
+    started_kinds = []
+
+    def _start(*_args, **kwargs):
+        started_kinds.append(kwargs["kind"])
         ready.set()
         return "https://example.trycloudflare.com"
 
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: True)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: "temporary")
     monkeypatch.setattr(remote_access, "remote_access_status", lambda _: status)
     monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
@@ -232,6 +700,7 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         remote_access.start_remote_access(_state())
     assert ready.wait(1)
     remote_access._start_worker.join(1)
+    assert started_kinds == ["temporary"]
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
 
 
@@ -264,6 +733,107 @@ def test_request_cannot_adopt_reopened_lifecycle(monkeypatch, operation):
     assert getattr(remote_access, f"{operation}_remote_access")(_state()) == satisfied
 
 
+def test_remote_access_http_boundary_and_ui_session_gate(monkeypatch):
+    status = {
+        "state": "online",
+        "url": "https://studio.example.com",
+        "error": None,
+        "auto_start": True,
+        "method": "custom",
+        "available": True,
+        "managed_by": "settings",
+        "can_start": False,
+        "can_stop": True,
+        "kind": "custom",
+        "dns": "pending",
+        "connector_registered": True,
+        "tunnel_serving": True,
+        "custom_state": "provisioning",
+        "custom_operation_revision": 9,
+        "custom_hostname": "studio.example.com",
+        "custom_tunnel_name": "unsloth-AB12CD",
+        "custom_runnable": True,
+        "login_url": "https://dash.cloudflare.com/login",
+        "custom_error": "dns_conflict",
+        "custom_error_detail": "record exists",
+        "custom_error_phase": "provision",
+        "custom_error_settled": False,
+        "orphaned_hostnames": ["old.example.com"],
+    }
+    via_key = [False]
+    cancelled_revisions = []
+    monkeypatch.setattr(routes, "remote_access_status", lambda _state: status)
+    monkeypatch.setattr(routes, "provision_custom_remote_access", lambda *_args: status)
+    monkeypatch.setattr(
+        routes,
+        "cancel_custom_remote_access",
+        lambda _state, revision: (cancelled_revisions.append(revision), status)[1],
+    )
+    selected_methods = []
+    monkeypatch.setattr(routes, "set_remote_access_method", selected_methods.append)
+    app = FastAPI()
+    for name, value in vars(_state()).items():
+        setattr(app.state, name, value)
+    app.include_router(routes.router)
+    app.dependency_overrides[routes.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[routes.authenticated_via_api_key] = lambda: via_key[0]
+    client = TestClient(app)
+    body = client.get("/remote-access").json()
+    assert (body["kind"], body["dns"], body["connector_registered"], body["tunnel_serving"]) == (
+        "custom",
+        "pending",
+        True,
+        True,
+    )
+    assert (
+        body["method"],
+        body["custom_tunnel_name"],
+        body["login_url"],
+        body["custom_error"],
+        body["orphaned_hostnames"],
+    ) == (
+        "custom",
+        "unsloth-AB12CD",
+        status["login_url"],
+        "dns_conflict",
+        ["old.example.com"],
+    )
+    assert (
+        body["custom_state"],
+        body["custom_operation_revision"],
+        body["custom_hostname"],
+        body["custom_runnable"],
+        body["custom_error_detail"],
+        body["custom_error_phase"],
+        body["custom_error_settled"],
+    ) == ("provisioning", 9, "studio.example.com", True, "record exists", "provision", False)
+    assert client.post(
+        "/remote-access/custom/provision", json = {"hostname": "studio.example.com"}
+    ).json()["login_url"]
+    cancel_response = client.post("/remote-access/custom/cancel", json = {"expected_revision": 9})
+    assert cancel_response.json()["custom_error"] == "dns_conflict"
+    assert cancelled_revisions == [9]
+    assert client.put("/remote-access/method", json = {"method": "custom"}).json()["method"] == (
+        "custom"
+    )
+    assert selected_methods == ["custom"]
+    via_key[0] = True
+    requests = [
+        ("GET", "/remote-access", None),
+        ("POST", "/remote-access/start", None),
+        ("POST", "/remote-access/stop", None),
+        ("PUT", "/remote-access/auto-start", {"enabled": True}),
+        ("PUT", "/remote-access/method", {"method": "temporary"}),
+        ("POST", "/remote-access/custom/provision", {"hostname": "studio.example.com"}),
+        ("POST", "/remote-access/custom/cancel", {"expected_revision": 9}),
+        ("POST", "/remote-access/custom/teardown", None),
+    ]
+    assert all(
+        client.request(method, path, json = payload).status_code == 403
+        for method, path, payload in requests
+    )
+
+
 def test_management_rejects_api_keys():
     with pytest.raises(HTTPException) as exc:
         routes._require_ui_session(True)
@@ -282,7 +852,7 @@ def test_management_rejects_api_keys():
             continue
         args = node.args.args + node.args.kwonlyargs
         gated[node.name] = any(a.arg == "_ui_session" for a in args)
-    assert len(gated) == 4, f"expected 4 remote-access handlers, found {sorted(gated)}"
+    assert len(gated) == 8, f"expected 8 remote-access handlers, found {sorted(gated)}"
     assert all(
         gated.values()
     ), f"ungated remote-access handlers: {sorted(k for k, v in gated.items() if not v)}"
@@ -309,7 +879,14 @@ def test_remote_stop_returns_terminal_state(monkeypatch):
     assert response.state == "off" and response.managed_by is None
 
 
-def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/settings/remote-access/stop",
+        "/api/settings/remote-access/custom/teardown",
+    ],
+)
+def test_stop_response_middleware_holds_lease_through_body(monkeypatch, path):
     acquired = threading.Event()
     released = threading.Event()
 
@@ -334,7 +911,7 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
             {
                 "type": "http",
                 "method": "POST",
-                "path": "/api/settings/remote-access/stop",
+                "path": path,
             },
             None,
             _send,
@@ -424,13 +1001,10 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
     assert exc.value.status_code == 409
 
 
-def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
+def test_unstoppable_connector_reports_why_start_is_blocked(idle_workers, monkeypatch):
     # The generic "Cloudflare tunnel failed" hides the one state the user can
     # act on: a connector whose exit was never confirmed still holds the slot.
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -442,7 +1016,6 @@ def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
             "stop_pending": True,
         },
     )
-    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
     assert remote_access.remote_access_status(_state())["error"] == (
         "cloudflared could not be stopped"
     )
@@ -457,7 +1030,7 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
     monkeypatch.setattr(remote_access, "_start_worker", foreign_start)
     monkeypatch.setattr(remote_access, "_stop_worker", None)
     monkeypatch.setattr(remote_access, "_STOP_OWNERSHIP_WAIT", 0.1)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
     monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
     monkeypatch.setattr(
         cloudflare_tunnel,
@@ -483,15 +1056,8 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
         remote_access._open_remote_access_stop_response_admission()
 
 
-def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(monkeypatch):
-    # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
-    # and Studio only ever opens Quick Tunnels. Measured against a real tunnel: an
-    # SSE endpoint answers 200 with text/event-stream but delivers zero events.
-    monkeypatch.setattr(remote_access, "_start_worker", None)
-    monkeypatch.setattr(remote_access, "_stop_worker", None)
-    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
-    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
-    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+def test_streaming_depends_on_the_active_tunnel_kind(idle_workers, monkeypatch):
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start_kind", lambda: None)
 
     def _status(url):
         return {
@@ -511,3 +1077,22 @@ def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(mo
         lambda: _status("https://live.trycloudflare.com"),
     )
     assert remote_access.remote_access_status(_state())["streaming_supported"] is False
+
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            **_status("https://stable.example.com"),
+            "kind": "custom",
+            "dns": "pending",
+            "connector_registered": True,
+            "tunnel_serving": True,
+        },
+    )
+    custom = remote_access.remote_access_status(_state())
+    assert custom["streaming_supported"] is True
+    assert (custom["connector_registered"], custom["tunnel_serving"], custom["dns"]) == (
+        True,
+        True,
+        "pending",
+    )
