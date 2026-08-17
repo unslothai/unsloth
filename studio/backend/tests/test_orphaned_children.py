@@ -1991,7 +1991,15 @@ def test_the_installer_waits_for_its_validation_group_not_the_leader(tmp_path):
         grandchild = int(proc.stdout.readline().strip())
         assert _alive(grandchild)
 
-        gone = installer._terminate_validation_server(proc)
+        # grace = 1.0, not the 5.0 default. Both the leader and its child ignore
+        # SIGTERM on purpose, so every one of the four grace windows inside
+        # _terminate_validation_server (leader wait, group wait, post-SIGKILL group
+        # wait, final leader wait) is paid in full: 20s of pure waiting for a test
+        # about escalation order. 1.0s is still 20x what a SIGKILLed group needs to
+        # be reaped, and the escalation under test is unchanged -- the leader still
+        # has to outlive its SIGTERM and the group still has to be SIGKILLed for
+        # `gone` to come back True.
+        gone = installer._terminate_validation_server(proc, grace = 1.0)
         assert gone is True, "reported a stop with the group still up"
         time.sleep(0.3)
         assert not _alive(grandchild), "the leader went and its child stayed"

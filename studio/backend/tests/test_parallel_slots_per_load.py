@@ -228,7 +228,7 @@ def test_load_model_commits_requested_from_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
     healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_intent = intent")
+    snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 

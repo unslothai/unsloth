@@ -63,6 +63,7 @@ from routes.inference import (
     _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
+    _extract_response_format,
     _extract_responses_reasoning,
     _normalise_responses_input,
     _responses_tool_output_content,
@@ -291,6 +292,62 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = True)
 
         assert chat_req.parallel_tool_calls is False
+
+    def test_text_format_json_schema_becomes_response_format(self):
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        payload = ResponsesRequest(
+            input = "hi",
+            text = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Person",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {
+            "type": "json_schema",
+            "json_schema": {"name": "Person", "schema": schema, "strict": True},
+        }
+
+    def test_text_format_json_object_becomes_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {"type": "json_object"}
+
+    def test_text_format_text_carries_no_response_format(self):
+        # Codex and the Agents SDK send this on ordinary requests; constraining
+        # them would route every call onto the schema path.
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_verbosity_only_carries_no_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"verbosity": "low"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_format_json_schema_without_schema_is_ignored(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_schema"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
 
     def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
         payload = ResponsesRequest(
