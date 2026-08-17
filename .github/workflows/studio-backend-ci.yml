@@ -195,10 +195,21 @@ jobs:
         # descheduled by the other three inflates one side of that ratio. Observed on
         # staging, where the 3.10 leg reported "early markup cost 1.354s against the
         # reference's 0.854s" while 3.13 passed the same commit.
+        #
+        # The other two assert ABSOLUTE elapsed time, and tightly: 50ms for a
+        # short-circuit that should not run at all, and 100ms for a regex backtracking
+        # guard. Bounds that small are inside one scheduler quantum, so under four
+        # workers they measure the scheduler as much as the code. Bounds of 0.5s and up
+        # are left in the parallel run; there are 22 files with elapsed-time bounds and
+        # serialising all of them would give back most of what this change buys. The
+        # isolation guard scans for the tight ones, so a new test below the threshold
+        # fails that guard instead of flaking here.
         run: |
           python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
+            --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
+            --ignore=tests/test_tool_xml_strip.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -206,7 +217,10 @@ jobs:
         # Relative timing against a reference measured in the same process. Serial, so the
         # comparison is between two implementations rather than between two schedulings.
         run: |
-          python -m pytest tests/test_streaming_stripper.py -q --tb=short
+          python -m pytest -q --tb=short \
+            tests/test_streaming_stripper.py \
+            tests/test_llama_cpp_wait_for_vram_settle.py \
+            tests/test_tool_xml_strip.py
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by

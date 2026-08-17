@@ -18,6 +18,7 @@ silent: the job stays green while the tests stop running. These tests fail if th
 ignore appears without a step that runs the same path, or the other way round.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -68,7 +69,59 @@ def _over_the_repo_root(command: str) -> bool:
 # is silent: the job stays green while the tests stop running.
 BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
+    ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
+    ("tests/test_tool_xml_strip.py", "asserts a regex benchmark under 0.1s"),
 ]
+
+# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
+# under four workers on four vCPUs it measures the scheduler as much as the code. Above it
+# there is enough headroom to survive being descheduled. Twenty-two backend files assert
+# some elapsed bound and serialising all of them would give back most of what -n 4 buys,
+# so the line is drawn where the measurement stops being about the code.
+TIGHT_BOUND_S = 0.1
+
+BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "tests"
+_CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
+
+
+def _tight_elapsed_bounds(path: Path) -> list[str]:
+    """Asserts of the form ``elapsed < <= TIGHT_BOUND_S``, where ``elapsed`` came from a clock.
+
+    Read with ast rather than a regex, so the name has to actually be assigned from a
+    difference of two clock readings. Grepping for `< 0.05` would match a tolerance on a
+    float, and grepping for `elapsed` would match a variable that holds anything.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
+    except SyntaxError:
+        return []
+    timed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.BinOp):
+            if not isinstance(node.value.op, ast.Sub):
+                continue
+            reads_clock = any(
+                isinstance(inner, ast.Call) and getattr(inner.func, "attr", "") in _CLOCKS
+                for inner in ast.walk(node.value)
+            )
+            if reads_clock:
+                timed.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assert):
+            continue
+        for cmp_node in ast.walk(node.test):
+            if not isinstance(cmp_node, ast.Compare):
+                continue
+            if not (isinstance(cmp_node.left, ast.Name) and cmp_node.left.id in timed):
+                continue
+            for op, bound in zip(cmp_node.ops, cmp_node.comparators):
+                if not isinstance(op, (ast.Lt, ast.LtE)):
+                    continue
+                if isinstance(bound, ast.Constant) and isinstance(bound.value, (int, float)):
+                    if bound.value <= TIGHT_BOUND_S:
+                        found.append(f"{path.name}:{node.lineno} {cmp_node.left.id} < {bound.value}")
+    return found
 
 BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
 
@@ -177,3 +230,36 @@ def test_a_backend_isolated_path_still_runs_serially(path, reason):
         f"{path} is ignored from the backend parallel run ({reason}) and no serial step "
         f"runs it, so it runs nowhere in {WORKFLOW.name} while the job stays green."
     )
+
+
+def test_every_tight_elapsed_bound_is_isolated():
+    """The rule, applied by scanning rather than by memory.
+
+    Two of the entries above were found by review rather than by CI: they passed on
+    staging and would have flaked later. A new test asserting a 20ms bound would do the
+    same. This finds them, so adding one forces the isolation instead of buying a flake.
+    """
+    isolated = {path for path, _ in BACKEND_ISOLATED}
+    stray = {}
+    for path in sorted(BACKEND_TESTS.glob("*.py")):
+        bounds = _tight_elapsed_bounds(path)
+        if bounds and f"tests/{path.name}" not in isolated:
+            stray[path.name] = bounds
+    assert not stray, (
+        f"these backend tests assert an elapsed-time bound at or below {TIGHT_BOUND_S}s "
+        f"and still run under -n 4, where four workers share four vCPUs and a bound that "
+        f"small measures the scheduler as much as the code: {stray}. Either add the file "
+        f"to BACKEND_ISOLATED and to both halves of the workflow, or give the assertion "
+        f"enough headroom to survive being descheduled."
+    )
+
+
+def test_the_tight_bound_scan_finds_the_known_ones():
+    """A scan that matched nothing would pass the test above on an empty set."""
+    found = {
+        path.name: _tight_elapsed_bounds(path)
+        for path in sorted(BACKEND_TESTS.glob("*.py"))
+        if _tight_elapsed_bounds(path)
+    }
+    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found
+    assert "test_tool_xml_strip.py" in found, found
