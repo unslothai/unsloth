@@ -123,6 +123,6 @@ def test_a_pull_request_still_gets_latest_only():
             f"burning a runner"
         )
         concurrency = document.get("concurrency") or {}
-        assert "github.ref != 'refs/heads/main'" in str(concurrency.get("cancel-in-progress")), (
-            f"{name} no longer cancels superseded PR runs"
-        )
+        assert "github.ref != 'refs/heads/main'" in str(
+            concurrency.get("cancel-in-progress")
+        ), f"{name} no longer cancels superseded PR runs"
