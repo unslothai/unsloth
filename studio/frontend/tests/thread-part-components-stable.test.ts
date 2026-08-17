@@ -43,10 +43,7 @@ test("the assistant part components are not an inline object literal", () => {
   assert.equal(
     inline.length,
     0,
-    `${inline.length} inline components literal(s) in thread.tsx. Each one hands ` +
-      "the primitive a fresh object every render and defeats the memo on " +
-      "MessagePrimitivePartByIndex. Hoist it to module scope, or wrap it in " +
-      "useMemo if it genuinely depends on props or state.",
+    `${inline.length} inline components literal(s) in thread.tsx. Each one hands the primitive a fresh object every render and defeats the memo on MessagePrimitivePartByIndex. Hoist it to module scope, or wrap it in useMemo if it genuinely depends on props or state.`,
   );
 });
 
@@ -69,13 +66,23 @@ test("the upstream memo still compares components.tools by identity", () => {
   // an assistant-ui upgrade starts comparing the map structurally, or stops
   // reading `tools`, this test fails and says to re-measure rather than
   // silently leaving a hoist that no longer buys anything.
-  const comparator = readFileSync(
-    new URL(
-      "../node_modules/@assistant-ui/core/dist/react/primitives/message/MessageParts.js",
-      import.meta.url,
-    ),
-    "utf8",
+  // Read through a named variable so a missing file can be told apart from a
+  // changed comparator. A half-installed or relocated node_modules otherwise
+  // surfaces as a bare ENOENT stack, which reads like a real regression in this
+  // file; that happened once and cost a while to disbelieve.
+  const comparatorPath = new URL(
+    "../node_modules/@assistant-ui/core/dist/react/primitives/message/MessageParts.js",
+    import.meta.url,
   );
+  let comparator: string;
+  try {
+    comparator = readFileSync(comparatorPath, "utf8");
+  } catch (cause) {
+    throw new Error(
+      `cannot read the assistant-ui comparator at ${comparatorPath.pathname}. This is an install problem, not a failure of the code under test: reinstall node_modules and re-run before reading anything into it.`,
+      { cause },
+    );
+  }
   assert.match(
     comparator,
     /prev\.components\?\.tools === next\.components\?\.tools/,
