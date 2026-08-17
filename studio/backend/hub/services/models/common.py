@@ -740,21 +740,6 @@ def _local_model_info(
     )
 
 
-def _local_payload_is_short_a_shard(model_dir: Path) -> bool:
-    """Whether *model_dir* declares weight shards it does not hold.
-
-    Reuses the HF cache's own completeness judge rather than re-deriving it: that one already
-    knows a whole safetensors set beside an interrupted ``.bin`` one still loads, which family
-    the classified format names, and how a subdirectory layout is carried.
-    """
-    from hub.utils.inventory_scan import _snapshot_lacks_a_complete_weight_family
-    try:
-        return _snapshot_lacks_a_complete_weight_family(model_dir)
-    except OSError:
-        # Unreadable is not incomplete: an unstat-able folder is dropped by the scan anyway.
-        return False
-
-
 def _classify_local_path(
     scan_path: Path,
     source: LocalModelSource,
@@ -834,16 +819,6 @@ def _classify_local_path(
         trusted_hf_cache_repo = trusted_hf_cache_repo,
     )
 
-    # A plain local folder carries no downloader markers, so "is this whole?" has to come from
-    # the payload itself. Detection was transport-based -- the HF downloader's `.incomplete`
-    # blobs and broken symlinks -- which a folder filled by LM Studio, oMLX or a manual copy
-    # never has, so an interrupted download there was offered as a ready model and failed at
-    # load time. The HF cache passes its own verdict in (`is_snapshot_partial` already runs this
-    # very check as one of its signals), so only judge what nobody judged for us.
-    payload_partial = partial
-    if not partial and source != "hf_cache" and scan_path.is_dir():
-        payload_partial = _local_payload_is_short_a_shard(scan_path)
-
     if model_format is not None:
         if model_format == "adapter":
             size_bytes = _sum_file_sizes(f for f in files if _is_adapter_weight_file(f))
@@ -864,7 +839,7 @@ def _classify_local_path(
                 display_name = display_name,
                 model_id = model_id,
                 updated_at = updated_at,
-                partial = payload_partial,
+                partial = partial,
                 size_bytes = size_bytes,
                 base_model = adapter_base_model if model_format == "adapter" else None,
                 base_model_source = (
