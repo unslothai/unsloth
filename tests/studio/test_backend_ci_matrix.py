@@ -286,3 +286,34 @@ def test_the_floor_lint_covers_every_tree_the_matrix_legs_run():
             f"not scan it, so a post-floor stdlib name there passes the pull request and "
             f"fails on the push to main."
         )
+
+
+def test_the_floor_lint_covers_test_code_the_matrix_executes():
+    """Not shipped is not the same as not executed.
+
+    studio-backend-ci runs `pytest tests/` from studio/backend on every leg, so a 3.11
+    API in a test file is executed by the oldest leg exactly as one in a shipped module
+    is. With the pull request down to a single newest leg, dropping tests from the scan
+    would let both that leg and this lint pass while the failure waits for the push to
+    main, which is the gap the lint exists to close.
+    """
+    import importlib.util
+
+    lint = REPO / "scripts" / "lint_backend_python_floor.py"
+    spec = importlib.util.spec_from_file_location("lint_backend_python_floor", lint)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    scanned = {Path(name).relative_to(REPO).as_posix() for name in module.targets()}
+    for tree in ("studio/backend/tests", "unsloth_cli/tests"):
+        on_disk = {
+            path.relative_to(REPO).as_posix()
+            for path in (REPO / tree).rglob("*.py")
+            if not any(part in module.EXCLUDE_PARTS for part in path.parts)
+        }
+        assert on_disk, f"{tree} has no python files; this assertion would pass on nothing"
+        missed = sorted(on_disk - scanned)
+        assert not missed, (
+            f"the floor lint does not scan {missed}. The matrix runs those files on every "
+            f"leg, including the oldest, so an above-floor API in them fails on main."
+        )

@@ -55,10 +55,14 @@ ROOTS = (
 # It also named "loggers.py", which is a directory, so that entry matched nothing at all.
 # A check that covers most of the tree reads exactly like one that covers all of it.
 #
-# So the tree is the input and only these come out:
-#   tests   -- run by whatever interpreter runs them, and not shipped
-#   vendor  -- third party, pinned to its own support range
-EXCLUDE_PARTS = ("tests", "vendor", "node_modules", "__pycache__", ".venv")
+# So the tree is the input and only vendored code comes out, pinned to its own support
+# range. Tests are IN, which the first version had wrong on the theory that they are not
+# shipped: shipping is not the question, execution is. studio-backend-ci runs
+# `pytest tests/` from studio/backend on every leg, so a 3.11 API in a test file is
+# executed by the 3.10 leg exactly as one in a shipped module is. With the pull request
+# down to a single 3.13 leg, that leg and this lint would both pass and the failure would
+# arrive on the push to main, which is the whole gap this exists to close.
+EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 
 # An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin`
 # and a comment saying why, not by dropping its file from the scan. Excluding the file
@@ -90,7 +94,7 @@ def matrix_floor() -> tuple[int, int]:
 
 
 def targets() -> list[str]:
-    """Every shipped .py under the trees the matrix runs, found rather than listed."""
+    """Every .py the matrix legs ship or execute, found rather than listed."""
     found = []
     for root in ROOTS:
         if not root.is_dir():
@@ -119,7 +123,7 @@ def main() -> int:
         )
     files = targets()
     print(
-        f"[floor] {len(files)} shipped files must run on Python {target}, "
+        f"[floor] {len(files)} files must run on Python {target}, "
         f"the oldest leg in the matrix"
     )
     command = [
@@ -133,7 +137,7 @@ def main() -> int:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode == 0:
-        print(f"[floor] OK: nothing shipped needs more than {target}")
+        print(f"[floor] OK: nothing needs more than {target}")
         return 0
     print(
         f"::error title=Backend needs a newer Python than the matrix floor::"
