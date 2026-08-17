@@ -8,6 +8,7 @@ import os
 import re
 import socket
 import sys
+import statistics
 import threading
 import time
 import types
@@ -193,6 +194,15 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
+# Where a blocked event loop stops and scheduler noise starts, measured rather than
+# guessed: with the shim's 0.6 + 0.6 second delays the blocking route holds /health for
+# 1.72s (1.719 to 1.729 over five runs) and the to_thread route answers in 2 to 10 ms.
+# The split goes between them with an order of magnitude of margin either way. The old
+# 0.25 bound sat in neither regime and CI duly failed it on a single 0.261s sample among
+# eleven 0.0013s ones, which is a runner descheduling a thread, not a stalled loop.
+_BLOCKED_LOOP_SEC = 0.6
+
+
 # (1) Behavioural canary
 def test_buggy_route_blocks_event_loop():
     """Sync detect_audio_type call inside async route stalls /health."""
@@ -203,7 +213,7 @@ def test_buggy_route_blocks_event_loop():
         with _UvicornServerThread(app, port = port) as uv:
             max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
     assert probe_t >= 0.5
-    assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
+    assert max_lat >= _BLOCKED_LOOP_SEC, f"expected a stalled loop, got {max_lat:.3f}s"
 
 
 def test_fixed_route_keeps_event_loop_responsive():
@@ -217,7 +227,12 @@ def test_fixed_route_keeps_event_loop_responsive():
                 f"http://127.0.0.1:{uv.port}"
             )
     assert probe_t >= 0.5
-    assert max_lat < 0.25, f"expected <0.25s; got {max_lat:.3f}s (all: {lats})"
+    assert max_lat < _BLOCKED_LOOP_SEC, f"expected a free loop, got {max_lat:.3f}s (all: {lats})"
+    # The worst sample is the only thing that separates the two cases, so it cannot also
+    # carry the fine-grained signal. The median does: it is immune to one descheduled
+    # thread, and a loop blocked for any part of the run lifts it well clear of the
+    # milliseconds a free one measures.
+    assert statistics.median(lats) < 0.1, f"the loop was not consistently free: {lats}"
 
 
 # (2) Functional equivalence -- sync == to_thread for each codec branch
