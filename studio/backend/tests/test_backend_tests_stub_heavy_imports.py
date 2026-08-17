@@ -309,6 +309,52 @@ def _import_time_nodes(node: ast.AST):
         yield from _import_time_nodes(child)
 
 
+def _never_runs(node: ast.AST) -> bool:
+    """Whether this ``if`` test is a constant the interpreter will not take.
+
+    ``if TYPE_CHECKING:`` and ``if False:`` are the two that matter: an import under
+    either never executes, so it cannot be what left the target in ``sys.modules``.
+    Nothing else is guessed -- a test this cannot evaluate is assumed to run.
+    """
+    if not isinstance(node, ast.If):
+        return False
+    test = node.test
+    if isinstance(test, ast.Constant):
+        return not test.value
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
+def _reachable_import_time_nodes(node: ast.AST):
+    """``_import_time_nodes``, minus the branches that provably do not run.
+
+    Two corrections, both reported on this PR. Import time rather than runtime,
+    because a class body, a decorator, a default and an annotation all execute while
+    the module is being imported, so an eager import written in one of them DOES cache
+    the target -- ``_runtime_nodes`` stopped at every def and class and reported no
+    eager import for a file that was in fact safe. And reachable, because
+    ``_runtime_nodes`` walked into ``if TYPE_CHECKING:`` and ``if False:``, where an
+    import never runs, and reported a file safe that still raises.
+    """
+    if _never_runs(node):
+        for child in node.orelse:
+            yield from _reachable_import_time_nodes(child)
+        return
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        body = node.body if isinstance(node.body, list) else [node.body]
+        deferred = {id(statement) for statement in body}
+        for child in ast.iter_child_nodes(node):
+            if id(child) not in deferred:
+                yield from _reachable_import_time_nodes(child)
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _reachable_import_time_nodes(child)
+
+
 def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
     """Whether the module imports ``target`` under live stubs, at module scope, before ``line``.
 
@@ -336,7 +382,7 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
         # live" has one answer in this file and cannot drift between the two callers.
         if not _stubs_before(tree, statement.lineno):
             continue
-        for node in _runtime_nodes(statement):
+        for node in _reachable_import_time_nodes(statement):
             if isinstance(node, ast.Import):
                 if any(alias.name == target for alias in node.names):
                     return True
@@ -389,6 +435,36 @@ def _skips_on_plain_import_error(node: ast.Call) -> bool:
     return False
 
 
+def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
+    """Module-level ``def``s by name."""
+    return {
+        statement.name: statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
+    """Module-level ``def`` name -> the first line the module body calls it from.
+
+    A ``def`` is only deferred while nothing runs it. A helper the module body calls
+    executes during collection, so an ``importorskip`` inside it runs then too, and
+    giving it the end-of-module boundary let a stub installed BELOW the call site read
+    as being in place. Followed one level deep, which is the shape that occurs; a
+    helper reached only through another helper keeps the deferred boundary rather than
+    being guessed at.
+    """
+    functions = _module_functions(tree)
+    first: dict[str, int] = {}
+    for statement in tree.body:
+        for node in _import_time_nodes(statement):
+            if isinstance(node, ast.Call):
+                name = _callee_name(node)
+                if name in functions and name not in first:
+                    first[name] = node.lineno
+    return first
+
+
 def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[str, int]]:
     """``(target, line the stub must be installed before)`` per heavy ``importorskip``.
 
@@ -408,6 +484,17 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     """
     module_scope = {id(node) for statement in tree.body for node in _import_time_nodes(statement)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
+    # A call inside a def is deferred only if nothing runs that def during import. Where
+    # the module body calls it, the body runs at collection like any other import-time
+    # statement, and the end-of-module boundary would let a stub installed BELOW the call
+    # count. Those calls take the line the helper is invoked from. Reported on this PR.
+    called_at_import = _functions_called_at_import(tree)
+    in_function = {
+        id(node): name
+        for name, function in _module_functions(tree).items()
+        for statement in function.body
+        for node in ast.walk(statement)
+    }
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -429,7 +516,11 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
             and isinstance(target.value, str)
             and target.value in heavy
         ):
-            calls.append((target.value, node.lineno if id(node) in module_scope else end))
+            if id(node) in module_scope:
+                boundary = node.lineno
+            else:
+                boundary = called_at_import.get(in_function.get(id(node)), end)
+            calls.append((target.value, boundary))
     return calls
 
 
@@ -810,6 +901,58 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    )\n"
     )
     assert calls(explicit_default) and not safe(explicit_default)
+
+    # An import under `if TYPE_CHECKING:` never runs, so it is not what cached the
+    # target, and the file still raises after the stubs are dropped. Reported here.
+    type_checking_import = (
+        "import pytest, sys\n"
+        "from typing import TYPE_CHECKING\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "if TYPE_CHECKING:\n"
+        "    import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert not _offender_free(type_checking_import)
+
+    # But a class body DOES run at import time, so an eager import written there
+    # caches the target and the file is safe. Stopping at every class reported it as
+    # an offender. Reported here.
+    class_body_import = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "class _Eager:\n"
+        "    import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(class_body_import)
+
+    # An importorskip inside a helper the MODULE BODY calls runs at collection, so a
+    # stub installed below that call site is too late. The end-of-module boundary said
+    # it was in time. Reported here.
+    helper_called_at_import = (
+        "import pytest, sys\n"
+        "def _probe():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "_probe()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(helper_called_at_import) == [("core.inference.inference", 4)]
+    assert not safe(helper_called_at_import)
+
+    # The same helper NOT called at import time keeps the deferred boundary.
+    helper_never_called = (
+        "import pytest, sys\n"
+        "def _probe():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(helper_never_called)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
