@@ -196,6 +196,25 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     return context_length - min(requested, max(1, context_length // 4))
 
 
+def _latest_turn_tokens(messages: list[dict], count_tokens: Callable[[list[dict]], int]) -> int:
+    """Tokens in the newest message, counted without handing the template an orphan.
+
+    The diagnosis this feeds is produced when a request cannot be made to fit, and a tool
+    loop reaches that point with a tool result last. On its own that slice is not a
+    conversation: templates that require a tool result to follow its assistant tool call
+    refuse to render it, and the exception would escape the fit entirely -- the caller
+    falls back to the untrimmed request and the client is told nothing at all, which is
+    the opposite of what this branch exists for. A number that is approximate is worth
+    more here than a diagnosis that never arrives.
+    """
+    if not messages:
+        return 0
+    try:
+        return count_tokens(messages[-1:])
+    except Exception:
+        return estimate_messages_tokens(messages[-1:])
+
+
 def fit_rolling_context(
     messages: list[dict],
     *,
@@ -310,7 +329,7 @@ def fit_rolling_context(
             # the message just sent. Between them these say whether the conversation
             # or the single message is the problem.
             "irreducible_tokens": current_tokens,
-            "latest_turn_tokens": count_tokens(messages[-1:]) if messages else 0,
+            "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
             # ...and WHOSE message that is. A tool loop refits with the tool result
             # appended, so the last message is often a tool result rather than anything
             # the user wrote: telling them to shorten it names something they did not

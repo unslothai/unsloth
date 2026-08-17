@@ -513,6 +513,43 @@ def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     assert info["latest_turn_role"] == "user"
 
 
+def test_an_irreducible_fit_survives_a_template_that_refuses_a_lone_tool_result():
+    """The diagnosis is produced exactly where a tool loop is most likely to be.
+
+    A tool result on its own is not a conversation, and templates that require it to
+    follow its assistant tool call refuse to render one. Counting that slice directly
+    threw the exception out of the fit, so the caller fell back to the untrimmed request
+    and the client was told nothing at all -- on the one path this diagnosis exists for.
+    """
+
+    def strict_counter(messages):
+        if len(messages) == 1 and messages[0].get("role") == "tool":
+            raise RuntimeError("a tool result must follow an assistant tool call")
+        return _length_counter(messages)
+
+    messages = [
+        {"role": "user", "content": "read it"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "python", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "output" * 500},
+    ]
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = strict_counter,
+    )
+
+    assert info is not None and info["fits"] is False
+    assert info["latest_turn_role"] == "tool"
+    # Estimated rather than counted, but present: an approximate number beats a
+    # diagnosis that never reaches the client.
+    assert info["latest_turn_tokens"] > 0
+
+
 def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault():
     """The two numbers that make the error actionable.
 
