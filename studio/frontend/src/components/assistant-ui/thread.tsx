@@ -17,6 +17,7 @@ import {
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
@@ -2144,14 +2145,7 @@ const Composer: FC<{
     );
   });
   const hasResearchMessage = useAuiState(({ thread }) =>
-    thread.messages.some((message) => {
-      const custom = (
-        message.metadata as
-          | { custom?: { researchRunId?: unknown } }
-          | undefined
-      )?.custom;
-      return typeof custom?.researchRunId === "string";
-    }),
+    threadHasResearchMessage(thread.messages),
   );
   const researchUsed = researchThreadClaimed || hasResearchMessage;
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
@@ -6184,6 +6178,26 @@ function assistantMessageText(content: readonly unknown[] | undefined): string {
  * Retry keeps its old meaning: drop the partial and start over.
  */
 const ContinueMessageBar: FC = () => {
+  // One subscription for the whole bar on every message that is not the newest one.
+  //
+  // The bar is mounted under every assistant message and returns null unless that message is the
+  // last one, but the ten `useAuiState` calls below all ran first, and each of them is a store
+  // subscription whose selector re-runs on EVERY store update -- including one per character
+  // typed in the composer. Measured on the heavy-thread fixture at 300K characters, 220
+  // messages: 10,193 subscriptions in the tree and 10,258 selector runs per keystroke. Gating on
+  // `isLast` first leaves the newest message with exactly the bar it had and every older message
+  // with one subscription instead of ten.
+  //
+  // `isLast` is what the body below already gates on, so nothing that used to render stops
+  // rendering: this is the same condition, asked before the work rather than after it.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueMessageBarForLastMessage />;
+};
+
+const ContinueMessageBarForLastMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isLast = useAuiState(({ message }) => message.isLast);
