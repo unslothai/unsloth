@@ -697,3 +697,87 @@ def test_the_projector_probe_agrees_with_the_layer_loop_it_gates(tmp_path):
         "the probe left the projector on the GPU and the fit then could not place "
         f"the model: {[c for c in cmd if 'fit' in str(c) or 'mmproj' in str(c)]}"
     )
+
+
+def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
+    """Remote, so nothing here has the file to ask whether it is an image tower the
+    switch drops or an audio encoder the loader keeps. Under-charging is the
+    direction that admits a chat load over VRAM a running training job needs, so
+    the unknown one is charged."""
+    seen = {}
+
+    def fake_companions(repo, *, hf_token, include_mmproj, **kw):
+        seen["include_mmproj"] = include_mmproj
+        return 0
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "unsloth/some-vl-GGUF",
+        gguf_variant = "UD-Q4_K_XL",
+        is_vision = True,
+    )
+    variant = SimpleNamespace(quant = "UD-Q4_K_XL", size_bytes = 4 * GIB)
+
+    with (
+        patch("routes.inference._remote_gguf_companion_bytes", fake_companions),
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            lambda *a, **k: ([variant], True),
+        ),
+    ):
+        _estimate_gguf_required_gb(config, disable_vision = True)
+
+    assert seen.get("include_mmproj") is True
+
+
+def test_the_vision_switch_does_not_record_an_inherited_audio_encoder(tmp_path, monkeypatch):
+    """The capability probe falls back to the ambient LLAMA_ARG_MMPROJ, which the
+    switch then scrubs out of the child. Reading it anyway recorded an audio encoder
+    the launched server does not have, and that becomes has_audio_input, so the
+    composer would offer attachments the server cannot process."""
+    ambient = tmp_path / "ambient-mmproj.gguf"
+    ambient.write_bytes(b"\x00" * (1 * MIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(ambient))
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    import utils.models.gguf_metadata as _meta
+
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        result = _launch(backend, gguf, disable_vision = True)
+
+    assert "LLAMA_ARG_MMPROJ" not in result["env"]
+    assert backend._mmproj_has_audio is False
+
+
+def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
+    """_start_diffusion_server ignores the switch and records it False, so comparing
+    it on that path makes every identical repeat request a mismatch and reloads a
+    runtime that was already the one asked for. The switch must not be what decides,
+    so both spellings of the request have to reach the same verdict."""
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+
+    backend = LlamaCppBackend()
+    backend._is_diffusion = True
+    backend._disable_vision = False
+    backend._gguf_path = str(tmp_path / "diffusion.gguf")
+    # Enough state for the comparison under test to be REACHED: the checks above it
+    # return early on their own, and a test where both calls fail for an unrelated
+    # reason passes whatever this line does (it did, until the mutant survived).
+    backend._requested_n_ctx = 4096
+    backend._cache_type_kv = None
+
+    def _intent(disable_vision: bool):
+        return GgufLoadIntent(
+            gguf_path = str(tmp_path / "diffusion.gguf"),
+            model_identifier = "test",
+            disable_vision = disable_vision,
+        )
+
+    assert backend._runtime_matches_intent(_intent(True), None) == (
+        backend._runtime_matches_intent(_intent(False), None)
+    )

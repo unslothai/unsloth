@@ -4549,8 +4549,13 @@ class LlamaCppBackend:
             return False
 
         # Toggling vision changes which files the child opens, so it cannot be
-        # satisfied by a live server that was launched the other way.
-        if bool(self._disable_vision) != bool(intent.disable_vision):
+        # satisfied by a live server that was launched the other way. Not on the
+        # diffusion path: _start_diffusion_server ignores the switch and records it
+        # False, so comparing it there makes every identical repeat request a
+        # mismatch and tears down a runtime that was already the one asked for.
+        if not self._is_diffusion and bool(self._disable_vision) != bool(
+            intent.disable_vision
+        ):
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
@@ -15660,8 +15665,15 @@ class LlamaCppBackend:
                 # but never one the unpinnable guard just dropped.
                 self._mmproj_has_audio = False
                 self._mmproj_accepts_image = True
+                # ...and never one the vision switch is about to scrub out of the
+                # child environment either. Reading it would record an audio encoder
+                # the launched server does not have, and _apply_detected_audio turns
+                # that into has_audio_input, so the composer would offer attachments
+                # the server cannot process.
                 _mmproj_probe = launch_mmproj_path or (
-                    "" if _pv_mmproj_unpinnable else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
+                    ""
+                    if (_pv_mmproj_unpinnable or disable_vision)
+                    else (os.environ.get("LLAMA_ARG_MMPROJ") or "")
                 )
                 if launch_mmproj_path or os.path.isfile(_mmproj_probe):
                     try:

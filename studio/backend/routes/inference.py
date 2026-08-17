@@ -6645,10 +6645,15 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo,
                 hf_token = hf_token,
-                # Matches the launch path's own gate: the load fetches no projector
-                # when vision is switched off, so charging for one here would refuse
-                # a chat load over bytes it never downloads.
-                include_mmproj = bool(has_vision) and not disable_vision,
+                # Charged whenever the repo ships one, switch or no switch. The load
+                # now fetches a remote projector either way, because only the file's
+                # own metadata says whether it is an image tower the switch drops or
+                # an audio encoder the loader keeps, and nothing here has the file to
+                # ask. Under-charging is the direction that lets this guard admit a
+                # chat load over VRAM a running training job needs, so a projector of
+                # unknown kind is charged; the local branch, where the file is on
+                # disk, asks it instead.
+                include_mmproj = bool(has_vision),
                 # Remote, so which sidecar the repo ships is unknown until the
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
