@@ -1979,6 +1979,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedNUbatch",
   "tensorParallel",
   "loadedTensorParallel",
+  "loadedDisableVision",
   "disableVision",
   "loadedVisionDisabledByUser",
   "gpuMemoryMode",
@@ -3081,6 +3082,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
           // Repaired from the echo alongside tensorParallel: this load picked its
           // own model and config, so a stale true would show Vision off over a
           // loaded projector, and the next Apply would send it.
@@ -3126,6 +3128,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
+          loadedDisableVision: loadResp.disable_vision ?? false,
           // Cleared, not carried, like the GGUF-only knobs above: a safetensors
           // load has no projector, and a stale true would stage it for the next
           // model that has one.
@@ -3446,6 +3449,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedNUbatch: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        loadedDisableVision: loadResp.disable_vision ?? false,
         // The request above omits disable_vision, so the echo is what the load
         // ran with; adopting it stops a previous model's Vision-off carrying over.
         disableVision: loadResp.disable_vision ?? false,

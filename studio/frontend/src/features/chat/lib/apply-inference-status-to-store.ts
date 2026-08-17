@@ -407,6 +407,13 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel) && {
         disableVision: status.disable_vision,
       }),
+    // The rollback baseline, and unguarded like the mirror below rather than
+    // seeded once: it has to track the RUNNING server, or a switch that fails
+    // after a poll restores whatever the last seed happened to see.
+    ...(seedLoadParams &&
+      status.disable_vision !== undefined && {
+        loadedDisableVision: status.disable_vision,
+      }),
     // Unguarded, unlike the seed above: this mirrors the live load for the
     // composer's image gate, not a user setting, so every poll must land.
     ...(seedLoadParams &&

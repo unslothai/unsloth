@@ -1695,6 +1695,7 @@ export function useChatModelRuntime() {
               ...mlxRuntimeStateFrom(loadResponse),
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              loadedDisableVision: loadResponse.disable_vision ?? false,
               // Repaired from the echo like the knob above: loadDisableVision
               // forces the flag off for a diffusion target without writing the
               // store, so a Vision-off GGUF followed by a diffusion load would
@@ -1878,12 +1879,15 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
-                  // Restore the vision placement the previous model was running. The RAW
-                  // setting, not loadedVisionDisabledByUser: that one is narrowed to
-                  // models that can do images, so a non-vision GGUF carrying the switch
-                  // would roll back with vision on while the control restored to off,
-                  // leaving the backend and the UI disagreeing until the next full reload.
-                  disable_vision: stateBeforeUnload.disableVision,
+                  // What the PREVIOUS server was loaded with. Not the control field:
+                  // applyPerModelConfigToRuntime(pendingLoadConfig) writes disableVision
+                  // before this baseline is captured, so that holds the target's setting
+                  // and a failed switch would roll the old model back with the new
+                  // model's Vision choice. Not loadedVisionDisabledByUser either: that is
+                  // narrowed to models that can do images, so a non-vision GGUF carrying
+                  // the switch would come back with vision on while the control restored
+                  // to off. Same separately tracked baseline tensor_parallel uses above.
+                  disable_vision: stateBeforeUnload.loadedDisableVision ?? false,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
@@ -1933,6 +1937,8 @@ export function useChatModelRuntime() {
                   tensorParallel: rollbackResponse.tensor_parallel ?? false,
                   loadedTensorParallel:
                     rollbackResponse.tensor_parallel ?? false,
+                  loadedDisableVision:
+                    rollbackResponse.disable_vision ?? false,
                   // The pre-switch value, NOT the echo: the replayed request is
                   // gated on the model having a projector, so a text-only GGUF the
                   // user switched off echoes false and would flip Vision back on.

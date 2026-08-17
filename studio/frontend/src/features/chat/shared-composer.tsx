@@ -1621,6 +1621,7 @@ export function SharedComposer({
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own
           // model, so the editable value must follow it or Advanced Settings
           // shows the other pane's Vision state.

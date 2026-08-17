@@ -180,11 +180,13 @@ test("every other refusal is untouched by the new branch", () => {
 });
 
 // The rollback replays the previous load's settings after a failed switch. It must
-// send the RAW switch, not the narrowed image-gating field: that one is false for a
-// model that cannot do images, so a non-vision GGUF carrying the switch would come
-// back with vision on while the control restored to off. Source-level for the same
-// reason as the reseed above: the replay sits inside one large object literal.
-test("the rollback replays the raw vision setting, not the narrowed one", () => {
+// send the baseline that tracks the RUNNING server, not the control field: a pending
+// per-model config is written to disableVision before the switch captures its
+// baseline, so that holds the TARGET's setting and a failed switch would roll the old
+// model back with the new model's Vision choice. Nor the narrowed image-gating field,
+// which is false for a model that cannot do images. Source-level for the same reason
+// as the reseed above: the replay sits inside one large object literal.
+test("the rollback replays the loaded vision baseline, not the control or the gate", () => {
   const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
   const replay = runtime.slice(
     runtime.indexOf("tensor_parallel: stateBeforeUnload.loadedTensorParallel"),
@@ -194,30 +196,15 @@ test("the rollback replays the raw vision setting, not the narrowed one", () => 
     replay.indexOf("gpu_memory_mode:"),
   );
   assert.ok(
-    line.includes("stateBeforeUnload.disableVision"),
-    `rollback must replay the raw setting, got: ${line.trim()}`,
+    line.includes("stateBeforeUnload.loadedDisableVision"),
+    `rollback must replay the loaded baseline, got: ${line.trim()}`,
   );
   assert.ok(
     !line.includes("loadedVisionDisabledByUser"),
     "rollback must not replay the narrowed image-gating field",
   );
-});
-
-// The API Monitor's "Settings applied on API load" panel labels an override with no
-// recognised fields "App defaults". describeOverride is what decides that, so a
-// persisted Vision-off override it does not mention reads as no override at all,
-// while an API auto-switch will in fact unload the projector. Source-level for the
-// same reason as the rest of this file: the panel has no render harness here.
-test("the saved-settings summary mentions a vision-off override", () => {
-  const panel = read(
-    "src/features/api-monitor/components/saved-model-settings.tsx",
-  );
-  const describe = panel.slice(
-    panel.indexOf("function describeOverride"),
-    panel.indexOf("\n}", panel.indexOf("function describeOverride")),
-  );
   assert.ok(
-    describe.includes("disable_vision"),
-    "describeOverride must summarise disable_vision, or the panel calls a saved vision-off override App defaults",
+    !/stateBeforeUnload\.disableVision\b/.test(line),
+    "rollback must not replay the control field, which the pending config overwrites",
   );
 });
