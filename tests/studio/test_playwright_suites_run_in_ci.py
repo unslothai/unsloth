@@ -128,6 +128,34 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
     )
 
 
+def test_the_linux_job_still_drives_all_three_browser_engines():
+    """The repo-wide check cannot see this job disappear.
+
+    run-studio-indicator-browser.sh is named by the Mac and Windows UI workflows too,
+    so deleting all three calls from the Linux workflow leaves every guard above green
+    while the Chromium/Firefox/WebKit coverage this job exists for is gone. Reported on
+    PR #9060. Asserted against the job, not the file: a step moved back into ui-smoke
+    would put it behind the 30-minute limit this change moved it out of.
+    """
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
+    )
+    job = document["jobs"]["ui-indicator"]
+    runs = "\n".join(
+        str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict)
+    )
+    missing = [
+        engine
+        for engine in ("chromium", "firefox", "webkit")
+        if f"run-studio-indicator-browser.sh 18899 {engine}" not in runs
+    ]
+    assert not missing, (
+        f"the ui-indicator job no longer drives {missing}. That is the cross-browser "
+        f"coverage this job was split out to keep, and the repo-wide check above cannot "
+        f"see it go: the Mac and Windows workflows name the same helper."
+    )
+
+
 def test_the_scan_reads_the_workflows_it_claims_to():
     """A scan that read nothing would pass both checks above on anything."""
     assert len(DRIVERS) > 10, f"only found {len(DRIVERS)} drivers; the glob is wrong"
