@@ -23,41 +23,57 @@ STATUS_MISSING = "missing"
 STATUS_UNREADABLE = "unreadable"
 
 
-# Enough to catch a folder whose model dirs are all refused without walking a
-# large one. The scan that got here already returned nothing.
-_CHILD_PROBE_LIMIT = 64
+# Deep enough for <root>/<publisher>/<model>, the LM Studio and HF cache shape.
+_PROBE_DEPTH = 2
+# Total opens for one probe, whatever the shape. Bounds the cost; the depth does not.
+_PROBE_OPEN_LIMIT = 64
+
+
+def _probe_dir(path: str, *, depth: int, budget: list[int]) -> str:
+    """Open ``path``, then its subdirectories down to ``depth``, depth first.
+
+    Depth first so a denied model is found in three opens rather than after every
+    publisher. ``budget`` is shared across the whole walk and decremented per open.
+    """
+    if budget[0] <= 0:
+        return STATUS_OK
+    budget[0] -= 1
+    subdirs: list[str] = []
+    try:
+        with os.scandir(path) as entries:
+            if depth <= 0:
+                # Only need to know it opens.
+                next(entries, None)
+                return STATUS_OK
+            for entry in entries:
+                if len(subdirs) >= budget[0]:
+                    break
+                try:
+                    if entry.is_dir():
+                        subdirs.append(entry.path)
+                except OSError as error:
+                    return classify_scan_error(error)
+    except OSError as error:
+        return classify_scan_error(error)
+    for subdir in subdirs:
+        status = _probe_dir(subdir, depth = depth - 1, budget = budget)
+        if status != STATUS_OK:
+            return status
+        if budget[0] <= 0:
+            break
+    return STATUS_OK
 
 
 def probe_status(path: str, *, children: bool = False) -> str:
     """Open ``path`` and report what the OS says. No walking.
 
-    With ``children``, also open up to ``_CHILD_PROBE_LIMIT`` subdirectories and
-    report the first refusal. A root can list fine while every model under it is
-    denied, and the scanners skip unreadable children silently, so both arrive as
-    the same empty list. Stops at the first bad child, so the denied-everything
-    case costs one extra open.
+    With ``children``, also open what is under it. A root can list fine while the
+    models below it are denied, and the scanners skip an unreadable entry
+    silently, so both arrive as the same empty list.
     """
-    try:
-        with os.scandir(path) as entries:
-            if not children:
-                next(entries, None)
-                return STATUS_OK
-            probed = 0
-            for entry in entries:
-                if probed >= _CHILD_PROBE_LIMIT:
-                    break
-                try:
-                    if not entry.is_dir():
-                        continue
-                except OSError as error:
-                    return classify_scan_error(error)
-                probed += 1
-                child_status = probe_status(entry.path)
-                if child_status != STATUS_OK:
-                    return child_status
-    except OSError as error:
-        return classify_scan_error(error)
-    return STATUS_OK
+    if not children:
+        return _probe_dir(path, depth = 0, budget = [1])
+    return _probe_dir(path, depth = _PROBE_DEPTH, budget = [_PROBE_OPEN_LIMIT])
 
 
 def is_readable_dir(path: str) -> bool:

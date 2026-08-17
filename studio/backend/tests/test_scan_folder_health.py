@@ -32,6 +32,14 @@ from utils.paths.scan_folder_health import (
 )
 
 
+# os.geteuid is missing on Windows, and a skipif condition is evaluated at import,
+# so the check has to be resolved before the decorator sees it.
+requires_posix_permissions = pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason = "needs POSIX mode bits and a non-root user",
+)
+
+
 @pytest.fixture(autouse = True)
 def _clean_registry():
     """Each test starts with no remembered failures."""
@@ -54,8 +62,7 @@ def test_an_empty_directory_still_passes(tmp_path: Path):
     assert is_readable_dir(str(empty)) is True
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+@requires_posix_permissions
 def test_a_chmod_000_directory_fails_the_probe(tmp_path: Path):
     denied = tmp_path / "denied"
     denied.mkdir()
@@ -177,8 +184,7 @@ def test_an_empty_folder_that_is_still_there_stays_ok(tmp_path: Path):
     assert scan_folder_status(str(tmp_path)) == STATUS_OK
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+@requires_posix_permissions
 def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     """End to end through collect_local_models, the scan behind the model list."""
     from routes.models import collect_local_models
@@ -200,8 +206,7 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         denied.chmod(stat.S_IRWXU)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+@requires_posix_permissions
 def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     """The Hub inventory has its own custom-folder loop, and it feeds the dialog.
 
@@ -260,8 +265,7 @@ def test_a_root_that_lists_but_hides_every_model_is_not_ok(tmp_path: Path):
         denied_child.chmod(stat.S_IRWXU)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+@requires_posix_permissions
 def test_the_real_scan_flags_a_folder_whose_models_are_all_denied(tmp_path: Path):
     from routes.models import collect_local_models
 
@@ -278,11 +282,78 @@ def test_the_real_scan_flags_a_folder_whose_models_are_all_denied(tmp_path: Path
         denied_child.chmod(stat.S_IRWXU)
 
 
+@requires_posix_permissions
+def test_a_denied_model_under_a_readable_publisher_is_not_ok(tmp_path: Path):
+    """The LM Studio shape: <root>/<publisher>/<model>, denied at the model.
+
+    Both levels above it list fine, so a probe that stops at the first level
+    reports ok while the scan returns nothing.
+    """
+    model = tmp_path / "publisher" / "modelA"
+    model.mkdir(parents = True)
+    (model / "model.gguf").write_bytes(b"stub")
+    model.chmod(0o000)
+    try:
+        assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
+    finally:
+        model.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_the_real_scan_flags_a_denied_model_two_levels_down(tmp_path: Path):
+    from routes.models import collect_local_models
+
+    folder = tmp_path / "models"
+    model = folder / "publisher" / "modelA"
+    model.mkdir(parents = True)
+    (model / "model.gguf").write_bytes(b"stub")
+    model.chmod(0o000)
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+    try:
+        collect_local_models(tmp_path / "root", custom_folders = list(rows))
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+    finally:
+        model.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_the_deep_probe_finds_the_denial_in_a_few_opens(tmp_path: Path, monkeypatch):
+    """Depth first, so the whole-mount-denied case costs three opens, not a walk."""
+    denied = tmp_path / "publisher" / "modelA"
+    denied.mkdir(parents = True)
+    denied.chmod(0o000)
+
+    opened: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    try:
+        assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
+        # Root, publisher, model.
+        assert len(opened) == 3
+    finally:
+        denied.chmod(stat.S_IRWXU)
+
+
+def test_this_file_can_be_collected_without_geteuid(monkeypatch):
+    """Windows has no os.geteuid, and a skipif condition runs at import time."""
+    source = Path(__file__).read_text(encoding = "utf-8")
+    monkeypatch.delattr(os, "geteuid", raising = False)
+    monkeypatch.setattr(os, "name", "nt")
+    namespace: dict = {"__name__": "windows_collection_probe"}
+    # The module body is what pytest evaluates while collecting.
+    exec(compile(source, __file__, "exec"), namespace)
+
+
 def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
     """A folder with many readable children must not turn into a walk."""
     import utils.paths.scan_folder_health as health
 
-    for i in range(health._CHILD_PROBE_LIMIT * 3):
+    for i in range(health._PROBE_OPEN_LIMIT * 3):
         (tmp_path / f"child{i}").mkdir()
 
     opened: list[str] = []
@@ -294,8 +365,8 @@ def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
     assert probe_status(str(tmp_path), children = True) == STATUS_OK
-    # The root plus at most the capped number of children.
-    assert len(opened) <= health._CHILD_PROBE_LIMIT + 1
+    # One shared budget across the whole walk, however deep or wide the tree.
+    assert len(opened) <= health._PROBE_OPEN_LIMIT
 
 
 def test_reopening_the_dialog_clears_a_folder_the_user_fixed(tmp_path: Path):
@@ -312,8 +383,7 @@ def test_reopening_the_dialog_clears_a_folder_the_user_fixed(tmp_path: Path):
     assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
-@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+@requires_posix_permissions
 def test_reopening_the_dialog_keeps_a_folder_that_is_still_denied(tmp_path: Path):
     denied = tmp_path / "denied"
     denied.mkdir()
