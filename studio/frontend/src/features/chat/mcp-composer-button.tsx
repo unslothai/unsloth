@@ -21,6 +21,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { isTauri } from "@/lib/api-base";
 
 import {
   type McpServerConfig,
@@ -29,6 +30,7 @@ import {
   updateMcpServer,
 } from "./api/mcp-servers-api";
 import { ChatMcpServersDialog } from "./chat-mcp-servers-dialog";
+import { getMcpPresets } from "./mcp-presets";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 
 // Matches the Thinking pill chevron so the affordance reads the same.
@@ -48,43 +50,9 @@ const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   </svg>
 );
 
-type McpPreset = {
-  id: string;
-  displayName: string; // stored row name
-  url: string;
-  label?: string; // dropdown text, if different from displayName
-  hint?: string; // shown when the row is highlighted
-  disablesWebSearch?: boolean; // turn the built-in Search pill off when enabled
-};
-
-// Keyless remote MCP presets (rate-limited free tiers, no API key).
-// Hugging Face runs anonymously; add a token via "Manage MCP servers".
-const MCP_PRESETS: readonly McpPreset[] = [
-  {
-    id: "unsloth-docs",
-    displayName: "Unsloth Docs",
-    url: "https://unsloth.ai/docs/~gitbook/mcp",
-  },
-  {
-    id: "context7",
-    displayName: "Context7",
-    url: "https://mcp.context7.com/mcp",
-    label: "Context7 (Realtime Docs)",
-  },
-  {
-    id: "exa",
-    displayName: "Exa",
-    url: "https://mcp.exa.ai/mcp",
-    label: "Exa (Semantic Search)",
-    hint: "Enabling Exa will disable default search",
-    disablesWebSearch: true,
-  },
-  {
-    id: "huggingface",
-    displayName: "Hugging Face",
-    url: "https://huggingface.co/mcp",
-  },
-] as const;
+// Desktop adds local stdio integrations. Browser clients keep the keyless
+// remote presets, which also work against hosted Unsloth backends.
+const MCP_PRESETS = getMcpPresets(isTauri);
 
 // mcp_servers has no UNIQUE(url); dedupe by normalized URL so a preset toggle
 // reuses its row instead of duplicating.
