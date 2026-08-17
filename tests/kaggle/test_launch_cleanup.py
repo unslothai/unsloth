@@ -429,27 +429,31 @@ def _flooding_launcher(outdir: Path) -> str:
     retry and before the `finally` that re-raises the signal. A fake deletion that
     succeeds silently never reaches that.
     """
-    return _waiting_launcher(outdir).replace(
-        "            time.sleep(%d)" % _STALL_SEC,
-        "\n".join(
-            [
-                "            while True:",
-                "                sys.stdout.write('x' * 65536)",
-                "                sys.stdout.flush()",
-            ]
-        ),
-    ).replace(
-        "        launch.main()",
-        "\n".join(
-            [
-                "        _real_delete = launch.delete_kernel",
-                "        def _noisy_delete(slug):",
-                "            launch._log(f'deleting {slug}')",
-                "            return _real_delete(slug)",
-                "        launch.delete_kernel = _noisy_delete",
-                "        launch.main()",
-            ]
-        ),
+    return (
+        _waiting_launcher(outdir)
+        .replace(
+            "            time.sleep(%d)" % _STALL_SEC,
+            "\n".join(
+                [
+                    "            while True:",
+                    "                sys.stdout.write('x' * 65536)",
+                    "                sys.stdout.flush()",
+                ]
+            ),
+        )
+        .replace(
+            "        launch.main()",
+            "\n".join(
+                [
+                    "        _real_delete = launch.delete_kernel",
+                    "        def _noisy_delete(slug):",
+                    "            launch._log(f'deleting {slug}')",
+                    "            return _real_delete(slug)",
+                    "        launch.delete_kernel = _noisy_delete",
+                    "        launch.main()",
+                ]
+            ),
+        )
     )
 
 
