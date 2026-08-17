@@ -400,4 +400,12 @@ test("the interval between widenings is compensated too, not just the widening c
   // leaves a detached one alone.
   assert.match(GLUE, /idleRef/);
   assert.match(GLUE, /if \(!viewport \|\| anchorRef\.current\) return;/);
+  // The idle path carries the same stable fallback the widening path does, because the anchor is
+  // often the very pre Streamdown replaces, and re-picking after a replacement would re-base
+  // AFTER that replacement's own reflow and keep it.
+  assert.match(GLUE, /function holdAnchor\(viewport: HTMLElement, element: Element\): HeldAnchor/);
+  assert.match(GLUE, /held\.row\?\.isConnected && held\.rowSample/);
+  // And it re-bases every frame, including the no-op ones. Returning early on those left the
+  // baseline's scrollTop several frames stale, and anchorCorrection's clamp term reads it.
+  assert.match(GLUE, /if \(shift !== null\) adjustForContentInsertedAbove\(shift\);/);
 });

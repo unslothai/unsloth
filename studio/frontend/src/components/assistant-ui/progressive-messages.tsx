@@ -177,6 +177,31 @@ function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
   };
 }
 
+/**
+ * An anchor plus the row it sits in, sampled together.
+ *
+ * The row is the fallback. pickAnchorRow descends to the fold, so the anchor is very often the
+ * `<pre>` Streamdown replaces when Shiki finishes highlighting it, and a replaced node takes its
+ * baseline with it. A `[data-role]` row is not replaced in place by anything, so it survives to
+ * carry the measurement across.
+ */
+function holdAnchor(viewport: HTMLElement, element: Element): HeldAnchor {
+  const row = element.closest("[data-role]");
+  return {
+    element,
+    sample: sampleAnchor(viewport, element),
+    row,
+    rowSample: row ? sampleAnchor(viewport, row) : null,
+  };
+}
+
+type HeldAnchor = {
+  element: Element;
+  sample: AnchorSample;
+  row: Element | null;
+  rowSample: AnchorSample | null;
+};
+
 /** True while `element` still covers some of what the reader can see. */
 function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
   const box = element.getBoundingClientRect();
@@ -279,9 +304,7 @@ function useProgressiveMountWindow(
     | null
   >(null);
   /** The row the idle sampler below holds still, and where it last saw it. */
-  const idleRef = useRef<{ element: Element; sample: AnchorSample } | null>(
-    null,
-  );
+  const idleRef = useRef<HeldAnchor | null>(null);
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
@@ -365,7 +388,7 @@ function useProgressiveMountWindow(
     // meant the next frame merely re-picked and re-based, so an image or a Shiki block landing
     // between this layout effect and that frame was folded into the new baseline and never
     // corrected: with anchoring off, the reader kept the whole displacement.
-    idleRef.current = { element, sample: sampleAnchor(viewport, element) };
+    idleRef.current = holdAnchor(viewport, element);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
   // Content above the reader also moves for reasons that are not a widening, and while the window
@@ -399,10 +422,23 @@ function useProgressiveMountWindow(
       // in between would correct the same movement twice.
       if (!viewport || anchorRef.current) return;
       const held = idleRef.current;
-      if (!held || !held.element.isConnected) {
+      if (!held) {
         const element = pickAnchorRow(viewport);
-        idleRef.current = element
-          ? { element, sample: sampleAnchor(viewport, element) }
+        idleRef.current = element ? holdAnchor(viewport, element) : null;
+        return;
+      }
+      // The anchor first, its row if the anchor has been replaced since the last frame. Re-picking
+      // instead would discard the only pre-replacement sample and re-base AFTER the replacement's
+      // own reflow, so with anchoring off the reader would keep that height change.
+      const [element, baseline] = held.element.isConnected
+        ? [held.element, held.sample]
+        : held.row?.isConnected && held.rowSample
+          ? [held.row, held.rowSample]
+          : [null, null];
+      if (!element || !baseline) {
+        const replacement = pickAnchorRow(viewport);
+        idleRef.current = replacement
+          ? holdAnchor(viewport, replacement)
           : null;
         return;
       }
@@ -410,28 +446,24 @@ function useProgressiveMountWindow(
       // Tested by the row's own box rather than by its top offset: a tall row scrolled just past
       // can have its top within a viewport of the fold while none of it is on screen, and a
       // reflow between it and the first visible row then moves the reader while leaving it still.
-      if (!isAnchorVisible(viewport, held.element)) {
+      if (!isAnchorVisible(viewport, element)) {
         // Re-pick in THIS frame rather than nulling and waiting for the next one. A baseline-free
         // frame is a frame in which a reflow above the newly visible content is folded into the
         // next baseline and kept by the reader, which is the same gap that made nulling after a
         // widening wrong.
         const replacement = pickAnchorRow(viewport);
         idleRef.current = replacement
-          ? {
-              element: replacement,
-              sample: sampleAnchor(viewport, replacement),
-            }
+          ? holdAnchor(viewport, replacement)
           : null;
         return;
       }
-      const now = sampleAnchor(viewport, held.element);
-      const shift = anchorCorrection(held.sample, now);
-      if (shift == null) return;
-      adjustForContentInsertedAbove(shift);
-      idleRef.current = {
-        element: held.element,
-        sample: sampleAnchor(viewport, held.element),
-      };
+      const shift = anchorCorrection(baseline, sampleAnchor(viewport, element));
+      if (shift !== null) adjustForContentInsertedAbove(shift);
+      // Re-based EVERY frame, including the ones with nothing to correct. Returning early on a
+      // no-op frame left the baseline's scrollTop at wherever the reader was several frames ago,
+      // and anchorCorrection's clamp term reads that scrollTop, so a later shrink near the bottom
+      // would have had the wrong amount subtracted from it.
+      idleRef.current = holdAnchor(viewport, element);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
