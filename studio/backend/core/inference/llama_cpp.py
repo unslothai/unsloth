@@ -49,7 +49,11 @@ from typing import (
 
 import httpx
 
-from core.inference.context_window import fit_rolling_context, messages_have_media
+from core.inference.context_window import (
+    evicted_messages,
+    fit_rolling_context,
+    messages_have_media,
+)
 from core.inference.llama_server_args import (
     _GPU_LAYER_FLAGS,
     _LAYER_OFFLOAD_FLAGS,
@@ -459,6 +463,99 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+
+
+def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
+    """Room to hold back during a fit for the turns recalled straight after it."""
+    if not thread_id:
+        return 0
+    try:
+        from core.rag import config as rag_config
+        from core.rag import conversation_archive
+
+        if not conversation_archive.enabled():
+            return 0
+        return max(0, int(rag_config.CONVERSATION_RECALL_RESERVE_TOKENS))
+    except Exception:
+        return 0
+
+
+def _prefix_user_text(message: dict, prefix: str) -> dict:
+    """Copy of ``message`` with ``prefix`` in front of its text. Never mutates."""
+    content = message.get("content")
+    if isinstance(content, str) or content is None:
+        return {**message, "content": prefix + (content or "")}
+    if isinstance(content, list):
+        parts = list(content)
+        for index, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") in ("text", "input_text"):
+                parts[index] = {**part, "text": prefix + str(part.get("text") or "")}
+                return {**message, "content": parts}
+        return {**message, "content": [{"type": "text", "text": prefix}] + parts}
+    return message
+
+
+def _archive_and_recall(
+    conversation: list[dict],
+    before: list[dict],
+    *,
+    thread_id: Optional[str],
+    style: str,
+    recall_done: bool,
+) -> dict:
+    """Keep the turns this fit evicted, then pull the relevant ones back.
+
+    Returns ``{"conversation", "events", "counts", "recalled"}``. Never raises: a chat
+    that cannot archive still has to answer, so every failure degrades to the plain
+    fitted messages.
+
+    Recall fires at most once per request. The tool loop refits on every iteration, and
+    without the guard each pass would stack another recall block onto the prompt.
+    """
+    result = {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
+    if not thread_id:
+        return result
+    try:
+        from core.inference.tools import build_conversation_recall
+        from core.rag import conversation_archive
+
+        if not conversation_archive.enabled():
+            return result
+
+        gone = evicted_messages(before, conversation)
+        archived = conversation_archive.archive_turns(thread_id, gone) if gone else 0
+        counts = {"archived_messages": archived}
+
+        if recall_done:
+            result["counts"] = counts
+            return result
+
+        recall = build_conversation_recall(conversation, thread_id, style = style)
+        if not recall:
+            result["counts"] = counts
+            return result
+
+        if style == "inline":
+            prefix = recall.get("prefix") or ""
+            updated = list(conversation)
+            for index in range(len(updated) - 1, -1, -1):
+                if updated[index].get("role") == "user":
+                    updated[index] = _prefix_user_text(updated[index], prefix)
+                    break
+            else:
+                result["counts"] = counts
+                return result
+            result["conversation"] = updated
+        else:
+            result["conversation"] = list(conversation) + list(recall["messages"])
+            result["events"] = list(recall["events"])
+
+        counts["recalled_chunks"] = int(recall.get("sources") or 0)
+        result["counts"] = counts
+        result["recalled"] = True
+    except Exception as exc:
+        logger.warning("Could not archive or recall compacted turns: %s", exc)
+    return result
 # A transport error can arrive before the child is reapable; a request path cannot
 # afford the 5s the background MTP reload spends on the same race.
 _RESPAWN_REAP_GRACE_S = 1.0
@@ -19644,6 +19741,7 @@ class LlamaCppBackend:
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
+        thread_id: Optional[str] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -19710,6 +19808,7 @@ class LlamaCppBackend:
             and not messages_have_media(openai_messages)
         ):
             try:
+                _before_fit = openai_messages
                 openai_messages, truncation = fit_rolling_context(
                     openai_messages,
                     context_length = self._effective_context_length,
@@ -19723,7 +19822,20 @@ class LlamaCppBackend:
                         continue_final_message = continue_final_message,
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
+                    reserve_tokens = _conversation_recall_reserve(thread_id),
                 )
+                if truncation and truncation["fits"]:
+                    # Inline, not a forged tool exchange: this path sends no tools array,
+                    # and strict chat templates reject a tool role that has no catalogue.
+                    _recalled = _archive_and_recall(
+                        openai_messages,
+                        _before_fit,
+                        thread_id = thread_id,
+                        style = "inline",
+                        recall_done = False,
+                    )
+                    openai_messages = _recalled["conversation"]
+                    truncation = {**truncation, **_recalled["counts"]}
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
@@ -19986,6 +20098,9 @@ class LlamaCppBackend:
 
         conversation = list(messages)
         _rolling_anchor_ids: set[int] = set()
+        # The loop refits on every iteration; recall must fire once per request, or each
+        # pass stacks another block of recalled turns onto the prompt.
+        _conversation_recall_done = False
         for message in reversed(conversation):
             if message.get("role") == "user":
                 _rolling_anchor_ids.add(id(message))
@@ -20240,6 +20355,7 @@ class LlamaCppBackend:
             ):
                 _preflight_context_length = self._effective_context_length
                 try:
+                    _before_fit = conversation
                     conversation, truncation = fit_rolling_context(
                         conversation,
                         context_length = self._effective_context_length,
@@ -20258,7 +20374,26 @@ class LlamaCppBackend:
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
                         protected_message_ids = _rolling_anchor_ids,
+                        reserve_tokens = _conversation_recall_reserve(thread_id),
                     )
+                    if truncation and truncation["fits"]:
+                        _recalled = _archive_and_recall(
+                            conversation,
+                            _before_fit,
+                            thread_id = thread_id,
+                            style = "tool",
+                            recall_done = _conversation_recall_done,
+                        )
+                        conversation = _recalled["conversation"]
+                        truncation = {**truncation, **_recalled["counts"]}
+                        if _recalled["recalled"]:
+                            _conversation_recall_done = True
+                            # Anchor the recalled turns so a later refit in this same
+                            # request cannot evict what we just paid to bring back.
+                            for _message in _recalled["conversation"][-2:]:
+                                _rolling_anchor_ids.add(id(_message))
+                            for _ev in _recalled["events"]:
+                                yield _ev
                     if truncation and truncation["fits"]:
                         yield {"type": "context_truncated", **truncation}
                     _preflight_succeeded = True
@@ -21553,6 +21688,7 @@ class LlamaCppBackend:
         ):
             _final_preflight_context_length = self._effective_context_length
             try:
+                _before_final_fit = conversation
                 conversation, truncation = fit_rolling_context(
                     conversation,
                     context_length = self._effective_context_length,
@@ -21566,7 +21702,24 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     protected_message_ids = _rolling_anchor_ids,
+                    reserve_tokens = _conversation_recall_reserve(thread_id),
                 )
+                if truncation and truncation["fits"]:
+                    _recalled = _archive_and_recall(
+                        conversation,
+                        _before_final_fit,
+                        thread_id = thread_id,
+                        style = "tool",
+                        recall_done = _conversation_recall_done,
+                    )
+                    conversation = _recalled["conversation"]
+                    truncation = {**truncation, **_recalled["counts"]}
+                    if _recalled["recalled"]:
+                        _conversation_recall_done = True
+                        for _message in _recalled["conversation"][-2:]:
+                            _rolling_anchor_ids.add(id(_message))
+                        for _ev in _recalled["events"]:
+                            yield _ev
                 if truncation and truncation["fits"]:
                     yield {"type": "context_truncated", **truncation}
                 _final_preflight_succeeded = True

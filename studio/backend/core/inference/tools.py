@@ -9762,6 +9762,142 @@ def _last_user_text(conversation: list[dict]) -> str:
     return ""
 
 
+def build_synthetic_search_exchange(
+    *,
+    tool_name: str,
+    call_prefix: str,
+    status_label: str,
+    query: str,
+    text: str,
+    sources: list[dict],
+) -> dict:
+    """Render a retrieval the loop never asked for as a normal tool exchange.
+
+    Returns ``{"events": [...], "messages": [...]}``. The messages are what the model
+    reads; the events are what the UI draws, so a forced retrieval shows up as an
+    ordinary tool card with working citations instead of appearing from nowhere.
+    """
+    import json as _json
+    import uuid as _uuid
+
+    call_id = call_prefix + _uuid.uuid4().hex[:12]
+    args = {"query": query}
+    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    events = [
+        {"type": "status", "text": f"{status_label}: {query[:60]}"},
+        {
+            "type": "tool_start",
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+            "arguments": args,
+        },
+        {
+            "type": "tool_end",
+            "tool_name": tool_name,
+            "tool_call_id": call_id,
+            "result": full_result,
+        },
+        {"type": "status", "text": ""},
+    ]
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": _json.dumps(args, ensure_ascii = False),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "name": tool_name,
+            "tool_call_id": call_id,
+            "content": text,
+        },
+    ]
+    return {"events": events, "messages": messages}
+
+
+_RECALL_BLOCK = (
+    "<recalled_conversation>\n"
+    "This conversation was compacted and earlier turns were removed from your context. "
+    "These are the most relevant earlier turns, retrieved verbatim from this chat.\n"
+    "{text}\n"
+    "</recalled_conversation>\n\n"
+)
+
+
+def build_conversation_recall(
+    conversation: list[dict],
+    thread_id: str | None,
+    *,
+    style: str = "tool",
+    top_k: int | None = None,
+) -> dict | None:
+    """Retrieve the archived turns most relevant to the latest user message.
+
+    Deliberately NOT gated on ``rag_scope``: compaction happens whether or not the user
+    turned document RAG on, and the turns being recalled are the conversation's own, not
+    somebody's uploaded files.
+
+    Forcing this one retrieval is the whole feature. Given only a search tool the model
+    decides for itself whether to look, and measured on MRCR v2 a 35B declined on 56% of
+    rows, scoring 0.099 when it skipped against 0.461 when it searched. Forcing the
+    lookup on the turn that evicted took tool-only 0.258 to 0.604, and the model then
+    called the tool on 0% of rows, so it costs nothing on the common path.
+
+    ``style="tool"`` renders a tool exchange (the tool loop, which already carries a
+    tools array). ``style="inline"`` prefixes the latest user message instead, for the
+    plain path that sends no tools at all -- forging tool_calls without a tools array is
+    a chat-template hazard on strict templates.
+    """
+    if not thread_id:
+        return None
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return None
+    if not conversation_archive.enabled():
+        return None
+
+    query = _last_user_text(conversation)
+    if not query:
+        return None
+    try:
+        found = conversation_archive.recall(thread_id, query, top_k = top_k)
+    except Exception:
+        logger.warning("Conversation recall failed", exc_info = True)
+        return None
+    if not found:
+        return None
+    text, sources = found
+
+    if style == "inline":
+        return {
+            "events": [],
+            "messages": [],
+            "prefix": _RECALL_BLOCK.format(text = text),
+            "sources": len(sources),
+        }
+    built = build_synthetic_search_exchange(
+        tool_name = "search_conversation",
+        call_prefix = "conv_recall_",
+        status_label = "Recalling earlier conversation",
+        query = query,
+        text = text,
+        sources = sources,
+    )
+    built["sources"] = len(sources)
+    logger.info("Conversation recall: %d earlier passage(s) for %r", len(sources), query[:80])
+    return built
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return
     ``{"events": [...], "messages": [...]}`` to splice into the loop, else ``None``.
@@ -9863,52 +9999,16 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     if text is None:
         return None
 
-    import json as _json
-    import uuid as _uuid
-
-    call_id = "rag_auto_" + _uuid.uuid4().hex[:12]
-    args = {"query": query}
-    full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
-    events = [
-        {"type": "status", "text": f"Searching documents: {query[:60]}"},
-        {
-            "type": "tool_start",
-            "tool_name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "arguments": args,
-        },
-        {
-            "type": "tool_end",
-            "tool_name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "result": full_result,
-        },
-        {"type": "status", "text": ""},
-    ]
-    messages = [
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": "search_knowledge_base",
-                        "arguments": _json.dumps(args, ensure_ascii = False),
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "name": "search_knowledge_base",
-            "tool_call_id": call_id,
-            "content": text,
-        },
-    ]
+    built = build_synthetic_search_exchange(
+        tool_name = "search_knowledge_base",
+        call_prefix = "rag_auto_",
+        status_label = "Searching documents",
+        query = query,
+        text = text,
+        sources = sources,
+    )
     logger.info("RAG auto-inject: %d passage(s) for %r", len(sources), query[:80])
-    return {"events": events, "messages": messages}
+    return built
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)

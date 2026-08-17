@@ -681,9 +681,9 @@ def _accumulate_context_truncation(current: Optional[dict], event: dict) -> dict
     if current is None:
         return incoming
     combined = {**current, **incoming}
-    combined["dropped_messages"] = int(current.get("dropped_messages") or 0) + int(
-        incoming.get("dropped_messages") or 0
-    )
+    for counter in ("dropped_messages", "archived_messages", "recalled_chunks"):
+        if counter in current or counter in incoming:
+            combined[counter] = int(current.get(counter) or 0) + int(incoming.get(counter) or 0)
     if current.get("prompt_tokens_before") is not None:
         combined["prompt_tokens_before"] = current["prompt_tokens_before"]
     return combined
@@ -14578,6 +14578,7 @@ async def openai_chat_completions(
                 seed = _seed,
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
+                thread_id = payload.thread_id,
             )
 
         _gguf_sentinel = object()
