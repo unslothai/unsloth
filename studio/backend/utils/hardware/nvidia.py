@@ -160,18 +160,23 @@ def _resolve_uuid_token(token: str, uuid_info: dict[str, tuple[int, bool]]) -> O
 def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
     """Resolve a CUDA_VISIBLE_DEVICES mask that mixes numeric indices and GPU
     UUIDs (e.g. ["0", "GPU-<uuid>"]) to physical indices, so a UUID mask is
-    exactly as selectable as the equivalent numeric one. Numeric tokens pass
-    through as-is, matching the trust level of the plain-numeric fast path in
-    _get_parent_visible_gpu_spec(); UUID tokens are resolved via nvidia-smi,
-    to the same index get_visible_gpu_utilization() and
-    get_backend_visible_gpu_info() already key their own nvidia-smi rows by
-    (see _query_uuid_to_ordinal()'s PCI-bus cross-check). Order is preserved
-    to match the mask, since it defines the visible-ordinal mapping
-    downstream. Returns None -- and the caller falls back to relative
-    ordinals -- if nvidia-smi is unavailable, its index doesn't match PCI bus
-    order, any UUID token doesn't match exactly one non-MIG physical device
-    (an actual MIG instance UUID, a MIG-enabled root's UUID, or a UUID/prefix
-    ambiguous across cards), or two tokens resolve to the same physical ID
+    exactly as selectable as the equivalent numeric one. Numeric tokens are
+    validated against the GPUs nvidia-smi actually reports (real CUDA
+    semantics truncate enumeration at the first negative or out-of-range
+    member of a mixed mask, hiding everything after it -- rather than
+    replicate that exact truncation point, an invalid numeric member fails
+    the whole resolution); UUID tokens are resolved to the same index
+    get_visible_gpu_utilization() and get_backend_visible_gpu_info() already
+    key their own nvidia-smi rows by (see _query_uuid_to_ordinal()'s PCI-bus
+    cross-check). Order is preserved to match the mask, since it defines the
+    visible-ordinal mapping downstream. Returns None -- and the caller falls
+    back to relative ordinals -- if nvidia-smi is unavailable, its index
+    doesn't match PCI bus order, a numeric token is negative or not a
+    queried GPU, any UUID token doesn't match exactly one non-MIG physical
+    device (an actual MIG instance UUID, a MIG-enabled root's UUID, or a
+    UUID/prefix ambiguous across cards -- checked against every root
+    regardless of MIG state, so a MIG root can't make an otherwise-ambiguous
+    prefix look unambiguous), or two tokens resolve to the same physical ID
     (a repeated or aliased UUID/index pair): _visible_ordinal_map() is keyed
     by physical ID, so a duplicate silently collapses one of the mask's
     visible ordinals rather than giving it its own device entry. Cached per
@@ -193,19 +198,32 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
     if uuid_info is None:
         _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
         return None
+    valid_indices = {idx for idx, _is_mig_enabled in uuid_info.values()}
 
     resolved = []
     for token in tokens:
         try:
-            resolved.append(int(token))
-            continue
+            numeric_idx = int(token)
         except ValueError:
-            pass
-        idx = _resolve_uuid_token(token, uuid_info)
-        if idx is None:
+            idx = _resolve_uuid_token(token, uuid_info)
+            if idx is None:
+                _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
+                return None
+            resolved.append(idx)
+            continue
+        # CUDA truncates enumeration at the first invalid member of a mixed
+        # mask (negative or not a real device) -- everything listed after it
+        # in the real CUDA_VISIBLE_DEVICES semantics is not visible at all,
+        # not merely skipped. Replicating that exact truncation point would
+        # mean returning a list shorter than the mask, which every caller of
+        # _get_parent_visible_gpu_spec() would then have to special-case, so
+        # fail the whole resolution instead: falling back to relative
+        # ordinals (no explicit selection) is safer than resolving a later
+        # UUID token that real CUDA_VISIBLE_DEVICES parsing would have hidden.
+        if numeric_idx < 0 or numeric_idx not in valid_indices:
             _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
             return None
-        resolved.append(idx)
+        resolved.append(numeric_idx)
 
     if len(set(resolved)) != len(resolved):
         logger.warning(

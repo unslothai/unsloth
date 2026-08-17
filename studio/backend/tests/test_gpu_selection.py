@@ -362,10 +362,12 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
         )
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
-            # "0" passes through as-is (same trust level as the pure-numeric
-            # fast path); only the UUID token goes through nvidia-smi. Distinct
-            # physical IDs here on purpose -- see the duplicate-rejection test
-            # below for what happens when they alias the same card.
+            # "0" is validated against the queried GPUs (a real, non-negative
+            # index -- see the invalid-numeric-member tests below for what
+            # happens when it isn't); only the UUID token goes through
+            # resolution proper. Distinct physical IDs here on purpose -- see
+            # the duplicate-rejection test below for what happens when they
+            # alias the same card.
             result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
         self.assertEqual(result, [0, 1])
 
@@ -377,6 +379,35 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
         with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
             mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
             result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_rejects_a_mixed_mask_with_a_negative_numeric_member(self):
+        # Real CUDA_VISIBLE_DEVICES semantics: an invalid member (negative or
+        # out-of-range) truncates enumeration there, hiding everything listed
+        # after it. Rather than replicate that exact truncation point, this
+        # must fail the whole resolution -- falling back to relative ordinals
+        # (no explicit selection at all) rather than resolve a UUID that real
+        # CUDA parsing would never have exposed in the first place.
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", "-1", self._UUID_A])
+        self.assertIsNone(result)
+
+    def test_rejects_a_mixed_mask_with_an_out_of_range_numeric_member(self):
+        # "5" doesn't correspond to any GPU nvidia-smi actually reported --
+        # blindly trusting it (as opposed to the pure-numeric fast path,
+        # which never queries nvidia-smi at all to cross-check) would let a
+        # typo'd or stale index slip through resolution as if it were real.
+        smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["5", self._UUID_A])
         self.assertIsNone(result)
 
     def test_caches_a_resolved_mask_and_does_not_requery(self):
