@@ -16,12 +16,12 @@ import {
   type PendingAttachment,
   type ThreadHistoryAdapter,
   type ThreadMessage,
-  type unstable_RemoteThreadListAdapter,
+  type RemoteThreadListAdapter,
   useAui,
   useAuiEvent,
   useAuiState,
   useLocalRuntime,
-  unstable_useRemoteThreadListRuntime as useRemoteThreadListRuntime,
+  useRemoteThreadListRuntime,
 } from "@assistant-ui/react";
 import { createAssistantStream } from "assistant-stream";
 import {
@@ -757,7 +757,7 @@ function createStudioDbAdapter(
   pairId?: string,
   projectId?: string | null,
   listThreads = true,
-): unstable_RemoteThreadListAdapter {
+): RemoteThreadListAdapter {
   return {
     async fetch(remoteId: string) {
       const thread = await getStoredChatThread(remoteId);

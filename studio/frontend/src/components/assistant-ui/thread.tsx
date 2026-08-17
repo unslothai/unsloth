@@ -209,7 +209,7 @@ import {
   useAuiEvent,
   useAuiState,
 } from "@assistant-ui/react";
-import { flushResourcesSync } from "@assistant-ui/tap";
+import { flushTapSync } from "@assistant-ui/tap";
 import {
   AttachmentIcon,
   Bookmark02Icon,
@@ -3141,7 +3141,7 @@ const Composer: FC<{
               return;
             }
             void composer.clearAttachments();
-            flushResourcesSync(() => {
+            flushTapSync(() => {
               composer.setText("");
             });
             clearStoredDraft();
@@ -3527,7 +3527,7 @@ const Composer: FC<{
             if (aui.composer().getState().text.trim() !== queuedPrompt) {
               return;
             }
-            flushResourcesSync(() => {
+            flushTapSync(() => {
               aui.composer().setText("");
             });
             clearStoredDraft();
@@ -3571,7 +3571,7 @@ const Composer: FC<{
             : {}),
           openaiReasoningItem: overlay.openaiReasoningItem,
         });
-        flushResourcesSync(() => {
+        flushTapSync(() => {
           aui
             .composer()
             .setText(
@@ -3770,7 +3770,7 @@ const Composer: FC<{
                     ) {
                       return;
                     }
-                    flushResourcesSync(() => {
+                    flushTapSync(() => {
                       aui.composer().setText("");
                     });
                     clearStoredDraft();
@@ -3913,7 +3913,7 @@ function useImeComposerInputHandlers({
       if (!composer.getState().isEditing) {
         return;
       }
-      flushResourcesSync(() => {
+      flushTapSync(() => {
         composer.setText(value);
       });
     },
