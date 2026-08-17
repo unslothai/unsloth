@@ -455,8 +455,10 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
         query,
         *,
         top_k = None,
+        branch_messages = None,
     ):
         seen["top_k"] = top_k
+        seen["branch_messages"] = branch_messages
         return ("earlier turn", [{"id": "1"}])
 
     monkeypatch.setattr(conversation_archive, "recall", fake_recall)
@@ -529,14 +531,47 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
         query,
         *,
         top_k = None,
+        branch_messages = None,
     ):
         seen["top_k"] = top_k
+        seen["branch_messages"] = branch_messages
         return ("earlier turn", [{"id": "1"}])
 
     monkeypatch.setattr(conversation_archive, "recall", fake_recall)
     tools_mod._search_conversation({"query": "pelicans"}, {"thread_id": THREAD})
 
     assert seen["top_k"] is None
+
+
+def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):
+    """The forced recall is branch-filtered, so the tool the model can call must be too.
+
+    Otherwise the model simply asks for what the forced recall correctly refused, and a
+    response the user replaced with Retry comes back through the other door.
+    """
+    seen = {}
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        seen["branch_messages"] = branch_messages
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    branch = [{"role": "user", "content": "on this branch"}]
+
+    tools_mod.execute_tool(
+        "search_conversation",
+        {"query": "pelicans"},
+        thread_id = THREAD,
+        conversation_branch = branch,
+    )
+
+    assert seen["branch_messages"] == branch
 
 
 def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, monkeypatch):

@@ -9446,6 +9446,7 @@ def execute_tool(
     disable_sandbox: bool = False,
     output_callback = None,
     website_policy: dict | None = None,
+    conversation_branch: list[dict] | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -9478,7 +9479,7 @@ def execute_tool(
         # works whether or not the request carries a document rag_scope.
         return _search_knowledge_base_with_budget(
             arguments,
-            {"thread_id": thread_id},
+            {"thread_id": thread_id, "branch_messages": conversation_branch},
             effective_timeout,
             cancel_event,
             search_fn = _search_conversation,
@@ -9647,7 +9648,15 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     top_k = (
         None if requested is None else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
     )
-    found = conversation_archive.recall(str(thread_id), str(query), top_k = top_k)
+    # The branch this request is on, so a response the user replaced with Retry cannot
+    # be searched back up out of the archive. Absent for callers that have none, which
+    # falls back to filtering against the whole stored thread.
+    found = conversation_archive.recall(
+        str(thread_id),
+        str(query),
+        top_k = top_k,
+        branch_messages = scope.get("branch_messages"),
+    )
     if not found:
         return "No earlier turns of this conversation matched that query."
     text, sources = found
@@ -9931,6 +9940,7 @@ def build_conversation_recall(
     *,
     style: str = "tool",
     top_k: int | None = None,
+    branch_messages: list[dict] | None = None,
 ) -> dict | None:
     """Retrieve the archived turns most relevant to the latest user message.
 
@@ -9962,7 +9972,9 @@ def build_conversation_recall(
     if not query:
         return None
     try:
-        found = conversation_archive.recall(thread_id, query, top_k = top_k)
+        found = conversation_archive.recall(
+            thread_id, query, top_k = top_k, branch_messages = branch_messages
+        )
     except Exception:
         logger.warning("Conversation recall failed", exc_info = True)
         return None

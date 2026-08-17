@@ -312,6 +312,35 @@ def _live_transcript(thread_id: str) -> Optional[str]:
     return blob or None
 
 
+def _branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
+    """The ACTIVE branch, normalised the same way, built from the request's own messages.
+
+    Preferred over ``_live_transcript`` wherever the caller has it, because the stored
+    rows are the whole message DAG, not a branch. Retry and regenerate keep the abandoned
+    response as a sibling node on purpose -- that is what the branch arrows navigate
+    between -- so a thread-wide blob still contains a response the user replaced, and an
+    archived copy of it passes the live-branch check and can be recalled into a branch
+    where it never happened. The client sends exactly one branch per request, so the
+    messages being fitted are the authoritative answer to "what is on this branch".
+
+    They are also the same projection ``render_turn`` archived from, so the probe is
+    comparing like with like rather than crossing the store's message format.
+    """
+    if not messages:
+        return None
+    parts = []
+    for message in messages:
+        parts.append(_text_of(message.get("content"), include_tool_calls = True))
+        # Request-shaped assistant turns carry calls in `tool_calls`, not as content
+        # parts, and render_turn indexes the arguments -- so they belong in the haystack.
+        for call in message.get("tool_calls") or []:
+            function = (call or {}).get("function") or {}
+            parts.append(str(function.get("name") or ""))
+            parts.append(str(function.get("arguments") or ""))
+    blob = _normalise("\n".join(part for part in parts if part))
+    return blob or None
+
+
 _TOOL_RESULT_PROBE_CHARS = 160
 
 
@@ -367,6 +396,7 @@ def recall(
     query: str,
     *,
     top_k: Optional[int] = None,
+    branch_messages: Optional[list[dict]] = None,
 ) -> Optional[tuple[str, list[dict]]]:
     """Most relevant archived turns for ``query``, rendered like any other RAG hit.
 
@@ -427,7 +457,10 @@ def recall(
         if not hits:
             return None
         rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
-        transcript = _live_transcript(thread_id)
+        # The request's own branch first: the stored rows are the whole DAG, siblings
+        # included. Falling back to them is still better than not filtering at all, for
+        # a caller that has no branch to offer.
+        transcript = _branch_transcript(branch_messages) or _live_transcript(thread_id)
         if transcript:
             kept = [
                 hit

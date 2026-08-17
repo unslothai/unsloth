@@ -570,6 +570,7 @@ def _archive_and_recall(
     recall_done: bool,
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
+    branch_messages: Optional[list[dict]] = None,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -605,7 +606,13 @@ def _archive_and_recall(
             result["counts"] = counts
             return result
 
-        recall = build_conversation_recall(conversation, thread_id, style = style, top_k = top_k)
+        recall = build_conversation_recall(
+            conversation,
+            thread_id,
+            style = style,
+            top_k = top_k,
+            branch_messages = branch_messages,
+        )
         if not recall:
             result["counts"] = counts
             return result
@@ -19930,6 +19937,7 @@ class LlamaCppBackend:
                     _recalled = _archive_and_recall(
                         openai_messages,
                         _before_fit,
+                        branch_messages = _before_fit,
                         thread_id = thread_id,
                         style = "inline",
                         recall_done = False,
@@ -20190,7 +20198,11 @@ class LlamaCppBackend:
           {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
           {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
         """
-        from core.inference.tool_stream_exec import accepts_output_callback, stream_tool_execution
+        from core.inference.tool_stream_exec import (
+            accepts_kwarg,
+            accepts_output_callback,
+            stream_tool_execution,
+        )
         from core.inference.tools import (
             build_rag_autoinject,
             execute_tool,
@@ -20227,6 +20239,12 @@ class LlamaCppBackend:
         # boundary-sized block of still-live history, and the truncation events sum, so
         # the inflated total is persisted and the next request starts from it.
         _sticky_boundary_applied = False
+        # The branch this request is on, kept aside before anything is evicted from or
+        # injected into `conversation`. The archive is keyed by thread, and a thread's
+        # stored rows are the whole message DAG -- Retry and regenerate keep the replaced
+        # response as a sibling -- so recall has to be told which branch is live, and the
+        # messages the client sent are the only authoritative answer.
+        _request_branch: list[dict] = list(messages)
         for message in reversed(conversation):
             if message.get("role") == "user":
                 _rolling_anchor_ids.add(id(message))
@@ -20514,6 +20532,7 @@ class LlamaCppBackend:
                         _recalled = _archive_and_recall(
                             conversation,
                             _before_fit,
+                            branch_messages = _request_branch,
                             thread_id = thread_id,
                             # Tool style forges an assistant tool_call plus a tool
                             # result for search_conversation. That is only safe when the
@@ -21679,6 +21698,11 @@ class LlamaCppBackend:
                                 rag_scope = rag_scope,
                                 disable_sandbox = bypass_permissions,
                             )
+                            # Same branch the forced recall is filtered against, so a
+                            # model-initiated search cannot reach a sibling response the
+                            # forced recall correctly refused.
+                            if accepts_kwarg(execute_tool, "conversation_branch"):
+                                kwargs["conversation_branch"] = _request_branch
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             return execute_tool(
@@ -21870,6 +21894,7 @@ class LlamaCppBackend:
                     _recalled = _archive_and_recall(
                         conversation,
                         _before_final_fit,
+                        branch_messages = _request_branch,
                         thread_id = thread_id,
                         # Inline, not tool: this final-answer request is counted and sent
                         # with no tools array at all (the count above passes None), so a

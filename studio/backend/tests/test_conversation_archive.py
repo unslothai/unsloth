@@ -327,6 +327,70 @@ def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkey
     assert "GONEAWAY-2222" not in (survived[0] or "")
 
 
+def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
+    """Retry keeps the replaced response as a sibling, and siblings are stored rows.
+
+    Rewinding by editing prunes the abandoned rows, so filtering against the whole thread
+    is enough there. Retry and regenerate do not: both responses are kept on purpose,
+    which is what the branch arrows navigate between, and the thread-wide blob therefore
+    still contains a response the user replaced. Only the branch the request was sent on
+    can tell the two apart.
+    """
+    live = [
+        {"role": "user", "content": "what is the code, code KEEPME-1111"},
+        {"role": "assistant", "content": "the code is KEEPME-1111"},
+    ]
+    retried_away = [
+        {"role": "user", "content": "what is the code, code KEEPME-1111"},
+        {"role": "assistant", "content": "the code is SIBLING-3333"},
+    ]
+    _archive(live, thread_id = "retry-thread")
+    _archive(retried_away, thread_id = "retry-thread")
+    # Both branches remain stored, which is exactly what Retry leaves behind.
+    _save_thread("retry-thread", live)
+    _save_thread("retry-thread", retried_away, append = True)
+
+    # Thread-wide filtering cannot reject the sibling: its text is genuinely in the DAG.
+    thread_wide = conversation_archive.recall("retry-thread", "SIBLING-3333")
+    assert thread_wide is not None and "SIBLING-3333" in thread_wide[0]
+
+    # Told which branch the request is on, it is rejected, and the live answer still comes
+    # back rather than the filter simply refusing everything.
+    on_branch = conversation_archive.recall("retry-thread", "SIBLING-3333", branch_messages = live)
+    assert on_branch is None or "SIBLING-3333" not in on_branch[0]
+    survived = conversation_archive.recall("retry-thread", "KEEPME-1111", branch_messages = live)
+    assert survived is not None and "KEEPME-1111" in survived[0]
+
+
+def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
+    """A tool turn's arguments live in `tool_calls`, not in content, on the wire.
+
+    render_turn indexes those arguments, so a branch blob built from content alone would
+    miss every archived tool turn and filter out the whole exchange as rolled back.
+    """
+    branch = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "terminal", "arguments": '{"cmd": "ls TOOLARG-7777"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "TOOLARG-7777 listed"},
+    ]
+    _archive(branch, thread_id = "tool-branch-thread")
+    _save_thread("tool-branch-thread", [{"role": "user", "content": "unrelated"}])
+
+    found = conversation_archive.recall(
+        "tool-branch-thread", "TOOLARG-7777", branch_messages = branch
+    )
+
+    assert found is not None and "TOOLARG-7777" in found[0]
+
+
 def test_a_thread_that_was_never_persisted_is_never_archived(conn):
     """The temporary-chat guarantee.
 

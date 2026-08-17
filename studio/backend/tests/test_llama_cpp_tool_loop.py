@@ -3662,7 +3662,13 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
             ],
             payloads,
         )
-        backend._effective_context_length = 100
+        # Sized so each window overflows by roughly one turn-group. A compaction now
+        # trims a headroom margin BELOW the budget rather than to the brim, and the
+        # turn-picking estimator is coarser than the exact count, so a fixture whose
+        # every turn is a single group-sized step evicts the whole history in one pass
+        # and the second preflight has nothing left to refit. The property under test is
+        # that BOTH preflight paths refit against the window they were given.
+        backend._effective_context_length = 2000
         monkeypatch.setattr(
             backend,
             "count_chat_tokens",
@@ -3672,17 +3678,17 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         )
 
         def fake_respawn():
-            backend._effective_context_length = 60
+            backend._effective_context_length = 1000
             return True
 
         monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
         events = list(
             backend.generate_chat_completion_with_tools(
                 messages = [
-                    {"role": "user", "content": "u" * 25},
-                    {"role": "assistant", "content": "a" * 25},
-                    {"role": "user", "content": "u" * 25},
-                    {"role": "assistant", "content": "a" * 25},
+                    {"role": "user", "content": "u" * 400},
+                    {"role": "assistant", "content": "a" * 400},
+                    {"role": "user", "content": "u" * 400},
+                    {"role": "assistant", "content": "a" * 400},
                     {"role": "user", "content": "final"},
                 ],
                 tools = [{"type": "function", "function": {"name": "python"}}],
@@ -3693,8 +3699,8 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
 
         notices = [event for event in events if event.get("type") == "context_truncated"]
         assert [notice["dropped_messages"] for notice in notices] == [2, 2]
-        assert [notice["context_length"] for notice in notices] == [100, 60]
-        assert [payload["max_tokens"] for payload in payloads] == [100, 60]
+        assert [notice["context_length"] for notice in notices] == [2000, 1000]
+        assert [payload["max_tokens"] for payload in payloads] == [2000, 1000]
         assert len(payloads[0]["messages"]) == 3
         assert len(payloads[1]["messages"]) == 1
 
@@ -3872,7 +3878,13 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
         [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
         payloads,
     )
-    backend._effective_context_length = 100
+    # Sized so each window overflows by roughly one turn-group. A compaction now
+    # trims a headroom margin BELOW the budget rather than to the brim, and the
+    # turn-picking estimator is coarser than the exact count, so a fixture whose
+    # every turn is a single group-sized step evicts the whole history in one pass
+    # and the second preflight has nothing left to refit. The property under test is
+    # that BOTH preflight paths refit against the window they were given.
+    backend._effective_context_length = 2000
     monkeypatch.setattr(
         backend,
         "count_chat_tokens",
@@ -3882,17 +3894,17 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
     )
 
     def fake_respawn():
-        backend._effective_context_length = 60
+        backend._effective_context_length = 1000
         return True
 
     monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
     events = list(
         backend.generate_chat_completion(
             messages = [
-                {"role": "user", "content": "u" * 25},
-                {"role": "assistant", "content": "a" * 25},
-                {"role": "user", "content": "u" * 25},
-                {"role": "assistant", "content": "a" * 25},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
                 {"role": "user", "content": "final"},
             ],
             context_overflow = "truncate_oldest",
@@ -3905,8 +3917,8 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
         if isinstance(event, dict) and event.get("type") == "context_truncated"
     ]
     assert [notice["dropped_messages"] for notice in notices] == [2, 2]
-    assert [notice["context_length"] for notice in notices] == [100, 60]
-    assert [payload["max_tokens"] for payload in payloads] == [100, 60]
+    assert [notice["context_length"] for notice in notices] == [2000, 1000]
+    assert [payload["max_tokens"] for payload in payloads] == [2000, 1000]
     assert len(payloads[0]["messages"]) == 3
     assert len(payloads[1]["messages"]) == 1
 
