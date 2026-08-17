@@ -178,18 +178,29 @@ const FS_PATH_APIS = new Map([
   ["accessSync", 1],
   ["appendFile", 1],
   ["appendFileSync", 1],
+  ["chmod", 1],
+  ["chmodSync", 1],
+  ["chown", 1],
+  ["chownSync", 1],
   ["copyFile", 2],
   ["copyFileSync", 2],
   ["cp", 2],
   ["cpSync", 2],
+  ["createReadStream", 1],
+  ["createWriteStream", 1],
   ["existsSync", 1],
+  ["glob", 1],
+  ["globSync", 1],
   ["link", 2],
   ["linkSync", 2],
   ["lstat", 1],
   ["lstatSync", 1],
   ["mkdir", 1],
   ["mkdirSync", 1],
+  ["mkdtemp", 1],
+  ["mkdtempSync", 1],
   ["open", 1],
+  ["openAsBlob", 1],
   ["openSync", 1],
   ["opendir", 1],
   ["opendirSync", 1],
@@ -197,14 +208,25 @@ const FS_PATH_APIS = new Map([
   ["readdirSync", 1],
   ["readFile", 1],
   ["readFileSync", 1],
+  ["readlink", 1],
+  ["readlinkSync", 1],
   ["realpath", 1],
   ["realpathSync", 1],
   ["rename", 2],
   ["renameSync", 2],
   ["rm", 1],
   ["rmSync", 1],
+  ["rmdir", 1],
+  ["rmdirSync", 1],
   ["stat", 1],
   ["statSync", 1],
+  ["truncate", 1],
+  ["truncateSync", 1],
+  ["unwatchFile", 1],
+  ["utimes", 1],
+  ["utimesSync", 1],
+  ["watch", 1],
+  ["watchFile", 1],
   ["symlink", 2],
   ["symlinkSync", 2],
   ["unlink", 1],
@@ -213,11 +235,25 @@ const FS_PATH_APIS = new Map([
   ["writeFileSync", 1],
 ]);
 
-function calleeName(call: ts.CallExpression): string | null {
-  if (ts.isIdentifier(call.expression)) return call.expression.text;
-  if (ts.isPropertyAccessExpression(call.expression))
-    return call.expression.name.text;
-  return null;
+/**
+ * The fs entry point a call names, seen through an alias. `import { readFile as
+ * read }` makes the callee text `read`, so matching the spelling at the call site
+ * would let `read(url.pathname)` past. Resolve to the import binding and read the
+ * name on the module's side of the `as`.
+ */
+function calleeName(
+  call: ts.CallExpression,
+  table: Map<ts.Node, Map<string, ts.Node>>,
+): string | null {
+  if (ts.isPropertyAccessExpression(call.expression)) {
+    return call.expression.name.text; // fs.readFile(...)
+  }
+  if (!ts.isIdentifier(call.expression)) return null;
+  const declaration = resolve(call.expression, table);
+  if (declaration && ts.isImportSpecifier(declaration)) {
+    return (declaration.propertyName ?? declaration.name).text;
+  }
+  return call.expression.text;
 }
 
 /**
@@ -251,6 +287,16 @@ function taintedBindings(
       ? n
       : null;
 
+  // `x = <tainted>` after the fact. A value built in steps, `let path = "";
+  // path = url.pathname;`, is otherwise invisible to `assigned` above.
+  const reassigned = (n: ts.Node): ts.Node | null =>
+    ts.isBinaryExpression(n) &&
+    n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isIdentifier(n.left) &&
+    isTainted(n.right)
+      ? resolve(n.left, table)
+      : null;
+
   // `arr.push(<tainted>)`, which taints whichever `arr` is in scope here.
   const collected = (n: ts.Node): ts.Node | null =>
     ts.isCallExpression(n) &&
@@ -282,7 +328,8 @@ function taintedBindings(
     changed = false;
     rounds += 1;
     walk(source, (n) => {
-      const binding = assigned(n) ?? collected(n) ?? iterated(n);
+      const binding =
+        assigned(n) ?? reassigned(n) ?? collected(n) ?? iterated(n);
       if (binding !== null && !tainted.has(binding)) {
         tainted.add(binding);
         changed = true;
@@ -332,7 +379,7 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
       return;
     }
     if (ts.isCallExpression(n)) {
-      const name = calleeName(n);
+      const name = calleeName(n, table);
       const pathArguments = name === null ? undefined : FS_PATH_APIS.get(name);
       if (pathArguments !== undefined) {
         result.fsCalls += 1;
@@ -452,6 +499,27 @@ test("the rules fire on the shapes they exist for, and only those", () => {
        const from = new URL("./a.ts", import.meta.url);
        const to = new URL("./b.ts", import.meta.url).pathname;
        await copyFile(from, to);`,
+      "pathnameToFs",
+    ],
+    [
+      // Built in steps, so the taint arrives by assignment and not by an
+      // initializer.
+      `import { readFile } from "node:fs/promises";
+       let where = "";
+       where = new URL("./x.ts", import.meta.url).pathname;
+       await readFile(where, "utf8");`,
+      "pathnameToFs",
+    ],
+    [
+      // Imported under an alias, so the call site does not spell the fs name.
+      `import { readFile as read } from "node:fs/promises";
+       await read(new URL("./x.ts", import.meta.url).pathname, "utf8");`,
+      "pathnameToFs",
+    ],
+    [
+      // An fs entry point outside the read/write core is no more portable.
+      `import { createReadStream } from "node:fs";
+       createReadStream(new URL("./x.ts", import.meta.url).pathname);`,
       "pathnameToFs",
     ],
   ];
