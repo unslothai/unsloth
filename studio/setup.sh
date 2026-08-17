@@ -2290,24 +2290,26 @@ _bounded_pkg_probe() {
             # The descendant tree is walked BEFORE the interpreter is signalled: once
             # it exits its children are reparented to init and -P can no longer find
             # them. A sitecustomize or .pth hook can spawn a helper that spawns its
-            # own child, so this descends rather than taking one level -- bounded, and
-            # best effort: pgrep is not guaranteed to exist, anything spawned after
+            # own child, so this descends level by level until one comes back empty --
+            # a fixed depth would strand whatever nests below it. The bound is a
+            # total-pid cap instead: teardown must not chase a fork bomb. Best effort
+            # either way: pgrep is not guaranteed to exist, anything spawned after
             # the snapshot is missed, and this is teardown, not a contract. A process
             # group would be exact, but job control prints its own notifications to
             # the console and this script's output is pinned.
             _bpp_kids=""
             if command -v pgrep >/dev/null 2>&1; then
                 _bpp_level="$_bpp_pid"
-                _bpp_depth=0
-                while [ -n "$_bpp_level" ] && [ "$_bpp_depth" -lt 5 ]; do
+                _bpp_n=0
+                while [ -n "$_bpp_level" ] && [ "$_bpp_n" -lt 256 ]; do
                     _bpp_next=""
                     for _bpp_p in $_bpp_level; do
                         _bpp_c=$(pgrep -P "$_bpp_p" 2>/dev/null || true)
                         [ -n "$_bpp_c" ] && _bpp_next="$_bpp_next $_bpp_c"
+                        _bpp_n=$((_bpp_n + 1))
                     done
                     _bpp_kids="$_bpp_kids $_bpp_next"
                     _bpp_level="$_bpp_next"
-                    _bpp_depth=$((_bpp_depth + 1))
                 done
             fi
             kill "$_bpp_pid" 2>/dev/null || true
