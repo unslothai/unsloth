@@ -62,21 +62,59 @@ test("Speak eject asks about running chats before tearing anything down", () => 
 test("a Speak load asks the same question and forces from the answer", () => {
   assert.match(
     source,
-    /ttsLoadInFlight\.current = true;\s*const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+    /const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
   );
   // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
   assert.match(
     source,
-    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}[\s\S]{0,600}?ttsLoadInFlight\.current = true;\s*const stopDecision/,
+    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}[\s\S]{0,400}?ttsLoadInFlight\.current = true;/,
   );
   // Declining releases the slot and drops the queued pick, which would else re-ask.
   assert.match(
     source,
-    /if \(!stopDecision\.proceed\) \{\s*ttsLoadInFlight\.current = false;[\s\S]*?pendingRoutedTtsPick\.current = null;\s*return;\s*\}/,
+    /if \(!stopDecision\.proceed\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;[\s\S]*?pendingRoutedTtsPick\.current = null;\s*return;\s*\}/,
   );
   assert.match(
     source,
     /load_request_id: loadRequestId,\s*force_cancel_active: stopDecision\.forceCancelActive,/,
+  );
+});
+
+test("a model swap holds Chat's lifecycle gate across the question", () => {
+  // Without the gate a queue can materialize while the dialog is open, so it is missing
+  // from the snapshot the answer was given for: the eject's blanket queue stop then hits
+  // work nobody confirmed stopping, and a load started in that window 409s again.
+  assert.match(
+    source,
+    /ttsLoadInFlight\.current = true;[\s\S]{0,400}?const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);\s*if \(lifecycleLease === null\) \{[\s\S]*?return;\s*\}[\s\S]{0,200}?const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // Released before the queued replay, which needs the gate for its own attempt.
+  assert.match(
+    source,
+    /ttsLoadInFlight\.current = false;[\s\S]{0,120}?releaseLifecycle\(\);[\s\S]*?replayQueuedTtsPick\(\);/,
+  );
+  // Eject takes it before it goes busy, so it is held across its own question too.
+  assert.match(
+    source,
+    /const lifecycleLease = useChatRuntimeStore\.getState\(\)\.beginModelLoading\(\);[\s\S]{0,300}?setBusy\("unloading"\);[\s\S]{0,400}?confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",/,
+  );
+  assert.match(
+    source,
+    /\} finally \{\s*useChatRuntimeStore\.getState\(\)\.endModelLoading\(lifecycleLease\);\s*\}/,
+  );
+});
+
+test("a load confirmed after Audio is hidden is deferred, not sent", () => {
+  // pendingTtsLoad is still null while the dialog is open, so the deactivation effect has
+  // nothing to abort. Sending anyway let a hidden page replace the visible page's model.
+  assert.match(
+    source,
+    /if \(!activeRef\.current\) \{\s*releaseLifecycle\(\);\s*ttsLoadInFlight\.current = false;\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}/,
+  );
+  // The activation effect replays exactly that queue, so the pick is not lost.
+  assert.match(
+    source,
+    /if \(!active\) \{[\s\S]*?\n    \}\s*\n\s*\/\/[\s\S]*?replayQueuedTtsPick\(\);/,
   );
 });
 

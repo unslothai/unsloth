@@ -50,6 +50,7 @@ import {
   loadModel,
   requestLocalPromptQueueStop,
   unloadModel,
+  useChatRuntimeStore,
 } from "@/features/chat";
 import {
   SttModelNotDownloadedError,
@@ -702,11 +703,33 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       // instead of dead-ending on the backend's 409. Claimed before the await: a routed
       // pick arriving while the dialog is open must queue, not start a second load.
       ttsLoadInFlight.current = true;
+      // Chat's gate, held across the question and the load. Without it a queue can
+      // materialize while the dialog is open, outside the snapshot the answer was given
+      // for, and a generation started in that window brings the 409 back.
+      const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      if (lifecycleLease === null) {
+        ttsLoadInFlight.current = false;
+        pendingRoutedTtsPick.current = null;
+        toast.info("Wait for the current model to finish loading.");
+        return;
+      }
+      const releaseLifecycle = () =>
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       const stopDecision = await confirmStopRunningChatsIfNeeded();
       if (!stopDecision.proceed) {
+        releaseLifecycle();
         ttsLoadInFlight.current = false;
         // Declining refuses the swap, so a queued pick must not reopen the dialog.
         pendingRoutedTtsPick.current = null;
+        return;
+      }
+      // The page can go away while the dialog is open. pendingTtsLoad is still null then,
+      // so the deactivation effect has nothing to abort and a hidden load would replace
+      // the model the now-visible page is using. Queue it for the activation replay.
+      if (!activeRef.current) {
+        releaseLifecycle();
+        ttsLoadInFlight.current = false;
+        pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
         return;
       }
       const generation = ++ttsLoadGeneration.current;
@@ -776,6 +799,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         if (pendingTtsLoad.current?.generation === generation)
           pendingTtsLoad.current = null;
         ttsLoadInFlight.current = false;
+        // Before the replay below, which needs the gate for its own attempt.
+        releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
         if (activeRef.current) void refreshStatus();
@@ -1340,44 +1365,56 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const activeModel = status?.active_model;
     if (!activeModel) return;
 
+    // Chat's gate, taken before the question so a queue cannot materialize while the
+    // dialog is open and then be stopped by the blanket queue stop below.
+    const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+    if (lifecycleLease === null) {
+      toast.info("Wait for the current model to finish loading.");
+      return;
+    }
+
     // Busy before the dialog, so a second eject cannot start behind the first.
     setBusy("unloading");
     void (async () => {
-      // Ejecting stops every chat on the shared llama-server. Unforced, the backend
-      // refused with a 409 the user could only read. Nothing is torn down until the
-      // answer is in, so declining leaves the page as it was.
-      const stopDecision = await confirmStopRunningChatsIfNeeded(
-        "Unloading the model",
-        "unload",
-      );
-      if (!stopDecision.proceed) {
-        setBusy(null);
-        return;
-      }
-
-      // An old managed completion must not immediately replace the model the
-      // user just ejected. The global download may continue for later use.
-      invalidatePendingStagedTts();
-      stageTtsDownload([]);
-
-      const toastId = toast.loading("Unloading model…");
       try {
-        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
-        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
-        await unloadModel({
-          model_path: activeModel,
-          force_cancel_active: stopDecision.forceCancelActive,
-        });
-        requestLocalPromptQueueStop();
-        await refreshStatus();
-        toast.success("Model unloaded", { id: toastId, duration: 1200 });
-      } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Failed to unload model.",
-          { id: toastId },
+        // Ejecting stops every chat on the shared llama-server. Unforced, the backend
+        // refused with a 409 the user could only read. Nothing is torn down until the
+        // answer is in, so declining leaves the page as it was.
+        const stopDecision = await confirmStopRunningChatsIfNeeded(
+          "Unloading the model",
+          "unload",
         );
+        if (!stopDecision.proceed) {
+          setBusy(null);
+          return;
+        }
+
+        // An old managed completion must not immediately replace the model the
+        // user just ejected. The global download may continue for later use.
+        invalidatePendingStagedTts();
+        stageTtsDownload([]);
+
+        const toastId = toast.loading("Unloading model…");
+        try {
+          cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+          requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+          await unloadModel({
+            model_path: activeModel,
+            force_cancel_active: stopDecision.forceCancelActive,
+          });
+          requestLocalPromptQueueStop();
+          await refreshStatus();
+          toast.success("Model unloaded", { id: toastId, duration: 1200 });
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : "Failed to unload model.",
+            { id: toastId },
+          );
+        } finally {
+          setBusy(null);
+        }
       } finally {
-        setBusy(null);
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
       }
     })();
   }, [
