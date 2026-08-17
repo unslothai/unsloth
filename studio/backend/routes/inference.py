@@ -11910,6 +11910,39 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 # content_part type.
 _INPUT_DOCUMENT_PROVIDERS = frozenset({"anthropic", "openai"})
 
+# The frontend stores tool-call ids as "<provider id>:<uuid4>" (chat-adapter.ts
+# mints them for part identity), which strict providers reject on replay --
+# OpenAI caps call ids at 64 chars, and the minted form is 66. #8913.
+_MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
+    r":[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def _replay_tool_call_id(value: Any) -> Any:
+    """Restore the provider's original tool-call id for replay; hash-shorten
+    anything else over 64 chars (same scheme as openai_codex_client._codex_call_id,
+    so call/output pairs shorten identically)."""
+    if not isinstance(value, str):
+        return value
+    base = _MINTED_TOOL_CALL_ID_SUFFIX.sub("", value)
+    if len(base) <= 64:
+        return base
+    digest = _hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
+    return f"{base[:31]}_{digest}"
+
+
+def _replay_tool_call_ids(tool_calls: Any) -> Any:
+    if not isinstance(tool_calls, list):
+        return tool_calls
+    out = []
+    for tc in tool_calls:
+        if isinstance(tc, dict) and isinstance(tc.get("id"), str):
+            fixed = _replay_tool_call_id(tc["id"])
+            if fixed != tc["id"]:
+                tc = {**tc, "id": fixed}
+        out.append(tc)
+    return out
+
 
 def _build_external_messages(
     messages: list,
@@ -12220,6 +12253,11 @@ def _build_external_messages(
                 if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
+    for entry in result:
+        if entry.get("tool_calls"):
+            entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"])
+        if isinstance(entry.get("tool_call_id"), str):
+            entry["tool_call_id"] = _replay_tool_call_id(entry["tool_call_id"])
     return result
 
 

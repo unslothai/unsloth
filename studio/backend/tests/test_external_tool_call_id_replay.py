@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Replayed tool-call ids must fit provider limits (#8913).
+
+The frontend stores tool-call ids as "<provider id>:<uuid4>" (66 chars for
+OpenAI), and providers that validate ids reject the whole request on the next
+turn, permanently breaking the chat.
+"""
+
+from models.inference import ChatMessage
+from routes.inference import _build_external_messages
+
+MINTED = "call_AbCdEfGhIjKlMnOpQrStUvWx:071e73c8-5d38-4d4c-821a-62fe32c7a54a"
+ORIGINAL = "call_AbCdEfGhIjKlMnOpQrStUvWx"
+
+
+def _history(tool_call_id):
+    return [
+        ChatMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {"name": "python", "arguments": "{}"},
+                    }
+                ],
+            }
+        ),
+        ChatMessage.model_validate(
+            {"role": "tool", "tool_call_id": tool_call_id, "content": "ok"}
+        ),
+    ]
+
+
+def _replayed_ids(tool_call_id, provider_type = "openai"):
+    out = _build_external_messages(
+        _history(tool_call_id), supports_vision = True, provider_type = provider_type
+    )
+    assistant = next(m for m in out if m.get("tool_calls"))
+    tool = next(m for m in out if m["role"] == "tool")
+    return assistant["tool_calls"][0]["id"], tool["tool_call_id"]
+
+
+def test_minted_frontend_id_is_restored_to_provider_id():
+    call_id, output_id = _replayed_ids(MINTED)
+    assert call_id == ORIGINAL
+    assert output_id == ORIGINAL
+
+
+def test_oversized_foreign_id_is_shortened_symmetrically():
+    long_id = "x" * 80
+    call_id, output_id = _replayed_ids(long_id)
+    assert call_id == output_id
+    assert len(call_id) == 64
+    assert call_id.startswith("x" * 31)
+
+
+def test_short_ids_pass_through_unchanged():
+    call_id, output_id = _replayed_ids("call_xyz")
+    assert call_id == "call_xyz"
+    assert output_id == "call_xyz"
+
+
+def test_replay_applies_on_generic_chat_completions_providers():
+    call_id, output_id = _replayed_ids(MINTED, provider_type = "mistral")
+    assert call_id == ORIGINAL
+    assert output_id == ORIGINAL
