@@ -994,39 +994,47 @@ def is_resumable_partial(
     writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
     the progress you already have", which must not be promised for bytes about to be swept.
 
-    With a ``variant`` the answer is about THAT variant, and it mirrors what
-    :func:`prepare_cache_for_transport` would keep: the blob scan is repo-wide, so a sibling
-    quant's reopenable partial would otherwise answer for a row of its own that is about to be
-    purged. Main blobs are vouched for by the variant marker checked above. A shared companion
-    (mmproj, MTP drafter) answers to ``.transport.companion`` instead, so it only counts while
-    that marker agrees; otherwise the resume it would back is swept first. Without a manifest
-    there is nothing to scope by, and an unscoped yes is the promise this guards against.
+    Decided per cache entry, the way :func:`prepare_cache_for_transport` decides what to purge,
+    because one repo can own several active directories at once (a case-sensitive filesystem
+    holds ``models--Org--Model`` beside ``models--org--model``). A marker only vouches for
+    partials sitting beside it.
+
+    Within an entry the split matters too: main blobs answer to the variant marker, while a
+    shared companion (mmproj, MTP drafter) answers to ``.transport.companion``. With a
+    ``variant`` the manifest says which hashes are which; a blob in neither set, and a variant
+    with no manifest, back nothing rather than an unscoped yes.
     """
-    if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
-        return False
-    resumable = incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True)
-    if not resumable or variant is None:
-        return bool(resumable)
-    main, companion = _manifest_hash_split(repo_type, repo_id, variant)
-    if resumable & main:
-        return True
-    if not resumable & companion:
-        return False
-    return read_active_companion_marker(repo_type, repo_id) == TRANSPORT_HTTP
+    main, companion = (
+        _manifest_hash_split(repo_type, repo_id, variant) if variant else (set(), set())
+    )
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+        resumable = _resumable_blob_hashes(entry)
+        if not resumable:
+            continue
+        if _read_marker(entry, variant) == TRANSPORT_HTTP and (variant is None or resumable & main):
+            return True
+        if (
+            variant is not None
+            and resumable & companion
+            and _read_companion_marker(entry) == TRANSPORT_HTTP
+        ):
+            return True
+    return False
 
 
-def read_active_companion_marker(
-    repo_type: str,
-    repo_id: str,
-    *,
-    root: Optional[Path] = None,
-) -> Optional[str]:
-    """Transport recorded for the repo's shared companion blobs, which are not variant-scoped."""
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
-        value = _read_companion_marker(entry)
-        if value is not None:
-            return value
-    return None
+def _resumable_blob_hashes(entry: Path) -> set[str]:
+    """Blob hashes whose partial sits in THIS entry and can still be appended to."""
+    out: set[str] = set()
+    try:
+        for blob in (entry / "blobs").iterdir():
+            if not blob.is_file():
+                continue
+            blob_hash = incomplete_blob_hash(blob.name)
+            if blob_hash is not None and partial_is_resumable(blob.name):
+                out.add(blob_hash)
+    except OSError:
+        return out
+    return out
 
 
 def _manifest_hash_split(

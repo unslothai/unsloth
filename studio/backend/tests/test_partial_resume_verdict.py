@@ -172,3 +172,61 @@ def test_the_variants_own_partial_still_decides_for_the_variant(cache):
     download_registry._write_companion_marker(cache, "xet")
     _partial(cache, LEGACY_PARTIAL)
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
+
+
+# --------------------------------------------------------------------------------------------
+# One repo can own several active cache directories at once: a case-sensitive filesystem holds
+# models--Org--Model beside models--org--model, and every one of them matches. The blob scan
+# unions them while a marker read answers from whichever comes first, so a verdict built from
+# the two separately can pair a partial in one directory with a marker from another.
+# prepare_cache_for_transport judges each directory on its own, so the pairing has to as well.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def split_cache(monkeypatch, tmp_path):
+    """Two active entries for one repo. The names are stand-ins so the test also runs on a
+    case-insensitive filesystem, where the real pair cannot coexist."""
+    root = tmp_path / "hub"
+    first = root / "models--Org--Model"
+    second = root / "models--Org--Model.case-variant"
+    for entry in (first, second):
+        (entry / "blobs").mkdir(parents = True)
+    monkeypatch.setenv("HF_HUB_CACHE", str(root))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        download_registry, "iter_active_repo_cache_dirs", lambda *_a, **_k: iter((first, second))
+    )
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: True)
+    return first, second
+
+
+def test_a_marker_does_not_vouch_for_another_directorys_companion(split_cache):
+    first, second = split_cache
+    _record_with_companion("http", first)
+    download_registry._write_companion_marker(first, "http")
+    # The partial lives next door, under a Xet companion marker that will purge it.
+    download_registry._write_marker(second, "http", "Q4_K_M")
+    download_registry._write_companion_marker(second, "xet")
+    _partial(second, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
+
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+def test_a_marker_does_not_vouch_for_another_directorys_main_partial(split_cache):
+    first, second = split_cache
+    _record("http", first)
+    # Same repo, other directory, written by Xet: its own marker is what decides.
+    download_registry._write_marker(second, "xet", "Q4_K_M")
+    _partial(second, LEGACY_PARTIAL)
+
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+def test_a_partial_and_its_own_directorys_marker_still_resume(split_cache):
+    first, second = split_cache
+    _record("http", first)
+    download_registry._write_marker(second, "http", "Q4_K_M")
+    _partial(second, LEGACY_PARTIAL)
+
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
