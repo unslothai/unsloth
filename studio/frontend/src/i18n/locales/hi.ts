@@ -1018,6 +1018,9 @@ export const hi = {
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
+      rememberParamsPerModelDescription:
+        "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:
