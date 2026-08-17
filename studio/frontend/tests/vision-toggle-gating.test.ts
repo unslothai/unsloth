@@ -202,3 +202,22 @@ test("the rollback replays the raw vision setting, not the narrowed one", () => 
     "rollback must not replay the narrowed image-gating field",
   );
 });
+
+// The API Monitor's "Settings applied on API load" panel labels an override with no
+// recognised fields "App defaults". describeOverride is what decides that, so a
+// persisted Vision-off override it does not mention reads as no override at all,
+// while an API auto-switch will in fact unload the projector. Source-level for the
+// same reason as the rest of this file: the panel has no render harness here.
+test("the saved-settings summary mentions a vision-off override", () => {
+  const panel = read(
+    "src/features/api-monitor/components/saved-model-settings.tsx",
+  );
+  const describe = panel.slice(
+    panel.indexOf("function describeOverride"),
+    panel.indexOf("\n}", panel.indexOf("function describeOverride")),
+  );
+  assert.ok(
+    describe.includes("disable_vision"),
+    "describeOverride must summarise disable_vision, or the panel calls a saved vision-off override App defaults",
+  );
+});

@@ -800,3 +800,18 @@ def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_swit
 
     assert backend._disable_vision is True
     assert backend._vision_disabled_by_user is False
+
+
+def test_a_projector_the_resolve_rejected_is_not_blamed_on_the_switch(tmp_path):
+    """A None launch path does not mean the switch dropped it. The resolve also
+    returns None for a missing file or a family mismatch, and reporting the switch
+    there tells the user to turn Vision back on when the same projector will just be
+    rejected again. Only a usable image projector the switch itself dropped counts."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    # What a family-check failure looks like from here.
+    backend._resolve_launch_mmproj_path = lambda **_kw: None
+
+    _launch(backend, gguf, disable_vision = True)
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False

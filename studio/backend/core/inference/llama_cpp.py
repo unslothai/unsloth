@@ -13912,6 +13912,12 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
+                # Set only where the SWITCH is what dropped a usable image projector.
+                # A None launch path does not mean that on its own: the resolve also
+                # returns None for a missing file or a family mismatch, and reporting
+                # the switch there tells the user to turn Vision back on when the same
+                # projector will just be rejected again.
+                _dv_dropped_image_projector = False
                 if not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
@@ -13946,6 +13952,7 @@ class LlamaCppBackend:
                                     "other. Turn Vision back on to send audio."
                                 )
                             launch_mmproj_path = None
+                            _dv_dropped_image_projector = True
                         else:
                             logger.info(
                                 "Vision is off for this load, but this model's projector "
@@ -17226,11 +17233,13 @@ class LlamaCppBackend:
                 # capability default stays True, and the switch would take the blame
                 # for images that turning it back on cannot restore while the argument
                 # still suppresses the projector.
+                # One signal, recorded where the decision was actually made, rather
+                # than re-derived from state that cannot tell the cases apart: it is
+                # True only where a usable image projector was resolved and the switch
+                # is what dropped it. That covers the advanced-argument case and the
+                # audio-only case as well, since neither reaches the assignment.
                 self._vision_disabled_by_user = bool(
-                    is_vision
-                    and disable_vision
-                    and self._mmproj_accepts_image
-                    and not extra_args_disable_mmproj(extra_args)
+                    is_vision and disable_vision and _dv_dropped_image_projector
                 )
                 self._model_identifier = model_identifier
 
