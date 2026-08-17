@@ -475,6 +475,54 @@ def test_valid_utf8_multibyte_text_stays_editable(rag_home, stub_embeddings):
     assert "日本語" in body["text"]
 
 
+def test_saving_a_truncated_preview_is_refused(rag_home, stub_embeddings, monkeypatch):
+    """The GET refuses to call an oversized source editable, but a stale or direct
+    client can still PUT the truncated body it was given. Writing that would delete
+    everything past the cap, so the save re-checks rather than trusting the client."""
+    from routes import rag as rag_routes
+
+    _, doc_id, path = _ingest("big.md", "keep this tail\n" * 200)
+    monkeypatch.setattr(rag_routes, "_MAX_TEXT_EDIT_BYTES", 64)
+    monkeypatch.setattr(rag_routes, "_MAX_TEXT_EDIT_CHARS", 16)
+    client = _client()
+
+    shown = client.get(f"/api/rag/documents/{doc_id}/content").json()
+    assert shown["editable"] is False and shown["truncated"] is True
+
+    before = open(path, encoding = "utf-8").read()
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": shown["text"]})
+    assert res.status_code == 409
+    assert open(path, encoding = "utf-8").read() == before, "the tail was destroyed"
+    assert _document_row(doc_id) is not None
+
+
+def test_saving_a_lossy_preview_is_refused(rag_home, stub_embeddings):
+    # Same rule for a byte that is not valid UTF-8: the preview shows U+FFFD, and
+    # saving it back would rewrite the original byte as that replacement.
+    from core.rag import ingestion, store
+    from utils.paths import ensure_dir, rag_uploads_root
+
+    path = ensure_dir(rag_uploads_root()) / "latin.txt"
+    path.write_bytes(b"caf\xe9 latte\n")
+    doc_id, job_id = ingestion.start_ingestion(
+        store.project_scope(PROJECT_ID),
+        None,
+        None,
+        "latin.txt",
+        str(path),
+        project_id = PROJECT_ID,
+    )
+    _await_job(job_id)
+    client = _client()
+
+    shown = client.get(f"/api/rag/documents/{doc_id}/content").json()
+    assert shown["editable"] is False
+
+    res = client.put(f"/api/rag/documents/{doc_id}/content", json = {"text": shown["text"]})
+    assert res.status_code == 409
+    assert path.read_bytes() == b"caf\xe9 latte\n", "the original byte was rewritten"
+
+
 def test_saving_is_capped_on_encoded_bytes_not_characters(rag_home, stub_embeddings):
     # Pydantic's max_length counts characters. A CJK payload under that limit can
     # still encode to more than the byte cap, and saving it would produce a file

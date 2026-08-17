@@ -1316,6 +1316,26 @@ def update_document_content(
     if not _is_managed_preview_path(old_path):
         raise HTTPException(status_code = 403, detail = "Forbidden")
 
+    # The same faithfulness test the GET applies, because only that endpoint
+    # deciding it is not enough: a client holding a preview from before the file
+    # grew, or one calling this route directly, would otherwise save back a body
+    # the server itself refused to call editable. Writing it would delete
+    # everything past the size cap, or rewrite a byte that is not valid UTF-8 as
+    # the encoding of U+FFFD -- destroying content the user never saw, let alone
+    # edited.
+    try:
+        _, faithful = _document_text(old_path, ext)
+    except Exception as exc:  # noqa: BLE001 - an unreadable original is not a 500
+        logger.warning("failed to read document %s before saving", document_id, exc_info = True)
+        raise HTTPException(
+            status_code = 422, detail = f"Could not read this document ({exc})"
+        ) from exc
+    if not faithful:
+        raise HTTPException(
+            status_code = 409,
+            detail = "This source cannot be edited here: it is too large or is not valid UTF-8 text.",
+        )
+
     body = payload.text.encode("utf-8")
     # max_length counts characters; this counts what actually lands on disk. A
     # payload that passed the field check can still exceed the cap (one character
