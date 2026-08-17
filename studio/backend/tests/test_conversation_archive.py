@@ -24,8 +24,64 @@ def _turn(question, answer):
     ]
 
 
-def _archive(messages, thread_id = THREAD):
-    """The module opens its own connection to the same temp DB the fixture points at."""
+def _save_thread(
+    thread_id,
+    turns,
+    *,
+    append = False,
+):
+    """Persist a transcript the way the chat history route does.
+
+    ``append`` matters: a real thread grows, and replacing its rows on every archive call
+    would leave only the newest turn saved, so the live-branch filter would reject
+    everything archived earlier. Tests that rewind a thread pass append=False to replace.
+    """
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    existing = len(studio_db.list_chat_messages(thread_id) or []) if append else 0
+    rows = [
+        {
+            "id": f"{thread_id}-{existing + index}",
+            "threadId": thread_id,
+            "role": message["role"],
+            "content": [{"type": "text", "text": message["content"]}],
+            "createdAt": existing + index + 2,
+        }
+        for index, message in enumerate(turns)
+    ]
+    if append:
+        for row in rows:
+            studio_db.upsert_chat_message(row)
+        return
+    # A rewind, through the same prune_missing sync the PUT route uses. Deleting the
+    # thread instead would tombstone its id, and recreating a tombstoned id raises.
+    studio_db.sync_chat_messages(thread_id, rows, prune_missing = True)
+
+
+def _archive(
+    messages,
+    thread_id = THREAD,
+    *,
+    persist = True,
+):
+    """The module opens its own connection to the same temp DB the fixture points at.
+
+    Archiving now requires the thread to exist in studio.db, so the default persists a
+    matching transcript. That is not scaffolding: only a persisted thread can ever be
+    deleted, and an archive no delete can reach is exactly the temporary-chat leak the
+    rule exists to prevent. ``persist=False`` exercises the refusal.
+    """
+    if persist:
+        _save_thread(thread_id, messages, append = True)
     return conversation_archive.archive_turns(thread_id, messages)
 
 
@@ -176,7 +232,7 @@ def test_the_transcript_is_never_mutated(conn):
 
 def test_has_archive_reports_whether_anything_was_kept(conn):
     assert conversation_archive.has_archive(THREAD) is False
-    conversation_archive.archive_turns(THREAD, _turn("what is a duck", "a waterfowl"))
+    _archive(_turn("what is a duck", "a waterfowl"))
     assert conversation_archive.has_archive(THREAD) is True
 
 
@@ -240,31 +296,6 @@ def test_recall_finds_a_rare_token_buried_in_boilerplate(conn):
     assert "VULPINE-9134-QK" in found[0]
 
 
-def _save_thread(thread_id, turns):
-    """Persist a transcript the way the chat history route does."""
-    from storage import studio_db
-
-    studio_db.upsert_chat_thread(
-        {
-            "id": thread_id,
-            "title": "t",
-            "modelType": "base",
-            "modelId": "local-model",
-            "createdAt": 1,
-        }
-    )
-    for index, message in enumerate(turns):
-        studio_db.upsert_chat_message(
-            {
-                "id": f"{thread_id}-{index}",
-                "threadId": thread_id,
-                "role": message["role"],
-                "content": [{"type": "text", "text": message["content"]}],
-                "createdAt": index + 2,
-            }
-        )
-
-
 def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkeypatch):
     """Editing an earlier message rewinds the thread onto a new branch.
 
@@ -296,11 +327,33 @@ def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkey
     assert "GONEAWAY-2222" not in (survived[0] or "")
 
 
+def test_a_thread_that_was_never_persisted_is_never_archived(conn):
+    """The temporary-chat guarantee.
+
+    An incognito chat is never written to studio.db and is documented to vanish on
+    reload, but the frontend still sends its thread_id and the request carries no
+    incognito flag. Archiving it would persist the one conversation the user asked not
+    to keep, in a scope no deletion flow could reach.
+    """
+    written = _archive(
+        [
+            {"role": "user", "content": "temporary section, code EPHEMERAL-4444"},
+            {"role": "assistant", "content": "noted"},
+        ],
+        thread_id = "temporary-thread",
+        persist = False,
+    )
+
+    assert written == 0
+    assert conversation_archive.has_archive("temporary-thread") is False
+    assert conversation_archive.recall("temporary-thread", "EPHEMERAL-4444") is None
+
+
 def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
-    """An API caller can pass a thread_id without persisting anything.
+    """A thread archived earlier whose saved rows are gone still answers.
 
     An empty transcript is absence of evidence, not evidence that the turns are gone, so
-    the branch check must not silently disable recall for those callers.
+    the branch check must not silently disable recall for an archive that already exists.
     """
     _archive(
         [
@@ -309,8 +362,87 @@ def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
         ],
         thread_id = "unsaved-thread",
     )
+    # Drop the saved rows, leaving the archive behind.
+    from storage import studio_db
+
+    studio_db.delete_chat_threads(["unsaved-thread"])
 
     found = conversation_archive.recall("unsaved-thread", "ORPHAN-3333")
 
     assert found is not None
     assert "ORPHAN-3333" in found[0]
+
+
+def test_editing_only_the_assistant_half_retires_the_archived_turn(conn):
+    """A turn is archived as a unit, so it lives or dies as a unit.
+
+    Matching on the first line that is still present kept serving the old answer after
+    the user edited it: the unchanged user line vouched for the whole turn.
+    """
+    original = [
+        {"role": "user", "content": "what is the launch code"},
+        {"role": "assistant", "content": "the launch code is STALEANSWER-9999"},
+    ]
+    _archive(original, thread_id = "edited-thread")
+    # The user keeps their question and rewrites the answer.
+    _save_thread(
+        "edited-thread",
+        [
+            {"role": "user", "content": "what is the launch code"},
+            {"role": "assistant", "content": "the launch code is FRESHANSWER-1111"},
+        ],
+    )
+
+    found = conversation_archive.recall("edited-thread", "STALEANSWER-9999")
+
+    assert found is None or "STALEANSWER-9999" not in found[0]
+
+
+def test_a_failed_chunk_write_leaves_the_turn_retryable(conn, monkeypatch):
+    """An empty 'completed' document would make the turn unarchivable forever.
+
+    `document_by_hash` skips whatever it finds, and the row says completed, so nothing
+    would ever retry it.
+    """
+    turns = _turn("what is a quokka", "a small marsupial")
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    # Restored by re-setting, not by monkeypatch.undo(): fixtures requesting monkeypatch
+    # share this function's instance, so undo() would also revert stub_embeddings and the
+    # retry would fail for an unrelated reason.
+    real_add_chunks = store.add_chunks
+    monkeypatch.setattr(store, "add_chunks", explode)
+    assert _archive(turns, thread_id = "retry-thread") == 0
+    monkeypatch.setattr(store, "add_chunks", real_add_chunks)
+
+    # The retry succeeds, which it cannot do if a completed husk was left behind.
+    assert _archive(turns, thread_id = "retry-thread", persist = False) == 1
+    found = conversation_archive.recall("retry-thread", "quokka")
+    assert found is not None and "quokka" in found[0]
+
+
+def test_archived_tool_turns_keep_what_the_call_actually_did(conn):
+    """ "assistant called terminal" cannot answer "what did you run earlier?"."""
+    rendered = conversation_archive.render_turn(
+        [
+            {
+                "role": "assistant",
+                "content": "running the migration now",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "terminal",
+                            "arguments": '{"command": "alembic upgrade head"}',
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "content": "ok"},
+        ]
+    )
+
+    assert "terminal" in rendered
+    assert "alembic upgrade head" in rendered
+    assert "running the migration now" in rendered

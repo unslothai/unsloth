@@ -1018,6 +1018,8 @@ async def delete_project(
     # By run id: the rows are gone by now, so there is nothing left to look up.
     _cancel_research_runs(request, list(project.get("activeResearchRunIds") or []))
     _cancel_active_generations(member_ids)
+    # The project's chats go with it, so their archives have to as well.
+    await run_in_threadpool(_remove_conversation_archives, member_ids)
     if project.get("sandboxPath"):
         from core.inference.tools import (
             finish_workspace_delete_when_idle,
@@ -1307,6 +1309,12 @@ async def clear_history(
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
+    # Same content deletion as DELETE /threads, so the same archive cleanup. Without it
+    # "Clear all chats" leaves every conversation searchable in rag.db, and a client that
+    # reuses a thread id can read the old archive from a new chat.
+    await run_in_threadpool(
+        _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared))
+    )
     # "Clear all chats" is the common bulk delete, so it has to clean up the
     # same folders DELETE /threads does; otherwise every sandbox is stranded.
     # delete_files matches DELETE /threads: off by default, since the files are

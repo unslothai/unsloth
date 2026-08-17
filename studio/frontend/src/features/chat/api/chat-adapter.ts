@@ -5465,7 +5465,15 @@ export function createOpenAIStreamAdapter(
                   chunk.context_truncated,
                 );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
+                // A fits:false chunk is the fitter reporting it could NOT make the
+                // request fit: it returned the original messages with dropped_messages 0.
+                // Toasting "older turns were removed" there is simply untrue, and worse,
+                // it burns the once-per-thread flag so a later real compaction is silent.
+                const reallyCompacted =
+                  chunk.context_truncated.fits === true &&
+                  (chunk.context_truncated.dropped_messages ?? 0) > 0;
                 if (
+                  reallyCompacted &&
                   resolvedThreadId &&
                   activeThreadId === resolvedThreadId &&
                   !rollingContextNoticeThreads.has(resolvedThreadId)
@@ -6542,14 +6550,20 @@ export function createOpenAIStreamAdapter(
             // changes nothing. Say which part is actually too long.
             const irreducible =
               contextTruncation?.fits === false ? contextTruncation : null;
+            // Against prompt_target, not context_length. The fit reserves up to a
+            // quarter of the window for the reply, so a 3,500-token message already
+            // cannot fit a 4,096-token context with a 1,024-token reserve; comparing
+            // with the raw window calls that case "the conversation is too long" and
+            // sends the user to start a new chat, which fails identically.
+            const budget =
+              irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
             const messageIsTheProblem =
-              irreducible != null &&
-              (irreducible.latest_turn_tokens ?? 0) >
-                (irreducible.context_length ?? 0);
+              irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
             toast.error("Context limit reached", {
               description: messageIsTheProblem
                 ? `This message is ${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
-                  `against a ${irreducible?.context_length?.toLocaleString()}-token window. ` +
+                  `against the ${budget.toLocaleString()} tokens this ` +
+                  `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
                   "The earlier turns were already removed and it still does not fit, so " +
                   'shortening the conversation will not help. Shorten this message, or raise "Context Length" ' +
                   "in the chat Settings panel (⚙ in the top-right)."

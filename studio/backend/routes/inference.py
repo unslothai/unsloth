@@ -3388,8 +3388,17 @@ async def _select_request_tools(
     # the forced recall covers that turn and the tool appears from the next one.
     # getattr, not attribute access: this helper also serves the token-count request
     # model, which carries no thread_id.
-    if not _thread_has_conversation_archive(getattr(payload, "thread_id", None)):
-        tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
+    # Follows the ARCHIVE, not the caller's allowlist. Studio always sends an explicit
+    # enabled_tools array (documents/web/code/artifacts), and it has no reason to name an
+    # internal tool it does not expose as a pill -- so the filter above removed
+    # search_conversation before this ran, and the tool, plus the compaction nudge gated
+    # on it, never appeared in a Studio chat at all. It is read-only, always-safe, and
+    # only exists once this thread has actually had turns evicted, so it is added on that
+    # condition rather than requested.
+    has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+    tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
+    if has_archive and tools_on:
+        tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.

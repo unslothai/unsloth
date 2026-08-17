@@ -9612,6 +9612,11 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
+# The ceiling for a model-supplied top_k. Small on purpose: this returns whole
+# archived turns into a protected exchange the rolling window cannot trim.
+_MAX_CONVERSATION_SEARCH_TOP_K = 8
+
+
 def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     """Search this thread's archived turns. ``rag_scope`` carries only the thread id here;
     the model supplies ``query``/``top_k``."""
@@ -9630,9 +9635,17 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not conversation_archive.enabled():
         return "Searching earlier conversation is unavailable on this server."
 
-    found = conversation_archive.recall(
-        str(thread_id), str(query), top_k = _opt_int((arguments or {}).get("top_k"))
+    # Clamped, not trusted. top_k is written by the model, and a negative value reaches
+    # a Python slice as out[:-1], which returns nearly the whole candidate pool instead
+    # of one result: a ~30k-token tool result that the rolling window cannot evict,
+    # because it protects the current user/tool exchange.
+    requested = _opt_int((arguments or {}).get("top_k"))
+    top_k = (
+        _MAX_CONVERSATION_SEARCH_TOP_K
+        if requested is None
+        else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
     )
+    found = conversation_archive.recall(str(thread_id), str(query), top_k = top_k)
     if not found:
         return "No earlier turns of this conversation matched that query."
     text, sources = found

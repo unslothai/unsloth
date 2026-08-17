@@ -245,3 +245,29 @@ test("the too-long advice depends on WHICH part does not fit", () => {
   assert.match(adapterSource, /shortening the conversation will not help/);
   assert.match(adapterSource, /latest_turn_tokens/);
 });
+
+test("a fits:false diagnosis is not a compaction", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
+  // were removed" is untrue -- and toasting it also burns the once-per-thread flag, so
+  // a later genuine compaction would say nothing at all.
+  assert.match(source, /const reallyCompacted =/);
+  assert.match(source, /context_truncated\.fits === true/);
+  assert.match(source, /dropped_messages \?\? 0\) > 0/);
+});
+
+test("the too-long check uses the prompt budget, not the raw window", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // The fit reserves up to a quarter of the window for the reply, so a 3,500-token
+  // message already cannot fit a 4,096-token context. Comparing against the raw window
+  // calls that "the conversation is too long" and sends the user to a new chat, which
+  // fails identically.
+  assert.match(source, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
+  assert.match(source, /latest_turn_tokens \?\? 0\) > budget/);
+});

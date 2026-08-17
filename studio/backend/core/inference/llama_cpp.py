@@ -50,6 +50,7 @@ from typing import (
 import httpx
 
 from core.inference.context_window import (
+    prompt_budget,
     evicted_messages,
     fit_rolling_context,
     messages_have_media,
@@ -461,6 +462,12 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
+# Both retrieval tools share the per-turn cap. Paraphrased re-searches slip past
+# the duplicate guard, and each one appends top-K passages into the current
+# user/tool exchange, which the rolling window protects and therefore cannot
+# evict -- so an uncapped tool can only end the turn in a context-length error.
+_RAG_SEARCH_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 
@@ -534,6 +541,26 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
     return message
 
 
+def _recall_top_k(budget_tokens: int) -> int:
+    """How many archived chunks actually fit in the room a fit obtained.
+
+    The reserve is what the fit AIMS to hold back, not what it always gets: protected
+    messages (system, the latest turn, anchored recalls) can stop the trim reaching its
+    target while the result is still under the prompt budget, which the fit accepts.
+    Injecting a full reserve's worth of recall on top of that pushes the request back
+    over the window, turning a successful compaction into a context-length error --
+    reproduced at ctx 8000 with a large latest turn: fit accepted at 6900, recall took
+    it to 8948. So the recall is sized from the room actually left, not from the wish.
+    """
+    try:
+        from core.rag import config as rag_config
+        chunk = max(1, int(rag_config.CHUNK_TOKENS))
+        cap = max(0, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
+    except Exception:
+        return 0
+    return max(0, min(cap, int(budget_tokens) // chunk))
+
+
 def _archive_and_recall(
     conversation: list[dict],
     before: list[dict],
@@ -541,6 +568,7 @@ def _archive_and_recall(
     thread_id: Optional[str],
     style: str,
     recall_done: bool,
+    recall_budget_tokens: int = 0,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -569,7 +597,14 @@ def _archive_and_recall(
             result["counts"] = counts
             return result
 
-        recall = build_conversation_recall(conversation, thread_id, style = style)
+        top_k = _recall_top_k(recall_budget_tokens)
+        if top_k <= 0:
+            # No room was actually obtained. Archiving still happened above, so nothing
+            # is lost: the turns stay searchable and the next fit can recall them.
+            result["counts"] = counts
+            return result
+
+        recall = build_conversation_recall(conversation, thread_id, style = style, top_k = top_k)
         if not recall:
             result["counts"] = counts
             return result
@@ -19875,6 +19910,11 @@ class LlamaCppBackend:
                         thread_id = thread_id,
                         style = "inline",
                         recall_done = False,
+                        recall_budget_tokens = max(
+                            0,
+                            prompt_budget(self._effective_context_length, payload["max_tokens"])
+                            - int(truncation.get("prompt_tokens_after") or 0),
+                        ),
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -20148,6 +20188,12 @@ class LlamaCppBackend:
         # The loop refits on every iteration; recall must fire once per request, or each
         # pass stacks another block of recalled turns onto the prompt.
         _conversation_recall_done = False
+        # The sticky boundary describes the ORIGINAL transcript, so it may be applied at
+        # most once per request. The tool loop refits every iteration on the conversation
+        # the previous fit returned; re-applying the count there evicts another
+        # boundary-sized block of still-live history, and the truncation events sum, so
+        # the inflated total is persisted and the next request starts from it.
+        _sticky_boundary_applied = False
         for message in reversed(conversation):
             if message.get("role") == "user":
                 _rolling_anchor_ids.add(id(message))
@@ -20422,15 +20468,35 @@ class LlamaCppBackend:
                         ),
                         protected_message_ids = _rolling_anchor_ids,
                         reserve_tokens = _conversation_recall_reserve(thread_id),
-                        sticky_dropped = _sticky_compaction_boundary(thread_id),
+                        sticky_dropped = (
+                            0
+                            if _sticky_boundary_applied
+                            else _sticky_compaction_boundary(thread_id)
+                        ),
                     )
+                    # Set whatever the fit decided: the boundary has now been accounted
+                    # for in this request, whether or not it changed anything.
+                    _sticky_boundary_applied = True
                     if truncation and truncation["fits"]:
                         _recalled = _archive_and_recall(
                             conversation,
                             _before_fit,
                             thread_id = thread_id,
-                            style = "tool",
+                            # Tool style forges an assistant tool_call plus a tool
+                            # result for search_conversation. That is only safe when the
+                            # request actually advertises it: on the FIRST compaction the
+                            # archive did not exist at tool-selection time, so it is
+                            # absent, and a tool role with no matching catalogue entry is
+                            # the same strict-template hazard the plain path avoids.
+                            style = (
+                                "tool" if "search_conversation" in _enabled_tool_names else "inline"
+                            ),
                             recall_done = _conversation_recall_done,
+                            recall_budget_tokens = max(
+                                0,
+                                prompt_budget(self._effective_context_length, max_tokens)
+                                - int(truncation.get("prompt_tokens_after") or 0),
+                            ),
                         )
                         conversation = _recalled["conversation"]
                         truncation = {**truncation, **_recalled["counts"]}
@@ -21552,7 +21618,7 @@ class LlamaCppBackend:
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     # RAG: cap paraphrased KB re-searches that slip past the dup guard.
                     if (
-                        decision.tool_name == "search_knowledge_base"
+                        decision.tool_name in _RAG_SEARCH_TOOLS
                         and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
@@ -21585,7 +21651,7 @@ class LlamaCppBackend:
                             tool_call_id = decision.tool_call_id,
                             cancel_event = cancel_event,
                         )
-                        if decision.tool_name == "search_knowledge_base":
+                        if decision.tool_name in _RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)
@@ -21753,15 +21819,27 @@ class LlamaCppBackend:
                     ),
                     protected_message_ids = _rolling_anchor_ids,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = _sticky_compaction_boundary(thread_id),
+                    sticky_dropped = (
+                        0 if _sticky_boundary_applied else _sticky_compaction_boundary(thread_id)
+                    ),
                 )
+                _sticky_boundary_applied = True
                 if truncation and truncation["fits"]:
                     _recalled = _archive_and_recall(
                         conversation,
                         _before_final_fit,
                         thread_id = thread_id,
-                        style = "tool",
+                        # Inline, not tool: this final-answer request is counted and sent
+                        # with no tools array at all (the count above passes None), so a
+                        # forged tool_call plus tool role has no catalogue to match and is
+                        # a strict-template hazard.
+                        style = "inline",
                         recall_done = _conversation_recall_done,
+                        recall_budget_tokens = max(
+                            0,
+                            prompt_budget(self._effective_context_length, max_tokens)
+                            - int(truncation.get("prompt_tokens_after") or 0),
+                        ),
                     )
                     conversation = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}

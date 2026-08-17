@@ -182,6 +182,20 @@ def messages_have_media(messages: list[dict]) -> bool:
     return False
 
 
+def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
+    """Tokens available to the PROMPT, once room for the reply is set aside.
+
+    Exported because two other things need the same number and must not re-derive it:
+    the caller sizing a forced recall against the room a fit actually obtained, and the
+    client explaining which part of an over-long request does not fit. A second copy of
+    this formula would drift from the fit it is supposed to describe.
+    """
+    if context_length <= 1:
+        return context_length
+    requested = max_tokens if max_tokens is not None and max_tokens > 0 else context_length
+    return context_length - min(requested, max(1, context_length // 4))
+
+
 def fit_rolling_context(
     messages: list[dict],
     *,
@@ -221,9 +235,7 @@ def fit_rolling_context(
     if context_length <= 1:
         return messages, None
 
-    requested_headroom = max_tokens if max_tokens is not None and max_tokens > 0 else context_length
-    output_headroom = min(requested_headroom, max(1, context_length // 4))
-    prompt_target = context_length - output_headroom
+    prompt_target = prompt_budget(context_length, max_tokens)
     fitted = list(messages)
     initial_tokens = count_tokens(fitted)
     current_tokens = initial_tokens
@@ -300,6 +312,7 @@ def fit_rolling_context(
             "irreducible_tokens": current_tokens,
             "latest_turn_tokens": count_tokens(messages[-1:]) if messages else 0,
             "context_length": context_length,
+            "prompt_target": prompt_target,
         }
     if dropped_total == 0:
         return messages, None

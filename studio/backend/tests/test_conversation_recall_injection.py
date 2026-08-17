@@ -19,13 +19,34 @@ THREAD = "thread-recall"
 
 @pytest.fixture
 def archived(rag_home, rag_conn, stub_embeddings):
-    conversation_archive.archive_turns(
-        THREAD,
-        [
-            {"role": "user", "content": "write me a limerick about pelicans"},
-            {"role": "assistant", "content": "There once was a bird with a bill"},
-        ],
+    turns = [
+        {"role": "user", "content": "write me a limerick about pelicans"},
+        {"role": "assistant", "content": "There once was a bird with a bill"},
+    ]
+    # The thread has to exist in studio.db: only a persisted thread can be deleted, and
+    # an archive nothing can delete is the temporary-chat leak the rule prevents.
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": THREAD,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
     )
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-{index}",
+                "threadId": THREAD,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    conversation_archive.archive_turns(THREAD, turns)
     return rag_conn
 
 
@@ -344,3 +365,152 @@ def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
     monkeypatch.setitem(sys.modules, "storage.studio_db", module)
 
     assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
+# ---------------------------------------------------------------------------
+# Sizing the forced recall, and applying the sticky boundary once
+# ---------------------------------------------------------------------------
+
+
+def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
+    """The reserve is what the fit AIMS for, not what it always gets.
+
+    Protected messages (system, the latest turn, anchored recalls) can stop the trim
+    reaching its target while the result is still under the prompt budget, which the fit
+    accepts. Reproduced at ctx 8000: the fit accepted at 6900, and a full reserve of
+    recall on top took the request to 8948, past the window it had just been made to fit.
+    """
+    from core.inference import llama_cpp
+
+    assert llama_cpp._recall_top_k(0) == 0
+    assert llama_cpp._recall_top_k(-500) == 0
+    # Enough room for some chunks but not the full allowance.
+    assert 0 < llama_cpp._recall_top_k(1024) <= 4
+    # Plenty of room is still capped by the configured top-k.
+    assert llama_cpp._recall_top_k(1_000_000) == 4
+
+
+def test_the_sticky_boundary_is_applied_once_per_request():
+    """The tool loop refits on the conversation the previous fit returned.
+
+    Re-applying the persisted count there evicts another boundary-sized block of live
+    history. Measured before the fix: a second fit dropped 28 of the 30 surviving
+    messages instead of 14, leaving 4.
+    """
+    from core.inference.context_window import fit_rolling_context
+
+    def counter(messages):
+        return sum(max(1, len(m["content"]) // 4) for m in messages)
+
+    conversation = [{"role": "system", "content": "s" * 80}]
+    for index in range(40):
+        conversation.append({"role": "user", "content": f"q{index} " * 200})
+        conversation.append({"role": "assistant", "content": f"a{index} " * 200})
+    conversation.append({"role": "user", "content": "latest"})
+
+    conversation, first = fit_rolling_context(
+        conversation,
+        context_length = 8000,
+        max_tokens = 512,
+        count_tokens = counter,
+        sticky_dropped = 52,
+    )
+    assert first["dropped_messages"] == 52
+    # A tool result lands and pushes the already-fitted conversation back over budget.
+    conversation = conversation + [
+        {"role": "assistant", "content": "calling"},
+        {"role": "tool", "content": "R" * (2600 * 4)},
+    ]
+    _, reapplied = fit_rolling_context(
+        conversation,
+        context_length = 8000,
+        max_tokens = 512,
+        count_tokens = counter,
+        sticky_dropped = 52,
+    )
+    _, once = fit_rolling_context(
+        conversation,
+        context_length = 8000,
+        max_tokens = 512,
+        count_tokens = counter,
+        sticky_dropped = 0,
+    )
+    assert reapplied["dropped_messages"] > once["dropped_messages"]
+    # The request path must take the second shape: the boundary describes the ORIGINAL
+    # transcript, so it is spent after the first fit.
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
+    text = source.read_text()
+    assert "_sticky_boundary_applied = True" in text
+    assert "0 if _sticky_boundary_applied" in text
+
+
+def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
+    """top_k is written by the model. A negative reaches a slice as out[:-1]."""
+    seen = {}
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+    ):
+        seen["top_k"] = top_k
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    tools_mod._search_conversation({"query": "pelicans", "top_k": -1}, {"thread_id": THREAD})
+    assert seen["top_k"] >= 1
+
+    tools_mod._search_conversation({"query": "pelicans", "top_k": 10_000}, {"thread_id": THREAD})
+    assert seen["top_k"] <= tools_mod._MAX_CONVERSATION_SEARCH_TOP_K
+
+
+def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
+    """Studio always sends enabled_tools, and it never names this internal tool.
+
+    While the gate could only REMOVE, the allowlist filter dropped search_conversation
+    before it ran, so the tool (and the compaction nudge gated on it) never appeared in a
+    Studio chat at all, however long the conversation got.
+    """
+    import asyncio
+    import types
+
+    import routes.inference as routes_mod
+
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: True)
+
+    payload = types.SimpleNamespace(
+        enabled_tools = ["search_knowledge_base", "web_search"],
+        rag_scope = {"thread_id": THREAD},
+        thread_id = THREAD,
+        bypass_permissions = False,
+    )
+    tools = asyncio.run(routes_mod._select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    names = [tool["function"]["name"] for tool in tools]
+
+    assert "search_conversation" in names
+    assert names.count("search_conversation") == 1
+    # Still absent without an archive: an ordinary short chat never sees the schema.
+    monkeypatch.setattr(routes_mod, "_thread_has_conversation_archive", lambda _tid: False)
+    tools = asyncio.run(routes_mod._select_request_tools(payload, tools_on = True, mcp_allowed = False))
+    assert "search_conversation" not in [t["function"]["name"] for t in tools]
+
+
+def test_both_retrieval_tools_share_the_per_turn_search_cap():
+    """Each search appends passages into the protected current exchange.
+
+    The rolling window cannot evict those, so an uncapped tool can only end the turn in
+    a context-length error after paying for the embeddings.
+    """
+    from pathlib import Path
+
+    from core.inference.llama_cpp import _RAG_SEARCH_TOOLS
+
+    assert _RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
+    text = (Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py").read_text()
+    # The cap and the counter must both key on the set, not on one tool name.
+    assert "decision.tool_name in _RAG_SEARCH_TOOLS" in text
+    assert 'decision.tool_name == "search_knowledge_base"' not in text

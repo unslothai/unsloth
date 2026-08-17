@@ -47,6 +47,14 @@ _SKIP_ROLES = frozenset({"system", "developer"})
 _INJECTED_CALL_PREFIXES = ("rag_auto_", "conv_recall_")
 
 _MAX_TOOL_RESULT_CHARS = 4000
+# Tool arguments are usually short (a path, a command, a query). The cap is only
+# there so a pathological blob cannot dominate the archived turn.
+_MAX_TOOL_ARGS_CHARS = 1000
+# Retrieval fetches this multiple of the requested number before the live-branch
+# filter runs. Filtering AFTER a k-sized fetch means stale turns from an abandoned
+# branch can occupy the whole result and starve live matches sitting just below,
+# so recall returns nothing while the answer is in the archive.
+_BRANCH_FILTER_OVERFETCH = 4
 
 
 def _text_of(content) -> str:
@@ -89,10 +97,24 @@ def render_turn(group: list[dict]) -> str:
         text = _text_of(message.get("content")).strip()
         calls = message.get("tool_calls") or []
         if calls:
-            names = ", ".join(
-                str((call or {}).get("function", {}).get("name") or "tool") for call in calls
-            )
-            lines.append(f"assistant called {names}")
+            # The arguments, bounded, not just the name. The searchable substance of a
+            # tool turn is the command, query, path or snippet that was run -- "assistant
+            # called terminal" cannot answer "what did you run earlier?", which is exactly
+            # what this archive exists to answer. Any assistant text on the same message
+            # is kept for the same reason.
+            for call in calls:
+                function = (call or {}).get("function") or {}
+                name = str(function.get("name") or "tool")
+                arguments = str(function.get("arguments") or "").strip()
+                if len(arguments) > _MAX_TOOL_ARGS_CHARS:
+                    arguments = arguments[:_MAX_TOOL_ARGS_CHARS] + " ..."
+                lines.append(
+                    f"assistant called {name}: {arguments}"
+                    if arguments
+                    else f"assistant called {name}"
+                )
+            if text:
+                lines.append(f"{role or 'assistant'}: {text}")
             continue
         if not text:
             continue
@@ -114,7 +136,16 @@ def _archivable(group: list[dict]) -> bool:
 
 
 def enabled() -> bool:
-    return bool(config.CONVERSATION_ARCHIVE) and bool(rag_db.RAG_AVAILABLE)
+    """Whether the archive can actually run here.
+
+    ``rag_available()`` and not ``RAG_AVAILABLE``: the flag only records that
+    ``import sqlite_vec`` worked, while the vec0 native library it loads is a separate
+    file a venv can be missing (the common macOS case). Trusting the flag there is worse
+    than having no feature at all -- the fit holds a recall reserve back, so every
+    overflowing prompt evicts extra history, and then both the archive write and the
+    recall fail at ``get_connection()``, so the user pays for content they never get.
+    """
+    return bool(config.CONVERSATION_ARCHIVE) and bool(rag_db.rag_available())
 
 
 def archive_turns(thread_id: str, evicted: list[dict]) -> int:
@@ -125,6 +156,19 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     costs one indexed SELECT and writes nothing.
     """
     if not thread_id or not evicted or not enabled():
+        return 0
+    # A temporary (incognito) chat is never written to studio.db and is documented to
+    # vanish on reload, but the frontend still sends its thread_id and the request model
+    # carries no incognito flag, so nothing here would otherwise tell the two apart.
+    # Archiving one would persist exactly the content the user asked not to keep, into a
+    # scope with no thread row -- so no deletion flow could ever reach it either.
+    #
+    # A thread with saved messages is the signal, and by the time a chat is long enough
+    # to compact its earlier turns are always persisted. An API client that sends a
+    # thread_id without persisting anything is excluded for the same reason: its archive
+    # would be equally unreachable by any delete.
+    if not _live_transcript(thread_id):
+        logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
 
     # Lazy, and pointed at the evictor's own grouper on purpose: an archived unit has to
@@ -167,6 +211,11 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
+            # commit=False, then commit once the chunks are in. Committing the
+            # document first leaves an empty row marked "completed" if the chunk or
+            # vector write fails, and `document_by_hash` then skips that turn on every
+            # later compaction: the turn is silently unarchivable forever, and it looks
+            # finished, so nothing retries it.
             document_id = store.create_document(
                 conn,
                 scope = scope,
@@ -175,8 +224,14 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 sha256 = digest,
                 status = "completed",
                 embedding_model = identity,
+                commit = False,
             )
-            store.add_chunks(conn, scope, document_id, chunks, vectors)
+            try:
+                store.add_chunks(conn, scope, document_id, chunks, vectors)
+            except Exception:
+                conn.rollback()
+                raise
+            conn.commit()
             written += 1
     except Exception:
         # A chat that cannot archive is worse off than one that can, but far better off
@@ -259,11 +314,16 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     so they are stripped first -- leaving them in made every probe miss and filtered out
     the turns this feature exists to return.
     """
-    for line in (text or "").splitlines():
-        probe = _normalise(_ROLE_PREFIX.sub("", line))[:160]
-        if probe and probe in transcript:
-            return True
-    return False
+    probes = [_normalise(_ROLE_PREFIX.sub("", line))[:160] for line in (text or "").splitlines()]
+    probes = [probe for probe in probes if probe]
+    if not probes:
+        return False
+    # EVERY line, not the first one that matches. A turn is archived as a unit, so
+    # editing only the assistant half leaves the user line matching and would keep
+    # serving the answer that no longer exists. Requiring all of them means an edit to
+    # any part of a turn retires the whole archived copy, which is what "this turn is
+    # still on the branch" has to mean.
+    return all(probe in transcript for probe in probes)
 
 
 def recall(
@@ -298,23 +358,26 @@ def recall(
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
+    # Ask for more than we intend to keep, because the live-branch filter below can
+    # reject any of them and there is no second fetch.
+    fetch = limit * _BRANCH_FILTER_OVERFETCH
     conn = None
     try:
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
         hits = retrieval.retrieve_hybrid(
-            conn, scope, query, k = limit, model_name = model, mode = "lexical"
+            conn, scope, query, k = fetch, model_name = model, mode = "lexical"
         )
-        if len(hits) < limit:
+        if len(hits) < fetch:
             try:
                 seen = {hit.chunk_id for hit in hits}
                 for hit in retrieval.retrieve_hybrid(
-                    conn, scope, query, k = limit, model_name = model, mode = "hybrid"
+                    conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
                 ):
                     if hit.chunk_id not in seen:
                         hits.append(hit)
                         seen.add(hit.chunk_id)
-                    if len(hits) >= limit:
+                    if len(hits) >= fetch:
                         break
             except Exception:
                 # Dense retrieval raises rather than degrading when no embedder can start.
@@ -334,7 +397,7 @@ def recall(
                 hit
                 for hit in hits
                 if hit.chunk_id in rows and _on_live_branch(rows[hit.chunk_id]["text"], transcript)
-            ]
+            ][:limit]
             if len(kept) != len(hits):
                 logger.info(
                     "conversation_archive.branch_filtered thread_id=%s kept=%d of %d",
@@ -343,6 +406,8 @@ def recall(
                     len(hits),
                 )
             hits = kept
+        else:
+            hits = hits[:limit]
         if not hits:
             return None
         text, sources = tool._format(rows, hits)

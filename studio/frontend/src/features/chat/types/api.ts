@@ -670,5 +670,9 @@ export interface OpenAIChatChunk {
     // whether "shorten the conversation" is useful advice or a dead end.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // The prompt's share of the window, i.e. context_length minus the reply
+    // reserve. It is what a single turn actually has to fit inside, and the
+    // client must not re-derive it: the reserve formula lives in the fit.
+    prompt_target?: number;
   };
 }
