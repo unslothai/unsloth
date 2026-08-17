@@ -210,7 +210,9 @@ jobs:
         #   in version-compat-ci.yml that installs the heavier dep set
         #   (torchcodec, full transformers/peft/bnb pins) those tests need.
         # State-sensitive hardware-spoofing files run in isolation in the
-        # next step because they mutate hardware.py module globals.
+        # next step because they mutate hardware.py module globals, and
+        # tests/studio/load_freeze in the step after that because its
+        # assertions are wall-clock latency bounds.
         # -m: honour markers from tests/python/conftest.py (`server` =
         #   needs studio venv, `e2e` = needs network).
         # --deselect:
@@ -233,6 +235,7 @@ jobs:
             --ignore=tests/saving \
             --ignore=tests/utils \
             --ignore=tests/sh \
+            --ignore=tests/studio/load_freeze \
             --ignore=tests/studio/test_hardware_dispatch_matrix.py \
             --ignore=tests/studio/test_is_mlx_dispatch_gate.py \
             --ignore=tests/studio/test_xpu_spoof_pipeline.py \
@@ -257,6 +260,22 @@ jobs:
             tests/studio/test_hardware_dispatch_matrix.py \
             tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_xpu_spoof_pipeline.py
+
+      - name: Event-loop latency tests (wall clock, run without CPU contention)
+        env:
+          PYTHONPATH: ${{ github.workspace }}/studio
+          UNSLOTH_COMPILE_DISABLE: '1'
+        # These drive a live uvicorn server and assert upper bounds on real
+        # elapsed time: a /health burst must stay under 250 ms while a 600 ms
+        # blocking probe runs, and a 100-request burst under 350 ms. That is the
+        # actual contract (the route hands the blocking call to a thread), so the
+        # bounds cannot be relaxed without the test ceasing to test anything.
+        # A descheduled worker inflates them, so they run alone. Measured under
+        # 3x CPU oversubscription the margin is wide (8 ms against 250, 38 ms
+        # against 350), but a runner core is several times slower than the box
+        # that measured it, which puts the 350 ms one within reach.
+        # 20s serially, against the ~10 minutes -n 4 saves on this job.
+        run: python -m pytest tests/studio/load_freeze -q --tb=short
 
       - name: CLI tests (unsloth_cli)
         # unsloth_cli/tests had no CI at all: `unsloth_cli/**` was only a paths
