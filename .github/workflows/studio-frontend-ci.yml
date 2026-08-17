@@ -48,8 +48,10 @@ jobs:
   build:
     name: Frontend build + bundle sanity
     runs-on: ubuntu-latest
-    # Two browser smokes (~50s) plus the Chromium install now sit inside this.
-    timeout-minutes: 20
+    # Two browser smokes (~50s) plus the Chromium install now sit inside this, and the
+    # heavy-thread gate below seeds 7 threads per size instead of 1 since that harness moved to a
+    # page per action: 14 seeds for its two sizes, measured at 2m09s on a workstation.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: studio/frontend
@@ -194,6 +196,11 @@ jobs:
       # a PR gate can afford. The measurement this harness exists for is the three-engine,
       # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
       # asked for it deliberately, not on every frontend PR.
+      #
+      # Both tables stay on, so both drivers are exercised, but at one repetition the harness's
+      # carry-over line has no repetitions 2..N to compare against and prints "one repetition"
+      # for every action. Reading a carry-over number off this step is reading nothing; take it
+      # from the deliberate run.
       - name: Browser smoke for heavy-thread interaction cost
         working-directory: ${{ github.workspace }}
         env:
