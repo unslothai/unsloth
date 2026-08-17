@@ -18,12 +18,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { InfoHint } from "@/components/ui/info-hint";
-import { PanelResizeHandle } from "@/components/ui/panel-resize-handle";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import { PanelResizeHandle } from "@/components/ui/panel-resize-handle";
 import {
   Select,
   SelectContent,
@@ -49,12 +49,12 @@ import {
   snapToStep,
 } from "@/features/model-picker";
 import { RetrievalSettingsSection } from "@/features/rag";
-import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import {
   CHAT_SETTINGS_WIDTH_MIN,
   clampChatSettingsWidth,
   useChatSettingsWidth,
 } from "@/hooks/use-chat-settings-width";
+import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -68,8 +68,6 @@ import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OpenAICodeExecSection } from "./components/openai-code-exec-section";
-import { PermissionModeDropdown } from "./permission-mode-select";
-import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import {
   type ExternalProviderConfig,
   getExternalProviderApiKey,
@@ -77,6 +75,14 @@ import {
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
 } from "./external-providers";
+import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
+import { PermissionModeDropdown } from "./permission-mode-select";
+import {
+  applyPresetLoadConfig,
+  capturePresetLoadConfig,
+  formatPresetLoadConfigSummary,
+  isSamePresetLoadConfig,
+} from "./presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
   BUILTIN_PRESET_NAMES,
@@ -88,12 +94,6 @@ import {
   isSamePresetConfig,
   toPresetParams,
 } from "./presets/preset-policy";
-import {
-  applyPresetLoadConfig,
-  capturePresetLoadConfig,
-  formatPresetLoadConfigSummary,
-  isSamePresetLoadConfig,
-} from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
   getExternalMaxOutputTokens,
@@ -504,9 +504,7 @@ export function ChatSettingsPanel({
   const isMobile = useIsMobile();
   const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const currentCheckpoint = params.checkpoint;
-  const activeModelIsLocal = useChatRuntimeStore(
-    (s) => s.activeModelIsLocal,
-  );
+  const activeModelIsLocal = useChatRuntimeStore((s) => s.activeModelIsLocal);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   // Direct-file / custom-folder GGUFs load without a variant label but still
   // report a GGUF context, so detect them via the context and the checkpoint
@@ -654,19 +652,19 @@ export function ChatSettingsPanel({
     [activePreset],
   );
   const hasUnsavedPresetChanges = useMemo(() => {
-      if (activePresetDefinition == null) {
-        return false;
-      }
-      const samplingChanged =
-        activePresetDefinition.name === "Default"
-          ? activePresetSource === "modified"
-          : !isSamePresetConfig(activePresetDefinition.params, params);
-      const currentLoadConfig = capturePresetLoadConfig();
-      const loadChanged = !isSamePresetLoadConfig(
-        activePresetDefinition.loadConfig,
-        currentLoadConfig,
-      );
-      return samplingChanged || loadChanged;
+    if (activePresetDefinition == null) {
+      return false;
+    }
+    const samplingChanged =
+      activePresetDefinition.name === "Default"
+        ? activePresetSource === "modified"
+        : !isSamePresetConfig(activePresetDefinition.params, params);
+    const currentLoadConfig = capturePresetLoadConfig();
+    const loadChanged = !isSamePresetLoadConfig(
+      activePresetDefinition.loadConfig,
+      currentLoadConfig,
+    );
+    return samplingChanged || loadChanged;
   }, [
     activePresetDefinition,
     activePresetSource,
@@ -738,14 +736,14 @@ export function ChatSettingsPanel({
     ? parseExternalModelId(currentCheckpoint)
     : null;
   const maxTokensMax = isExternalModel
-      ? getExternalMaxOutputTokens(
-          externalProviderType,
-          externalSelection?.modelId,
-          activeExternalProvider?.maxOutputTokens,
-        )
-      : isGguf && baseContext
-        ? baseContext
-        : Math.max(64, params.maxSeqLength);
+    ? getExternalMaxOutputTokens(
+        externalProviderType,
+        externalSelection?.modelId,
+        activeExternalProvider?.maxOutputTokens,
+      )
+    : isGguf && baseContext
+      ? baseContext
+      : Math.max(64, params.maxSeqLength);
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -991,514 +989,517 @@ export function ChatSettingsPanel({
   const settingsContent = (
     <>
       <div className="flex h-full min-h-0 flex-col">
-      {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
-      <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
-        {isMobile ? (
-          <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
-            Run settings
-          </span>
-        ) : (
-          <>
+        {/* Header is outside the scroll area so the scrollbar never shifts the close button. */}
+        <div className="flex h-[48px] shrink-0 items-start gap-2 bg-panel-surface pl-[18px] pr-[16px] pt-[11px]">
+          {isMobile ? (
             <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
               Run settings
             </span>
-            <Tooltip>
+          ) : (
+            <>
+              <span className="flex h-[34px] flex-1 items-center text-ui-16 font-semibold tracking-[0em] dark:tracking-[0.015em] text-nav-fg">
+                Run settings
+              </span>
+              <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                  aria-label="Close run settings"
+                  <button
+                    type="button"
+                    onClick={() => onOpenChange?.(false)}
+                    className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    aria-label="Close run settings"
+                  >
+                    <HugeiconsIcon
+                      icon={LayoutAlignRightIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
                 >
-                  <HugeiconsIcon
-                    icon={LayoutAlignRightIcon}
-                    strokeWidth={1.75}
-                    className="size-icon"
-                  />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="bottom"
-                sideOffset={6}
-                className="tooltip-compact"
-              >
-                Close run settings
-              </TooltipContent>
-            </Tooltip>
-          </>
-        )}
-      </div>
+                  Close run settings
+                </TooltipContent>
+              </Tooltip>
+            </>
+          )}
+        </div>
 
-      <div
-        ref={settingsScrollRef}
-        className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
-      >
-      <div className="px-[18px] pt-3">
-        {(hasModelContent || modelConfig) && (
+        <div
+          ref={settingsScrollRef}
+          className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
+        >
+          <div className="px-[18px] pt-3">
+            {(hasModelContent || modelConfig) && (
               <CollapsibleSection label="Model" defaultOpen={true} first={true}>
-            <div className="flex flex-col gap-3 pt-1">
-              {modelConfig}
-              {showSpecFallback && (
-                <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
-                  <p>
-                    {specFallbackMessage({
-                      reason: specFallbackReason,
-                      drafter: speculativeDrafterLabel,
-                      isLocalGguf,
-                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
-                    })}
-                  </p>
-                  {mtpUpdatable && llamaUpdateStatus?.update_available && (
-                    <Button
-                      size="sm"
-                      className="corner-squircle mt-2 h-7 text-ui-12"
-                      onClick={handleMtpUpdate}
-                      disabled={llamaUpdating}
-                      data-test-id="mtp-update-button"
-                    >
-                      {llamaUpdating ? "Updating..." : "Update llama.cpp"}
-                    </Button>
+                <div className="flex flex-col gap-3 pt-1">
+                  {modelConfig}
+                  {showSpecFallback && (
+                    <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
+                      <p>
+                        {specFallbackMessage({
+                          reason: specFallbackReason,
+                          drafter: speculativeDrafterLabel,
+                          isLocalGguf,
+                          updateAvailable: Boolean(
+                            llamaUpdateStatus?.update_available,
+                          ),
+                        })}
+                      </p>
+                      {mtpUpdatable && llamaUpdateStatus?.update_available && (
+                        <Button
+                          size="sm"
+                          className="corner-squircle mt-2 h-7 text-ui-12"
+                          onClick={handleMtpUpdate}
+                          disabled={llamaUpdating}
+                          data-test-id="mtp-update-button"
+                        >
+                          {llamaUpdating ? "Updating..." : "Update llama.cpp"}
+                        </Button>
+                      )}
+                    </div>
                   )}
-                </div>
-              )}
-              {showContextVramWarning && (
-                <p className="text-ui-11 text-amber-500">
-                  Context length exceeds the estimated VRAM capacity (
+                  {showContextVramWarning && (
+                    <p className="text-ui-11 text-amber-500">
+                      Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
-                </p>
-              )}
-            </div>
-          </CollapsibleSection>
-        )}
-
-        <CollapsibleSection
-          label="Preset"
-          headerAction={
-            <InfoHint>
-              Saving a preset also stores current load settings (
-              {loadSettingNames}).
-              {currentLoadSummary ? (
-                <>
-                  {" "}
-                  Active now: {currentLoadSummary}.
-                </>
-              ) : null}
-              {activePresetLoadSummary &&
-              activePresetLoadSummary !== currentLoadSummary ? (
-                <>
-                  {" "}
-                  Saved in preset: {activePresetLoadSummary}.
-                </>
-              ) : null}
-            </InfoHint>
-          }
-          defaultOpen={true}
-          first={!hasModelContent && !modelConfig}
-        >
-          <div className="flex flex-col gap-3 pt-1">
-            <DropdownMenu modal={false}>
-                  <DropdownMenuTrigger asChild={true}>
-                <div
-                  className="w-full min-w-0 cursor-pointer outline-none focus-visible:outline-none"
-                  aria-label="Open preset list"
-                >
-                  <InputGroup className="panel-input-group">
-                    <InputGroupInput
-                      id="inference-preset-name"
-                      value={presetNameInput}
-                      onChange={(e) => setPresetNameInput(e.target.value)}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => {
-                        if (
-                          e.key === "Enter" &&
-                          settingsHydrated &&
-                          presetSaveState.canSubmit
-                        ) {
-                          e.preventDefault();
-                          savePresetWithName(presetNameInput);
-                        }
-                        e.stopPropagation();
-                      }}
-                      placeholder="Preset name"
-                      maxLength={80}
-                      autoComplete="off"
-                      className={cn(
-                        "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
-                        presetSaveState.isSaveReady &&
-                          "placeholder:text-primary/50",
-                      )}
-                      aria-label="Inference preset name"
-                    />
-                    <InputGroupAddon
-                      align="inline-end"
-                      className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0 !cursor-pointer"
-                    >
-                      <span
-                        className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
-                        aria-hidden="true"
-                      >
-                        <HugeiconsIcon
-                          icon={ChevronDownStandardIcon}
-                          className="size-3.5"
-                          strokeWidth={2}
-                        />
-                      </span>
-                    </InputGroupAddon>
-                  </InputGroup>
+                    </p>
+                  )}
                 </div>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                sideOffset={0}
-                className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
-              >
-                <MenuDismissGuard />
-                {presets.map((p, index) => (
-                  <Fragment key={p.name}>
-                    <DropdownMenuItem
-                      disabled={!settingsHydrated}
-                      onSelect={(event) => {
-                        if (!settingsHydrated) {
-                          event.preventDefault();
-                          return;
-                        }
-                        applyPreset(p.name);
-                      }}
-                      className="flex min-h-9 items-center px-3 py-0 text-ui-13 font-medium leading-[1.4] tracking-nav"
+              </CollapsibleSection>
+            )}
+
+            <CollapsibleSection
+              label="Preset"
+              headerAction={
+                <InfoHint>
+                  Saving a preset also stores current load settings (
+                  {loadSettingNames}).
+                  {currentLoadSummary ? (
+                    <> Active now: {currentLoadSummary}.</>
+                  ) : null}
+                  {activePresetLoadSummary &&
+                  activePresetLoadSummary !== currentLoadSummary ? (
+                    <> Saved in preset: {activePresetLoadSummary}.</>
+                  ) : null}
+                </InfoHint>
+              }
+              defaultOpen={true}
+              first={!hasModelContent && !modelConfig}
+            >
+              <div className="flex flex-col gap-3 pt-1">
+                {/* Modal below the mobile breakpoint, where this whole panel is a Sheet. This
+                trigger is `asChild` over a div that CONTAINS an input, so with no modal shield
+                the release-click of the opening press lands on that input, focus leaves the
+                portalled content, and a non-modal Radix layer dismisses on focus-outside.
+                Measured on chromium at 420x900 with the pointer never moving: the menu mounted
+                at t=33 ms and was gone by t=208 ms, so it could not be opened at all. Staying
+                modal there costs nothing, because the Sheet has already parked
+                pointer-events:none on the body and there is no second invalidation to save. */}
+                <DropdownMenu modal={isMobile}>
+                  <DropdownMenuTrigger asChild={true}>
+                    <div
+                      className="w-full min-w-0 cursor-pointer outline-none focus-visible:outline-none"
+                      aria-label="Open preset list"
                     >
-                      {p.name}
-                    </DropdownMenuItem>
-                    {index === BUILTIN_PRESETS.length - 1 &&
-                      presets.length > BUILTIN_PRESETS.length && (
-                        <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
-                      )}
-                  </Fragment>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <div className="grid grid-cols-2 gap-3">
-              <Button
-                type="button"
-                onClick={() => savePresetWithName(presetNameInput)}
-                disabled={!(settingsHydrated && presetSaveState.canSubmit)}
+                      <InputGroup className="panel-input-group">
+                        <InputGroupInput
+                          id="inference-preset-name"
+                          value={presetNameInput}
+                          onChange={(e) => setPresetNameInput(e.target.value)}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                          onKeyDown={(e) => {
+                            if (
+                              e.key === "Enter" &&
+                              settingsHydrated &&
+                              presetSaveState.canSubmit
+                            ) {
+                              e.preventDefault();
+                              savePresetWithName(presetNameInput);
+                            }
+                            e.stopPropagation();
+                          }}
+                          placeholder="Preset name"
+                          maxLength={80}
+                          autoComplete="off"
+                          className={cn(
+                            "!h-9 min-h-0 min-w-0 self-stretch !pl-3.5 !pr-2 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13",
+                            presetSaveState.isSaveReady &&
+                              "placeholder:text-primary/50",
+                          )}
+                          aria-label="Inference preset name"
+                        />
+                        <InputGroupAddon
+                          align="inline-end"
+                          className="min-h-0 shrink-0 gap-0 self-stretch border-0 py-0 pl-0 !pr-1 has-[>button]:mr-0 !cursor-pointer"
+                        >
+                          <span
+                            className="!h-7 min-h-7 !w-7 min-w-7 shrink-0 self-center inline-flex items-center justify-center rounded-full border-0 px-0 text-[#a0a097] dark:text-nav-fg pointer-events-none"
+                            aria-hidden="true"
+                          >
+                            <HugeiconsIcon
+                              icon={ChevronDownStandardIcon}
+                              className="size-3.5"
+                              strokeWidth={2}
+                            />
+                          </span>
+                        </InputGroupAddon>
+                      </InputGroup>
+                    </div>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="start"
+                    sideOffset={0}
+                    className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
+                  >
+                    <MenuDismissGuard />
+                    {presets.map((p, index) => (
+                      <Fragment key={p.name}>
+                        <DropdownMenuItem
+                          disabled={!settingsHydrated}
+                          onSelect={(event) => {
+                            if (!settingsHydrated) {
+                              event.preventDefault();
+                              return;
+                            }
+                            applyPreset(p.name);
+                          }}
+                          className="flex min-h-9 items-center px-3 py-0 text-ui-13 font-medium leading-[1.4] tracking-nav"
+                        >
+                          {p.name}
+                        </DropdownMenuItem>
+                        {index === BUILTIN_PRESETS.length - 1 &&
+                          presets.length > BUILTIN_PRESETS.length && (
+                            <DropdownMenuSeparator className="mx-3 my-1.5 h-px bg-black/8 dark:bg-white/8" />
+                          )}
+                      </Fragment>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    type="button"
+                    onClick={() => savePresetWithName(presetNameInput)}
+                    disabled={!(settingsHydrated && presetSaveState.canSubmit)}
                     variant={
                       presetSaveState.isSaveReady ? "default" : "outline"
                     }
-                size="sm"
-                className={cn(
-                  "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
-                  presetSaveState.isSaveReady &&
-                    "bg-primary text-primary-foreground hover:bg-primary/90",
-                )}
-                title={presetSaveState.title}
-                aria-label={presetSaveState.title}
-              >
-                {presetSaveState.buttonLabel}
-              </Button>
-              <Button
-                type="button"
-                onClick={() => deletePreset(activePreset)}
-                disabled={!(settingsHydrated && activeCustomPreset)}
-                variant="outline"
-                size="sm"
-                className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
-                title={
-                  activeCustomPreset
-                    ? activeBuiltinPreset
-                      ? "Reset selected preset to built-in defaults"
-                      : "Delete selected preset"
-                    : "No saved override to delete"
-                }
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </CollapsibleSection>
+                    size="sm"
+                    className={cn(
+                      "h-9 w-full rounded-full text-ui-13 font-medium tracking-nav",
+                      presetSaveState.isSaveReady &&
+                        "bg-primary text-primary-foreground hover:bg-primary/90",
+                    )}
+                    title={presetSaveState.title}
+                    aria-label={presetSaveState.title}
+                  >
+                    {presetSaveState.buttonLabel}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => deletePreset(activePreset)}
+                    disabled={!(settingsHydrated && activeCustomPreset)}
+                    variant="outline"
+                    size="sm"
+                    className="h-9 w-full rounded-full text-ui-13 font-medium tracking-nav text-muted-foreground"
+                    title={
+                      activeCustomPreset
+                        ? activeBuiltinPreset
+                          ? "Reset selected preset to built-in defaults"
+                          : "Delete selected preset"
+                        : "No saved override to delete"
+                    }
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </div>
+            </CollapsibleSection>
 
-        {showPromptCachingControl && activeExternalProvider ? (
-          <CollapsibleSection label="Provider" defaultOpen={true}>
-            <div className="flex items-center justify-between gap-3 pt-1">
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
-                  Prompt caching
-                </span>
-                <InfoHint>
+            {showPromptCachingControl && activeExternalProvider ? (
+              <CollapsibleSection label="Provider" defaultOpen={true}>
+                <div className="flex items-center justify-between gap-3 pt-1">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Prompt caching
+                    </span>
+                    <InfoHint>
                       Reuse compatible prompt prefixes for lower latency and
                       cost.
-                </InfoHint>
-              </div>
-              <Switch
-                className="panel-switch shrink-0"
-                checked={promptCachingEnabled}
-                onCheckedChange={(checked) => {
-                  onExternalProviderChange?.({
-                    ...activeExternalProvider,
-                    enablePromptCaching: checked,
-                  });
-                }}
-                aria-label="Enable prompt caching"
-              />
-            </div>
-            {showPromptCacheTtlControl && promptCachingEnabled ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
-                    Cache TTL
-                  </span>
-                  <InfoHint>
-                    Anthropic exposes a 5 minute and a 1 hour ephemeral
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={promptCachingEnabled}
+                    onCheckedChange={(checked) => {
+                      onExternalProviderChange?.({
+                        ...activeExternalProvider,
+                        enablePromptCaching: checked,
+                      });
+                    }}
+                    aria-label="Enable prompt caching"
+                  />
+                </div>
+                {showPromptCacheTtlControl && promptCachingEnabled ? (
+                  <div className="flex items-center justify-between gap-3 pt-3">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        Cache TTL
+                      </span>
+                      <InfoHint>
+                        Anthropic exposes a 5 minute and a 1 hour ephemeral
                         cache pool. The 1 hour pool costs 2x base input on write
                         vs 1.25x for 5 minute, but reads stay 0.1x for both, so
                         a single read landing more than 5 minutes after the
                         write pays off the premium.
-                  </InfoHint>
-                </div>
-                <Select
-                  value={activeExternalProvider.promptCacheTtl ?? "5m"}
-                  onValueChange={(value) => {
-                    if (value !== "5m" && value !== "1h") return;
-                    onExternalProviderChange?.({
-                      ...activeExternalProvider,
-                      promptCacheTtl: value,
-                    });
-                  }}
-                >
-                  <SelectTrigger
-                    className="panel-select-trigger h-8 w-[124px] shrink-0"
-                    aria-label="Prompt cache TTL"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="5m">5 minutes</SelectItem>
-                    <SelectItem value="1h">1 hour</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                      </InfoHint>
+                    </div>
+                    <Select
+                      value={activeExternalProvider.promptCacheTtl ?? "5m"}
+                      onValueChange={(value) => {
+                        if (value !== "5m" && value !== "1h") return;
+                        onExternalProviderChange?.({
+                          ...activeExternalProvider,
+                          promptCacheTtl: value,
+                        });
+                      }}
+                    >
+                      <SelectTrigger
+                        className="panel-select-trigger h-8 w-[124px] shrink-0"
+                        aria-label="Prompt cache TTL"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="5m">5 minutes</SelectItem>
+                        <SelectItem value="1h">1 hour</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                {showFastModeControl ? (
+                  <div className="flex items-center justify-between gap-3 pt-3">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        Fast mode
+                      </span>
+                      <InfoHint>
+                        Research preview. Up to 2.5x higher output tokens per
+                        second on Claude Opus 5 and 4.8 at 2x standard Opus
+                        pricing. Switching between fast and standard invalidates
+                        the prompt cache and is incompatible with the Priority
+                        service tier.
+                      </InfoHint>
+                    </div>
+                    <Switch
+                      className="panel-switch shrink-0"
+                      checked={Boolean(params.fastMode)}
+                      onCheckedChange={set("fastMode")}
+                      aria-label="Fast mode"
+                    />
+                  </div>
+                ) : null}
+              </CollapsibleSection>
             ) : null}
-            {showFastModeControl ? (
-              <div className="flex items-center justify-between gap-3 pt-3">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
-                    Fast mode
-                  </span>
-                  <InfoHint>
-                    Research preview. Up to 2.5x higher output tokens per
-                    second on Claude Opus 5 and 4.8 at 2x standard Opus
-                    pricing.
-                    Switching between fast and standard invalidates the
-                    prompt cache and is incompatible with the Priority
-                    service tier.
-                  </InfoHint>
-                </div>
-                <Switch
-                  className="panel-switch shrink-0"
-                  checked={Boolean(params.fastMode)}
-                  onCheckedChange={set("fastMode")}
-                  aria-label="Fast mode"
+
+            {showOpenAICodeExecSection && activeExternalProvider ? (
+              <CollapsibleSection label="Code Execution" defaultOpen={false}>
+                <OpenAICodeExecSection
+                  provider={activeExternalProvider}
+                  apiKey={openAiApiKeyForSection}
+                  activeThreadId={activeThreadId}
+                  onProviderChange={(p) => onExternalProviderChange?.(p)}
+                />
+              </CollapsibleSection>
+            ) : null}
+
+            <CollapsibleSection
+              label="System Prompt"
+              defaultOpen={true}
+              onLabelClick={openSystemPromptEditor}
+              headerAction={
+                <Tooltip>
+                  <TooltipPrimitive.Trigger asChild={true}>
+                    <button
+                      type="button"
+                      onClick={openSystemPromptEditor}
+                      className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
+                      aria-label="Edit system prompt"
+                    >
+                      <HugeiconsIcon
+                        icon={Edit03Icon}
+                        strokeWidth={1.75}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipPrimitive.Trigger>
+                  <TooltipContent
+                    side="top"
+                    sideOffset={6}
+                    className="tooltip-compact"
+                  >
+                    Edit prompt
+                  </TooltipContent>
+                </Tooltip>
+              }
+            >
+              {/* Rounded wrapper clips overflowing text and the scrollbar. */}
+              <div
+                className={cn(
+                  "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
+                  systemPromptOverflows && "cursor-pointer",
+                )}
+              >
+                <textarea
+                  ref={attachPromptBox}
+                  value={currentSystemPrompt}
+                  onChange={(e) => set("systemPrompt")(e.target.value)}
+                  onMouseDown={(e) => {
+                    // Overflowing prompt: click opens the popup editor instead.
+                    // While focused, clicks still move the caret normally.
+                    if (
+                      systemPromptOverflows &&
+                      document.activeElement !== e.currentTarget
+                    ) {
+                      e.preventDefault();
+                      openSystemPromptEditor();
+                    }
+                  }}
+                  placeholder="Example: You are a helpful assistant..."
+                  aria-label="System prompt"
+                  className={cn(
+                    "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-ui-13 font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
+                    systemPromptOverflows && "cursor-pointer",
+                  )}
                 />
               </div>
-            ) : null}
-          </CollapsibleSection>
-        ) : null}
+            </CollapsibleSection>
 
-        {showOpenAICodeExecSection && activeExternalProvider ? (
-          <CollapsibleSection label="Code Execution" defaultOpen={false}>
-            <OpenAICodeExecSection
-              provider={activeExternalProvider}
-              apiKey={openAiApiKeyForSection}
-              activeThreadId={activeThreadId}
-              onProviderChange={(p) => onExternalProviderChange?.(p)}
-            />
-          </CollapsibleSection>
-        ) : null}
-
-        <CollapsibleSection
-          label="System Prompt"
-          defaultOpen={true}
-          onLabelClick={openSystemPromptEditor}
-          headerAction={
-            <Tooltip>
-                  <TooltipPrimitive.Trigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={openSystemPromptEditor}
-                  className="nav-icon-btn text-nav-icon-idle hover:bg-panel-surface-hover hover:text-black dark:hover:text-white"
-                  aria-label="Edit system prompt"
-                >
-                  <HugeiconsIcon
-                    icon={Edit03Icon}
-                    strokeWidth={1.75}
-                    className="size-3"
+            <CollapsibleSection label="Sampling" defaultOpen={true}>
+              <div className="flex flex-col gap-5 pt-1">
+                {showTemperature ? (
+                  <ParamSlider
+                    label="Temperature"
+                    value={params.temperature}
+                    min={0}
+                    max={2}
+                    step={0.01}
+                    onChange={set("temperature")}
+                    info="Controls randomness. Lower values make output focused and deterministic; higher values increase variety and creativity."
                   />
-                </button>
-              </TooltipPrimitive.Trigger>
-              <TooltipContent
-                side="top"
-                sideOffset={6}
-                className="tooltip-compact"
-              >
-                Edit prompt
-              </TooltipContent>
-            </Tooltip>
-          }
-        >
-          {/* Rounded wrapper clips overflowing text and the scrollbar. */}
-          <div
-            className={cn(
-              "panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle",
-              systemPromptOverflows && "cursor-pointer",
-            )}
-          >
-            <textarea
-              ref={attachPromptBox}
-              value={currentSystemPrompt}
-              onChange={(e) => set("systemPrompt")(e.target.value)}
-              onMouseDown={(e) => {
-                // Overflowing prompt: click opens the popup editor instead.
-                // While focused, clicks still move the caret normally.
-                if (
-                  systemPromptOverflows &&
-                  document.activeElement !== e.currentTarget
-                ) {
-                  e.preventDefault();
-                  openSystemPromptEditor();
-                }
-              }}
-              placeholder="Example: You are a helpful assistant..."
-              aria-label="System prompt"
-              className={cn(
-                "block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-ui-13 font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground",
-                systemPromptOverflows && "cursor-pointer",
-              )}
-            />
-          </div>
-        </CollapsibleSection>
-
-        <CollapsibleSection label="Sampling" defaultOpen={true}>
-          <div className="flex flex-col gap-5 pt-1">
-            {showTemperature ? (
-              <ParamSlider
-                label="Temperature"
-                value={params.temperature}
-                min={0}
-                max={2}
-                step={0.01}
-                onChange={set("temperature")}
-                info="Controls randomness. Lower values make output focused and deterministic; higher values increase variety and creativity."
-              />
-            ) : null}
-            {showTopP ? (
-              <ParamSlider
-                label="Top P"
-                value={params.topP}
-                min={0}
-                max={1}
-                step={0.05}
-                onChange={set("topP")}
-                displayValue={params.topP === 1 ? "Off" : undefined}
-                info="Nucleus sampling. Restricts choices to the smallest set of tokens whose cumulative probability reaches this threshold. 1.0 = off."
-              />
-            ) : null}
-            {showTopK ? (
-              <ParamSlider
-                label="Top K"
-                value={params.topK}
-                min={0}
-                max={100}
-                step={1}
-                onChange={set("topK")}
-                displayValue={params.topK === 0 ? "Off" : undefined}
-                info="Limits sampling to the K most likely tokens at each step. 0 = off."
-              />
-            ) : null}
-            {showMinP ? (
-              <ParamSlider
-                label="Min P"
-                value={params.minP}
-                min={0}
-                max={1}
-                step={0.01}
-                onChange={set("minP")}
-                info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
-              />
-            ) : null}
-            {showRepetitionPenalty ? (
-              <ParamSlider
-                label="Repetition Penalty"
-                value={params.repetitionPenalty}
-                min={1}
-                max={2}
-                step={0.05}
-                onChange={set("repetitionPenalty")}
-                displayValue={
-                  params.repetitionPenalty === 1 ? "Off" : undefined
-                }
-                info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
-              />
-            ) : null}
-            {showPresencePenalty ? (
-              <ParamSlider
-                label="Presence Penalty"
-                value={params.presencePenalty}
-                min={0}
-                max={2}
-                step={0.1}
-                onChange={set("presencePenalty")}
+                ) : null}
+                {showTopP ? (
+                  <ParamSlider
+                    label="Top P"
+                    value={params.topP}
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    onChange={set("topP")}
+                    displayValue={params.topP === 1 ? "Off" : undefined}
+                    info="Nucleus sampling. Restricts choices to the smallest set of tokens whose cumulative probability reaches this threshold. 1.0 = off."
+                  />
+                ) : null}
+                {showTopK ? (
+                  <ParamSlider
+                    label="Top K"
+                    value={params.topK}
+                    min={0}
+                    max={100}
+                    step={1}
+                    onChange={set("topK")}
+                    displayValue={params.topK === 0 ? "Off" : undefined}
+                    info="Limits sampling to the K most likely tokens at each step. 0 = off."
+                  />
+                ) : null}
+                {showMinP ? (
+                  <ParamSlider
+                    label="Min P"
+                    value={params.minP}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    onChange={set("minP")}
+                    info="Drops tokens whose probability is below this fraction of the top token's probability. Filters unlikely candidates."
+                  />
+                ) : null}
+                {showRepetitionPenalty ? (
+                  <ParamSlider
+                    label="Repetition Penalty"
+                    value={params.repetitionPenalty}
+                    min={1}
+                    max={2}
+                    step={0.05}
+                    onChange={set("repetitionPenalty")}
+                    displayValue={
+                      params.repetitionPenalty === 1 ? "Off" : undefined
+                    }
+                    info="Down-weights tokens that have already appeared, reducing repetition. 1.0 = off; higher values penalize more strongly."
+                  />
+                ) : null}
+                {showPresencePenalty ? (
+                  <ParamSlider
+                    label="Presence Penalty"
+                    value={params.presencePenalty}
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    onChange={set("presencePenalty")}
                     displayValue={
                       params.presencePenalty === 0 ? "Off" : undefined
                     }
-                info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
-              />
-            ) : null}
-            <ParamSlider
-              label="Max Tokens"
-              value={params.maxTokens}
-              min={
-                isExternalModel
-                  ? getExternalMinOutputTokens(externalProviderType)
-                  : 64
-              }
-              max={maxTokensMax}
-              step={64}
-              onChange={set("maxTokens")}
-              displayValue={
-                isGguf && baseContext && params.maxTokens >= baseContext
-                  ? "Max"
-                  : !isExternalModel &&
-                      !isGguf &&
-                      params.maxTokens >= maxTokensMax
-                    ? "Max"
-                    : undefined
-              }
-              info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
-            />
+                    info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
+                  />
+                ) : null}
+                <ParamSlider
+                  label="Max Tokens"
+                  value={params.maxTokens}
+                  min={
+                    isExternalModel
+                      ? getExternalMinOutputTokens(externalProviderType)
+                      : 64
+                  }
+                  max={maxTokensMax}
+                  step={64}
+                  onChange={set("maxTokens")}
+                  displayValue={
+                    isGguf && baseContext && params.maxTokens >= baseContext
+                      ? "Max"
+                      : !isExternalModel &&
+                          !isGguf &&
+                          params.maxTokens >= maxTokensMax
+                        ? "Max"
+                        : undefined
+                  }
+                  info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
+                />
+              </div>
+            </CollapsibleSection>
+
+            {isExternalModel ? null : (
+              <CollapsibleSection label="Tools">
+                <div className="flex flex-col gap-5 pt-1">
+                  <AutoHealToolCallsToggle />
+                  <NudgeToolCallsToggle />
+                  <ConfirmToolCallsToggle />
+                  <BypassPermissionsToggle />
+                  <MaxToolCallsSlider />
+                  <ToolCallTimeoutSlider />
+                </div>
+              </CollapsibleSection>
+            )}
+
+            {isExternalModel ? null : (
+              <CollapsibleSection label="Retrieval">
+                <RetrievalSettingsSection />
+              </CollapsibleSection>
+            )}
           </div>
-        </CollapsibleSection>
-
-            {isExternalModel ? null : (
-          <CollapsibleSection label="Tools">
-            <div className="flex flex-col gap-5 pt-1">
-              <AutoHealToolCallsToggle />
-              <NudgeToolCallsToggle />
-              <ConfirmToolCallsToggle />
-              <BypassPermissionsToggle />
-              <MaxToolCallsSlider />
-              <ToolCallTimeoutSlider />
-            </div>
-          </CollapsibleSection>
-            )}
-
-            {isExternalModel ? null : (
-          <CollapsibleSection label="Retrieval">
-            <RetrievalSettingsSection />
-          </CollapsibleSection>
-            )}
-      </div>
-      </div>
+        </div>
       </div>
       <Dialog
         open={systemPromptEditorOpen}
@@ -1681,27 +1682,27 @@ export function ChatSettingsPanel({
       }
     >
       {open ? (
-      <PanelResizeHandle
-        edge="left"
-        open={open}
-        width={settingsWidth}
-        stored={settingsStored}
-        min={CHAT_SETTINGS_WIDTH_MIN}
-        max={settingsMax}
-        clamp={clampChatSettingsWidth}
-        setWidth={setSettingsWidth}
-        resetWidth={resetSettingsWidth}
-        onToggle={() => onOpenChange?.(!open)}
-        target={() => asideRef.current}
-        cssVar="--chat-settings-width"
-        measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
-        label={t("shell.aria.resizeRunSettings")}
-        toggleLabel={t("shell.aria.openRunSettings")}
-        collapseHint={t("shell.resize.collapse")}
-        expandHint={t("shell.resize.expand")}
-        dragHint={t("shell.resize.drag")}
-        dataSlot="chat-settings-resize-handle"
-      />
+        <PanelResizeHandle
+          edge="left"
+          open={open}
+          width={settingsWidth}
+          stored={settingsStored}
+          min={CHAT_SETTINGS_WIDTH_MIN}
+          max={settingsMax}
+          clamp={clampChatSettingsWidth}
+          setWidth={setSettingsWidth}
+          resetWidth={resetSettingsWidth}
+          onToggle={() => onOpenChange?.(!open)}
+          target={() => asideRef.current}
+          cssVar="--chat-settings-width"
+          measure={() => asideRef.current?.getBoundingClientRect().width ?? 0}
+          label={t("shell.aria.resizeRunSettings")}
+          toggleLabel={t("shell.aria.openRunSettings")}
+          collapseHint={t("shell.resize.collapse")}
+          expandHint={t("shell.resize.expand")}
+          dragHint={t("shell.resize.drag")}
+          dataSlot="chat-settings-resize-handle"
+        />
       ) : null}
       <div className="h-full w-full overflow-hidden">{settingsContent}</div>
     </aside>
@@ -1827,8 +1828,7 @@ function ConfirmToolCallsToggle() {
             When on, every local Unsloth tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
-            level).
-            Provider-hosted tools are not gated here.
+            level). Provider-hosted tools are not gated here.
           </InfoHint>
         </div>
         {permissionMode === "full" ? (

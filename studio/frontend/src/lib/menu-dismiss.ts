@@ -52,13 +52,18 @@ import { useEffect } from "react";
  *
  * THE UPPER BOUND, AND WHY IT IS ANCHORED AT RELEASE
  *
- * Plenty of dismissing gestures never become a click at all. Measured on chromium: a right click
- * outside an open menu raises `contextmenu` instead, so with no upper bound the swallower
- * survived and ate the user's next real left click 900 ms later. That is a worse bug than the
- * one this replaced, because a bounded window that occasionally misses is at least attributable,
- * while an unbounded one swallows a click with nothing to associate it with. So the window opens
- * at `pointerup` rather than at `pointerdown`: a press held for a minute is still covered, and a
- * gesture that produces no click is still bounded.
+ * Plenty of dismissing gestures never become a click at all: a press that turns into a drag or a
+ * scroll, a press on an element the menu's own close unmounts before release, a window that
+ * loses focus mid-gesture. With no upper bound the swallower survives all of those and eats an
+ * unrelated click an arbitrary time later, which the user experiences as the app ignoring a
+ * click for no reason and cannot report usefully. So the window opens at `pointerup` rather than
+ * at `pointerdown`: a press held for a minute is still covered, and a gesture that produces no
+ * click is still bounded.
+ *
+ * A bound is not a substitute for not arming, though. A right click raises `contextmenu` and
+ * never a `click`, and measured on all three engines it ate the user's next left click; the
+ * bound only shortened that to 500 ms. The primary-button check below is the real answer, and
+ * the bound is what catches the cases nobody has enumerated.
  *
  * WHY THE ARM STATE OUTLIVES THE COMPONENT
  *
@@ -152,6 +157,17 @@ export function useDismissingClickGuard(): void {
       // A new gesture always supersedes the last one, so a press that never produced a click
       // cannot leave the swallower armed.
       disarm();
+      // Only the primary button ever synthesises the click this exists to eat. A right or
+      // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
+      // the user's NEXT left click: measured on all three engines, the click after a right-click
+      // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
+      // forever, but not arming at all is the actual answer.
+      // Only the primary button ever synthesises the click this exists to eat. A right or
+      // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
+      // the user's NEXT left click: measured on all three engines, the click after a right-click
+      // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
+      // forever, but not arming at all is the actual answer.
+      if (event.button !== 0) return;
       const target = event.target;
       if (!(target instanceof Element)) return;
       if (target.closest(MENU_SURFACE)) return;
