@@ -216,14 +216,27 @@ def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | N
     A ``try`` that catches ``ImportError`` is exempt, since that is a deliberate guard
     rather than an omission.
     """
+    lines = _heavy_import_lines(tree, heavy)
+    return lines[0] if lines else None
+
+
+def _heavy_import_lines(tree: ast.Module, heavy: frozenset[str]) -> list[int]:
+    """Every import-time import of a heavy backend module, not just the first.
+
+    Separate branches can both import one, and only one of them needs to be stubbed for
+    the first to look fine: a file that stubs before the import in the ``if`` and forgets
+    the one in the ``else`` dies at collection whenever the else runs, while reducing the
+    module to a single line reported it safe. Reported on this PR.
+    """
     guarded = _guarded_by_import_error(tree)
+    lines: list[int] = []
     for statement in tree.body:
         for node in _reachable_import_time_nodes(statement):
             if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in guarded:
                 continue
             if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
-                return node.lineno
-    return None
+                lines.append(node.lineno)
+    return sorted(lines)
 
 
 def _runtime_nodes(node: ast.AST):
@@ -655,7 +668,10 @@ def _is_offender(source: str, heavy: frozenset[str]) -> bool:
         tree = _parse(source)
     except SyntaxError:  # not this guard's job to report
         return False
-    return not _stubs_before(tree, _first_heavy_import_line(tree, heavy))
+    lines = _heavy_import_lines(tree, heavy)
+    # EVERY one of them, since any single unstubbed import is the one that kills
+    # collection, whatever the others do.
+    return any(not _stubs_before(tree, line) for line in lines)
 
 
 def _offenders() -> list[str]:
@@ -1889,6 +1905,28 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert not _is_offender(in_finally, heavy), in_finally
+
+    # Two branches, each with its own heavy import. Stubbing before the first one does
+    # nothing for the second, and stopping at the first import reported this safe.
+    one_branch_stubbed = (
+        "if enabled():\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "    from core.inference import inference\n"
+        "else:\n"
+        "    from core.training import trainer as t\n"
+    )
+    assert _heavy_import_lines(_parse(one_branch_stubbed), heavy) == [3, 5], one_branch_stubbed
+    assert _is_offender(one_branch_stubbed, heavy), one_branch_stubbed
+    # Both branches stubbed is fine.
+    both_stubbed = (
+        "if enabled():\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "    from core.inference import inference\n"
+        "else:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "    from core.training import trainer as t\n"
+    )
+    assert not _is_offender(both_stubbed, heavy), both_stubbed
 
     # A stub on a branch the import cannot be on. Line order alone put it above the
     # import while the two exclude each other.
