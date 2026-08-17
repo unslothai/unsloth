@@ -527,9 +527,7 @@ def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
     llama.cpp is last-wins on the pair, so the disable form has to follow the extras."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
-    cmd = _launch(
-        backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
-    )["cmd"]
+    cmd = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
 
     assert "--no-mmproj-auto" in cmd
     assert cmd.index("--no-mmproj-auto") > cmd.index("--mmproj-auto")
@@ -542,9 +540,7 @@ def test_an_audio_only_projector_is_not_taken_away_by_the_auto_override(tmp_path
 
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
     with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
-        cmd = _launch(
-            backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
-        )["cmd"]
+        cmd = _launch(backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"])["cmd"]
 
     assert "--mmproj" in cmd
     assert "--no-mmproj-auto" not in cmd
