@@ -3386,7 +3386,9 @@ async def _select_request_tools(
     # had turns evicted, so an ordinary short chat never sees the extra schema. On the very
     # first compaction the tool is still absent (the archive is written mid-request), but
     # the forced recall covers that turn and the tool appears from the next one.
-    if not _thread_has_conversation_archive(payload.thread_id):
+    # getattr, not attribute access: this helper also serves the token-count request
+    # model, which carries no thread_id.
+    if not _thread_has_conversation_archive(getattr(payload, "thread_id", None)):
         tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
