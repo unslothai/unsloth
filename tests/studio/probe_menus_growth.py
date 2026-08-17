@@ -130,20 +130,18 @@ def main() -> int:
             for size in sizes:
                 print(f"[menus] seeding {size}", flush = True)
                 page = browser.new_page(viewport = {"width": 1440, "height": 950})
-                page.goto(f"{BASE}/smoke-heavy-thread.html",
-                          wait_until = "domcontentloaded")
-                page.wait_for_function("() => Boolean(window.__heavyThread)",
-                                       timeout = 60_000)
+                page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
+                page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 60_000)
                 plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
                 page.wait_for_function(
                     "(n) => window.__heavyThread.messageCount() >= n",
-                    arg = plan["messages"], timeout = 300_000,
+                    arg = plan["messages"],
+                    timeout = 300_000,
                 )
                 page.wait_for_timeout(1500)
 
                 triggers = [t for t in page.evaluate(ENUMERATE_JS) if t["visible"]]
-                print(f"[menus] {size}: {len(triggers)} visible menu triggers",
-                      flush = True)
+                print(f"[menus] {size}: {len(triggers)} visible menu triggers", flush = True)
                 per_menu: dict = {}
                 for t in triggers:
                     samples = []
@@ -164,10 +162,14 @@ def main() -> int:
                         ),
                         "bodyPointerEvents": body_pe,
                     }
-                    print(f"[menus]   {key}: {per_menu[key]['median_open_close_ms']} ms "
-                          f"body={body_pe}", flush = True)
+                    print(
+                        f"[menus]   {key}: {per_menu[key]['median_open_close_ms']} ms "
+                        f"body={body_pe}",
+                        flush = True,
+                    )
                 results["by_size"][str(size)] = {
-                    "messages": plan["messages"], "menus": per_menu,
+                    "messages": plan["messages"],
+                    "menus": per_menu,
                 }
                 page.close()
             browser.close()

@@ -149,9 +149,7 @@ async def drive(page, label: str) -> dict:
         await page.wait_for_timeout(1200)
         after = await page.evaluate(FACTS_JS)
         out["after_click_on_delete"] = after
-        out["destructive_click_through"] = (
-            after["assistantMessages"] < before_msgs
-        )
+        out["destructive_click_through"] = after["assistantMessages"] < before_msgs
         out["menu_closed_by_that_click"] = not after["menuOpen"]
         await page.screenshot(path = str(SHOT_DIR / f"{label}_2_after_click_delete.png"))
     else:
@@ -175,7 +173,8 @@ async def drive(page, label: str) -> dict:
                 await page.wait_for_timeout(120)
         after = await page.evaluate(SCROLL_AFTER_JS)
         out["scroll_under_open_menu"] = {
-            **before, **after,
+            **before,
+            **after,
             "delta": after["after"] - before["before"],
             "scrolled": after["after"] != before["before"],
         }
@@ -189,8 +188,7 @@ async def drive(page, label: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", required = True)
-    ap.add_argument("--engine", default = "chromium",
-                    choices = ("chromium", "webkit", "firefox"))
+    ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     args = ap.parse_args()
 
     from playwright.async_api import async_playwright
@@ -200,15 +198,9 @@ def main() -> int:
         async with async_playwright() as pw:
             browser = await getattr(pw, args.engine).launch(headless = True)
             page = await browser.new_page(viewport = {"width": 1280, "height": 900})
-            await page.goto(
-                f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded"
-            )
-            await page.wait_for_function(
-                "() => Boolean(window.__heavyThread)", timeout = 60_000
-            )
-            plan = await page.evaluate(
-                "(n) => window.__heavyThread.seed(n)", CHARS
-            )
+            await page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
+            await page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 60_000)
+            plan = await page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
             await page.wait_for_function(
                 "(n) => window.__heavyThread.messageCount() >= n",
                 arg = plan["messages"],
