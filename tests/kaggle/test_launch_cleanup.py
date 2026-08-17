@@ -541,7 +541,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
                     "        def _reentrant(msg):",
                     "            if 'received signal' in msg:",
                     "                raise RuntimeError(",
-                    "                    \"reentrant call inside <_io.BufferedWriter \"",
+                    '                    "reentrant call inside <_io.BufferedWriter "',
                     "                    \"name='<stdout>'>\")",
                     "            _real_log(msg)",
                     "        launch._log = _reentrant",

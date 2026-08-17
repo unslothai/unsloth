@@ -971,9 +971,7 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
             # RETURNING 0, and the cancelled job read as completed. Deleting is
             # best effort, the exit status is not. Retried once, since the kernel
             # is billing meanwhile.
-            _log_from_signal(
-                f"release() failed under signal {signum}: {type(exc).__name__}: {exc}"
-            )
+            _log_from_signal(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
             try:
                 release()
             except BaseException as retry_exc:  # noqa: BLE001
