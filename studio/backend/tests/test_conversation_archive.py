@@ -1351,3 +1351,69 @@ def test_a_tool_call_message_is_exempt_from_the_character_anchors(conn):
     ]
 
     assert conversation_archive._document_matches_one_run(rows, live, 1) is True
+
+
+def test_a_turn_is_re_embedded_when_the_embedder_changes(conn, monkeypatch):
+    """Dense search only reads documents whose embedder matches the query's.
+
+    Hashed and skipped, a turn archived under the previous model stayed invisible to every
+    paraphrased search for good, however often the client re-presented it.
+    """
+    from core.rag import embeddings, store
+
+    thread_id = "identity-thread"
+    turn = _turn("what is the deploy code", "the deploy code is 5150")
+    _save_thread(thread_id, turn, append = True)
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
+    # Same turn, same hash, under an embedder the query side no longer asks for.
+    identity["name"] = "st:model-b"
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
+
+    rows = conn.execute(
+        "SELECT embedding_model FROM documents WHERE scope = ?",
+        (store.conversation_archive_scope(thread_id),),
+    ).fetchall()
+    # Replaced, not duplicated.
+    assert [row["embedding_model"] for row in rows] == ["st:model-b"]
+
+    # And re-presenting it under the SAME embedder is still a no-op.
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 0
+
+
+def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
+    """Per group, a long chat's first compaction ran dozens of jobs back to back.
+
+    Both backends serialise them, so the reply could not start until the last one landed.
+    """
+    from core.rag import embeddings
+
+    thread_id = "batch-thread"
+    _save_thread(thread_id, _turn("hello", "hi"), append = True)
+
+    calls = []
+    real = embeddings.encode_with_identity
+
+    def counted(texts, **kwargs):
+        calls.append(len(texts))
+        return real(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", counted)
+
+    evicted = []
+    for index in range(12):
+        evicted.append({"role": "user", "content": f"question number {index} about the deploy"})
+        evicted.append({"role": "assistant", "content": f"answer number {index}, code {index}"})
+
+    assert conversation_archive.archive_turns(thread_id, evicted) == 12
+    assert len(calls) == 1
+    assert calls[0] >= 12

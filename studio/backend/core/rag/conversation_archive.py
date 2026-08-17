@@ -266,12 +266,20 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     try:
         count = embeddings.token_counter(model)
         conn = rag_db.get_connection()
+        # What the query side will ask for. Only a prediction until the encode reports
+        # what it actually used, so the authoritative check happens under the write lock.
+        expected_identity = embeddings.embedding_identity(model)
+
+        # Chunk everything first, then embed it in ONE pass. Per group, a first
+        # compaction of a long chat ran dozens of one-item embedding jobs back to back
+        # before the reply could start, and both backends serialise them.
+        pending = []
         for group in groups:
             text = render_turn(group)
             if not text:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-            if store.document_by_hash(conn, scope, digest):
+            if _archived_under(conn, scope, digest, expected_identity):
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -279,13 +287,22 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 overlap = config.CHUNK_OVERLAP,
                 count = count,
             )
-            if not chunks:
-                continue
-            # Identity from the encode that produced these vectors: a concurrent embedder
-            # swap would otherwise label them with a space they were never in.
-            vectors, identity = embeddings.encode_with_identity(
-                [chunk.text for chunk in chunks], model_name = model, normalize = True
-            )
+            if chunks:
+                pending.append((group, digest, chunks))
+        if not pending:
+            return 0
+
+        # Identity from the encode that produced these vectors: a concurrent embedder
+        # swap would otherwise label them with a space they were never in.
+        vectors, identity = embeddings.encode_with_identity(
+            [chunk.text for group_chunks in pending for chunk in group_chunks[2]],
+            model_name = model,
+            normalize = True,
+        )
+        offset = 0
+        for group, digest, chunks in pending:
+            group_vectors = vectors[offset : offset + len(chunks)]
+            offset += len(chunks)
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
@@ -303,10 +320,16 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             except Exception:
                 # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
-            if store.document_by_hash(conn, scope, digest):
+            stale = _stale_document(conn, scope, digest, identity)
+            if stale is _ARCHIVED:
                 if _write_lock:
                     conn.rollback()
                 continue
+            if stale is not None:
+                # Same turn, vectors from an embedder the query side no longer asks for.
+                # Skipping it would leave the turn invisible to dense search forever, so
+                # the copy is replaced rather than deduplicated, as ingestion does.
+                store.delete_document(conn, stale, commit = False)
             document_id = store.create_document(
                 conn,
                 scope = scope,
@@ -322,7 +345,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 commit = False,
             )
             try:
-                store.add_chunks(conn, scope, document_id, chunks, vectors)
+                store.add_chunks(conn, scope, document_id, chunks, group_vectors)
             except Exception:
                 conn.rollback()
                 raise
@@ -368,6 +391,34 @@ def degraded() -> bool:
     on every compaction for nothing. The caller checks this and stops reserving.
     """
     return _INGEST_FAILED
+
+
+# Returned by ``_stale_document`` for a turn that is already archived under vectors the
+# query side still accepts.
+_ARCHIVED = "archived"
+
+
+def _stale_document(conn, scope: str, digest: str, identity: str):
+    """The document id to replace, ``_ARCHIVED`` to skip, or None to write a new one.
+
+    Hash alone is not enough. Dense search only reads documents whose recorded embedder
+    matches the query's, so a turn archived under the previous model stays hashed-and-
+    skipped while being invisible to every paraphrased search. Ingestion re-indexes in
+    that case; so does this.
+    """
+    existing = store.document_by_hash(conn, scope, digest)
+    if existing is None:
+        return None
+    document = store.get_document(conn, existing)
+    recorded = (document or {}).get("embedding_model")
+    if config.embedding_identity_matches(recorded, identity):
+        return _ARCHIVED
+    return existing
+
+
+def _archived_under(conn, scope: str, digest: str, identity: str) -> bool:
+    """Cheap pre-check before the chunking and embedding pass."""
+    return _stale_document(conn, scope, digest, identity) is _ARCHIVED
 
 
 def has_archive(thread_id: str) -> bool:
@@ -702,8 +753,6 @@ def _document_matches_one_run(
         if opened_at:
             return False
         return partial_tail or cursor >= len(transcript[position])
-
-    return any(_one_run_from(start) for start in range(len(transcript)))
 
     return any(_one_run_from(start) for start in range(len(transcript)))
 
