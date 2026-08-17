@@ -134,20 +134,23 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
   // path does when it swaps its placeholder for the player, so holding the last
   // painted text has to be gated on the new text extending it.
   //
-  // The gate is a prefix comparison, not any particular spelling of one. It is
-  // written as a slice compare rather than startsWith because startsWith scans
-  // a growing reply: 74 ms against 1.6 ms over a 60,000 character stream. Both
-  // halves are asserted, since the length check alone would pass a comparison
-  // against the wrong string, and the compare alone would pass without the
-  // cheap rejection that keeps it off the hot path.
+  // The spelling is pinned, not left open. `startsWith` scans a growing reply,
+  // 74 ms against 1.6 ms over a 60,000 character stream, and the two spellings
+  // are behaviourally identical, so no output test can tell them apart and this
+  // source check is the only thing standing between the hot path and a quiet
+  // revert. Written as `slice || startsWith` it accepted both and passed on the
+  // previous code unchanged, which is to say it measured nothing.
   assert.ok(
     hook.includes("text.length >= displayed.text.length"),
     "the coalescer must reject a shorter replacement on length first",
   );
   assert.ok(
-    hook.includes("text.slice(0, displayed.text.length) === displayed.text") ||
-      hook.includes("text.startsWith(displayed.text)"),
+    hook.includes("text.slice(0, displayed.text.length) === displayed.text"),
     "the coalescer must hold the painted text only when the new text extends it",
+  );
+  assert.ok(
+    !hook.includes("text.startsWith(displayed.text)"),
+    "the coalescer must not scan the reply to decide the new text extends it",
   );
 });
 

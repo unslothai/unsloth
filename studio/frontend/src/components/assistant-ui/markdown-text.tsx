@@ -466,9 +466,8 @@ function useCoalescedStreamingText(
     isStreaming &&
     displayed.messageId === messageId &&
     text.length >= displayed.text.length &&
-    // Not startsWith: on a growing reply it scans, where slicing to the prefix
-    // length and comparing lets V8 compare natively. Same 60,000 character
-    // stream as the helper in streaming-render-schedule.ts: 74 ms to 1.6 ms.
+    // Not startsWith, which scans a growing reply. See hasPrefix in
+    // streaming-render-schedule.ts for the measurement.
     text.slice(0, displayed.text.length) === displayed.text
   ) {
     return displayed.text;

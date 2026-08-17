@@ -14,6 +14,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { hasPrefix } from "../src/components/assistant-ui/streaming-render-schedule.ts";
@@ -110,5 +111,33 @@ test("hasPrefix agrees with startsWith under randomised growth", () => {
   assert.ok(
     bothTrue > 4_000,
     `only ${bothTrue} of 20,000 cases were real prefixes; the true branch is barely covered`,
+  );
+});
+
+// `hasPrefix` and `startsWith` return the same answer, so no output test can
+// tell the cache's three growing-reply comparisons apart from the spelling this
+// replaced. Without a source check, reverting them costs nothing and no test
+// notices. The rule is narrower than "never call startsWith": the one call the
+// helper cannot express takes a start position and compares a fixed block, so
+// it does not grow with the reply and is left alone.
+test("the incremental cache tests prefixes without scanning the reply", () => {
+  const source = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/streaming-render-schedule.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const bare = [...source.matchAll(/\.startsWith\(([^)]*)\)/g)].filter(
+    (match) => !match[1].includes(","),
+  );
+  assert.deepEqual(
+    bare.map((match) => match[0]),
+    [],
+    "a one-argument startsWith on this path scans the whole reply; use hasPrefix",
+  );
+  assert.ok(
+    source.split("hasPrefix(").length - 1 >= 3,
+    "hasPrefix should be the spelling every prefix test on this path uses",
   );
 });
