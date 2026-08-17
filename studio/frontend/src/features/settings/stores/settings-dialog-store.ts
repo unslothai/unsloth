@@ -36,10 +36,8 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it. Navigating
-  // away drops it, like scrollTarget: the panel is fetched on first view, so a
-  // dialog closed or a tab switched before it arrives has no one left to consume
-  // the request, and the next ordinary visit to Data would replay it.
+  // toast). DataTab uses it as its initial subpage, then clears it. See
+  // archivedFor for how long an unconsumed one lives.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -87,6 +85,22 @@ function loadInitialTab(): SettingsTab {
     : "general";
 }
 
+/**
+ * An unconsumed archive request, after a navigation that lands on `tab`.
+ *
+ * Only DataTab clears the request, and the panel is fetched on first view, so a dialog
+ * closed or a tab left before it arrives strands the flag and the next ordinary visit to
+ * Data opens an archive listing nobody asked for. The request is for Data, so it lives
+ * exactly as long as the dialog is open on Data: reselecting Data goes nowhere and keeps
+ * it, and closing (below) always drops it, since nothing is left to read it.
+ */
+function archivedFor(
+  state: SettingsDialogState,
+  tab: SettingsTab,
+): ArchivedShelf | null {
+  return tab === "data" ? state.archivedRequested : null;
+}
+
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),
@@ -94,13 +108,16 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   opener: null,
   archivedRequested: null,
   openDialog: (tab, options) =>
-    set((state) => ({
-      open: true,
-      activeTab: tab ?? state.activeTab,
-      scrollTarget: options?.scrollTarget ?? null,
-      archivedRequested: null,
-      opener: captureOpener(),
-    })),
+    set((state) => {
+      const next = tab ?? state.activeTab;
+      return {
+        open: true,
+        activeTab: next,
+        scrollTarget: options?.scrollTarget ?? null,
+        archivedRequested: archivedFor(state, next),
+        opener: captureOpener(),
+      };
+    }),
   openArchivedChats: () =>
     set({
       open: true,
@@ -133,6 +150,10 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
     } catch {
       // ignore storage failures
     }
-    set({ activeTab: tab, scrollTarget: null, archivedRequested: null });
+    set((state) => ({
+      activeTab: tab,
+      scrollTarget: null,
+      archivedRequested: archivedFor(state, tab),
+    }));
   },
 }));

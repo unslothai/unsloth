@@ -53,6 +53,23 @@ test("an ordinary open does not inherit an abandoned deep-open", () => {
   assert.equal(store.getState().archivedRequested, null);
 });
 
+test("reselecting Data navigates nowhere, so the deep-open still stands", () => {
+  // The nav button fires on the active tab too, and the panel is still on the wire.
+  reset();
+  store.getState().openArchivedChats();
+  store.getState().setActiveTab("data");
+  assert.equal(store.getState().archivedRequested, "chats");
+});
+
+test("reopening on Data does not drop a deep-open still in flight", () => {
+  reset();
+  store.getState().openArchivedMedia("images");
+  store.getState().openDialog();
+  assert.equal(store.getState().archivedRequested, "images");
+  store.getState().openDialog("data");
+  assert.equal(store.getState().archivedRequested, "images");
+});
+
 test("consuming it clears it, so a later visit to Data is an ordinary one", () => {
   reset();
   store.getState().openArchivedChats();
