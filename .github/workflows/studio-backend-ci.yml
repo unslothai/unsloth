@@ -132,7 +132,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio httpx \
+            'numpy<3' pytest pytest-asyncio pytest-xdist httpx \
             soundfile librosa
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
@@ -176,8 +176,20 @@ jobs:
         #   - TestTransformersIntrospection: same
         #   - test_returns_cuda_when_cuda_available / test_calls_cuda_cache_when_cuda:
         #       assume CUDA-capable GPU
+        #
+        # -n 4: 1322.6s -> 343.0s locally on the same 4-worker shape as the runner, with
+        # an IDENTICAL result -- 51 failed / 26190 passed serial against 51 failed /
+        # 26188 passed parallel, and the two failure sets compared equal name for name,
+        # so nothing here depends on the order it runs in. (Those 51 are a local
+        # environment missing peft and a diffusers pin; the point is that the two modes
+        # agree, not the count.) Same shape as repo-cpu-tests below, which has run -n 4
+        # since it measured 806s -> 220s.
+        #
+        # Unit tests, so this is CPU and not memory bound: the job installs --no-torch
+        # style CPU wheels and loads no model, unlike the inference smoke workflows
+        # where four workers on one runner would not fit.
         run: |
-          python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/test_studio_api.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
