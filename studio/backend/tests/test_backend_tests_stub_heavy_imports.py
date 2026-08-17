@@ -819,8 +819,8 @@ def _skips_on_plain_import_error(node: ast.Call) -> bool:
     return False
 
 
-def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Every ``def`` by name, nested ones included.
+def _module_functions(tree: ast.Module) -> dict[str, list[ast.AST]]:
+    """Every ``def`` by name, nested ones included, ALL definitions of each name.
 
     Nested bodies are still DEFERRED by default -- a function nothing calls does not
     run, whatever it is written inside. They are here so that one which IS called at
@@ -831,12 +831,12 @@ def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
     call read as being in time while the inner import had already run. Reported on
     this PR.
     """
-    functions: dict[str, ast.AST] = {}
+    functions: dict[str, list[ast.AST]] = {}
 
     def _collect(body):
         for statement in body:
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                functions.setdefault(statement.name, statement)
+                functions.setdefault(statement.name, []).append(statement)
                 _collect(statement.body)
             elif hasattr(statement, "body"):
                 _collect(statement.body)
@@ -879,32 +879,34 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
             # nothing calls, and handing those the outer boundary fails a file Python
             # never executes that way. Reported on this PR. Same reachability rule as
             # the module body uses, so the two cannot answer differently.
-            for statement in functions[caller].body:
-                # Nothing after an unconditional exit runs, so a call below one is not
-                # reached at import and must not inherit this boundary: doing so
-                # rejected a stub installed below the outer call while the inner helper
-                # had never run. A CONDITIONAL exit is not enough to stop, since the
-                # path that does not take it still reaches the calls below. Reported on
-                # this PR.
-                for node in _reachable_import_time_nodes(statement):
-                    if not isinstance(node, ast.Call):
-                        continue
-                    callee = _callee_name(node)
-                    # The inner helper runs when the OUTER one is called, so it
-                    # inherits that line rather than its own, which is only where it
-                    # is written.
-                    if callee in functions and line < first.get(callee, line + 1):
-                        first[callee] = line
-                        changed = True
-                # Nothing after an unconditional exit runs, so a call below one is not
-                # reached at import and must not inherit this boundary: doing so
-                # rejected a stub installed below the outer call while the inner helper
-                # had never run. Checked AFTER the statement, since `return _inner()`
-                # runs its own expression. A CONDITIONAL exit is not enough to stop:
-                # the path that does not take it still reaches the calls below.
-                # Reported on this PR.
-                if isinstance(statement, (ast.Return, ast.Raise)):
-                    break
+            # Every definition of the name, not just the first. Two enclosing
+            # functions can each define a helper called the same thing, and keeping
+            # only one dropped the other from the call graph: its importorskip then
+            # took the end-of-module boundary and a stub installed after the enclosing
+            # call read as being in time. Reported on this PR. Which of them a call
+            # names cannot be told apart here, so all of them take the boundary, which
+            # is the strict answer.
+            for definition in functions[caller]:
+                for statement in definition.body:
+                    for node in _reachable_import_time_nodes(statement):
+                        if not isinstance(node, ast.Call):
+                            continue
+                        callee = _callee_name(node)
+                        # The inner helper runs when the OUTER one is called, so it
+                        # inherits that line rather than its own, which is only where
+                        # it is written.
+                        if callee in functions and line < first.get(callee, line + 1):
+                            first[callee] = line
+                            changed = True
+                    # Nothing after an unconditional exit runs, so a call below one is
+                    # not reached at import and must not inherit this boundary: doing
+                    # so rejected a stub installed below the outer call while the inner
+                    # helper had never run. Checked AFTER the statement, since
+                    # `return _inner()` runs its own expression. A CONDITIONAL exit is
+                    # not enough to stop: the path that skips it still reaches the
+                    # calls below. Reported on this PR.
+                    if isinstance(statement, (ast.Return, ast.Raise)):
+                        break
     return first
 
 
@@ -917,12 +919,31 @@ def _reachable_nodes(node: ast.AST):
     it is written.
     """
     if isinstance(node, ast.If) and _constant_test(node) is not None:
-        for child in node.body if _constant_test(node) else node.orelse:
-            yield from _reachable_nodes(child)
+        yield from _reachable_body(node.body if _constant_test(node) else node.orelse)
         return
     yield node
-    for child in ast.iter_child_nodes(node):
-        yield from _reachable_nodes(child)
+    for _field, value in ast.iter_fields(node):
+        if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+            yield from _reachable_body(value)
+        elif isinstance(value, list):
+            for child in value:
+                if isinstance(child, ast.AST):
+                    yield from _reachable_nodes(child)
+        elif isinstance(value, ast.AST):
+            yield from _reachable_nodes(value)
+
+
+def _reachable_body(body: list[ast.stmt]):
+    """A statement list, up to the first unconditional exit.
+
+    Anything written after a bare ``return`` or ``raise`` is dead: Python cannot execute
+    it, so an ``importorskip`` there is not an offence, and reporting one failed CI on a
+    file that never runs the import. Reported on this PR.
+    """
+    for statement in body:
+        yield from _reachable_nodes(statement)
+        if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
+            return
 
 
 def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
@@ -986,8 +1007,9 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     # boundary, which is what deferred means. Reported on this PR.
     in_function = {
         id(node): name
-        for name, function in _module_functions(tree).items()
-        for statement in function.body
+        for name, definitions in _module_functions(tree).items()
+        for definition in definitions
+        for statement in definition.body
         for node in _reachable_import_time_nodes(statement)
     }
     calls: list[tuple[str, int]] = []
@@ -1255,6 +1277,36 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "_stub_if_missing('unsloth', ())\n"
     )
     assert safe(after_return), after_return
+
+    # Two enclosing functions can define a helper of the same name. Keeping only the
+    # first dropped the second from the call graph, and its importorskip then took the
+    # lenient end-of-module boundary.
+    same_name = (
+        "import pytest, sys\n"
+        "def _unused():\n"
+        "    def _probe():\n        return None\n"
+        "    return _probe()\n"
+        "def _outer():\n"
+        "    def _probe():\n"
+        "        return pytest.importorskip('core.inference.inference')\n"
+        "    return _probe()\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(same_name) == [("core.inference.inference", 10)], calls(same_name)
+    assert not safe(same_name), same_name
+
+    # An importorskip below an unconditional exit is dead code, so it is not an offence.
+    for dead in (
+        "import pytest\n"
+        "def test_x():\n"
+        "    return None\n"
+        "    pytest.importorskip('core.inference.inference')\n",
+        "import pytest\n"
+        "raise SystemExit(0)\n"
+        "inf = pytest.importorskip('core.inference.inference')\n",
+    ):
+        assert safe(dead), dead
 
     # A nested def nothing calls at import is still deferred: it runs at test time,
     # by which point a stub anywhere in the module body is in place.
