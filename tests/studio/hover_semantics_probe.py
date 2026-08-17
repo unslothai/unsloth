@@ -550,7 +550,9 @@ def case_h5_keyboard(page) -> dict:
     page.wait_for_timeout(400)
     before = census(page)
     page.evaluate("() => window.__probeReset()")
-    page.evaluate("() => { const v = window.__heavyThread.viewport(); v.tabIndex = -1; v.focus(); }")
+    page.evaluate(
+        "() => { const v = window.__heavyThread.viewport(); v.tabIndex = -1; v.focus(); }"
+    )
     top_before = page.evaluate("() => window.__heavyThread.viewportMetrics().scrollTop")
     # Several presses, because one PageDown may land an assistant message under the stale point
     # and the case would look clean without having reached the interesting state.
@@ -839,9 +841,7 @@ def main() -> int:
                         info(f"{engine} {name} rep{rep}: {json.dumps(row)[:400]}")
                 results["engines"][engine] = per_case
                 browser.close()
-        (OUT / f"{LABEL}.json").write_text(
-            json.dumps(results, indent = 2), encoding = "utf-8"
-        )
+        (OUT / f"{LABEL}.json").write_text(json.dumps(results, indent = 2), encoding = "utf-8")
         info(f"wrote {OUT / f'{LABEL}.json'}")
     finally:
         if vite is not None:
