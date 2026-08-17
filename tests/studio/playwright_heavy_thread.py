@@ -723,12 +723,6 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
             arg = plan["messages"],
             timeout = SEED_TIMEOUT_MS,
         )
-    # The previous repetition ended by re-opening the thread, which throws away every highlighted
-    # fence and starts Shiki again. Without this wait, repetitions 2 and 3 measure a thread that
-    # is still building itself: measured on Chromium at 300K, the scroll gesture read 667ms on
-    # the first repetition and 1100ms on the two that followed, and the difference was the
-    # re-highlighting, not the scroll.
-    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
     # Re-open unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so
     # without this every repetition after the first would run against a thread with no tool
     # result panes in it -- a different, cheaper fixture wearing the same label. Idempotent: on
@@ -740,6 +734,16 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
             arg = expanded,
             timeout = ACTION_TIMEOUT_MS,
         )
+    # AFTER the expansion, which is the order measure_cell() seeds in, and for two reasons that
+    # both end in Shiki. The previous repetition ended by re-opening the thread, which throws away
+    # every highlighted fence and starts Shiki again: measured on Chromium at 300K, the scroll
+    # gesture read 667ms on the first repetition and 1100ms on the two that followed, and the
+    # difference was the re-highlighting, not the scroll. And the panes the expansion just mounted
+    # carry code fences of their own, which cannot start highlighting until they exist -- the wait
+    # above is satisfied by their containers appearing, which is not the same thing. Settling
+    # before the expansion instead would leave that second batch inside the keystroke and scroll
+    # windows of every repetition after the first.
+    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
         page,
@@ -782,6 +786,11 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
     return rep
 
 
+# The per-repetition values that are proofs rather than timings: what the action did, not how long
+# it took. Nothing here can be aggregated, so every repetition's is carried through summarise()
+# and read by harness_failures().
+PROOF_KEYS = ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose")
+
 # Portable headline per action, plus the action's own DOM-observable duration. `floored` marks a
 # value clocked across a double rAF, which carries the ~33ms vsync floor.
 HEADLINE = {
@@ -812,10 +821,16 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
         # Values that are not numbers are proofs the action really happened, not timings, so the
-        # last repetition's is kept verbatim rather than aggregated.
-        for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
+        # last repetition's is kept verbatim rather than aggregated -- and every repetition's is
+        # kept beside it. The median spans all of them, so a repetition that typed into nothing is
+        # inside the reported number even when the final one landed, and a verdict reading only
+        # rows[-1] passes on it.
+        for key in PROOF_KEYS:
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
+        merged["per_repetition_proofs"] = [
+            {key: row[key] for key in PROOF_KEYS if key in row} for row in rows
+        ]
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
@@ -1241,6 +1256,15 @@ def print_growth(results: dict, report: dict) -> None:
             )
 
 
+def numbered_proofs(action: dict) -> list[tuple[int, dict]]:
+    """Each repetition's proofs, numbered from 1, for a verdict that must not read only the last.
+
+    Empty for an action that never ran and for a results file written before summarise() started
+    carrying them, so a caller can iterate it unconditionally.
+    """
+    return list(enumerate(action.get("per_repetition_proofs") or [], 1))
+
+
 def harness_failures(results: dict, report: dict) -> list[str]:
     """Only the ways this harness can be measuring nothing. No performance budgets: see the
     module docstring."""
@@ -1340,12 +1364,17 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 # own. Only the runtime's copy shows the keystroke reached React rather than just
                 # the textarea, and a keystroke that reached nothing still reports the ~33ms
                 # paint floor, which reads as a plausible timing.
-                if keystroke["runtimeText"] != keystroke["domText"]:
-                    failures.append(
-                        f"{where} typed {keystroke['domText']!r} into the DOM but the runtime "
-                        f"holds {keystroke['runtimeText']!r}; the keystroke never reached the "
-                        "composer state"
-                    )
+                #
+                # Per repetition, not on the summary. The summary carries the LAST repetition's
+                # proof while the headline is a median over all of them, so a first repetition
+                # that typed into nothing is in the number with nothing to show for it.
+                for n, proof in numbered_proofs(keystroke):
+                    if proof["runtimeText"] != proof["domText"]:
+                        failures.append(
+                            f"{where} repetition {n} typed {proof['domText']!r} into the DOM but "
+                            f"the runtime holds {proof['runtimeText']!r}; the keystroke never "
+                            "reached the composer state, and that repetition is in the median"
+                        )
                 # Sitting on the paint floor is NOT a harness failure here, and the reason is a
                 # finding rather than an excuse: the character reaches the composer and paints on
                 # the very next frame at every size, while the thread churns for another 180ms
@@ -1381,13 +1410,18 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     failures.append(f"{where} never opened the message action menu")
                 elif menu["closeMs"] is None:
                     failures.append(f"{where} opened the action menu and it never closed")
-                elif menu["bodyPointerEventsAfterClose"] == "none":
-                    failures.append(
-                        f"{where} left the body on the modal layer after closing the menu"
-                    )
                 # An empty popover satisfies "the menu opened" and costs nothing to render.
                 elif not menu["itemsWhileOpen"]:
                     failures.append(f"{where} opened an action menu with no items in it")
+                # Per repetition for the same reason as the keystroke proof above: a repetition
+                # that left the body on the modal layer measured a different mechanism from the
+                # ones that did not, and every one of them is in the median.
+                for n, proof in numbered_proofs(menu):
+                    if proof["bodyPointerEventsAfterClose"] == "none":
+                        failures.append(
+                            f"{where} repetition {n} left the body on the modal layer after "
+                            "closing the menu"
+                        )
                 if not menu["triggersWhileHovered"] and counts["actionBars"] <= 0:
                     failures.append(
                         f"{where} mounted no action bar at rest and none under the pointer either"
@@ -1410,19 +1444,22 @@ def harness_failures(results: dict, report: dict) -> list[str]:
 
         # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
         # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
-        # across sizes is comparing columns measured on different mechanisms.
-        layers = {
-            results["by_engine"][engine]["by_size"][str(size)]
-            .get("actions", {})
-            .get("menu", {})
-            .get("bodyPointerEvents")
-            for size in results["sizes"]
-            if "crashed" not in results["by_engine"][engine]["by_size"][str(size)]
-        }
+        # is comparing columns measured on different mechanisms. Every repetition goes in, not
+        # just the one the summary carries: mixing the two layers WITHIN a size is the same
+        # defect, and it lands in a median rather than in a column.
+        layers = set()
+        for size in results["sizes"]:
+            row = results["by_engine"][engine]["by_size"][str(size)]
+            if "crashed" in row:
+                continue
+            menu_summary = row.get("actions", {}).get("menu", {})
+            layers.add(menu_summary.get("bodyPointerEvents"))
+            for _, proof in numbered_proofs(menu_summary):
+                layers.add(proof.get("bodyPointerEvents"))
         if len(layers) > 1:
             failures.append(
-                f"on {engine} the menu put the body on {sorted(str(x) for x in layers)} across "
-                "sizes; the columns are not measuring the same mechanism"
+                f"on {engine} the menu put the body on {sorted(str(x) for x in layers)}; the "
+                "numbers are not measuring the same mechanism"
             )
 
     # Discrimination. Not a budget: a harness where the largest thread costs what the smallest
