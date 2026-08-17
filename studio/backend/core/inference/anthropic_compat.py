@@ -411,7 +411,11 @@ class AnthropicStreamEmitter:
     """Converts generate_chat_completion_with_tools() events into Anthropic
     Messages SSE strings."""
 
-    def __init__(self, parse_think: bool = True, think_provenance: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        parse_think: bool = True,
+        think_provenance: Optional[dict] = None,
+    ) -> None:
         # Off when the route knows reasoning markup cannot be genuine (thinking
         # disabled or a non-reasoning model): literal <think> in prose then
         # streams as ordinary text instead of being consumed as a trace.

@@ -164,12 +164,9 @@ def test_think_parsing_expected_gates_on_capability_and_request():
                 return {"reasoning_effort": "none"}
             return {"reasoning_effort": "low" if enable_thinking is False else "high"}
 
+    assert _think_parsing_expected(_EffortBackend(), _basic_payload(enable_thinking = False)) is True
     assert (
-        _think_parsing_expected(_EffortBackend(), _basic_payload(enable_thinking = False)) is True
-    )
-    assert (
-        _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none"))
-        is False
+        _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
 
@@ -179,17 +176,22 @@ def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     # and the parsing gate read these same args, so they cannot disagree.
     from routes.inference import _anthropic_reasoning_args
 
-    assert _anthropic_reasoning_args(_basic_payload(reasoning_effort = "none"))[
-        "enable_thinking"
-    ] is False
-    assert _anthropic_reasoning_args(_basic_payload(reasoning_effort = "high"))[
-        "enable_thinking"
-    ] is True
+    assert (
+        _anthropic_reasoning_args(_basic_payload(reasoning_effort = "none"))["enable_thinking"]
+        is False
+    )
+    assert (
+        _anthropic_reasoning_args(_basic_payload(reasoning_effort = "high"))["enable_thinking"]
+        is True
+    )
     assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
     # An explicit boolean always wins over the effort mapping.
-    assert _anthropic_reasoning_args(
-        _basic_payload(enable_thinking = True, reasoning_effort = "none")
-    )["enable_thinking"] is True
+    assert (
+        _anthropic_reasoning_args(_basic_payload(enable_thinking = True, reasoning_effort = "none"))[
+            "enable_thinking"
+        ]
+        is True
+    )
 
 
 def test_replayed_thinking_preserved_only_when_requested():
@@ -241,7 +243,6 @@ def test_anthropic_emitter_no_leading_think_keeps_all_tags_literal():
 
 def test_split_think_segments_only_parses_leading_block():
     from routes.inference import _split_think_segments
-
     assert _split_think_segments("<think>why</think>Use <think>x</think> tags.") == [
         ("thinking", "why"),
         ("text", "Use <think>x</think> tags."),

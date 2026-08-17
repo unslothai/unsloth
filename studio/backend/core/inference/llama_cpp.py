@@ -21148,9 +21148,9 @@ class LlamaCppBackend:
                                                     reasoning_provenance.get("wrapped", 0) + 1
                                                 )
                                                 _prov_entry = {"len": 0}
-                                                reasoning_provenance.setdefault(
-                                                    "wraps", []
-                                                ).append(_prov_entry)
+                                                reasoning_provenance.setdefault("wraps", []).append(
+                                                    _prov_entry
+                                                )
                                             cumulative_display += "<think>"
                                             in_thinking = True
                                         cumulative_display += reasoning

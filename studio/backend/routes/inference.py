@@ -20481,9 +20481,7 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     think_provenance = _think_prov,
-                    count_template_kwargs = _anthropic_count_template_kwargs(
-                        llama_backend, payload
-                    ),
+                    count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
                 )
             )
         return await _admitted_anthropic(
@@ -20532,9 +20530,7 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 think_provenance = _think_prov,
-                count_template_kwargs = _anthropic_count_template_kwargs(
-                    llama_backend, payload
-                ),
+                count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
             )
         )
     return await _admitted_anthropic(
@@ -21005,9 +21001,7 @@ async def _anthropic_tool_non_streaming(
     # only as many leading blocks as the generator actually wrapped from
     # reasoning_content are parsed; a literal leading tag stays text.
     if parse_think:
-        _wrap_budget = (
-            None if think_provenance is None else int(think_provenance.get("wrapped", 0))
-        )
+        _wrap_budget = None if think_provenance is None else int(think_provenance.get("wrapped", 0))
         _wrap_entries = (think_provenance or {}).get("wraps") or []
         _wrap_i = 0
         _expanded: list = []
