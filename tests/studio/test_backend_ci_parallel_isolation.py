@@ -77,6 +77,7 @@ BACKEND_ISOLATED = [
         "compares when a callback fired against when the child exited",
     ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
+    ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
 ]
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
@@ -122,29 +123,54 @@ def _reads_a_clock(node: ast.AST) -> bool:
     )
 
 
+def _calls_a_helper(node: ast.AST, helpers: set) -> bool:
+    return any(
+        isinstance(inner, ast.Call) and getattr(inner.func, "id", None) in helpers
+        for inner in ast.walk(node)
+    )
+
+
 def _timing_helpers(tree: ast.AST) -> set:
-    """Functions that RETURN a clock difference, at any nesting depth.
+    """Functions that hand back a clock value, however indirectly.
 
-    test_diffusion_checkpoint_resume defines `_elapsed(path)` inside the test and compares
-    two of its results. Without this, a call to it looks like any other call and the
-    benchmark reads as untimed.
+    Not just ``return time.perf_counter() - t0``. test_tool_call_parser_strict has
+
+        def best_ms(depth):
+            best = float("inf")
+            for _ in range(5):
+                t0 = time.perf_counter()
+                ...
+                best = min(best, time.perf_counter() - t0)
+            return best
+
+    where the return reads no clock at all: the duration arrives through a local name. So
+    a function counts if it returns anything containing one of its OWN timed names, and
+    the whole thing runs to a fixpoint, so a helper that returns another helper's result
+    is found on the next pass rather than missed.
     """
-    helpers = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for inner in ast.walk(node):
-            if (
-                isinstance(inner, ast.Return)
-                and inner.value is not None
-                and _reads_a_clock(inner.value)
-            ):
-                helpers.add(node.name)
-                break
-    return helpers
+    functions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    helpers: set = set()
+    while True:
+        grown = False
+        for node in functions:
+            if node.name in helpers:
+                continue
+            local = _timed_names(node)
+            for inner in ast.walk(node):
+                if not isinstance(inner, ast.Return) or inner.value is None:
+                    continue
+                if _is_timed(inner.value, local, helpers):
+                    helpers.add(node.name)
+                    grown = True
+                    break
+        if not grown:
+            return helpers
 
 
-def _timed_names(tree: ast.AST) -> set:
+def _timed_names(tree: ast.AST, helpers: set = frozenset()) -> set:
     """Anything holding a clock value: a duration, an instant, or a list of them.
 
     Three ways one gets there, all present in this suite:
@@ -159,7 +185,9 @@ def _timed_names(tree: ast.AST) -> set:
     """
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and _reads_a_clock(node.value):
+        if isinstance(node, ast.Assign) and (
+            _reads_a_clock(node.value) or _calls_a_helper(node.value, helpers)
+        ):
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
             if node.func.attr in ("append", "add", "insert") and _reads_a_clock(node):
@@ -205,7 +233,9 @@ def _fragile_timing_asserts(path: Path) -> list:
         tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
     except SyntaxError:
         return []
-    names, helpers = _timed_names(tree), _timing_helpers(tree)
+    # Helpers first: a name can hold a duration only because a helper returned one.
+    helpers = _timing_helpers(tree)
+    names = _timed_names(tree, helpers)
     enclosing = {}
     for holder in ast.walk(tree):
         if isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
