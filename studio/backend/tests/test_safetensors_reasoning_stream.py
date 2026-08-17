@@ -30,6 +30,9 @@ import types  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
 
+_STUBBED: list[str] = []
+
+
 def _stub_if_missing(name, attrs):
     """Register a stub module for a dep the backend pytest job does not install.
 
@@ -61,6 +64,7 @@ def _stub_if_missing(name, attrs):
         return
     except Exception:  # noqa: BLE001 - unusable here either way, so stub it
         pass
+    _STUBBED.append(name)
     mod = types.ModuleType(name)
     mod.__spec__ = None
     for attr in attrs:
@@ -74,6 +78,24 @@ def _stub_if_missing(name, attrs):
 _stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
 _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+# Build the module while the stubs are live, then drop them, exactly as
+# test_audio_type_inconclusive.py does. The three tests below reach this through
+# pytest.importorskip and get it from sys.modules, so the stubs only have to exist
+# for this one import.
+#
+# Dropping them is not tidiness. A stub left in sys.modules is a cross-file leak:
+# test_audio_type_inconclusive.py::test_the_stubs_do_not_outlive_this_module asserts
+# nobody does it, and every other file's _stub_if_missing returns early when the name
+# is already present, so its own bookkeeping never runs and its cleanup has nothing to
+# undo. Leaving them installed traded this file's order dependency for a worse one.
+try:
+    import core.inference.inference  # noqa: E402,F401
+except ImportError:  # pragma: no cover - the real dep set imports fine
+    pass
+
+for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)
 
 
 _THINK_TPL = "...<think>...</think>..."
