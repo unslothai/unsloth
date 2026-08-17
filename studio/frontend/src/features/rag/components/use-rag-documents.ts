@@ -626,7 +626,17 @@ export function useRagDocuments(
       // afterwards would put the deleted row back on screen. Only for the mounted
       // scope: a stale batch bumping this would discard the new scope's own load
       // and leave it empty until something unrelated refreshed it.
-      if (forCurrentScope) refreshSeq.current += 1;
+      //
+      // Retiring a request also means its `finally` will not clear the in-flight
+      // marker, because the sequence no longer matches. The poll skips a tick
+      // while that is set, so it has to be handed back here or a scope whose
+      // caller starts no replacement refresh -- the KB dialog and the thread bar
+      // both call remove() bare -- would stop polling for the rest of the
+      // session, leaving an indexing row stuck as running and sends gated on it.
+      if (forCurrentScope) {
+        refreshSeq.current += 1;
+        refreshInFlight.current = false;
+      }
       // Restore by re-inserting this one row rather than reinstating a whole
       // snapshot: during a batch an earlier snapshot still holds the rows previous
       // iterations deleted, and replaying it would resurrect them.

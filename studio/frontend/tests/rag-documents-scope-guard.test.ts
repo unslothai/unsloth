@@ -59,8 +59,21 @@ test("a delete for another scope does not retire the mounted scope's load", () =
   );
   assert.match(
     hookSource,
-    /if \(forCurrentScope\) refreshSeq\.current \+= 1;/,
+    /if \(forCurrentScope\) \{\s*\n\s*refreshSeq\.current \+= 1;/,
     "only a delete for the mounted scope may invalidate refreshes",
+  );
+});
+
+test("invalidating a refresh hands back the in-flight marker", () => {
+  // Retiring a request means its own `finally` will not clear the marker, since
+  // the sequence no longer matches. The four-second poll skips a tick while it is
+  // set, and the KB dialog and thread bar call remove() with no replacement
+  // refresh, so leaving it set stops those scopes polling for the session: an
+  // indexing row stays "running" forever and sends gated on it never go out.
+  assert.match(
+    hookSource,
+    /if \(forCurrentScope\) \{\s*\n\s*refreshSeq\.current \+= 1;\s*\n\s*refreshInFlight\.current = false;\s*\n\s*\}/,
+    "remove must clear refreshInFlight alongside the sequence bump",
   );
 });
 
