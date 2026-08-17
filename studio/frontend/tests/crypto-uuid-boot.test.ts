@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
@@ -12,14 +12,18 @@ const read = (relative: string): string =>
 
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 const POLYFILL_TAG = /<script\b[^>]*src="\/crypto-boot\.js"[^>]*>/;
-const ENTRY_TAG = /<script\b[^>]*src="\/src\/main\.tsx"[^>]*>/;
+const ENTRY_TAG = /<script\b[^>]*\btype="module"[^>]*>/;
+const APP_ENTRY = /<script\b[^>]*src="\/src\/main\.tsx"[^>]*>/;
 const ASYNC_ATTR = /\basync\b/;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-// Markup, not a parsed DOM: catches the tag being dropped, moved or made async,
-// not every way of making it inert. Comments would otherwise satisfy that.
-const MARKUP = read("../index.html").replace(HTML_COMMENT, "");
+// Every HTML entry, so a new page cannot ship without the polyfill. Markup, not
+// a parsed DOM: catches a tag dropped, moved or made async, not every way of
+// making it inert. Comments would otherwise satisfy that.
+const PAGES = readdirSync(new URL("../", import.meta.url))
+  .filter((name) => name.endsWith(".html"))
+  .map((name) => [name, read(`../${name}`).replace(HTML_COMMENT, "")] as const);
 const BOOT_SCRIPT = read("../public/crypto-boot.js");
 
 function boot(cryptoStub: unknown): { randomUUID?: () => string } {
@@ -30,22 +34,28 @@ function boot(cryptoStub: unknown): { randomUUID?: () => string } {
   return sandbox.crypto;
 }
 
-test("index.html loads the polyfill before the module entry", () => {
-  const polyfill = MARKUP.search(POLYFILL_TAG);
-  const entry = MARKUP.search(ENTRY_TAG);
-  assert.ok(polyfill !== -1, "index.html must load /crypto-boot.js");
-  assert.ok(entry !== -1, "index.html must load the module entry");
-  assert.ok(
-    polyfill < entry,
-    "the polyfill must be parsed before the module entry",
-  );
+test("every page loads the polyfill before its module entry", () => {
+  assert.ok(PAGES.length > 0, "no HTML entries found");
+  // Generalising the entry pattern would otherwise accept index.html pointing
+  // at another page's harness.
+  const index = PAGES.find(([name]) => name === "index.html")?.[1];
+  assert.match(index ?? "", APP_ENTRY, "index.html must keep the app entry");
+  for (const [name, markup] of PAGES) {
+    const polyfill = markup.search(POLYFILL_TAG);
+    const entry = markup.search(ENTRY_TAG);
+    assert.ok(polyfill !== -1, `${name} must load /crypto-boot.js`);
+    assert.ok(entry !== -1, `${name} must load a module entry`);
+    assert.ok(polyfill < entry, `${name} loads the polyfill too late`);
+  }
 });
 
-test("neither the polyfill nor the entry opts out of ordered execution", () => {
+test("no page lets the polyfill or its entry opt out of ordered execution", () => {
   // The entry is deferred, so anything above it runs first and `defer` here
   // would too. `async` leaves that ordering and lets the entry win.
-  assert.doesNotMatch(POLYFILL_TAG.exec(MARKUP)?.[0] ?? "", ASYNC_ATTR);
-  assert.doesNotMatch(ENTRY_TAG.exec(MARKUP)?.[0] ?? "", ASYNC_ATTR);
+  for (const [name, markup] of PAGES) {
+    assert.doesNotMatch(POLYFILL_TAG.exec(markup)?.[0] ?? "", ASYNC_ATTR, name);
+    assert.doesNotMatch(ENTRY_TAG.exec(markup)?.[0] ?? "", ASYNC_ATTR, name);
+  }
 });
 
 // Arbitrary and non-sequential, so no substitute source reproduces it.

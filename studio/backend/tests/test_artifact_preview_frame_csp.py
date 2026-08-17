@@ -8,6 +8,7 @@ reaches this route now, fenced HTML included, not just approved render_html
 output."""
 
 import asyncio
+import pathlib
 
 import routes.inference as inf_mod
 
@@ -122,3 +123,31 @@ def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
         if scheme not in value.split()
     }
     assert gaps == {"worker-src": "data:"}
+
+
+def test_the_shell_restores_randomuuid_for_insecure_canvases():
+    # crypto.randomUUID() is secure-context only, so a canvas served over plain
+    # http throws without it. The shell's script cannot run from here, so these
+    # pin its parts and the behaviour is checked in a browser: it defers to a
+    # real randomUUID, assigns one when there is none, and runs the installer.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    assert 'typeof crypto.randomUUID === "function"' in shell
+    assert "crypto.randomUUID = () =>" in shell
+    assert "installRandomUUIDFallback();" in shell
+
+
+def test_the_shell_generator_matches_the_app_one():
+    # The strict CSP allows no external script, so the app's crypto-boot.js
+    # cannot be reused here and its generator is duplicated. Pin the copies to
+    # each other: crypto-boot.js is the one with a golden test over its output,
+    # so a change made to only one side would otherwise go uncovered here.
+    shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
+    boot = (
+        pathlib.Path(__file__).resolve().parents[2] / "frontend/public/crypto-boot.js"
+    ).read_text(encoding = "utf-8")
+    for expression in (
+        '"10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>',
+        "(+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16)",
+    ):
+        assert expression in boot
+        assert expression in shell
