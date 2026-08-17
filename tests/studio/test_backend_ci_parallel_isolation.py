@@ -111,7 +111,11 @@ def _timing_helpers(tree: ast.AST) -> set:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for inner in ast.walk(node):
-            if isinstance(inner, ast.Return) and inner.value is not None and _reads_a_clock(inner.value):
+            if (
+                isinstance(inner, ast.Return)
+                and inner.value is not None
+                and _reads_a_clock(inner.value)
+            ):
                 helpers.add(node.name)
                 break
     return helpers
@@ -322,9 +326,9 @@ def test_the_scan_finds_all_three_shapes():
         for path in sorted(BACKEND_TESTS.glob("*.py"))
         if _fragile_timing_asserts(path)
     }
-    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found      # named
-    assert "test_tool_xml_strip.py" in found, found                      # named
-    assert "test_diffusion_checkpoint_resume.py" in found, found         # helper, relative
+    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found  # named
+    assert "test_tool_xml_strip.py" in found, found  # named
+    assert "test_diffusion_checkpoint_resume.py" in found, found  # helper, relative
 
     # The inline form, which the suite currently uses only at 0.2s, above the threshold.
     # Recognised rather than isolated, so tightening that bound would trip the guard.
