@@ -8,6 +8,8 @@ OpenAI), and providers that validate ids reject the whole request on the next
 turn, permanently breaking the chat.
 """
 
+import re
+
 from models.inference import ChatMessage
 from routes.inference import _build_external_messages
 
@@ -66,6 +68,21 @@ def test_short_ids_pass_through_unchanged():
 
 
 def test_replay_applies_on_generic_chat_completions_providers():
-    call_id, output_id = _replayed_ids(MINTED, provider_type = "mistral")
+    call_id, output_id = _replayed_ids(MINTED, provider_type = "deepseek")
     assert call_id == ORIGINAL
     assert output_id == ORIGINAL
+
+
+def test_mistral_maps_foreign_ids_to_nine_alnum_chars():
+    for foreign in (MINTED, "tool_call_0", "toolu_01A09q90qw90lq917835lq9", "x" * 80):
+        call_id, output_id = _replayed_ids(foreign, provider_type = "mistral")
+        assert call_id == output_id
+        assert re.fullmatch(r"[a-zA-Z0-9]{9}", call_id)
+
+
+def test_mistral_native_ids_pass_through_unchanged():
+    call_id, output_id = _replayed_ids(
+        "AbCdEfGhI:071e73c8-5d38-4d4c-821a-62fe32c7a54a", provider_type = "mistral"
+    )
+    assert call_id == "AbCdEfGhI"
+    assert output_id == "AbCdEfGhI"
