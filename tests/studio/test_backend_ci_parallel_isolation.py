@@ -81,6 +81,7 @@ BACKEND_ISOLATED = [
     # Found by staging rather than by the scan, and the scan cannot find it: see below.
     ("tests/test_tunnel_safe_long_post.py", "work sleeps 0.2s past a 0.05s keepalive timer"),
     ("tests/test_scan_loras_off_event_loop.py", "counts heartbeats during a 0.3s sleep"),
+    ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
 ]
 
 # What the scan above does NOT cover, recorded because the gap is structural rather than a
@@ -100,9 +101,17 @@ BACKEND_ISOLATED = [
 # threshold was not enough margin for the one that failed, so the ratio is not a usable
 # rule, and flagging all ten would serialise a large part of the suite on a guess.
 #
-# So this class is found by reading rather than by scanning. Both entries here arrived that
-# way, one from a staging failure and one from review, and the note is here so the next
-# person does not assume the scan covers it.
+# So this class is found by reading rather than by scanning. The first arrived from a
+# staging failure, the second from review, and the third from reading the other eight
+# candidates once the shape was clear: test_anthropic_messages counts SSE keepalives
+# emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as
+# the heartbeat test loses ticks.
+#
+# That same pass turned up one false positive worth naming, because the grep that finds
+# these is crude: test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but
+# `staged` is a list comprehension over cached filenames and has no timing in it at all.
+# It also costs 152s, so isolating it on the strength of a pattern match would have been
+# expensive as well as wrong. Read the assertion before adding a file here.
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
 # under four workers on four vCPUs it measures the scheduler as much as the code. Above it
