@@ -121,13 +121,50 @@ def _heavy_backend_modules() -> frozenset[str]:
     return frozenset(tainted)
 
 
-def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | None:
-    """Line of the first module-scope import of a heavy backend module, or None."""
-    for node in tree.body:
-        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+def _guarded_by_import_error(tree: ast.Module) -> set[int]:
+    """Ids of nodes inside a ``try`` whose handler catches ``ImportError``.
+
+    That is a deliberate guard, not an omission: the file either skips at module level
+    or falls back, so an unstubbed import there cannot take collection down.
+    ``test_chat_eos_template_refresh.py`` and ``test_generation_timing.py`` are both
+    written that way.
+    """
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
             continue
-        if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
-            return node.lineno
+        catches = any(
+            handler.type is None
+            or "ImportError" in ast.unparse(handler.type)
+            or "Exception" in ast.unparse(handler.type)
+            for handler in node.handlers
+        )
+        if catches:
+            for statement in node.body:
+                guarded.update(id(child) for child in ast.walk(statement))
+    return guarded
+
+
+def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | None:
+    """Line of the first import-time import of a heavy backend module, or None.
+
+    Not just the direct children of the module body. An import inside a module-scope
+    ``with`` or ``if`` runs at import time exactly like a top-level one, and reading
+    only ``tree.body`` made it invisible to this guard -- a file that wrote
+    ``with something(): from core.training.trainer import X`` without stubbing would
+    take collection down unseen. ``_import_time_nodes`` is the traversal that already
+    knows which of those run, so it is used here.
+
+    A ``try`` that catches ``ImportError`` is exempt, since that is a deliberate guard
+    rather than an omission.
+    """
+    guarded = _guarded_by_import_error(tree)
+    for statement in tree.body:
+        for node in _import_time_nodes(statement):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in guarded:
+                continue
+            if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
+                return node.lineno
     return None
 
 
@@ -225,6 +262,50 @@ def _installs_stub(nodes: list[ast.AST]) -> bool:
     return calls_stub or _writes_sys_modules(nodes)
 
 
+def _stub_helpers(tree: ast.Module) -> dict[str, ast.AST]:
+    """Module-level ``def``s by name, so a call to one can be read through to its body."""
+    return {
+        statement.name: statement
+        for statement in tree.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _helper_installs_stub(
+    name: str,
+    helpers: dict[str, ast.AST],
+    named: frozenset[str],
+    seen: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether calling ``name`` installs a stub for the required module.
+
+    ``_runtime_nodes`` deliberately stops at every ``def``, which is right for "does this
+    statement install a stub" and wrong for "does calling this helper install one". Two
+    files hold their stubs with ``with _stubbed():`` and import the heavy module inside
+    that block, so the installing code is one call away from module scope and the
+    statement itself spells neither ``unsloth`` nor ``sys.modules``. Read through the
+    call, the same way the stub-record check already reads through the helper that
+    appends to the record.
+
+    Recursive with a ``seen`` set, since the helper that names the module and the helper
+    that writes ``sys.modules`` are usually not the same one, and a cycle would otherwise
+    not terminate.
+    """
+    helper = helpers.get(name)
+    if helper is None or name in seen:
+        return False
+    nodes = list(ast.walk(helper))
+    if not (_names_required_stub(nodes) or _reads_a_named_stub(nodes, named)):
+        return False
+    if _installs_stub(nodes):
+        return True
+    return any(
+        _helper_installs_stub(_callee_name(node), helpers, named, seen | {name})
+        for node in nodes
+        if isinstance(node, ast.Call)
+    )
+
+
 def _stubs_before(tree: ast.Module, line: int | None) -> bool:
     """Whether a stub naming ``unsloth`` is INSTALLED at module scope before ``line``.
 
@@ -250,10 +331,17 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
     if line is None:
         return True
     named: frozenset[str] = frozenset()
+    helpers = _stub_helpers(tree)
     for statement in tree.body:
         if statement.lineno >= line:
             break
         nodes = list(_runtime_nodes(statement))
+        if any(
+            isinstance(node, ast.Call)
+            and _helper_installs_stub(_callee_name(node), helpers, named)
+            for node in nodes
+        ):
+            return True
         names_it = _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
         if not names_it:
             continue
@@ -1256,6 +1344,38 @@ def test_the_guard_would_catch_an_unstubbed_module():
         ), stubbed
         assert not _is_offender(stubbed, heavy), stubbed
 
+    # A module-scope `with` or `if` runs at import exactly like a top-level line, so a heavy
+    # import inside one is an offence. Reading only the direct children of the module body
+    # made this shape invisible to the guard entirely.
+    for nested, at in (
+        ("with open('x') as fh:\n    from core.training import trainer as t\n", 2),
+        ("import os\nif os.environ.get('X'):\n    from core.inference import inference\n", 3),
+    ):
+        assert _first_heavy_import_line(_parse(nested), heavy) == at, nested
+        assert _is_offender(nested, heavy), nested
+
+    # ...and the context manager that HOLDS the stubs is how two of the real files are
+    # written, so the installing code sits one call away from module scope and the
+    # statement itself spells neither the module name nor sys.modules.
+    held = (
+        "import contextlib, sys\n"
+        '_STUBS = (("unsloth", ()),)\n'
+        "@contextlib.contextmanager\n"
+        "def _stubbed():\n"
+        "    for _n, _a in _STUBS:\n"
+        "        sys.modules[_n] = object()\n"
+        "    yield\n"
+        "with _stubbed():\n"
+        "    from core.training import trainer as t\n"
+    )
+    assert _first_heavy_import_line(_parse(held), heavy) == 9, held
+    assert _stubs_before(_parse(held), 9), held
+    assert not _is_offender(held, heavy), held
+
+    # Same helper, never called: still not stubbed, or reading through the call would have
+    # made a defined-and-unused helper into its own proof.
+    assert _is_offender(held.replace("with _stubbed():\n    from", "from"), heavy)
+
     # And a stub that lands too late does not count.
     too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'
     assert not _stubs_before(_parse(too_late), _first_heavy_import_line(_parse(too_late), heavy))
@@ -1294,6 +1414,14 @@ def test_only_an_installed_stub_counts_as_stubbing():
         "from core.training import trainer as t\n",
         # Reading sys.modules is not writing it.
         'import sys\nassert "unsloth" not in sys.modules\n'
+        "from core.training import trainer as t\n",
+        # The same read, one call away: a helper that is called at module scope and names
+        # the module without installing anything. Reading through a call has to keep
+        # asking what the helper DOES, or every helper mentioning the name would count.
+        "import sys\n"
+        "def _require_absent():\n"
+        '    assert "unsloth" not in sys.modules\n'
+        "_require_absent()\n"
         "from core.training import trainer as t\n",
         # A stub of something ELSE, with the required name loose in the file rather than in
         # the operation. Both halves are present, so a prefix-wide pairing reads this as
