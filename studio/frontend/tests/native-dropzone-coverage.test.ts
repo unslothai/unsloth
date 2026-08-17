@@ -93,11 +93,28 @@ test("a claimed drop zone that refuses a drop says so", async () => {
 
 // Compare mode disabled the window-wide handler outright, so a file dropped on
 // a compare view produced no overlay, no toast and no attachment.
-test("compare mode refuses attachment drops out loud", async () => {
+test("compare mode refuses drops out loud", async () => {
   const source = await readFile(
     new URL("features/chat/chat-page.tsx", SRC),
     "utf8",
   );
-  assert.match(source, /attachmentsUnsupportedReason:/);
+  assert.match(source, /dropsUnsupportedReason:/);
   assert.doesNotMatch(source, /enabled: active && view\.mode === "single"/);
+});
+
+// Keeping the listener on in compare must not start loading models there:
+// before, nothing happened; auto-loading would replace the model behind it.
+test("a refusing view loads no model either", async () => {
+  const source = await readFile(
+    new URL("features/native-intents/use-native-drop.ts", SRC),
+    "utf8",
+  );
+  // The guard has to sit above the model branch, not just the attachment ones.
+  const guard = source.indexOf("dropsUnsupportedReason && isActionableKind");
+  const modelBranch = source.indexOf("registerNativeModelPath(dropped.path)");
+  assert.ok(guard > 0 && modelBranch > guard);
+  assert.match(
+    source,
+    /function isActionableKind[\s\S]*?dropped\.kind !== "none" && dropped\.kind !== "unsupported"/,
+  );
 });

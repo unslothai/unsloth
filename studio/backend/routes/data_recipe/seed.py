@@ -433,6 +433,17 @@ def _get_block_total_size(block_dir: Path) -> int:
     return total
 
 
+def _require_unstructured_ext(filename: str) -> str:
+    """Reject an unsupported type before any bytes are read."""
+    ext = Path(filename).suffix.lower()
+    if ext not in UNSTRUCTURED_ALLOWED_EXTS:
+        raise HTTPException(
+            400,
+            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
+        )
+    return ext
+
+
 def _read_native_drop(lease: str) -> tuple[str, bytes]:
     """Read a desktop drop; returns (filename, content).
 
@@ -472,19 +483,17 @@ async def upload_unstructured_file(
     # called outside FastAPI, an unfilled param is still a truthy Form marker.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
+        # verify_native_path_lease already refused an unlisted suffix.
         original_filename, content = _read_native_drop(lease)
+        ext = _require_unstructured_ext(original_filename)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
+        # Before the read, as it was: a rejected 500 MB upload must not be
+        # pulled into memory first.
+        ext = _require_unstructured_ext(original_filename)
         content = await file.read()
     else:
         raise HTTPException(400, "No file was provided.")
-
-    ext = Path(original_filename).suffix.lower()
-    if ext not in UNSTRUCTURED_ALLOWED_EXTS:
-        raise HTTPException(
-            400,
-            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
-        )
 
     size_bytes = len(content)
 

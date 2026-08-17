@@ -20,9 +20,9 @@ interface NativeModelDropOptions {
   attachmentScope?: string;
   // Where a drop on this window belongs, for reporting a failure back to it.
   attachmentTargetKey?: string;
-  /** Set when this view takes no attachments at all. Refuses every attachable
-   * drop with this sentence instead of swallowing it. */
-  attachmentsUnsupportedReason?: string;
+  /** Set when this view takes no drops at all. Refuses every droppable payload
+   * with this sentence instead of swallowing it, and loads nothing. */
+  dropsUnsupportedReason?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
@@ -66,13 +66,12 @@ function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number 
   return 0;
 }
 
-function isAttachKind(dropped: ReturnType<typeof classifyDropPaths>): boolean {
-  return (
-    dropped.kind === "docs" ||
-    dropped.kind === "images" ||
-    dropped.kind === "audio" ||
-    dropped.kind === "attach"
-  );
+/** Anything this handler would otherwise act on. "none" and "unsupported"
+ * already have their own answers. */
+function isActionableKind(
+  dropped: ReturnType<typeof classifyDropPaths>,
+): boolean {
+  return dropped.kind !== "none" && dropped.kind !== "unsupported";
 }
 
 function dropStateForPaths(
@@ -81,8 +80,8 @@ function dropStateForPaths(
 ): NativeModelDropState {
   const dropped = classifyDropPaths(paths);
   if (dropped.kind === "none") return { status: "idle" };
-  if (options.attachmentsUnsupportedReason && isAttachKind(dropped)) {
-    return { status: "invalid", reason: options.attachmentsUnsupportedReason };
+  if (options.dropsUnsupportedReason && isActionableKind(dropped)) {
+    return { status: "invalid", reason: options.dropsUnsupportedReason };
   }
   if (dropped.kind === "docs") {
     return canAttachDocs(options)
@@ -253,8 +252,10 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           toast.error(SUPPORTED_DROP_HINT);
           return;
         }
-        if (currentOptions.attachmentsUnsupportedReason && isAttachKind(dropped)) {
-          toast.error(currentOptions.attachmentsUnsupportedReason);
+        // Before the model branch too: this view loads nothing, so a dropped
+        // GGUF must not replace the active model behind it.
+        if (currentOptions.dropsUnsupportedReason && isActionableKind(dropped)) {
+          toast.error(currentOptions.dropsUnsupportedReason);
           return;
         }
         if (
