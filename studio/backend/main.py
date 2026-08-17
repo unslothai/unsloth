@@ -1336,6 +1336,10 @@ app.add_middleware(
     max_age = 60,
 )
 
+from utils.keyless_api_access import KeylessToolPolicyMiddleware  # noqa: E402
+
+app.add_middleware(KeylessToolPolicyMiddleware)
+
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
 app.add_middleware(RemoteAccessStopResponseMiddleware)

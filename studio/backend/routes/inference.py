@@ -2345,7 +2345,10 @@ def _request_used_api_key(request: Any) -> bool:
     # _request_is_internal_workflow where a Studio workflow needs its own connection.
     token = _request_api_key_token(request)
     if token is None:
-        return False
+        # keyless traffic is someone using Unsloth as an API server too
+        from auth.authentication import admitted_without_session
+
+        return admitted_without_session(request)
     try:
         return not auth_storage.is_internal_api_key(token)
     except Exception:

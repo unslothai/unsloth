@@ -91,10 +91,10 @@ from utils.openai_auto_switch_settings import (
     set_openai_auto_switch,
 )
 from utils.keyless_api_access import (
-    DEFAULT_KEYLESS_API_ACCESS_SCOPE,
     access_exposure,
     get_keyless_api_access_scope,
-    set_keyless_api_access_scope,
+    get_keyless_api_tools_enabled,
+    set_keyless_api_access,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -1708,11 +1708,12 @@ def rotate_preview_links(
 
 class KeylessApiAccessPayload(BaseModel):
     scope: Literal["off", "inference", "full"]
+    tools: Optional[StrictBool] = None
 
 
 class KeylessApiAccessResponse(BaseModel):
     scope: Literal["off", "inference", "full"]
-    default_scope: str = DEFAULT_KEYLESS_API_ACCESS_SCOPE
+    tools: bool
     exposure: Optional[Literal["colab", "public_url", "network"]] = None
 
 
@@ -1843,9 +1844,26 @@ def update_preview_sharing(
     return PreviewSharingResponse(enabled = enabled)
 
 
+def _require_ui_session_for_keyless(
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> None:
+    """Only a signed-in UI session may change who needs a key.
+
+    An sk-unsloth key must not be able to switch authentication off for the whole
+    install, and a keyless caller must not be able to widen its own scope; both are
+    ``authenticated_via_api_key``, so one check covers them.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = 403,
+            detail = "Keyless API access can only be changed from the Unsloth UI.",
+        )
+
+
 def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
     return KeylessApiAccessResponse(
         scope = get_keyless_api_access_scope(),
+        tools = get_keyless_api_tools_enabled(),
         exposure = access_exposure(request.app.state),
     )
 
@@ -1854,6 +1872,7 @@ def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
 def get_keyless_api_access(
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
     return _keyless_api_access_response(request)
 
@@ -1863,22 +1882,15 @@ def update_keyless_api_access(
     request: Request,
     payload: KeylessApiAccessPayload,
     current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session_for_keyless),
 ) -> KeylessApiAccessResponse:
-    """Choose which routes are served without an API key: none, inference, or all."""
-    try:
-        scope = set_keyless_api_access_scope(payload.scope)
-    except ValueError as exc:
-        raise log_and_http_error(
-            exc,
-            400,
-            safe_error_detail(exc, fallback = "Invalid keyless API access setting."),
-            event = "settings.update_keyless_api_access_failed",
-            log = logger,
-        ) from exc
+    """Choose which routes are served without an API key, and whether tools come too."""
+    scope, tools = set_keyless_api_access(payload.scope, tools = payload.tools)
     logger.info(
-        "settings.keyless_api_access_updated subject=%s scope=%s exposure=%s",
+        "settings.keyless_api_access_updated subject=%s scope=%s tools=%s exposure=%s",
         current_subject,
         scope,
+        tools,
         access_exposure(request.app.state),
     )
     return _keyless_api_access_response(request)

@@ -24,10 +24,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
-type PendingScope = Exclude<KeylessApiAccessScope, "off">;
+type PendingGrant = Exclude<KeylessApiAccessScope, "off"> | "tools";
 
 const CONFIRM_COPY: Record<
-  PendingScope,
+  PendingGrant,
   { title: string; body: (audience: string) => string; action: string }
 > = {
   inference: {
@@ -42,6 +42,12 @@ const CONFIRM_COPY: Record<
       `${audience} will be able to chat, start training runs, and read the files and settings in Unsloth, with no API key.`,
     action: "Allow everything",
   },
+  tools: {
+    title: "Let keyless callers run tools?",
+    body: (audience) =>
+      `${audience} will be able to run Python and terminal commands through the model, with no API key.`,
+    action: "Allow tools",
+  },
 };
 
 export function KeylessApiAccessSection({
@@ -55,10 +61,7 @@ export function KeylessApiAccessSection({
   );
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [pending, setPending] = useState<PendingScope | null>(null);
-
-  const describe = (cause: unknown, fallback: string) =>
-    setError(cause instanceof Error ? cause.message : fallback);
+  const [pending, setPending] = useState<PendingGrant | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,7 +75,11 @@ export function KeylessApiAccessSection({
       })
       .catch((cause: unknown) => {
         if (!cancelled) {
-          describe(cause, "Couldn't load keyless API access.");
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Couldn't load keyless API access.",
+          );
         }
       });
     return () => {
@@ -80,41 +87,67 @@ export function KeylessApiAccessSection({
     };
   }, [onScopeChange]);
 
-  const save = async (next: KeylessApiAccessScope) => {
+  const save = async (next: KeylessApiAccessScope, tools?: boolean) => {
     setSaving(true);
     setError(null);
     try {
-      const saved = await updateKeylessApiAccess(next);
+      const saved = await updateKeylessApiAccess(next, tools);
       setSettings(saved);
       onScopeChange?.(saved.scope);
     } catch (cause: unknown) {
-      describe(cause, "Couldn't update keyless API access.");
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "Couldn't update keyless API access.",
+      );
     } finally {
       setSaving(false);
       setPending(null);
     }
   };
 
-  // re-read first: a tunnel started since this tab opened changes who the dialog names
-  const confirm = async (confirmAs: PendingScope) => {
+  // re-read who the dialog names, held busy so no second click lands during the round trip
+  const confirm = async (confirmAs: PendingGrant) => {
+    setSaving(true);
     try {
       setSettings(await loadKeylessApiAccess());
     } catch {
       // keep the exposure already on screen; the dialog still states the scope
+    } finally {
+      setSaving(false);
     }
     setPending(confirmAs);
   };
 
   const scope = settings?.scope ?? "off";
+  const tools = settings?.tools === true;
   const audience = keylessAudience(settings?.exposure ?? null);
   const busy = settings === null || saving;
 
-  const request = (next: KeylessApiAccessScope, confirmAs: PendingScope) => {
+  const request = (next: KeylessApiAccessScope, confirmAs: PendingGrant) => {
     if (next === "off" || scope === "full") {
       void save(next);
       return;
     }
     void confirm(confirmAs);
+  };
+
+  const requestTools = (on: boolean) => {
+    if (!on) {
+      void save(scope, false);
+      return;
+    }
+    void confirm("tools");
+  };
+
+  const applyPending = () => {
+    if (pending === "tools") {
+      void save(scope, true);
+      return;
+    }
+    if (pending) {
+      void save(pending);
+    }
   };
 
   return (
@@ -176,6 +209,19 @@ export function KeylessApiAccessSection({
             aria-label="Everything else"
           />
         </SettingsRow>
+
+        <SettingsRow
+          label="Allow tools"
+          description="Let keyless callers use the built-in Python, terminal and web search tools. Off unless you turn it on."
+          alignTop={true}
+        >
+          <Switch
+            checked={tools}
+            disabled={busy || scope === "off"}
+            onCheckedChange={requestTools}
+            aria-label="Allow tools"
+          />
+        </SettingsRow>
       </div>
 
       <Dialog
@@ -198,10 +244,10 @@ export function KeylessApiAccessSection({
             <Button
               disabled={saving}
               className={cn(
-                pending === "full" &&
+                (pending === "full" || pending === "tools") &&
                   "bg-destructive hover:bg-destructive/90 text-destructive-foreground",
               )}
-              onClick={() => pending && void save(pending)}
+              onClick={applyPending}
             >
               {pending ? CONFIRM_COPY[pending].action : ""}
             </Button>

@@ -9,14 +9,13 @@ export type KeylessApiAccessExposure = "colab" | "public_url" | "network";
 
 export type KeylessApiAccessSettings = {
   scope: KeylessApiAccessScope;
-  defaultScope: KeylessApiAccessScope;
+  tools: boolean;
   exposure: KeylessApiAccessExposure | null;
 };
 
 type ApiKeylessApiAccessSettings = {
   scope: KeylessApiAccessScope;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  default_scope: KeylessApiAccessScope;
+  tools: boolean;
   exposure?: KeylessApiAccessExposure | null;
 };
 
@@ -25,7 +24,7 @@ function fromApi(
 ): KeylessApiAccessSettings {
   return {
     scope: settings.scope,
-    defaultScope: settings.default_scope,
+    tools: settings.tools,
     exposure: settings.exposure ?? null,
   };
 }
@@ -42,11 +41,12 @@ export async function loadKeylessApiAccess(): Promise<KeylessApiAccessSettings> 
 
 export async function updateKeylessApiAccess(
   scope: KeylessApiAccessScope,
+  tools?: boolean,
 ): Promise<KeylessApiAccessSettings> {
   const res = await authFetch("/api/settings/keyless-api-access", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope }),
+    body: JSON.stringify({ scope, tools: tools ?? null }),
   });
   if (!res.ok) {
     throw new Error(

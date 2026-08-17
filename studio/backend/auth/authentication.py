@@ -56,6 +56,11 @@ def _names_a_session(token: str) -> bool:
     return subject is not None and get_user_and_secret(subject) is not None
 
 
+def bearer_names_a_session(token: str) -> bool:
+    """Public form of the session check, for callers that only have the raw token."""
+    return _names_a_session(token)
+
+
 def admitted_without_session(request: Any) -> bool:
     """True when keyless API access lets this request through with no Studio sign-in.
 
@@ -66,7 +71,11 @@ def admitted_without_session(request: Any) -> bool:
 
     if not keyless_request_allowed(request):
         return False
-    scheme, token = get_authorization_scheme_param(request.headers.get("Authorization") or "")
+    try:
+        header = request.headers.get("Authorization")
+    except Exception:
+        return True  # no readable header is no session either
+    scheme, token = get_authorization_scheme_param(header or "")
     return not (scheme.lower() == "bearer" and token and _names_a_session(token))
 
 
