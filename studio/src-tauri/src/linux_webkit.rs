@@ -52,16 +52,30 @@ fn rendering_plan(
     webkit_version: (u32, u32, u32),
     nvidia_driver_loaded: bool,
 ) -> RenderingPlan {
-    // Presence is an operator override, including `=0` and an empty value. Do
-    // not combine the modern shared-memory switch with legacy instructions a
-    // user may already carry in a launcher or environment.d file.
-    if env(FORCE_SHARED_MEMORY).is_some() || env(DISABLE_DMABUF).is_some() {
+    // DISABLE_DMABUF is the explicit operator override, including `=0` and an
+    // empty value. It also disambiguates a deliberate FORCE_SHM=1 on NVIDIA.
+    if env(DISABLE_DMABUF).is_some() {
         return RenderingPlan::PreserveEnvironment;
     }
 
+    let force_shared_memory = env(FORCE_SHARED_MEMORY);
+
     // webkit's isNVIDIA fix (bug 262607) is session-independent, so x11 needs this too
     if nvidia_driver_loaded {
+        // Previous Wayland builds injected exactly FORCE_SHM=1. Tauri relaunches
+        // inherit it, so treating that lone value as an override leaves the first
+        // post-update process on the old workaround. Other values remain operator
+        // overrides; use DISABLE_DMABUF=0 alongside FORCE_SHM=1 to preserve an
+        // intentional shared-memory choice on NVIDIA.
+        if force_shared_memory.is_some() && force_shared_memory.as_deref() != Some(OsStr::new("1"))
+        {
+            return RenderingPlan::PreserveEnvironment;
+        }
         return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON);
+    }
+
+    if force_shared_memory.is_some() {
+        return RenderingPlan::PreserveEnvironment;
     }
 
     let configured_backends = env(GDK_BACKEND);
@@ -121,6 +135,10 @@ pub fn configure_linux_renderer() -> Option<(&'static str, &'static str)> {
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variable = workaround.variable();
+
+            if workaround == RenderingWorkaround::DisableDmabuf {
+                std::env::remove_var(FORCE_SHARED_MEMORY);
+            }
             std::env::set_var(variable, "1");
             Some((variable, reason))
         }
@@ -205,6 +223,22 @@ mod tests {
         assert_eq!(
             plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0")]),
             RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+        );
+    }
+
+    #[test]
+    fn nvidia_relaunch_replaces_inherited_force_shm() {
+        assert_eq!(
+            plan_on_nvidia(&[(WAYLAND_DISPLAY, "wayland-0"), (FORCE_SHARED_MEMORY, "1"),]),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_REASON)
+        );
+    }
+
+    #[test]
+    fn explicit_disable_override_preserves_force_shm_on_nvidia() {
+        assert_eq!(
+            plan_on_nvidia(&[(FORCE_SHARED_MEMORY, "1"), (DISABLE_DMABUF, "0"),]),
+            RenderingPlan::PreserveEnvironment
         );
     }
 
