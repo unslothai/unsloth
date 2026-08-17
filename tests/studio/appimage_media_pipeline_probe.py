@@ -26,19 +26,22 @@ GST_STATE_NULL, GST_STATE_PLAYING = 1, 4
 GST_MESSAGE_EOS, GST_MESSAGE_ERROR = 1 << 0, 1 << 11
 EXPORT = re.compile(r'^export ([A-Z0-9_]+)="([^"]*)"$')
 
-# The video gallery writes H.264, dictation captures through PulseAudio, and the
-# galleries play WebM and Ogg, so each of those decoders has to be reachable.
+# The video gallery writes H.264 and the galleries play WebM, Ogg and WAV, so
+# each of those has to be reachable by name.
 REQUIRED_ELEMENTS = (
     "playbin",
     "decodebin",
     "qtdemux",
     "h264parse",
+    "openh264enc",
     "avdec_h264",
     "vp8dec",
     "opusdec",
     "wavparse",
-    "pulsesrc",
 )
+# Dictation needs a capture source, but which one is the host's business: a
+# machine with no PulseAudio still records through ALSA.
+CAPTURE_ELEMENTS = ("pulsesrc", "alsasrc")
 
 
 def _extract(appimage: Path, workdir: Path) -> Path:
@@ -109,6 +112,8 @@ def main() -> None:
         absent = [
             name for name in REQUIRED_ELEMENTS if not gst.gst_element_factory_find(name.encode())
         ]
+        if not any(gst.gst_element_factory_find(name.encode()) for name in CAPTURE_ELEMENTS):
+            absent.append(" or ".join(CAPTURE_ELEMENTS))
         if absent:
             raise SystemExit(
                 "The bundled GStreamer registry is missing "
