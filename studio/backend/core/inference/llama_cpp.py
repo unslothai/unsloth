@@ -475,7 +475,12 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         from core.rag import config as rag_config
         from core.rag import conversation_archive
 
-        if not conversation_archive.enabled():
+        # Eligibility, not just availability. A temporary chat is never archived, so
+        # nothing can ever be recalled into the room held back for it -- and the reserve
+        # is subtracted from the trim target, so on a small window it evicts most of the
+        # history to reserve space that stays empty. Measured on a 4K chat: 15 tokens of
+        # conversation survived instead of 1,615.
+        if not conversation_archive.can_archive(thread_id):
             return 0
         return max(0, int(rag_config.CONVERSATION_RECALL_RESERVE_TOKENS))
     except Exception:

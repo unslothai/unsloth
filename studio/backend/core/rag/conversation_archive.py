@@ -173,6 +173,30 @@ def enabled() -> bool:
     return bool(config.CONVERSATION_ARCHIVE) and bool(rag_db.rag_available())
 
 
+def can_archive(thread_id: Optional[str]) -> bool:
+    """Whether this thread's evicted turns can be archived at all.
+
+    A temporary (incognito) chat is never written to studio.db and is documented to
+    vanish on reload, but the frontend still sends its thread_id and the request model
+    carries no incognito flag, so nothing else here would tell the two apart. Archiving
+    one would persist exactly the content the user asked not to keep, into a scope with
+    no thread row, which no deletion flow could ever reach. An API client that sends a
+    thread_id without persisting anything is excluded for the same reason.
+
+    Also what decides whether the fit should hold a recall reserve back: a thread that
+    can never be archived can never be recalled either, and the reserve is subtracted
+    from the trim target, so charging it there evicts history to make room for content
+    that cannot arrive.
+    """
+    if not thread_id or not enabled():
+        return False
+    try:
+        from storage import studio_db
+        return bool(studio_db.chat_thread_has_messages(thread_id))
+    except Exception:
+        return False
+
+
 def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     """Index the evicted turns for ``thread_id``. Returns how many were newly written.
 
@@ -192,7 +216,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     # to compact its earlier turns are always persisted. An API client that sends a
     # thread_id without persisting anything is excluded for the same reason: its archive
     # would be equally unreachable by any delete.
-    if not _live_transcript(thread_id):
+    if not can_archive(thread_id):
         logger.debug("conversation_archive.skipped_unpersisted_thread thread_id=%s", thread_id)
         return 0
 
@@ -279,7 +303,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     # Re-checking after the commit converges either way, because the delete route drops
     # the thread's rows first and sweeps archives last: a sweep that ran before this
     # commit is caught here, and one that runs after removes these rows itself.
-    if written and not _live_transcript(thread_id):
+    if written and not can_archive(thread_id):
         logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
         delete_for_thread(thread_id)
         return 0

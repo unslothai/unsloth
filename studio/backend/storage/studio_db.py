@@ -3350,6 +3350,22 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
         conn.close()
 
 
+def chat_thread_has_messages(thread_id: str) -> bool:
+    """Whether this thread has any saved message. Existence only, no rows hydrated.
+
+    A temporary (incognito) chat is never written here, so this is what separates a
+    thread whose turns can be archived from one whose turns must not be.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1", (thread_id,)
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def list_chat_messages(thread_id: str) -> list[dict]:
     conn = get_connection()
     try:

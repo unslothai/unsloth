@@ -589,6 +589,27 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
     assert seen["top_k"] is None
 
 
+def test_a_thread_that_cannot_be_archived_holds_back_no_reserve(monkeypatch):
+    """The reserve is room for recalled turns, and a temporary chat never has any.
+
+    archive_turns refuses a thread with no saved messages, so nothing can ever be
+    recalled into that room -- while the fit subtracts it from the trim target, so it
+    is paid for in evicted history. On a 4K window that was most of the conversation.
+    """
+    from core.inference import llama_cpp
+    from core.rag import conversation_archive
+
+    monkeypatch.setattr(conversation_archive, "enabled", lambda: True)
+
+    monkeypatch.setattr(conversation_archive, "can_archive", lambda thread_id: False)
+    assert llama_cpp._conversation_recall_reserve("incognito") == 0
+
+    monkeypatch.setattr(conversation_archive, "can_archive", lambda thread_id: True)
+    assert llama_cpp._conversation_recall_reserve("saved") > 0
+    # And no thread at all is still zero.
+    assert llama_cpp._conversation_recall_reserve(None) == 0
+
+
 def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch):
     """The loop conversation can end with an internal user-role re-prompt.
 

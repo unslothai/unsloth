@@ -552,6 +552,9 @@ def test_a_thread_that_was_never_persisted_is_never_archived(conn):
     assert written == 0
     assert conversation_archive.has_archive("temporary-thread") is False
     assert conversation_archive.recall("temporary-thread", "EPHEMERAL-4444") is None
+    # Same predicate the fit asks before holding a recall reserve back, so a chat that
+    # is never archived never pays for the room to recall into either.
+    assert conversation_archive.can_archive("temporary-thread") is False
 
 
 def test_a_thread_deleted_mid_ingest_does_not_leave_its_turns_behind(conn, monkeypatch):
