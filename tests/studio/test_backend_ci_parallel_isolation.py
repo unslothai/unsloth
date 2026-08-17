@@ -78,7 +78,23 @@ BACKEND_ISOLATED = [
     ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
+    # Found by staging rather than by the scan, and the scan cannot find it: see below.
+    ("tests/test_tunnel_safe_long_post.py", "work sleeps 0.2s past a 0.05s keepalive timer"),
 ]
+
+# What the scan above does NOT cover, recorded because the gap is structural rather than a
+# missing case. It finds assertions that COMPARE clock-derived values. A test can depend on
+# timing without any clock in it at all: test_tunnel_safe_long_post patches the keepalive
+# threshold to 0.05s and makes the work sleep 0.2s, then asserts on the RESULT -- that the
+# response starts with padding -- so whether it passes turns on which of two timers fired
+# first, and nothing in the expression is a duration. It failed exactly that way on a
+# staging 3.13 leg that had been green.
+#
+# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the
+# threshold was not enough margin for the one that failed, so the ratio is not a usable
+# rule, and flagging all ten would serialise a large part of the suite on a guess. So this
+# class is left to staging, which is the only thing that has ever detected one, and named
+# here so the next person does not assume the scan covers it.
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
 # under four workers on four vCPUs it measures the scheduler as much as the code. Above it
