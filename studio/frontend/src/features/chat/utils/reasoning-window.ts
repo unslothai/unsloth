@@ -180,12 +180,12 @@ function isFencedCode(block: string): boolean {
 const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
 
 /**
- * The longest `\[ ... \]` body `preprocessLaTeX` will rewrite, from `lib/latex.ts`:
- * `(?<!\\)\\\[([\s\S]{0,4096}?)\\\]`. A `\[` whose `\]` is further away than this is left as
- * ordinary text, so treating it as an opener would be wrong in the direction that matters most:
- * `alignWindowStart` would return 0 forever and the pane would silently never window.
+ * The longest math body `preprocessLaTeX` will rewrite, from `lib/latex.ts`: `[\s\S]{0,4096}?` on
+ * both delimiter pairs. An opener whose closer is further away than this is left as ordinary text,
+ * so treating it as live would be wrong in the direction that matters most: `alignWindowStart`
+ * would return 0 forever and the pane would silently never window.
  */
-const BRACKET_MATH_SPAN = 4096;
+const MATH_SPAN_LIMIT = 4096;
 
 /**
  * Regions where a delimiter is a literal: fenced code blocks and inline code spans.
@@ -231,41 +231,70 @@ function inRegions(regions: Array<[number, number]>, at: number): boolean {
 }
 
 /**
- * The `\[ ... \]` spans `preprocessLaTeX` would actually rewrite, in increasing order.
+ * The delimiter pairs `preprocessLaTeX` rewrites, in the order its own alternation tries them:
+ * `(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)`.
+ *
+ * BOTH forms matter here, and the inline one is the easier to overlook. `\( ... \)` becomes
+ * `$ ... $`, and because the pass is a dotall regex over the whole string it happily spans a blank
+ * line: `some prose \(a + b\n\nc + d\) and more` is rewritten across the paragraph break, verified
+ * against the function itself. The renderer would split that into two blocks, so a slice can land
+ * between them, and the mounted suffix then reaches the preprocessor carrying a bare `\)` that
+ * renders literally.
+ */
+const MATH_DELIMITERS: Array<[string, string]> = [
+  ["\\[", "\\]"],
+  ["\\(", "\\)"],
+];
+
+/**
+ * The math spans `preprocessLaTeX` would actually form, in increasing order.
  *
  * The one construct block boundaries cannot speak for, because that pass runs BEFORE the document
- * is split and turns these into `$$`. Everything it ignores is ignored here too: delimiters inside
- * code, and an opener with no closer within its span limit.
+ * is split. Everything it ignores is ignored here too: delimiters inside code, an escaped opener,
+ * and an opener with no closer within its span limit.
+ *
+ * Scanned as one left-to-right walk over both pairs rather than once per pair, because that is
+ * what the alternation does: the earliest opener wins, and its closer ends it, so an interleaved
+ * `\( ... \[ ... \) ... \]` forms ONE span from the `\(` and not two overlapping ones.
  */
-function bracketMathSpans(text: string): Array<[number, number]> {
+function mathSpans(text: string): Array<[number, number]> {
   const regions = codeRegions(text);
   const spans: Array<[number, number]> = [];
-  let index = text.indexOf("\\[");
-  while (index !== -1) {
-    if (text[index - 1] === "\\" || inRegions(regions, index)) {
-      index = text.indexOf("\\[", index + 2);
-      continue;
+  const liveOpener = (from: number): [number, string, string] | null => {
+    let best: [number, string, string] | null = null;
+    for (const [open, close] of MATH_DELIMITERS) {
+      let at = text.indexOf(open, from);
+      while (at !== -1 && (text[at - 1] === "\\" || inRegions(regions, at))) {
+        at = text.indexOf(open, at + 2);
+      }
+      if (at !== -1 && (best === null || at < best[0])) best = [at, open, close];
     }
+    return best;
+  };
+
+  let cursor = 0;
+  for (let found = liveOpener(cursor); found !== null; found = liveOpener(cursor)) {
+    const [at, , closer] = found;
     // The body is what the preprocessor's `{0,4096}` counts, so the closer may sit AT the limit.
-    const limit = index + 2 + BRACKET_MATH_SPAN;
-    let close = text.indexOf("\\]", index + 2);
+    const limit = at + 2 + MATH_SPAN_LIMIT;
+    let close = text.indexOf(closer, at + 2);
     while (close !== -1 && close <= limit && (text[close - 1] === "\\" || inRegions(regions, close))) {
-      close = text.indexOf("\\]", close + 2);
+      close = text.indexOf(closer, close + 2);
     }
     if (close === -1 || close > limit) {
       // No closer within the preprocessor's reach, so this is literal text to it and to us.
-      index = text.indexOf("\\[", index + 2);
+      cursor = at + 2;
       continue;
     }
-    spans.push([index, close + 2]);
-    index = text.indexOf("\\[", close + 2);
+    spans.push([at, close + 2]);
+    cursor = close + 2;
   }
   return spans;
 }
 
-/** Whether `offset` sits inside a `\[ ... \]` equation the preprocessor would form. */
+/** Whether `offset` sits inside an equation the preprocessor would form. */
 export function isOutsideBracketMath(text: string, offset: number): boolean {
-  return !bracketMathSpans(text).some(([from, to]) => offset > from && offset < to);
+  return !mathSpans(text).some(([from, to]) => offset > from && offset < to);
 }
 
 /**
@@ -281,7 +310,7 @@ export function isOutsideBracketMath(text: string, offset: number): boolean {
  */
 export function alignWindowStart(text: string, target: number): number {
   if (target <= 0) return 0;
-  const spans = bracketMathSpans(text);
+  const spans = mathSpans(text);
   let span = 0;
   let offset = 0;
   for (const block of parseMarkdownIntoBlocks(text)) {

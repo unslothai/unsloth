@@ -40,8 +40,11 @@ import {
   type CSSProperties,
   type ComponentProps,
   memo,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -149,7 +152,9 @@ function ReasoningTrigger({
         {active ? (
           <span className="text-sm">Thinking...</span>
         ) : (
-          <span>Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}</span>
+          <span>
+            Thought for {duration ?? 0} {duration === 1 ? "second" : "seconds"}
+          </span>
         )}
       </span>
       <ChevronDownIcon
@@ -213,7 +218,8 @@ function ReasoningText({
       if (currentScrollTop < lastScrollTopRef.current) {
         detachedFromBottomRef.current = true;
       }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const distanceFromBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight;
       if (
         detachedFromBottomRef.current &&
         distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
@@ -302,35 +308,33 @@ const RESTORE_SETTLE_MS = 400;
 const COMPLETION_HOLD_MS = ANIMATION_DURATION + 60;
 
 /**
- * Rounds whose reader has already asked for the whole body, by message id.
+ * Whether the reader has already asked for this reasoning group's whole body.
  *
  * The decision has to outlive the component that makes it. Closing a reasoning group unmounts its
  * `CollapsibleContent`, and with it `ReasoningBody`, so a reader who scrolled back, collapsed the
  * group and reopened it mid-stream would meet a windowed pane again and have to ask twice. "Off
  * for the rest of the round" has to mean the round, not the mount.
  *
- * Keyed on the message AND on the opening of this round's own text, because one assistant message
- * can hold several reasoning groups when it alternates thinking with visible answer, and a message
- * id alone would tell a later group that the reader had already asked for ITS history. The opening
- * characters are stable: a part only ever grows at the end, and no restore can happen before 18,000
- * characters have arrived.
+ * It lives in `ReasoningGroupImpl` because that component ALREADY has exactly the lifetime wanted:
+ * it owns the open/closed state, so it stays mounted across a collapse by construction, and it is
+ * one instance per reasoning group, so two groups in one message cannot share it.
  *
- * Bounded, because it is reached from a module and would otherwise hold a string per round for the
- * life of the tab. Only an explicit scroll-back adds to it, so the cap is never close.
+ * This replaces a module-level set keyed by hand, and the three review findings that key produced
+ * are all answered by not having one. Keyed by message id, a message that thinks, answers and
+ * thinks again gave its second group the first group's answer. Keyed by message id plus the
+ * opening of the round's text, two groups that begin with the same 64 characters still aliased.
+ * And the ref that remembered which key this instance had written went stale when the part
+ * instance was reused for another message. None of those are reachable now: there is no key, no
+ * eviction cap, and nothing that outlives the group it describes.
  */
-const RESTORED_ROUNDS = new Set<string>();
-const RESTORED_ROUNDS_CAP = 64;
+type ReasoningRestoreState = {
+  restored: boolean;
+  setRestored: (value: boolean) => void;
+};
 
-const roundKey = (messageId: string, text: string): string =>
-  `${messageId}:${text.slice(0, 64)}`;
-
-function markRestored(key: string): void {
-  if (RESTORED_ROUNDS.size >= RESTORED_ROUNDS_CAP) {
-    const oldest = RESTORED_ROUNDS.values().next();
-    if (!oldest.done) RESTORED_ROUNDS.delete(oldest.value);
-  }
-  RESTORED_ROUNDS.add(key);
-}
+const ReasoningRestoreContext = createContext<ReasoningRestoreState | null>(
+  null,
+);
 
 /**
  * The thinking body: a bounded tail of it while it streams and the reader is watching the end,
@@ -368,26 +372,26 @@ function ReasoningBody() {
   // different message (the same reason markdown-text.tsx re-keys its caches on the message id).
   const messageId = useAuiState(({ message }) => message.id);
 
-  // Read through a ref so the scroll handler does not need `text` in its dependencies, which
-  // would re-subscribe the scroll listener on every arriving chunk.
-  const roundKeyRef = useRef(roundKey(messageId, text));
-  roundKeyRef.current = roundKey(messageId, text);
-  // What this instance actually put in the set, so a regenerate can take back its OWN entry. By
-  // then `text` is the new round's, so recomputing the key would delete something never added.
-  const markedKeyRef = useRef<string | null>(null);
+  // Owned by the enclosing group, which outlives this component's collapse.
+  const restore = useContext(ReasoningRestoreContext);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const windowRef = useRef(freshReasoningWindow());
-  // Once set, the whole body is mounted for the rest of this round. Seeded from the round rather
-  // than from false, so it survives the group being collapsed and reopened.
-  const restoredRef = useRef(RESTORED_ROUNDS.has(roundKey(messageId, text)));
+  // Once set, the whole body is mounted for the rest of this round. Seeded from the group so it
+  // survives this component being unmounted by a collapse and mounted again by a reopen.
+  const restoredRef = useRef(false);
+  // Mirrored from the group every render, so the scroll handler can read it without `restored` in
+  // its dependencies, which would re-subscribe the listener on every arriving chunk.
+  if (restore) restoredRef.current = restore.restored;
   // Whether the reader is still following the end. The pane starts pinned to its own bottom.
   const atBottomRef = useRef(true);
   const settleRef = useRef<number | null>(null);
   const [, forceRender] = useState(0);
 
   const scroller = useCallback(
-    () => hostRef.current?.closest<HTMLElement>('[data-slot="reasoning-text"]') ?? null,
+    () =>
+      hostRef.current?.closest<HTMLElement>('[data-slot="reasoning-text"]') ??
+      null,
     [],
   );
 
@@ -398,7 +402,7 @@ function ReasoningBody() {
     messageIdRef.current = messageId;
     windowRef.current = freshReasoningWindow();
     atBottomRef.current = true;
-    restoredRef.current = RESTORED_ROUNDS.has(roundKey(messageId, text));
+    restoredRef.current = false;
     // Cancel any correction still in flight. It resolves the scroller afresh every frame, so a
     // settle left running across a thread switch would find the NEW thread's pane and drive it to
     // the old thread's distance from the bottom.
@@ -418,12 +422,12 @@ function ReasoningBody() {
       windowRef.current = freshReasoningWindow();
       atBottomRef.current = true;
       restoredRef.current = false;
-      if (markedKeyRef.current !== null) {
-        RESTORED_ROUNDS.delete(markedKeyRef.current);
-        markedKeyRef.current = null;
-      }
       setHoldingThroughCollapse(false);
-    } else if (!isRunning && windowRef.current.start > 0 && !restoredRef.current) {
+    } else if (
+      !isRunning &&
+      windowRef.current.start > 0 &&
+      !restoredRef.current
+    ) {
       setHoldingThroughCollapse(true);
     }
   }
@@ -480,7 +484,8 @@ function ReasoningBody() {
           0,
           element.scrollHeight - element.clientHeight - distanceFromBottom,
         );
-        if (Math.abs(element.scrollTop - target) >= 1) element.scrollTop = target;
+        if (Math.abs(element.scrollTop - target) >= 1)
+          element.scrollTop = target;
         // Read back rather than trusting the write: the browser clamps it.
         written = element.scrollTop;
         settleRef.current =
@@ -498,21 +503,24 @@ function ReasoningBody() {
       const distanceFromBottom =
         element.scrollHeight - element.scrollTop - element.clientHeight;
       atBottomRef.current = distanceFromBottom <= AT_BOTTOM_PX;
-      if (restoredRef.current || windowRef.current.start <= 0 || atBottomRef.current) {
+      if (
+        restoredRef.current ||
+        windowRef.current.start <= 0 ||
+        atBottomRef.current
+      ) {
         return;
       }
       // Scrolled back with a window engaged. Give them everything and stop windowing for this
       // round. Nothing here can run twice: `restoredRef` is checked first and set before the
       // correction starts, so the hold's own scroll writes cannot re-enter this.
       restoredRef.current = true;
-      markedKeyRef.current = roundKeyRef.current;
-      markRestored(roundKeyRef.current);
+      restore?.setRestored(true);
       holdPlace(distanceFromBottom);
       forceRender((n) => n + 1);
     };
     element.addEventListener("scroll", onScroll, { passive: true });
     return () => element.removeEventListener("scroll", onScroll);
-  }, [scroller, isRunning, holdPlace]);
+  }, [scroller, isRunning, holdPlace, restore]);
 
   // Advanced during render, not in an effect: while the reader is at the end the start is a pure
   // function of the text, and computing it after the commit would render one frame of the
@@ -554,7 +562,8 @@ function ReasoningBody() {
         key={renderKey}
         text={
           windowed
-            ? windowRef.current.definitions + text.slice(windowRef.current.start)
+            ? windowRef.current.definitions +
+              text.slice(windowRef.current.start)
             : undefined
         }
       />
@@ -566,7 +575,13 @@ const ReasoningImpl: ReasoningMessagePartComponent = () => <ReasoningBody />;
 
 const COPY_RESET_MS = 2000;
 
-function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+function ReasoningCopyButton({
+  startIndex,
+  endIndex,
+}: {
+  startIndex: number;
+  endIndex: number;
+}) {
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -648,6 +663,22 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     (state) => state.collapseThinkingByDefault,
   );
 
+  // The reader's request for this group's whole body. It lives here rather than in the body
+  // itself because a collapse unmounts the body and this component survives it, and rather than
+  // in a module because one instance per group is the identity that was being reinvented.
+  const [restored, setRestored] = useState(false);
+  const groupMessageId = useAuiState(({ message }) => message.id);
+  const [seenMessageId, setSeenMessageId] = useState(groupMessageId);
+  if (seenMessageId !== groupMessageId) {
+    // This instance was reused for another message, so its answer belongs to the old one.
+    setSeenMessageId(groupMessageId);
+    setRestored(false);
+  }
+  const restore = useMemo<ReasoningRestoreState>(
+    () => ({ restored, setRestored }),
+    [restored],
+  );
+
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
   const [retainStreamingHeight, setRetainStreamingHeight] = useState(false);
@@ -676,6 +707,10 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setDismissedWhileStreaming(false);
       setManualOpen(false);
+      // A regenerate is a new round in the same group, so it starts windowed again. Folded into
+      // the existing round transition rather than tracked separately, because this predicate is
+      // already the one definition of "a new round started" in this component.
+      setRestored(false);
     }
   }
 
@@ -719,35 +754,40 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   );
 
   return (
-    <ReasoningRoot
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      variant={variant}
-    >
-      <div className="flex min-w-0 items-center gap-2">
-        <ReasoningTrigger
-          className="min-w-0 flex-1"
-          active={isReasoningStreaming}
-          // Prefer server timing when available.
-          duration={persistedDuration ?? duration}
-        />
-        <div className="flex w-16 shrink-0 justify-end">
-          {isOpen && !isReasoningStreaming && (
-            <ReasoningCopyButton startIndex={startIndex} endIndex={endIndex} />
-          )}
-        </div>
-      </div>
-      <ReasoningContent
-        aria-busy={isReasoningStreaming}
-        streaming={isReasoningStreaming}
+    <ReasoningRestoreContext.Provider value={restore}>
+      <ReasoningRoot
+        open={isOpen}
+        onOpenChange={handleOpenChange}
+        variant={variant}
       >
-        <ReasoningText
-          streaming={isReasoningStreaming || retainStreamingHeight}
+        <div className="flex min-w-0 items-center gap-2">
+          <ReasoningTrigger
+            className="min-w-0 flex-1"
+            active={isReasoningStreaming}
+            // Prefer server timing when available.
+            duration={persistedDuration ?? duration}
+          />
+          <div className="flex w-16 shrink-0 justify-end">
+            {isOpen && !isReasoningStreaming && (
+              <ReasoningCopyButton
+                startIndex={startIndex}
+                endIndex={endIndex}
+              />
+            )}
+          </div>
+        </div>
+        <ReasoningContent
+          aria-busy={isReasoningStreaming}
+          streaming={isReasoningStreaming}
         >
-          {children}
-        </ReasoningText>
-      </ReasoningContent>
-    </ReasoningRoot>
+          <ReasoningText
+            streaming={isReasoningStreaming || retainStreamingHeight}
+          >
+            {children}
+          </ReasoningText>
+        </ReasoningContent>
+      </ReasoningRoot>
+    </ReasoningRestoreContext.Provider>
   );
 };
 

@@ -425,3 +425,36 @@ test("a footnote arriving mid-stream turns the window off rather than freezing i
   assert.equal(state.start, 0);
   assert.equal(state.definitions, "", "carried definitions go with the window");
 });
+
+test("an inline \\(...\\) span that crosses a block boundary is not sliced", () => {
+  // The premise, from `preprocessLaTeX` itself: the pass is a dotall regex over the WHOLE string,
+  // so an inline span happily crosses a paragraph break and becomes `$ ... $`. The renderer then
+  // splits that into two blocks, so a boundary exists inside what is really one equation.
+  const lead = "Prose that fills space.\n\n".repeat(700);
+  const spanning = "some prose \\(a + b\n\nc + d\\) and more";
+  const text = `${lead}${spanning}\n\n${"tail text\n\n".repeat(30)}`;
+  assert.ok(preprocessLaTeX(text).includes("$a + b"), "premise: the span is rewritten");
+  assert.ok(
+    !preprocessLaTeX(`c + d\\) and more\n`).includes("$"),
+    "premise: the suffix alone leaves a literal closer",
+  );
+
+  const opener = text.indexOf("\\(a + b");
+  const closer = text.indexOf("\\) and more") + 2;
+  assert.ok(parseMarkdownIntoBlocks(text.slice(opener, closer)).length > 1, "premise: two blocks");
+
+  for (let target = opener - 200; target < closer + 200; target += 7) {
+    const start = alignWindowStart(text, target);
+    assert.ok(
+      start <= opener || start >= closer,
+      `window started at ${start}, inside the inline span ${opener}..${closer}`,
+    );
+  }
+});
+
+test("an inline span with no closer in reach does not disable the window", () => {
+  const overCap = `\\(\n${"x + y\n".repeat(900)}`;
+  const text = `intro\n\n${overCap}\n\n${"filler\n\n".repeat(80)}`;
+  assert.ok(!preprocessLaTeX(text).includes("$"), "premise: the preprocessor ignores it");
+  assert.ok(alignWindowStart(text, text.length - 500) > 0);
+});
