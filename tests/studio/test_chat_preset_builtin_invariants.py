@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import uuid
 import textwrap
 from pathlib import Path
 
@@ -55,7 +56,17 @@ def _ensure_harness():
 def _run(script: str):
     _require_node()
     _ensure_harness()
-    script_path = TEMP / "run.mts"
+    # Unique per call. Every _run used to write the same TEMP/run.mts and then execute
+    # `node run.mts` from TEMP, so two of this file's tests on different pytest-xdist
+    # workers could interleave the write and the exec and one would run the other's
+    # script. Under `-n 4` that failed 5 to 6 of these 9 tests on every run of the file.
+    #
+    # A unique NAME rather than a per-call directory (which is what
+    # tests/studio/_node_harness.py does): the scripts reach the frontend sources by a
+    # relative path counted from TEMP, so adding a directory level breaks every import
+    # with ERR_MODULE_NOT_FOUND. register.mjs and loader.mjs stay shared because their
+    # contents are fixed, so a concurrent rewrite writes identical bytes.
+    script_path = TEMP / f"run_{uuid.uuid4().hex}.mts"
     script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")
     result = subprocess.run(
@@ -64,7 +75,7 @@ def _run(script: str):
             "--experimental-strip-types",
             "--import=./register.mjs",
             "--no-warnings",
-            "run.mts",
+            script_path.name,
         ],
         cwd = str(TEMP),
         capture_output = True,
@@ -72,6 +83,7 @@ def _run(script: str):
         timeout = 30,
         env = env,
     )
+    script_path.unlink(missing_ok = True)
     assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
     last = [line for line in result.stdout.strip().splitlines() if line.strip()][-1]
     return json.loads(last)
