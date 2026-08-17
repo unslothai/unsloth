@@ -1130,3 +1130,66 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
     reason = shim.free_ram_pressure_reason()
     assert reason is not None, "three running downloads left too little RAM for a fourth on Xet"
     assert "RAM free" in reason
+
+
+def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
+    """The reservation tests above start workers one after another, which never exercises the race:
+    read the ledger, then reserve, with a gap in between. These threads sit in that gap together.
+
+    The barrier is in system_profile, which the clamp reads OUTSIDE the lock, so all four arrive at
+    the decision at once; the sleep in xet_env_overrides widens the read-to-reserve window that a
+    split critical section would leave open."""
+    import os
+    import threading
+    import time
+
+    shim = clean_ledger
+    workers = 4
+    barrier = threading.Barrier(workers)
+    profile_cls = _fake_profile_cls()
+    profile = profile_cls(32 * _GB, 8 * _GB)
+
+    def _overrides(prof, **kwargs):
+        time.sleep(0.02)
+        limit = max(1 * _GB, prof.total_ram_bytes // 8)
+        return {
+            _LIMIT: str(limit),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": str(limit // 2),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": str(limit // 32),
+            "HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS": "8",
+        }
+
+    def _profile_of(cache_dir = None):
+        barrier.wait(timeout = 10)
+        return profile
+
+    module = _types.SimpleNamespace(
+        xet_env_overrides = _overrides,
+        system_profile = _profile_of,
+        _MIN_BUFFER_LIMIT = 1 * _GB,
+        _RAM_FRACTION = 8,
+    )
+    sized = _overrides(profile)
+
+    granted: list[int] = []
+    lock = threading.Lock()
+
+    def _size():
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())
+        with lock:
+            granted.append(int(written[_LIMIT]))
+
+    threads = [threading.Thread(target = _size) for _ in range(workers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout = 30)
+
+    assert len(granted) == workers, "a sizing thread never finished"
+    total = sum(granted)
+    assert total < 8 * _GB, (
+        f"{workers} concurrent sizings promised {total / _GB:.2f}GB of 8GB free; "
+        "the ledger read and the reservation are not one decision"
+    )
+    assert len(set(granted)) > 1, "identical budgets means they all read the same snapshot"

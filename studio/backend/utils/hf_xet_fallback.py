@@ -326,7 +326,8 @@ def _as_int(value: str) -> "Optional[int]":
 # after we sized it. Four downloads starting together would each read the same untouched `available`
 # and each take a quarter of it, promising the whole machine. Reservations bridge that window:
 # sizing subtracts what live siblings were already promised.
-_budget_lock = threading.Lock()
+# RLock: the clamp holds this across its whole decide-and-reserve region, and the reserve retakes it.
+_budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
 _budget_reservations: "dict[int, list]" = {}
 _budget_token_seq = 0
@@ -435,54 +436,62 @@ def clamp_to_available_ram(
         if available <= 0 or total <= 0:
             return sized
         floor = int(getattr(module, "_MIN_BUFFER_LIMIT", 1_000_000_000))
+        limit = int(sized[_BUFFER_LIMIT_KEY])
+        # Reading the ledger and reserving against it is ONE decision. Split across two critical
+        # sections, concurrent workers all read the same total before any of them wrote, which is
+        # the very overcommit the ledger exists to stop. The recompute inside is pure arithmetic on
+        # a frozen profile, so holding the lock across it costs microseconds; the RAM/disk reading
+        # above stays outside. `_budget_lock` is an RLock because `_reserve_worker_budget` retakes
+        # it here.
         with _budget_lock:
             unclaimed = max(0, available - _live_reserved_locked())
-        budget = max(floor, unclaimed // _AVAILABLE_RAM_SHARE)
-        limit = int(sized[_BUFFER_LIMIT_KEY])
-        if limit <= budget:
-            # Still reserved: four unclamped workers would otherwise promise four full budgets.
-            _reserve_worker_budget(limit)
-            return sized
+            budget = max(floor, unclaimed // _AVAILABLE_RAM_SHARE)
+            if limit <= budget:
+                # Still reserved: four unclamped workers would otherwise promise four full budgets.
+                _reserve_worker_budget(limit)
+                return sized
 
-        # Re-ask the zoo about a machine the download can afford, so buffer, per-file and file
-        # count all scale together instead of the limit moving on its own.
-        fraction = int(getattr(module, "_RAM_FRACTION", 8)) or 8
-        synthetic = max(floor, budget * fraction)
-        clamped = sized
-        for _ in range(_CLAMP_MAX_PASSES):
-            candidate = dict(
-                overrides(
-                    dataclasses.replace(
-                        profile,
-                        total_ram_bytes = min(total, synthetic),
-                        available_ram_bytes = available,
-                    ),
-                    fail_fast = True,
+            # Re-ask the zoo about a machine the download can afford, so buffer, per-file and file
+            # count all scale together instead of the limit moving on its own.
+            fraction = int(getattr(module, "_RAM_FRACTION", 8)) or 8
+            synthetic = max(floor, budget * fraction)
+            clamped = sized
+            for _ in range(_CLAMP_MAX_PASSES):
+                candidate = dict(
+                    overrides(
+                        dataclasses.replace(
+                            profile,
+                            total_ram_bytes = min(total, synthetic),
+                            available_ram_bytes = available,
+                        ),
+                        fail_fast = True,
+                    )
                 )
-            )
-            clamped = candidate
-            new_limit = int(candidate[_BUFFER_LIMIT_KEY])
-            if new_limit <= budget:
-                break
-            # Monotonic in total RAM, so scaling by the overshoot converges.
-            synthetic = max(floor, synthetic * budget // new_limit)
+                clamped = candidate
+                new_limit = int(candidate[_BUFFER_LIMIT_KEY])
+                if new_limit <= budget:
+                    break
+                # Monotonic in total RAM, so scaling by the overshoot converges.
+                synthetic = max(floor, synthetic * budget // new_limit)
 
-        # Reduce-only: keep a value the recompute would RAISE. `xet_env_overrides` is called raw
-        # here, without the throttled flag `apply_xet_env` threads through after a 429, so an
-        # un-throttled recompute could otherwise hand back the stream ceiling that backoff lowered.
-        # Every derived number is monotonic in total RAM, so taking the smaller of the two is
-        # always a coherent config.
-        written = {}
-        for key, value in clamped.items():
-            if key not in sized:
-                continue
-            before, after = _as_int(sized[key]), _as_int(value)
-            written[key] = (
-                sized[key] if before is not None and after is not None and after > before else value
-            )
-        env.update(written)
-        effective = _as_int(written.get(_BUFFER_LIMIT_KEY, "")) or budget
-        _reserve_worker_budget(effective)
+            # Reduce-only: keep a value the recompute would RAISE. `xet_env_overrides` is called raw
+            # here, without the throttled flag `apply_xet_env` threads through after a 429, so an
+            # un-throttled recompute could otherwise hand back the stream ceiling that backoff
+            # lowered. Every derived number is monotonic in total RAM, so taking the smaller of the
+            # two is always a coherent config.
+            written = {}
+            for key, value in clamped.items():
+                if key not in sized:
+                    continue
+                before, after = _as_int(sized[key]), _as_int(value)
+                written[key] = (
+                    sized[key]
+                    if before is not None and after is not None and after > before
+                    else value
+                )
+            env.update(written)
+            effective = _as_int(written.get(_BUFFER_LIMIT_KEY, "")) or budget
+            _reserve_worker_budget(effective)
         import logging as _logging
 
         _logging.getLogger(__name__).info(
