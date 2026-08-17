@@ -28,6 +28,12 @@ import {
   getPresetSource,
 } from "../presets/preset-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
+import {
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
+  DEFAULT_PROJECT_ATTACHMENT_TARGET,
+  normalizeProjectAttachmentTarget,
+  type ProjectAttachmentTarget,
+} from "../utils/project-attachment-target";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   PERSISTED_INFERENCE_PARAM_KEYS,
@@ -130,6 +136,19 @@ const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
+/** Where the composer files an attachment in a project chat. `project` indexes
+
+/** Key a choice made in a chat that has no id yet lives under until it gets one. */
+export const PENDING_CHAT_ATTACHMENT_KEY = "__pending__";
+
+/** Bumped whenever the pending entry changes hands, so a composer that read it
+ * can tell whether the one sitting there afterwards is still its own. */
+let pendingAttachmentTargetClaim = 0;
+
+export function readPendingAttachmentTargetClaim(): number {
+  return pendingAttachmentTargetClaim;
+}
+
 export type RagMode = "hybrid" | "lexical" | "dense";
 
 export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
@@ -195,6 +214,12 @@ function loadRagSource(): RagSource {
 
 function saveRagSource(value: RagSource): void {
   persistSetting(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+}
+
+function loadProjectAttachmentTarget(): ProjectAttachmentTarget {
+  return normalizeProjectAttachmentTarget(
+    loadString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, DEFAULT_PROJECT_ATTACHMENT_TARGET),
+  );
 }
 
 function loadRagMode(): RagMode {
@@ -2184,6 +2209,11 @@ type ChatRuntimeStore = {
   mcpEnabledForChat: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
+  /** Default composer attachment scope for chats inside a project. */
+  projectAttachmentTarget: ProjectAttachmentTarget;
+  /** Per-chat override of that default, so a pick in one chat does not redirect
+   * the rest. Session-only: a reload falls back to the saved default. */
+  projectAttachmentTargetByThread: Record<string, ProjectAttachmentTarget>;
   ragMode: RagMode;
   ragTopK: number;
   // autoInject = forced first-pass retrieval before answering.
@@ -2518,6 +2548,18 @@ type ChatRuntimeStore = {
   setRagEnabled: (enabled: boolean) => void;
   setRememberParamsPerModel: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
+  setProjectAttachmentTarget: (target: ProjectAttachmentTarget) => void;
+  setThreadProjectAttachmentTarget: (
+    threadId: string | null,
+    target: ProjectAttachmentTarget,
+  ) => void;
+  /** Carry a choice made before the chat existed onto its new id. `claim` is
+   * the value readPendingAttachmentTargetClaim gave when the choice was made;
+   * a newer one means the entry now belongs to a different composer. */
+  adoptPendingProjectAttachmentTarget: (threadId: string, claim?: number) =>
+    void;
+  /** Drop a choice made in a composer that never became a chat. */
+  clearPendingProjectAttachmentTarget: () => void;
   setRagMode: (mode: RagMode) => void;
   setRagTopK: (topK: number) => void;
   setRagAutoInject: (value: RagAutoInject) => void;
@@ -3319,6 +3361,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
   ragSource: loadRagSource(),
+  projectAttachmentTarget: loadProjectAttachmentTarget(),
+  projectAttachmentTargetByThread: {},
   ragMode: loadRagMode(),
   ragTopK: loadRagTopK(),
   ragAutoInject: loadRagAutoInject(),
@@ -4383,6 +4427,57 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         ragEnabled,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
+    }),
+  setProjectAttachmentTarget: (projectAttachmentTarget) =>
+    set(() => {
+      saveString(CHAT_PROJECT_ATTACHMENT_TARGET_KEY, projectAttachmentTarget);
+      return { projectAttachmentTarget };
+    }),
+  setThreadProjectAttachmentTarget: (threadId, target) =>
+    set((state) => {
+      if (threadId === null) {
+        pendingAttachmentTargetClaim += 1;
+      }
+      return {
+        projectAttachmentTargetByThread: {
+          ...state.projectAttachmentTargetByThread,
+          [threadId ?? PENDING_CHAT_ATTACHMENT_KEY]: target,
+        },
+      };
+    }),
+  adoptPendingProjectAttachmentTarget: (threadId, claim) =>
+    set((state) => {
+      // The entry under the shared key need not be the caller's: an abandoned
+      // composer has had its own dropped and the next one's is sitting there,
+      // which handing it over would consume.
+      if (claim !== undefined && claim !== pendingAttachmentTargetClaim) {
+        return state;
+      }
+      const pending =
+        state.projectAttachmentTargetByThread[PENDING_CHAT_ATTACHMENT_KEY];
+      // A chat that already made its own choice keeps it: the pending entry
+      // belongs to a chat that does not exist yet.
+      if (
+        pending === undefined ||
+        threadId in state.projectAttachmentTargetByThread
+      ) {
+        return state;
+      }
+      const next = { ...state.projectAttachmentTargetByThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
+      next[threadId] = pending;
+      return { projectAttachmentTargetByThread: next };
+    }),
+  clearPendingProjectAttachmentTarget: () =>
+    set((state) => {
+      const byThread = state.projectAttachmentTargetByThread;
+      if (!(PENDING_CHAT_ATTACHMENT_KEY in byThread)) {
+        return state;
+      }
+      pendingAttachmentTargetClaim += 1;
+      const next = { ...byThread };
+      delete next[PENDING_CHAT_ATTACHMENT_KEY];
+      return { projectAttachmentTargetByThread: next };
     }),
   setRememberParamsPerModel: (rememberParamsPerModel) =>
     set((state) => {
