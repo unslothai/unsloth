@@ -9,7 +9,7 @@ import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
 } from "../src/features/native-intents/attachment-queue.ts";
-import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
+import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_VIDEO_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
@@ -26,6 +26,7 @@ const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_ATTACHMENT_EXTS_RE = /AUDIO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const RUST_AUDIO_MIME_RE = /Some\("(audio\/[^"]+)"\)/g;
+const RUST_VIDEO_ATTACHMENT_EXTS_RE = /VIDEO_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 const RUST_MIME_ARM_RE = /Some\("(image\/[^"]+)"\)/g;
@@ -399,6 +400,27 @@ test("documents, images and audio can be dropped together", () => {
     assert.deepEqual(dropped.images, ["/photos/cat.png"]);
     assert.deepEqual(dropped.audio, ["/clips/note.mp3"]);
   }
+});
+
+// The reference pickers register video paths natively, so the two lists have to
+// stay in step or a droppable clip starts being turned away.
+test("frontend and Rust accept the same video extensions", () => {
+  const frontend = CHAT_VIDEO_DROP_ACCEPT.split(",")
+    .map((ext) => ext.trim().toLowerCase())
+    .sort();
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_VIDEO_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+
+  assert.deepEqual(rust, frontend);
 });
 
 test("frontend and Rust accept the same chat audio extensions", () => {

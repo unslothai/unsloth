@@ -604,6 +604,9 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+// Video goes higher: a container carries far more bytes per second. Still
+// bounded, since a clip past this would not fit a context window as frames.
+const MAX_NATIVE_VIDEO_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -625,6 +628,11 @@ fn attachment_mime_type(path: &Path) -> Option<&'static str> {
         "m4a" => Some("audio/mp4"),
         "ogg" | "oga" => Some("audio/ogg"),
         "flac" => Some("audio/flac"),
+        "mp4" => Some("video/mp4"),
+        "mov" => Some("video/quicktime"),
+        "webm" => Some("video/webm"),
+        "mkv" => Some("video/x-matroska"),
+        "avi" => Some("video/x-msvideo"),
         _ => None,
     }
 }
@@ -673,10 +681,12 @@ fn open_attachment_file(path: &Path) -> Result<fs::File, String> {
 fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFile, String> {
     let path = &entry.canonical_path;
     let mime_type = attachment_mime_type(path).ok_or_else(|| {
-        "Only chat image and audio attachments can be read inline.".to_string()
+        "Only chat image, audio and video attachments can be read inline.".to_string()
     })?;
     let max_bytes = if mime_type.starts_with("image/") {
         MAX_NATIVE_IMAGE_BYTES
+    } else if mime_type.starts_with("video/") {
+        MAX_NATIVE_VIDEO_BYTES
     } else {
         MAX_NATIVE_ATTACHMENT_BYTES
     };

@@ -433,13 +433,52 @@ def _get_block_total_size(block_dir: Path) -> int:
     return total
 
 
+def _read_native_drop(lease: str) -> tuple[str, bytes]:
+    """Read a desktop drop; returns (filename, content).
+
+    The webview never names a path directly: Rust signs what the OS handed it,
+    and this re-verifies and re-stats that grant before reading a byte. Same
+    contract as the RAG route's ``_save_native_path_upload``.
+    """
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "attach",
+            expected_kind = "attachment",
+            expected_path_type = "file",
+            allowed_suffixes = sorted(UNSTRUCTURED_ALLOWED_EXTS),
+        )
+    except NativePathLeaseError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    try:
+        return grant.canonical_path.name, grant.canonical_path.read_bytes()
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+
+
 @router.post("/seed/upload-unstructured-file")
 async def upload_unstructured_file(
-    file: UploadFile = FastAPIFile(...), block_id: str = Form(...)
+    file: UploadFile | None = FastAPIFile(None),
+    block_id: str = Form(...),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
 
-    original_filename = file.filename or "upload"
+    # Desktop drops arrive as a signed path, not multipart bytes: Tauri hands
+    # the webview a path, never a File (#9036). isinstance, not a truth test:
+    # called outside FastAPI, an unfilled param is still a truthy Form marker.
+    lease = native_path_lease if isinstance(native_path_lease, str) else None
+    if lease:
+        original_filename, content = _read_native_drop(lease)
+    elif file is not None and hasattr(file, "read"):
+        original_filename = file.filename or "upload"
+        content = await file.read()
+    else:
+        raise HTTPException(400, "No file was provided.")
+
     ext = Path(original_filename).suffix.lower()
     if ext not in UNSTRUCTURED_ALLOWED_EXTS:
         raise HTTPException(
@@ -447,7 +486,6 @@ async def upload_unstructured_file(
             f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(UNSTRUCTURED_ALLOWED_EXTS))}",
         )
 
-    content = await file.read()
     size_bytes = len(content)
 
     if size_bytes == 0:

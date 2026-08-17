@@ -6,7 +6,8 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
   if (state.status === "invalid") {
     return {
       title: "Can't use these files",
-      description: "Drop a .gguf model, or documents to chat with.",
+      description:
+        state.reason ?? "Drop a .gguf model, or documents to chat with.",
     };
   }
   if (state.status === "attach") {

@@ -15,6 +15,10 @@ export const CHAT_AUDIO_DROP_ACCEPT = ".wav,.mp3,.m4a,.ogg,.oga,.flac";
 
 const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) => ext.trim().toLowerCase());
 
+/** Video files the native side accepts, for the reference pickers; keep in sync
+ * with `native_path_policy.rs` `VIDEO_ATTACHMENT_EXTS`. */
+export const CHAT_VIDEO_DROP_ACCEPT = ".mp4,.mov,.webm,.mkv,.avi";
+
 /** What the window actually takes, for the rejection toast and the overlay. */
 export const SUPPORTED_DROP_HINT = `Supported files: ${RAG_UPLOAD_ACCEPT}, ${CHAT_IMAGE_DROP_ACCEPT}, one of ${CHAT_AUDIO_DROP_ACCEPT}, or a single .gguf model.`;
 

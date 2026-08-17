@@ -11,13 +11,18 @@ export type NativeModelDropState =
   | { status: "idle" }
   | { status: "valid"; action: "load" | "replace" | "chip" }
   | { status: "attach"; count: number; kind: "docs" | "images" | "audio" | "mixed" }
-  | { status: "invalid" };
+  // `reason` explains a refusal the file types alone do not. Absent means the
+  // files themselves are the problem.
+  | { status: "invalid"; reason?: string };
 
 interface NativeModelDropOptions {
   enabled?: boolean;
   attachmentScope?: string;
   // Where a drop on this window belongs, for reporting a failure back to it.
   attachmentTargetKey?: string;
+  /** Set when this view takes no attachments at all. Refuses every attachable
+   * drop with this sentence instead of swallowing it. */
+  attachmentsUnsupportedReason?: string;
   nativePathLeasesSupported: boolean;
   hasActiveModel: boolean;
   isModelLoading: boolean;
@@ -61,12 +66,24 @@ function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number 
   return 0;
 }
 
+function isAttachKind(dropped: ReturnType<typeof classifyDropPaths>): boolean {
+  return (
+    dropped.kind === "docs" ||
+    dropped.kind === "images" ||
+    dropped.kind === "audio" ||
+    dropped.kind === "attach"
+  );
+}
+
 function dropStateForPaths(
   paths: string[],
   options: NativeModelDropOptions,
 ): NativeModelDropState {
   const dropped = classifyDropPaths(paths);
   if (dropped.kind === "none") return { status: "idle" };
+  if (options.attachmentsUnsupportedReason && isAttachKind(dropped)) {
+    return { status: "invalid", reason: options.attachmentsUnsupportedReason };
+  }
   if (dropped.kind === "docs") {
     return canAttachDocs(options)
       ? { status: "attach", count: dropped.paths.length, kind: "docs" }
@@ -181,6 +198,8 @@ function sameDropState(
   if (a.status === "valid" && b.status === "valid") return a.action === b.action;
   if (a.status === "attach" && b.status === "attach")
     return a.count === b.count && a.kind === b.kind;
+  if (a.status === "invalid" && b.status === "invalid")
+    return a.reason === b.reason;
   return true;
 }
 
@@ -232,6 +251,10 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
         if (dropped.kind === "none") return;
         if (dropped.kind === "unsupported") {
           toast.error(SUPPORTED_DROP_HINT);
+          return;
+        }
+        if (currentOptions.attachmentsUnsupportedReason && isAttachKind(dropped)) {
+          toast.error(currentOptions.attachmentsUnsupportedReason);
           return;
         }
         if (

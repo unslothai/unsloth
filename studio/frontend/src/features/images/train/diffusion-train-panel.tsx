@@ -58,6 +58,7 @@ import {
   loadUploadLimitSettings,
 } from "@/features/settings/api/upload-limit";
 import { isTauri } from "@/lib/api-base";
+import { useNativeFileDrop } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
 
 import {
@@ -1014,6 +1015,20 @@ export function DiffusionTrainPanel({
     [dropTarget, uploadTo],
   );
 
+  // Desktop drops never reach the handlers above (#9036). Files only: a folder
+  // arrives as one directory path the native side cannot expand, so the folder
+  // button still owns that case.
+  const { ref: nativeDropRef, dragging: nativeDragging } = useNativeFileDrop({
+    onFiles: async (files) => {
+      if (uploadInFlight.current) {
+        toast.error("An upload is already running. Wait for it to finish, then drop again.");
+        return;
+      }
+      await uploadTo(dropTarget, files);
+    },
+    accept: DATASET_FILE_ACCEPT,
+  });
+
   const onStart = useCallback(async () => {
     const baseModel = (effectiveBase === CUSTOM_BASE ? customBase : effectiveBase).trim();
     if (!baseModel) {
@@ -1565,10 +1580,12 @@ export function DiffusionTrainPanel({
           {/* Dataset */}
           {/* the whole field is the drop zone, so a folder can land on the picker, the thumbnails or the caption grid. */}
           <div
+            ref={nativeDropRef}
             className={cn(
               fieldClass,
               "rounded-lg transition-colors",
-              dropActive && "outline-2 outline-dashed outline-offset-4 outline-primary/60",
+              (dropActive || nativeDragging) &&
+                "outline-2 outline-dashed outline-offset-4 outline-primary/60",
             )}
             onDragOver={(e) => {
               // tauri consumes os drags before the webview, as the chat composer notes.
@@ -1735,7 +1752,9 @@ export function DiffusionTrainPanel({
                   />
                 </div>
                 <p className="text-ui-11 leading-snug text-muted-foreground">
-                  {isTauri ? "Pick files or a folder." : "Pick files or a folder, or drop them here."}{" "}
+                  {isTauri
+                    ? "Pick files or a folder, or drop files here."
+                    : "Pick files or a folder, or drop them here."}{" "}
                   Images, or clips for the video families. A caption file beside one (cat.png and
                   cat.txt, or cat.mp4 and cat.txt) is read as that item's caption.
                 </p>

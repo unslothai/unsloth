@@ -2703,7 +2703,14 @@ export function ChatPage({
     [artifactViewKey],
   );
   const nativeModelDropState = useNativeModelDrop({
-    enabled: active && view.mode === "single",
+    // Compare used to disable this outright, so a drop there vanished with no
+    // overlay and no message (#9036). Keep listening and refuse out loud: the
+    // compare composer has no attachment queue to drain into.
+    enabled: active,
+    attachmentsUnsupportedReason:
+      view.mode === "single"
+        ? undefined
+        : "Attachments need a single chat. Open one, then drop the file there.",
     attachmentScope,
     attachmentTargetKey: artifactViewKey,
     nativePathLeasesSupported,
