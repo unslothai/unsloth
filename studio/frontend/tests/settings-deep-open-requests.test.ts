@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `archivedRequested` is a one-shot deep-open request that only DataTab clears. The panel
-// is loaded on first view, so a dialog closed or a tab switched while the chunk is still
-// in flight leaves the request set with nothing left to consume it, and the next visit to
-// Data opens an archive listing nobody asked for. `scrollTarget` is the same kind of
-// request and is already dropped by every navigation away; this holds the two together.
+// `archivedRequested` and `scrollTarget` are one-shot deep-link requests, each cleared only
+// by the panel that performs the jump. Panels load on first view, so a navigation can now
+// move before the chunk arrives: too wide a clear loses a deep-link the panel was still
+// coming to serve, and too narrow a one replays a stale request on an ordinary later visit.
+// Both live exactly as long as the dialog is open on the tab that reads them.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -75,4 +75,52 @@ test("consuming it clears it, so a later visit to Data is an ordinary one", () =
   store.getState().openArchivedChats();
   store.getState().consumeArchivedChatsRequest();
   assert.equal(store.getState().archivedRequested, null);
+});
+
+test("a scroll target survives until the panel it targets can read it", () => {
+  reset();
+  store.getState().openDialog("about", { scrollTarget: "about-updates" });
+  assert.equal(store.getState().activeTab, "about");
+  assert.equal(store.getState().scrollTarget, "about-updates");
+});
+
+test("reselecting the target's own tab keeps the scroll target", () => {
+  reset();
+  store.getState().openDialog("about", { scrollTarget: "about-updates" });
+  store.getState().setActiveTab("about");
+  assert.equal(store.getState().scrollTarget, "about-updates");
+  store.getState().openDialog();
+  assert.equal(store.getState().scrollTarget, "about-updates");
+});
+
+test("leaving the target's tab, or closing, drops the scroll target", () => {
+  reset();
+  store
+    .getState()
+    .openDialog("appearance", { scrollTarget: "appearance-sidebar-nav" });
+  store.getState().setActiveTab("about");
+  assert.equal(store.getState().scrollTarget, null);
+
+  reset();
+  store
+    .getState()
+    .openDialog("appearance", { scrollTarget: "appearance-sidebar-nav" });
+  store.getState().closeDialog();
+  assert.equal(store.getState().scrollTarget, null);
+});
+
+test("an open that names its own target replaces one still pending", () => {
+  reset();
+  store.getState().openDialog("about", { scrollTarget: "about-updates" });
+  store
+    .getState()
+    .openDialog("appearance", { scrollTarget: "appearance-sidebar-nav" });
+  assert.equal(store.getState().scrollTarget, "appearance-sidebar-nav");
+});
+
+test("consuming a scroll target clears it", () => {
+  reset();
+  store.getState().openDialog("about", { scrollTarget: "about-updates" });
+  store.getState().consumeScrollTarget("about-updates");
+  assert.equal(store.getState().scrollTarget, null);
 });

@@ -37,7 +37,7 @@ interface SettingsDialogState {
   opener: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
   // toast). DataTab uses it as its initial subpage, then clears it. See
-  // archivedFor for how long an unconsumed one lives.
+  // requestsFor for how long it and scrollTarget live unconsumed.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -85,20 +85,30 @@ function loadInitialTab(): SettingsTab {
     : "general";
 }
 
+/** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
+const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "about-updates": "about",
+  "appearance-sidebar-nav": "appearance",
+};
+
 /**
- * An unconsumed archive request, after a navigation that lands on `tab`.
+ * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
  *
- * Only DataTab clears the request, and the panel is fetched on first view, so a dialog
- * closed or a tab left before it arrives strands the flag and the next ordinary visit to
- * Data opens an archive listing nobody asked for. The request is for Data, so it lives
- * exactly as long as the dialog is open on Data: reselecting Data goes nowhere and keeps
- * it, and closing (below) always drops it, since nothing is left to read it.
+ * Each is set by whoever asks for the jump and cleared only by the panel that performs it,
+ * and panels are fetched on first view, so a navigation can now move before the chunk
+ * arrives. A request therefore lives exactly as long as the dialog is open on the tab that
+ * reads it: reselecting that tab goes nowhere and keeps it, anything else drops it, and
+ * closing (below) always does. Held wider, a stale request replays on an ordinary later
+ * visit; held narrower, reselecting the tab loses a deep-link that was still in flight.
  */
-function archivedFor(
-  state: SettingsDialogState,
-  tab: SettingsTab,
-): ArchivedShelf | null {
-  return tab === "data" ? state.archivedRequested : null;
+function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
+  return {
+    scrollTarget:
+      state.scrollTarget && SCROLL_TARGET_TAB[state.scrollTarget] === tab
+        ? state.scrollTarget
+        : null,
+    archivedRequested: tab === "data" ? state.archivedRequested : null,
+  };
 }
 
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
@@ -110,11 +120,13 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   openDialog: (tab, options) =>
     set((state) => {
       const next = tab ?? state.activeTab;
+      const pending = requestsFor(state, next);
       return {
         open: true,
         activeTab: next,
-        scrollTarget: options?.scrollTarget ?? null,
-        archivedRequested: archivedFor(state, next),
+        // A caller that names a target replaces whatever was still pending.
+        scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
+        archivedRequested: pending.archivedRequested,
         opener: captureOpener(),
       };
     }),
@@ -150,10 +162,6 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
     } catch {
       // ignore storage failures
     }
-    set((state) => ({
-      activeTab: tab,
-      scrollTarget: null,
-      archivedRequested: archivedFor(state, tab),
-    }));
+    set((state) => ({ activeTab: tab, ...requestsFor(state, tab) }));
   },
 }));
