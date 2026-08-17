@@ -513,8 +513,8 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
 
 def _scan_probes(
     probes: list[str], messages: list[str], start: int, last: int
-) -> Optional[tuple[int, int]]:
-    """Message index and offset where ``probes`` finish matching in order, or None.
+) -> Optional[tuple[int, int, int]]:
+    """Message index, end offset, and the offset the run into it began at, or None.
 
     An index rather than a bool so one document's chunks scan as a single pass, each
     continuing where the last stopped, which stops two chunks of a turn matching two
@@ -523,17 +523,22 @@ def _scan_probes(
     """
     index = start
     cursor = 0
+    opened_at = 0
+    opened_index = -1
     for probe in probes:
         while index < last:
             found = messages[index].find(probe, cursor)
             if found >= 0:
+                if index != opened_index:
+                    opened_index = index
+                    opened_at = found
                 cursor = found + len(probe)
                 break
             index += 1
             cursor = 0
         else:
             return None
-    return index, cursor
+    return index, cursor, opened_at
 
 
 def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
@@ -631,15 +636,24 @@ def _document_matches_one_run(
         last = min(len(transcript), start + window)
         position = start
         cursor = 0
+        opened_at = 0
         for probes in probe_lists:
             found = _scan_probes(probes, transcript, position, last)
             if found is None:
                 return False
-            position, cursor = found
-        # And the turn has to END where the live message does. Editing a reply by keeping
-        # it and appending a correction ("No" becoming "No, correction: yes") leaves every
-        # probe matching, so the pre-edit copy stayed eligible and could be recalled as
-        # the answer -- with the correction nowhere in it.
+            previous = position
+            position, cursor, chunk_opened_at = found
+            # Chunks overlap, so several can land in the final message; the run into it
+            # began at the earliest of them.
+            opened_at = chunk_opened_at if position != previous else min(opened_at, chunk_opened_at)
+        # And the turn has to cover the live message END TO END. An edit that keeps the
+        # old text and adds to it leaves every probe matching, whichever side it adds on:
+        # "No" becoming "No, correction: yes" or "Correction: no". Either way the pre-edit
+        # copy stayed eligible and could be recalled as the answer, correction and all
+        # missing. render_turn only ever cuts the tail, so the start is required
+        # unconditionally and the end is not.
+        if opened_at != 0:
+            return False
         return truncated_tail or cursor >= len(transcript[position])
 
     return any(_one_run_from(start) for start in range(len(transcript)))

@@ -1197,3 +1197,37 @@ def test_the_branch_boundary_excludes_the_turn_inline_recall_rewrites():
     assert llama_cpp._branch_boundary([rewritten, prefill], branch) == 2
     # And with the turn left alone, the same two messages are still the boundary.
     assert llama_cpp._branch_boundary([user_latest, prefill], branch) == 2
+
+
+def test_a_conversation_search_charges_token_dense_text_properly(archived, monkeypatch):
+    """Four characters per token is an English rule, and CJK runs near one per character.
+
+    A result accepted at a quarter of its real size lands in the current tool exchange,
+    which the window cannot evict, so the turn can only end in a context-length error.
+    """
+    from core.rag import config as rag_config
+
+    asked = []
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        asked.append(top_k)
+        return ("\u6df1\u5c64\u5b66\u7fd2" * 250 * (top_k or 1), [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    answer = tools_mod._search_conversation(
+        {"query": "pelicans", "top_k": 4},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 2},
+    )
+
+    # The room clamps the request to 2 chunks, and then the size does the rest: 1,000 CJK
+    # characters is about 1,000 tokens, not the 250 the shared estimator claims, so even
+    # one chunk does not fit a 1,000-token budget.
+    assert asked == [2, 1]
+    assert "no room" in answer.lower()

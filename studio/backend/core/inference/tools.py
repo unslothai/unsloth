@@ -9696,11 +9696,10 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     # forced recall uses, and a single chunk that still does not fit is refused rather
     # than appended to an exchange the window is not allowed to evict.
     if budget is not None:
-        from core.inference.context_window import estimate_message_tokens
         attempt = max(1, int(top_k or 1))
         while True:
             rendered = _rendered_conversation_search(found)
-            if estimate_message_tokens({"role": "tool", "content": rendered}) <= int(budget):
+            if _conversation_search_tokens(rendered) <= int(budget):
                 return rendered
             if attempt <= 1:
                 return "There is no room left in this context to search earlier conversation."
@@ -9709,6 +9708,20 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
             if not found:
                 return "No earlier turns of this conversation matched that query."
     return _rendered_conversation_search(found)
+
+
+def _conversation_search_tokens(text: str) -> int:
+    """A deliberately pessimistic size for a search result, in tokens.
+
+    The shared estimator charges four characters per token, which is about right for
+    English and badly wrong for text that tokenises densely: CJK and emoji run closer to
+    one token per character, so a result could be accepted at a quarter of its real cost
+    and then land in the current tool exchange, which the window cannot evict. No exact
+    counter is reachable from here, the provider loop having no tokenizer at all, so
+    non-ASCII characters are charged one token each and the rest at the usual rate.
+    """
+    dense = sum(1 for char in text if ord(char) > 127)
+    return max(1, dense + (len(text) - dense) // 4)
 
 
 def _rendered_conversation_search(found) -> str:

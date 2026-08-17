@@ -1231,3 +1231,23 @@ def test_a_truncated_tool_result_may_still_end_mid_message(conn):
     )
 
     assert conversation_archive._document_matches_one_run(rows, live, 2) is True
+
+
+def test_an_answer_edited_by_prepending_to_it_retires_the_archived_copy(conn):
+    """The other side of the same edit: the old text is kept as a suffix.
+
+    "No" becoming "Correction: no" leaves the probe matching and ending exactly where the
+    live message does, so an end-only check still called the pre-edit copy live.
+    """
+    rows = [{"text": "user: should I deploy on Friday\nassistant: No"}]
+
+    def _live(answer):
+        return conversation_archive.branch_message_texts(
+            [
+                {"role": "user", "content": "should I deploy on Friday"},
+                {"role": "assistant", "content": answer},
+            ]
+        )
+
+    assert conversation_archive._document_matches_one_run(rows, _live("Correction: no"), 2) is False
+    assert conversation_archive._document_matches_one_run(rows, _live("No"), 2) is True
