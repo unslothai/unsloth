@@ -612,8 +612,7 @@ test("a model's recommendation does not overwrite the chat's sampling", () => {
     setParams,
     /options\?\.fromModelDefaults === true\s*\?\s*restoreThreadScopedParams\(params\)\s*:\s*params/,
   );
-  // and the restored object is the one that reaches the store and the diff, not `params`
-  assert.match(setParams, /getChangedInferenceParams\(effective, state\.params\)/);
+  // and the restored object is the one that reaches the store
   assert.match(setParams, /params: effective,/);
   assert.doesNotMatch(setParams, /^\s*params,$/m);
 
@@ -634,4 +633,22 @@ test("both Qwen recommendation paths are marked as model defaults", () => {
       /setParams\(\s*\{ \.\.\.store\.params, \.\.\.p(arams)? \},\s*\{ fromModelDefaults: true \},?\s*\)/,
     );
   }
+});
+
+// Restoring the chat's value makes it equal on both sides of the diff, so diffing the
+// restored object drops the key and the model's recommendation never reaches the
+// installation defaults. One chat pinning temperature would then leave every new chat
+// on whatever model loaded before it.
+test("a chat pinning a param does not withhold the model's default from the rest", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(setParams, /getChangedInferenceParams\(params, state\.params\)/);
+  assert.doesNotMatch(
+    setParams,
+    /getChangedInferenceParams\(effective,/,
+    "the restored object decides what is persisted, so pinned keys are withheld",
+  );
+  // Called once: it bumps the mutation versions, so a second diff double-counts.
+  assert.equal(setParams.match(/getChangedInferenceParams\(/g)?.length, 1);
+  // The live store still gets the restored object; only persistence uses the model's.
+  assert.match(setParams, /params: effective,/);
 });

@@ -3206,13 +3206,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // A model's recommendation is applied through this setter too, and it must
       // not overwrite the sampling this chat is running with. Only keys the chat
       // actually holds are put back, so one it never set still follows the model.
+      // Live store only: what gets persisted is decided from the model's own
+      // object below, so a chat pinning a key does not withhold the
+      // recommendation from every other chat.
       const effective =
         options?.fromModelDefaults === true
           ? restoreThreadScopedParams(params)
           : params;
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
-      const changedParams = getChangedInferenceParams(effective, state.params);
+      // Diffed against `params`, not `effective`: a key the open chat pinned is
+      // equal on both sides of the restored diff and would drop out, leaving the
+      // installation defaults on the model that loaded before this one.
+      const changedParams = getChangedInferenceParams(params, state.params);
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         state.params,
         effective,
