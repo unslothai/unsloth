@@ -780,3 +780,199 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     )
     assert shim.apply_xet_env({}, "/new/volume/hub") == {}
     assert seen["applied"] is True
+
+
+# --- free-RAM clamp (issue #9032) ---------------------------------------------------------------
+# The zoo sizes Xet's buffers from TOTAL RAM, which cannot see a loaded model. Studio clamps the
+# result to what is free. The bar: shrink under pressure, change nothing otherwise.
+
+_GB = 1_000_000_000
+_LIMIT = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
+
+
+def _fake_profile_cls():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen = True)
+    class _Profile:
+        total_ram_bytes: int
+        available_ram_bytes: int
+        cpu_count: int = 16
+        ram_source: str = "psutil"
+        cpu_source: str = "affinity"
+        free_disk_bytes: int = 500 * _GB
+        disk_source: str = "statvfs"
+
+    return _Profile
+
+
+def _fake_tuning(total, available, *, calls = None):
+    """Stand-in zoo sized like the real one (an eighth of total RAM), recording the profile it was
+    asked about so a test can prove the clamp re-asks rather than editing numbers itself."""
+    import types
+
+    profile_cls = _fake_profile_cls()
+
+    def _overrides(profile, **kwargs):
+        if calls is not None:
+            calls.append(profile)
+        limit = max(1 * _GB, profile.total_ram_bytes // 8)
+        return {
+            _LIMIT: str(limit),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": str(limit // 2),
+            "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": str(limit // 32),
+            "HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS": "8",
+        }
+
+    return types.SimpleNamespace(
+        xet_env_overrides = _overrides,
+        system_profile = lambda cache_dir = None: profile_cls(total, available),
+        _MIN_BUFFER_LIMIT = 1 * _GB,
+        _RAM_FRACTION = 8,
+    )
+
+
+def test_clamp_is_a_no_op_when_the_machine_has_room(monkeypatch):
+    """The design rests on this: an eighth of TOTAL cannot exceed a quarter of AVAILABLE unless RAM
+    is already held, so an idle machine keeps the zoo's numbers and no download gets slower."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 30 * _GB, calls = calls)
+    sized = module.xet_env_overrides(module.system_profile())
+    calls.clear()
+
+    env = dict(sized)
+    written = shim.clamp_to_available_ram(env, dict(sized), module = module)
+
+    assert written == sized, "an affordable budget must come back untouched"
+    assert env == sized
+    assert calls == [], "re-sizing a machine that fits would burn the zero-cost guarantee"
+
+
+def test_clamp_shrinks_a_budget_free_ram_cannot_afford(monkeypatch):
+    """Issue #9032: 32GB box, 27B GGUF resident, 8GB free. The zoo still hands out a 4GB buffer
+    because total RAM has not changed, and that on top of the loaded weights is the swap."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 8 * _GB, calls = calls)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    calls.clear()
+
+    env = dict(unclamped)
+    written = shim.clamp_to_available_ram(env, dict(unclamped), module = module)
+
+    budget = 8 * _GB // 4
+    assert int(unclamped[_LIMIT]) > budget, "precondition: the unclamped budget overshoots"
+    assert int(written[_LIMIT]) <= budget, "the clamp has to bring it inside what is free"
+    assert env[_LIMIT] == written[_LIMIT], "the worker's env is what actually ships"
+    assert calls, "the zoo must be the one re-sizing, so its formulas stay the single source"
+    assert calls[0].total_ram_bytes < 32 * _GB, "it should be asked about a smaller machine"
+    # Every derived number moves together; a limit shrunk on its own would leave the per-file and
+    # concurrency values describing a budget that no longer exists.
+    assert int(written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) < int(
+        unclamped["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]
+    )
+
+
+def test_clamp_bottoms_out_at_the_zoos_own_floor(monkeypatch):
+    """Below the floor the answer is a different transport, not a tinier buffer: Xet has a minimum
+    it can work in, and ``_memory_pressure_reason`` routes a machine this tight to HTTP."""
+    import utils.hf_xet_fallback as shim
+
+    module = _fake_tuning(32 * _GB, 1 * _GB)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 1 * _GB))
+
+    written = shim.clamp_to_available_ram({}, dict(unclamped), module = module)
+    assert int(written[_LIMIT]) == module._MIN_BUFFER_LIMIT
+    assert int(written[_LIMIT]) < int(unclamped[_LIMIT])
+
+
+def test_clamp_never_writes_a_key_the_user_set(monkeypatch):
+    """The zoo's apply is setdefault, so a user-set variable never reaches ``sized`` and must not be
+    reintroduced here. Same mechanism covers HF_XET_HIGH_PERFORMANCE: the zoo drops its caps, no
+    budget key arrives, and the clamp stands down with it."""
+    import utils.hf_xet_fallback as shim
+
+    calls = []
+    module = _fake_tuning(32 * _GB, 1 * _GB, calls = calls)
+
+    # High-performance stand-down: no budget key in what the zoo wrote.
+    env = {"HF_XET_HIGH_PERFORMANCE": "1"}
+    assert shim.clamp_to_available_ram(env, {}, module = module) == {}
+    assert env == {"HF_XET_HIGH_PERFORMANCE": "1"}
+    assert calls == [], "with no caps to clamp there is nothing to re-size"
+
+    # A user-pinned per-file size is absent from `sized` for the same reason; clamping the rest must
+    # not write it back at our number.
+    sized = {_LIMIT: str(8 * _GB)}
+    env = {_LIMIT: str(8 * _GB), "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": "999"}
+    written = shim.clamp_to_available_ram(env, sized, module = module)
+    assert set(written) == {_LIMIT}, "only keys the zoo wrote are ours to rewrite"
+    assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"] == "999"
+
+
+def test_clamp_stands_down_when_ram_cannot_be_measured(monkeypatch):
+    """No psutil, no cgroup, or a zoo too old to expose a profile: absence of evidence is not
+    evidence of pressure, so the download runs as before."""
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    sized = {_LIMIT: str(8 * _GB)}
+
+    unmeasurable = _fake_tuning(0, 0)
+    assert shim.clamp_to_available_ram({}, dict(sized), module = unmeasurable) == sized
+
+    old_zoo = types.SimpleNamespace(apply_xet_env = lambda *a, **k: {})
+    assert shim.clamp_to_available_ram({}, dict(sized), module = old_zoo) == sized
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("no")
+
+    raising = types.SimpleNamespace(xet_env_overrides = _boom, system_profile = _boom)
+    assert shim.clamp_to_available_ram({}, dict(sized), module = raising) == sized, (
+        "a clamp must never be the thing that breaks a download"
+    )
+
+
+def test_clamp_holds_against_the_real_zoo_formulas():
+    """The fakes above pin the seam; this pins the arithmetic, so a zoo that changes how it sizes
+    cannot quietly reintroduce a budget bigger than free RAM."""
+    tuning = pytest.importorskip("unsloth_zoo.hf_xet_tuning")
+
+    idle = tuning.SystemProfile(
+        total_ram_bytes = 32 * 1024 ** 3,
+        available_ram_bytes = 30 * _GB,
+        cpu_count = 24,
+        ram_source = "psutil",
+        cpu_source = "affinity",
+        free_disk_bytes = 500 * _GB,
+        disk_source = "statvfs",
+    )
+    import dataclasses
+
+    loaded = dataclasses.replace(idle, available_ram_bytes = 8 * _GB)
+
+    import types
+
+    import utils.hf_xet_fallback as shim
+
+    sized = dict(tuning.xet_env_overrides(idle, fail_fast = True))
+
+    def _module_for(profile):
+        return types.SimpleNamespace(
+            xet_env_overrides = tuning.xet_env_overrides,
+            system_profile = lambda cache_dir = None: profile,
+            _MIN_BUFFER_LIMIT = tuning._MIN_BUFFER_LIMIT,
+            _RAM_FRACTION = tuning._RAM_FRACTION,
+        )
+
+    assert shim.clamp_to_available_ram({}, dict(sized), module = _module_for(idle)) == sized, (
+        "30GB free must still buy the zoo's own 32GB-machine budget"
+    )
+
+    clamped = shim.clamp_to_available_ram({}, dict(sized), module = _module_for(loaded))
+    assert int(clamped[_LIMIT]) <= 8 * _GB // 4, "a 27B model resident must shrink the budget"
+    assert int(clamped[_LIMIT]) < int(sized[_LIMIT])

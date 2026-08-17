@@ -79,7 +79,34 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
     if health is None:
         # Older unsloth_zoo without the health module: no opinion, keep the existing default.
         return (True, "Xet")
+    if health.use_xet:
+        pressure = _memory_pressure_reason()
+        if pressure is not None:
+            return (False, pressure)
     return (bool(health.use_xet), str(health.reason))
+
+
+def _memory_pressure_reason() -> Optional[str]:
+    """Why this machine should download over HTTP right now, or ``None`` to leave Xet alone.
+
+    The zoo already refuses Xet below ``MIN_XET_RAM_BYTES``, but measures TOTAL RAM, so the check
+    passes on a 32 GB box down to 2 GB free because a 27B GGUF is loaded (issue #9032). Same rule
+    and threshold, asked of free RAM. Buffers are clamped separately; this catches the machine where
+    even the clamped floor will not fit. Unmeasurable RAM is not evidence of pressure, so it keeps
+    Xet."""
+    try:
+        from utils.hf_xet_fallback import available_ram_bytes
+
+        available, floor = available_ram_bytes()
+    except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
+        logger.debug("Free-RAM probe failed, leaving the Xet verdict alone: %s", exc)
+        return None
+    if available is None or available >= floor:
+        return None
+    return (
+        f"HTTP: only {available / 1e9:.1f}GB RAM free (Xet wants {floor / 1e9:.0f}GB); "
+        "close a loaded model to use Xet"
+    )
 
 
 def _allow_high_performance() -> bool:

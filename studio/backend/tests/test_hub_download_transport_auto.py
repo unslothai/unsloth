@@ -555,3 +555,61 @@ def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
     flag_on = env.get("HF_XET_HIGH_PERFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
     sized = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE" in env
     assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"
+
+
+# --- free-RAM transport gate (issue #9032) -------------------------------------------------------
+
+
+def test_auto_picks_http_when_free_ram_is_below_the_xet_floor(monkeypatch):
+    """The zoo already refuses Xet under MIN_XET_RAM_BYTES, but asks TOTAL RAM, which cannot see a
+    loaded 27B GGUF. Same rule, asked of free RAM."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.available_ram_bytes = lambda: (2_000_000_000, 4_000_000_000)
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    use_xet, reason = dl.resolve_auto_use_xet()
+    assert use_xet is False
+    assert "2.0GB RAM free" in reason, "the user needs to read why their download changed transport"
+
+
+def test_free_ram_gate_leaves_a_machine_with_room_alone(monkeypatch):
+    """The gate is for the pressured case only: with headroom the health verdict still decides, so
+    no download drops to the slower sequential writer for nothing."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.available_ram_bytes = lambda: (30_000_000_000, 4_000_000_000)
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (True, "Xet")
+
+
+def test_free_ram_gate_never_decides_the_transport_by_failing(monkeypatch):
+    """An unmeasurable machine, or a shim too old to expose the probe, is not evidence of pressure."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    for probe in (
+        None,                                          # older shim: attribute missing entirely
+        lambda: (None, 4_000_000_000),                 # psutil absent: RAM unmeasurable
+        lambda: (_ for _ in ()).throw(RuntimeError()),  # probe itself raises
+    ):
+        fake = _types.ModuleType("utils.hf_xet_fallback")
+        fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+        if probe is not None:
+            fake.available_ram_bytes = probe
+        monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+        assert dl.resolve_auto_use_xet() == (True, "Xet")
+
+
+def test_a_demoted_health_verdict_is_not_second_guessed(monkeypatch):
+    """The gate only demotes. A machine already on HTTP keeps the zoo's reason, so the user reads
+    the real cause instead of a free-RAM number that was never the problem."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = False, reason = "Xet stalled twice")
+    fake.available_ram_bytes = lambda: (1_000_000_000, 4_000_000_000)
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (False, "Xet stalled twice")

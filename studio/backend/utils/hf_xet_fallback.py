@@ -284,19 +284,133 @@ def apply_xet_env(env: dict, cache_dir: "Optional[str]" = None) -> "Optional[dic
     *env* is a copy of this process's environment, which already carries the zoo's import-time
     sizing, and applying is setdefault: on a zoo that can resize we recompute for *cache_dir*
     instead, so a backend whose cache has since moved does not hand the worker the old volume's
-    numbers. Older zoos keep the previous behaviour."""
+    numbers. Older zoos keep the previous behaviour.
+
+    The zoo sizes from TOTAL RAM, which cannot see a model already loaded, so the result passes
+    through :func:`clamp_to_available_ram` before it reaches the worker."""
     module = _load_optional("unsloth_zoo.hf_xet_tuning")
     if module is None or not hasattr(module, "apply_xet_env"):
         return None
     try:
         resize = getattr(module, "resize_for_cache_dir", None)
         if resize is not None:
-            return dict(resize(env, cache_dir))
-        return dict(module.apply_xet_env(env, fail_fast = True))
+            sized = dict(resize(env, cache_dir))
+        else:
+            sized = dict(module.apply_xet_env(env, fail_fast = True))
     except Exception as exc:  # noqa: BLE001
         import logging as _logging
         _logging.getLogger(__name__).debug("apply_xet_env failed: %s", exc)
         return None
+    return clamp_to_available_ram(env, sized, cache_dir = cache_dir, module = module)
+
+
+# Share of free RAM a download may turn into buffers. A quarter of AVAILABLE always exceeds the
+# zoo's eighth of TOTAL on an idle machine, so the clamp is unreachable unless RAM is actually held.
+_AVAILABLE_RAM_SHARE = 4
+# Integer arithmetic converges in one or two passes; the bound only guards a future non-monotonic zoo.
+_CLAMP_MAX_PASSES = 3
+_BUFFER_LIMIT_KEY = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
+
+
+def clamp_to_available_ram(
+    env: dict,
+    sized: "dict[str, str]",
+    *,
+    cache_dir: "Optional[str]" = None,
+    module: Any = None,
+) -> "dict[str, str]":
+    """Shrink a zoo-sized ``HF_XET_*`` budget that free RAM cannot afford. Returns what *env* holds.
+
+    hf_xet's reconstruction buffers are the worker's RSS, not reclaimable page cache. Sized from
+    total RAM, a download started while a 27B GGUF is resident asks for the same multi-GB budget it
+    would on an idle box, and the two together are the swap (issue #9032).
+
+    A clamp, not a second sizing formula: the zoo keeps deciding, this only hands it a smaller
+    machine, so the two cannot drift. Three properties:
+
+    - Free when there is headroom: a budget that fits returns untouched.
+    - Only keys the zoo wrote are rewritten, so an explicit user setting survives. A user-set
+      ``HF_XET_HIGH_PERFORMANCE`` makes the zoo drop its caps, leaving no budget key to clamp.
+    - Unmeasurable RAM, or a zoo too old to report it, leaves the download alone.
+    """
+    if module is None:
+        module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    overrides = getattr(module, "xet_env_overrides", None)
+    profile_of = getattr(module, "system_profile", None)
+    if overrides is None or profile_of is None or _BUFFER_LIMIT_KEY not in sized:
+        return sized
+    try:
+        import dataclasses
+
+        profile = profile_of(cache_dir)
+        available = int(getattr(profile, "available_ram_bytes", 0) or 0)
+        total = int(getattr(profile, "total_ram_bytes", 0) or 0)
+        if available <= 0 or total <= 0:
+            return sized
+        floor = int(getattr(module, "_MIN_BUFFER_LIMIT", 1_000_000_000))
+        budget = max(floor, available // _AVAILABLE_RAM_SHARE)
+        limit = int(sized[_BUFFER_LIMIT_KEY])
+        if limit <= budget:
+            return sized
+
+        # Re-ask the zoo about a machine the download can afford, so buffer, per-file and file
+        # count all scale together instead of the limit moving on its own.
+        fraction = int(getattr(module, "_RAM_FRACTION", 8)) or 8
+        synthetic = max(floor, budget * fraction)
+        clamped = sized
+        for _ in range(_CLAMP_MAX_PASSES):
+            candidate = dict(
+                overrides(
+                    dataclasses.replace(
+                        profile,
+                        total_ram_bytes = min(total, synthetic),
+                        available_ram_bytes = available,
+                    ),
+                    fail_fast = True,
+                )
+            )
+            clamped = candidate
+            new_limit = int(candidate[_BUFFER_LIMIT_KEY])
+            if new_limit <= budget:
+                break
+            # Monotonic in total RAM, so scaling by the overshoot converges.
+            synthetic = max(floor, synthetic * budget // new_limit)
+
+        written = {key: value for key, value in clamped.items() if key in sized}
+        env.update(written)
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "Xet download buffers clamped to free RAM: %.2fGB -> %.2fGB "
+            "(%.1fGB free of %.1fGB total)",
+            limit / 1e9,
+            int(written.get(_BUFFER_LIMIT_KEY, limit)) / 1e9,
+            available / 1e9,
+            total / 1e9,
+        )
+        return written
+    except Exception as exc:  # noqa: BLE001 - a clamp must never be what breaks a download
+        import logging as _logging
+        _logging.getLogger(__name__).debug("clamp_to_available_ram failed: %s", exc)
+        return sized
+
+
+def available_ram_bytes() -> "tuple[Optional[int], int]":
+    """``(free RAM right now, the floor Xet wants)``; ``(None, floor)`` when RAM is unmeasurable.
+
+    Both numbers are the zoo's. It just compares its floor against TOTAL RAM, which cannot see a
+    loaded model; exposing them here lets the transport choice apply the same rule to free RAM."""
+    module = _load_optional("unsloth_zoo.hf_xet_tuning")
+    floor = int(getattr(module, "MIN_XET_RAM_BYTES", 4_000_000_000) or 4_000_000_000)
+    profile_of = getattr(module, "system_profile", None)
+    if profile_of is None:
+        return (None, floor)
+    try:
+        available = int(getattr(profile_of(), "available_ram_bytes", 0) or 0)
+    except Exception as exc:  # noqa: BLE001
+        import logging as _logging
+        _logging.getLogger(__name__).debug("available_ram_bytes failed: %s", exc)
+        return (None, floor)
+    return (available if available > 0 else None, floor)
 
 
 def child_should_disable_xet(config: dict) -> bool:
@@ -567,6 +681,8 @@ __all__ = [
     "start_watchdog",
     "xet_env_overrides",
     "apply_xet_env",
+    "clamp_to_available_ram",
+    "available_ram_bytes",
     "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",
