@@ -150,9 +150,18 @@ def test_annotate_does_not_mutate_the_database_rows():
     assert "status" not in rows[0]
 
 
-def test_a_folder_that_scanned_and_found_models_is_ok():
-    note_scan_folder_scanned("/models/never-stat-me", found = True)
-    assert scan_folder_status("/models/never-stat-me") == STATUS_OK
+def test_a_folder_that_found_models_costs_no_syscall(monkeypatch):
+    """The healthy path is the hot one, so it must not probe anything."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("a healthy scan folder touched the filesystem")
+
+    for name in ("scandir", "listdir", "stat", "access"):
+        monkeypatch.setattr(os, name, _boom)
+    monkeypatch.setattr(os.path, "isdir", _boom)
+
+    note_scan_folder_scanned("/models/never-probe-me", found = True)
+    assert scan_folder_status("/models/never-probe-me") == STATUS_OK
 
 
 def test_a_folder_that_disappeared_reports_missing(tmp_path: Path):
@@ -184,6 +193,49 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         # And it recovers on its own once the folder is readable again.
         denied.chmod(stat.S_IRWXU)
         collect_local_models(tmp_path, custom_folders = list(rows))
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
+    finally:
+        denied.chmod(stat.S_IRWXU)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
+    """The Hub inventory has its own custom-folder loop, and it feeds the dialog.
+
+    /api/hub/models/local goes through here, not through collect_local_models,
+    so a status the dialog can show has to be recorded on this path too.
+    """
+    import asyncio as _asyncio
+
+    from hub.services.models.local_inventory import _collect_models_from_default_sources
+
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    (denied / "model.gguf").write_bytes(b"stub")
+    denied.chmod(0o000)
+    rows = [{"id": 1, "path": str(denied), "created_at": "2026-01-01"}]
+
+    def scan():
+        return _asyncio.run(
+            _collect_models_from_default_sources(
+                tmp_path,
+                tmp_path / "hf",
+                tmp_path / "legacy",
+                tmp_path / "default",
+                [],
+                [],
+                [],
+                list(rows),
+            )
+        )
+
+    try:
+        scan()
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+
+        denied.chmod(stat.S_IRWXU)
+        scan()
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
     finally:
         denied.chmod(stat.S_IRWXU)

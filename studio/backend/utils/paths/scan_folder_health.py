@@ -23,6 +23,16 @@ STATUS_MISSING = "missing"
 STATUS_UNREADABLE = "unreadable"
 
 
+def probe_status(path: str) -> str:
+    """Open ``path`` and report what the OS says. One syscall, no walking."""
+    try:
+        with os.scandir(path) as entries:
+            next(entries, None)
+    except OSError as error:
+        return classify_scan_error(error)
+    return STATUS_OK
+
+
 def is_readable_dir(path: str) -> bool:
     """True only if ``path`` can actually be listed.
 
@@ -32,12 +42,7 @@ def is_readable_dir(path: str) -> bool:
     """
     if not os.access(path, os.R_OK | os.X_OK):
         return False
-    try:
-        with os.scandir(path) as entries:
-            next(entries, None)
-    except OSError:
-        return False
-    return True
+    return probe_status(path) == STATUS_OK
 
 
 def classify_scan_error(error: OSError) -> str:
@@ -69,19 +74,23 @@ def clear_scan_failure(path: str) -> None:
 
 
 def note_scan_folder_scanned(path: str, *, found: bool) -> None:
-    """Record the outcome of a scan that did not raise.
+    """Record the outcome of a scan of ``path``.
 
-    A folder that yielded models is healthy. One that yielded nothing is either
-    genuinely empty or gone (renamed, deleted, unmounted volume), and the
-    scanners return an empty list for both. One stat separates them, and only
-    runs for a folder that had no scan work to do.
+    A folder that yielded models is healthy, and costs nothing here. One that
+    yielded nothing is empty, gone, or refused, and the scanners return an empty
+    list for all three: some raise, some swallow the error. So ask the OS once,
+    and only for a folder that had no scan work to do anyway.
     """
-    if found or os.path.isdir(path):
+    if found:
+        clear_scan_failure(path)
+        return
+    status = probe_status(path)
+    if status == STATUS_OK:
         clear_scan_failure(path)
         return
     if len(_failed) >= _MAX_TRACKED:
         _failed.clear()
-    _failed[path] = STATUS_MISSING
+    _failed[path] = status
 
 
 def scan_folder_status(path: str) -> str:

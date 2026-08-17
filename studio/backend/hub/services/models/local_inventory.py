@@ -37,7 +37,11 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
-from utils.paths.scan_folder_health import annotate_scan_folders
+from utils.paths.scan_folder_health import (
+    annotate_scan_folders,
+    note_scan_folder_scanned,
+    record_scan_failure,
+)
 
 logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
@@ -684,7 +688,9 @@ async def _collect_models_from_default_sources(
             lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
-        custom_sources.append((folder_path, discovered))
+        # Carry the registered path: the status registry is keyed on the row, not
+        # on the normalized Path this scan walks.
+        custom_sources.append((folder_path, discovered, str(folder["path"])))
         state_repositories.extend(
             ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
         )
@@ -716,7 +722,7 @@ async def _collect_models_from_default_sources(
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
-    for folder_path, discovered in custom_sources:
+    for folder_path, discovered, row_path in custom_sources:
         try:
             custom_models = await asyncio.to_thread(
                 _scan_custom_folder,
@@ -727,7 +733,11 @@ async def _collect_models_from_default_sources(
             )
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            # Only an OS failure is something the user can fix, so only that is shown.
+            if isinstance(e, OSError):
+                record_scan_failure(row_path, e)
             continue
+        note_scan_folder_scanned(row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
     return local_models
