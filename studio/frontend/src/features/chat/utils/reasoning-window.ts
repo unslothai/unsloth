@@ -53,26 +53,59 @@ export const REASONING_WINDOW_CHARS = 12_000;
 export const REASONING_WINDOW_SLACK = 0.5;
 
 /**
+ * The fence marker a line opens or closes, or null if the line is not a fence line.
+ *
+ * CommonMark, section "Fenced code blocks": up to three leading spaces, then at least three
+ * backticks or at least three tildes. Counting only bare ``` at column zero misses the two
+ * shapes that occur constantly in real thinking text -- a fence indented because it sits in a
+ * list item, and a ~~~ fence used because the code itself contains backticks -- and a missed
+ * fence is not a missed optimisation, it is a slice into the middle of a code block.
+ */
+function fenceMarker(line: string): { char: string; length: number; info: string } | null {
+  let index = 0;
+  while (index < 3 && line[index] === " ") index += 1;
+  const char = line[index];
+  if (char !== "`" && char !== "~") return null;
+  let length = 0;
+  while (line[index + length] === char) length += 1;
+  if (length < 3) return null;
+  return { char, length, info: line.slice(index + length) };
+}
+
+/**
  * Whether an offset is outside a fenced code block.
  *
- * Slicing Markdown at an arbitrary offset can leave the remainder starting INSIDE a ``` fence,
- * and the renderer would then read that fence's closing marker as an opening one and treat the
- * rest of the thinking block as code. Counting the markers before the offset is the whole test:
- * an even count means every fence opened before it was also closed before it.
- *
- * Only markers at the start of a line count, because that is the only place CommonMark begins a
- * fence and inline triple backticks are common in reasoning prose.
+ * Slicing Markdown at an arbitrary offset can leave the remainder starting INSIDE a fence, and
+ * the renderer would then read that fence's closing marker as an opening one and treat the rest
+ * of the thinking block as code. So walk the lines before the offset and track whether a fence is
+ * open, following CommonMark's own rules: an open fence is closed only by a marker of the SAME
+ * character that is at least as long and carries no info string, and while a fence is open no
+ * other marker means anything. A backtick fence's info string may not contain a backtick, which
+ * is what keeps inline ``` in prose from opening one.
  */
 export function isOutsideFence(text: string, offset: number): boolean {
-  let fences = 0;
-  let index = 0;
-  while (index < offset) {
-    const next = text.indexOf("```", index);
-    if (next === -1 || next >= offset) break;
-    if (next === 0 || text[next - 1] === "\n") fences += 1;
-    index = next + 3;
+  let open: { char: string; length: number } | null = null;
+  let lineStart = 0;
+  while (lineStart < offset) {
+    let lineEnd = text.indexOf("\n", lineStart);
+    if (lineEnd === -1 || lineEnd > offset) lineEnd = Math.min(offset, text.length);
+    const marker = fenceMarker(text.slice(lineStart, lineEnd));
+    if (marker) {
+      if (open === null) {
+        if (!(marker.char === "`" && marker.info.includes("`"))) {
+          open = { char: marker.char, length: marker.length };
+        }
+      } else if (
+        marker.char === open.char &&
+        marker.length >= open.length &&
+        marker.info.trim() === ""
+      ) {
+        open = null;
+      }
+    }
+    lineStart = lineEnd + 1;
   }
-  return fences % 2 === 0;
+  return open === null;
 }
 
 /**

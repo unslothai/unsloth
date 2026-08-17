@@ -8,22 +8,23 @@ watching a thinking block stream. It says nothing about the two cases where the 
 content BACK, and those are where a window stops being a performance change and starts being a
 correctness question:
 
-    SCROLL BACK WHILE STREAMING. Reaching the top of the mounted window widens it, mounting more
-    above. Widening is the thing this change is trying to avoid doing, so the honest question is
-    how much of the cost comes back per widen, and how far a reader can scroll before the pane is
-    as expensive as it was without the window at all.
+    SCROLL BACK WHILE STREAMING. Scrolling back restores the whole body in ONE step and turns the
+    window off for the rest of the round, so the honest question is what that single restore costs
+    and where the pane sits afterwards. It sits where an unwindowed pane already sits, because
+    afterwards it IS an unwindowed pane. The step loop below therefore reports one real restore
+    and then a run of no-ops, which is the shape to expect.
 
     EXPAND AFTER COMPLETION. The group collapses when the round ends. If the reader opens it, the
     whole body has to become reachable. What matters there is time to FIRST painted content, and
     whether a full expand of a 130,000-character body is survivable at all.
 
 Both are probes: they print what they measured and fail only when the probe itself did not
-measure what it claims (no widen happened, the group never opened, the body never completed).
+measure what it claims (no restore happened, the group never opened, the body never completed).
 Budgets belong in the harness, set from numbers taken on real hardware.
 
 It drives the DOM directly rather than through a page API, so it works unchanged against a tree
 with no window in it. That is the point: every number here is reported for BOTH trees, and the
-baseline column is what says whether a widen is expensive in absolute terms or only relative to a
+baseline column is what says whether a restore is expensive in absolute terms or only relative to a
 windowed pane.
 
 Run:
@@ -106,13 +107,13 @@ RECORDER = """
 
 
 def scroll_back(page) -> list[dict]:
-    """Drive the reader to the top of the pane repeatedly, measuring each widen."""
+    """Drive the reader to the top of the pane repeatedly, measuring the restore and its aftermath."""
     steps: list[dict] = []
     for index in range(WIDENS):
         before = page.evaluate("() => window.__paneStats()")
         page.evaluate("() => window.__probeMark()")
         page.evaluate("() => { const p = window.__pane(); if (p) p.scrollTop = 0; }")
-        # Long enough for the widen commit, the highlighter and the settle loop that holds the
+        # Long enough for the restore commit, the highlighter and the settle loop that holds the
         # reader's place while the new fences reach their real height.
         page.wait_for_timeout(700)
         frames = page.evaluate("() => window.__probeRead()")
@@ -127,7 +128,7 @@ def scroll_back(page) -> list[dict]:
                 "spans_after": after["spans"],
                 "worst_frame_ms": frames["worst"],
                 "p50_frame_ms": frames["p50"],
-                # How far the reader ended up from where they were reading. The widen mounts
+                # How far the reader ended up from where they were reading. The restore mounts
                 # content ABOVE them, so a pane that jumps shows up here and nowhere else.
                 "scroll_top_after": after["scrollTop"],
                 "distance_from_bottom_before": (
@@ -139,7 +140,7 @@ def scroll_back(page) -> list[dict]:
             }
         )
         if after["chars"] <= before["chars"]:
-            # Nothing more to widen into: the whole body is mounted.
+            # Nothing more to restore: the whole body is already mounted.
             break
     return steps
 
@@ -302,7 +303,7 @@ def main() -> int:
                 "expand": expand,
             }
             out = OUT / f"probe-reasoning-window-{LABEL}-{ENGINE}.json"
-            out.write_text(json.dumps(payload, indent = 2))
+            out.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
             info(f"wrote {out}")
 
             context.close()
@@ -310,7 +311,7 @@ def main() -> int:
 
             bad = []
             if not steps:
-                bad.append("no scroll-back step ran, so nothing about widening was measured")
+                bad.append("no scroll-back step ran, so nothing about the restore was measured")
             if not expand.get("opened"):
                 bad.append("the finished group never opened, so the expand was not measured")
             elif expand.get("first_paint_ms") is None:

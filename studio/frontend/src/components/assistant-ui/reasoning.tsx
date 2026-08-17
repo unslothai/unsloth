@@ -407,9 +407,25 @@ function ReasoningBody() {
   }
   const windowed = isRunning && !restoredRef.current && startRef.current > 0;
 
+  // Keyed on the window start, so moving the window or giving it back REMOUNTS the renderer.
+  //
+  // Not a precaution. Streamdown 2.5.0 memoises its default Markdown components on the source
+  // POSITION of the node -- `e.className === t.className && sameNodePosition(e.node, t.node)`,
+  // comparing only start/end line and column (vercel/streamdown#570, open). Handing it a string
+  // that is not an extension of the last one moves different text into the same line and column
+  // span, and every block whose span happens to match keeps the output it already had. Measured
+  // on a 60,000-character fixture: four stale fences while windowed and two stale paragraphs
+  // after the restore, showing text from elsewhere in the reasoning at a position the model
+  // never wrote it. Remounting is the only seam that reaches it, because neither the block key
+  // nor the memo is reachable through the props Streamdown exposes.
+  const renderKey = windowed ? startRef.current : -1;
+
   return (
     <div ref={hostRef} className="contents">
-      <MarkdownText text={windowed ? text.slice(startRef.current) : undefined} />
+      <MarkdownText
+        key={renderKey}
+        text={windowed ? text.slice(startRef.current) : undefined}
+      />
     </div>
   );
 }

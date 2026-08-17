@@ -859,7 +859,7 @@ def main() -> int:
         "report": report,
     }
     out = OUT / f"reasoning-pane-{LABEL}.json"
-    out.write_text(json.dumps(payload, indent = 2))
+    out.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
     info(f"wrote {out}")
 
     bad = harness_failures(results)

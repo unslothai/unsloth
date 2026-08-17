@@ -41,6 +41,56 @@ test("an unclosed fence is still open at the end of the text", () => {
   assert.equal(isOutsideFence(text, text.length), false);
 });
 
+// A blank line inside a fence is legal CommonMark and ordinary in real code, so it is a block
+// boundary that lands in the middle of a code block. Counting only bare ``` at column zero says
+// such a boundary is safe for the two fence shapes below, and the slice then starts mid-code with
+// the CLOSING marker ahead of it, which the renderer reads as an opening one and highlights the
+// rest of the thinking block as code.
+
+test("a fence indented inside a list item is still a fence", () => {
+  const text = "- plan:\n\n  ```python\n  def f():\n      return 1\n\n  def g():\n      pass\n  ```\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("def g")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+// The two below assert on the SLICE rather than on isOutsideFence, so they cannot pass merely
+// because the fence test agrees with itself.
+
+test("the window start never lands inside an indented fence", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}- plan:\n\n  \`\`\`python\n  def f():\n      return 1\n\n  def g():\n      pass\n  \`\`\`\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("def f"));
+  // Starting at "  def g" leaves the fence's closing marker ahead of the reader, which the
+  // renderer reads as an opening one.
+  assert.ok(!text.slice(start).startsWith("  def g"), text.slice(start, start + 20));
+});
+
+test("a tilde fence is a fence", () => {
+  const text = "intro\n\n~~~python\nx = 1\n\ny = 2\n~~~\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("y = 2")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside a tilde fence", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}~~~python\ndef f():\n    return 1\n\ndef g():\n    pass\n~~~\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("def f"));
+  assert.ok(!text.slice(start).startsWith("def g"), text.slice(start, start + 20));
+});
+
+test("a shorter run of the fence character does not close a longer fence", () => {
+  // Four backticks are used precisely so the sample can contain three.
+  const text = "intro\n\n````\n```\ninner\n```\n\nstill inner\n````\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("inner")), false);
+  assert.equal(isOutsideFence(text, text.indexOf("still inner")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("an info string cannot close a fence", () => {
+  const text = "intro\n\n```py\nx = 1\n\n```python\n\nstill code\n```\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("still code")), false);
+});
+
 test("the window start lands on a block boundary at or after the target", () => {
   const text = body(30);
   const start = alignWindowStart(text, 400);
