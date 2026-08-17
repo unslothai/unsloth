@@ -454,6 +454,15 @@ def branch_message_texts(messages: Optional[list[dict]]) -> Optional[list[str]]:
     return [text for text in texts if text] or None
 
 
+def message_text(content) -> str:
+    """One stored message's content, normalised the way the branch check normalises it.
+
+    Exposed so the rolling window can tell two stored messages apart on exactly the terms
+    this module compares them on, rather than inventing a second notion of "same text".
+    """
+    return _normalise(_probe_text({"content": content}))
+
+
 def content_on_branch(content, transcript: Optional[list[str]]) -> bool:
     """Whether one stored message's text appears on the branch ``transcript`` describes.
 

@@ -9447,6 +9447,7 @@ def execute_tool(
     output_callback = None,
     website_policy: dict | None = None,
     conversation_branch: list[dict] | None = None,
+    conversation_budget_tokens: int | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -9479,7 +9480,11 @@ def execute_tool(
         # works whether or not the request carries a document rag_scope.
         return _search_knowledge_base_with_budget(
             arguments,
-            {"thread_id": thread_id, "branch_messages": conversation_branch},
+            {
+                "thread_id": thread_id,
+                "branch_messages": conversation_branch,
+                "budget_tokens": conversation_budget_tokens,
+            },
             effective_timeout,
             cancel_event,
             search_fn = _search_conversation,
@@ -9648,6 +9653,21 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     top_k = (
         None if requested is None else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
     )
+    # Then against the room the window actually has left. The fixed cap bounds what the
+    # model can ask for; it says nothing about what fits. Eight chunks is roughly 4,000
+    # tokens once wrapped, which a 4K chat cannot hold, and the result lands in the
+    # current tool exchange, which rolling truncation protects and cannot evict -- so
+    # overshooting here is a context-length error the next preflight cannot recover from.
+    budget = scope.get("budget_tokens")
+    if budget is not None:
+        try:
+            from core.rag import config as rag_config
+            affordable = max(0, int(budget)) // max(1, int(rag_config.CHUNK_TOKENS))
+        except Exception:
+            affordable = 0
+        if affordable <= 0:
+            return "There is no room left in this context to search earlier conversation."
+        top_k = affordable if top_k is None else max(1, min(top_k, affordable))
     # The branch this request is on, so a response the user replaced with Retry cannot
     # be searched back up out of the archive. Absent for callers that have none, which
     # falls back to filtering against the whole stored thread.

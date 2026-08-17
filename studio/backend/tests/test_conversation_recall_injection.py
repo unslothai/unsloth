@@ -342,6 +342,80 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
 
 
+def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch):
+    """Retry on a short reply gives two siblings whose text is the same.
+
+    The branch check is textual, so "Done." on the live branch and "Done." on the branch
+    the user switched away from both look on-branch, and the newest row wins -- applying a
+    boundary measured on a much deeper branch and evicting live history this branch still
+    has. Where the text cannot separate them, the smaller boundary is the safe one.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "Done.",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
+                },
+            },
+        ],
+    )
+    branch = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Done."},
+        {"role": "user", "content": "next"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+
+
+def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypatch):
+    """Only replies indistinguishable from the newest are folded in.
+
+    Otherwise the smallest boundary anywhere in a long thread would win every time, and
+    the boundary would ratchet backwards over the life of the chat.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "an earlier, shallower answer",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 2}}
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "the newest answer",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 30}}
+                },
+            },
+        ],
+    )
+    branch = [
+        {"role": "assistant", "content": "an earlier, shallower answer"},
+        {"role": "assistant", "content": "the newest answer"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 30
+
+
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
     from core.inference import llama_cpp
@@ -510,6 +584,54 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
 
     tools_mod._search_conversation({"query": "pelicans", "top_k": 10_000}, {"thread_id": THREAD})
     assert seen["top_k"] <= tools_mod._MAX_CONVERSATION_SEARCH_TOP_K
+
+
+def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monkeypatch):
+    """The fixed ceiling bounds what the model may ask for, not what the context holds.
+
+    Eight chunks is roughly 4,000 tokens once wrapped, and the result lands in the current
+    tool exchange, which rolling truncation protects and cannot evict -- so on a small
+    context an unbudgeted search is a context-length error the next preflight cannot undo.
+    """
+    from core.rag import config as rag_config
+
+    seen = {}
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        seen["top_k"] = top_k
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    # Room for two chunks, asked for the ceiling.
+    tools_mod._search_conversation(
+        {"query": "pelicans", "top_k": 8},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 2},
+    )
+    assert seen["top_k"] == 2
+
+    # An omitted top_k is budgeted too, rather than falling through to the default.
+    seen.clear()
+    tools_mod._search_conversation(
+        {"query": "pelicans"},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS},
+    )
+    assert seen["top_k"] == 1
+
+    # No room at all: say so instead of returning a result that cannot be sent.
+    seen.clear()
+    answer = tools_mod._search_conversation(
+        {"query": "pelicans", "top_k": 4},
+        {"thread_id": THREAD, "budget_tokens": 10},
+    )
+    assert "no room" in answer.lower()
+    assert not seen
 
 
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):

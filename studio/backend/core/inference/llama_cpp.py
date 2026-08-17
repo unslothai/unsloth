@@ -51,6 +51,7 @@ import httpx
 
 from core.inference.context_window import (
     prompt_budget,
+    estimate_messages_tokens,
     evicted_messages,
     fit_rolling_context,
     messages_have_media,
@@ -498,7 +499,16 @@ def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optiona
         return None
 
 
-def _archive_content_on_branch(content, transcript: Optional[str]) -> bool:
+def _archive_message_text(content) -> str:
+    """One stored message flattened the way the branch check flattens it, or ""."""
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.message_text(content)
+    except Exception:
+        return ""
+
+
+def _archive_content_on_branch(content, transcript: Optional[list[str]]) -> bool:
     if transcript is None:
         return True
     try:
@@ -536,10 +546,26 @@ def _sticky_compaction_boundary(
         # branch actually being sent, it evicts a block sized for history this branch
         # does not have. Skip the rows the request's own messages do not contain.
         _branch = _archive_branch_transcript(branch_messages)
-        for message in reversed(studio_db.list_chat_messages(thread_id) or []):
-            if message.get("role") != "assistant":
-                continue
-            if not _archive_content_on_branch(message.get("content"), _branch):
+        candidates = [
+            message
+            for message in reversed(studio_db.list_chat_messages(thread_id) or [])
+            if message.get("role") == "assistant"
+            and _archive_content_on_branch(message.get("content"), _branch)
+        ]
+        if not candidates:
+            return 0
+
+        # The newest on-branch assistant turn decides, EXCEPT that the branch check is
+        # textual, so two siblings whose replies read the same ("Done") are
+        # indistinguishable from here -- and Retry is exactly what produces them. Taking
+        # the first match would then apply a boundary measured on a different, possibly
+        # much deeper branch. Where the text cannot tell them apart, take the SMALLEST
+        # boundary offered: too small costs one more compaction later, too large evicts
+        # live history that this branch still has.
+        newest = _archive_message_text(candidates[0].get("content"))
+        boundaries = []
+        for message in candidates:
+            if _archive_message_text(message.get("content")) != newest:
                 continue
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
@@ -552,7 +578,8 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            return max(0, int(truncation.get("dropped_messages") or 0))
+            boundaries.append(max(0, int(truncation.get("dropped_messages") or 0)))
+        return min(boundaries) if boundaries else 0
     except Exception:
         return 0
     return 0
@@ -21810,6 +21837,19 @@ class LlamaCppBackend:
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
                                 kwargs["conversation_branch"] = _request_branch
+                            # And the room actually left. The model picks its own top_k,
+                            # and the result lands in the current tool exchange, which
+                            # rolling truncation protects and therefore cannot evict: a
+                            # top_k the window cannot hold ends the turn in a
+                            # context-length error that no later refit can undo.
+                            if self._effective_context_length and accepts_kwarg(
+                                execute_tool, "conversation_budget_tokens"
+                            ):
+                                kwargs["conversation_budget_tokens"] = max(
+                                    0,
+                                    prompt_budget(self._effective_context_length, max_tokens)
+                                    - estimate_messages_tokens(conversation),
+                                )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             return execute_tool(
