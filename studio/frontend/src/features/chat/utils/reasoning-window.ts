@@ -51,8 +51,12 @@
 // in the reasoning. That is the reason this restores once and then stops, and it is why the
 // renderer is re-keyed on every window move rather than merely re-rendered.
 //
-// Neither the block key nor the index is reachable through `BlockComponent` or
-// `parseMarkdownIntoBlocksFn`, which are the only seams Streamdown exposes.
+// Correcting an earlier claim in this comment: the block index IS reachable. `BlockProps` carries
+// `content`, `index` and `isIncomplete`, and the shipped dist passes all three to a custom
+// `BlockComponent`. What is not reachable is the KEY, which stays Streamdown's own `useId()`
+// string, so a custom block component cannot change how React matches instances -- but it can
+// decide, per block, whether to render that block at all. That seam is what a whole-block window
+// would be built on, and it would need none of the machinery below.
 //
 // WHERE THE WINDOW IS ALLOWED TO START, AND WHY THIS NO LONGER PARSES MARKDOWN ITSELF
 //
@@ -133,21 +137,25 @@ const LINK_DEFINITION = /^ {0,3}>?\s*\[(?:[^\]\\]|\\.)+\]:\s*(\S[\s\S]*)$/;
  * paragraph the reader has already read back on screen, which is a visible artefact made by the
  * machinery that exists to avoid one.
  */
+function isTitle(rest: string): boolean {
+  const trimmed = rest.trim();
+  if (trimmed.length === 0) return true;
+  return /^"[^"]*"$|^'[^']*'$|^\([^)]*\)$/.test(trimmed);
+}
+
 function hasValidDestination(rest: string): boolean {
   const trimmed = rest.trim();
   if (trimmed.startsWith("<")) {
     const close = trimmed.indexOf(">");
-    // An angle destination may not contain a newline, an unescaped `<`, or spaces past the `>`.
+    // An angle destination may contain spaces, but not a line ending or an unescaped `<`.
     if (close === -1) return false;
-    const inside = trimmed.slice(1, close);
-    return !/[<\n]/.test(inside);
+    if (/[<\n]/.test(trimmed.slice(1, close))) return false;
+    return isTitle(trimmed.slice(close + 1));
   }
   // A bare destination runs to the first whitespace; anything after it must be a title.
-  const [destination, ...title] = trimmed.split(/\s+/);
+  const [destination, ...rest_] = trimmed.split(/\s+/);
   if (destination.length === 0 || destination.includes("<")) return false;
-  if (title.length === 0) return true;
-  const rejoined = title.join(" ");
-  return /^["'(].*["')]$/.test(rejoined);
+  return isTitle(rest_.join(" "));
 }
 
 /** Container prefixes, so `> [spec]: url` is recognised and carried without its quote marker. */
@@ -172,50 +180,92 @@ function isFencedCode(block: string): boolean {
 const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
 
 /**
- * How a block changes `\[ ... \]` parity.
- *
- * Code is skipped, both fenced and inline, for the same reason `preprocessLaTeX` skips it: a `\[`
- * in a code sample is a literal, and treating it as an opener leaves the scanner believing it is
- * inside an equation for the rest of the stream. That failure is quiet and total, because
- * `alignWindowStart` then returns 0 forever and the pane simply never becomes windowed.
+ * The longest `\[ ... \]` body `preprocessLaTeX` will rewrite, from `lib/latex.ts`:
+ * `(?<!\\)\\\[([\s\S]{0,4096}?)\\\]`. A `\[` whose `\]` is further away than this is left as
+ * ordinary text, so treating it as an opener would be wrong in the direction that matters most:
+ * `alignWindowStart` would return 0 forever and the pane would silently never window.
  */
-function bracketDelta(block: string): number {
-  if (isFencedCode(block)) return 0;
-  const bare = block.replace(INLINE_CODE, "");
-  let depth = 0;
-  let index = 0;
-  while (index < bare.length - 1) {
-    if (bare[index] !== "\\") {
-      index += 1;
-      continue;
-    }
-    const next = bare[index + 1];
-    if (next === "\\") {
-      index += 2;
-      continue;
-    }
-    if (next === "[") depth += 1;
-    else if (next === "]") depth -= 1;
-    index += 2;
+const BRACKET_MATH_SPAN = 4096;
+
+/**
+ * Regions where a delimiter is a literal: fenced code blocks and inline code spans.
+ *
+ * Returned sorted and merged, so membership is a binary search rather than a walk. Both matter: a
+ * body alternating an inline code span with a `\[` gives as many regions as delimiters, and asking
+ * each delimiter to scan every region is the quadratic shape this file has already had to remove
+ * twice.
+ */
+function codeRegions(text: string): Array<[number, number]> {
+  const found: Array<[number, number]> = [];
+  let offset = 0;
+  for (const block of parseMarkdownIntoBlocks(text)) {
+    if (isFencedCode(block)) found.push([offset, offset + block.length]);
+    offset += block.length;
   }
-  return depth;
+  INLINE_CODE.lastIndex = 0;
+  for (let m = INLINE_CODE.exec(text); m !== null; m = INLINE_CODE.exec(text)) {
+    found.push([m.index, m.index + m[0].length]);
+  }
+  found.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const [from, to] of found) {
+    const last = merged[merged.length - 1];
+    if (last && from <= last[1]) last[1] = Math.max(last[1], to);
+    else merged.push([from, to]);
+  }
+  return merged;
+}
+
+/** Whether `at` falls in one of `regions`, which must be sorted and non-overlapping. */
+function inRegions(regions: Array<[number, number]>, at: number): boolean {
+  let low = 0;
+  let high = regions.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const [from, to] = regions[mid]!;
+    if (at < from) high = mid - 1;
+    else if (at >= to) low = mid + 1;
+    else return true;
+  }
+  return false;
 }
 
 /**
- * Whether `offset` sits inside a `\[ ... \]` equation.
+ * The `\[ ... \]` spans `preprocessLaTeX` would actually rewrite, in increasing order.
  *
- * The one construct the block boundaries cannot speak for, because `preprocessLaTeX` turns it into
- * `$$` before the document is split, so the split never sees it in this form.
+ * The one construct block boundaries cannot speak for, because that pass runs BEFORE the document
+ * is split and turns these into `$$`. Everything it ignores is ignored here too: delimiters inside
+ * code, and an opener with no closer within its span limit.
  */
-export function isOutsideBracketMath(text: string, offset: number): boolean {
-  let depth = 0;
-  let position = 0;
-  for (const block of parseMarkdownIntoBlocks(text)) {
-    if (position >= offset) break;
-    depth += bracketDelta(block);
-    position += block.length;
+function bracketMathSpans(text: string): Array<[number, number]> {
+  const regions = codeRegions(text);
+  const spans: Array<[number, number]> = [];
+  let index = text.indexOf("\\[");
+  while (index !== -1) {
+    if (text[index - 1] === "\\" || inRegions(regions, index)) {
+      index = text.indexOf("\\[", index + 2);
+      continue;
+    }
+    // The body is what the preprocessor's `{0,4096}` counts, so the closer may sit AT the limit.
+    const limit = index + 2 + BRACKET_MATH_SPAN;
+    let close = text.indexOf("\\]", index + 2);
+    while (close !== -1 && close <= limit && (text[close - 1] === "\\" || inRegions(regions, close))) {
+      close = text.indexOf("\\]", close + 2);
+    }
+    if (close === -1 || close > limit) {
+      // No closer within the preprocessor's reach, so this is literal text to it and to us.
+      index = text.indexOf("\\[", index + 2);
+      continue;
+    }
+    spans.push([index, close + 2]);
+    index = text.indexOf("\\[", close + 2);
   }
-  return depth <= 0;
+  return spans;
+}
+
+/** Whether `offset` sits inside a `\[ ... \]` equation the preprocessor would form. */
+export function isOutsideBracketMath(text: string, offset: number): boolean {
+  return !bracketMathSpans(text).some(([from, to]) => offset > from && offset < to);
 }
 
 /**
@@ -225,15 +275,20 @@ export function isOutsideBracketMath(text: string, offset: number): boolean {
  * one, which is the quadratic shape this file has already had to remove twice.
  *
  * Returns 0 when there is none, which mounts the whole body. That is the right failure: showing
- * everything is correct and merely slow, whereas cutting into a construct is wrong.
+ * everything is correct and merely slow, whereas cutting into a construct is wrong. Callers must
+ * treat that 0 as "turn the window off", not as "keep whatever start you had" -- see
+ * `nextReasoningWindowStart`.
  */
 export function alignWindowStart(text: string, target: number): number {
   if (target <= 0) return 0;
+  const spans = bracketMathSpans(text);
+  let span = 0;
   let offset = 0;
-  let depth = 0;
   for (const block of parseMarkdownIntoBlocks(text)) {
-    if (offset >= target && offset > 0 && depth <= 0) return offset;
-    depth += bracketDelta(block);
+    // Both the boundaries and the spans only move forward, so this cursor never rewinds.
+    while (span < spans.length && spans[span]![1] <= offset) span += 1;
+    const inMath = span < spans.length && offset > spans[span]![0] && offset < spans[span]![1];
+    if (offset >= target && offset > 0 && !inMath) return offset;
     offset += block.length;
   }
   return 0;
@@ -243,8 +298,18 @@ export function alignWindowStart(text: string, target: number): number {
  * Where the mounted window should start, given where it starts now, while the reader is at the
  * end of a streaming block.
  *
- * Monotone: never less than `currentStart`, so the mounted body never grows backwards on its own
- * and the renderer never sees the string it just rendered with a prefix glued back on.
+ * Monotone WHILE A BOUNDARY EXISTS: never less than `currentStart`, so the mounted body never
+ * grows backwards on its own and the renderer never sees the string it just rendered with a prefix
+ * glued back on.
+ *
+ * When no boundary exists the window turns off instead, and that exception is the whole point. A
+ * GFM footnote makes `parseMarkdownIntoBlocks` return the ENTIRE document as one block --
+ * measured, 163 blocks become 1 the moment a `[^1]: ...` definition is appended -- so a start that
+ * was a real boundary a chunk ago is not one any more. Keeping it would slice a document the
+ * renderer treats as indivisible, which is the corruption class this file exists to avoid, and it
+ * would also freeze the start forever while the text kept growing: measured at 31,729 mounted
+ * characters and rising, from a window that is supposed to cap at 18,000. Turning off gives the
+ * reader the unwindowed pane, which is correct and merely as slow as today.
  */
 export function nextReasoningWindowStart(
   text: string,
@@ -255,6 +320,7 @@ export function nextReasoningWindowStart(
   const rendered = text.length - currentStart;
   if (rendered <= windowChars * (1 + slack)) return currentStart;
   const aligned = alignWindowStart(text, text.length - windowChars);
+  if (aligned === 0) return 0;
   return Math.max(currentStart, aligned);
 }
 
@@ -321,5 +387,12 @@ export function advanceReasoningWindow(
   if (start > state.start) {
     return { start, retryAt: 0, definitions: linkDefinitionsBefore(text, start) };
   }
-  return { ...state, start, retryAt: text.length + REASONING_WINDOW_RETRY_CHARS };
+  // The start did not move, so the cached definitions still stand -- unless the window was just
+  // turned off, in which case they must go with it: at start 0 the real ones are in the mounted
+  // text already, and re-prepending them would duplicate them on screen.
+  return {
+    start,
+    retryAt: text.length + REASONING_WINDOW_RETRY_CHARS,
+    definitions: start === 0 ? "" : state.definitions,
+  };
 }

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { parseMarkdownIntoBlocks } from "streamdown";
 
+import { preprocessLaTeX } from "../src/lib/latex.ts";
 import {
   REASONING_WINDOW_CHARS,
   REASONING_WINDOW_RETRY_CHARS,
@@ -332,4 +333,95 @@ test("a real definition in angle brackets is still carried", () => {
   const text = `[spec]: <https://example.com/spec>\n\n${"filler\n\n".repeat(50)}`;
   const start = alignWindowStart(text, 100);
   assert.ok(linkDefinitionsBefore(text, start).includes("https://example.com/spec"));
+});
+
+test("junk after an angle-bracket destination makes it a paragraph, not a definition", () => {
+  // Ground truth from remark, the parser in this pipeline: only the first of these three is a
+  // definition. The other two render visibly, so carrying one puts read text back on screen.
+  const definition = `[spec]: <https://example.com/spec> "Title"`;
+  const paragraphs = [
+    `[spec]: <https://example.com/spec> junk here`,
+    `[spec]: <https://example.com/spec>extra`,
+  ];
+  const filler = `\n\n${"filler\n\n".repeat(50)}`;
+  const first = definition + filler;
+  assert.ok(
+    linkDefinitionsBefore(first, alignWindowStart(first, 100)).includes("example.com/spec"),
+  );
+  for (const line of paragraphs) {
+    const text = line + filler;
+    assert.equal(linkDefinitionsBefore(text, alignWindowStart(text, 100)), "", line);
+  }
+});
+
+test("a bracket span longer than the preprocessor's cap does not disable the window", () => {
+  // `preprocessLaTeX` caps a `\[ ... \]` body at 4,096 characters and leaves anything longer as
+  // ordinary text. Treating such an opener as live would leave this scanner believing it was
+  // inside an equation for the rest of the stream, and `alignWindowStart` would return 0 forever:
+  // the pane would silently never window, which is the same quiet total failure a `\[` in a code
+  // sample used to cause.
+  const overCap = `\\[\n${"x + y = z\n".repeat(600)}\\]`;
+  const text = `intro\n\n${overCap}\n\n${"filler\n\n".repeat(80)}`;
+  // The premise, checked rather than assumed.
+  assert.ok(overCap.length - 4 > 4096);
+  assert.ok(!preprocessLaTeX(text).includes("$$"), "premise: the preprocessor ignores it");
+  assert.ok(alignWindowStart(text, text.length - 500) > 0);
+
+  // And the control: a span INSIDE the cap is still respected.
+  const underCap = `\\[\n${"x + y = z\n".repeat(100)}\\]`;
+  const inside = `intro\n\n${underCap}\n\n${"filler\n\n".repeat(80)}`;
+  assert.ok(preprocessLaTeX(inside).includes("$$"), "premise: the preprocessor rewrites it");
+  const openerAt = inside.indexOf("\\[");
+  assert.equal(isOutsideBracketMath(inside, openerAt + 40), false);
+});
+
+test("alignment stays linear when inline code alternates with bracket openers", () => {
+  // Every delimiter used to be checked against every code region. This is the shape that made
+  // that quadratic: as many regions as delimiters, all of them the same kind.
+  //
+  // Measured as a RATIO rather than a wall clock, because the absolute numbers are small enough
+  // that a machine-specific threshold would either pass on the quadratic version or fail on a
+  // loaded runner. Four times the input against a linear scan costs 11.1x here and 4.1x with the
+  // search, so 7 separates them with room on both sides.
+  const build = (n: number) => `${"pad\n\n".repeat(20)}${"`\\[` and text\n\n".repeat(n)}`;
+  const time = (n: number) => {
+    const text = build(n);
+    const at = performance.now();
+    alignWindowStart(text, Math.floor(text.length / 2));
+    return performance.now() - at;
+  };
+  time(1_000);
+  const small = time(4_000);
+  const large = time(16_000);
+  assert.ok(large < small * 7, `4,000 took ${small}ms, 16,000 took ${large}ms`);
+});
+
+test("a footnote arriving mid-stream turns the window off rather than freezing it", () => {
+  // The premise, checked rather than assumed: a GFM footnote definition makes the renderer treat
+  // the WHOLE document as one block, so a start that was a boundary a chunk ago is not one now.
+  const body = "A paragraph of reasoning text here.\n\n".repeat(900);
+  const plain = `${body}Tail.\n`;
+  const withNote = `${body}See it[^1].\n\n${"More reasoning text.\n\n".repeat(2000)}[^1]: The note.\n`;
+  assert.ok(parseMarkdownIntoBlocks(plain).length > 100);
+  assert.equal(parseMarkdownIntoBlocks(withNote).length, 1);
+
+  // Engaged on the plain text, then the footnote arrives.
+  const engaged = nextReasoningWindowStart(plain, 0);
+  assert.ok(engaged > 0);
+  // The freeze only shows once the mounted suffix has outgrown the window, which is the point at
+  // which the alignment is asked again. Until then the start is simply not reconsidered.
+  assert.ok(withNote.length - engaged > REASONING_WINDOW_CHARS * 1.5);
+  assert.equal(alignWindowStart(withNote, withNote.length - REASONING_WINDOW_CHARS), 0);
+
+  // Retaining `engaged` would slice a document the renderer treats as indivisible, AND would
+  // freeze the start while the text kept growing: 31,729 mounted characters from a window that
+  // caps at 18,000. Turning off is the only safe answer.
+  assert.equal(nextReasoningWindowStart(withNote, engaged), 0);
+  const state = advanceReasoningWindow(withNote, {
+    start: engaged,
+    retryAt: 0,
+    definitions: "[spec]: /url\n\n",
+  });
+  assert.equal(state.start, 0);
+  assert.equal(state.definitions, "", "carried definitions go with the window");
 });
