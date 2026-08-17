@@ -487,7 +487,30 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         return 0
 
 
-def _sticky_compaction_boundary(thread_id: Optional[str]) -> int:
+def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optional[str]:
+    """The active branch as one normalised blob, or None if there is nothing to compare."""
+    if not branch_messages:
+        return None
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.branch_transcript(branch_messages)
+    except Exception:
+        return None
+
+
+def _archive_content_on_branch(content, transcript: Optional[str]) -> bool:
+    if transcript is None:
+        return True
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.content_on_branch(content, transcript)
+    except Exception:
+        return True
+
+
+def _sticky_compaction_boundary(
+    thread_id: Optional[str], branch_messages: Optional[list[dict]] = None
+) -> int:
     """How many leading messages this thread last compacted away, or 0.
 
     The fit is otherwise stateless: the client re-sends the whole saved transcript on
@@ -506,8 +529,17 @@ def _sticky_compaction_boundary(thread_id: Optional[str]) -> int:
         return 0
     try:
         from storage import studio_db
+
+        # The stored rows are the whole message DAG, ordered by creation time, so the
+        # newest assistant turn can belong to a sibling branch left behind by Retry or
+        # regenerate. Its boundary describes a different conversation: applied to the
+        # branch actually being sent, it evicts a block sized for history this branch
+        # does not have. Skip the rows the request's own messages do not contain.
+        _branch = _archive_branch_transcript(branch_messages)
         for message in reversed(studio_db.list_chat_messages(thread_id) or []):
             if message.get("role") != "assistant":
+                continue
+            if not _archive_content_on_branch(message.get("content"), _branch):
                 continue
             metadata = message.get("metadata") or {}
             if not isinstance(metadata, dict):
@@ -19929,7 +19961,7 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
-                    sticky_dropped = _sticky_compaction_boundary(thread_id),
+                    sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -20522,7 +20554,7 @@ class LlamaCppBackend:
                         sticky_dropped = (
                             0
                             if _sticky_boundary_applied
-                            else _sticky_compaction_boundary(thread_id)
+                            else _sticky_compaction_boundary(thread_id, _request_branch)
                         ),
                     )
                     # Set whatever the fit decided: the boundary has now been accounted
@@ -21886,7 +21918,9 @@ class LlamaCppBackend:
                     protected_message_ids = _rolling_anchor_ids,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
-                        0 if _sticky_boundary_applied else _sticky_compaction_boundary(thread_id)
+                        0
+                        if _sticky_boundary_applied
+                        else _sticky_compaction_boundary(thread_id, _request_branch)
                     ),
                 )
                 _sticky_boundary_applied = True

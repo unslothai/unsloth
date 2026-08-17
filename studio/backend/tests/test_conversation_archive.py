@@ -413,6 +413,39 @@ def test_a_thread_that_was_never_persisted_is_never_archived(conn):
     assert conversation_archive.recall("temporary-thread", "EPHEMERAL-4444") is None
 
 
+def test_a_thread_deleted_mid_ingest_does_not_leave_its_turns_behind(conn, monkeypatch):
+    """Deleting a chat while it is compacting must not resurrect the archive.
+
+    Deletion cancels the generation, but cancellation is cooperative and the embedding
+    pass between the liveness check and the commit does not observe it. A delete that
+    sweeps the scope in that window is undone by the commit, and the rows it puts back
+    are in a scope no later delete can reach, since the thread is gone.
+    """
+    from storage import studio_db
+
+    turns = _turn("what is the code", "the code is DELETED-9999")
+    _save_thread("doomed-thread", turns, append = True)
+
+    original = conversation_archive.embeddings.encode_with_identity
+
+    def delete_the_thread_mid_ingest(*args, **kwargs):
+        # Exactly the interleaving that matters: rows first, archive sweep last, both
+        # completing before this ingest commits.
+        studio_db.delete_chat_threads(["doomed-thread"])
+        conversation_archive.delete_for_thread("doomed-thread")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        conversation_archive.embeddings, "encode_with_identity", delete_the_thread_mid_ingest
+    )
+
+    written = conversation_archive.archive_turns("doomed-thread", turns)
+
+    assert written == 0
+    assert conversation_archive.has_archive("doomed-thread") is False
+    assert conversation_archive.recall("doomed-thread", "DELETED-9999") is None
+
+
 def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
     """A thread archived earlier whose saved rows are gone still answers.
 

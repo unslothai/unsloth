@@ -257,6 +257,21 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 conn.close()
             except Exception:
                 pass
+
+    # Deleting a thread cancels its generation, but cancellation is cooperative and the
+    # work between the liveness check above and the commit is the slowest part of this
+    # function (chunking, then an embedding pass). A delete landing in that window
+    # removes the thread's rows and sweeps its archive scope BEFORE this commit puts
+    # rows back, leaving content the user deleted persisted in a scope no later delete
+    # can reach -- the same unreachable-archive problem as an unpersisted thread.
+    #
+    # Re-checking after the commit converges either way, because the delete route drops
+    # the thread's rows first and sweeps archives last: a sweep that ran before this
+    # commit is caught here, and one that runs after removes these rows itself.
+    if written and not _live_transcript(thread_id):
+        logger.info("conversation_archive.thread_deleted_mid_ingest thread_id=%s", thread_id)
+        delete_for_thread(thread_id)
+        return 0
     return written
 
 
@@ -312,7 +327,7 @@ def _live_transcript(thread_id: str) -> Optional[str]:
     return blob or None
 
 
-def _branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
+def branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
     """The ACTIVE branch, normalised the same way, built from the request's own messages.
 
     Preferred over ``_live_transcript`` wherever the caller has it, because the stored
@@ -339,6 +354,20 @@ def _branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
             parts.append(str(function.get("arguments") or ""))
     blob = _normalise("\n".join(part for part in parts if part))
     return blob or None
+
+
+def content_on_branch(content, transcript: Optional[str]) -> bool:
+    """Whether one stored message's text appears on the branch ``transcript`` describes.
+
+    Shared with the rolling window, which has the same problem recall does: a thread's
+    stored rows are the whole DAG, so "the newest assistant turn" can belong to a sibling
+    the user is not on. Empty text is treated as on-branch, because a message with
+    nothing to compare is not evidence of a different branch.
+    """
+    if not transcript:
+        return True
+    text = _normalise(_text_of(content, include_tool_calls = True))
+    return not text or text in transcript
 
 
 _TOOL_RESULT_PROBE_CHARS = 160
@@ -460,7 +489,7 @@ def recall(
         # The request's own branch first: the stored rows are the whole DAG, siblings
         # included. Falling back to them is still better than not filtering at all, for
         # a caller that has no branch to offer.
-        transcript = _branch_transcript(branch_messages) or _live_transcript(thread_id)
+        transcript = branch_transcript(branch_messages) or _live_transcript(thread_id)
         if transcript:
             kept = [
                 hit

@@ -301,6 +301,47 @@ def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
     assert llama_cpp._sticky_compaction_boundary("t1") == 18
 
 
+def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
+    """Retry keeps the replaced response, and the stored rows are the whole DAG.
+
+    Ordered by creation time, the newest assistant can be the sibling the user switched
+    away from. Its boundary was measured on a different conversation, so applying it to
+    the branch being sent evicts a block sized for history this branch does not have.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "answer on the branch we are on",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "regenerated answer the user switched away from",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 40}}
+                },
+            },
+        ],
+    )
+    branch = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "answer on the branch we are on"},
+        {"role": "user", "content": "next"},
+    ]
+
+    # Thread-wide, the newest row wins even though it is on the other branch.
+    assert llama_cpp._sticky_compaction_boundary("t1") == 40
+    # Told which branch the request is on, the branch's own boundary is used.
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+
+
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
     from core.inference import llama_cpp
@@ -443,7 +484,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
     source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
     text = source.read_text()
     assert "_sticky_boundary_applied = True" in text
-    assert "0 if _sticky_boundary_applied" in text
+    # Whitespace-insensitive: the gate is one expression however the formatter wraps it.
+    assert "0 if _sticky_boundary_applied" in " ".join(text.split())
 
 
 def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
