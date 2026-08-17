@@ -239,3 +239,50 @@ jobs:
           name: studio-frontend-dist
           path: studio/frontend/dist
           retention-days: 1
+
+  # The suite reads its own sources off disk, resolves modules by URL and walks
+  # directories, so it can be correct on POSIX and wrong on Windows. Running it
+  # on ubuntu only, this job's absence let 13 such failures accumulate unseen
+  # across three files: two shapes of path/URL confusion, one of them added by a
+  # PR whose whole purpose was to fix a Windows bug.
+  #
+  # Deliberately NOT a matrix over the job above. Measured on a staging replica
+  # of this workflow, `windows-latest` runs `npm test` in 49s against ubuntu's
+  # 47s, so the tests themselves are not the expensive part; typecheck (48s),
+  # build (33s), the Chromium install and the three browser smokes are, and none
+  # of them can fail on Windows for a reason they would not also fail on ubuntu.
+  # Repeating them would roughly triple the cost of this workflow to re-answer a
+  # question ubuntu already answered. Checkout, node, `npm ci` and `npm test` on
+  # Windows measured ~110s.
+  #
+  # Line endings need no special handling here: .gitattributes pins
+  # `studio/frontend/** text=auto eol=lf`, so the tree checks out LF whatever the
+  # runner's core.autocrlf says, and the assertions that match on exact source
+  # substrings see the bytes in the repo.
+  windows:
+    name: Frontend unit tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      # Plain `npm ci`, not the hardened install the ubuntu job runs. The
+      # lockfile audit, the allowScripts pins and `--strict-allow-scripts` are
+      # supply-chain gates on the same lockfile, and this job is a platform gate;
+      # duplicating them here would spend a second runner to re-check bytes that
+      # cannot differ, and `--strict-allow-scripts` needs the npm 11.16 upgrade
+      # step besides.
+      - run: npm ci --no-fund --no-audit
+
+      - name: Unit tests
+        run: npm test
