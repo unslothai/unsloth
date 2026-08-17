@@ -77,6 +77,7 @@ from utils.paths.scan_folder_health import (
     note_scan_folder_scanned,
     record_scan_failure,
 )
+
 # Shared with the hub inventory scans; private aliases kept for existing importers.
 # ``_HF_REPO_ID_RE`` is the Hub repo id shape ("owner/name"); anything else is a path.
 from utils.hidden_models import (
@@ -1023,9 +1024,7 @@ def collect_local_models(
             # Keep the reason so the folder list can show it instead of nothing.
             record_scan_failure(str(folder.get("path", folder_path)), e)
             continue
-        note_scan_folder_scanned(
-            str(folder.get("path", folder_path)), found = bool(custom_models)
-        )
+        note_scan_folder_scanned(str(folder.get("path", folder_path)), found = bool(custom_models))
         local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
 
     # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show

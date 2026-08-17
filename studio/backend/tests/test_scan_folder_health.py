@@ -122,7 +122,6 @@ def test_clearing_an_unknown_folder_is_harmless():
 
 def test_the_registry_stays_bounded():
     import utils.paths.scan_folder_health as health
-
     for i in range(health._MAX_TRACKED + 5):
         record_scan_failure(f"/models/{i}", PermissionError(errno.EACCES, "Permission denied"))
     assert len(health._failed) <= health._MAX_TRACKED
