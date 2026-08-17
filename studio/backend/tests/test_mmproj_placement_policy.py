@@ -604,17 +604,25 @@ def test_a_vision_off_load_does_not_need_a_cached_projector(tmp_path):
 
     seen = {}
 
-    def fake_blocks(repo, variant, *, require_mmproj, hf_token = None):
+    def fake_blocks(
+        repo,
+        variant,
+        *,
+        require_mmproj,
+        hf_token = None,
+    ):
         seen["require_mmproj"] = require_mmproj
         return False
 
-    def inner(self, intent, load_cancel_event = None):
+    def inner(
+        self,
+        intent,
+        load_cancel_event = None,
+    ):
         return True
 
     wrapped = _with_gguf_load_marker(inner)
-    with patch(
-        "core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks
-    ):
+    with patch("core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks):
         wrapped(
             object(),
             GgufLoadIntent(
