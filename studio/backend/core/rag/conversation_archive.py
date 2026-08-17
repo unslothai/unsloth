@@ -97,6 +97,60 @@ def _text_of(content, *, include_tool_calls: bool = False) -> str:
     return "" if content is None else str(content)
 
 
+def _probe_text(message: dict) -> str:
+    """One message flattened in the ORDER ``render_turn`` writes it.
+
+    The branch check compares the archived rendering against a transcript, and now
+    compares it in order, so the two have to agree on what that order is. render_turn
+    writes a tool call before any assistant text on the same message, and the tool's
+    result after it (the result arrives as the next message). Both message shapes are
+    laid out that way here -- the request's `tool_calls`, and the store's `tool-call`
+    content parts, which carry the call and its result together on one part.
+    """
+    calls: list[str] = []
+    texts: list[str] = []
+    results: list[str] = []
+
+    def rendered(value) -> list[str]:
+        """A structured value as the strings a wire-format copy of it could look like.
+
+        The store keeps a tool call's arguments as an object, while the archived copy is
+        the raw string the model emitted, whose spacing is its own. This is a haystack,
+        so offering both spacings costs nothing and cannot cause a false rejection.
+        """
+        if isinstance(value, str):
+            return [value]
+        try:
+            spaced = json.dumps(value, ensure_ascii = False)
+            compact = json.dumps(value, ensure_ascii = False, separators = (",", ":"))
+        except Exception:
+            return [str(value)]
+        return [spaced] if spaced == compact else [spaced, compact]
+
+    content = message.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "tool-call":
+                for value in (part.get("toolName"), part.get("args")):
+                    if value not in (None, "", {}, []):
+                        calls.extend(rendered(value))
+                result = part.get("result")
+                if result not in (None, "", {}, []):
+                    results.extend(rendered(result))
+            elif part.get("type") in ("text", "input_text") or "text" in part:
+                texts.append(str(part.get("text") or ""))
+    else:
+        texts.append(_text_of(content))
+    for call in message.get("tool_calls") or []:
+        function = (call or {}).get("function") or {}
+        for value in (function.get("name"), function.get("arguments")):
+            if value:
+                calls.append(str(value))
+    return "\n".join(part for part in calls + texts + results if part)
+
+
 def _is_injected(message: dict) -> bool:
     call_id = str(message.get("tool_call_id") or "")
     if call_id.startswith(_INJECTED_CALL_PREFIXES):
@@ -357,8 +411,7 @@ def _live_transcript(thread_id: str) -> Optional[str]:
         return None
     if not messages:
         return None
-    parts = [_text_of(message.get("content"), include_tool_calls = True) for message in messages]
-    blob = _normalise("\n".join(part for part in parts if part))
+    blob = _normalise("\n".join(part for part in map(_probe_text, messages) if part))
     return blob or None
 
 
@@ -378,16 +431,7 @@ def branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
     """
     if not messages:
         return None
-    parts = []
-    for message in messages:
-        parts.append(_text_of(message.get("content"), include_tool_calls = True))
-        # Request-shaped assistant turns carry calls in `tool_calls`, not as content
-        # parts, and render_turn indexes the arguments -- so they belong in the haystack.
-        for call in message.get("tool_calls") or []:
-            function = (call or {}).get("function") or {}
-            parts.append(str(function.get("name") or ""))
-            parts.append(str(function.get("arguments") or ""))
-    blob = _normalise("\n".join(part for part in parts if part))
+    blob = _normalise("\n".join(part for part in map(_probe_text, messages) if part))
     return blob or None
 
 
@@ -401,7 +445,7 @@ def content_on_branch(content, transcript: Optional[str]) -> bool:
     """
     if not transcript:
         return True
-    text = _normalise(_text_of(content, include_tool_calls = True))
+    text = _normalise(_probe_text({"content": content}))
     return not text or text in transcript
 
 
@@ -446,12 +490,22 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     probes = [probe for probe in probes if probe]
     if not probes:
         return False
-    # EVERY line, not the first one that matches. A turn is archived as a unit, so
-    # editing only the assistant half leaves the user line matching and would keep
-    # serving the answer that no longer exists. Requiring all of them means an edit to
-    # any part of a turn retires the whole archived copy, which is what "this turn is
-    # still on the branch" has to mean.
-    return all(probe in transcript for probe in probes)
+    # EVERY line, IN ORDER. A turn is archived as a unit, so editing only the assistant
+    # half leaves the user line matching and would keep serving the answer that no longer
+    # exists; requiring all of them means an edit to any part of a turn retires the whole
+    # archived copy. Requiring them in order closes the rest of the same hole: independent
+    # membership accepts a turn whose lines were merely rearranged, and would serve the
+    # pre-edit ordering back as though it were what happened.
+    #
+    # Both sides are rendered by render_turn, so the order being compared is the order the
+    # archive itself wrote, not an assumption about how a message store lays a turn out.
+    position = 0
+    for probe in probes:
+        found = transcript.find(probe, position)
+        if found < 0:
+            return False
+        position = found + len(probe)
+    return True
 
 
 def _document_on_live_branch(conn, document_id: str, transcript: str, cache: dict) -> bool:
@@ -601,15 +655,63 @@ def recall(
                 pass
 
 
-def delete_for_thread(thread_id: str) -> int:
-    """Drop a thread's archive. Called when the thread itself is deleted."""
-    if not thread_id or not rag_db.RAG_AVAILABLE:
-        return 0
+def _delete_scope_without_vec(scope: str, thread_id: str) -> int:
+    """Delete a scope's text-bearing rows over a connection with no sqlite-vec.
+
+    Deletion must not depend on the optional native extension. An archive is only ever
+    WRITTEN while vec0 loads, but the library can stop loading afterwards (a venv change,
+    the common macOS case), and a delete that quietly does nothing then leaves the turns
+    of a deleted conversation on disk, ready to answer again the day vec0 loads.
+
+    The embedding rows in chunks_vec cannot be reached from here and are left behind.
+    They carry vectors, not text, and every read path resolves a hit back through
+    ``chunks`` joined to ``documents``, both of which are gone, so an orphan can be
+    retrieved by nothing.
+    """
     conn = None
     removed = 0
     try:
-        conn = rag_db.get_connection()
-        scope = store.conversation_archive_scope(thread_id)
+        conn = rag_db.get_metadata_connection()
+        documents = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall()
+        ]
+        for document_id in documents:
+            conn.execute(
+                "DELETE FROM chunks_fts WHERE chunk_id IN "
+                "(SELECT id FROM chunks WHERE document_id=?)",
+                (document_id,),
+            )
+            conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
+            conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
+            removed += 1
+        conn.commit()
+    except Exception:
+        logger.warning(
+            "conversation_archive.delete_without_vec_failed thread_id=%s", thread_id, exc_info = True
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return removed
+
+
+def delete_for_thread(thread_id: str) -> int:
+    """Drop a thread's archive. Called when the thread itself is deleted."""
+    if not thread_id:
+        return 0
+    scope = store.conversation_archive_scope(thread_id)
+    conn = None
+    removed = 0
+    try:
+        try:
+            conn = rag_db.get_connection()
+        except Exception:
+            # No vec0 here. Delete what can be deleted rather than nothing at all.
+            return _delete_scope_without_vec(scope, thread_id)
         for row in conn.execute("SELECT id FROM documents WHERE scope=?", (scope,)).fetchall():
             store.delete_document(conn, row["id"])
             removed += 1

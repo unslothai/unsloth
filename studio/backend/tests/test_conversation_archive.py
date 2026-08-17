@@ -362,6 +362,92 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     assert survived is not None and "KEEPME-1111" in survived[0]
 
 
+def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
+    """An archive is only written while vec0 loads, but it can stop loading afterwards.
+
+    A venv change is enough (the common macOS case). A delete that quietly does nothing
+    then leaves a deleted conversation's turns on disk, ready to answer again the day the
+    extension loads once more.
+    """
+    turns = _turn("what is the passphrase", "the passphrase is VECGONE-2020")
+    _save_thread("vecless-thread", turns, append = True)
+    assert conversation_archive.archive_turns("vecless-thread", turns) == 1
+
+    def no_vec():
+        raise rag_db.RagExtensionUnavailable("vec0 will not load")
+
+    monkeypatch.setattr(rag_db, "get_connection", no_vec)
+    removed = conversation_archive.delete_for_thread("vecless-thread")
+    monkeypatch.undo()
+
+    assert removed == 1
+    # And with the extension back, nothing of that conversation is left to find.
+    assert conversation_archive.has_archive("vecless-thread") is False
+    assert conversation_archive.recall("vecless-thread", "VECGONE-2020") is None
+
+
+def test_a_turn_whose_lines_were_REORDERED_is_no_longer_on_the_branch(conn):
+    """Independent line membership accepts a turn that was merely rearranged.
+
+    Every probe still occurs somewhere in the transcript, so the pre-edit ordering stays
+    eligible and would be served back as what happened.
+    """
+    original = [{"role": "assistant", "content": "REORDER-A first\nREORDER-B second"}]
+    archived = conversation_archive.render_turn(original)
+
+    same = conversation_archive.branch_transcript(original)
+    swapped = conversation_archive.branch_transcript(
+        [{"role": "assistant", "content": "REORDER-B second\nREORDER-A first"}]
+    )
+
+    assert conversation_archive._on_live_branch(archived, same) is True
+    assert conversation_archive._on_live_branch(archived, swapped) is False
+
+
+def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
+    """Ordered matching only works if both sides agree on the order.
+
+    render_turn writes a tool call before any assistant text on the same message and the
+    result after it, so the transcript builders have to lay a turn out the same way, in
+    both the request shape (`tool_calls`) and the stored shape (`tool-call` parts).
+    """
+    request_shape = [
+        {"role": "user", "content": "check the log"},
+        {
+            "role": "assistant",
+            "content": "I will read it now",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd":"cat log"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "log contents here"},
+    ]
+    archived = conversation_archive.render_turn(request_shape)
+    stored_shape = [
+        {"role": "user", "content": [{"type": "text", "text": "check the log"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will read it now"},
+                {
+                    "type": "tool-call",
+                    "toolName": "terminal",
+                    "args": {"cmd": "cat log"},
+                    "result": "log contents here",
+                },
+            ],
+        },
+    ]
+
+    assert conversation_archive._on_live_branch(
+        archived, conversation_archive.branch_transcript(request_shape)
+    )
+    # The stored shape keeps arguments as an object, so its spacing is not the model's.
+    assert conversation_archive._on_live_branch(
+        archived, conversation_archive.branch_transcript(stored_shape)
+    )
+
+
 def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
     """A turn longer than CHUNK_TOKENS is stored as several chunks of one document.
 
