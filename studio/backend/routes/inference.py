@@ -20366,6 +20366,11 @@ async def anthropic_messages(
             )
         )
 
+    # Shared provenance: the generator counts the leading <think> wraps it
+    # created from reasoning_content, so the emitters can tell genuine traces
+    # from a model answering with literal <think> markup.
+    _think_prov: dict = {"wrapped": 0}
+
     if server_tools:
         # Bypass Permissions suppresses confirm, so both flags together is fine.
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
@@ -20429,6 +20434,7 @@ async def anthropic_messages(
 
         def _run_tool_gen():
             return llama_backend.generate_chat_completion_with_tools(
+                reasoning_provenance = _think_prov,
                 messages = openai_messages,
                 tools = openai_tools,
                 temperature = temperature,
@@ -20472,6 +20478,7 @@ async def anthropic_messages(
                     openai_tools = openai_tools,
                     disable_parallel_tool_use = _disable_parallel,
                     parse_think = _think_parsing_expected(llama_backend, payload),
+                    think_provenance = _think_prov,
                     count_template_kwargs = _anthropic_count_template_kwargs(
                         llama_backend, payload
                     ),
@@ -20485,12 +20492,14 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 openai_tools = openai_tools,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                think_provenance = _think_prov,
             )
         )
 
     # ── No-tool path ──────────────────────────────────────────
     def _run_plain_gen():
         return llama_backend.generate_chat_completion(
+            reasoning_provenance = _think_prov,
             messages = openai_messages,
             temperature = temperature,
             top_p = top_p,
@@ -20520,6 +20529,7 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 openai_messages = openai_messages,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                think_provenance = _think_prov,
                 count_template_kwargs = _anthropic_count_template_kwargs(
                     llama_backend, payload
                 ),
@@ -20531,6 +20541,7 @@ async def anthropic_messages(
             message_id,
             model_name,
             parse_think = _think_parsing_expected(llama_backend, payload),
+            think_provenance = _think_prov,
         )
     )
 
@@ -20546,6 +20557,7 @@ async def _anthropic_tool_stream(
     openai_tools = None,
     disable_parallel_tool_use = False,
     parse_think = True,
+    think_provenance = None,
     count_template_kwargs = None,
 ):
     """Streaming response for the tool-calling path."""
@@ -20578,7 +20590,9 @@ async def _anthropic_tool_stream(
         _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
-            emitter = AnthropicStreamEmitter(parse_think = parse_think)
+            emitter = AnthropicStreamEmitter(
+                parse_think = parse_think, think_provenance = think_provenance
+            )
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
 
@@ -20710,6 +20724,7 @@ async def _anthropic_plain_stream(
     llama_backend = None,
     openai_messages = None,
     parse_think = True,
+    think_provenance = None,
     count_template_kwargs = None,
 ):
     """Streaming response for the no-tool path."""
@@ -20731,7 +20746,9 @@ async def _anthropic_plain_stream(
         _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
         _tracker.__enter__()
         try:
-            emitter = AnthropicStreamEmitter(parse_think = parse_think)
+            emitter = AnthropicStreamEmitter(
+                parse_think = parse_think, think_provenance = think_provenance
+            )
             for line in emitter.start(message_id, model_name, input_tokens = input_tokens):
                 yield line
 
@@ -20902,6 +20919,7 @@ async def _anthropic_tool_non_streaming(
     disable_parallel_tool_use = False,
     openai_tools = None,
     parse_think = True,
+    think_provenance = None,
 ):
     """Non-streaming response for the tool-calling path.
 
@@ -20974,12 +20992,22 @@ async def _anthropic_tool_non_streaming(
                 captured_finish_reason = _fr
 
     # Split <think> markup out of the accumulated text into typed thinking
-    # blocks, preserving position relative to tool_use blocks.
+    # blocks, preserving position relative to tool_use blocks. With provenance,
+    # only as many leading blocks as the generator actually wrapped from
+    # reasoning_content are parsed; a literal leading tag stays text.
     if parse_think:
+        _wrap_budget = (
+            None if think_provenance is None else int(think_provenance.get("wrapped", 0))
+        )
         _expanded: list = []
         for block in content_blocks:
-            if isinstance(block, AnthropicResponseTextBlock) and "<think>" in block.text:
+            leading_think = isinstance(
+                block, AnthropicResponseTextBlock
+            ) and block.text.lstrip().startswith("<think>")
+            if leading_think and (_wrap_budget is None or _wrap_budget > 0):
                 _expanded.extend(_think_markup_to_blocks(block.text))
+                if _wrap_budget is not None:
+                    _wrap_budget -= 1
             else:
                 _expanded.append(block)
         content_blocks = _expanded
@@ -21015,6 +21043,7 @@ async def _anthropic_plain_non_streaming(
     message_id,
     model_name,
     parse_think = True,
+    think_provenance = None,
 ):
     """Non-streaming response for the no-tool path."""
     text_parts = []
@@ -21038,8 +21067,11 @@ async def _anthropic_plain_non_streaming(
             text_parts.append(new)
 
     full_text = "".join(text_parts)
+    # With provenance, only parse the leading <think> the generator actually
+    # wrapped from reasoning_content; a literal leading tag stays text.
+    _wrapped = think_provenance is None or think_provenance.get("wrapped", 0) > 0
     content_blocks: list = []
-    if full_text and parse_think:
+    if full_text and parse_think and _wrapped:
         content_blocks = _think_markup_to_blocks(full_text)
     elif full_text:
         content_blocks = [AnthropicResponseTextBlock(text = full_text)]

@@ -411,7 +411,7 @@ class AnthropicStreamEmitter:
     """Converts generate_chat_completion_with_tools() events into Anthropic
     Messages SSE strings."""
 
-    def __init__(self, parse_think: bool = True) -> None:
+    def __init__(self, parse_think: bool = True, think_provenance: Optional[dict] = None) -> None:
         # Off when the route knows reasoning markup cannot be genuine (thinking
         # disabled or a non-reasoning model): literal <think> in prose then
         # streams as ordinary text instead of being consumed as a trace.
@@ -441,6 +441,14 @@ class AnthropicStreamEmitter:
         # stay literal.
         self._think_consumed: bool = False
         self._turn_has_text: bool = False
+        # Live provenance from the generator: "wrapped" counts the leading
+        # <think> tags IT opened from reasoning_content. When provided, a
+        # leading tag is only parsed as reasoning if a generator wrap is
+        # available -- a model answering with literal <think> markup (and no
+        # genuine trace) keeps it as text. None falls back to the leading-tag
+        # heuristic (test doubles / callers without provenance).
+        self._think_provenance = think_provenance
+        self._wraps_consumed: int = 0
         self._usage: dict = {}
 
     def start(
@@ -573,6 +581,14 @@ class AnthropicStreamEmitter:
                         # leading reasoning block; relay the rest literally.
                         data = data[i:]
                         continue
+                if (
+                    self._think_provenance is not None
+                    and self._think_provenance.get("wrapped", 0) <= self._wraps_consumed
+                ):
+                    # The generator did not wrap this tag: literal model text.
+                    events.extend(self._emit_text_delta(data))
+                    break
+                self._wraps_consumed += 1
                 data = data[i + len(open_tag) :]
                 self._route_mode = "thinking"
             else:

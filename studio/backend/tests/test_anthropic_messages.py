@@ -2017,11 +2017,19 @@ class TestAnthropicMessagesToolRouting:
 
         def _gen_plain(**kwargs):
             assert kwargs["promote_reasoning_only"] is False
+            # Mirror the real generator: record that the leading <think> was
+            # wrapped from reasoning_content, not literal model text.
+            prov = kwargs.get("reasoning_provenance")
+            if prov is not None:
+                prov["wrapped"] = prov.get("wrapped", 0) + 1
             yield f"<think>{reasoning}"
             yield f"<think>{reasoning}</think>"
 
         def _gen_tools(**kwargs):
             assert kwargs["promote_reasoning_only"] is False
+            prov = kwargs.get("reasoning_provenance")
+            if prov is not None:
+                prov["wrapped"] = prov.get("wrapped", 0) + 1
             yield {"type": "content", "text": f"<think>{reasoning}"}
             yield {"type": "content", "text": f"<think>{reasoning}</think>"}
 
@@ -2049,6 +2057,30 @@ class TestAnthropicMessagesToolRouting:
             body = json.loads(response.body)
             assert body["content"][0]["type"] == "thinking"
             assert body["content"][0]["thinking"] == reasoning
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_literal_leading_think_without_provenance_stays_text(self, monkeypatch, stream):
+        # The model answered with literal <think> markup (user asked for it) and
+        # produced no genuine reasoning: the generator recorded no wrap, so the
+        # markup must come back as text, not be consumed into a thinking block.
+        literal = "<think>like this</think>"
+
+        def _gen_plain(**kwargs):
+            assert kwargs.get("reasoning_provenance") is not None
+            yield literal
+
+        _mock_backend(monkeypatch, generate_chat_completion = _gen_plain)
+        payload = _basic_payload(stream = stream)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+        if stream:
+            body = self._sse_blob(self._consume_response(response))
+            assert '"thinking_delta"' not in body
+            assert literal in body
+        else:
+            body = json.loads(response.body)
+            assert body["content"][0]["type"] == "text"
+            assert body["content"][0]["text"] == literal
 
     def test_tool_use_non_streaming_records_api_monitor_reply(self, monkeypatch):
         import routes.inference as inf_mod

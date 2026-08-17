@@ -20246,6 +20246,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        reasoning_provenance: Optional[dict] = None,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -20388,6 +20389,13 @@ class LlamaCppBackend:
                                 if reasoning:
                                     reasoning_text += reasoning
                                     if not in_thinking:
+                                        # Provenance for think-aware consumers: a
+                                        # leading <think> we open here is genuine
+                                        # reasoning, unlike literal tags in content.
+                                        if reasoning_provenance is not None and not cumulative:
+                                            reasoning_provenance["wrapped"] = (
+                                                reasoning_provenance.get("wrapped", 0) + 1
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning
@@ -20452,6 +20460,7 @@ class LlamaCppBackend:
                     seed = seed,
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
+                    reasoning_provenance = reasoning_provenance,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -20496,6 +20505,7 @@ class LlamaCppBackend:
         permission_mode: Optional[str] = None,
         promote_reasoning_only: bool = True,
         perf_callback: Optional[Callable[[dict], None]] = None,
+        reasoning_provenance: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -20665,6 +20675,8 @@ class LlamaCppBackend:
                 cumulative_display += "</think>"
                 in_thinking = False
             elif reasoning_accum:
+                if reasoning_provenance is not None and not cumulative_display:
+                    reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
 
@@ -21101,6 +21113,13 @@ class LlamaCppBackend:
                                     reasoning_accum += reasoning
                                     if detect_state != _S_DRAINING:
                                         if not in_thinking:
+                                            if (
+                                                reasoning_provenance is not None
+                                                and not cumulative_display
+                                            ):
+                                                reasoning_provenance["wrapped"] = (
+                                                    reasoning_provenance.get("wrapped", 0) + 1
+                                                )
                                             cumulative_display += "<think>"
                                             in_thinking = True
                                         cumulative_display += reasoning
@@ -22112,6 +22131,10 @@ class LlamaCppBackend:
                                         _final_reasoning_started_at = time.monotonic()
                                     reasoning_text += reasoning
                                     if not in_thinking:
+                                        if reasoning_provenance is not None and not cumulative:
+                                            reasoning_provenance["wrapped"] = (
+                                                reasoning_provenance.get("wrapped", 0) + 1
+                                            )
                                         cumulative += "<think>"
                                         in_thinking = True
                                     cumulative += reasoning
