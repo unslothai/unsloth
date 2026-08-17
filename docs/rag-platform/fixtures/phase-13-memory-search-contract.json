@@ -1,0 +1,66 @@
+{
+  "phase": 13,
+  "authority": "/Users/baran/Desktop/rag-backend",
+  "memory": {
+    "python_active": [
+      "GET /api/v1/memories",
+      "POST /api/v1/memories",
+      "GET /api/v1/messages",
+      "POST /api/v1/messages",
+      "GET /api/v1/messages/search",
+      "GET /api/v1/messages/{memory_id}:{message_id}/content",
+      "PUT /api/v1/messages/{memory_id}:{message_id}",
+      "DELETE /api/v1/messages/{memory_id}:{message_id}"
+    ],
+    "go_active": [
+      "GET /api/v1/memories/{memory_id}",
+      "PUT /api/v1/memories/{memory_id}",
+      "DELETE /api/v1/memories/{memory_id}",
+      "GET /api/v1/memories/{memory_id}/config"
+    ],
+    "create_request": {
+      "name": "Support",
+      "memory_type": ["raw", "semantic"],
+      "embd_id": "embed-1@VLLM",
+      "llm_id": "chat-1@VLLM"
+    },
+    "message_request": {
+      "memory_id": ["memory-1"],
+      "agent_id": "agent-1",
+      "session_id": "session-1",
+      "user_input": "Hello",
+      "agent_response": "Hi"
+    },
+    "lifecycle": {
+      "forgetting_policy": "FIFO",
+      "unsupported_forgetting_policies": ["LRU"],
+      "status_request": { "status": false },
+      "delete_semantics": "forget_at soft-delete",
+      "consent": "frontend-local explicit opt-in; never sends chat content when false"
+    }
+  },
+  "search": {
+    "python_active": [
+      "GET /api/v1/searches",
+      "POST /api/v1/searches"
+    ],
+    "go_active": [
+      "GET /api/v1/searches/{search_id}",
+      "PUT /api/v1/searches/{search_id}",
+      "DELETE /api/v1/searches/{search_id}",
+      "POST /api/v1/searches/{search_id}/completion",
+      "POST /api/v1/searches/{search_id}/completions"
+    ],
+    "create_request": {
+      "name": "Docs",
+      "description": "Search docs"
+    },
+    "update_required": ["name", "search_config"],
+    "completion_request": {
+      "question": "What is retrieval?",
+      "kb_ids": ["dataset-1"]
+    },
+    "completion_protocol": "text/event-stream; delta/cumulative answer frames, embedded [DONE] suppression, reference chunks, terminal data=true",
+    "history": "session-only frontend state; backend exposes no persistent Search history route"
+  }
+}

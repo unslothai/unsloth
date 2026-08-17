@@ -22,6 +22,8 @@ interface PlatformBackendEnv {
   VITE_RAG_PLATFORM_OAUTH_ENABLED?: string;
   VITE_RAG_PLATFORM_MODEL_TOOLS_ENABLED?: string;
   VITE_RAG_PLATFORM_CONNECTORS_ENABLED?: string;
+  VITE_RAG_PLATFORM_MEMORY_ENABLED?: string;
+  VITE_RAG_PLATFORM_SEARCH_ENABLED?: string;
 }
 
 export interface PlatformAuthConfig {
@@ -120,6 +122,26 @@ export function isPlatformConnectorsEnabled(
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_CONNECTORS_ENABLED)
+  );
+}
+
+export function isPlatformMemoryEnabled(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): boolean {
+  return (
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_MEMORY_ENABLED)
+  );
+}
+
+export function isPlatformSearchEnabled(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): boolean {
+  return (
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_SEARCH_ENABLED)
   );
 }
 

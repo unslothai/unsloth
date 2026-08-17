@@ -5,6 +5,8 @@ import {
   FEATURE_EXPORT,
   FEATURE_IMAGES,
   FEATURE_PROJECTS,
+  FEATURE_MEMORY_NAV,
+  FEATURE_SEARCH_NAV,
   FEATURE_RECIPES,
   FEATURE_TRAIN,
   FEATURE_VIDEO,
@@ -14,6 +16,7 @@ import type { TranslationKey } from "@/i18n";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   BotIcon,
+  CloudIcon,
   ChefHatIcon,
   DashboardCircleIcon,
   DownloadSquare01Icon,
@@ -24,6 +27,7 @@ import {
   Image03Icon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
+  Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -39,6 +43,8 @@ const ITEM_META: Record<
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
   agents: { icon: BotIcon, labelKey: "shell.navigation.agents" },
   files: { icon: Folder01Icon, labelKey: "shell.navigation.files" },
+  memory: { icon: CloudIcon, labelKey: "shell.navigation.memory" },
+  search: { icon: Search01Icon, labelKey: "shell.navigation.searchApps" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
@@ -133,6 +139,8 @@ export function SidebarNavCustomizer() {
     (item) =>
       (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
+      (item.id !== "memory" || FEATURE_MEMORY_NAV) &&
+      (item.id !== "search" || FEATURE_SEARCH_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

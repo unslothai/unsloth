@@ -142,6 +142,8 @@ export const en = {
       hub: "Knowledge",
       agents: "Agents",
       files: "Files",
+      memory: "Memory",
+      searchApps: "Search",
       agentsUnavailable: "Agents are not available in this version yet.",
       train: "Train",
       recipes: "Recipes",

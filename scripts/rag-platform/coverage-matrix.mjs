@@ -2557,6 +2557,71 @@ for (const inventoryRoute of inventory.routes.flatMap((route) => [
   }
 }
 
+const PHASE13_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/phase-13-memory-search-api.test.ts",
+  "src/features/memory/memory-page.test.tsx",
+  "src/features/search/search-page.test.tsx",
+  "src/features/memory/memory-page.tsx (loading, empty, error, permission, timeout/abort policy, consent, destructive confirmation and lifecycle states)",
+  "src/features/search/search-page.tsx (loading, empty, error, permission, cancellable SSE, session-only history and source visibility states)",
+  "docs/rag-platform/fixtures/phase-13-memory-search-contract.json",
+  "docs/adr/0015-phase-13-memory-search-and-consent-boundary.md",
+  "scripts/rag-platform/phase-13-runtime-smoke.mjs (authenticated hybrid route and auth-boundary probes)",
+  "docs/rag-platform/faz-13-sonuc-raporu.md (authenticated browser E2E: provider-qualified Memory extraction/search and Search SSE with sources)",
+];
+
+function phase13UiPath(canonical) {
+  if (canonical.includes("/memories")) {
+    if (canonical.endsWith("/config")) return "Hafıza → Seçili hafıza → Ayarlar";
+    if (/\/memories\/\{p\}$/.test(canonical)) return "Hafıza → Seçili hafıza → Mesajlar/Ayarlar/Sil";
+    return "Hafıza → Hafıza listesi/Yeni hafıza";
+  }
+  if (canonical.includes("/messages")) {
+    if (canonical.endsWith("/content")) return "Hafıza → Mesajlar → İçeriği aç";
+    if (canonical.endsWith("/search")) return "Hafıza → Mesajlar → Gelişmiş ara";
+    if (/\/messages\/\{p\}$/.test(canonical)) return "Hafıza → Mesaj → Etkinleştir/Devre dışı bırak/Unut";
+    return "Hafıza → İzinli sohbet kaydı/Mesajlar/Son mesajlar";
+  }
+  if (/\/completions?$/.test(canonical)) return "Arama → Seçili arama → Arama tamamlaması ve kaynaklar";
+  if (/\/searches\/\{p\}$/.test(canonical)) return "Arama → Seçili arama → Yapılandır/Sil";
+  return "Arama → Arama listesi/Yeni arama";
+}
+
+for (const inventoryRoute of inventory.routes.flatMap((route) => [
+  route,
+  ...(route.alternates ?? []),
+])) {
+  if (inventoryRoute.runtime_enabled !== true) continue;
+  const canonical = canonicalPath(inventoryRoute.path);
+  if (phaseOf(inventoryRoute, canonical) !== 13) continue;
+  const classification = classifyRecord(inventoryRoute, canonical);
+  const key = `${inventoryRoute.service}|${inventoryRoute.method} ${canonical}`;
+  if (
+    classification.class === "frontend-action" ||
+    classification.class === "frontend-screen"
+  ) {
+    const isMemory = canonical.includes("/memories") || canonical.includes("/messages");
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "implemented",
+      uiPath: phase13UiPath(canonical),
+      typedService: isMemory
+        ? "src/integrations/platform-backend/memory-api.ts (typed route function)"
+        : canonical.endsWith("/completion")
+          ? "src/integrations/platform-backend/search-api.ts#streamPlatformSearchCompletionAlias"
+          : canonical.endsWith("/completions")
+            ? "src/integrations/platform-backend/search-api.ts#streamPlatformSearchCompletion"
+            : "src/integrations/platform-backend/search-api.ts (typed route function)",
+      evidence: PHASE13_TEST_EVIDENCE,
+    };
+  } else if (classification.class === "api-only") {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath: "— (protocol alias; aynı kullanıcı aksiyonunun typed adapter sözleşmesi)",
+      typedService: "src/integrations/platform-backend/search-api.ts",
+      evidence: PHASE13_TEST_EVIDENCE,
+    };
+  }
+}
+
 /**
  * Per-route findings verified against the running backend that a reader of the
  * row needs in order to trust it. Keyed by canonical `METHOD path`.

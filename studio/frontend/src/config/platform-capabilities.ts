@@ -7,6 +7,8 @@ export type ProductCapabilityId =
   | "settings"
   | "agents"
   | "files"
+  | "memory"
+  | "search"
   | "local-model-lifecycle"
   | "training"
   | "recipes"
@@ -87,6 +89,14 @@ export function createCapabilityRegistry(
       getBackendMode(env) === "legacy"
         ? unavailable("files")
         : supported("files", true),
+    memory:
+      getBackendMode(env) === "legacy"
+        ? unavailable("memory")
+        : supported("memory", true),
+    search:
+      getBackendMode(env) === "legacy"
+        ? unavailable("search")
+        : supported("search", true),
     "local-model-lifecycle": legacyOnly("local-model-lifecycle"),
     training: legacyOnly("training"),
     recipes: legacyOnly("recipes"),

@@ -13830,12 +13830,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/?$",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "DELETE",
+        "path": "/api/v1/messages/<memory_id>:<message_id>",
+        "service": "python-api"
+      }
     },
     {
       "method": "PUT",
@@ -13847,12 +13852,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/?$",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "PUT",
+        "path": "/api/v1/messages/<memory_id>:<message_id>",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -13864,12 +13874,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/content/?$",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/content/?$",
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/messages/<memory_id>:<message_id>/content",
+        "service": "python-api"
+      }
     },
     {
       "method": "DELETE",
@@ -13881,17 +13896,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "DELETE",
-        "path": "/api/v1/messages/:memory_message",
-        "service": "go-api"
-      }
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/?$",
+      "alternates": []
     },
     {
       "method": "PUT",
@@ -13903,17 +13913,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "PUT",
-        "path": "/api/v1/messages/:memory_message",
-        "service": "go-api"
-      }
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/?$",
+      "alternates": []
     },
     {
       "method": "GET",
@@ -13925,17 +13930,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
-      "proxy_match": "location ~ ^/api/v1/messages/[^/]+/content/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/messages/:memory_message/content",
-        "service": "go-api"
-      }
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
+      "proxy_match": "location ~ ^/api/v1/messages/[^/]+:[^/]+/content/?$",
+      "alternates": []
     },
     {
       "method": "GET",

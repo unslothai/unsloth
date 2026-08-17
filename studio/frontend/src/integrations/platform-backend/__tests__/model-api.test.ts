@@ -32,6 +32,11 @@ import {
   updateInstanceModel,
   updateProviderInstance,
 } from "../model-api";
+import {
+  platformModelReference,
+  resolvePlatformModelReference,
+  type PlatformModel,
+} from "../model-types";
 import { platformTestServer } from "./test-server";
 
 const success = (data: unknown = true) =>
@@ -45,6 +50,32 @@ describe("Rag Platform Phase 3 model service", () => {
   });
 
   afterEach(() => vi.unstubAllEnvs());
+
+  it("builds provider-qualified runtime references for default and named instances", () => {
+    const base: PlatformModel = {
+      id: "claude-sonnet-5",
+      name: "claude-sonnet-5",
+      providerId: "vllm",
+      providerName: "VLLM",
+      instanceId: "instance-1",
+      instanceName: "default",
+      capabilities: ["chat"],
+      status: "1",
+      maxTokens: null,
+    };
+    const named = { ...base, instanceName: "private-cluster" };
+
+    expect(platformModelReference(base)).toBe("claude-sonnet-5@VLLM");
+    expect(platformModelReference(named)).toBe(
+      "claude-sonnet-5@private-cluster@VLLM",
+    );
+    expect(resolvePlatformModelReference(base.id, [base])).toBe(
+      "claude-sonnet-5@VLLM",
+    );
+    expect(
+      resolvePlatformModelReference(platformModelReference(named), [named]),
+    ).toBe("claude-sonnet-5@private-cluster@VLLM");
+  });
 
   it("normalizes providers and permanently drops returned api_key material", async () => {
     platformTestServer.use(

@@ -226,9 +226,18 @@ const NGINX_LOCATIONS = parseNginxLocations(NGINX_PATH);
 /** Concrete probe path for a route template, so the nginx regexes can be matched. */
 function probePath(path) {
   return path
-    .replace(/<[^>]*>/g, "x") // Quart <id> / <int:id>
+    // The Go handler validates this named segment as `memory_id:message_id`.
+    // Probe the valid wire contract, not an arbitrary single token; nginx's
+    // specificity override deliberately sends valid composite segments to
+    // Python while malformed single-token probes would reach Go.
+    .replace(/:memory_message\b/g, "__memory_message__")
+    // Resolve Gin first. If Quart parameters were resolved first, the literal
+    // colon in `<memory_id>:<message_id>` would become `:x` and this rule would
+    // incorrectly erase the delimiter, missing the more-specific nginx route.
     .replace(/:[A-Za-z_][A-Za-z0-9_]*/g, "x") // gin :id
-    .replace(/\*[A-Za-z_]*/g, "x"); // gin wildcard
+    .replace(/<[^>]*>/g, "x") // Quart <id> / <int:id>
+    .replace(/\*[A-Za-z_]*/g, "x") // gin wildcard
+    .replaceAll("__memory_message__", "x:x");
 }
 
 /**

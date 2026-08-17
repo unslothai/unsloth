@@ -56,6 +56,8 @@ import {
   FEATURE_API_MONITOR,
   FEATURE_EXPORT,
   FEATURE_FILES_NAV,
+  FEATURE_MEMORY_NAV,
+  FEATURE_SEARCH_NAV,
   FEATURE_IMAGES,
   FEATURE_PROJECTS,
   FEATURE_RECIPES,
@@ -1146,6 +1148,34 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/files" }));
       },
     },
+    memory: {
+      icon: CloudIcon,
+      label: t("shell.navigation.memory"),
+      active: pathname === "/memory" || pathname.startsWith("/memory/"),
+      disabled: !getProductCapability("memory").available,
+      tooltip: getProductCapability("memory").reason ?? undefined,
+      onClick: () => {
+        navigate({ to: "/memory" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/memory" }));
+      },
+    },
+    search: {
+      icon: Search01Icon,
+      label: t("shell.navigation.searchApps"),
+      active: pathname === "/search" || pathname.startsWith("/search/"),
+      disabled: !getProductCapability("search").available,
+      tooltip: getProductCapability("search").reason ?? undefined,
+      onClick: () => {
+        navigate({ to: "/search" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/search" }));
+      },
+    },
     images: {
       icon: Image03Icon,
       label: t("shell.navigation.images"),
@@ -1250,6 +1280,8 @@ export function AppSidebar() {
       (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
       (item.id !== "files" || FEATURE_FILES_NAV) &&
+      (item.id !== "memory" || FEATURE_MEMORY_NAV) &&
+      (item.id !== "search" || FEATURE_SEARCH_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

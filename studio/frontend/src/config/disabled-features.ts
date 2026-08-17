@@ -18,3 +18,7 @@ export const FEATURE_AGENTS_NAV =
   getProductCapability("agents").visibleInNavigation;
 export const FEATURE_FILES_NAV =
   getProductCapability("files").visibleInNavigation;
+export const FEATURE_MEMORY_NAV =
+  getProductCapability("memory").visibleInNavigation;
+export const FEATURE_SEARCH_NAV =
+  getProductCapability("search").visibleInNavigation;

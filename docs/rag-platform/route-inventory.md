@@ -1056,12 +1056,12 @@
 | GET | `/api/v1/memories/<memory_id>/config` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/memory_api.py:148` | — | — |
 | GET | `/api/v1/messages` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:277` | go-api@9384 (`internal/router/router.go:475`) | — |
 | POST | `/api/v1/messages` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:184` | go-api@9384 (`internal/router/router.go:476`) | — |
-| DELETE | `/api/v1/messages/:memory_message` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:477` | — | — |
-| PUT | `/api/v1/messages/:memory_message` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:478` | — | — |
-| GET | `/api/v1/messages/:memory_message/content` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:479` | — | — |
-| DELETE | `/api/v1/messages/<memory_id>:<message_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/memory_api.py:216` | — | — |
-| PUT | `/api/v1/messages/<memory_id>:<message_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/memory_api.py:230` | — | — |
-| GET | `/api/v1/messages/<memory_id>:<message_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/memory_api.py:300` | — | — |
+| DELETE | `/api/v1/messages/:memory_message` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:477` | — | — |
+| PUT | `/api/v1/messages/:memory_message` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:478` | — | — |
+| GET | `/api/v1/messages/:memory_message/content` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:479` | — | — |
+| DELETE | `/api/v1/messages/<memory_id>:<message_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:216` | — | — |
+| PUT | `/api/v1/messages/<memory_id>:<message_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:230` | — | — |
+| GET | `/api/v1/messages/<memory_id>:<message_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:300` | — | — |
 | GET | `/api/v1/messages/search` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/memory_api.py:253` | go-api@9384 (`internal/router/router.go:480`) | — |
 | GET | `/api/v1/models` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/models_api.py:30` | go-api@9384 (`internal/router/router.go:541`) | — |
 | PATCH | `/api/v1/models` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:542` | — | — |

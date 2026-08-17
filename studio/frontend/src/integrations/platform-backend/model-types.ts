@@ -29,6 +29,43 @@ export interface PlatformModel {
   maxTokens: number | null;
 }
 
+/**
+ * Runtime model consumers resolve tenant models from the backend's composite
+ * reference: model@provider for the default instance, or
+ * model@instance@provider for a named instance. The model catalog keeps the
+ * bare model id and provider metadata separate, so product screens compose the
+ * reference before persisting memory/search configuration.
+ */
+export function platformModelReference(
+  model: Pick<PlatformModel, "id" | "name" | "providerName" | "instanceName">,
+): string {
+  const name = model.name.trim() || model.id.trim();
+  const provider = model.providerName.trim();
+  const instance = model.instanceName.trim();
+  if (!provider) return model.id.trim() || name;
+  if (instance && instance.toLowerCase() !== "default") {
+    return `${name}@${instance}@${provider}`;
+  }
+  return `${name}@${provider}`;
+}
+
+export function resolvePlatformModelReference(
+  reference: string,
+  models: PlatformModel[],
+): string {
+  const normalized = reference.trim();
+  if (!normalized) return "";
+  const match = models.find((model) => {
+    const composite = platformModelReference(model);
+    return (
+      normalized === model.id.trim() ||
+      normalized === model.name.trim() ||
+      normalized === composite
+    );
+  });
+  return match ? platformModelReference(match) : normalized;
+}
+
 export interface PlatformDefaultModel {
   capability: string;
   enabled: boolean;
