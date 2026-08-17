@@ -707,7 +707,11 @@ def test_wait_for_local_model_still_honors_cancellation(monkeypatch):
         asyncio.run(supervisor._wait_for_local_model(_waiting_run(30.0)))
 
 
-def _install_fake_client(monkeypatch, responses: list) -> list:
+def _install_fake_client(
+    monkeypatch,
+    responses: list,
+    timeouts: list[httpx.Timeout] | None = None,
+) -> list:
     """Serve ``responses`` in order to the completion path and record the sends. An entry that
     is an exception is raised instead, standing in for a transport failure."""
     sent: list = []
@@ -719,7 +723,8 @@ def _install_fake_client(monkeypatch, responses: list) -> list:
 
     class _FakeClient:
         def __init__(self, **kwargs):
-            pass
+            if timeouts is not None:
+                timeouts.append(kwargs["timeout"])
 
         async def __aenter__(self):
             return self
@@ -795,6 +800,17 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             report_progress = False,
         )
     )
+
+
+def test_unlimited_stream_keeps_a_finite_httpx_header_timeout(monkeypatch):
+    timeouts: list[httpx.Timeout] = []
+    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert len(timeouts) == 1
+    assert timeouts[0].connect == research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+    assert timeouts[0].read == research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
 
 
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
