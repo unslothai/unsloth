@@ -5515,6 +5515,7 @@ async def _maybe_auto_switch_model(
     *,
     require_vision: bool = False,
     require_image: bool = True,
+    modality_label: str = "image or audio",
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
@@ -5525,7 +5526,8 @@ async def _maybe_auto_switch_model(
     to a text-only target before it runs, so an image request can't evict the
     resident vision model only to 400 afterwards; ``require_image`` is what makes
     that rejection modality-aware, since an audio request needs the projector but
-    not a vision tower.
+    not a vision tower. ``modality_label`` names the inputs actually attached, so
+    the rejection does not report a modality the request never carried.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -5683,7 +5685,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    "The requested model does not support the image or audio input in this request.",
+                    f"The requested model does not support the {modality_label} input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -13113,6 +13115,7 @@ async def openai_chat_completions(
     _pre_parsed = None
     _needs_vision = False
     _needs_image = False
+    _modality_label = "image or audio"
     if _automatic_model_load_may_run():
         _pre_parsed = _extract_content_parts(payload.messages)
         if not _pre_parsed[1]:
@@ -13218,6 +13221,20 @@ async def openai_chat_completions(
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
         _needs_vision = _needs_image or bool(payload.audio_base64) or bool(payload.video_base64)
+        # Name what is actually attached, so the refusal does not report a
+        # modality the request never carried.
+        _modality_label = (
+            " or ".join(
+                name
+                for name, present in (
+                    ("image", _needs_image),
+                    ("audio", bool(payload.audio_base64)),
+                    ("video", bool(payload.video_base64)),
+                )
+                if present
+            )
+            or _modality_label
+        )
         # Size is knowable now and the switch is not cheap: refuse an oversized
         # clip before it costs a model load.
         if payload.video_base64:
@@ -13231,6 +13248,7 @@ async def openai_chat_completions(
         current_subject,
         require_vision = _needs_vision,
         require_image = _needs_image,
+        modality_label = _modality_label,
     )
 
     llama_backend = get_llama_cpp_backend()
