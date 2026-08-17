@@ -617,8 +617,8 @@ function sharedPrefixLength(left: string, right: string): number {
 // Unchanged characters are not enough to keep a block across a rewrite: Marked
 // reads `paragraph\n` followed by new text as a lazy continuation, so an edit
 // that closes up a blank line re-segments the paragraph before it even though
-// that paragraph's own characters never moved. A blank line cannot be reopened
-// from the far side, so a boundary that ends at one is safe to keep.
+// that paragraph's own characters never moved. `\r` counts as line-ending
+// whitespace, so a CRLF reply is read the same way as an LF one.
 function endsAtBlankLine(text: string, end: number): boolean {
   if (end === 0) {
     return true;
@@ -629,7 +629,7 @@ function endsAtBlankLine(text: string, end: number): boolean {
   let index = end - 2;
   while (index >= 0) {
     const code = text.charCodeAt(index);
-    if (code === 32 || code === 9) {
+    if (code === 32 || code === 9 || code === 13) {
       index -= 1;
       continue;
     }
@@ -639,9 +639,11 @@ function endsAtBlankLine(text: string, end: number): boolean {
 }
 
 // The last blank line at or before `limit`, or 0 for none. A commit boundary
-// does not have to land on the blank line itself: any untouched blank line
-// between the boundary and the rewrite insulates it just as well, and a commit
-// often ends on the block before its separator.
+// does not have to land on the blank line itself: an untouched blank line
+// between the boundary and the rewrite carries most of the insulation, and a
+// commit often ends on the block before its separator. It is not the whole of
+// it: see `rewindToRewrite`, which also keeps the rollback window's worth of
+// blocks between the boundary it lands on and the first changed character.
 function lastBlankLineEnd(text: string, limit: number): number {
   for (let end = limit; end > 0; end -= 1) {
     if (endsAtBlankLine(text, end)) {
@@ -773,8 +775,32 @@ export class IncrementalMarkdownCache {
     // Unchanged characters alone do not make a boundary safe to keep, so stop
     // at the last blank line the rewrite left intact.
     const safeLimit = lastBlankLineEnd(this.source, shared);
+
+    // A blank line is still not enough on its own. A blank line is not a wall:
+    // Marked merges a run of them into one separator block, so a rewrite that
+    // inserts a newline (which `\[...\]` -> `\n$$\n` does) re-segments the
+    // separator in front of it, and a list or an indented code block reopens
+    // across one. The append path already answers this: it only trusts a
+    // boundary once ROLLBACK_BLOCKS blocks sit behind it. Ask the rewind for
+    // the same margin, measured from the first changed character. Counting
+    // backwards from the end costs only the blocks the rewrite is near.
+    let blocksBeforeLimit = this.committedBlocks.length;
+    let scanned = this.committedLength;
+    while (blocksBeforeLimit > 0 && scanned > safeLimit) {
+      blocksBeforeLimit -= 1;
+      scanned -= this.committedBlocks[blocksBeforeLimit].length;
+    }
+    const blockLimit = blocksBeforeLimit - ROLLBACK_BLOCKS;
+    if (blockLimit <= 0) {
+      return false;
+    }
+
     let index = this.commitPoints.length - 1;
-    while (index >= 0 && this.commitPoints[index].length > safeLimit) {
+    while (
+      index >= 0 &&
+      (this.commitPoints[index].length > safeLimit ||
+        this.commitPoints[index].blockCount > blockLimit)
+    ) {
       index -= 1;
     }
     if (index < 0) {

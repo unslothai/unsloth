@@ -144,20 +144,27 @@ test("a rewrite behind the live tail keeps the blocks it cannot reach", () => {
     beforeClose.length > lead.length,
     "the span body was never committed, so nothing was rewound",
   );
-  // Everything the rewrite reaches is behind the opener, and the commit before
-  // the opener is the maximal correct answer. Pin it exactly. The retained
-  // prefix alone cannot show over-rewinding, because the same update re-commits
-  // what it gave back; the counter is what does not recover.
-  assert.equal(
-    atClose,
-    lead,
-    `expected the ${lead.length} characters before the opener to survive, ` +
-      `kept ${atClose.length}`,
+  // Nothing the rewrite reaches may survive, so what is kept is a prefix of the
+  // text before the opener, never more.
+  assert.ok(
+    lead.startsWith(atClose),
+    `kept ${atClose.length} characters, past the ${lead.length} the rewrite ` +
+      "cannot reach",
   );
-  assert.equal(
-    rewound(cache),
-    beforeClose.length - lead.length,
-    "the rewind gave back more than the span the rewrite covered",
+  // It also may not give back the whole prefix, which is what a rebuild looks
+  // like from the outside. The rewind stops a rollback window short of the
+  // change, so the bound is the text before the opener minus that window, not
+  // the text before the opener. The retained prefix alone cannot show
+  // over-rewinding, because the same update re-commits what it gave back; the
+  // counter is what does not recover.
+  assert.ok(
+    atClose.length > lead.length * 0.7,
+    `expected most of the ${lead.length} characters before the opener to ` +
+      `survive, kept ${atClose.length}`,
+  );
+  assert.ok(
+    rewound(cache) < beforeClose.length - lead.length * 0.7,
+    "the rewind gave back more than the span plus its rollback window",
   );
 });
 
@@ -219,11 +226,25 @@ test("retaining across a rewrite still matches a full Streamdown split", () => {
   // first one already trimmed.
   const twice = `${spanning}${spanning}`;
 
+  // A `\[...\]` whose body spans blank lines. Closing it emits `\n$$\n`, whose
+  // leading newline lands against the blank line in front of the opener, and
+  // Marked reads a run of blank lines as ONE separator block, so the block
+  // before the rewrite is re-segmented even though its own characters never
+  // moved. The body needs enough blank-line-separated chunks for the separator
+  // in front of the opener to have been committed at all.
+  const displayBody = `${Array.from(
+    { length: 5 },
+    (_, index) => `s${index}\n\n`,
+  ).join("")}`;
+  const blankRunMerge = `Lead paragraph.\n\n\\[${displayBody}\\]\n\n`;
+
   for (const reply of [
     buildReply(6),
     plainVariant(buildReply(6)),
     spanning,
     twice,
+    blankRunMerge,
+    `${spanning}${blankRunMerge}`,
   ]) {
     const cache = new IncrementalMarkdownCache();
     for (let length = 0; length <= reply.length; length += 1) {
