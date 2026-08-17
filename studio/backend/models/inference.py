@@ -183,6 +183,16 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    disable_vision: bool = Field(
+        False,
+        description = (
+            "Load a vision-capable GGUF without its multimodal projector, as a "
+            "text-only model. Frees the VRAM the projector would hold, at the cost "
+            "of image input, which is off for the session; text generation is "
+            "unaffected. Ignored for models with no vision projector, and for "
+            "non-GGUF models."
+        ),
+    )
     gpu_memory_mode: Literal["auto", "manual"] = Field(
         "auto",
         description = (
