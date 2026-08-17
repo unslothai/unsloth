@@ -592,6 +592,26 @@ def main() -> None:
             timeout = 15,
         )
 
+        # WebKit builds its media support from the GStreamer registry it can
+        # actually load. A bundle whose core rejects every plugin still renders
+        # and downloads, and silently plays nothing: no gallery video, no
+        # dictation capture. The gallery writes H.264 MP4.
+        media = json.loads(
+            _execute(
+                base,
+                session_id,
+                "const v=document.createElement('video'); const a=document.createElement('audio');"
+                "return JSON.stringify({"
+                "mp4:v.canPlayType('video/mp4'), webm:v.canPlayType('video/webm'),"
+                "wav:a.canPlayType('audio/wav'),"
+                "capture:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)});",
+            )
+        )
+        (ART_DIR / "media-support.json").write_text(json.dumps(media, indent = 2), encoding = "utf-8")
+        for media_type in ("mp4", "webm", "wav"):
+            assert media[media_type], f"The packaged webview cannot play {media_type}: {media}"
+        assert media["capture"], f"The packaged webview exposes no capture device API: {media}"
+
         screenshot = _request(base, "GET", f"/session/{session_id}/screenshot")
         (ART_DIR / "model-download-cancelled.png").write_bytes(
             base64.b64decode(screenshot["value"])

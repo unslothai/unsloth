@@ -31,6 +31,9 @@ host_patterns=(
   'libXrender.so*' 'libXcomposite.so*' 'libXdamage.so*'
   'libXinerama.so*' 'libXau.so*' 'libXdmcp.so*' 'libxshmfence.so*'
   'libwayland-*.so*' 'libasound.so*' 'libpulse*.so*'
+  # The media plugins reach hardware decoders through these, and each one
+  # dlopens a host driver of its own.
+  'libva.so*' 'libva-*.so*' 'libvdpau*.so*' 'libnvidia-*.so*'
   'libstdc++.so*' 'libgcc_s.so*' 'libnghttp2.so*' 'libcurl*.so*'
 )
 for pattern in "${host_patterns[@]}"; do

@@ -34,6 +34,12 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert appimage["bundleMediaFramework"] is True
     assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith("/libappindicator3.so.1")
 
+    # linuxdeploy can only bundle the GStreamer plugins the builder installed,
+    # and the bundled core rejects host plugins from another 1.x release.
+    dependencies = _step("Install Linux dependencies")["run"]
+    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+        assert package in dependencies
+
     build = _step("Build Linux bundles")
     verify = _step("Verify complete Linux AppImage")
     stage = _step("Stage release assets")
@@ -71,6 +77,8 @@ def test_appimage_pr_build_is_unsigned_and_feeds_every_artifact_test():
     build = jobs["appimage-pr-build"]
     build_source = yaml.safe_dump(build)
     assert "github.event_name == 'pull_request'" in build["if"]
+    for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
+        assert package in build_source
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build_source
     assert "createUpdaterArtifacts" in build_source
     assert "false" in build_source
@@ -264,7 +272,15 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     # WebKit's media pipeline is the bundled GStreamer core plus these plugins.
     gst_plugins = runtime / "gstreamer-1.0"
     gst_plugins.mkdir()
-    for name in ("coreelements", "playback", "pulseaudio", "typefindfunctions"):
+    for name in (
+        "coreelements",
+        "playback",
+        "pulseaudio",
+        "typefindfunctions",
+        "isomp4",
+        "videoparsersbad",
+        "libav",
+    ):
         (gst_plugins / f"libgst{name}.so").touch()
     for index in range(60):
         (gst_plugins / f"libgstfixture{index}.so").touch()

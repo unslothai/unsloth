@@ -107,6 +107,7 @@ for component in \
   'libwebkit2gtkinjectedbundle.so' \
   'libgiognutls.so' \
   'libgstcoreelements.so' 'libgstplayback.so' 'libgstpulseaudio.so' \
+  'libgstisomp4.so' 'libgstvideoparsersbad.so' 'libgstlibav.so' \
   'gst-plugin-scanner'; do
   require_basename "$component"
 done
@@ -135,6 +136,7 @@ for forbidden in \
   'libXrender.so*' 'libXcomposite.so*' 'libXdamage.so*' \
   'libXinerama.so*' 'libXau.so*' 'libXdmcp.so*' 'libxshmfence.so*' \
   'libwayland-*.so*' 'libasound.so*' 'libpulse*.so*' \
+  'libva.so*' 'libva-*.so*' 'libvdpau*.so*' 'libnvidia-*.so*' \
   'libnghttp2.so*' 'libcurl*.so*' 'libstdc++.so*' 'libgcc_s.so*'; do
   if found="$(find "$appdir" \( -type f -o -type l \) -name "$forbidden" -print -quit)" && [[ -n "$found" ]]; then
     echo "Complete AppImage must leave host runtime component unbundled: $found" >&2
