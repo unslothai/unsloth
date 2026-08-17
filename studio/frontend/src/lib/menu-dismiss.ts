@@ -130,6 +130,13 @@ function swallowClick(event: Event): void {
   // re-raises the pointerdown it already captured -- so a bare click dispatched at `document`
   // is enough to release it. `bubbles: false` keeps it to listeners on `document` itself, and
   // `disarm()` above has already removed ours, so this cannot re-enter.
+  //
+  // Two properties of this worth knowing before reusing it. It wakes EVERY listener on
+  // `document`, not just Radix's, so it releases every dismissable layer that is currently
+  // deferring: that is bounded today only because two of these menus cannot be open at once,
+  // and it would need revisiting if that changed. And `isTrusted` is false on a synthetic
+  // event, so anything that gates on trusted input will ignore it -- Radix does not, which is
+  // what makes this work at all.
   document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
