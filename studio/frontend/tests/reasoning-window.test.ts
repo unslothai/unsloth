@@ -288,3 +288,48 @@ test("a bare label with no destination is still not a definition", () => {
   assert.ok(start > 0);
   assert.equal(linkDefinitionsBefore(text, start), "");
 });
+
+test("a literal backslash-bracket inside a fence does not disable the window forever", () => {
+  // preprocessLaTeX skips code, so a `\[` in a code sample is a literal. Treating it as an opener
+  // left the scanner believing it was inside an equation for the rest of the stream, and
+  // alignWindowStart then returns 0 forever: the pane silently never becomes windowed.
+  const text = `intro\n\n\`\`\`tex\n\\[ not really an equation\n\`\`\`\n\n${"filler\n\n".repeat(60)}`;
+  assert.equal(isOutsideBracketMath(text, text.length), true);
+  assert.ok(alignWindowStart(text, 400) > 0, "the window never engaged after a fenced backslash");
+});
+
+test("a literal backslash-bracket in inline code does not disable the window", () => {
+  const text = `Use \`\\[\` for display math.\n\n${"filler\n\n".repeat(60)}`;
+  assert.equal(isOutsideBracketMath(text, text.length), true);
+  assert.ok(alignWindowStart(text, 400) > 0);
+});
+
+test("a paragraph that only looks like a definition is not carried", () => {
+  // Checked against remark, the parser in this very pipeline: `[spec]: /url not a title` is a
+  // PARAGRAPH, because what follows the destination is not a valid title. Carrying it would put
+  // text the reader has already read back at the top of the pane.
+  const text = `[spec]: /url not a title\n\n${"filler\n\n".repeat(50)}`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  assert.equal(linkDefinitionsBefore(text, start), "");
+});
+
+test("a destination in angle brackets may contain spaces and is still a definition", () => {
+  // The control. remark parses `[spec]: <invalid destination>` as a DEFINITION, spaces and all,
+  // so refusing it would drop a real one.
+  const text = `[spec]: <a destination with spaces>\n\n${"filler\n\n".repeat(50)}`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(linkDefinitionsBefore(text, start).includes("a destination with spaces"));
+});
+
+test("a real definition with a title is still carried", () => {
+  const text = `[spec]: https://example.com/spec "The Spec"\n\n${"filler\n\n".repeat(50)}`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(linkDefinitionsBefore(text, start).includes("https://example.com/spec"));
+});
+
+test("a real definition in angle brackets is still carried", () => {
+  const text = `[spec]: <https://example.com/spec>\n\n${"filler\n\n".repeat(50)}`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(linkDefinitionsBefore(text, start).includes("https://example.com/spec"));
+});

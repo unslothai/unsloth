@@ -117,11 +117,38 @@ export const REASONING_WINDOW_RETRY_CHARS = 2_000;
 /**
  * A link-reference definition, `[label]: destination`, possibly inside a container.
  *
- * The label alternation allows a backslash escape, because CommonMark lets a label contain an
- * escaped bracket: `[spec\]]: /url` is one definition, not a label that ends at the first `]`.
- * A destination is required, so a bare `[spec]:` is never mistaken for one.
+ * The label allows a backslash escape, because CommonMark lets one contain an escaped bracket:
+ * `[spec\]]: /url` is one definition, not a label ending at the first `]`. The destination is
+ * checked separately by `hasValidDestination`, because a line that merely LOOKS like a definition
+ * is rendered visibly as a paragraph rather than registering anything, and carrying one of those
+ * puts old text back at the top of the pane.
  */
-const LINK_DEFINITION = /^ {0,3}>?\s*\[(?:[^\]\\]|\\.)+\]:\s*\S/;
+const LINK_DEFINITION = /^ {0,3}>?\s*\[(?:[^\]\\]|\\.)+\]:\s*(\S[\s\S]*)$/;
+
+/**
+ * Whether what follows the colon is a destination CommonMark would actually accept.
+ *
+ * Deliberately conservative, and it fails toward NOT carrying. Refusing a real definition costs a
+ * link its styling inside the window until the reader scrolls back; accepting a fake one puts a
+ * paragraph the reader has already read back on screen, which is a visible artefact made by the
+ * machinery that exists to avoid one.
+ */
+function hasValidDestination(rest: string): boolean {
+  const trimmed = rest.trim();
+  if (trimmed.startsWith("<")) {
+    const close = trimmed.indexOf(">");
+    // An angle destination may not contain a newline, an unescaped `<`, or spaces past the `>`.
+    if (close === -1) return false;
+    const inside = trimmed.slice(1, close);
+    return !/[<\n]/.test(inside);
+  }
+  // A bare destination runs to the first whitespace; anything after it must be a title.
+  const [destination, ...title] = trimmed.split(/\s+/);
+  if (destination.length === 0 || destination.includes("<")) return false;
+  if (title.length === 0) return true;
+  const rejoined = title.join(" ");
+  return /^["'(].*["')]$/.test(rejoined);
+}
 
 /** Container prefixes, so `> [spec]: url` is recognised and carried without its quote marker. */
 const CONTAINER_PREFIX = /^ {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/;
@@ -135,54 +162,79 @@ function stripContainers(line: string): string {
   }
 }
 
+/** Whether a block is fenced code, in which nothing means what it says. */
+function isFencedCode(block: string): boolean {
+  const body = stripContainers(block.trimStart());
+  return body.startsWith("```") || body.startsWith("~~~");
+}
+
+/** Inline code spans, which `preprocessLaTeX` also skips. */
+const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
+
 /**
- * Whether `offset` sits inside a `\[ ... \]` equation.
+ * How a block changes `\[ ... \]` parity.
  *
- * The one construct the block boundaries cannot speak for, because `preprocessLaTeX` turns it into
- * `$$` before the document is split, so the split never sees it in this form. An escaped `\\[` is
- * a literal bracket and is skipped, matching that file's own `(?<!\\)`.
+ * Code is skipped, both fenced and inline, for the same reason `preprocessLaTeX` skips it: a `\[`
+ * in a code sample is a literal, and treating it as an opener leaves the scanner believing it is
+ * inside an equation for the rest of the stream. That failure is quiet and total, because
+ * `alignWindowStart` then returns 0 forever and the pane simply never becomes windowed.
  */
-export function isOutsideBracketMath(text: string, offset: number): boolean {
-  let open = false;
+function bracketDelta(block: string): number {
+  if (isFencedCode(block)) return 0;
+  const bare = block.replace(INLINE_CODE, "");
+  let depth = 0;
   let index = 0;
-  while (index < offset - 1) {
-    if (text[index] !== "\\") {
+  while (index < bare.length - 1) {
+    if (bare[index] !== "\\") {
       index += 1;
       continue;
     }
-    const next = text[index + 1];
+    const next = bare[index + 1];
     if (next === "\\") {
       index += 2;
       continue;
     }
-    if (next === "[") open = true;
-    else if (next === "]") open = false;
+    if (next === "[") depth += 1;
+    else if (next === "]") depth -= 1;
     index += 2;
   }
-  return !open;
+  return depth;
 }
 
-/** The offset at which each block starts, taken from the renderer's own splitter. */
-function blockStarts(text: string): number[] {
-  const starts: number[] = [];
-  let offset = 0;
+/**
+ * Whether `offset` sits inside a `\[ ... \]` equation.
+ *
+ * The one construct the block boundaries cannot speak for, because `preprocessLaTeX` turns it into
+ * `$$` before the document is split, so the split never sees it in this form.
+ */
+export function isOutsideBracketMath(text: string, offset: number): boolean {
+  let depth = 0;
+  let position = 0;
   for (const block of parseMarkdownIntoBlocks(text)) {
-    starts.push(offset);
-    offset += block.length;
+    if (position >= offset) break;
+    depth += bracketDelta(block);
+    position += block.length;
   }
-  return starts;
+  return depth <= 0;
 }
 
 /**
  * The first block boundary at or after `target`.
+ *
+ * One pass. Asking `isOutsideBracketMath` per candidate would re-walk the whole prefix for each
+ * one, which is the quadratic shape this file has already had to remove twice.
  *
  * Returns 0 when there is none, which mounts the whole body. That is the right failure: showing
  * everything is correct and merely slow, whereas cutting into a construct is wrong.
  */
 export function alignWindowStart(text: string, target: number): number {
   if (target <= 0) return 0;
-  for (const start of blockStarts(text)) {
-    if (start >= target && start > 0 && isOutsideBracketMath(text, start)) return start;
+  let offset = 0;
+  let depth = 0;
+  for (const block of parseMarkdownIntoBlocks(text)) {
+    if (offset >= target && offset > 0 && depth <= 0) return offset;
+    depth += bracketDelta(block);
+    offset += block.length;
   }
   return 0;
 }
@@ -227,7 +279,8 @@ export function linkDefinitionsBefore(text: string, start: number): string {
   for (const block of parseMarkdownIntoBlocks(text)) {
     if (offset >= start) break;
     const bare = stripContainers(block.trim());
-    if (LINK_DEFINITION.test(bare)) definitions.push(bare);
+    const match = LINK_DEFINITION.exec(bare);
+    if (match && hasValidDestination(match[1])) definitions.push(bare);
     offset += block.length;
   }
   return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;
