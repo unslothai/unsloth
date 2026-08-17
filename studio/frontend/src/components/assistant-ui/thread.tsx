@@ -85,6 +85,7 @@ import {
 } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
+  resolveProjectId,
   sentAudioNames,
 } from "@/features/chat/api/chat-adapter";
 import {
@@ -203,7 +204,12 @@ import {
   dictationSendBlocked,
   shouldSubmitDictation,
 } from "@/features/chat/utils/dictation-send";
-import { listThreadDocuments } from "@/features/rag/api/rag-api";
+import {
+  isRagClientError,
+  listProjectDocuments,
+  listThreadDocuments,
+  projectWorkCount,
+} from "@/features/rag/api/rag-api";
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -306,6 +312,10 @@ const PageDragContext = createContext(false);
 // instead of aui.thread() so queues can keep advancing in the background.
 type PromptQueueTarget = {
   getDocumentThreadId: () => string | null;
+  /** The project this queue was started in, for a chat with no row to read. */
+  getQueueProjectId: () => string | null;
+  /** A knowledge base replaces every other scope, project sources included. */
+  usesKnowledgeBase: boolean;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
   append: (prompt: string) => void | Promise<void>;
@@ -493,22 +503,58 @@ function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
   schedulePromptQueueTargetStatePoll(run);
 }
 
+const indexingDocument = (doc: { status: string }) =>
+  doc.status === "pending" || doc.status === "running";
+
 async function targetHasIndexingDocuments(item: PromptQueueItem) {
   if (item.target.isIndexing()) {
     return true;
   }
-  if (!item.target.usesThreadDocuments) {
-    return false;
-  }
   const threadId = item.target.getDocumentThreadId();
-  if (!threadId) {
-    return false;
-  }
   try {
-    const documents = await listThreadDocuments(threadId);
-    return documents.some(
-      (doc) => doc.status === "pending" || doc.status === "running",
-    );
+    if (threadId && item.target.usesThreadDocuments) {
+      const documents = await listThreadDocuments(threadId);
+      if (documents.some(indexingDocument)) {
+        return true;
+      }
+    }
+    // Unless a knowledge base is active: the adapter sends kb_id alone, so the
+    // project's sources cannot reach this run and waiting on them only delays it.
+    if (item.target.usesKnowledgeBase) {
+      return false;
+    }
+    // Project sources are retrieved whatever the Docs pill says (chat-adapter's
+    // rag_scope), and isIndexing() above only answers while the bar that watches
+    // them is mounted, which a background queue has not. So ask directly, and
+    // for a chat with no row yet use the project the queue was started in.
+    // Rethrowing: a row this probe could not read is not a chat with no project,
+    // and the catch below is what holds the prompt and asks again. The queue's
+    // own project is the fallback wherever the row is still missing, so a poll
+    // landing mid-navigation cannot probe the project the user moved to.
+    const queueProjectId = item.target.getQueueProjectId();
+    const projectId = threadId
+      ? await resolveProjectId(threadId, undefined, {
+          rethrowReadFailure: true,
+          composerProjectId: queueProjectId,
+        })
+      : queueProjectId;
+    if (!projectId) {
+      return false;
+    }
+    if (projectWorkCount(projectId) > 0) {
+      return true;
+    }
+    try {
+      const projectDocuments = await listProjectDocuments(projectId);
+      return projectDocuments.some(indexingDocument);
+    } catch (error) {
+      // A project the server will not list (deleted, or a server predating the
+      // route) is not one to wait for: the retry below never ends.
+      if (isRagClientError(error)) {
+        return false;
+      }
+      throw error;
+    }
   } catch {
     // A failed status probe cannot prove that this thread's documents are
     // ready. Keep the queued send pending and retry instead of dispatching
@@ -3012,9 +3058,17 @@ const Composer: FC<{
     }
     const chatStateAtQueueStart = useChatRuntimeStore.getState();
     const incognitoAtQueueStart = chatStateAtQueueStart.incognito;
+    // A chat with no row yet has no project to look up, and the store holds
+    // whichever project is on screen when the queue polls. Read it here.
+    const projectIdAtQueueStart = incognitoAtQueueStart
+      ? null
+      : (chatStateAtQueueStart.activeProjectId ?? null);
     const usesThreadDocumentsAtQueueStart =
       chatStateAtQueueStart.ragEnabled &&
       chatStateAtQueueStart.ragSource.type === "thread";
+    const usesKnowledgeBaseAtQueueStart =
+      chatStateAtQueueStart.ragEnabled &&
+      chatStateAtQueueStart.ragSource.type === "kb";
     const runSettingsAtQueueStart =
       snapshotQueuedChatRunSettings(chatStateAtQueueStart);
     const getThreadListItemState = () => {
@@ -3218,7 +3272,9 @@ const Composer: FC<{
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
+      getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
+      usesKnowledgeBase: usesKnowledgeBaseAtQueueStart,
       usesLocalModel:
         parseExternalModelId(runSettingsAtQueueStart.params.checkpoint) === null,
       usesDeepResearch: runSettingsAtQueueStart.deepResearchEnabled,
