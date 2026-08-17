@@ -1565,7 +1565,9 @@ class TestProbeGating:
         assert get_transformers_tier("org/new") == "550"
         assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
 
-    def test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe(self, monkeypatch):
+    def test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe(
+        self, monkeypatch
+    ):
         """The mapping check answers first, and short-circuits the probe below it.
 
         This ordering is what quietly invalidated the two tests above. They pinned
@@ -1584,7 +1586,9 @@ class TestProbeGating:
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
         monkeypatch.setattr(
-            tv, "_config_model_types", lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"})
+            tv,
+            "_config_model_types",
+            lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"}),
         )
         # Declares 5.x too, so the version-field probe below WOULD fire if it were reached.
         _config_json_cache[("org/brandnew", None)] = {
@@ -1600,7 +1604,6 @@ class TestProbeGating:
         tier = get_transformers_tier("org/brandnew")
         assert tier != "default", f"a model_type the default lacks must be raised, got {tier!r}"
         assert probed == [], "the mapping check must answer before any sidecar probe runs"
-
 
     def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
         self._patch_venvs(monkeypatch)
