@@ -308,6 +308,28 @@ def test_b_an_omitted_permission_mode_arms_the_auto_gate(monkeypatch):
     assert policy.confirm_calls is True
 
 
+@pytest.mark.parametrize(
+    "nudge_tool_calls", [None, False, True], ids = ["omitted", "disabled", "enabled"]
+)
+def test_b_external_tool_loop_receives_requested_nudge_setting(monkeypatch, nudge_tool_calls):
+    """The external Studio loop must receive the request-level nudge policy."""
+    monkeypatch.setattr(
+        "core.inference.tools.get_enabled_mcp_tools",
+        lambda: _noop_mcp(),
+    )
+    inf = _install(monkeypatch, "openai")
+    payload = _payload(
+        enable_tools = True,
+        enabled_tools = ["python"],
+        nudge_tool_calls = nudge_tool_calls,
+    )
+
+    with pytest.raises(LoopEntered) as excinfo:
+        _run(inf, payload)
+
+    assert excinfo.value.args[0].nudge_tool_calls is nudge_tool_calls
+
+
 def test_b_the_external_and_codex_paths_derive_the_gate_identically():
     """Both policy constructions must read the same two expressions off the
     payload; a divergence would make one path quietly more permissive."""
