@@ -66,7 +66,8 @@ def test_an_isolated_path_still_runs_in_a_serial_step(path, reason):
     serial = [
         command
         for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
-        if " -n " not in f" {command} " and re.search(rf"(?<![\w/]){re.escape(path)}(?![\w/])", command)
+        if " -n " not in f" {command} "
+        and re.search(rf"(?<![\w/]){re.escape(path)}(?![\w/])", command)
     ]
     assert serial, (
         f"{path} is ignored from the parallel run ({reason}) and no serial pytest step runs "
