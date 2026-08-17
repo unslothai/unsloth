@@ -1223,9 +1223,9 @@ def test_both_unload_callables_accept_the_arguments_the_route_passes(monkeypatch
     orchestrator_unload = ri._stt_lifecycle()[1]
 
     assert registry_unload is stt_registry.unload
-    assert registry_unload is not orchestrator_unload, (
-        "both branches resolved to the same callable, so this proves nothing"
-    )
+    assert (
+        registry_unload is not orchestrator_unload
+    ), "both branches resolved to the same callable, so this proves nothing"
 
     for unload in (registry_unload, orchestrator_unload):
         # Exactly how routes/inference.py::stt_unload calls it.
