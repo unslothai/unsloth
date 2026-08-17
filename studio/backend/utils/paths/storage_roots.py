@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import re
 import sys
@@ -140,11 +141,49 @@ def _xdg_user_dir(key: str) -> Path | None:
     return None
 
 
+def _documents_from_registry_value(value: object, expandable: bool) -> Path | None:
+    """The Documents path a Windows shell-folder registry value names."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    # REG_EXPAND_SZ stores it unexpanded, e.g. %USERPROFILE%\Documents. ntpath
+    # rather than os.path: %VAR% is Windows syntax, which posixpath leaves as-is.
+    return Path(ntpath.expandvars(value) if expandable else value)
+
+
+def _windows_documents_dir() -> Path | None:
+    """Windows' own Documents folder, wherever the user moved it.
+
+    OneDrive's Known Folder Move repoints Documents at the synced copy and
+    leaves ~/Documents behind, so that guess writes to the wrong place or to a
+    folder that is not there at all.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import winreg  # Windows-only, and absent from some stripped builds.
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            # "Personal" is the registry's name for Documents.
+            value, kind = winreg.QueryValueEx(key, "Personal")
+    except OSError:
+        return None
+    return _documents_from_registry_value(value, kind == winreg.REG_EXPAND_SZ)
+
+
 def documents_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_DOCUMENTS_HOME") or "").strip()
     if override:
         return Path(override).expanduser()
-    return _xdg_user_dir("XDG_DOCUMENTS_DIR") or (Path.home() / "Documents")
+    return (
+        _windows_documents_dir()
+        or _xdg_user_dir("XDG_DOCUMENTS_DIR")
+        or (Path.home() / "Documents")
+    )
 
 
 def project_workspaces_root() -> Path:

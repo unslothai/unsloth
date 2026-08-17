@@ -193,6 +193,24 @@ def _drive_concurrent_probe_and_health(
     return max(latencies), elapsed, latencies
 
 
+# The bound stays where it was. What changes is that a stall has to REPRODUCE.
+#
+# Measured, with the shim's 0.6 + 0.6 second delays: the blocking route holds /health
+# for 1.72s and does it every time (1.719, 1.729, 1.721, 1.719, 1.727 over five runs),
+# while the to_thread route answers in 2 to 10 ms. A blocked loop is not a coin flip.
+# What IS a coin flip is the runner descheduling a thread for a couple of hundred
+# milliseconds, which is what failed this test on a single 0.261s sample among eleven
+# 0.0013s ones.
+#
+# So the measurement is repeated and one clean run is enough. Widening the bound
+# instead would have opened a blind range between the old limit and the new one, and
+# the obvious alternatives do not work here: only ONE sample is slow even when the loop
+# is fully blocked, because the health probes share a connection and serialise behind
+# the stall, so neither a median nor a count of slow samples can tell the two apart.
+_MAX_HEALTH_LATENCY_SEC = 0.25
+_STALL_ATTEMPTS = 3
+
+
 # (1) Behavioural canary
 def test_buggy_route_blocks_event_loop():
     """Sync detect_audio_type call inside async route stalls /health."""
@@ -203,21 +221,30 @@ def test_buggy_route_blocks_event_loop():
         with _UvicornServerThread(app, port = port) as uv:
             max_lat, probe_t, _ = _drive_concurrent_probe_and_health(f"http://127.0.0.1:{uv.port}")
     assert probe_t >= 0.5
-    assert max_lat >= 0.4, f"expected >=0.4s stall, got {max_lat:.3f}s"
+    assert max_lat >= _MAX_HEALTH_LATENCY_SEC, f"expected a stalled loop, got {max_lat:.3f}s"
 
 
 def test_fixed_route_keeps_event_loop_responsive():
     """to_thread-wrapped call leaves the event loop free."""
-    with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
-        backend = _make_backend(shim.port)
-        app = _build_app(backend, wrap_in_thread = True)
-        port = _free_port()
-        with _UvicornServerThread(app, port = port) as uv:
-            max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
-                f"http://127.0.0.1:{uv.port}"
-            )
-    assert probe_t >= 0.5
-    assert max_lat < 0.25, f"expected <0.25s; got {max_lat:.3f}s (all: {lats})"
+    attempts = []
+    for _ in range(_STALL_ATTEMPTS):
+        with FakeLlamaServer(tok_delay = 0.6, detok_delay = 0.6) as shim:
+            backend = _make_backend(shim.port)
+            app = _build_app(backend, wrap_in_thread = True)
+            port = _free_port()
+            with _UvicornServerThread(app, port = port) as uv:
+                max_lat, probe_t, lats = _drive_concurrent_probe_and_health(
+                    f"http://127.0.0.1:{uv.port}"
+                )
+        assert probe_t >= 0.5
+        attempts.append((max_lat, lats))
+        if max_lat < _MAX_HEALTH_LATENCY_SEC:
+            return
+    assert False, (
+        f"/health stalled past {_MAX_HEALTH_LATENCY_SEC}s on every one of "
+        f"{_STALL_ATTEMPTS} runs, so it is the route and not the runner: "
+        f"{[round(worst, 3) for worst, _ in attempts]} (last run: {attempts[-1][1]})"
+    )
 
 
 # (2) Functional equivalence -- sync == to_thread for each codec branch
