@@ -286,6 +286,19 @@ const AT_BOTTOM_PX = 24;
 const RESTORE_SETTLE_MS = 400;
 
 /**
+ * How long the window survives the end of the round, in milliseconds.
+ *
+ * A finished block is not windowed, but it must stop being windowed at a moment when somebody can
+ * see it. `ReasoningGroupImpl` closes the collapsible on the same transition that ends the round,
+ * and Radix keeps a closing `CollapsibleContent` mounted for the length of its exit animation. So
+ * dropping the window on the completion frame hands Streamdown the WHOLE body to parse and
+ * highlight, immediately before that body is unmounted unseen, which is the single most expensive
+ * frame in the round spent on nothing. Holding the window across the collapse means the usual case
+ * pays nothing, and a block the reader has pinned open still fills out, one animation later.
+ */
+const COMPLETION_HOLD_MS = ANIMATION_DURATION + 60;
+
+/**
  * The thinking body: a bounded tail of it while it streams and the reader is watching the end,
  * and all of it the moment that stops being true.
  *
@@ -326,16 +339,41 @@ function ReasoningBody() {
     [],
   );
 
+  // Parts are keyed by index and nothing else, so switching threads hands THIS instance a
+  // different message (the same reason markdown-text.tsx re-keys its caches on the message id).
+  // A start left over from a longer reasoning part would then be past the end of a shorter one,
+  // and `text.slice` would render an empty pane until the new round grew past it.
+  const messageId = useAuiState(({ message }) => message.id);
+  const messageIdRef = useRef(messageId);
+  if (messageIdRef.current !== messageId) {
+    messageIdRef.current = messageId;
+    startRef.current = 0;
+    restoredRef.current = false;
+  }
+
   // A regenerate reuses this instance, so a new round has to start windowed again rather than
   // inheriting the last round's restore.
   const [wasRunning, setWasRunning] = useState(isRunning);
+  const [holdingThroughCollapse, setHoldingThroughCollapse] = useState(false);
   if (wasRunning !== isRunning) {
     setWasRunning(isRunning);
     if (isRunning && !wasRunning) {
       startRef.current = 0;
       restoredRef.current = false;
+      setHoldingThroughCollapse(false);
+    } else if (!isRunning && startRef.current > 0 && !restoredRef.current) {
+      setHoldingThroughCollapse(true);
     }
   }
+
+  useEffect(() => {
+    if (!holdingThroughCollapse) return;
+    const timer = window.setTimeout(
+      () => setHoldingThroughCollapse(false),
+      COMPLETION_HOLD_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [holdingThroughCollapse]);
 
   useEffect(
     () => () => {
@@ -361,9 +399,18 @@ function ReasoningBody() {
   const holdPlace = useCallback(
     (distanceFromBottom: number) => {
       const deadline = performance.now() + RESTORE_SETTLE_MS;
+      // What this loop last left scrollTop at. A value that is no longer that is the READER
+      // moving, and two writers on one scrollTop is a fight the reader always loses: a trackpad
+      // flick keeps producing events well past this loop's 400ms, and every one of them would be
+      // undone on the next frame. So the correction yields to them and stops.
+      let written: number | null = null;
       const step = () => {
         const element = scroller();
         if (!element) {
+          settleRef.current = null;
+          return;
+        }
+        if (written !== null && Math.abs(element.scrollTop - written) >= 1) {
           settleRef.current = null;
           return;
         }
@@ -372,6 +419,8 @@ function ReasoningBody() {
           element.scrollHeight - element.clientHeight - distanceFromBottom,
         );
         if (Math.abs(element.scrollTop - target) >= 1) element.scrollTop = target;
+        // Read back rather than trusting the write: the browser clamps it.
+        written = element.scrollTop;
         settleRef.current =
           performance.now() < deadline ? requestAnimationFrame(step) : null;
       };
@@ -405,7 +454,10 @@ function ReasoningBody() {
   if (isRunning && !restoredRef.current) {
     startRef.current = nextReasoningWindowStart(text, startRef.current);
   }
-  const windowed = isRunning && !restoredRef.current && startRef.current > 0;
+  const windowed =
+    (isRunning || holdingThroughCollapse) &&
+    !restoredRef.current &&
+    startRef.current > 0;
 
   // Keyed on the window start, so moving the window or giving it back REMOUNTS the renderer.
   //
