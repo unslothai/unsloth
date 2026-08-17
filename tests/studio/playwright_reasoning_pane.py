@@ -140,13 +140,9 @@ OUT = Path(os.environ.get("PW_ART_DIR", "logs/playwright-reasoning-pane"))
 OUT.mkdir(parents = True, exist_ok = True)
 
 # Characters of REASONING content. The largest is the trace's own 90,000.
-SIZES = sorted(
-    int(n) for n in os.environ.get("SMOKE_RP_CHARS", "22500,45000,90000").split(",")
-)
+SIZES = sorted(int(n) for n in os.environ.get("SMOKE_RP_CHARS", "22500,45000,90000").split(","))
 ENGINES = [
-    e.strip()
-    for e in os.environ.get("SMOKE_RP_ENGINES", "chromium,webkit").split(",")
-    if e.strip()
+    e.strip() for e in os.environ.get("SMOKE_RP_ENGINES", "chromium,webkit").split(",") if e.strip()
 ]
 # Characters per fence. This is the span DENSITY knob: the trace's 90,262 characters carried
 # 16,186 spans, i.e. 5.6 characters per span, which only happens if the content is nearly all
@@ -556,9 +552,7 @@ def measure_cell(context, engine: str, size: int) -> dict:
         throttle_cdp = page.context.new_cdp_session(page)
         throttle_cdp.send("Emulation.setCPUThrottlingRate", {"rate": CPU_THROTTLE})
     page.goto(f"{BASE}/smoke-reasoning-pane.html", wait_until = "domcontentloaded")
-    page.wait_for_function(
-        """() => Boolean(window.__reasoningPane)""", timeout = 120_000
-    )
+    page.wait_for_function("""() => Boolean(window.__reasoningPane)""", timeout = 120_000)
 
     start_run(page, size)
     finished = wait_for_stream(page, RUN_TIMEOUT_MS)
@@ -673,7 +667,8 @@ def print_run(cell: dict) -> None:
     a = cell["after"]
     c = cell.get("collapse_ms")
     print(
-        f"  collapse took {c}ms" if c is not None
+        f"  collapse took {c}ms"
+        if c is not None
         else "  collapse did NOT complete within the timeout",
         flush = True,
     )
@@ -735,9 +730,7 @@ def summarise(cell: dict) -> dict:
         "after_elements": cell["after"]["totalElements"],
         "collapsed": cell["after"]["reasoningCodeSpans"] == 0,
         "collapse_ms": cell.get("collapse_ms"),
-        "peak_heap_mb": max(
-            (r["heap_mb"] for r in rows if r["heap_mb"] is not None), default = None
-        ),
+        "peak_heap_mb": max((r["heap_mb"] for r in rows if r["heap_mb"] is not None), default = None),
         "final_heap_mb": cell["rows"][-1]["heap_mb"] if cell.get("rows") else None,
     }
 
@@ -768,9 +761,7 @@ def harness_failures(results: dict) -> list[str]:
             # holds whatever the renderer under test then does with them.
             sent = cell.get("state", {}).get("sentChars") or 0
             if sent < size * 0.99:
-                bad.append(
-                    f"{where}: the fixture only sent {sent:,} of {size:,} characters"
-                )
+                bad.append(f"{where}: the fixture only sent {sent:,} of {size:,} characters")
             if max(r["reasoning_chars"] for r in rows) <= 0:
                 bad.append(f"{where}: the reasoning pane never held any text")
             # And, on an unmodified tree, that the content really did become highlight spans. At
