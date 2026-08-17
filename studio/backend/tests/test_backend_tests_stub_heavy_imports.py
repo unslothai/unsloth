@@ -162,8 +162,7 @@ def _guarded_by_import_error(tree: ast.Module) -> set[int]:
         if not isinstance(node, ast.Try):
             continue
         catches = any(
-            handler.type is None or _catches_import_error(handler.type)
-            for handler in node.handlers
+            handler.type is None or _catches_import_error(handler.type) for handler in node.handlers
         )
         if catches:
             for statement in node.body:
@@ -414,7 +413,11 @@ def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
     yield from _runtime_nodes(node)
 
 
-def _running_before(body: list[ast.stmt], line: int, flags: frozenset[str] = frozenset()):
+def _running_before(
+    body: list[ast.stmt],
+    line: int,
+    flags: frozenset[str] = frozenset(),
+):
     """``(statement, nodes)`` for everything that has run once ``line`` is reached.
 
     Line order alone merges branches that exclude each other:
