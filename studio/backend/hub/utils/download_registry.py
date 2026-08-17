@@ -119,6 +119,16 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
+            if probe and auto_transport == TRANSPORT_XET:
+                # Free RAM belongs in the same verdict: this IS the Auto decision, since the UI
+                # submits the answer as an explicit xet/http. Probe-only, so an ordinary poll stays
+                # read-only and still does not load Zoo.
+                from utils.hf_xet_fallback import free_ram_pressure_reason
+
+                pressure = free_ram_pressure_reason()
+                if pressure is not None:
+                    auto_transport = TRANSPORT_HTTP
+                    auto_reason = pressure
         except Exception:
             # No opinion: keep the optimistic default; the download-time ladder still recovers.
             pass

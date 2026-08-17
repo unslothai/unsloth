@@ -434,6 +434,31 @@ def available_ram_bytes() -> "tuple[Optional[int], int]":
     return (available if available > 0 else None, floor)
 
 
+def free_ram_pressure_reason() -> "Optional[str]":
+    """Why a download should take HTTP right now, or ``None`` to leave Xet alone.
+
+    The zoo refuses Xet below ``MIN_XET_RAM_BYTES`` but measures TOTAL RAM, so the check passes on a
+    32 GB box down to 2 GB free because a 27B GGUF is loaded (issue #9032). Same rule and threshold,
+    asked of free RAM. Buffers are clamped separately; this catches the host where even the clamped
+    floor will not fit.
+
+    One rule with two callers, which must agree: the capabilities probe resolves what the UI submits
+    as an explicit transport, and ``resolve_auto_use_xet`` covers an API caller that sends "auto".
+    Unmeasurable RAM is not evidence of pressure, so anything unreadable keeps Xet."""
+    try:
+        available, floor = available_ram_bytes()
+    except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
+        import logging as _logging
+        _logging.getLogger(__name__).debug("free_ram_pressure_reason failed: %s", exc)
+        return None
+    if available is None or available >= floor:
+        return None
+    return (
+        f"HTTP: only {available / 1e9:.1f}GB RAM free (Xet wants {floor / 1e9:.0f}GB); "
+        "close a loaded model to use Xet"
+    )
+
+
 def child_should_disable_xet(config: dict) -> bool:
     """Single source of truth for the per-worker Xet env flip (mirrors
     ``unsloth_zoo.hf_xet_fallback.child_should_disable_xet``). Deliberately lightweight: importing or
@@ -704,6 +729,7 @@ __all__ = [
     "apply_xet_env",
     "clamp_to_available_ram",
     "available_ram_bytes",
+    "free_ram_pressure_reason",
     "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",

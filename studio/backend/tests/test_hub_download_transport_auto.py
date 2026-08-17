@@ -566,7 +566,7 @@ def test_auto_picks_http_when_free_ram_is_below_the_xet_floor(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
-    fake.available_ram_bytes = lambda: (2_000_000_000, 4_000_000_000)
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
 
     use_xet, reason = dl.resolve_auto_use_xet()
@@ -580,7 +580,7 @@ def test_free_ram_gate_leaves_a_machine_with_room_alone(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
-    fake.available_ram_bytes = lambda: (30_000_000_000, 4_000_000_000)
+    fake.free_ram_pressure_reason = lambda: None
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
 
     assert dl.resolve_auto_use_xet() == (True, "Xet")
@@ -592,13 +592,13 @@ def test_free_ram_gate_never_decides_the_transport_by_failing(monkeypatch):
 
     for probe in (
         None,  # older shim: attribute missing entirely
-        lambda: (None, 4_000_000_000),  # psutil absent: RAM unmeasurable
+        lambda: None,  # psutil absent: RAM unmeasurable
         lambda: (_ for _ in ()).throw(RuntimeError()),  # probe itself raises
     ):
         fake = _types.ModuleType("utils.hf_xet_fallback")
         fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
         if probe is not None:
-            fake.available_ram_bytes = probe
+            fake.free_ram_pressure_reason = probe
         monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
         assert dl.resolve_auto_use_xet() == (True, "Xet")
 
@@ -609,7 +609,69 @@ def test_a_demoted_health_verdict_is_not_second_guessed(monkeypatch):
     monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
     fake = _types.ModuleType("utils.hf_xet_fallback")
     fake.xet_health = lambda **kw: _types.SimpleNamespace(use_xet = False, reason = "Xet stalled twice")
-    fake.available_ram_bytes = lambda: (1_000_000_000, 4_000_000_000)
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free"
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
 
     assert dl.resolve_auto_use_xet() == (False, "Xet stalled twice")
+
+
+def test_the_auto_probe_carries_the_free_ram_verdict(monkeypatch):
+    """The UI never sends "auto": effectiveTransportMode() resolves it through this probe and submits
+    the answer as an explicit xet/http, which resolve_requested_use_xet honours without consulting
+    resolve_auto_use_xet. So the gate has to live here or the primary flow never sees it."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2.0GB RAM free" in caps.auto_reason
+
+
+def test_a_browse_poll_never_reads_free_ram(monkeypatch):
+    """probe=False is the read-only poll behind opening Hub. It must stay off the zoo, so the free-RAM
+    reading is probe-only like the health verdict it rides along with."""
+    called: list[str] = []
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: called.append("read") or "HTTP: pressured"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities()
+    assert called == [], "a browse poll measured RAM"
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+
+
+def test_the_probe_does_not_override_a_health_demotion(monkeypatch):
+    """Health already said HTTP; the free-RAM read is skipped and its reason does not replace one the
+    user is better served by."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(
+        use_xet = False, reason = "Xet failed 2 times in a row on this machine"
+    )
+    fake.xet_health = fake.cached_xet_health
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 2.0GB RAM free"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "2 times" in caps.auto_reason
+
+
+def test_the_probe_survives_a_shim_without_the_free_ram_helper(monkeypatch):
+    """An older shim has no free_ram_pressure_reason; the probe keeps the health verdict."""
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: _types.SimpleNamespace(use_xet = True, reason = "Xet")
+    fake.xet_health = fake.cached_xet_health
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda _name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert caps.auto_reason == "Xet"

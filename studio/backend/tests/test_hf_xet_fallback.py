@@ -1000,3 +1000,27 @@ def test_clamp_never_raises_a_value_the_zoo_had_lowered():
     assert (
         written["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] == "4"
     ), "a clamp that raises anything is not a clamp"
+
+
+def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
+    """The threshold logic itself, now that both transport callers share this one helper."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (2 * _GB, 4 * _GB))
+    reason = shim.free_ram_pressure_reason()
+    assert reason is not None and "2.0GB RAM free" in reason
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (4 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "at the floor is not below it"
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (30 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None
+
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (None, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "unmeasurable is not pressure"
+
+    def _boom():
+        raise RuntimeError("no")
+
+    monkeypatch.setattr(shim, "available_ram_bytes", _boom)
+    assert shim.free_ram_pressure_reason() is None
