@@ -112,18 +112,12 @@ def _store_reducers() -> str:
 def _resident_fast_path() -> str:
     """The adoption tail of loadModel's already-resident branch, verbatim.
 
-    The tail, not the whole branch. #8943 grew that branch from a short early return
-    into the residency decision itself: it now reconciles GPU pools, speculative type,
-    managed llama flags and per-model config through 17 imported collaborators. Slicing
-    all of it would mean stubbing all 17, and a replay under 17 stubs asserts against a
-    construction rather than the product.
-
-    What this file is about is what happens AFTER the model is judged resident --
-    setCheckpoint blanks the bar, this path returns before the post-load recount, and a
-    mounted thread does not rerun its history loader -- so the slice starts where the
-    adoption is confirmed. The decision itself is `adoptable`, stubbed below, and it is
-    covered on its own by the resident-model-match and resident-config-match suites that
-    #8943 added beside it.
+    The tail, not the whole branch: #8943 grew that branch into the residency decision
+    itself, reaching 17 imported collaborators, and a replay under 17 stubs asserts
+    against a construction rather than the product. This file is about what happens
+    AFTER the model is judged resident, so the slice starts where adoption is confirmed.
+    The decision is `adoptable`, stubbed below and covered by the resident-model-match
+    and resident-config-match suites #8943 added.
     """
     return slice_between(
         read(RUNTIME),
@@ -415,10 +409,10 @@ __EFFECTS__
 
 HARNESS_RESIDENT = """
 
-// Adopting the model that never left memory returns before the post-load recount, so
-// the adoption tail is sliced verbatim below and replayed inside its own function with
-// the surrounding load machinery stubbed. Every stub is either derived exactly as the
-// source derives it, or a collaborator this file does not measure.
+// Adopting a model that never left memory returns before the post-load recount, so the
+// tail is sliced verbatim below and replayed with the load machinery stubbed. Each stub
+// is either derived as the source derives it, or a collaborator this file does not
+// measure.
 export async function adoptResidentModel(props: any): Promise<void> {
   const selection = "pick";
   const modelId: string = props.modelId;
@@ -426,9 +420,8 @@ export async function adoptResidentModel(props: any): Promise<void> {
   const selectedCheckpoint: string | null = state.params?.checkpoint ?? null;
   const previousGgufVariant: string | null = state.activeGgufVariant ?? null;
   const pendingConfig: any = undefined;
-  // The residency decision itself, which this file does not measure: the caller has
-  // already seeded the status it wants adopted. resident-model-match.test.ts and
-  // resident-config-match.test.ts cover the real predicate.
+  // The residency decision, which this file does not measure: the caller seeds the
+  // status it wants adopted. resident-model-match.test.ts covers the real predicate.
   const adoptable = (_status: any): boolean => true;
   const bailIfLoadInFlight = (): boolean => false;
   const restorePreviousConfig = (): void => {};
@@ -444,9 +437,8 @@ export async function adoptResidentModel(props: any): Promise<void> {
   };
   const syncModelCapabilities = (_id: string, _status: any): void => {};
   const applyPerModelConfigToRuntime = (_config: any, _options?: any): void => {};
-  // Only maxSeqLength is read here, and only to decide whether the pick names a cap.
-  // The real normalizer snaps and clamps, which this file does not measure; what it
-  // must keep is the null-for-absent answer the branch below tests against.
+  // Only maxSeqLength is read, and only to decide whether the pick names a cap. The
+  // real normalizer also snaps and clamps; what matters here is null-for-absent.
   const normalizeMaxSeqLength = (value: unknown): number | null =>
     typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
   const defaultInferenceParams: any = { maxSeqLength: null };
@@ -454,9 +446,8 @@ export async function adoptResidentModel(props: any): Promise<void> {
   const nativePathToken = undefined;
   const residentStatus: any = props.residentStatus;
   const readServerWideReloadHints = async (): Promise<boolean> => false;
-  // The two conditions the sliced tail sits inside, restated so the braces balance and
-  // the entry conditions are visible rather than implied. Both are the same judgement:
-  // this pick needs no load. The caller decides it by seeding the resident status.
+  // The two conditions the tail sits inside, restated so the braces balance and the
+  // entry conditions are visible. Both say the same thing: this pick needs no load.
   if (!forceReload && !nativePathToken) {
     if (
       residentStatus &&
