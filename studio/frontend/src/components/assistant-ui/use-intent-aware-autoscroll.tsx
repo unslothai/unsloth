@@ -79,7 +79,9 @@ type AutoScrollContextValue = {
   /**
    * Content of `deltaPx` height was just inserted ABOVE the viewport, so shift
    * the viewport by it and the user keeps looking at what they were looking at.
-   * Progressive mounting (see progressive-mount-controller) is the only caller.
+   * Progressive mounting (see progressive-mount-controller) is the only caller,
+   * and it calls on EVERY widening commit, `deltaPx` of zero included, because
+   * a zero correction still has to resync the intent bookkeeping below.
    *
    * This hook owns scrollTop and the caller never writes it, which is the whole
    * reason this exists as a method rather than as a scrollTop write next to the
@@ -87,12 +89,6 @@ type AutoScrollContextValue = {
    * while the user is following.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => void;
-  /**
-   * Counts scroll gestures the USER made (wheel, touch drag), whether or not they detached.
-   * A caller that measures a layout shift across two frames reads this before and after; if it
-   * moved, the reader scrolled in between and the measurement is theirs, not the layout's.
-   */
-  getUserGestureSeq: () => number;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -109,7 +105,6 @@ const noopContext: AutoScrollContextValue = {
   adjustForContentInsertedAbove: () => {
     /* no viewport mounted */
   },
-  getUserGestureSeq: () => 0,
 };
 
 const AutoScrollContext = createContext<AutoScrollContextValue>(noopContext);
@@ -135,11 +130,6 @@ export function useScrollThreadToBottom(): ScrollToBottom {
 /** See AutoScrollContextValue.adjustForContentInsertedAbove. */
 export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
-}
-
-/** See AutoScrollContextValue.getUserGestureSeq. */
-export function useUserGestureSeq(): () => number {
-  return useContext(AutoScrollContext).getUserGestureSeq;
 }
 
 export function useIsThreadAtBottom(): boolean {
@@ -168,9 +158,6 @@ export function useIntentAwareAutoScroll(): {
   const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
     /* no viewport mounted */
   });
-  // Hook scope, not attach scope: it must survive the viewport remounting under a thread switch,
-  // and it is read from outside the closure.
-  const userGestureSeqRef = useRef(0);
 
   const getIsAtBottom = useCallback(() => isAtBottomRef.current, []);
 
@@ -202,8 +189,6 @@ export function useIntentAwareAutoScroll(): {
   const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
     adjustImplRef.current(deltaPx);
   }, []);
-
-  const getUserGestureSeq = useCallback(() => userGestureSeqRef.current, []);
 
   const attach = useCallback(
     (el: HTMLElement, isRebind: boolean) => {
@@ -433,9 +418,6 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onWheel = (e: WheelEvent) => {
-        // Bumped for EVERY wheel, not only the ones that detach: the point is to record that the
-        // reader moved the viewport themselves, which is true whichever way they scrolled.
-        userGestureSeqRef.current += 1;
         if (
           e.deltaY < 0 &&
           canScrollUp() &&
@@ -450,7 +432,6 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onTouchMove = (e: TouchEvent) => {
-        userGestureSeqRef.current += 1;
         const y = e.touches[0]?.clientY ?? 0;
         // Finger moves DOWN on the screen = content scrolls UP.
         if (
@@ -471,20 +452,6 @@ export function useIntentAwareAutoScroll(): {
 
         const delta = scrollTop - lastScrollTop;
         const distanceNow = distanceFromBottom();
-
-        // Every scroll that is not one of ours counts as a gesture, not just wheel and
-        // touchmove. A scrollbar drag, PageUp, the arrow keys and middle-click autoscroll all
-        // reach this hook as nothing but a `scroll` event, and they detach the reader through
-        // the accumulator below, so a caller measuring a layout shift across two frames has to
-        // see them or it reads the reader's own movement as a shift and reverses it.
-        //
-        // The two scrolls that are NOT gestures are already excluded by arithmetic rather than
-        // by a flag: the corrective write in adjustImplRef advances lastScrollTop with itself,
-        // and a native scroll-anchoring adjustment is advanced past the same way, so both
-        // arrive here with delta 0.
-        if (!sizeChanged && delta !== 0) {
-          userGestureSeqRef.current += 1;
-        }
 
         // Viewport resizes can clamp scrollTop and produce spurious
         // direction signals. Only flip intent on deliberate scrolls.
@@ -729,7 +696,6 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
-      getUserGestureSeq,
     }),
     [
       scrollToBottom,
@@ -737,7 +703,6 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
-      getUserGestureSeq,
     ],
   );
 

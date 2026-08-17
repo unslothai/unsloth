@@ -39,10 +39,7 @@ import {
   initialWindow,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
-import {
-  useAdjustForContentInsertedAbove,
-  useUserGestureSeq,
-} from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 
 /** The subset of upstream's MessagesComponentConfig the thread actually passes. */
 export type ThreadMessageComponents = {
@@ -109,72 +106,6 @@ export function hasPendingProgressiveMounts(): boolean {
   return activeCompleters.size > 0;
 }
 
-/**
- * Whether this engine moves scrollTop by itself when content is inserted above the scroll
- * position, i.e. whether it implements CSS scroll anchoring. Cached: it is a property of the
- * build, it cannot change while the page is open, and the probe forces two layouts.
- *
- * Feature-probed rather than read off `CSS.supports("overflow-anchor", "none")`, because parsing
- * the property and acting on it are different things and WebKit shipped the two apart: bug 171099
- * notes the feature-status page listed `overflow-anchor` as supported while it was not
- * implemented. The question here is only ever "did scrollTop move", so ask that.
- */
-let engineCompensates: boolean | null = null;
-
-function engineCompensatesInsertionsAbove(): boolean {
-  if (engineCompensates !== null) return engineCompensates;
-  // Default to the compensating branch on anything unexpected: that is the behaviour every engine
-  // this ships against today has, and it is the one that is measured.
-  engineCompensates = true;
-  if (typeof document === "undefined") return true;
-  const probe = document.createElement("div");
-  probe.setAttribute("aria-hidden", "true");
-  probe.style.cssText =
-    "position:fixed;top:0;left:0;width:50px;height:50px;overflow:auto;" +
-    "visibility:hidden;pointer-events:none;contain:strict";
-  const fill = (count: number): DocumentFragment => {
-    const fragment = document.createDocumentFragment();
-    for (let index = 0; index < count; index += 1) {
-      const row = document.createElement("div");
-      row.style.height = "100px";
-      fragment.appendChild(row);
-    }
-    return fragment;
-  };
-  try {
-    probe.appendChild(fill(10));
-    document.body.appendChild(probe);
-    probe.scrollTop = 300;
-    // Scroll anchoring picks its anchor at the end of a layout, so the scrolled state has to be
-    // laid out before the insertion, not in the same batch as it.
-    void probe.scrollHeight;
-    const before = probe.scrollTop;
-    probe.insertBefore(fill(5), probe.firstChild);
-    void probe.scrollHeight;
-    engineCompensates = probe.scrollTop - before >= 400;
-  } catch {
-    engineCompensates = true;
-  } finally {
-    probe.remove();
-  }
-  return engineCompensates;
-}
-
-/**
- * Whether THIS viewport is compensated, which is the engine question plus one CSS opt-out. A
- * viewport that sets `overflow-anchor: none` is in the same position as an engine without scroll
- * anchoring, and the correction has to do the same amount of work in both cases.
- */
-function viewportCompensatesInsertionsAbove(viewport: HTMLElement): boolean {
-  if (getComputedStyle(viewport).overflowAnchor === "none") return false;
-  return engineCompensatesInsertionsAbove();
-}
-
-/** Test seam: forget the cached probe result. */
-export function resetScrollAnchoringProbeForTests(): void {
-  engineCompensates = null;
-}
-
 function useProgressiveMountWindow(
   count: number,
   resetKey: string | undefined,
@@ -182,7 +113,6 @@ function useProgressiveMountWindow(
 ): MountWindow {
   const aui = useAui();
   const adjustForContentInsertedAbove = useAdjustForContentInsertedAbove();
-  const getUserGestureSeq = useUserGestureSeq();
 
   // `isRunning` is read imperatively rather than through useAuiState on purpose: a reactive
   // subscription would re-render this component, and therefore rebuild the whole row array, on
@@ -260,7 +190,6 @@ function useProgressiveMountWindow(
     element: Element;
     viewportOffset: number;
     scrollTop: number;
-    gestureSeq: number;
   } | null>(null);
 
   const captureAnchor = useCallback(() => {
@@ -272,10 +201,9 @@ function useProgressiveMountWindow(
             element: first,
             viewportOffset: first.getBoundingClientRect().top,
             scrollTop: viewport.scrollTop,
-            gestureSeq: getUserGestureSeq(),
           }
         : null;
-  }, [viewportRef, getUserGestureSeq]);
+  }, [viewportRef]);
 
   useEffect(() => {
     if (mountWindow == null) return;
@@ -306,27 +234,40 @@ function useProgressiveMountWindow(
     if (!captured || !viewport || !captured.element.isConnected) return;
     // Which space this is measured in, and whether a frame the reader scrolled through can be
     // dropped, both depend on whether the engine already moved scrollTop. See anchorCorrection.
-    const shift = anchorCorrection(
-      captured,
-      {
-        viewportOffset: captured.element.getBoundingClientRect().top,
-        scrollTop: viewport.scrollTop,
-        gestureSeq: getUserGestureSeq(),
-      },
-      viewportCompensatesInsertionsAbove(viewport),
-    );
+    const shift = anchorCorrection(captured, {
+      viewportOffset: captured.element.getBoundingClientRect().top,
+      scrollTop: viewport.scrollTop,
+    });
     // Called on EVERY widening commit, including the ones with nothing to apply: a zero
     // correction still has to resync the hook's scroll bookkeeping past the offset native scroll
     // anchoring moved, or the scroll event that anchoring fires arrives as a downward scroll the
     // reader did not make. The hook decides whether anything is written; see
     // adjustForContentInsertedAbove.
     adjustForContentInsertedAbove(shift ?? 0);
-  }, [
-    mountWindow,
-    adjustForContentInsertedAbove,
-    viewportRef,
-    getUserGestureSeq,
-  ]);
+  }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
+
+  // CSS scroll anchoring is turned OFF for as long as the window is open, and turned back on the
+  // moment it closes, so a settled thread is exactly as it was before this change.
+  //
+  // This is the one thing that makes the correction below deterministic. Left on, the browser
+  // moves scrollTop by the inserted height on some frames and not others -- not at all on any
+  // shipping Safari, and suppressed per frame everywhere else after a programmatic scroll, which
+  // is what a scrollbar drag, PageUp and middle-click autoscroll are -- and no measurement taken
+  // inside the frame can tell which kind of frame it is in. Off, scrollTop moves only when the
+  // reader or this code moves it, which is the assumption anchorCorrection is built on.
+  //
+  // A layout effect keyed on the same trigger as the correction, so it is in place before the
+  // first widening rather than a frame after it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: isWithholding is the trigger
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    if (mountWindow == null) {
+      viewport.style.removeProperty("overflow-anchor");
+      return;
+    }
+    viewport.style.setProperty("overflow-anchor", "none");
+  }, [mountWindow, viewportRef]);
 
   // Registered only while rows are actually being withheld, so completeProgressiveMounts is free
   // for the settled thread that is the overwhelmingly common case.

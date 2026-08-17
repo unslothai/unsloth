@@ -150,34 +150,29 @@ test("the shift is measured in viewport space, as a residual", () => {
   // Both ends of the measurement are captured, because which of them is used depends on the
   // engine. The arithmetic itself lives in anchorCorrection and is tested there rather than here.
   assert.match(GLUE, /scrollTop: viewport\.scrollTop,/);
-  assert.match(GLUE, /gestureSeq: getUserGestureSeq\(\),/);
   assert.match(
     GLUE,
     /anchorCorrection\(/,
     "the correction must go through the tested pure function",
   );
-  assert.match(
-    GLUE,
-    /viewportCompensatesInsertionsAbove\(viewport\)/,
-    "which branch of the correction runs is an engine question, not a constant",
-  );
 });
 
-test("a widening frame the reader scrolled through is skipped, not corrected", () => {
-  // The flip side of measuring in viewport space: across the transition-deferred gap the reader's
-  // own gesture is indistinguishable from a layout shift. Measured, without this a 4000px wheel
-  // issued during a widening was cancelled inside the frame and the reader was put back at the
-  // bottom of the thread. The residual a widening leaves is single-digit pixels, so skipping one
-  // frame is invisible and the next widening corrects normally.
-  assert.match(GLUE, /gestureSeq: getUserGestureSeq\(\)/);
-  // The decision itself is arithmetic and lives in anchorCorrection, where it is tested against
-  // numbers rather than against its own spelling. All this file has to hold is that the glue
-  // still hands it the counter it needs to make the decision with.
-  assert.match(GLUE, /gestureSeq: getUserGestureSeq\(\),/);
-  // The counter must move on EVERY wheel, not only ones that detach, or a gesture below the
-  // detach threshold still corrupts the next measurement.
-  const wheel = section(HOOK, "const onWheel = ", "const onScroll = ");
-  assert.match(wheel, /userGestureSeqRef\.current \+= 1;/);
+test("the window owns the viewport's scroll-anchoring mode while it is open", () => {
+  // The correction is document-space arithmetic, and that is only correct if nothing else is
+  // moving scrollTop. Native scroll anchoring moves it on some frames and not others -- not at
+  // all on any shipping Safari, and suppressed per frame everywhere else after a programmatic
+  // scroll, which is what a scrollbar drag, PageUp and middle-click autoscroll are -- and no
+  // measurement taken inside the frame can tell the two apart. Measured with it left on: 19,259px
+  // of drift on a parked reader where the engine did not compensate, and 45,161px on Chromium
+  // where it did but was suppressed. So it is turned off while the window is open.
+  assert.match(GLUE, /setProperty\("overflow-anchor", "none"\)/);
+  // And turned back on when the window closes, or a settled thread is not the thread that
+  // shipped before this change.
+  assert.match(GLUE, /removeProperty\("overflow-anchor"\)/);
+  // No feature probe and no gesture bookkeeping: both existed to decide which of two behaviours
+  // the browser was giving us, and the browser is no longer in that loop.
+  assert.doesNotMatch(GLUE, /getUserGestureSeq/);
+  assert.doesNotMatch(HOOK, /userGestureSeqRef/);
 });
 
 test("the mount window never writes scrollTop itself", () => {
@@ -300,11 +295,12 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
 });
 
 test("the hook is told about every widening, including the ones with nothing to apply", () => {
-  // A widening that native scroll anchoring absorbed in full needs no scroll write, but the
-  // browser still moved scrollTop by the whole insertion and still fires a scroll event for it:
-  // measured, one event carrying the new offset on Chromium 151, WebKit 26.5 and Firefox 153.
-  // Returning early there left the hook's lastScrollTop a whole insertion behind, and that event
-  // then read as a large downward scroll, re-attaching a reader parked within 24px of the bottom.
+  // A widening with nothing to apply still has to resync the hook's bookkeeping, because
+  // something else may have moved scrollTop in the same frame. Measured on the version that
+  // returned early: a scroll-anchoring adjustment fires a scroll event carrying the new offset
+  // (one event, on Chromium 151, WebKit 26.5 and Firefox 153), lastScrollTop stayed a whole
+  // insertion behind, and that event read as a large downward scroll, re-attaching a reader
+  // parked within the 24px threshold.
   assert.match(GLUE, /adjustForContentInsertedAbove\(shift \?\? 0\)/);
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.doesNotMatch(
@@ -315,11 +311,3 @@ test("the hook is told about every widening, including the ones with nothing to 
   assert.match(body, /lastScrollTop = el\.scrollTop;/);
 });
 
-test("every scroll the hook did not make counts as a user gesture", () => {
-  // A scrollbar drag, PageUp, the arrow keys and middle-click autoscroll reach this hook as
-  // nothing but a `scroll` event, and they detach the reader, so a correction measured across
-  // them reverses their own movement. The hook's own writes and native anchoring adjustments are
-  // excluded by arithmetic, not by a flag: both advance lastScrollTop, so both read as delta 0.
-  const scroll = section(HOOK, "const onScroll = ", "const stabilize = ");
-  assert.match(scroll, /if \(!sizeChanged && delta !== 0\) \{\s*userGestureSeqRef\.current \+= 1;/);
-});

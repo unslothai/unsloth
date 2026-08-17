@@ -117,47 +117,48 @@ export type AnchorSample = {
   viewportOffset: number;
   /** The scroll container's scrollTop at the same instant. */
   scrollTop: number;
-  /** useIntentAwareAutoScroll's user-gesture counter at the same instant. */
-  gestureSeq: number;
 };
 
 /**
  * How far to move scrollTop so a widening commit leaves the reader looking at the same content,
  * or null for "do nothing". Pure, so it can be tested as arithmetic rather than as a substring.
  *
- * `viewportCompensates` is the whole reason this has two branches, and it is a property of the
- * ENGINE, not of this code.
+ * DOCUMENT space, which is only correct because the viewport turns CSS scroll anchoring OFF for
+ * as long as the window is open (see progressive-messages). With native anchoring live the
+ * browser moves scrollTop by the inserted height itself and a document-space delta reports that
+ * insertion anyway, so applying it doubles the browser's own correction: that was the first
+ * version of this code and it walked a parked reader's scrollTop 22,897 to 117,104 and dumped
+ * them at the bottom of a 300K thread.
  *
- * When it is true the browser implements CSS scroll anchoring and has ALREADY moved scrollTop by
- * the inserted height before this runs, so all that is left is the residual it did not absorb.
- * Viewport space is what measures a residual: it is zero precisely when the anchor is still where
- * the reader left it. Measured on Chromium 151, Firefox 153 and WebKit 26.5 at 150K characters,
- * that residual is 3 to 5 pixels per widening. Because it is that small, a frame the reader
- * scrolled through can simply be dropped: their gesture is indistinguishable from a layout shift
- * in viewport space, and skipping one frame costs single-digit pixels.
+ * The second version kept anchoring on, measured the leftover residual in viewport space, and
+ * dropped any frame the reader had scrolled through, because in viewport space a gesture and a
+ * layout shift are the same number. That is correct exactly while the browser compensates, and
+ * it is not in charge of whether it does. Measured at 150K characters:
  *
- * When it is false NOTHING has compensated, the "residual" is the entire inserted height, and
- * dropping a frame is not affordable. Measured on the same fixture with `overflow-anchor: none`
- * forced on the viewport, which is exactly what every shipping Safari and every iOS browser is
- * today (WebKit implemented scroll anchoring in 307475@main, Feb 2026, shipping in Safari 27):
- * one dropped frame walked a parked reader 19,259px, and dropping every frame walked them
- * 45,873px. So this branch measures in DOCUMENT space, which subtracts the reader's own scroll
- * arithmetically instead of dodging it, and never skips. That is the shape LibreChat#14901 uses,
- * and it is correct here for the same reason it is correct there: with no native compensation,
- * scrollTop moves only when the reader or this code moves it.
+ * - Every shipping Safari and every iOS browser has no scroll anchoring at all today; WebKit
+ *   implemented it in February 2026 and Playwright's WebKit 26.5 has it, which is why this was
+ *   invisible on this machine. With `overflow-anchor: none` standing in for those builds, one
+ *   dropped frame walked a parked reader 19,259px and dropping every frame walked them 45,873px,
+ *   on all three engines.
+ * - Anchoring is also suppressed PER FRAME on engines that do have it, including after a
+ *   programmatic scroll, which is what a scrollbar drag, PageUp and middle-click autoscroll all
+ *   become. Measured on Chromium 151 with anchoring available and a reader scrolling that way
+ *   through the build-in: 45,161px of drift, because every one of those frames was both
+ *   uncompensated and skipped.
+ *
+ * So the browser is taken out of the loop rather than trusted to be in it. With anchoring off,
+ * scrollTop moves only when the reader or this code moves it, and document space subtracts the
+ * reader's own movement arithmetically instead of dodging it, so no frame is ever skipped and
+ * there is nothing to feature-probe. Same fixture, same reader: 12px.
  */
 export function anchorCorrection(
   captured: AnchorSample,
   now: AnchorSample,
-  viewportCompensates: boolean,
 ): number | null {
-  const shift = viewportCompensates
-    ? now.viewportOffset - captured.viewportOffset
-    : now.viewportOffset +
-      now.scrollTop -
-      (captured.viewportOffset + captured.scrollTop);
-  if (viewportCompensates && now.gestureSeq !== captured.gestureSeq)
-    return null;
+  const shift =
+    now.viewportOffset +
+    now.scrollTop -
+    (captured.viewportOffset + captured.scrollTop);
   // Rounding down to whole pixels keeps a subpixel reflow from issuing a scroll write every frame.
   return Math.abs(shift) >= 1 ? shift : null;
 }
