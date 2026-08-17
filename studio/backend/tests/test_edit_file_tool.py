@@ -14,6 +14,7 @@ the file's encoding, line endings and mode survive an edit.
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -286,6 +287,84 @@ class TestReviewFindings:
         result = _edit(path = "placeholder.py", old_string = "", new_string = "x = 1\n")
         assert not result.startswith("Error:")
         assert target.read_text() == "x = 1\n"
+
+
+class TestSecondReviewFindings:
+    """Cases raised in the second review pass."""
+
+    def test_a_huge_replace_all_does_not_build_the_whole_diff(self, workdir):
+        # difflib was fed the entire file and its generator drained into a list,
+        # so replace_all on a file near the size cap allocated ~500MB and took
+        # over a second to return a 200-character receipt.
+        target = workdir / "big.txt"
+        target.write_text("a\n" * 300_000)
+        started = time.monotonic()
+        result = _edit(path = "big.txt", old_string = "a", new_string = "b", replace_all = True)
+        elapsed = time.monotonic() - started
+        assert not result.startswith("Error:")
+        assert len(result) < 2000
+        # Windowing makes this near-instant; diffing 300k lines does not.
+        assert elapsed < 2.0
+        assert target.read_text().startswith("b\nb\n")
+
+    def test_the_receipt_keeps_real_file_line_numbers(self, workdir):
+        # The window is sliced out of the file, so difflib numbers the hunk from
+        # the slice. A receipt pointing at line 3 of a 9000-line file would be
+        # worse than none.
+        target = workdir / "mid.py"
+        target.write_text("".join(f"line{i}\n" for i in range(1, 9001)))
+        result = _edit(path = "mid.py", old_string = "line8000\n", new_string = "CHANGED\n")
+        assert "@@ -7998" in result
+        assert "+CHANGED" in result
+
+    def test_a_change_in_the_first_lines_still_numbers_from_one(self, workdir):
+        target = workdir / "top.py"
+        target.write_text("".join(f"line{i}\n" for i in range(1, 200)))
+        result = _edit(path = "top.py", old_string = "line2\n", new_string = "TOP\n")
+        assert "@@ -1" in result
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX file mode")
+    def test_a_created_file_gets_the_usual_mode(self, workdir):
+        # mkstemp makes the temp file 0600 and copymode had nothing to copy from,
+        # so new files landed 0600 and locked out anyone reading generated files.
+        _edit(path = "fresh.py", old_string = "", new_string = "x = 1\n")
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = stat.S_IMODE(os.stat(workdir / "fresh.py").st_mode)
+        assert mode == 0o666 & ~umask
+
+    def test_creating_a_file_that_appeared_meanwhile_is_refused(self, workdir):
+        # O_EXCL rather than lexists-then-write: two chats sharing a workspace
+        # could both pass the check and the later write drop the earlier file.
+        target = workdir / "race.py"
+        assert not _edit(path = "race.py", old_string = "", new_string = "first\n").startswith("Error:")
+        result = _edit(path = "race.py", old_string = "", new_string = "second\n")
+        assert result.startswith("Error:")
+        assert target.read_text() == "first\n"
+
+    def test_filling_an_empty_file_is_guarded_against_a_racer(self, workdir):
+        # The zero-byte path goes through the normal write, so it carries the
+        # same expect check as an edit rather than clobbering blindly.
+        target = workdir / "z.py"
+        target.touch()
+        target.write_text("someone got here first\n")
+        error = tools._edit_file_write(str(target), "mine\n", "\n", "", expect = b"")
+        assert error.startswith("Error:")
+        assert target.read_text() == "someone got here first\n"
+
+
+class TestPublicSchema:
+    def test_the_request_schema_lists_edit_file(self):
+        # Programmatic clients pick tools off the generated OpenAPI schema; a
+        # built-in missing from it is undiscoverable.
+        from models.inference import ChatCompletionRequest
+        description = ChatCompletionRequest.model_fields["enabled_tools"].description
+        assert "edit_file" in description
+
+    def test_bypass_permissions_says_edit_file_is_unconfined(self):
+        from models.inference import ChatCompletionRequest
+        description = ChatCompletionRequest.model_fields["bypass_permissions"].description
+        assert "edit_file" in description
 
 
 class TestRegistration:

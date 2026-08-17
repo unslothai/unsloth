@@ -8909,6 +8909,10 @@ _EDIT_FILE_MAX_BYTES = _env_int("UNSLOTH_STUDIO_EDIT_FILE_MAX_BYTES", 16 * 1024 
 _EDIT_FILE_DIFF_LINES = 40
 _EDIT_FILE_DIFF_LINE_CHARS = 200
 _EDIT_FILE_DIFF_CHARS = 4000
+# Lines either side of the first change that are handed to difflib. Diffing the
+# whole file would split it into one str per line: at the 16MB cap that is 8M
+# objects and half a gigabyte to produce a 200-character receipt.
+_EDIT_FILE_DIFF_WINDOW_LINES = 120
 
 
 def _edit_file_resolve(
@@ -9043,36 +9047,98 @@ def _edit_file_write(
     return ""
 
 
-def _edit_file_receipt(before: str, after: str, name: str, count: int) -> str:
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@")
+
+
+def _edit_file_shift_hunk(line: str, offset: int) -> str:
+    """Add ``offset`` to both line numbers in a @@ hunk header."""
+    match = _HUNK_HEADER_RE.match(line)
+    if not match:
+        return line
+    before_span = match.group(2) or ""
+    after_span = match.group(4) or ""
+    shifted = (
+        f"@@ -{int(match.group(1)) + offset}{before_span} "
+        f"+{int(match.group(3)) + offset}{after_span} @@"
+    )
+    return shifted + line[match.end() :]
+
+
+def _edit_file_line_window(text: str, index: int, lines: int) -> "tuple[int, int]":
+    """Offsets of a window of ``lines`` lines either side of ``index``."""
+    start = index
+    for _ in range(lines):
+        newline = text.rfind("\n", 0, start)
+        if newline == -1:
+            start = 0
+            break
+        start = newline
+    if start and text[start : start + 1] == "\n":
+        start += 1
+    end = index
+    for _ in range(lines):
+        newline = text.find("\n", end)
+        if newline == -1:
+            end = len(text)
+            break
+        end = newline + 1
+    return start, max(end, index)
+
+
+def _edit_file_receipt(
+    before: str,
+    after: str,
+    name: str,
+    count: int,
+    change_at: int = 0,
+) -> str:
     """A bounded unified diff of what changed.
 
     Line-numbered so the model can confirm the edit landed where it meant and
-    aim the next one. Capped: echoing a large edit back would reintroduce the
-    cost this tool exists to remove.
+    aim the next one. Two separate bounds, because either alone leaks:
+    difflib is fed only a window around the first change, so a huge file is
+    never split into one str per line, and the generator is then consumed
+    lazily, so replace_all does not build every changed line to throw it away.
     """
     import difflib
+    import itertools
 
-    diff = list(
-        difflib.unified_diff(
-            before.split("\n"),
-            after.split("\n"),
-            lineterm = "",
-            n = 2,
-        )
-    )[2:]  # drop the ---/+++ headers; the name is on the summary line
+    window_start, before_end = _edit_file_line_window(
+        before, change_at, _EDIT_FILE_DIFF_WINDOW_LINES
+    )
+    # Both slices share a start: everything before the first change is identical
+    # in the two texts, so the same offset lands on the same line in each.
+    _, after_end = _edit_file_line_window(after, change_at, _EDIT_FILE_DIFF_WINDOW_LINES)
+    first_line = before.count("\n", 0, window_start) + 1
+    stream = difflib.unified_diff(
+        before[window_start:before_end].split("\n"),
+        after[window_start:after_end].split("\n"),
+        lineterm = "",
+        n = 2,
+    )
+    # drop the ---/+++ headers; the name is on the summary line
+    taken = list(itertools.islice(stream, 2 + _EDIT_FILE_DIFF_LINES + 1))[2:]
     plural = "" if count == 1 else "s"
     head = f"Edited {name} ({count} replacement{plural})"
-    if not diff:
+    if not taken:
         return head
-    if len(diff) > _EDIT_FILE_DIFF_LINES:
-        hidden = len(diff) - _EDIT_FILE_DIFF_LINES
-        diff = diff[:_EDIT_FILE_DIFF_LINES] + [f"... ({hidden} more diff lines)"]
+    if len(taken) > _EDIT_FILE_DIFF_LINES:
+        # The exact remaining count would cost the full diff to compute, which
+        # is the allocation this avoids.
+        diff = taken[:_EDIT_FILE_DIFF_LINES] + ["... (more diff lines)"]
+    else:
+        diff = taken
     diff = [
         line
         if len(line) <= _EDIT_FILE_DIFF_LINE_CHARS
         else f"{line[:_EDIT_FILE_DIFF_LINE_CHARS]}... (+{len(line) - _EDIT_FILE_DIFF_LINE_CHARS} chars)"
         for line in diff
     ]
+    # difflib numbered the hunks against the window it was given, so shift them
+    # back to real file lines; a receipt that points at line 3 of a 9000-line
+    # file is worse than no line numbers at all.
+    if first_line > 1:
+        diff = [_edit_file_shift_hunk(line, first_line - 1) for line in diff]
     body = "\n".join(diff)
     if len(body) > _EDIT_FILE_DIFF_CHARS:
         body = body[:_EDIT_FILE_DIFF_CHARS] + "\n... (receipt truncated)"
@@ -9115,19 +9181,56 @@ def _edit_file_create(
     and any other old_string cannot match an empty file, so nothing could ever
     write to it. Nothing is lost either, since there are no contents, and the
     mode is carried over by the write.
+
+    The absent case is created with O_EXCL rather than checked and then written:
+    two chats sharing a project workspace can both pass a lexists() check and
+    the later rename then drops the earlier file. O_EXCL also gives the new file
+    the usual umask-derived mode, where a mkstemp temp file would leave it 0600
+    and lock out a group that reads generated files.
     """
-    if os.path.lexists(target):
+    payload = (new.replace("\n", newline)).encode("utf-8")
+    if not os.path.lexists(target):
+        directory = os.path.dirname(target) or "."
         try:
-            existing = os.path.getsize(target)
-        except OSError:
-            existing = 1
-        if existing:
+            os.makedirs(directory, exist_ok = True)
+        except OSError as exc:
+            return f"Error: cannot create directory for '{name}': {exc}"
+        if workdir is not None and _is_outside_workdir(target, workdir):
             return (
-                f"Error: '{name}' already exists. An empty 'old_string' only "
-                "creates a new file; to change this one, pass the exact text to "
-                "replace."
+                f"Error: '{name}' moved outside the working directory while the "
+                "edit was being prepared; nothing was written."
             )
-    error = _edit_file_write(target, new, newline, "", workdir = workdir)
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        # Never follow a symlink planted at the final component in the meantime.
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(target, flags, 0o666)
+        except FileExistsError:
+            return (
+                f"Error: '{name}' was created by something else while this call "
+                "was preparing it; nothing was written."
+            )
+        except OSError as exc:
+            return f"Error: cannot write '{name}': {exc}"
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+        except OSError as exc:
+            return f"Error: cannot write '{name}': {exc}"
+        return f"Created {name} ({new.count(chr(10)) + 1} lines)"
+    try:
+        existing = os.path.getsize(target)
+    except OSError:
+        existing = 1
+    if existing:
+        return (
+            f"Error: '{name}' already exists. An empty 'old_string' only "
+            "creates a new file; to change this one, pass the exact text to "
+            "replace."
+        )
+    # Zero-byte and already there: guarded like any other edit, so a chat that
+    # filled it in between is not silently overwritten.
+    error = _edit_file_write(target, new, newline, "", expect = b"", workdir = workdir)
     if error:
         return error
     return f"Created {name} ({new.count(chr(10)) + 1} lines)"
@@ -9216,7 +9319,15 @@ def _edit_file(
     )
     if error:
         return error
-    return _edit_file_receipt(before, after, name, count if replace_all else 1)
+    # Where the first replacement landed, so the receipt can window around it
+    # instead of diffing the whole file.
+    return _edit_file_receipt(
+        before,
+        after,
+        name,
+        count if replace_all else 1,
+        change_at = max(before.find(old), 0),
+    )
 
 
 WEB_SEARCH_TOOL = {
