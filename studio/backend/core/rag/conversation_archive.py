@@ -430,6 +430,36 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     return all(probe in transcript for probe in probes)
 
 
+def _document_on_live_branch(conn, document_id: str, transcript: str, cache: dict) -> bool:
+    """Whether EVERY chunk of an archived turn is still on the branch.
+
+    Per chunk is not enough. A turn longer than CHUNK_TOKENS is stored as several
+    chunks of one document, so editing the second half of a long answer retires only
+    the chunks that carry the edit, and an untouched earlier chunk of the same retired
+    turn stays eligible on its own. The unit that was archived is the turn, and the
+    comment on ``_on_live_branch`` says an edit to any part of a turn retires the whole
+    copy -- which is only true if the whole document is checked.
+
+    Cached per call: candidates from one turn share a document, and this is the only
+    query in the filter.
+    """
+    if document_id in cache:
+        return cache[document_id]
+    try:
+        rows = conn.execute(
+            "SELECT text FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC",
+            (document_id,),
+        ).fetchall()
+    except Exception:
+        # Never fail a recall on the strictness pass: fall back to what the candidate
+        # chunk itself said, which is the previous behaviour.
+        cache[document_id] = True
+        return True
+    live = all(_on_live_branch(row["text"], transcript) for row in rows) if rows else False
+    cache[document_id] = live
+    return live
+
+
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
     """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest."""
     hits = retrieval.retrieve_hybrid(conn, scope, query, k = fetch, model_name = model, mode = "lexical")
@@ -498,6 +528,7 @@ def recall(
         fetch = limit * _BRANCH_FILTER_OVERFETCH
         rows: dict = {}
         hits: list = []
+        live_documents: dict = {}
         while True:
             candidates = _candidates(conn, scope, query, model, fetch, thread_id)
             if not candidates:
@@ -509,7 +540,10 @@ def recall(
             hits = [
                 hit
                 for hit in candidates
-                if hit.chunk_id in rows and _on_live_branch(rows[hit.chunk_id]["text"], transcript)
+                if hit.chunk_id in rows
+                and _document_on_live_branch(
+                    conn, rows[hit.chunk_id]["document_id"], transcript, live_documents
+                )
             ]
             if len(hits) != len(candidates):
                 logger.info(

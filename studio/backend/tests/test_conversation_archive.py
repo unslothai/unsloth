@@ -362,6 +362,72 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     assert survived is not None and "KEEPME-1111" in survived[0]
 
 
+def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
+    """A turn longer than CHUNK_TOKENS is stored as several chunks of one document.
+
+    Checking the branch per chunk means editing the second half of a long answer retires
+    only the chunks carrying the edit, and an untouched earlier chunk of the same retired
+    turn stays eligible on its own. The unit that was archived is the turn.
+    """
+    # The head is several chunks long on its own, so the FIRST chunk lies entirely
+    # inside the part that is never edited and passes a per-chunk check unchanged.
+    head = "opening CHUNKSPLIT-7373 marker. " + ("unchanged opening sentence. " * 300)
+    turn = [
+        {"role": "user", "content": "explain the deploy process"},
+        {"role": "assistant", "content": head + ("original ending sentence. " * 300)},
+    ]
+    _save_thread("chunk-thread", turn, append = True)
+    assert conversation_archive.archive_turns("chunk-thread", turn) == 1
+    # More than one chunk, or this test is not testing anything.
+    scope = store.conversation_archive_scope("chunk-thread")
+    document_ids = {
+        row["document_id"]
+        for row in conversation_archive.rag_db.get_connection()
+        .execute(
+            "SELECT document_id FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE d.scope = ?",
+            (scope,),
+        )
+        .fetchall()
+    }
+    chunk_count = (
+        conversation_archive.rag_db.get_connection()
+        .execute(
+            "SELECT COUNT(*) AS n FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE d.scope = ?",
+            (scope,),
+        )
+        .fetchone()["n"]
+    )
+    assert len(document_ids) == 1 and chunk_count > 1
+
+    # The branch now carries the same turn with its TAIL rewritten. The head, which is
+    # the chunk holding the marker, is untouched.
+    rewritten = [
+        turn[0],
+        {"role": "assistant", "content": head + ("a completely different ending. " * 300)},
+    ]
+    # The first chunk really is still on the branch: this is what per-chunk admitted.
+    first_chunk = (
+        conversation_archive.rag_db.get_connection()
+        .execute(
+            "SELECT c.text FROM chunks c JOIN documents d ON d.id = c.document_id "
+            "WHERE d.scope = ? ORDER BY c.chunk_index ASC LIMIT 1",
+            (scope,),
+        )
+        .fetchone()["text"]
+    )
+    assert conversation_archive._on_live_branch(
+        first_chunk, conversation_archive.branch_transcript(rewritten)
+    )
+
+    found = conversation_archive.recall(
+        "chunk-thread", "CHUNKSPLIT-7373", branch_messages = rewritten
+    )
+
+    assert found is None
+
+
 def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
     """render_turn caps a tool result and marks the cut with a truncation marker.
 
