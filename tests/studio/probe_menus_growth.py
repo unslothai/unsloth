@@ -105,7 +105,8 @@ async (index) => {
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--label", required = True)
+    # Defaulted so a generic CI driver can invoke this with no arguments.
+    ap.add_argument("--label", default = "run")
     ap.add_argument("--chars", default = "25000,300000")
     ap.add_argument("--reps", type = int, default = 3)
     ap.add_argument("--engine", default = "chromium")

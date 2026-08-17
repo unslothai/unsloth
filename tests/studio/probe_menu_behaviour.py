@@ -187,7 +187,8 @@ async def drive(page, label: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--label", required = True)
+    # Defaulted so a generic CI driver can invoke this with no arguments.
+    ap.add_argument("--label", default = "run")
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     args = ap.parse_args()
 
