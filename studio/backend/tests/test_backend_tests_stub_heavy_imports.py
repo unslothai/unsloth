@@ -152,15 +152,20 @@ def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | N
     ``with`` or ``if`` runs at import time exactly like a top-level one, and reading
     only ``tree.body`` made it invisible to this guard -- a file that wrote
     ``with something(): from core.training.trainer import X`` without stubbing would
-    take collection down unseen. ``_import_time_nodes`` is the traversal that already
-    knows which of those run, so it is used here.
+    take collection down unseen.
+
+    Reachability-aware, so ``if TYPE_CHECKING:`` and ``if False:`` are not read as
+    import-time dependencies: an import there never executes, and reporting it would
+    make a file with a legitimate type-only import fail this guard until someone added
+    a stub it does not need. Reported on this PR, against the first version of this
+    function, which used the plain import-time traversal.
 
     A ``try`` that catches ``ImportError`` is exempt, since that is a deliberate guard
     rather than an omission.
     """
     guarded = _guarded_by_import_error(tree)
     for statement in tree.body:
-        for node in _import_time_nodes(statement):
+        for node in _reachable_import_time_nodes(statement):
             if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in guarded:
                 continue
             if _module_scope_imports(ast.Module(body = [node], type_ignores = []), "") & heavy:
@@ -174,7 +179,15 @@ def _runtime_nodes(node: ast.AST):
     Bodies of ``def``/``class`` are not walked into: a stub call in a helper that nothing
     calls before the import installs nothing, and the ``def _stub_if_missing`` block itself
     would otherwise read as its own proof.
+
+    Branches that provably do not run are not walked into either, for the same reason from
+    the other direction: a stub installed under ``if False:`` installs nothing, so counting
+    it would report a file safe that still raises.
     """
+    if isinstance(node, ast.If) and _constant_test(node) is not None:
+        for child in node.body if _constant_test(node) else node.orelse:
+            yield from _runtime_nodes(child)
+        return
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
         return
     yield node
@@ -335,7 +348,18 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
     for statement in tree.body:
         if statement.lineno >= line:
             break
-        nodes = list(_runtime_nodes(statement))
+        # Only the part of the statement that runs BEFORE the import. A compound
+        # statement starts above the import line while its own body straddles it, so
+        # taking the whole subtree read
+        #     if True:
+        #         import core.inference.inference
+        #         _stub_if_missing("unsloth", ())
+        # as stubbed, when Python attempts that import first and collection dies.
+        # Reported on this PR, against the version that widened the search into
+        # compound statements without narrowing this side to match.
+        nodes = [
+            node for node in _runtime_nodes(statement) if getattr(node, "lineno", 0) < line
+        ]
         if any(
             isinstance(node, ast.Call) and _helper_installs_stub(_callee_name(node), helpers, named)
             for node in nodes
@@ -1374,6 +1398,39 @@ def test_the_guard_would_catch_an_unstubbed_module():
     # Same helper, never called: still not stubbed, or reading through the call would have
     # made a defined-and-unused helper into its own proof.
     assert _is_offender(held.replace("with _stubbed():\n    from", "from"), heavy)
+
+    # Order still decides it INSIDE the block. Widening the search into compound
+    # statements without narrowing the stub side to match read the whole enclosing
+    # statement as preceding the import, so a stub written below it counted.
+    inside_after = (
+        "if True:\n"
+        "    from core.inference import inference\n"
+        '    _stub_if_missing("unsloth", ())\n'
+    )
+    assert _first_heavy_import_line(_parse(inside_after), heavy) == 2, inside_after
+    assert _is_offender(inside_after, heavy), inside_after
+    # ...and the same block with the two lines the other way round is fine.
+    inside_before = (
+        "if True:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "    from core.inference import inference\n"
+    )
+    assert not _is_offender(inside_before, heavy), inside_before
+
+    # A branch that never runs is not an import, and not a stub either.
+    for unreachable in (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from core.training.trainer import UnslothTrainer\n",
+        "if False:\n    import core.inference.inference\n",
+    ):
+        assert _first_heavy_import_line(_parse(unreachable), heavy) is None, unreachable
+        assert not _is_offender(unreachable, heavy), unreachable
+    stub_that_never_runs = (
+        'if False:\n    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(stub_that_never_runs, heavy), stub_that_never_runs
 
     # And a stub that lands too late does not count.
     too_late = 'from core.training import trainer as t\n_stub_if_missing("unsloth", ())\n'
