@@ -72,3 +72,110 @@ export function stripTrailingTemplatePlaceholder(
   }
   return text.slice(0, from + scanFrom + match.index);
 }
+
+/**
+ * How far back a re-seed looks after a strip. The scan above never reads
+ * further back than `end - 1 - window`, and `end` is itself no further back
+ * than `length - window`, so everything it can reach lives in the last
+ * `2 * window` characters. The extra two cover the `${` straddling that edge.
+ */
+const RESEED_WINDOW = 2 * TRAILING_PLACEHOLDER_WINDOW + 2;
+
+const DOLLAR_BRACE = "${";
+
+export type TrailingPlaceholderWatch = {
+  /** Take the characters an arrival added. Reads `delta`, never the buffer. */
+  append(delta: string): void;
+  /** Take back the suffix a strip removed. `text` is the buffer after it. */
+  retract(text: string): void;
+  /**
+   * Whether `stripTrailingTemplatePlaceholder` could still cut something.
+   *
+   * Never false when it would, so the strip can be skipped outright whenever
+   * this is false. It may be true when the strip then cuts nothing, which
+   * costs one wasted scan on an arrival that already looked like a fragment.
+   */
+  isCandidate(): boolean;
+};
+
+/**
+ * Decide whether the trailing `${...}` strip has anything to do, from the
+ * deltas alone.
+ *
+ * `stripTrailingTemplatePlaceholder` is bounded, but it still has to touch the
+ * end of the accumulated reply, and touching it at all flattens the cons
+ * string that `text += delta` built, which costs O(reply) per arrival. The
+ * pattern needs the last non-whitespace character to be `}` and a `${` in
+ * front of it with no `}` in between, and both facts follow from the deltas:
+ * a reply that never ends in a brace, which is almost every arrival of almost
+ * every reply, is rejected without the buffer being read.
+ */
+export function createTrailingPlaceholderWatch(): TrailingPlaceholderWatch {
+  let length = 0;
+  // The last non-whitespace character, or "" when there is none.
+  let lastNonWhitespace = "";
+  // Index of the last `${`, of the last `}`, and of the `}` before that one.
+  let lastDollarBrace = -1;
+  let lastCloseBrace = -1;
+  let previousCloseBrace = -1;
+  // One character, so a `${` split across two arrivals is still seen.
+  let overlap = "";
+
+  const scan = (window: string, from: number): void => {
+    for (let index = 0; index < window.length; index += 1) {
+      const character = window[index];
+      if (character === CLOSE_BRACE) {
+        previousCloseBrace = lastCloseBrace;
+        lastCloseBrace = from + index;
+      } else if (
+        character === "{" &&
+        index > 0 &&
+        window[index - 1] === DOLLAR_BRACE[0]
+      ) {
+        lastDollarBrace = from + index - 1;
+      }
+      if (!WHITESPACE.test(character)) {
+        lastNonWhitespace = character;
+      }
+    }
+  };
+
+  return {
+    append(delta: string): void {
+      if (!delta) {
+        return;
+      }
+      // The `${` straddling the boundary is the one thing `delta` alone cannot
+      // show, because its `$` may have arrived last time.
+      if (overlap === DOLLAR_BRACE[0] && delta[0] === "{") {
+        lastDollarBrace = length - 1;
+      }
+      scan(delta, length);
+      length += delta.length;
+      overlap = delta[delta.length - 1];
+    },
+    retract(text: string): void {
+      length = text.length;
+      lastNonWhitespace = "";
+      lastDollarBrace = -1;
+      lastCloseBrace = -1;
+      previousCloseBrace = -1;
+      overlap = "";
+      // Only what the strip itself could reach. A `${` or `}` further back
+      // than this cannot take part in a match, so forgetting it cannot hide
+      // one: the strip would not look there either.
+      const from = Math.max(0, text.length - RESEED_WINDOW);
+      scan(text.slice(from), from);
+      if (text.length > 0) {
+        overlap = text[text.length - 1];
+      }
+    },
+    isCandidate(): boolean {
+      return (
+        lastNonWhitespace === CLOSE_BRACE &&
+        lastDollarBrace > previousCloseBrace &&
+        lastDollarBrace < lastCloseBrace
+      );
+    },
+  };
+}
