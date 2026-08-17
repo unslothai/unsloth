@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 import textwrap
 from pathlib import Path
@@ -38,18 +39,32 @@ def _require_node():
         pytest.skip("node --experimental-strip-types not available")
 
 
+def _write_atomic(path: Path, text: str):
+    """Write through a unique temp file and os.replace.
+
+    register.mjs and loader.mjs are shared by every _run, and write_text truncates
+    before it writes, so rewriting one while another worker's node process is
+    importing it can hand that process an empty or partial module. Contents are
+    constant, so the rename leaves every reader a whole file.
+    """
+    fd, tmp = tempfile.mkstemp(dir = str(path.parent), prefix = path.name, suffix = ".tmp")
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(text)
+    os.replace(tmp, path)
+
+
 def _ensure_harness():
     TEMP.mkdir(parents = True, exist_ok = True)
-    (TEMP / "register.mjs").write_text(
+    _write_atomic(
+        TEMP / "register.mjs",
         "import { register } from 'node:module';\nregister('./loader.mjs', import.meta.url);\n",
-        encoding = "utf-8",
     )
-    (TEMP / "loader.mjs").write_text(
+    _write_atomic(
+        TEMP / "loader.mjs",
         "export function resolve(specifier, context, next) {\n"
         "  if (specifier.endsWith('/types/runtime')) return next(specifier + '.ts', context);\n"
         "  return next(specifier, context);\n"
         "}\n",
-        encoding = "utf-8",
     )
 
 
