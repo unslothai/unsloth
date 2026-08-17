@@ -1036,7 +1036,12 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
         # budget measure the block and only the block.
         warmed = asyncio.Event()
 
-        async def _quick_setup(owner, pick, current_subject, hf_token = None):
+        async def _quick_setup(
+            owner,
+            pick,
+            current_subject,
+            hf_token = None,
+        ):
             warmed.set()
 
         monkeypatch.setattr(mas, "_start_load", _quick_setup)
