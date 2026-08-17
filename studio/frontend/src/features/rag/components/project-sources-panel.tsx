@@ -101,6 +101,9 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       invalidateProjectSources(projectId);
       await upload(files);
       announceProjectSourcesUpdated(projectId);
+      // An upload outlives a navigation the same way a bulk remove does, and the
+      // announce above already refreshes whoever is showing this project.
+      if (projectIdRef.current !== projectId) return;
       // Fetch the server rows for what was just uploaded. Job completion only
       // patches status/progress, so without this an upload keeps the optimistic
       // row's missing createdAt and sizeBytes: sorting would then rank it last
@@ -206,10 +209,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
       setRemoving(false);
     }
     // The panel is not keyed by project, so it is reused across a navigation and
-    // this continuation can resume against a different one. Everything below
-    // writes to the panel -- the selection, the toast, and a refresh that would
-    // publish this project's documents into the one now on screen -- so stop
-    // here. The announce above has already told the project that changed.
+    // this continuation can resume against a different one. The hook refuses to
+    // publish another scope's rows, so what is left here is the panel's own
+    // state: a selection and a failure toast that belong to a project the user
+    // is no longer looking at, and a refetch of a list nothing is showing. The
+    // announce above has already told the project that actually changed.
     if (projectIdRef.current !== batchProjectId) return;
     // Clear the selection either way: with no per-file toggle the user cannot
     // curate a retry set, so leaving rows selected would only misreport what is

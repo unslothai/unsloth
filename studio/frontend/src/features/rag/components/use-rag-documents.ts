@@ -242,6 +242,15 @@ export function useRagDocuments(
         // live "running %" chip. Failed docs hidden (toast warned at upload).
         const rows = (await lister()).filter((row) => row.status !== "failed");
         if (refreshSeq.current !== requestId) return true;
+        // The scope this call was made for, not the one now mounted. A mutation
+        // that awaits -- an upload, or a bulk remove walking its DELETEs --
+        // reconciles with the `refresh` it captured, which can start only after
+        // the user has switched scopes, so its ticket is the newest and the
+        // sequence check above lets it through. Publishing here would put the
+        // previous scope's documents into the list on screen, and the panel is
+        // reused without a key, so they would then be shown with the new
+        // scope's controls.
+        if (scopeKey !== liveScopeKeyRef.current) return true;
         setDocuments((prev) => {
           const merged = rows.map((row) => {
             const tracked = prev.find((p) => p.id === row.id);
@@ -607,18 +616,27 @@ export function useRagDocuments(
    * leave rows on screen that 404 on the next action. */
   const remove = useCallback(
     async (documentId: string): Promise<boolean> => {
+      // Whether this delete is for the scope on screen. A bulk batch keeps
+      // deleting the scope it started in after the user has navigated away, and
+      // both the invalidation and the optimistic drop below belong to that old
+      // list, not the one now mounted.
+      const forCurrentScope = scopeKey === liveScopeKeyRef.current;
       // Stand down list requests already in flight, as the scope change does. One
       // issued before this delete still carries the document, and letting it land
-      // afterwards would put the deleted row back on screen.
-      refreshSeq.current += 1;
+      // afterwards would put the deleted row back on screen. Only for the mounted
+      // scope: a stale batch bumping this would discard the new scope's own load
+      // and leave it empty until something unrelated refreshed it.
+      if (forCurrentScope) refreshSeq.current += 1;
       // Restore by re-inserting this one row rather than reinstating a whole
       // snapshot: during a batch an earlier snapshot still holds the rows previous
       // iterations deleted, and replaying it would resurrect them.
       let restore: TrackedDocument | undefined;
-      setDocuments((rows) => {
-        restore = rows.find((row) => row.id === documentId);
-        return rows.filter((row) => row.id !== documentId);
-      });
+      if (forCurrentScope) {
+        setDocuments((rows) => {
+          restore = rows.find((row) => row.id === documentId);
+          return rows.filter((row) => row.id !== documentId);
+        });
+      }
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -637,6 +655,8 @@ export function useRagDocuments(
         );
         return true;
       } catch (err) {
+        // `restore` is only set for the mounted scope, so a stale batch's
+        // rollback cannot insert its row into the list now on screen.
         setDocuments((rows) =>
           !restore || rows.some((row) => row.id === documentId)
             ? rows
@@ -653,7 +673,7 @@ export function useRagDocuments(
         }
       }
     },
-    [scope],
+    [scope, scopeKey],
   );
 
   return {
