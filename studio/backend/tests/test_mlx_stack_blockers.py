@@ -402,7 +402,7 @@ def test_concurrent_partial_import_is_retried_not_reported(monkeypatch):
     # The #9120 shape: a healthy stack whose first mlx_lm import races another
     # startup thread's first transformers import. One retry must clear it —
     # reporting it greyed out Train/Export for the whole process lifetime.
-    fake = _FakeImportWithRace("mlx_lm", failures=1)
+    fake = _FakeImportWithRace("mlx_lm", failures = 1)
     monkeypatch.setattr(mr.importlib, "import_module", fake)
     sleeps: list[float] = []
     monkeypatch.setattr(mr.time, "sleep", sleeps.append)
@@ -414,7 +414,7 @@ def test_concurrent_partial_import_is_retried_not_reported(monkeypatch):
 def test_broken_install_import_is_reported_on_the_first_attempt(monkeypatch):
     # A missing module is a real install problem, never the race: no retries,
     # no added latency before the chat-only verdict.
-    fake = _FakeImportWithRace("mlx_lm", failures=99)
+    fake = _FakeImportWithRace("mlx_lm", failures = 99)
     fake_bad = fake.__call__
 
     def strict(module: str):
@@ -434,7 +434,7 @@ def test_broken_install_import_is_reported_on_the_first_attempt(monkeypatch):
 def test_persistent_partial_import_reports_after_exhausting_retries(monkeypatch):
     # If the signature persists past the retries it is not a race after all:
     # the verdict must still name it instead of looping or passing.
-    fake = _FakeImportWithRace("mlx_lm", failures=99)
+    fake = _FakeImportWithRace("mlx_lm", failures = 99)
     monkeypatch.setattr(mr.importlib, "import_module", fake)
     sleeps: list[float] = []
     monkeypatch.setattr(mr.time, "sleep", sleeps.append)
