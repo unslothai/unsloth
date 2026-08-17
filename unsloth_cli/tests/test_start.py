@@ -854,6 +854,7 @@ def test_write_codex_config_profile(tmp_path, monkeypatch):
     assert catalog["models"][0]["max_context_window"] == 131072
     assert catalog["models"][0]["supports_reasoning_summary_parameter"] is False
     assert catalog["models"][0]["supports_parallel_tool_calls"] is False
+    assert catalog["models"][0]["apply_patch_tool_type"] == "function"
 
     assert catalog["models"][0]["base_instructions"] == start._CODEX_FALLBACK_PROMPT.read_text(
         encoding = "utf-8"
