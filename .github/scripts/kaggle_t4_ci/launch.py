@@ -216,11 +216,23 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
     )
 
 
-def _log(msg: str) -> None:
-    print(f"[launch] {msg}", flush = True)
-
-
 _STDOUT_FD = 1
+
+# Set once, on entry to the signal handler, and never cleared: the process is dying.
+# What it buys is that every _log below it drops rather than stalls, including the ones
+# release() reaches transitively -- delete_kernel() reports a refused delete through the
+# ordinary path, and that is exactly the moment stdout is least likely to drain. Putting
+# the check in _log rather than at the handler's own call sites is what makes it cover
+# them; a handler that stalls inside its own cleanup never reaches its retry either.
+_IN_SIGNAL_HANDLER = False
+
+
+def _log(msg: str) -> None:
+    # Costs nothing and drops nothing on the ordinary path, which is every line this
+    # script prints before something kills it.
+    if _IN_SIGNAL_HANDLER and not _writable(_STDOUT_FD):
+        return
+    print(f"[launch] {msg}", flush = True)
 
 
 def _writable(fd: int) -> bool:
@@ -986,6 +998,12 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
     atexit.register(release)
 
     def _release_and_die(signum, _frame):
+        # First, and outside the try: from here on every _log in this process drops a
+        # line rather than stalling on a stdout nobody is draining. release() logs
+        # through the ordinary path -- delete_kernel() reports a refused delete that way
+        # -- and a stall there is a stall before the retry and before the `finally`.
+        global _IN_SIGNAL_HANDLER
+        _IN_SIGNAL_HANDLER = True
         # Everything before the `finally` is best effort. The death is not: a handler
         # that returns normally leaves the process exiting on whatever code main()
         # computes, and a cancelled job then reads as a completed one.

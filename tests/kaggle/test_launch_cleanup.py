@@ -418,6 +418,41 @@ def _waiting_launcher(outdir: Path) -> str:
     )
 
 
+def _flooding_launcher(outdir: Path) -> str:
+    """A launcher parked inside a write to a stdout nobody is draining.
+
+    Two things differ from `_waiting_launcher`. It writes until the pipe is full instead
+    of sleeping, so when the signal lands the main thread is asleep in the kernel holding
+    the buffer lock rather than merely idle. And its delete logs on the way through, so
+    the handler meets a blocking `_log` it did not call itself: `delete_kernel` reports a
+    refused delete through the ordinary path, and a stall there is a stall before the
+    retry and before the `finally` that re-raises the signal. A fake deletion that
+    succeeds silently never reaches that.
+    """
+    return _waiting_launcher(outdir).replace(
+        "            time.sleep(%d)" % _STALL_SEC,
+        "\n".join(
+            [
+                "            while True:",
+                "                sys.stdout.write('x' * 65536)",
+                "                sys.stdout.flush()",
+            ]
+        ),
+    ).replace(
+        "        launch.main()",
+        "\n".join(
+            [
+                "        _real_delete = launch.delete_kernel",
+                "        def _noisy_delete(slug):",
+                "            launch._log(f'deleting {slug}')",
+                "            return _real_delete(slug)",
+                "        launch.delete_kernel = _noisy_delete",
+                "        launch.main()",
+            ]
+        ),
+    )
+
+
 @pytest.mark.parametrize("signame", ["SIGINT", "SIGTERM"])
 def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     """SIGTERM is what `kill` and an Actions cancel send; SIGINT is Ctrl-C.
@@ -580,19 +615,7 @@ def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
     lock, when the signal lands. Both the buffered path and the raw descriptor are then
     unavailable, and the line has to be dropped rather than waited on.
     """
-    proc = _runner(
-        tmp_path,
-        _waiting_launcher(tmp_path / "out").replace(
-            "            time.sleep(%d)" % _STALL_SEC,
-            "\n".join(
-                [
-                    "            while True:",
-                    "                sys.stdout.write('x' * 65536)",
-                    "                sys.stdout.flush()",
-                ]
-            ),
-        ),
-    )
+    proc = _runner(tmp_path, _flooding_launcher(tmp_path / "out"))
     try:
         _await_ready(proc)
         time.sleep(2)  # long enough for the pipe to fill and the write to park
