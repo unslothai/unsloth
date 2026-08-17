@@ -198,7 +198,11 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
     if uuid_info is None:
         _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
         return None
-    valid_indices = {idx for idx, _is_mig_enabled in uuid_info.values()}
+    # A MIG-enabled root is excluded from UUID resolution below (its own
+    # index isn't a valid selectable device); a plain numeric token equal to
+    # that same index must be rejected the same way, or a mixed mask could
+    # route around the UUID-side MIG protection entirely.
+    valid_indices = {idx for idx, is_mig_enabled in uuid_info.values() if not is_mig_enabled}
 
     resolved = []
     for token in tokens:

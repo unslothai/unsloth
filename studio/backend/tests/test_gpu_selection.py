@@ -410,6 +410,22 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             result = nvidia.resolve_gpu_uuid_mask(["5", self._UUID_A])
         self.assertIsNone(result)
 
+    def test_rejects_a_numeric_token_that_names_a_mig_enabled_root(self):
+        # "0" numerically names the same MIG-enabled root that UUID
+        # resolution would already reject -- a mixed mask must not be able
+        # to route around that protection just by spelling the index instead
+        # of the UUID.
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Enabled",
+                f"1, {self._UUID_B}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_B])
+        self.assertIsNone(result)
+
     def test_caches_a_resolved_mask_and_does_not_requery(self):
         smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         tokens = [self._UUID_A]
