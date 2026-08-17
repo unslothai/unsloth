@@ -433,6 +433,48 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     return calls
 
 
+def _stub_record_names(tree: ast.Module) -> frozenset[str]:
+    """Module-level names the stub helper records installed stubs into.
+
+    The real files pop through one (``for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)``), so a drop has to be recognisable through it.
+    The link is followed rather than guessed: a module-scope call that names the
+    required stub identifies the helper, and whatever module-level name that
+    helper appends to is the record.
+
+    An earlier version instead accumulated EVERY module-level assignment target,
+    which made an unrelated cleanup list read as the stub record and got properly
+    stubbed files reported as offenders. Reported on this PR.
+    """
+    helpers = {
+        _callee_name(node)
+        for statement in tree.body
+        for node in _runtime_nodes(statement)
+        if isinstance(node, ast.Call) and _names_required_stub(list(ast.walk(node)))
+    }
+    bound = {
+        name
+        for statement in tree.body
+        for name in _bound_names(statement)
+    }
+    recorded: set[str] = set()
+    for statement in tree.body:
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if statement.name not in helpers:
+            continue
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("append", "add", "insert")
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in bound
+            ):
+                recorded.add(node.func.value.id)
+    return frozenset(recorded)
+
+
 def _drops_stubs(tree: ast.Module, line: int) -> bool:
     """Whether the module removes its stubs again, at module scope, before ``line``.
 
@@ -452,7 +494,7 @@ def _drops_stubs(tree: ast.Module, line: int) -> bool:
     ``sys.modules.pop("routes.foo", None)`` in a properly stubbed file read as a
     drop and got the file reported as an offender. Reported on this PR.
     """
-    named: frozenset[str] = frozenset()
+    recorded = _stub_record_names(tree)
     for statement in tree.body:
         if statement.lineno >= line:
             break
@@ -465,10 +507,9 @@ def _drops_stubs(tree: ast.Module, line: int) -> bool:
             for node in nodes
         )
         if pops_sys_modules and (
-            _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
+            _names_required_stub(nodes) or _reads_a_named_stub(nodes, recorded)
         ):
             return True
-        named |= _bound_names(statement)
     return False
 
 
@@ -710,17 +751,41 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert _offender_free(foreign_modules)
-    # The real files pop through a module-level list, so that still reads as a drop.
+    # The real files pop through a module-level list the stub helper records into,
+    # so that still reads as a drop. The link is followed through the helper body,
+    # which is why the helper is spelled out here as the real files spell it.
+    _HELPER = (
+        "def _stub_if_missing(name, attrs):\n"
+        "    _STUBBED.append(name)\n"
+        "    sys.modules[name] = object()\n"
+    )
     drop_through_a_list = (
         "import pytest, sys\n"
         "_STUBBED = []\n"
-        "_stub_if_missing('unsloth', ())\n"
+        + _HELPER
+        + "_stub_if_missing('unsloth', ())\n"
         "for _n in reversed(_STUBBED):\n"
         "    sys.modules.pop(_n, None)\n"
         "def test_x():\n"
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert not _offender_free(drop_through_a_list)
+
+    # But an UNRELATED module-level list is not the stub record, even when it is
+    # popped from sys.modules. Accumulating every assignment target made this read
+    # as a stub drop and reported a properly stubbed file. Reported on this PR.
+    unrelated_cleanup_list = (
+        "import pytest, sys\n"
+        "_STUBBED = []\n"
+        "_JUNK = ['routes.foo']\n"
+        + _HELPER
+        + "_stub_if_missing('unsloth', ())\n"
+        "for _n in _JUNK:\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(unrelated_cleanup_list)
 
     # importorskip(modname = ...) is the documented signature, so matching only the
     # positional form let a file written that way past the guard. Reported here.

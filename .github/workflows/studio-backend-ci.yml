@@ -95,6 +95,13 @@ jobs:
             soundfile librosa
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
+          # peft: core/inference/inference.py imports it at module scope, and it is listed
+          # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
+          # installs. Without it every importorskip of that module SKIPS instead of running,
+          # which is invisible: test_safetensors_reasoning_stream.py reported 10 passed and
+          # 3 skipped here, green. Stubbing it instead does not work -- transformers probes
+          # `importlib.util.find_spec("peft")`, which raises on a stub whose __spec__ is None.
+          pip install peft
           # Torch CPU + transformers are required by a chunk of the backend test
           # suite (gpu_selection, kv_cache_estimation, utils). CPU-only torch
           # keeps the install ~250 MB / ~1 min on a clean runner.

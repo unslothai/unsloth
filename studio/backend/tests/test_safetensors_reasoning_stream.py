@@ -89,10 +89,11 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 # nobody does it, and every other file's _stub_if_missing returns early when the name
 # is already present, so its own bookkeeping never runs and its cleanup has nothing to
 # undo. Leaving them installed traded this file's order dependency for a worse one.
+_EAGER_IMPORT_ERROR: str | None = None
 try:
     import core.inference.inference  # noqa: E402,F401
-except ImportError:  # pragma: no cover - the real dep set imports fine
-    pass
+except ImportError as _error:  # recorded, not swallowed; see the test at the bottom
+    _EAGER_IMPORT_ERROR = f"{type(_error).__name__}: {_error}"
 
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
@@ -468,3 +469,25 @@ def test_text_only_vlm_fallback_resolves_native_markers_off():
     assert captured["reasoning_channel_markers_resolved"] is True
     # No markers on this branch, so this pins forwarding only.
     assert captured["prompt"] == "manual text-only prompt"
+
+
+def test_the_eager_import_under_the_stubs_actually_succeeded():
+    """A failed eager import turns the three importorskip tests into silent skips.
+
+    They resolve out of ``sys.modules``, so if the import above did not put
+    ``core.inference.inference`` there, ``importorskip`` finds the dependency
+    genuinely missing and skips. The job stays green while a third of this file
+    stops running, which is how the missing ``peft`` stub went unnoticed: 10 passed
+    and 3 skipped on the matrix, reported as success.
+
+    So the swallow records the error instead of dropping it, and this reads it back.
+    A module-scope dependency added to core/inference/inference.py that the backend
+    job does not install fails here by name rather than quietly reducing coverage.
+    """
+    assert _EAGER_IMPORT_ERROR is None, (
+        f"the eager import of core.inference.inference failed ({_EAGER_IMPORT_ERROR}), so the "
+        f"importorskip tests in this file skip instead of running. Install what it names in "
+        f"the backend job's extras, or stub it above the import where a stub is safe (it is "
+        f"not for anything transformers probes with importlib.util.find_spec)."
+    )
+    assert "core.inference.inference" in sys.modules
