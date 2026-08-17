@@ -567,7 +567,11 @@ class TrainingStartRequest(BaseModel):
             "on NVIDIA, and ZE_AFFINITY_MASK with subdevice tokens (e.g. "
             "'0.0,0.1') or FLAT-hierarchy (default) tile handles on Intel XPU. "
             "A CUDA_VISIBLE_DEVICES UUID mask that nvidia-smi can resolve to "
-            "root GPU UUIDs is supported."
+            "root GPU UUIDs is supported, but only while CUDA_DEVICE_ORDER is "
+            "PCI_BUS_ID (the default) and nvidia-smi's own device index agrees "
+            "with PCI bus order; an explicit CUDA_DEVICE_ORDER=FASTEST_FIRST or "
+            "a host where the two orderings disagree falls back to the same "
+            "unsupported case."
         ),
     )
 
