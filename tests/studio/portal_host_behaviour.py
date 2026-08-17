@@ -228,19 +228,19 @@ def main() -> int:
                 page = ctx.new_page()
                 try:
                     page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
-                    page.wait_for_function(
-                        "() => Boolean(window.__heavyThread)", timeout = 180_000
-                    )
+                    page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 180_000)
                     plan = page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
                     page.wait_for_function(
                         "(n) => window.__heavyThread.messageCount() >= n",
-                        arg = plan["messages"], timeout = 600_000,
+                        arg = plan["messages"],
+                        timeout = 600_000,
                     )
                     n = page.evaluate("() => window.__heavyThread.expandTools()")
                     if n:
                         page.wait_for_function(
                             "(k) => window.__heavyThread.counts().collapsibleOutputs >= k",
-                            arg = n, timeout = 300_000,
+                            arg = n,
+                            timeout = 300_000,
                         )
                     hv.wait_for_highlighting_settled(page, 600_000)
                     page.evaluate(
