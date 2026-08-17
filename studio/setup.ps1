@@ -5342,6 +5342,10 @@ print('POSTVER=' + ('__DAMAGED__' if damaged else d.version))
 '@
 $SkipPythonDeps = $false
 $LatestVer = ""
+# Initialized beside $LatestVer: a failed PyPI fetch leaves the catch with nothing
+# assigned, and the Requires-Python fallback reads this under a profile's
+# Set-StrictMode, where an unset variable is a terminating error, not $null.
+$pypiJson = $null
 # True only when the version-check gate ran: the post-update probe must stay off in
 # installer-driven/local runs, but it must not depend on the PyPI fetch succeeding --
 # a missing package is missing on any index.
