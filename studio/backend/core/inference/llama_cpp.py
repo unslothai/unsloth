@@ -8478,10 +8478,14 @@ class LlamaCppBackend:
         ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
         both, exactly as the non-chat header check above does.
 
-        This copy credits the ungated probe, and every narrowing the launch applies to it (the
-        ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids`` pin) only shrinks the
-        pool, so it charges no more than the launch copy and can refuse nothing the launch
-        would allow. Fails open the same way.
+        It credits each device's PHYSICAL TOTAL, not its free reading. Free here still counts
+        the resident llama-server, Unsloth model and Images/Video pipeline that the route and
+        ``load_model`` are about to reclaim, so pricing against it would refuse a switch to a
+        model the freed card holds easily. Total is the ceiling on what the launch can ever
+        see, and every narrowing the launch applies (the ROCm arch gate, the Vulkan discrete
+        preference, a ``gpu_ids`` pin) only shrinks the pool further, so this charges no more
+        than the launch copy and can refuse nothing the launch would allow. What survives is
+        the pick no reclaim can rescue, which is the one worth catching before the teardown.
 
         Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
         here would start a download the route has not committed to.
@@ -8502,8 +8506,13 @@ class LlamaCppBackend:
                 str(gguf_path),
                 *(str(arg) for arg in getattr(intent, "extra_args", None) or ()),
             ]
-            gpus = [(idx, free) for idx, free, _total in self._get_gpu_memory(binary)]
-            return self._launch_host_shortfall_message(argv, gpus)
+            probed = self._get_gpu_memory(binary)
+            # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
+            if any(total <= 0 for _idx, _free, total in probed):
+                return None
+            return self._launch_host_shortfall_message(
+                argv, [(idx, total) for idx, _free, total in probed]
+            )
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None

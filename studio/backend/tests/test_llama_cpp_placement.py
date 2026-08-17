@@ -1027,30 +1027,46 @@ def _load_intent(gguf, **kwargs):
 def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch):
     """`acquire_for(CHAT)` evicts a resident Images/Video pipeline and the reload
     confirmation cancels the running generations, both before the launch guard can read the
-    finished argv. The route asks first, so a refused load tears nothing down."""
+    finished argv. The route asks first, so a pick no reclaim can rescue, 100 GB against a
+    24 GB card and 10 GB of RAM, tears nothing down."""
     backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+        tmp_path, gguf_gb = 100, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
     )
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 24_000)]
 
     verdict = backend.host_offload_refusal_for_intent(_load_intent(gguf))
     assert verdict is not None and "does not fit in GPU memory" in verdict
 
 
-def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
-    """It credits the ungated probe, which every narrowing the launch applies only shrinks,
-    and abstains on an undownloaded repo, an unreadable pool and the escape. So it can never
-    reject a load the launch guard would have allowed."""
+def test_the_route_precheck_credits_vram_the_handoff_is_about_to_reclaim(tmp_path, monkeypatch):
+    """The resident llama-server, Unsloth model and media pipeline still hold VRAM when this
+    runs, and the route and load_model reclaim all three afterwards. Pricing against the free
+    reading refused a switch to a model the freed card holds outright, so every switch on a
+    busy GPU became impossible. The physical total is what bounds the launch."""
     backend, gguf = _offload_backend(
-        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+        tmp_path, gguf_gb = 13.3, free_mib = 900, avail_mib = 10_000, monkeypatch = monkeypatch
     )
+    # 900 MiB free because the model being replaced still holds the card
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 900, 24_000)]
+
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+
+
+def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
+    """Abstains on an undownloaded repo, a device whose total the probe cannot read, an
+    unreadable pool and the escape. So it can never reject a load the launch would allow."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 100, free_mib = 20_000, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 24_000)]
 
     assert backend.host_offload_refusal_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
-    # a card big enough to hold it leaves no shortfall to charge
-    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 24_000)]
+    # an igpu or a MIG/vGPU line reports total 0, so the ceiling is unknown
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 0)]
     assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
-    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 4877, 6141)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 24_000)]
     monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
     assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
 
