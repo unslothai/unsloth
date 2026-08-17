@@ -415,3 +415,32 @@ test("a fenced block larger than the budget keeps retaining", () => {
     parseMarkdownIntoBlocks(remend(input)),
   );
 });
+
+test("completed block snapshots keep identity while only the live tail changes", () => {
+  const source = paragraphs(80);
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(source);
+  assert.ok(first.blocks.length > 100);
+
+  const stablePrefix = first.blocks.slice(0, 80);
+  const next = cache.update(`${source}live tail`);
+  assert.deepEqual(
+    next.blocks.map((block) => block.content),
+    next.parseMarkdownIntoBlocks(next.markdown),
+  );
+  for (let index = 0; index < stablePrefix.length; index += 1) {
+    assert.equal(next.blocks[index], stablePrefix[index]);
+  }
+});
+
+test("a replacement invalidates snapshots instead of reusing stale identities", () => {
+  const cache = new IncrementalMarkdownCache();
+  const first = cache.update(paragraphs(40, "first"));
+  const replacement = cache.update(paragraphs(40, "replacement"));
+
+  assert.notEqual(replacement.blocks[0]?.id, first.blocks[0]?.id);
+  assert.deepEqual(
+    replacement.blocks.map((block) => block.content),
+    parseMarkdownIntoBlocks(remend(paragraphs(40, "replacement"))),
+  );
+});

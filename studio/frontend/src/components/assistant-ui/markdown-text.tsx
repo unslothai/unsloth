@@ -19,15 +19,23 @@ import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
+
+import type { HighlightResult } from "@streamdown/code";
 import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
+
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type ComponentProps,
+  type CSSProperties,
+  isValidElement,
   memo,
+  type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,8 +43,11 @@ import {
 import {
   Block,
   type BlockProps,
+  type ExtraProps,
+  parseMarkdownIntoBlocks,
   Streamdown,
   type StreamdownProps,
+  useIsCodeFenceIncomplete,
 } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
@@ -45,6 +56,7 @@ import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
   IncrementalMarkdownCache,
+  type MarkdownBlockSnapshot,
   withoutStreamdownAnimationPlugin,
 } from "./streaming-render-schedule";
 
@@ -456,7 +468,436 @@ function useCoalescedStreamingText(
   return text;
 }
 
+export const MARKDOWN_LAYOUT_EVENT = "aui-markdown-layout";
+
+const VIRTUALIZE_AFTER_BLOCKS = 24;
+const MARKDOWN_BLOCK_ESTIMATE_PX = 32;
+const MARKDOWN_BLOCK_OVERSCAN = 12;
+
+function findVerticalScrollOwner(element: HTMLElement): HTMLElement | null {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const style = getComputedStyle(parent);
+    if (/(auto|scroll)/.test(style.overflowY)) {
+      return parent;
+    }
+  }
+  return null;
+}
+
+const VIRTUALIZE_CODE_AFTER_LINES = 120;
+const VIRTUALIZE_CODE_AFTER_CHARS = 20_000;
+const CODE_LINE_ESTIMATE_PX = 20;
+const CODE_LINE_OVERSCAN = 24;
+const PLAIN_LONG_LINE_AFTER_CHARS = 8_000;
+const CODE_LANGUAGE_RE = /language-([^\s]+)/;
+
+function readCodeChildren(children: ReactNode): string {
+  if (typeof children === "string") return children;
+  if (Array.isArray(children)) return children.map(readCodeChildren).join("");
+  if (
+    isValidElement<{ children?: ReactNode }>(children) &&
+    children.props.children !== undefined
+  ) {
+    return readCodeChildren(children.props.children);
+  }
+  return "";
+}
+
+function trimTrailingNewlines(source: string): string {
+  let end = source.length;
+  while (end > 0 && source[end - 1] === "\n") end -= 1;
+  return source.slice(0, end);
+}
+
+function plainHighlight(source: string): HighlightResult {
+  return {
+    bg: "transparent",
+    fg: "inherit",
+    tokens: source.split("\n").map((content) => [
+      {
+        content,
+        offset: 0,
+      },
+    ]),
+  } as HighlightResult;
+}
+
+function useHighlightedCode(source: string, language: string): HighlightResult {
+  const raw = useMemo(() => plainHighlight(source), [source]);
+  const [snapshot, setSnapshot] = useState({ source, result: raw });
+
+  useEffect(() => {
+    let active = true;
+    const publish = (next: HighlightResult) => {
+      if (active) setSnapshot({ source, result: next });
+    };
+    const immediate = code.highlight(
+      {
+        code: source,
+        language: language as Parameters<typeof code.highlight>[0]["language"],
+        themes: STREAMDOWN_SHIKI_THEME,
+      },
+      publish,
+    );
+    queueMicrotask(() => publish(immediate ?? raw));
+    return () => {
+      active = false;
+      code.cancelHighlight(publish);
+    };
+  }, [language, raw, source]);
+
+  return snapshot.source === source ? snapshot.result : raw;
+}
+
+function resultRootStyle(result: HighlightResult): CSSProperties {
+  const style: Record<string, string> = {};
+  if (result.bg) style["--sdm-bg"] = result.bg;
+  if (result.fg) style["--sdm-fg"] = result.fg;
+  if (result.rootStyle) {
+    for (const declaration of result.rootStyle.split(";")) {
+      const separator = declaration.indexOf(":");
+      if (separator <= 0) continue;
+      const property = declaration.slice(0, separator).trim();
+      const value = declaration.slice(separator + 1).trim();
+      if (property && value) style[property] = value;
+    }
+  }
+  return style as CSSProperties;
+}
+
+function tokenStyle(
+  token: HighlightResult["tokens"][number][number],
+): CSSProperties {
+  const style: Record<string, string> = {};
+  if (token.color) style["--sdm-c"] = token.color;
+  if (token.bgColor) style["--sdm-tbg"] = token.bgColor;
+  for (const [property, value] of Object.entries(token.htmlStyle ?? {})) {
+    if (property === "color") style["--sdm-c"] = value;
+    else if (property === "background-color") style["--sdm-tbg"] = value;
+    else style[property] = value;
+  }
+  return style as CSSProperties;
+}
+
+function HighlightedCodeLine({
+  line,
+  lineNumber,
+}: {
+  line: HighlightResult["tokens"][number];
+  lineNumber: number;
+}) {
+  const content = line.map((token) => token.content).join("");
+  return (
+    <span className="block min-w-max" data-code-line={lineNumber}>
+      <span
+        aria-hidden="true"
+        className="mr-4 inline-block w-6 select-none text-right font-mono text-[13px] text-muted-foreground/50"
+      >
+        {lineNumber}
+      </span>
+      {content.length > PLAIN_LONG_LINE_AFTER_CHARS ? (
+        content
+      ) : line.length === 0 || (line.length === 1 && content === "") ? (
+        "\n"
+      ) : (
+        line.map((token, index) => {
+          const hasBackground = Boolean(
+            token.bgColor ?? token.htmlStyle?.["background-color"],
+          );
+          return (
+            <span
+              // A completed Shiki line retains token order and object identity.
+              // The line wrapper, not each token, is the virtualized unit.
+              key={index}
+              className={`text-[var(--sdm-c,inherit)] dark:text-[var(--shiki-dark,var(--sdm-c,inherit))]${
+                hasBackground
+                  ? " bg-[var(--sdm-tbg)] dark:bg-[var(--shiki-dark-bg,var(--sdm-tbg))]"
+                  : ""
+              }`}
+              style={tokenStyle(token)}
+              {...token.htmlAttrs}
+            >
+              {token.content}
+            </span>
+          );
+        })
+      )}
+    </span>
+  );
+}
+
+function VirtualizedCodeLines({ result }: { result: HighlightResult }) {
+  const rootRef = useRef<HTMLSpanElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const owner = findVerticalScrollOwner(root);
+    setScrollElement(owner);
+    if (!owner) return;
+    const measureOffset = () => {
+      const rootRect = root.getBoundingClientRect();
+      const ownerRect = owner.getBoundingClientRect();
+      setScrollMargin(rootRect.top - ownerRect.top + owner.scrollTop);
+    };
+    measureOffset();
+    const resizeObserver = new ResizeObserver(measureOffset);
+    resizeObserver.observe(root);
+    resizeObserver.observe(owner);
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: result.tokens.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => CODE_LINE_ESTIMATE_PX,
+    overscan: CODE_LINE_OVERSCAN,
+    scrollMargin,
+  });
+  const totalSize = virtualizer.getTotalSize();
+
+  useLayoutEffect(() => {
+    rootRef.current?.dispatchEvent(
+      new CustomEvent(MARKDOWN_LAYOUT_EVENT, { bubbles: true }),
+    );
+  }, [totalSize]);
+
+  return (
+    <span
+      ref={rootRef}
+      className="block"
+      data-virtualized-code="true"
+      style={{ height: `${totalSize}px`, position: "relative" }}
+    >
+      {virtualizer.getVirtualItems().map((virtualLine) => {
+        const line = result.tokens[virtualLine.index];
+        if (!line) return null;
+        return (
+          <span
+            className="block"
+            key={virtualLine.key}
+            data-index={virtualLine.index}
+            ref={virtualizer.measureElement}
+            style={{
+              left: 0,
+              position: "absolute",
+              top: 0,
+              transform: `translateY(${virtualLine.start - scrollMargin}px)`,
+            }}
+          >
+            <HighlightedCodeLine
+              line={line}
+              lineNumber={virtualLine.index + 1}
+            />
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function VirtualizedCodeBlock({
+  className,
+  language,
+  source,
+}: {
+  className?: string;
+  language: string;
+  source: string;
+}) {
+  const isIncomplete = useIsCodeFenceIncomplete();
+  const result = useHighlightedCode(source, language);
+
+  return (
+    <div
+      className={`my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2 ${className ?? ""}`}
+      data-incomplete={isIncomplete || undefined}
+      data-language={language}
+      data-streamdown="code-block"
+      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 200px" }}
+    >
+      <div
+        className="flex h-8 items-center text-xs text-muted-foreground"
+        data-language={language}
+        data-streamdown="code-block-header"
+      >
+        <span className="ml-1 font-mono lowercase">{language}</span>
+      </div>
+      <div
+        className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm"
+        data-language={language}
+        data-streamdown="code-block-body"
+      >
+        <pre
+          className="bg-[var(--sdm-bg,inherit)] dark:bg-[var(--shiki-dark-bg,var(--sdm-bg,inherit))]"
+          style={resultRootStyle(result)}
+        >
+          <code>
+            <VirtualizedCodeLines result={result} />
+          </code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
+function VirtualizedCode({
+  children,
+  className,
+  node: _node,
+  ...props
+}: ComponentProps<"code"> & ExtraProps) {
+
+  void _node;
+  if (!("data-block" in props)) {
+    return (
+      <code
+        className={`rounded bg-muted px-1.5 py-0.5 font-mono text-sm ${className ?? ""}`}
+        data-streamdown="inline-code"
+        {...props}
+      >
+        {children}
+      </code>
+    );
+  }
+
+  return (
+    <VirtualizedCodeBlock
+      className={className}
+      language={className?.match(CODE_LANGUAGE_RE)?.[1] ?? "text"}
+      source={trimTrailingNewlines(readCodeChildren(children))}
+    />
+  );
+}
+
+const VIRTUALIZED_CODE_COMPONENTS = {
+  ...STREAMDOWN_COMPONENTS,
+  code: VirtualizedCode,
+} as NonNullable<StreamdownProps["components"]>;
+
+function shouldVirtualizeCode(block: MarkdownBlockSnapshot): boolean {
+  const fence = getCodeFence(block.content);
+  if (!fence || fence.language?.toLowerCase() === "mermaid") return false;
+  return (
+    fence.source.length >= VIRTUALIZE_CODE_AFTER_CHARS ||
+    fence.source.split("\n").length >= VIRTUALIZE_CODE_AFTER_LINES
+  );
+}
+
+
+type VirtualizedMarkdownProps = {
+  blocks: readonly MarkdownBlockSnapshot[];
+  isStreaming: boolean;
+  messageId: string;
+};
+
+function VirtualizedMarkdown({
+  blocks,
+  isStreaming,
+  messageId,
+}: VirtualizedMarkdownProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const owner = findVerticalScrollOwner(root);
+    setScrollElement(owner);
+    if (!owner) return;
+
+    const measureOffset = () => {
+      const rootRect = root.getBoundingClientRect();
+      const ownerRect = owner.getBoundingClientRect();
+      setScrollMargin(rootRect.top - ownerRect.top + owner.scrollTop);
+    };
+    measureOffset();
+    const resizeObserver = new ResizeObserver(measureOffset);
+    resizeObserver.observe(root);
+    resizeObserver.observe(owner);
+    return () => resizeObserver.disconnect();
+  }, [messageId]);
+
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => scrollElement,
+    estimateSize: () => MARKDOWN_BLOCK_ESTIMATE_PX,
+    getItemKey: (index) => blocks[index]?.id ?? index,
+    overscan: MARKDOWN_BLOCK_OVERSCAN,
+    scrollMargin,
+  });
+
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    rootRef.current?.dispatchEvent(
+      new CustomEvent(MARKDOWN_LAYOUT_EVENT, { bubbles: true }),
+    );
+  }, [totalSize]);
+
+  return (
+    <div
+      ref={rootRef}
+      data-virtualized-markdown="true"
+      style={{
+        height: `${totalSize}px`,
+        position: "relative",
+        width: "100%",
+      }}
+    >
+      {virtualizer.getVirtualItems().map((virtualBlock) => {
+        const block = blocks[virtualBlock.index];
+        if (!block) return null;
+        const isLast = virtualBlock.index === blocks.length - 1;
+        return (
+          <div
+            key={block.id}
+            ref={virtualizer.measureElement}
+            data-index={virtualBlock.index}
+            data-markdown-block-id={block.id}
+            style={{
+              left: 0,
+              position: "absolute",
+              top: 0,
+
+              paddingBottom: isLast ? 0 : "1rem",
+              transform: `translateY(${virtualBlock.start - scrollMargin}px)`,
+              width: "100%",
+            }}
+          >
+            <Streamdown
+              mode="streaming"
+              parseIncompleteMarkdown={isStreaming && isLast}
+              isAnimating={isStreaming && isLast}
+              animated={STREAMDOWN_IMMEDIATE_UPDATES}
+              plugins={STREAMDOWN_PLUGINS}
+              components={
+                shouldVirtualizeCode(block)
+                  ? VIRTUALIZED_CODE_COMPONENTS
+                  : STREAMDOWN_COMPONENTS
+              }
+              urlTransform={safeMarkdownUrl}
+              controls={STREAMDOWN_CONTROLS}
+              shikiTheme={STREAMDOWN_SHIKI_THEME}
+              BlockComponent={StreamdownBlock}
+            >
+              {block.content}
+            </Streamdown>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+
 const MarkdownTextImpl = () => {
+
+  const layoutRef = useRef<HTMLDivElement>(null);
   const { text, status } = useMessagePartText();
   // Parts are keyed by index, so switching conversations hands this instance a
   // different message, and Streamdown only extends its parsed blocks: key it per
@@ -483,6 +924,19 @@ const MarkdownTextImpl = () => {
   const incrementalRender = isStreaming
     ? incrementalCache.update(processedText)
     : null;
+  const blocks = incrementalRender?.blocks ??
+    parseMarkdownIntoBlocks(processedText).map((content, index) => ({
+      id: index + 1,
+      content,
+    }));
+  const shouldVirtualize =
+    blocks.length >= VIRTUALIZE_AFTER_BLOCKS || blocks.some(shouldVirtualizeCode);
+
+  useLayoutEffect(() => {
+    layoutRef.current?.dispatchEvent(
+      new CustomEvent(MARKDOWN_LAYOUT_EVENT, { bubbles: true }),
+    );
+  }, [processedText, shouldVirtualize]);
 
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
@@ -490,23 +944,35 @@ const MarkdownTextImpl = () => {
   }
 
   return (
-    <div data-status={status.type} className="min-w-0 max-w-full">
-      <Streamdown
-        key={`${messageId}:${incrementalCache.renderGeneration}`}
-        mode="streaming"
-        parseIncompleteMarkdown={!incrementalRender}
-        parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-        isAnimating={isStreaming}
-        animated={STREAMDOWN_IMMEDIATE_UPDATES}
-        plugins={STREAMDOWN_PLUGINS}
-        components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeMarkdownUrl}
-        controls={STREAMDOWN_CONTROLS}
-        shikiTheme={STREAMDOWN_SHIKI_THEME}
-        BlockComponent={StreamdownBlock}
-      >
-        {incrementalRender?.markdown ?? processedText}
-      </Streamdown>
+    <div
+      ref={layoutRef}
+      data-status={status.type}
+      className="min-w-0 max-w-full"
+    >
+      {shouldVirtualize ? (
+        <VirtualizedMarkdown
+          blocks={blocks}
+          isStreaming={isStreaming}
+          messageId={messageId}
+        />
+      ) : (
+        <Streamdown
+          key={`${messageId}:${incrementalCache.renderGeneration}`}
+          mode="streaming"
+          parseIncompleteMarkdown={!incrementalRender}
+          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+          isAnimating={isStreaming}
+          animated={STREAMDOWN_IMMEDIATE_UPDATES}
+          plugins={STREAMDOWN_PLUGINS}
+          components={STREAMDOWN_COMPONENTS}
+          urlTransform={safeMarkdownUrl}
+          controls={STREAMDOWN_CONTROLS}
+          shikiTheme={STREAMDOWN_SHIKI_THEME}
+          BlockComponent={StreamdownBlock}
+        >
+          {incrementalRender?.markdown ?? processedText}
+        </Streamdown>
+      )}
     </div>
   );
 };

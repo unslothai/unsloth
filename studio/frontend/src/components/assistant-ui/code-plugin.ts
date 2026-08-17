@@ -88,6 +88,11 @@ type TokenLine = HighlightResult["tokens"][number];
 type ResultMeta = Omit<HighlightResult, "tokens">;
 type ThemeNames = { light: string; dark: string };
 type HighlightCallback = (result: HighlightResult) => void;
+
+
+export type StudioCodeHighlighterPlugin = CodeHighlighterPlugin & {
+  cancelHighlight: (callback: HighlightCallback) => void;
+};
 type Pending = { code: string; callbacks: Set<HighlightCallback> };
 
 type Fence = {
@@ -161,7 +166,7 @@ const shedsClosingRun = (shorter: string, longer: string): boolean =>
 
 export function createCodePlugin(
   options: CodePluginOptions = {},
-): CodeHighlighterPlugin {
+): StudioCodeHighlighterPlugin {
   const defaultThemes: [ThemeInput, ThemeInput] = options.themes ?? [
     "github-light",
     "github-dark",
@@ -410,6 +415,12 @@ export function createCodePlugin(
   return {
     name: "shiki",
     type: "code-highlighter",
+
+    cancelHighlight: (callback) => {
+      for (const fence of fences) {
+        fence.pending?.callbacks.delete(callback);
+      }
+    },
     getSupportedLanguages: () => SUPPORTED_LANGUAGE_LIST,
     getThemes: () => defaultThemes,
     supportsLanguage: (language) =>

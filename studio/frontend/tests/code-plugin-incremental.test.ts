@@ -605,3 +605,24 @@ test("a throttled multiline tail matches the previous plugin", async () => {
     ...expectedTail,
   ]);
 });
+
+
+test("a released highlight callback cannot update an unmounted fence", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  const options = {
+    code: "const released = true;\n",
+    language: "typescript" as HighlightOptions["language"],
+    themes: THEMES,
+  };
+  let releasedCallbackRan = false;
+  const releasedCallback = () => {
+    releasedCallbackRan = true;
+  };
+
+  plugin.highlight(options, releasedCallback);
+  plugin.cancelHighlight(releasedCallback);
+  await highlightOnce(plugin, options);
+  await Promise.resolve();
+
+  assert.equal(releasedCallbackRan, false);
+});

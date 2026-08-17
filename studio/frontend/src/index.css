@@ -2481,33 +2481,10 @@ html[data-chat-font] .aui-root {
 		border: 1px solid oklch(1 0 0 / 0.08);
 	}
 
-	/* Streamdown code-block stability hardening.
-	 *
-	 * Two streamdown internals cause a visible "reload"-style flicker on
-	 * trailing code blocks the moment streaming ends. Both are addressable
-	 * purely in CSS without patching the library:
-	 *
-	 * 1. `content-visibility: auto` + `contain-intrinsic-size: auto 200px`
-	 *    (set inline by streamdown's <ot> wrapper). The IntersectionObserver
-	 *    that gates content-visibility flips rendered height between the
-	 *    200px placeholder and the actual code-block height as the block
-	 *    sits near the viewport edge during stream finalization. The
-	 *    height jump is small but visible, and the rendering optimization
-	 *    is unnecessary for chat content (thread length is bounded). We
-	 *    force `visible` to keep the rendered height of code blocks fully
-	 *    determined by their actual content at all times.
-	 *
-	 * 2. `[data-sd-animate]` (`sd-fadeIn`, 150ms). Streamdown wraps each
-	 *    streaming text segment in a span carrying this attribute. When
-	 *    shiki re-renders the code body at stream end, those wrapper
-	 *    spans get re-keyed and the fade animation replays across the
-	 *    whole block at once — exactly the visual that reads as the chat
-	 *    area "reloading for a frame." We disable the animation only
-	 *    inside code blocks; prose token fade-in elsewhere is untouched. */
-	.aui-thread-root [data-streamdown="code-block"] {
-		content-visibility: visible !important;
-		contain-intrinsic-size: none !important;
-	}
+	/* Streamdown's animated wrapper is unnecessary inside highlighted code and
+	 * causes a full-block fade when Shiki publishes its final tokens. Long chat
+	 * replies now unmount offscreen Markdown blocks, so keep Streamdown's native
+	 * content-visibility behavior instead of forcing every code fence to paint. */
 	.aui-thread-root [data-streamdown="code-block"] [data-sd-animate] {
 		animation: none !important;
 	}

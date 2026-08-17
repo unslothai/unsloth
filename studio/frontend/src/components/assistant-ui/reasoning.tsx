@@ -5,7 +5,10 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MARKDOWN_LAYOUT_EVENT,
+  MarkdownText,
+} from "@/components/assistant-ui/markdown-text";
 import {
   Collapsible,
   CollapsibleContent,
@@ -224,23 +227,25 @@ function ReasoningText({
         shouldAutoScrollRef.current = false;
       }
     };
-    const observer = new MutationObserver(() => {
-      if (shouldAutoScrollRef.current) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
+    let scrollRaf: number | null = null;
+    const schedulePinnedScroll = () => {
+      if (!shouldAutoScrollRef.current || scrollRaf !== null) return;
+      scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = null;
+        if (shouldAutoScrollRef.current) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
+    };
     el.addEventListener("scroll", updateAutoScroll);
     el.addEventListener("wheel", handleWheel, { passive: true });
-    observer.observe(el, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
+    el.addEventListener(MARKDOWN_LAYOUT_EVENT, schedulePinnedScroll);
     lastScrollTopRef.current = el.scrollTop;
     detachedFromBottomRef.current = false;
     updateAutoScroll();
     return () => {
-      observer.disconnect();
+      if (scrollRaf !== null) cancelAnimationFrame(scrollRaf);
+      el.removeEventListener(MARKDOWN_LAYOUT_EVENT, schedulePinnedScroll);
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
     };

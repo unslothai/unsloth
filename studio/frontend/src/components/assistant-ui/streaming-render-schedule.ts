@@ -504,8 +504,14 @@ const hasNeutralRepairParity = (parity: RepairParity): boolean =>
     parity.inlineMath,
   ].includes(true);
 
+export type MarkdownBlockSnapshot = {
+  readonly id: number;
+  readonly content: string;
+};
+
 export type IncrementalMarkdownRender = {
   markdown: string;
+  blocks: readonly MarkdownBlockSnapshot[];
   parseMarkdownIntoBlocks: (markdown: string) => string[];
 };
 
@@ -637,7 +643,9 @@ function findCommitBoundary(
 export class IncrementalMarkdownCache {
   private source = "";
   private tail = "";
-  private committedBlocks: string[] = [];
+  private committedBlocks: MarkdownBlockSnapshot[] = [];
+  private liveBlocks: MarkdownBlockSnapshot[] = [];
+  private nextBlockId = 1;
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
@@ -646,9 +654,34 @@ export class IncrementalMarkdownCache {
   renderGeneration = 0;
 
   readonly parseMarkdownIntoBlocks = (markdown: string): string[] => [
-    ...this.committedBlocks,
+    ...this.committedBlocks.map((block) => block.content),
     ...parseMarkdownIntoBlocks(markdown),
   ];
+
+  private reconcileBlocks(
+    previous: readonly MarkdownBlockSnapshot[],
+    contents: readonly string[],
+  ): MarkdownBlockSnapshot[] {
+    const next: MarkdownBlockSnapshot[] = [];
+    for (let index = 0; index < contents.length; index += 1) {
+      const current = previous[index];
+      next.push(
+        current?.content === contents[index]
+          ? current
+          : { id: this.nextBlockId++, content: contents[index] },
+      );
+    }
+    return next;
+  }
+
+  private snapshot(markdown: string): readonly MarkdownBlockSnapshot[] {
+    this.liveBlocks = this.reconcileBlocks(
+      this.liveBlocks,
+      parseMarkdownIntoBlocks(markdown),
+    );
+    return [...this.committedBlocks, ...this.liveBlocks];
+  }
+
 
   // Streamdown memoises the whole component on the Markdown string and ignores
   // the parser callback, so the string is the only thing that can schedule a
@@ -660,7 +693,11 @@ export class IncrementalMarkdownCache {
     }
     this.droppedRetainedBlocks = false;
     this.lastMarkdown = markdown;
-    return { markdown, parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks };
+    return {
+      markdown,
+      blocks: this.snapshot(markdown),
+      parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
+    };
   }
 
   private resetIncrementalState(markdown: string): void {
@@ -668,6 +705,7 @@ export class IncrementalMarkdownCache {
     this.source = markdown;
     this.tail = markdown;
     this.committedBlocks = [];
+    this.liveBlocks = [];
     this.context = createRetainedContext();
   }
 
@@ -694,6 +732,7 @@ export class IncrementalMarkdownCache {
     if (markdown === this.source && this.lastMarkdown !== null) {
       return {
         markdown: this.lastMarkdown,
+        blocks: [...this.committedBlocks, ...this.liveBlocks],
         parseMarkdownIntoBlocks: this.parseMarkdownIntoBlocks,
       };
     }
@@ -754,7 +793,9 @@ export class IncrementalMarkdownCache {
       return this.render(repaired);
     }
 
-    this.committedBlocks.push(...blocks.slice(0, commit.count));
+    const describedBlocks = this.reconcileBlocks(this.liveBlocks, blocks);
+    this.committedBlocks.push(...describedBlocks.slice(0, commit.count));
+    this.liveBlocks = describedBlocks.slice(commit.count);
     this.context = nextContext;
     this.tail = nextTail;
 
