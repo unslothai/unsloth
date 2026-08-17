@@ -57,9 +57,7 @@ fn rendering_plan(
     }
 
     let is_appimage = env(APPIMAGE).is_some();
-    // libepoxy opens GLES by soname after startup, so it is invisible to the
-    // executable's dependency check. Without a usable host copy WebKit aborts;
-    // disabling DMA-BUF is the only tested path that still renders (#8343).
+    // libepoxy loads GLES at runtime; disabling DMA-BUF handles a missing copy (#8343).
     if is_appimage && !gles_usable {
         return RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf);
     }
@@ -85,9 +83,7 @@ fn rendering_plan(
     }
 
     let workaround = if is_appimage {
-        // FORCE_SHM keeps the web process alive on the affected Steam Deck but
-        // still reaches the failing epoxy path. The complete disable rendered
-        // there; retain FORCE_SHM for native packages where it is sufficient.
+        // FORCE_SHM still reaches the failing libepoxy path in AppImages.
         RenderingWorkaround::DisableDmabuf
     } else if supports_force_shared_memory(webkit_version) {
         RenderingWorkaround::ForceSharedMemory
@@ -100,8 +96,7 @@ fn rendering_plan(
 }
 
 fn gles_is_usable() -> bool {
-    // Test the same operation libepoxy performs instead of only looking for a
-    // filename: a present object with an unresolved dependency is equally unusable.
+    // Match libepoxy's runtime load, including unresolved dependencies.
     unsafe {
         let handle = libc::dlopen(GLES_V2.as_ptr().cast(), libc::RTLD_LAZY | libc::RTLD_LOCAL);
         if handle.is_null() {

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Launch a shipped AppImage against a deterministic desktop backend fixture.
-
-This deliberately does not install host GTK, WebKitGTK, JavaScriptCore, or an
-AppIndicator implementation. Reaching desktop auth proves that the packaged
-webview rendered and ran its startup JavaScript, not merely that AppRun stayed
-alive.
-"""
+"""Reach desktop auth without a host GTK or WebKit runtime."""
 
 from __future__ import annotations
 
@@ -52,9 +46,7 @@ def _write_fixture(art_dir: Path, home: Path, version: str) -> Path:
             import sys
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-            # The app spawns this fixture, so it must die with the app. An
-            # orphan keeps the port bound and the next launch attaches to it
-            # instead of starting its own backend.
+            # Do not leave the fixture bound after the app exits.
             ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
             if os.getppid() == 1:
                 raise SystemExit(0)

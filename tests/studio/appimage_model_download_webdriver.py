@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drive the packaged Linux AppImage through its real WebKitGTK webview.
-
-The backend is deterministic and serves no model bytes. The assertion is the
-historical Linux Mint failure boundary: selecting a GGUF in the packaged model
-picker must send POST /api/hub/download, paint progress, and send the cancel
-request. A live window alone cannot prove that the bundled WebKit network
-process works.
-"""
+"""Exercise model download and cancellation through the packaged WebKitGTK view."""
 
 from __future__ import annotations
 
@@ -124,9 +117,7 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
             from urllib.parse import parse_qs, urlparse
 
-            # The app spawns this fixture, so it must die with the app. An
-            # orphan keeps the port bound and the next launch attaches to it
-            # instead of starting its own backend.
+            # Do not leave the fixture bound after the app exits.
             ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
             if os.getppid() == 1:
                 raise SystemExit(0)
@@ -592,10 +583,7 @@ def main() -> None:
             timeout = 15,
         )
 
-        # WebKit builds its media support from the GStreamer registry it can
-        # actually load. A bundle whose core rejects every plugin still renders
-        # and downloads, and silently plays nothing: no gallery video, no
-        # dictation capture. The gallery writes H.264 MP4.
+        # Verify the packaged WebKit view exposes the required media formats.
         media = json.loads(
             _execute(
                 base,

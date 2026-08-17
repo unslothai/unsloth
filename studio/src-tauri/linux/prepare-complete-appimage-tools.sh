@@ -35,30 +35,21 @@ fetch "$GTK_PLUGIN_URL" "$GTK_PLUGIN_SHA256" linuxdeploy-plugin-gtk.sh
 fetch "$GSTREAMER_PLUGIN_URL" "$GSTREAMER_PLUGIN_SHA256" linuxdeploy-plugin-gstreamer.sh
 fetch "$APPIMAGE_PLUGIN_URL" "$APPIMAGE_PLUGIN_SHA256" linuxdeploy-plugin-appimage.AppImage
 
-# Replace Tauri's legacy AppRun before bundling: that binary globally prepends
-# the AppDir to LD_LIBRARY_PATH and recreates #7953. linuxdeploy wraps this
-# launcher with its generated GTK hook runner.
+# Replace Tauri's global LD_LIBRARY_PATH launcher to avoid #7953.
 install -m 755 "$script_dir/appimage-apprun.sh" "$tools_dir/AppRun-x86_64"
 
-# Harden the AppDir from the GTK plugin's final build-time hook. It runs after
-# GTK has deployed its dependency closure and before the output plugin packages
-# the generated AppRun.
+# Run the finalizer after the GTK plugin deploys its dependencies.
 install -m 755 \
   "$script_dir/finalize-complete-appimage.sh" \
   "$tools_dir/finalize-complete-appimage.sh"
 
 
-# The pinned GTK plugin predates the repaired Wayland runtime boundary and
-# unconditionally forces X11. Let GTK follow the session (or an explicit
-# GDK_BACKEND) so the same artifact can run natively on Wayland and under X11.
+# Let GTK select X11 or Wayland instead of forcing X11.
 sed -i '/export GDK_BACKEND=x11/d' "$tools_dir/linuxdeploy-plugin-gtk.sh"
 
-# Correct the GTK plugin's generated AppRun hook. Every host module search path
-# it leaves behind is a path by which a newer host GLib/GTK object can be loaded
-# into the bundled Ubuntu 22.04 runtime, which is the #7953 failure mode.
+# Remove host module paths from the generated AppRun hook (#7953).
 cat >> "$tools_dir/linuxdeploy-plugin-gtk.sh" <<'SH'
-# APPIMAGE_EXTRACT_AND_RUN can pass a relative APPDIR. Canonicalize it before
-# the generated hook derives WebKit helper and GTK data paths from that value.
+# Canonicalize the relative APPDIR used by APPIMAGE_EXTRACT_AND_RUN.
 sed -i '2i\
 case "${APPDIR:-}" in\
   /*) ;;\
@@ -67,20 +58,14 @@ esac\
 export APPDIR
 ' "$HOOKFILE"
 
-# The plugin copies every libgiognutls.so found under /usr/lib*, so a multilib
-# build host also contributes an i386 module. The x86-64 process rejects it with
-# "wrong ELF class: ELFCLASS32" and then has no TLS backend at all.
+# Remove foreign-architecture GIO modules copied from multilib hosts.
 while IFS= read -r -d '' gio_module; do
   machine="$(LC_ALL=C readelf -h "$gio_module" 2>/dev/null |
     sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
   [[ "$machine" == "Advanced Micro Devices X86-64" ]] || rm -f "$gio_module"
 done < <(find "$APPDIR"/usr/lib* -path '*/gio/modules/*' -type f -print0)
 
-# GIO_EXTRA_MODULES is additive, so inherited host entries must be removed.
-# Pin the default module directory to the bundled modules; otherwise host proxy
-# and dconf modules can be loaded into the bundled GLib process. Resolve it from
-# the modules that survived the architecture sweep rather than from directory
-# order, which selected the i386 directory on a multilib build host.
+# Pin GIO to the bundled modules that survived the architecture sweep.
 mapfile -t gio_module_dirs < <(
   find "$APPDIR"/usr/lib* -path '*/gio/modules/*' -type f -printf '%h\n' | sort -u
 )
@@ -94,9 +79,7 @@ unset GIO_EXTRA_MODULES
 export GIO_MODULE_DIR="\$APPDIR/${gio_module_dirs[0]#"$APPDIR"/}"
 EOF
 
-# The plugin appends the host GTK module directories to GTK_PATH. A session that
-# sets GTK_MODULES then dlopens a host module (KDE's colorreload, Mint's xapp,
-# canberra) into the bundled GTK, mixing two GTK/GLib builds in one process.
+# Pin GTK_PATH so GTK_MODULES cannot load host modules into bundled GTK.
 mapfile -t gtk_module_dirs < <(
   find "$APPDIR"/usr/lib* -maxdepth 2 -type d -name 'gtk-[0-9]*' | sort -u
 )
@@ -109,19 +92,14 @@ cat >> "$HOOKFILE" <<EOF
 export GTK_PATH="\$APPDIR/${gtk_module_dirs[0]#"$APPDIR"/}"
 EOF
 
-# Tauri writes .DirIcon as an absolute build-machine symlink, so it dangles on
-# every user's machine and desktop integration shows no icon. Relink relative.
-# Tauri points it at "$APPDIR/<product>.png", so the basename is the whole fix.
+# Replace Tauri's build-machine .DirIcon target with a relative link.
 dir_icon_target="$(readlink "$APPDIR/.DirIcon" 2>/dev/null || true)"
 if [[ "$dir_icon_target" == /* ]]; then
   ln -sfn "${dir_icon_target##*/}" "$APPDIR/.DirIcon"
 fi
 SH
 
-# Harden the AppDir from the last input plugin to run. linuxdeploy gives no
-# ordering guarantee between plugins and each one deploys a new dependency
-# closure, so the idempotent finalizer is appended to all of them: the last run
-# is the one that decides what ships.
+# Append the idempotent finalizer because linuxdeploy does not guarantee plugin order.
 for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh; do
   cat >> "$tools_dir/$plugin" <<'SH'
 

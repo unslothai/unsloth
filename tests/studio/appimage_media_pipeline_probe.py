@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decode H.264 with the AppImage's own GStreamer, on the host under test.
-
-`canPlayType` and a plugin's presence on disk both stop short of the thing that
-breaks: a bundled plugin whose host dependency is missing loads as nothing, and
-WebKit answers `maybe` anyway because another decoder covers the same type. This
-builds the pipeline by element name, so a plugin that cannot load is a missing
-element, and then requires real decoded frames rather than end of stream.
-"""
+"""Decode H.264 frames with the AppImage's GStreamer on the target host."""
 
 from __future__ import annotations
 
@@ -26,8 +19,7 @@ GST_STATE_NULL, GST_STATE_PLAYING = 1, 4
 GST_MESSAGE_EOS, GST_MESSAGE_ERROR = 1 << 0, 1 << 11
 EXPORT = re.compile(r'^export ([A-Z0-9_]+)="([^"]*)"$')
 
-# The video gallery writes H.264 and the galleries play WebM, Ogg and WAV, so
-# each of those has to be reachable by name.
+# Cover the formats used by the media galleries.
 REQUIRED_ELEMENTS = (
     "playbin",
     "decodebin",
@@ -39,8 +31,7 @@ REQUIRED_ELEMENTS = (
     "opusdec",
     "wavparse",
 )
-# Dictation needs a capture source, but which one is the host's business: a
-# machine with no PulseAudio still records through ALSA.
+# Dictation may use either host audio stack.
 CAPTURE_ELEMENTS = ("pulsesrc", "alsasrc")
 
 

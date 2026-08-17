@@ -12,10 +12,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
-// The complete AppImage's library path belongs only to its GTK/WebKit GUI.
-// Never leak AppDir entries—or activated Python overrides—into the managed
-// host Python environment. Caller-provided host paths remain available for
-// CUDA and private runtime discovery.
+// Keep AppImage GUI paths and Python overrides out of managed host Python.
 #[cfg(target_os = "linux")]
 fn scrub_appimage_library_path() -> Option<std::ffi::OsString> {
     let appdir = std::env::var_os("APPDIR")?;
@@ -58,10 +55,7 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     }
 }
 
-// A host launcher hands the target to a host browser or file manager, so it
-// must not inherit the bundle's GUI runtime: the host's own GLib/GTK binaries
-// fail to load against Ubuntu 22.04 copies. Bundled tools stay reachable as a
-// fallback because the AppDir PATH entries are demoted rather than dropped.
+// Restore a host-safe environment before launching browsers and file managers.
 #[cfg(target_os = "linux")]
 const APPIMAGE_GUI_ONLY_VARS: &[&str] = &[
     "GIO_MODULE_DIR",
@@ -112,7 +106,7 @@ fn scrub_appimage_launcher_env(cmd: &mut Command) {
     cmd.env_remove("PYTHONPATH");
 }
 
-/// `open::that_detached`, with the launcher handed a host environment.
+/// Open a target detached with a host-safe environment.
 #[cfg(target_os = "linux")]
 pub(crate) fn open_detached(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
     let mut last_error = None;
@@ -1622,10 +1616,7 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
 /// the Windows tree still disqualifies a *home*, but a child already running from
 /// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
 ///
-/// The AppImage AppRun runs the app from `$APPDIR/usr`, because the bundled
-/// WebKitGTK resolves its helper processes relative to that directory. That
-/// mount is read-only and is unmounted when the app exits, so a managed child
-/// must not inherit it as a working directory.
+/// Managed children must not inherit the AppImage's read-only `$APPDIR/usr` directory.
 fn is_unusable_cwd(
     path: &std::path::Path,
     windirs: &[std::path::PathBuf],

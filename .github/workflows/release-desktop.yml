@@ -557,9 +557,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf xdg-utils
-          # The AppImage carries the GStreamer plugins WebKit plays media with,
-          # and it can only carry what is installed here. The video gallery
-          # writes H.264 MP4, which needs the parsers and the libav decoder.
+          # Install the GStreamer plugins needed for H.264 playback and capture.
           sudo apt-get install -y gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav
 
       # ── Node.js ──
@@ -616,10 +614,7 @@ jobs:
           if (config.bundle?.linux?.rpm) {
             throw new Error('bundle.linux.rpm must not be configured');
           }
-          // WebKitGTK plays audio and video, and captures the microphone,
-          // through GStreamer. The bundle carries the GStreamer core libraries
-          // as WebKit dependencies, and that core refuses host plugins built
-          // for another 1.x release, so the plugins have to ship with it.
+          // The media plugins must match the bundled GStreamer core.
           if (config.bundle?.linux?.appimage?.bundleMediaFramework !== true) {
             throw new Error('Linux AppImage bundleMediaFramework must stay true');
           }

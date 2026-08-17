@@ -34,8 +34,7 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert appimage["bundleMediaFramework"] is True
     assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith("/libappindicator3.so.1")
 
-    # linuxdeploy can only bundle the GStreamer plugins the builder installed,
-    # and the bundled core rejects host plugins from another 1.x release.
+    # Require plugins compatible with the bundled GStreamer core.
     dependencies = _step("Install Linux dependencies")["run"]
     for package in ("gstreamer1.0-plugins-good", "gstreamer1.0-plugins-bad", "gstreamer1.0-libav"):
         assert package in dependencies
@@ -127,8 +126,7 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     assert no_gles["install_gles"] is False
     assert "libGLESv2.so.2" in source
 
-    # A bundled plugin whose host dependency is absent loads as nothing, which
-    # only the host it runs on can show.
+    # Probe plugin loadability on every target host.
     assert "appimage_media_pipeline_probe.py" in source
 
     linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
@@ -142,8 +140,7 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     ):
         assert package in linux_source
         assert package in webdriver_source
-    # The bundled media plugins reach the host's audio stack, so the lane that
-    # asserts media support has to provide it.
+    # Provide the host audio libraries used by bundled media plugins.
     for package in ("libasound2", "libpulse0"):
         assert package in webdriver_source
 
@@ -207,14 +204,11 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
 
     assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
-    # The plugin copies every libgiognutls.so under /usr/lib*, and appends the
-    # host GTK module directories to GTK_PATH. Both hand the bundled runtime a
-    # foreign object to load, so both are corrected before the plugin runs.
+    # Keep foreign GIO and GTK modules out of the bundled runtime.
     assert "-path '*/gio/modules/*' -type f -print0" in tool_script
     assert 'export GTK_PATH="\\$APPDIR/' in tool_script
 
-    # linuxdeploy does not promise a plugin order, and each plugin deploys its
-    # own dependency closure, so the finalizer runs from every one of them.
+    # Run the finalizer regardless of linuxdeploy plugin order.
     assert tool_script.count('"$plugin_dir/finalize-complete-appimage.sh" "$APPDIR"') == 1
     assert "for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh" in tool_script
 
@@ -453,7 +447,7 @@ def test_managed_appimage_children_preserve_host_library_paths():
     assert 'cmd.env_remove("PYTHONHOME")' in process_source
     assert 'cmd.env_remove("PYTHONPATH")' in process_source
 
-    # One cleanup each for std managed children, Tokio managed children, and host launchers.
+    # Cover std children, Tokio children, and host launchers.
     production_source = process_source.split('#[cfg(all(test, target_os = "linux"))]', 1)[0]
     assert production_source.count("for name in APPIMAGE_GUI_ONLY_VARS") == 3
     for source_path, (call, expected) in child_process_calls.items():

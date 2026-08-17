@@ -565,8 +565,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
-  # Build the checked-out PR once without signing or release credentials. Every
-  # PR artifact test below consumes this exact file, including fork PRs.
+  # Build the PR AppImage once for every artifact test below.
   appimage-pr-build:
     if: github.event_name == 'pull_request'
     name: Build PR AppImage
@@ -640,8 +639,7 @@ jobs:
           if-no-files-found: error
 
 
-  # Complete AppImage portability is separate from the native .deb lane above:
-  # these images deliberately have no host GTK/WebKitGTK/JavaScriptCore/AppIndicator.
+  # These images deliberately omit host GTK, WebKitGTK, and AppIndicator.
   appimage-portability:
     needs: appimage-pr-build
     if: >-
@@ -797,8 +795,7 @@ jobs:
         run: |
           set -euo pipefail
           studio/src-tauri/linux/verify-complete-appimage.sh "$APPIMAGE_PATH"
-          # Whether a bundled plugin can load depends on the host it runs on, so
-          # this belongs in the per-host matrix rather than in the build check.
+          # Check bundled plugin loadability on each target host.
           python3 tests/studio/appimage_media_pipeline_probe.py
           python3 tests/studio/appimage_portability_smoke.py
 
@@ -812,9 +809,7 @@ jobs:
           if-no-files-found: warn
 
 
-  # WebDriver needs the host's driver package. PR runs consume the same unsigned
-  # branch-built AppImage as the portability matrix; other events test the shipped artifact.
-  # a rendered window is not enough unless WebKit can start and cancel a model download.
+  # WebDriver uses the same PR artifact to exercise a real model download request.
   appimage-model-download:
     needs: appimage-pr-build
     if: >-

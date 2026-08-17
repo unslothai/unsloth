@@ -17,10 +17,7 @@ libdir="$appdir/usr/lib"
 [[ -d "$libdir" ]] || { echo "AppDir has no usr/lib: $appdir" >&2; exit 1; }
 command -v patchelf >/dev/null || { echo "patchelf is required" >&2; exit 1; }
 
-# These libraries cross into a running host service, driver, or a host module
-# loaded later by WebKit. They must remain one coherent host-side closure. This
-# is intentionally a final sweep rather than a linuxdeploy discovery exclusion:
-# input plugins can add dependencies after linuxdeploy's initial closure pass.
+# Remove host-coupled libraries after all input plugins deploy their dependencies.
 host_patterns=(
   'ld-linux*.so*' 'libc.so*' 'libm.so*' 'libdl.so*' 'libpthread.so*'
   'librt.so*' 'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*'
@@ -31,10 +28,7 @@ host_patterns=(
   'libXrender.so*' 'libXcomposite.so*' 'libXdamage.so*'
   'libXinerama.so*' 'libXau.so*' 'libXdmcp.so*' 'libxshmfence.so*'
   'libwayland-*.so*' 'libasound.so*' 'libpulse*.so*'
-  # libva and libvdpau stay bundled on purpose: they are dispatchers that pick
-  # a host driver at runtime and degrade to software decoding when it does not
-  # match, while removing them makes libgstlibav unloadable on a host that has
-  # no VA-API at all.
+  # Keep libva and libvdpau so libgstlibav can load without host VA-API.
   'libnvidia-*.so*'
   'libstdc++.so*' 'libgcc_s.so*' 'libnghttp2.so*' 'libcurl*.so*'
 )
@@ -44,10 +38,7 @@ for pattern in "${host_patterns[@]}"; do
   done < <(find "$appdir" \( -type f -o -type l \) -name "$pattern" -print0)
 done
 
-# AppRun deliberately exports no AppDir-wide loader path. Give every dynamic ELF
-# a path to the one private library directory relative to its own location. A
-# dlopened host object then resolves through its own metadata and ld.so.cache,
-# instead of inheriting a global Ubuntu-build-host directory (#7953).
+# Use $ORIGIN RUNPATHs so host objects do not inherit bundled libraries (#7953).
 patched=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue

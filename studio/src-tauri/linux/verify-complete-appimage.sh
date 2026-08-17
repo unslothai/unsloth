@@ -54,9 +54,7 @@ if ! grep -Rqs 'unset[[:space:]]\+GIO_EXTRA_MODULES' \
   exit 1
 fi
 
-# Every module search path the hooks leave in place is a way for a host GLib,
-# GTK, or GIO object to be dlopened into the bundled Ubuntu 22.04 runtime. The
-# GTK plugin lists the host module directories in GTK_PATH by default.
+# Require module search paths to stay inside the AppDir.
 for module_path in GTK_PATH GIO_MODULE_DIR; do
   value="$(grep -hs "^export ${module_path}=" "$appdir/apprun-hooks"/* 2>/dev/null |
     tail -1 | sed "s/^export ${module_path}=//; s/^\"//; s/\"$//")"
@@ -75,8 +73,7 @@ for module_path in GTK_PATH GIO_MODULE_DIR; do
     esac
   done
 done
-# Desktop integration reads .DirIcon, so an absolute build-machine symlink
-# there ships an iconless launcher.
+# Reject Tauri's absolute build-machine .DirIcon link.
 [[ -e "$appdir/.DirIcon" ]] || { echo "Complete AppImage has no resolvable .DirIcon" >&2; exit 1; }
 case "$(readlink "$appdir/.DirIcon" 2>/dev/null)" in
   /*) echo "Complete AppImage pins .DirIcon to a build-machine path" >&2; exit 1 ;;
@@ -112,20 +109,14 @@ for component in \
   require_basename "$component"
 done
 
-# The bundled GStreamer core rejects a host plugin built for another 1.x
-# release, so WebKit gets no media pipeline at all unless the plugins ship with
-# it: no <video>, no <audio>, and no microphone capture.
+# Require the media plugins that must match the bundled GStreamer core.
 gst_plugin_count="$(find "$appdir/usr/lib/gstreamer-1.0" -maxdepth 1 -type f -name '*.so' 2>/dev/null | wc -l)"
 if [[ "$gst_plugin_count" -lt 50 ]]; then
   echo "Complete AppImage bundles only $gst_plugin_count GStreamer plugins" >&2
   exit 1
 fi
 
-# The bundle owns one coherent userspace web runtime, but the loader and
-# libraries coupled to host services, drivers, display servers, or later-loaded
-# host modules must stay host-owned. The finalizer removes them after all input
-# plugins, and this list prevents any future plugin from silently reintroducing
-# one.
+# Reject libraries that must remain part of the host runtime.
 for forbidden in \
   'ld-linux*.so*' 'libc.so*' 'libpthread.so*' 'libm.so*' 'libdl.so*' 'librt.so*' \
   'libresolv.so*' 'libnss_*.so*' 'libutil.so*' 'libanl.so*' \
@@ -147,9 +138,7 @@ dynamic_count=0
 runpath_failures=0
 while IFS= read -r -d '' object; do
   [[ "$(head -c 4 "$object" 2>/dev/null || true)" == $'\177ELF' ]] || continue
-  # A build host with foreign-architecture packages installed can contribute an
-  # object the target process cannot load ("wrong ELF class: ELFCLASS32"), and
-  # checking only the main executable does not see it.
+  # Reject foreign-architecture objects copied from multilib hosts.
   object_machine="$(readelf -h "$object" 2>/dev/null |
     sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
   if [[ "$object_machine" != "Advanced Micro Devices X86-64" ]]; then
