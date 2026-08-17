@@ -208,6 +208,17 @@ async def one_case(page, case: str) -> dict:
         # press itself is a normal length and only the main thread is late.
         await page.evaluate(BLOCK_JS, HOLD_MS)
         await page.mouse.up()
+    elif case == "held_modifier":
+        # Press, then press a modifier while still held, then release. Modifiers get pressed
+        # mid-gesture constantly. A guard that treats any keydown as "the user moved on" disarms
+        # here, and the release still synthesises the click, so the press lands on Delete.
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.wait_for_timeout(120)
+        await page.keyboard.down("Shift")
+        await page.wait_for_timeout(120)
+        await page.mouse.up()
+        await page.keyboard.up("Shift")
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case == "select":
@@ -359,7 +370,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

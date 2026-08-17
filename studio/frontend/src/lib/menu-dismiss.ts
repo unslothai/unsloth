@@ -91,9 +91,23 @@ let graceTimer: number | undefined;
  * a mouse, but for touch it defers to the resulting `click`, which the swallow below denies it.
  */
 let armedByTouch = false;
+/**
+ * Whether the gesture that armed the guard is still pressed. A keydown only means "the user has
+ * moved on" once the pointer is up; while it is still down, releasing over the same element will
+ * still synthesise the click the guard exists to eat.
+ */
+let pointerIsDown = false;
 
 /** How long after the pointer is RELEASED a click may still arrive. */
 const CLICK_GRACE_MS = 500;
+
+const disarmOnKey = (): void => {
+  // Shift, Ctrl and friends get pressed mid-gesture constantly. Disarming on one while the button
+  // is still held meant a press on the unconfirmed "Delete message" button, then a modifier, then
+  // a release, deleted the message: measured on chromium, and safe once this returns early.
+  if (pointerIsDown) return;
+  disarm();
+};
 
 const disarm = (): void => {
   if (graceTimer !== undefined) {
@@ -102,14 +116,16 @@ const disarm = (): void => {
   }
   if (!armed) return;
   armed = false;
+  pointerIsDown = false;
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
   document.removeEventListener("pointercancel", disarm, true);
-  document.removeEventListener("keydown", disarm, true);
+  document.removeEventListener("keydown", disarmOnKey, true);
   window.removeEventListener("blur", disarm);
 };
 
 function startGrace(): void {
+  pointerIsDown = false;
   if (graceTimer !== undefined) window.clearTimeout(graceTimer);
   graceTimer = window.setTimeout(disarm, CLICK_GRACE_MS);
 }
@@ -144,13 +160,14 @@ const arm = (touch: boolean): void => {
   if (armed) return;
   armed = true;
   armedByTouch = touch;
+  pointerIsDown = true;
   // Capture, so this runs before React's root-container delegation reaches any control.
   document.addEventListener("click", swallowClick, true);
   // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
   // one: bound it at release, and drop it outright on a cancel, a key, or losing the window.
   document.addEventListener("pointerup", startGrace, true);
   document.addEventListener("pointercancel", disarm, true);
-  document.addEventListener("keydown", disarm, true);
+  document.addEventListener("keydown", disarmOnKey, true);
   window.addEventListener("blur", disarm);
 };
 
