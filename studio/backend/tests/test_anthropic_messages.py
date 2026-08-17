@@ -150,8 +150,9 @@ class TestToolActionNudge:
             model_name = "Llama-3.1-70B-Instruct",
         )
 
-        assert nudge.startswith("The current date is ")
-        assert "Tools are available when they materially improve" in nudge
+        # the date rides on the system prompt now, not the nudge.
+        assert "The current date is " not in nudge
+        assert nudge.startswith("Tools are available when they materially improve")
         assert "prefer using tools rather than answering from memory" not in nudge
         assert "fetch its full content by calling web_search with the url parameter" in nudge
         assert "Use code execution for math" in nudge
@@ -1513,6 +1514,10 @@ def _mock_backend(monkeypatch, **overrides):
     """
     import routes.inference as inf_mod
 
+    # Pinned off by default so prompt assertions do not depend on the host's stored setting;
+    # the date's own behaviour on this route is covered in test_current_date_prompt_settings.
+    monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda: "")
+
     calls = []
 
     def _gen_plain(**kwargs):
@@ -1588,6 +1593,24 @@ class TestAnthropicMessagesToolRouting:
             return chunks
 
         return _drive(_consume())
+
+    def test_plain_non_streaming_states_the_current_date(self, monkeypatch):
+        # /v1/messages used to get the date from the tool nudge; it now rides the system turn,
+        # so this route needs its own coverage or the date silently disappears from it.
+        import routes.inference as inf_mod
+
+        backend = _mock_backend(monkeypatch, context_length = 2048)
+        monkeypatch.setattr(
+            inf_mod, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+        )
+
+        _drive(anthropic_messages(_basic_payload(), request = self._Request(), current_subject = "t"))
+
+        [(_path, kwargs)] = backend.calls
+        assert kwargs["messages"][0] == {
+            "role": "system",
+            "content": "The current date is 2026-08-15.",
+        }
 
     def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
