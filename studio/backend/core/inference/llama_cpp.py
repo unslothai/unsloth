@@ -1840,8 +1840,7 @@ def _with_gguf_load_marker(load: Callable):
                 # then write into the shared Hub cache next to a running download job,
                 # which is the race this check exists to stop.
                 require_mmproj = bool(
-                    intent.is_vision
-                    and not extra_args_disable_mmproj(intent.extra_args)
+                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
                 ),
                 hf_token = intent.hf_token,
             ):

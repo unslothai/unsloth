@@ -607,11 +607,21 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
 
     seen = {}
 
-    def fake_blocks(repo, variant, *, require_mmproj, hf_token = None):
+    def fake_blocks(
+        repo,
+        variant,
+        *,
+        require_mmproj,
+        hf_token = None,
+    ):
         seen["require_mmproj"] = require_mmproj
         return False
 
-    def inner(self, intent, load_cancel_event = None):
+    def inner(
+        self,
+        intent,
+        load_cancel_event = None,
+    ):
         return True
 
     def _run(**intent_kwargs):
@@ -628,9 +638,7 @@ def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
         )
         return seen["require_mmproj"]
 
-    with patch(
-        "core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks
-    ):
+    with patch("core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks):
         # Vision off still downloads, so the interlock still applies.
         assert _run(disable_vision = True) is True
         assert _run(disable_vision = False) is True
@@ -784,9 +792,7 @@ def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
     )
 
 
-def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_switch(
-    tmp_path,
-):
+def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_switch(tmp_path):
     """vision_disabled_by_user drives the composer's "you turned it off" message. With
     --no-mmproj in the extras the projector is suppressed by the ARGUMENT, resolution
     is skipped so nothing reads the file and the capability default stays True, and
@@ -794,9 +800,7 @@ def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_swit
     restore while the argument still applies."""
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
 
-    _launch(
-        backend, gguf, disable_vision = True, extra_args = ["--no-mmproj"]
-    )
+    _launch(backend, gguf, disable_vision = True, extra_args = ["--no-mmproj"])
 
     assert backend._disable_vision is True
     assert backend._vision_disabled_by_user is False
