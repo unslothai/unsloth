@@ -75,7 +75,8 @@ def expand(page) -> None:
     if n:
         page.wait_for_function(
             "(k) => window.__heavyThread.counts().collapsibleOutputs >= k",
-            arg = n, timeout = 600_000,
+            arg = n,
+            timeout = 600_000,
         )
 
 
@@ -110,7 +111,6 @@ def before_jump(page):
     return page.evaluate(hv.JUMP_JS, SETTLE)
 
 
-
 def before_hover_only(page):
     """Hover the last assistant message and DO NOT open the menu.
 
@@ -120,7 +120,6 @@ def before_hover_only(page):
     """
     hover_last(page)
     return {"hovered": True}
-
 
 
 def park_pointer_in_gutter(page) -> dict:
@@ -224,12 +223,21 @@ def before_menu_keystroke(page):
 ARMS = [
     ("nothing", before_nothing, "control: the harness's repetition one"),
     ("keystroke", before_keystroke, "5 characters into the composer, then scroll"),
-    ("hover_only", before_hover_only,
-     "hover the last assistant message to reveal its action bar, then scroll"),
-    ("gutter_only", before_gutter_only,
-     "no hover, pointer parked on the scroller gutter, then scroll"),
-    ("hover_then_gutter", before_hover_then_gutter,
-     "hover a message, then park the pointer on the gutter, then scroll"),
+    (
+        "hover_only",
+        before_hover_only,
+        "hover the last assistant message to reveal its action bar, then scroll",
+    ),
+    (
+        "gutter_only",
+        before_gutter_only,
+        "no hover, pointer parked on the scroller gutter, then scroll",
+    ),
+    (
+        "hover_then_gutter",
+        before_hover_then_gutter,
+        "hover a message, then park the pointer on the gutter, then scroll",
+    ),
     ("menu", before_menu, "open and close the message action menu, then scroll"),
     ("reopen", before_reopen, "leave and re-enter the thread, then scroll"),
     (
@@ -276,13 +284,12 @@ def main() -> int:
                 cdp = ctx.new_cdp_session(page)
                 try:
                     page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
-                    page.wait_for_function(
-                        "() => Boolean(window.__heavyThread)", timeout = 180_000
-                    )
+                    page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 180_000)
                     plan = page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
                     page.wait_for_function(
                         "(n) => window.__heavyThread.messageCount() >= n",
-                        arg = plan["messages"], timeout = 1_200_000,
+                        arg = plan["messages"],
+                        timeout = 1_200_000,
                     )
                     expand(page)
                     settled(page)
@@ -316,7 +323,10 @@ def main() -> int:
                         page.evaluate(install_boundary_counter)
                         rows.append(
                             hv.run_action(
-                                page, cdp, "scroll", hv.SCROLL_JS,
+                                page,
+                                cdp,
+                                "scroll",
+                                hv.SCROLL_JS,
                                 [hv.SCROLL_STEPS, hv.SCROLL_STEP_PX, SETTLE],
                             )
                         )
