@@ -1831,8 +1831,15 @@ def _with_gguf_load_marker(load: Callable):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
+                # A load that opens no projector does not need one cached to be
+                # reusable: demanding it rejects the request while another variant of
+                # the repo downloads, over a file this load was never going to read.
+                # The switch is the only signal available here, since a remote
+                # projector is not on disk yet to be asked what it can encode.
                 require_mmproj = bool(
-                    intent.is_vision and not extra_args_disable_mmproj(intent.extra_args)
+                    intent.is_vision
+                    and not intent.disable_vision
+                    and not extra_args_disable_mmproj(intent.extra_args)
                 ),
                 hf_token = intent.hf_token,
             ):

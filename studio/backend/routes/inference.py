@@ -6501,7 +6501,28 @@ def _estimate_gguf_required_gb(
         # the file is never opened and the guard must not refuse a chat load over
         # bytes it provably does not take. A constrained machine is exactly where the
         # switch gets used and exactly where this guard bites.
-        _sized_attrs = [] if disable_vision else ["gguf_mmproj_file"]
+        # The switch turns VISION off, though, and the loader keeps an AUDIO-ONLY
+        # projector loaded despite it (there is no image tower to drop). So ask the
+        # same question the loader asks, on the same file, rather than assuming the
+        # switch always means no projector: dropping the bytes of one that does get
+        # opened would let this guard admit a load the running training job cannot
+        # afford. Locally the file is on disk, so the answer is readable here.
+        _sized_attrs = ["gguf_mmproj_file"]
+        if disable_vision:
+            _dv_mmproj = getattr(config, "gguf_mmproj_file", None)
+            _dv_opens_projector = False
+            if _dv_mmproj:
+                try:
+                    from utils.models.gguf_metadata import mmproj_accepts_image
+
+                    # Kept for audio, so its bytes stay charged. An unreadable file
+                    # reads as image-capable upstream, hence suppressed and uncharged,
+                    # which matches what the loader will then do with it.
+                    _dv_opens_projector = not mmproj_accepts_image(str(_dv_mmproj))
+                except Exception as _dv_exc:
+                    logger.debug(f"mmproj capability read failed: {_dv_exc}")
+            if not _dv_opens_projector:
+                _sized_attrs = []
         if not _charge_no_drafter:
             if dspark_requested:
                 _sized_attrs.append("gguf_dspark_file")

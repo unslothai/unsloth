@@ -558,3 +558,72 @@ def test_an_audio_only_projector_does_not_blame_the_switch_for_images(tmp_path):
 
     assert backend._disable_vision is True
     assert backend._vision_disabled_by_user is False
+
+
+def test_the_training_guard_still_charges_an_audio_only_projector(tmp_path):
+    """The switch turns vision off, and the loader keeps an audio-only projector
+    anyway because there is no image tower to drop. Dropping its bytes here would
+    let the guard admit a chat load the running training job cannot afford, which
+    is the direction that costs someone else's job rather than merely annoying
+    this user."""
+    import utils.models.gguf_metadata as _meta
+
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"\x00" * (4 * MIB))
+    mmproj = tmp_path / "mmproj-F16.gguf"
+    mmproj.write_bytes(b"\x00" * (1 * MIB))
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = str(mmproj),
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = True,
+    )
+
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: False):
+        audio_only = _estimate_gguf_required_gb(config, disable_vision = True)
+    with patch.object(_meta, "mmproj_accepts_image", lambda _p: True):
+        vision = _estimate_gguf_required_gb(config, disable_vision = True)
+    charged = _estimate_gguf_required_gb(config)
+
+    assert audio_only is not None and vision is not None and charged is not None
+    # Kept for audio, so it is charged exactly as an enabled projector would be.
+    assert audio_only == charged
+    # An image projector really is dropped, so the switch still frees its bytes.
+    assert vision < charged
+
+
+def test_a_vision_off_load_does_not_need_a_cached_projector(tmp_path):
+    """The download-conflict check asks whether a reusable cached load exists. A
+    load that opens no projector does not need one cached to qualify, so demanding
+    it rejects the request over a file this load was never going to read."""
+    from core.inference.llama_cpp import GgufLoadIntent, _with_gguf_load_marker
+
+    seen = {}
+
+    def fake_blocks(repo, variant, *, require_mmproj, hf_token = None):
+        seen["require_mmproj"] = require_mmproj
+        return False
+
+    def inner(self, intent, load_cancel_event = None):
+        return True
+
+    wrapped = _with_gguf_load_marker(inner)
+    with patch(
+        "core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks
+    ):
+        wrapped(
+            object(),
+            GgufLoadIntent(
+                gguf_path = str(tmp_path / "model.gguf"),
+                model_identifier = "test",
+                hf_repo = "unsloth/some-vl-GGUF",
+                is_vision = True,
+                disable_vision = True,
+            ),
+        )
+
+    assert seen["require_mmproj"] is False
