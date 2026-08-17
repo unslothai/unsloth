@@ -721,13 +721,42 @@ def test_a_stalled_model_is_nudged_to_act(executed):
             [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
         ]
     )
-    _run(transport)
+    _run(transport, nudge_tool_calls = True)
 
     assert [c["name"] for c in executed] == ["web_search"]
-    # The nudge is a user turn appended after the stall.
+    # The retry sees the assistant stall before the nudge, not user -> user.
     second = transport.requests[1]["messages"]
-    assert second[-1]["role"] == "user"
+    assert [message["role"] for message in second] == ["user", "assistant", "user"]
+    assert second[-2]["content"] == "I'll search for that now."
 
+
+
+def test_a_stalled_model_is_not_nudged_by_default(executed):
+    """Issue #8907: ordinary prose must not trigger a hidden retry by default."""
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_a_stalled_model_respects_explicit_nudge_off(executed):
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
 
 def test_a_finished_answer_is_not_nudged(executed):
     """A real answer must never be re-prompted into calling a tool."""

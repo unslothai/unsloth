@@ -12776,6 +12776,7 @@ async def _proxy_to_external_provider(
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
+                    nudge_tool_calls = payload.nudge_tool_calls,
                 ),
                 cancel_event = cancel_event,
             )
