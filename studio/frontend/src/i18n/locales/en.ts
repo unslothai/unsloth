@@ -283,6 +283,8 @@ export const en = {
         allowMicrophone: "Allow microphone",
         micAccessBlocked:
           "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessBlockedDesktop:
+          "Microphone access was blocked. Try again and choose Allow, or enable the microphone in your system privacy settings.",
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",
@@ -999,12 +1001,21 @@ export const en = {
         compareChat: "Compare chat",
         exportChat: "Export chat",
       },
+      pastedTextThreshold: "Condense long pastes",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model metadata in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      projectAttachments: "Share files across a project",
+      projectAttachmentsDescription:
+        "Default for files attached in a chat that belongs to a project: index them for the whole project so every chat in it can use them. Each chat can override this from the attach menu.",
+      rememberParamsPerModel: "Remember settings per model",
+      rememberParamsPerModelDescription:
+        "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
