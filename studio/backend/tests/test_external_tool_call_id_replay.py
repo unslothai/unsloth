@@ -32,9 +32,7 @@ def _history(tool_call_id):
                 ],
             }
         ),
-        ChatMessage.model_validate(
-            {"role": "tool", "tool_call_id": tool_call_id, "content": "ok"}
-        ),
+        ChatMessage.model_validate({"role": "tool", "tool_call_id": tool_call_id, "content": "ok"}),
     ]
 
 

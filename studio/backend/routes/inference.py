@@ -12277,20 +12277,14 @@ def _build_external_messages(
         if isinstance(entry.get("tool_calls"), list)
         for tc in entry["tool_calls"]
         if isinstance(tc, dict) and isinstance(tc.get("id"), str)
-    } | {
-        entry["tool_call_id"]
-        for entry in result
-        if isinstance(entry.get("tool_call_id"), str)
-    }
+    } | {entry["tool_call_id"] for entry in result if isinstance(entry.get("tool_call_id"), str)}
     if originals:
         replay_ids = _replay_tool_call_id_map(originals, provider_type)
         for entry in result:
             if entry.get("tool_calls"):
                 entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], replay_ids)
             if isinstance(entry.get("tool_call_id"), str):
-                entry["tool_call_id"] = replay_ids.get(
-                    entry["tool_call_id"], entry["tool_call_id"]
-                )
+                entry["tool_call_id"] = replay_ids.get(entry["tool_call_id"], entry["tool_call_id"])
     return result
 
 
