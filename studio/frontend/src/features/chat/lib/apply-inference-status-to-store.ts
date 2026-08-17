@@ -157,6 +157,14 @@ export function applyActiveModelStatusToStore(
         modelId: checkpointId,
         presetSource: store.activePresetSource,
       }),
+      // The model's own remembered settings outrank the recommendation, or
+      // every poll would undo them, but not past the context it loaded with.
+      // context_length is reported for a safetensors load too, so this is not
+      // narrowed to GGUF; absent, there is nothing to cap against.
+      {
+        fromModelDefaults: true,
+        maxTokensCap: status.context_length ?? undefined,
+      },
     );
   }
 
