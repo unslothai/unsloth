@@ -113,6 +113,25 @@ export function hasPendingProgressiveMounts(): boolean {
  * The anchor row's position, measured against its scroll container rather than against the window,
  * so that the container moving does not read as content inserted above it. See AnchorSample.
  */
+/**
+ * The row to hold still: the first one the reader can actually SEE, not the first one in the list.
+ *
+ * That distinction is load-bearing and it cost two measurement rounds to find. Widening prepends
+ * above everything, so for a widening any row will do and the topmost one is cheapest. Content
+ * that RELAYOUTS does not: a row growing between the topmost row and the fold moves the reader
+ * while leaving the topmost row exactly where it was, and an anchor taken there reports zero.
+ * Measured with a 600px height change injected into one row above a detached reader while the
+ * window was open: 600px of movement, reported as 0 by a topmost-row anchor.
+ */
+function pickAnchorRow(viewport: HTMLElement): Element | null {
+  const fold = viewport.getBoundingClientRect().top;
+  const rows = viewport.querySelectorAll("[data-role]");
+  for (const row of rows) {
+    if (row.getBoundingClientRect().bottom > fold) return row;
+  }
+  return rows.item(rows.length - 1);
+}
+
 function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
   return {
     viewportOffset:
@@ -204,6 +223,10 @@ function useProgressiveMountWindow(
     viewportOffset: number;
     scrollTop: number;
   } | null>(null);
+  /** The row the idle sampler below holds still, and where it last saw it. */
+  const idleRef = useRef<{ element: Element; sample: AnchorSample } | null>(
+    null,
+  );
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
@@ -223,10 +246,10 @@ function useProgressiveMountWindow(
     // bottom of a 118,004px thread, 24px from it instead of 4000. This callback runs from a
     // requestAnimationFrame, after a paint, so the ref is populated by definition.
     if (viewport) viewport.style.setProperty("overflow-anchor", "none");
-    const first = viewport?.querySelector("[data-role]") ?? null;
+    const anchor = viewport ? pickAnchorRow(viewport) : null;
     anchorRef.current =
-      viewport && first
-        ? { element: first, ...sampleAnchor(viewport, first) }
+      viewport && anchor
+        ? { element: anchor, ...sampleAnchor(viewport, anchor) }
         : null;
   }, [viewportRef]);
 
@@ -269,6 +292,67 @@ function useProgressiveMountWindow(
     // reader did not make. The hook decides whether anything is written; see
     // adjustForContentInsertedAbove.
     adjustForContentInsertedAbove(shift ?? 0);
+    // Make the idle sampler below re-pick, since everything it knew has just moved.
+    idleRef.current = null;
+  }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
+
+  // Content above the reader also moves for reasons that are not a widening, and while the window
+  // is open nothing else is watching for it. Streamdown replaces a `<pre>` when Shiki finishes
+  // highlighting it, KaTeX resizes a formula, an image lands: each of those relayouts a row that
+  // may be above the fold. Native anchoring is exactly what absorbs those, and it is disabled for
+  // the duration, so the compensation has to cover the whole interval rather than only the
+  // widening commits. The autoscroll hook's own mutation path does not help: it pins a FOLLOWING
+  // reader and deliberately leaves a detached one alone.
+  //
+  // Measured, injecting a 600px height change into one row above a detached reader while the
+  // window was open: without this the reader moved the full 600px, against 0px on the merge base
+  // where native anchoring absorbed it.
+  //
+  // The anchor here is the first row the reader can actually SEE, not the first row in the list,
+  // and that distinction is the whole reason the first version of this measured nothing. Widening
+  // prepends above everything, so the topmost row moves and any row will do. A reflow does not: a
+  // row growing between the topmost row and the fold moves the reader while leaving the topmost
+  // row exactly where it was. The visible row is re-picked only when it is gone or has scrolled
+  // out of view, so the per-frame cost is one getBoundingClientRect and one scrollTop read.
+  useEffect(() => {
+    if (mountWindow == null) {
+      idleRef.current = null;
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      const viewport = viewportRef.current;
+      // A pending widening capture owns the correction until its layout effect has run; stepping
+      // in between would correct the same movement twice.
+      if (!viewport || anchorRef.current) return;
+      const held = idleRef.current;
+      if (!held || !held.element.isConnected) {
+        const element = pickAnchorRow(viewport);
+        idleRef.current = element
+          ? { element, sample: sampleAnchor(viewport, element) }
+          : null;
+        return;
+      }
+      const now = sampleAnchor(viewport, held.element);
+      // Out of view: the reader has scrolled past it, so hold something they can see instead.
+      if (
+        now.viewportOffset > viewport.clientHeight ||
+        now.viewportOffset < -viewport.clientHeight
+      ) {
+        idleRef.current = null;
+        return;
+      }
+      const shift = anchorCorrection(held.sample, now);
+      if (shift == null) return;
+      adjustForContentInsertedAbove(shift);
+      idleRef.current = {
+        element: held.element,
+        sample: sampleAnchor(viewport, held.element),
+      };
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
   // Native scroll anchoring goes back on the moment the window closes, and on unmount, so a

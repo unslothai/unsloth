@@ -158,7 +158,7 @@ test("the anchor is measured against its scroll container, not against the windo
   );
   // Both ends go through the same function, so they cannot drift apart.
   assert.match(GLUE, /function sampleAnchor\(/);
-  assert.match(GLUE, /sampleAnchor\(viewport, first\)/);
+  assert.match(GLUE, /sampleAnchor\(viewport, anchor\)/);
   assert.match(GLUE, /sampleAnchor\(viewport, captured\.element\)/);
   assert.match(GLUE, /scrollTop: viewport\.scrollTop,/);
   assert.match(
@@ -349,4 +349,31 @@ test("the hook is told about every widening, including the ones with nothing to 
     "a zero correction must still resync the bookkeeping",
   );
   assert.match(body, /lastScrollTop = el\.scrollTop;/);
+});
+
+test("the anchor is the first row the reader can see, not the first row in the list", () => {
+  // Widening prepends above everything, so for a widening any row will do. Content that RELAYOUTS
+  // does not: a row growing between the topmost row and the fold moves the reader while leaving
+  // the topmost row exactly where it was. Measured with a 600px height change injected into one
+  // row above a detached reader while the window was open: 600px of movement, reported as 0 by a
+  // topmost-row anchor, and 0px of movement once the anchor was the visible one.
+  assert.match(GLUE, /function pickAnchorRow\(viewport: HTMLElement\)/);
+  assert.match(GLUE, /if \(row\.getBoundingClientRect\(\)\.bottom > fold\) return row;/);
+  assert.doesNotMatch(
+    GLUE,
+    /querySelector\("\[data-role\]"\)/,
+    "the first row in the list is not the row the reader is looking at",
+  );
+  // Both the widening capture and the between-widenings sampler use it.
+  assert.match(GLUE, /const anchor = viewport \? pickAnchorRow\(viewport\) : null;/);
+  assert.match(GLUE, /const element = pickAnchorRow\(viewport\);/);
+});
+
+test("the interval between widenings is compensated too, not just the widening commits", () => {
+  // Native anchoring is what normally absorbs a <pre> swapping in Shiki output or a KaTeX resize,
+  // and it is disabled for the whole mount window, so the compensation has to cover the whole
+  // interval. The autoscroll hook does not help: it pins a FOLLOWING reader and deliberately
+  // leaves a detached one alone.
+  assert.match(GLUE, /idleRef/);
+  assert.match(GLUE, /if \(!viewport \|\| anchorRef\.current\) return;/);
 });
