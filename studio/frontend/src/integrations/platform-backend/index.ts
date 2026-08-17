@@ -31,3 +31,8 @@ export * from "./error-policy";
 export * from "./agent-api";
 export * from "./agent-stream";
 export * from "./agent-types";
+export * from "./connector-api";
+export * from "./connector-types";
+export * from "./file-api";
+export * from "./file-types";
+export * from "./connector-oauth-state";

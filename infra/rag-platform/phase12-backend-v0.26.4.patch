@@ -1,0 +1,190 @@
+--- a/api/db/services/file_commit_service.py
++++ b/api/db/services/file_commit_service.py
+@@ -224,7 +224,8 @@
+             file_changes: List of dicts:
+                 [{"file_id": str, "file_name": str, "operation": "add"|"modify"|"delete"|"rename",
+                   "content": str (optional, for add/modify), "content_hash": str (optional),
+-                  "old_name": str, "new_name": str (for rename)}]
++                  "old_name": str, "new_name": str (for rename),
++                  "old_parent_id": str, "new_parent_id": str (for move)}]
+ 
+         Returns:
+             The created FileCommit instance
+@@ -390,6 +391,27 @@
+                     if file_id in tree_state:
+                         tree_state[file_id]["name"] = new_name
+ 
++                        new_parent_id = change.get("new_parent_id", "")
++                        if new_parent_id:
++                            tree_state[file_id]["parent_id"] = new_parent_id
++
++                elif op == "move":
++                    old_parent_id = change.get("old_parent_id", "")
++                    new_parent_id = change.get("new_parent_id", "")
++                    item["old_location"] = old_parent_id
++                    item["new_location"] = new_parent_id
++
++                    old_name = change.get("old_name", "")
++                    new_name = change.get("new_name", "")
++                    if old_name and new_name:
++                        item["old_name"] = old_name
++                        item["new_name"] = new_name
++
++                    if file_id in tree_state:
++                        tree_state[file_id]["parent_id"] = new_parent_id
++                        if new_name:
++                            tree_state[file_id]["name"] = new_name
++
+                 # Insert commit item
+                 FileCommitItem(**item).save(force_insert=True)
+ 
+@@ -570,7 +584,7 @@
+         """Get uncommitted changes by comparing current File table with latest commit.
+ 
+         Recursively scans all sub-folders under folder_id.
+-        Returns list of dicts: [{"file_id", "file_name", "operation": "add"|"modify"|"delete"}]
++        Returns list of dicts containing add/modify/delete/rename/move operations.
+         """
+         # Get latest commit's tree state
+         latest = cls._get_latest_commit(folder_id)
+@@ -595,13 +609,45 @@
+ 
+             if fid in current_files:
+                 live_file = current_files[fid]
++                committed_name = committed_entry.get("name", "")
++                committed_parent_id = committed_entry.get("parent_id", "")
++                live_parent_id = live_file.parent_id or ""
++
++                if live_file.name != committed_name:
++                    rename_change = {
++                        "file_id": fid,
++                        "file_name": live_file.name,
++                        "operation": "rename",
++                        "old_name": committed_name,
++                        "new_name": live_file.name,
++                    }
++                    if live_parent_id != committed_parent_id:
++                        rename_change.update(
++                            {
++                                "old_parent_id": committed_parent_id,
++                                "new_parent_id": live_parent_id,
++                            }
++                        )
++                    changes.append(rename_change)
++
++                if live_parent_id != committed_parent_id:
++                    changes.append(
++                        {
++                            "file_id": fid,
++                            "file_name": live_file.name,
++                            "operation": "move",
++                            "old_parent_id": committed_parent_id,
++                            "new_parent_id": live_parent_id,
++                        }
++                    )
++
+                 live_hash = _compute_file_hash(folder_id, fid)
+                 committed_hash = committed_entry.get("hash", "")
+                 if live_hash and live_hash != committed_hash:
+                     changes.append(
+                         {
+                             "file_id": fid,
+-                            "file_name": committed_entry.get("name", ""),
++                            "file_name": live_file.name,
+                             "operation": "modify",
+                         }
+                     )
+--- a/internal/service/nlp/retrieval.go
++++ b/internal/service/nlp/retrieval.go
+@@ -1014,6 +1014,33 @@
+ 		return result, nil
+ 	}
+ 
++	filteredResult, removed := pruneRetrievalSearchResult(result, existingDocIDs)
++	if removed > 0 {
++		common.Warn("Pruned stale chunks whose documents no longer exist", zap.Int("removed", removed))
++	}
++
++	return filteredResult, nil
++}
++
++func retrievalSearchChunkID(chunk map[string]interface{}) (string, bool) {
++	for _, key := range []string{"_id", "id"} {
++		if id, ok := chunk[key].(string); ok && id != "" {
++			return id, true
++		}
++	}
++	return "", false
++}
++
++// pruneRetrievalSearchResult removes stale document fields while preserving the
++// raw engine chunks needed by second-pass operations such as Elasticsearch KNN.
++func pruneRetrievalSearchResult(result *RetrievalSearchResult, existingDocIDs map[string]struct{}) (*RetrievalSearchResult, int) {
++	rawChunksByID := make(map[string]map[string]interface{}, len(result.Chunks))
++	for _, rawChunk := range result.Chunks {
++		if chunkID, ok := retrievalSearchChunkID(rawChunk); ok {
++			rawChunksByID[chunkID] = rawChunk
++		}
++	}
++
+ 	// Filter out chunks with deleted documents
+ 	filteredIDs := make([]string, 0, len(result.IDs))
+ 	filteredChunks := make([]map[string]interface{}, 0, len(result.IDs))
+@@ -1022,16 +1049,21 @@
+ 	removed := 0
+ 
+ 	for _, chunkID := range result.IDs {
+-		chunk, exists := result.Field[chunkID]
++		fieldChunk, exists := result.Field[chunkID]
+ 		if !exists {
+ 			continue
+ 		}
+-		docID, ok := chunk["doc_id"].(string)
++		rawChunk := fieldChunk
++		if preservedChunk, ok := rawChunksByID[chunkID]; ok {
++			rawChunk = preservedChunk
++		}
++
++		docID, ok := fieldChunk["doc_id"].(string)
+ 		if !ok || docID == "" {
+ 			// Keep chunks without doc_id
+ 			filteredIDs = append(filteredIDs, chunkID)
+-			filteredChunks = append(filteredChunks, chunk)
+-			filteredField[chunkID] = chunk
++			filteredChunks = append(filteredChunks, rawChunk)
++			filteredField[chunkID] = fieldChunk
+ 			if result.Highlight != nil {
+ 				if hl, ok := result.Highlight[chunkID]; ok {
+ 					filteredHighlight[chunkID] = hl
+@@ -1044,8 +1076,8 @@
+ 			continue
+ 		}
+ 		filteredIDs = append(filteredIDs, chunkID)
+-		filteredChunks = append(filteredChunks, chunk)
+-		filteredField[chunkID] = chunk
++		filteredChunks = append(filteredChunks, rawChunk)
++		filteredField[chunkID] = fieldChunk
+ 		if result.Highlight != nil {
+ 			if hl, ok := result.Highlight[chunkID]; ok {
+ 				filteredHighlight[chunkID] = hl
+@@ -1053,10 +1085,6 @@
+ 		}
+ 	}
+ 
+-	if removed > 0 {
+-		common.Warn("Pruned stale chunks whose documents no longer exist", zap.Int("removed", removed))
+-	}
+-
+ 	return &RetrievalSearchResult{
+ 		Chunks:      filteredChunks,
+ 		Total:       int64(len(filteredIDs)),
+@@ -1067,7 +1095,8 @@
+ 		Keywords:    result.Keywords,
+ 		Aggregation: result.Aggregation,
+ 		Options:     result.Options,
+-	}, nil
++		IndexNames:  result.IndexNames,
++	}, removed
+ }
+ 
+ // buildIndexNames creates index names for the given tenant IDs.

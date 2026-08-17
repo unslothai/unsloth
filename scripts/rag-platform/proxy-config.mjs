@@ -106,6 +106,54 @@ const specificityOverrides = [...pythonOverrides.values()].sort(
 // updates the full name group. Keep this explicit until the next owned image
 // includes the Go AlterModel group-status fix from the backend source tree.
 const runtimeOverrides = [
+  // The active Python Google OAuth-start handler prints the uploaded client
+  // credential object. Go implements the same contract with PKCE/state and
+  // never logs the credential. Keep all start/result calls on that boundary.
+  {
+    method: "POST",
+    path: "/api/v1/connectors/google/oauth/web/start",
+    port: 9384,
+  },
+  {
+    method: "POST",
+    path: "/api/v1/connectors/google/oauth/web/result",
+    port: 9384,
+  },
+  {
+    method: "POST",
+    path: "/api/v1/connectors/box/oauth/web/start",
+    port: 9384,
+  },
+  {
+    method: "POST",
+    path: "/api/v1/connectors/box/oauth/web/result",
+    port: 9384,
+  },
+  // Python additionally supports the BigQuery connection test. Preserve the
+  // complete user-facing connector contract instead of narrowing it to Go's
+  // current REST-only tester.
+  {
+    method: "POST",
+    path: "/api/v1/connectors/:connector_id/test",
+    port: 9380,
+  },
+  // The deployed sync worker is Python's DB-polling sync_data_source process.
+  // Python marks manual rebuild logs immediately runnable; the pinned Go peer
+  // publishes to its own task channel and leaves the DB row on the normal
+  // refresh interval, so an accepted rebuild can remain unconsumed here.
+  {
+    method: "POST",
+    path: "/api/v1/connectors/:connector_id/rebuild",
+    port: 9380,
+  },
+  // The pinned/current Go route binds :id but its handler reads query file_id,
+  // so every canonical path request returns code=400. Python consumes the path
+  // parameter and enforces the same tenant ownership check.
+  {
+    method: "GET",
+    path: "/api/v1/files/:file_id/parent",
+    port: 9380,
+  },
   {
     method: "PATCH",
     path: "/api/v1/providers/:provider/instances/:instance/models/*model",
@@ -141,6 +189,53 @@ const runtimeOverrides = [
     path: "/api/v1/datasets/:dataset_id/documents/parse",
     port: 9380,
   },
+  // Phase 12 commit metadata comparison is implemented by the patched Python
+  // service in the pinned image. Route the whole commit family together so a
+  // rename/move detected by /changes is committed and read back by the same
+  // tree-state implementation. Most-specific paths must precede detail paths
+  // because nginx evaluates regex locations in declaration order.
+  ...["workspace", "datasets", "folders"].flatMap((scope) => [
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits/:commit_id/files/:file_id/content`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits/:commit_id/files`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits/:commit_id/tree`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits/diff`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits/:commit_id`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/changes`,
+      port: 9380,
+    },
+    {
+      method: "GET",
+      path: `/api/v1/${scope}/:entity_id/commits`,
+      port: 9380,
+    },
+    {
+      method: "POST",
+      path: `/api/v1/${scope}/:entity_id/commits`,
+      port: 9380,
+    },
+  ]),
 ].map((route) => ({ ...route, regex: routeRegex(route.path) }));
 
 const lines = [
@@ -200,6 +295,12 @@ lines.push(
   "    # rag-platform-default ^/api/v1/admin(?:/|$) 9381",
   "    # rag-platform-default ^/(?:v1|api)(?:/|$) 9380",
   "    location ~ ^/(v1|api) {",
+  "        proxy_pass http://127.0.0.1:$rag_platform_service_port;",
+  "        include proxy.conf;",
+  "    }",
+  "",
+  "    # External provider redirects do not carry the /api prefix.",
+  "    location ~ ^/connectors/ {",
   "        proxy_pass http://127.0.0.1:$rag_platform_service_port;",
   "        include proxy.conf;",
   "    }",

@@ -89,6 +89,7 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "hub",
   "projects",
   "agents",
+  "files",
   "images",
   // Video sits directly under Images: the two media tabs read as one pair.
   "video",
@@ -111,6 +112,7 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   hub: true,
   projects: true,
   agents: true,
+  files: true,
   images: true,
   // Under "More" until a user pins it.
   video: false,

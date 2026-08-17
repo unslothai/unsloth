@@ -18,10 +18,10 @@ running in the active scheme.
 | Metric | Count |
 | --- | --- |
 | routes discovered | 746 |
-| reachable | 516 |
-| runtime-disabled | 225 |
-| — no reachable equivalent (capability lost) | 36 |
-| — same concrete request served elsewhere (no capability lost) | 189 |
+| reachable | 509 |
+| runtime-disabled | 232 |
+| — no reachable equivalent (capability lost) | 50 |
+| — same concrete request served elsewhere (no capability lost) | 182 |
 | not proxied by nginx | 5 |
 
 ## Why these routes are closed
@@ -69,12 +69,16 @@ Compared after canonicalising parameter syntax (`<id>`, `:id`, `*path` all
 normalise to `{p}`), so a Go route is only listed here when no Python route
 provides the same method and path shape.
 
-### `datasets` (27)
+### `datasets` (39)
 
 | Method | Path | Service | Source | Proxy result |
 | --- | --- | --- | --- | --- |
+| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:360` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | `internal/router/router.go:359` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:365` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | `internal/router/router.go:366` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api@9384 | `internal/router/router.go:363` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api@9384 | `internal/router/router.go:364` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:368` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api@9384 | `internal/router/router.go:367` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api@9384 | `internal/router/router.go:362` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
@@ -84,10 +88,16 @@ provides the same method and path shape.
 | DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api@9384 | `internal/router/router.go:373` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api@9384 | `internal/router/router.go:374` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:379` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:378` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | `internal/router/router.go:377` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:381` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | `internal/router/router.go:380` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:580` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 | HEAD | `/api/v1/datasets/<dataset_id>/artifacts` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:584` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:667` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
+| PUT | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:770` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/alteration` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:803` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/graph` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:612` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 | DELETE | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:762` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:715` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/<dataset_id>/artifacts/topics` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:638` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
@@ -98,8 +108,10 @@ provides the same method and path shape.
 | GET | `/api/v1/datasets/<dataset_id>/navigation/<path:name>/children` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:1029` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | GET | `/api/v1/datasets/<dataset_id>/navigation/search` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:984` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | DELETE | `/api/v1/datasets/<dataset_id>/skills` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:917` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/<dataset_id>/skills` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:713` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 | HEAD | `/api/v1/datasets/<dataset_id>/skills` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:881` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
 | DELETE | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:1129` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404 |
+| GET | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api@9380 | `api/apps/restful_apis/dataset_api.py:735` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 
 ### `auth` (7)
 
@@ -119,6 +131,13 @@ provides the same method and path shape.
 | --- | --- | --- | --- | --- |
 | GET | `/api/v1/pipelines` | go-api@9384 | `internal/router/router.go:170` | implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404 |
 | GET | `/api/v1/pipelines/:id` | go-api@9384 | `internal/router/router.go:171` | implemented only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); live hybrid proxy probe returns HTTP 404 |
+
+### `tasks` (2)
+
+| Method | Path | Service | Source | Proxy result |
+| --- | --- | --- | --- | --- |
+| POST | `/api/v1/tasks/:session_id/cancel` | go-api@9384 | `internal/router/agent_routes.go:110` | declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke verifies the deployed route boundary |
+| POST | `/api/v1/tasks/<task_id>/cancel` | python-api@9380 | `api/apps/restful_apis/task_api.py:30` | proxy-shadowed onto go-api:9384 under scheme "hybrid" |
 
 ## No capability lost — same method and path is served by a reachable route
 
@@ -200,18 +219,21 @@ serving implementation shown below keeps the surface available.
 | PATCH | `/api/v1/chats/<chat_id>/sessions/<session_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id`) | `api/apps/restful_apis/chat_api.py:834` |
 | DELETE | `/api/v1/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id/messages/:msg_id`) | `api/apps/restful_apis/chat_api.py:914` |
 | PUT | `/api/v1/chats/<chat_id>/sessions/<session_id>/messages/<msg_id>/feedback` | python-api@9380 | go-api (`/api/v1/chats/:chat_id/sessions/:session_id/messages/:msg_id/feedback`) | `api/apps/restful_apis/chat_api.py:939` |
+| POST | `/api/v1/connectors/:connector_id/rebuild` | go-api@9384 | python-api (`/api/v1/connectors/<connector_id>/rebuild`) | `internal/router/router.go:591` |
+| POST | `/api/v1/connectors/:connector_id/test` | go-api@9384 | python-api (`/api/v1/connectors/<connector_id>/test`) | `internal/router/router.go:592` |
 | DELETE | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:169` |
 | GET | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:123` |
 | PATCH | `/api/v1/connectors/<connector_id>` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id`) | `api/apps/restful_apis/connector_api.py:49` |
 | GET | `/api/v1/connectors/<connector_id>/logs` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id/logs`) | `api/apps/restful_apis/connector_api.py:136` |
-| POST | `/api/v1/connectors/<connector_id>/rebuild` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id/rebuild`) | `api/apps/restful_apis/connector_api.py:152` |
-| POST | `/api/v1/connectors/<connector_id>/test` | python-api@9380 | go-api (`/api/v1/connectors/:connector_id/test`) | `api/apps/restful_apis/connector_api.py:181` |
 | DELETE | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts`) | `internal/router/router.go:361` |
-| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts`) | `internal/router/router.go:360` |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>`) | `internal/router/router.go:365` |
-| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>`) | `internal/router/router.go:366` |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/artifacts/graph`) | `internal/router/router.go:364` |
+| GET | `/api/v1/datasets/:dataset_id/changes` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/changes`) | `internal/router/router.go:458` |
 | DELETE | `/api/v1/datasets/:dataset_id/chunks` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/chunks`) | `internal/router/router.go:381` |
+| GET | `/api/v1/datasets/:dataset_id/commits` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits`) | `internal/router/router.go:452` |
+| POST | `/api/v1/datasets/:dataset_id/commits` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits`) | `internal/router/router.go:451` |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/<commit_id>`) | `internal/router/router.go:454` |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/<commit_id>/files`) | `internal/router/router.go:455` |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content`) | `internal/router/router.go:457` |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/tree` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/<commit_id>/tree`) | `internal/router/router.go:456` |
 | GET | `/api/v1/datasets/:dataset_id/commits/diff` | go-api@9384 | python-api (`/api/v1/datasets/<entity_id>/commits/diff`) | `internal/router/router.go:453` |
 | DELETE | `/api/v1/datasets/:dataset_id/documents` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents`) | `internal/router/router.go:366` |
 | POST | `/api/v1/datasets/:dataset_id/documents` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents`) | `internal/router/router.go:363` |
@@ -219,8 +241,6 @@ serving implementation shown below keeps the surface available.
 | POST | `/api/v1/datasets/:dataset_id/documents/parse` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/documents/parse`) | `internal/router/router.go:375` |
 | DELETE | `/api/v1/datasets/:dataset_id/index` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/index`) | `internal/router/router.go:342` |
 | GET | `/api/v1/datasets/:dataset_id/ingestions/summary` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/ingestions/summary`) | `internal/router/router.go:353` |
-| GET | `/api/v1/datasets/:dataset_id/skills` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/skills`) | `internal/router/router.go:378` |
-| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>`) | `internal/router/router.go:380` |
 | DELETE | `/api/v1/datasets/:dataset_id/tags` | go-api@9384 | python-api (`/api/v1/datasets/<dataset_id>/tags`) | `internal/router/router.go:336` |
 | GET | `/api/v1/datasets/<dataset_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id`) | `api/apps/restful_apis/dataset_api.py:384` |
 | PUT | `/api/v1/datasets/<dataset_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id`) | `api/apps/restful_apis/dataset_api.py:220` |
@@ -251,29 +271,22 @@ serving implementation shown below keeps the surface available.
 | POST | `/api/v1/datasets/<dataset_id>/search` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/search`) | `api/apps/restful_apis/dataset_api.py:507` |
 | GET | `/api/v1/datasets/<dataset_id>/tags` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/tags`) | `api/apps/restful_apis/dataset_api.py:418` |
 | PUT | `/api/v1/datasets/<dataset_id>/tags` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/tags`) | `api/apps/restful_apis/dataset_api.py:458` |
-| GET | `/api/v1/datasets/<entity_id>/changes` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/changes`) | `api/apps/restful_apis/file_commit_api.py:301` |
-| GET | `/api/v1/datasets/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits`) | `api/apps/restful_apis/file_commit_api.py:140` |
-| POST | `/api/v1/datasets/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits`) | `api/apps/restful_apis/file_commit_api.py:107` |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id`) | `api/apps/restful_apis/file_commit_api.py:199` |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/files`) | `api/apps/restful_apis/file_commit_api.py:249` |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content`) | `api/apps/restful_apis/file_commit_api.py:328` |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/tree` | python-api@9380 | go-api (`/api/v1/datasets/:dataset_id/commits/:commit_id/tree`) | `api/apps/restful_apis/file_commit_api.py:312` |
 | GET | `/api/v1/documents/:id/preview` | go-api@9384 | python-api (`/api/v1/documents/<doc_id>/preview`) | `internal/router/router.go:214` |
 | GET | `/api/v1/documents/<document_id>` | python-api@9380 | go-api (`/api/v1/documents/:id`) | `api/apps/restful_apis/document_api.py:2151` |
 | GET | `/api/v1/documents/artifact/<filename>` | python-api@9380 | go-api (`/api/v1/documents/artifact/:filename`) | `api/apps/restful_apis/document_api.py:1871` |
 | GET | `/api/v1/documents/images/<image_id>` | python-api@9380 | go-api (`/api/v1/documents/images/:image_id`) | `api/apps/restful_apis/document_api.py:1782` |
+| GET | `/api/v1/files/:id/parent` | go-api@9384 | python-api (`/api/v1/files/<file_id>/parent`) | `internal/router/router.go:408` |
 | GET | `/api/v1/files/<file_id>` | python-api@9380 | go-api (`/api/v1/files/:id`) | `api/apps/restful_apis/file_api.py:262` |
 | GET | `/api/v1/files/<file_id>/ancestors` | python-api@9380 | go-api (`/api/v1/files/:id/ancestors`) | `api/apps/restful_apis/file_api.py:348` |
-| GET | `/api/v1/files/<file_id>/parent` | python-api@9380 | go-api (`/api/v1/files/:id/parent`) | `api/apps/restful_apis/file_api.py:317` |
 | GET | `/api/v1/files/<file_id>/versions` | python-api@9380 | go-api (`/api/v1/files/:id/versions`) | `api/apps/restful_apis/file_commit_api.py:370` |
+| GET | `/api/v1/folders/:folder_id/changes` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/changes`) | `internal/router/router.go:431` |
+| GET | `/api/v1/folders/:folder_id/commits` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits`) | `internal/router/router.go:425` |
+| POST | `/api/v1/folders/:folder_id/commits` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits`) | `internal/router/router.go:424` |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits/<commit_id>`) | `internal/router/router.go:427` |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits/<commit_id>/files`) | `internal/router/router.go:428` |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files/:file_id/content` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits/<commit_id>/files/<file_id>/content`) | `internal/router/router.go:430` |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/tree` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits/<commit_id>/tree`) | `internal/router/router.go:429` |
 | GET | `/api/v1/folders/:folder_id/commits/diff` | go-api@9384 | python-api (`/api/v1/folders/<entity_id>/commits/diff`) | `internal/router/router.go:426` |
-| GET | `/api/v1/folders/<entity_id>/changes` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/changes`) | `api/apps/restful_apis/file_commit_api.py:301` |
-| GET | `/api/v1/folders/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits`) | `api/apps/restful_apis/file_commit_api.py:140` |
-| POST | `/api/v1/folders/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits`) | `api/apps/restful_apis/file_commit_api.py:107` |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits/:commit_id`) | `api/apps/restful_apis/file_commit_api.py:199` |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits/:commit_id/files`) | `api/apps/restful_apis/file_commit_api.py:249` |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits/:commit_id/files/:file_id/content`) | `api/apps/restful_apis/file_commit_api.py:328` |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/tree` | python-api@9380 | go-api (`/api/v1/folders/:folder_id/commits/:commit_id/tree`) | `api/apps/restful_apis/file_commit_api.py:312` |
 | DELETE | `/api/v1/mcp/servers/<mcp_id>` | python-api@9380 | go-api (`/api/v1/mcp/servers/:mcp_id`) | `api/apps/restful_apis/mcp_api.py:231` |
 | GET | `/api/v1/mcp/servers/<mcp_id>` | python-api@9380 | go-api (`/api/v1/mcp/servers/:mcp_id`) | `api/apps/restful_apis/mcp_api.py:95` |
 | PUT | `/api/v1/mcp/servers/<mcp_id>` | python-api@9380 | go-api (`/api/v1/mcp/servers/:mcp_id`) | `api/apps/restful_apis/mcp_api.py:172` |
@@ -304,17 +317,16 @@ serving implementation shown below keeps the surface available.
 | POST | `/api/v1/searches/<search_id>/completion` | python-api@9380 | go-api (`/api/v1/searches/:search_id/completion`) | `api/apps/restful_apis/search_api.py:193` |
 | POST | `/api/v1/searches/<search_id>/completions` | python-api@9380 | go-api (`/api/v1/searches/:search_id/completions`) | `api/apps/restful_apis/search_api.py:194` |
 | DELETE | `/api/v1/system/tokens/<token>` | python-api@9380 | go-api (`/api/v1/system/tokens/:key`) | `api/apps/restful_apis/system_api.py:333` |
-| POST | `/api/v1/tasks/:session_id/cancel` | go-api@9384 | python-api (`/api/v1/tasks/<task_id>/cancel`) | `internal/router/agent_routes.go:110` |
 | PATCH | `/api/v1/tenants/<tenant_id>` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id`) | `api/apps/restful_apis/tenant_api.py:167` |
 | DELETE | `/api/v1/tenants/<tenant_id>/users` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id/users`) | `api/apps/restful_apis/tenant_api.py:135` |
 | GET | `/api/v1/tenants/<tenant_id>/users` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id/users`) | `api/apps/restful_apis/tenant_api.py:41` |
 | POST | `/api/v1/tenants/<tenant_id>/users` | python-api@9380 | go-api (`/api/v1/tenants/:tenant_id/users`) | `api/apps/restful_apis/tenant_api.py:60` |
+| GET | `/api/v1/workspace/:folder_id/changes` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/changes`) | `internal/router/router.go:444` |
+| GET | `/api/v1/workspace/:folder_id/commits` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits`) | `internal/router/router.go:438` |
+| POST | `/api/v1/workspace/:folder_id/commits` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits`) | `internal/router/router.go:437` |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits/<commit_id>`) | `internal/router/router.go:440` |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits/<commit_id>/files`) | `internal/router/router.go:441` |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files/:file_id/content` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits/<commit_id>/files/<file_id>/content`) | `internal/router/router.go:443` |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/tree` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits/<commit_id>/tree`) | `internal/router/router.go:442` |
 | GET | `/api/v1/workspace/:folder_id/commits/diff` | go-api@9384 | python-api (`/api/v1/workspace/<entity_id>/commits/diff`) | `internal/router/router.go:439` |
-| GET | `/api/v1/workspace/<entity_id>/changes` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/changes`) | `api/apps/restful_apis/file_commit_api.py:301` |
-| GET | `/api/v1/workspace/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits`) | `api/apps/restful_apis/file_commit_api.py:140` |
-| POST | `/api/v1/workspace/<entity_id>/commits` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits`) | `api/apps/restful_apis/file_commit_api.py:107` |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits/:commit_id`) | `api/apps/restful_apis/file_commit_api.py:199` |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits/:commit_id/files`) | `api/apps/restful_apis/file_commit_api.py:249` |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits/:commit_id/files/:file_id/content`) | `api/apps/restful_apis/file_commit_api.py:328` |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/tree` | python-api@9380 | go-api (`/api/v1/workspace/:folder_id/commits/:commit_id/tree`) | `api/apps/restful_apis/file_commit_api.py:312` |
 

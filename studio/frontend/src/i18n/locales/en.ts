@@ -141,6 +141,7 @@ export const en = {
       projects: "Projects",
       hub: "Knowledge",
       agents: "Agents",
+      files: "Files",
       agentsUnavailable: "Agents are not available in this version yet.",
       train: "Train",
       recipes: "Recipes",

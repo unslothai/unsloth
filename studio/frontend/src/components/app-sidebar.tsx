@@ -55,6 +55,7 @@ import {
   FEATURE_AGENTS_NAV,
   FEATURE_API_MONITOR,
   FEATURE_EXPORT,
+  FEATURE_FILES_NAV,
   FEATURE_IMAGES,
   FEATURE_PROJECTS,
   FEATURE_RECIPES,
@@ -1131,6 +1132,20 @@ export function AppSidebar() {
         preloadSilently(router.preloadRoute({ to: "/agents" }));
       },
     },
+    files: {
+      icon: Folder01Icon,
+      label: t("shell.navigation.files"),
+      active: pathname === "/files" || pathname.startsWith("/files/"),
+      disabled: !getProductCapability("files").available,
+      tooltip: getProductCapability("files").reason ?? undefined,
+      onClick: () => {
+        navigate({ to: "/files" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/files" }));
+      },
+    },
     images: {
       icon: Image03Icon,
       label: t("shell.navigation.images"),
@@ -1234,6 +1249,7 @@ export function AppSidebar() {
     (item) =>
       (item.id !== "projects" || FEATURE_PROJECTS) &&
       (item.id !== "agents" || FEATURE_AGENTS_NAV) &&
+      (item.id !== "files" || FEATURE_FILES_NAV) &&
       (item.id !== "images" || FEATURE_IMAGES) &&
       (item.id !== "train" || FEATURE_TRAIN) &&
       (item.id !== "video" || FEATURE_VIDEO) &&

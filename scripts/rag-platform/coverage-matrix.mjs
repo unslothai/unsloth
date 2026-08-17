@@ -689,6 +689,17 @@ const CLASS_RULES = [
     justification:
       "Go registers /system/keys and /system/tokens on the same ListAPIKeys, CreateKey and DeleteKey handlers, backed by the same API-token service and table. Rag Platform exposes one canonical token state machine through /system/tokens; the exact /system/keys alias remains typed and contract/auth tested without duplicate UI controls.",
   },
+  {
+    id: "phase12-v1-file-connector-compat",
+    when: {
+      path: /^\/v1\/(file|connector)(\/|$)/,
+      runtimeEnabled: true,
+    },
+    class: API_ONLY,
+    consumer: "legacy file/connector API client",
+    justification:
+      "Legacy v1 file and connector aliases duplicate the canonical /api/v1/files and /api/v1/connectors capabilities. Rag Platform uses the canonical typed services and one UI state machine; source/auth contract evidence covers these aliases without indistinguishable duplicate controls.",
+  },
 
   // -- 8. Primary entity list + detail reads = dedicated screens -----------
   {
@@ -2478,6 +2489,70 @@ for (const inventoryRoute of inventory.routes.flatMap((route) => [
       uiPath: "— (protocol or deprecated compatibility contract)",
       typedService: null,
       evidence: PHASE11_TEST_EVIDENCE,
+    };
+  }
+}
+
+const PHASE12_TEST_EVIDENCE = [
+  "src/integrations/platform-backend/__tests__/phase-12-files-connectors-api.test.ts",
+  "src/features/files/files-page.test.tsx",
+  "src/features/files/files-page.tsx (loading, empty, error, permission, timeout, abort, confirmation and object-URL cleanup states)",
+  "src/features/files/connector-oauth-callback-page.tsx (state correlation + popup/full-page bridge)",
+  "docs/rag-platform/fixtures/phase-12-connectors-files-contract.json",
+  "docs/adr/0013-phase-12-connectors-files-and-oauth-runtime-boundary.md",
+  "scripts/rag-platform/phase-12-runtime-smoke.mjs (authenticated hybrid route, callback and secret-log probes)",
+];
+
+function phase12UiPath(canonical) {
+  if (/^\/api\/v1\/connectors(?:\/|$)|^\/connectors\//.test(canonical)) {
+    if (/oauth/.test(canonical)) return "Dosyalar → Connector’lar → OAuth yetkilendirmesi";
+    if (/\/logs$/.test(canonical)) return "Dosyalar → Connector’lar → Çalışma günlükleri";
+    if (/\/rebuild$/.test(canonical)) return "Dosyalar → Connector’lar → Yeniden indeksle";
+    if (/\/test$/.test(canonical)) return "Dosyalar → Connector’lar → Bağlantıyı test et";
+    return "Dosyalar → Connector’lar → Yapılandırma";
+  }
+  if (/\/(commits|changes)(\/|$)/.test(canonical))
+    return "Dosyalar → Commit geçmişi → Workspace/Klasör/Veri kümesi";
+  if (/\/versions$/.test(canonical)) return "Dosyalar → Dosya satırı → Sürümler";
+  if (/link-to-datasets/.test(canonical)) return "Dosyalar → Seçili dosyalar → Veri kümesine bağla";
+  return "Dosyalar → Dosya alanı";
+}
+
+for (const inventoryRoute of inventory.routes.flatMap((route) => [
+  route,
+  ...(route.alternates ?? []),
+])) {
+  if (inventoryRoute.runtime_enabled !== true) continue;
+  const canonical = canonicalPath(inventoryRoute.path);
+  if (phaseOf(inventoryRoute, canonical) !== 12) continue;
+  const classification = classifyRecord(inventoryRoute, canonical);
+  const key = `${inventoryRoute.service}|${inventoryRoute.method} ${canonical}`;
+  if (
+    classification.class === "frontend-action" ||
+    classification.class === "frontend-screen"
+  ) {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "implemented",
+      uiPath: phase12UiPath(canonical),
+      typedService: canonical.includes("/connectors")
+        ? "src/integrations/platform-backend/connector-api.ts (typed route function)"
+        : "src/integrations/platform-backend/file-api.ts (typed route function)",
+      evidence: PHASE12_TEST_EVIDENCE,
+    };
+  } else if (classification.class === "external-callback") {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath: "— (provider redirect; güvenli SPA callback köprüsü sonucu kullanıcı akışına taşır)",
+      typedService:
+        "src/integrations/platform-backend/connector-api.ts#completeConnectorOAuthCallback",
+      evidence: PHASE12_TEST_EVIDENCE,
+    };
+  } else if (classification.class === "api-only") {
+    PHASE_IMPLEMENTATION_EVIDENCE[key] = {
+      status: "contract-verified",
+      uiPath: "— (deprecated/protocol uyumluluk yolu; modern Faz 12 UI eşdeğeri kullanılır)",
+      typedService: null,
+      evidence: PHASE12_TEST_EVIDENCE,
     };
   }
 }

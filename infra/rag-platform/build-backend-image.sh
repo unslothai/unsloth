@@ -3,7 +3,8 @@
 # Rebuilds the Faz 0 backend alias with the Go API/admin executable that the
 # published v0.26.4 image omits. The backend checkout itself remains untouched:
 # a clean archive of the verified release tag is used as disposable context,
-# plus the owned no-CGO compatibility stub copied explicitly by the Dockerfile.
+# plus owned no-CGO adapters and the reviewed Phase 12 compatibility patch
+# copied explicitly by the Dockerfile.
 
 set -euo pipefail
 

@@ -18,6 +18,12 @@ export default defineConfig(({ mode }) => {
         "http://127.0.0.1",
       changeOrigin: true,
     };
+    proxy["/connectors"] = {
+      target:
+        env.VITE_RAG_PLATFORM_PROXY_TARGET?.trim() ||
+        "http://127.0.0.1",
+      changeOrigin: true,
+    };
   }
   Object.assign(proxy, {
     "/api": {

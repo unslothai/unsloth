@@ -95,6 +95,7 @@ const CHAT_ONLY_ALLOWED = new Set([
   "/chat",
   "/projects",
   "/agents",
+  "/files",
   "/hub",
   "/login",
   "/signup",
@@ -136,6 +137,7 @@ function isChatOnlyAllowed(pathname: string): boolean {
 
 export const Route = createRootRoute({
   beforeLoad: async ({ location }) => {
+    if (location.pathname.startsWith("/connector-oauth/")) return;
     if (isPlatformAuthEnabled() && location.pathname === "/") {
       const oauth = consumePlatformOAuthRedirect();
       if (oauth.handled) {
@@ -166,10 +168,10 @@ const DEFAULT_DOCUMENT_TITLE = branding.documentTitle;
 function RootLayout() {
   const t = useT();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const isAuthFlowRoute = useMatches({
     select: (matches) => matches.some((match) => match.staticData.isAuthFlow),
   });
+  const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname) || isAuthFlowRoute;
   // Exact match: a prefix would treat /chatty as chat, hiding its not-found UI.
   const isChatRoute = pathname === "/chat";
   const { pinned, setPinned, togglePinned } = useSidebarPin();

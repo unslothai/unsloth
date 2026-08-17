@@ -38,6 +38,7 @@ const ITEM_META: Record<
   projects: { icon: Folder01Icon, labelKey: "shell.navigation.projects" },
   hub: { icon: DashboardCircleIcon, labelKey: "shell.navigation.hub" },
   agents: { icon: BotIcon, labelKey: "shell.navigation.agents" },
+  files: { icon: Folder01Icon, labelKey: "shell.navigation.files" },
   images: { icon: Image03Icon, labelKey: "shell.navigation.images" },
   train: { icon: TestTubeOutlineIcon, labelKey: "shell.navigation.train" },
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },

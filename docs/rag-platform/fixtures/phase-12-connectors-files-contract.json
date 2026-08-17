@@ -1,0 +1,58 @@
+{
+  "kind": "source-verified-contract",
+  "phase": 12,
+  "authority": "/Users/baran/Desktop/rag-backend",
+  "secret_policy": "No provider credential, OAuth code, token, password or connector secret is captured.",
+  "contracts": {
+    "connector_create": {
+      "method": "POST",
+      "path": "/api/v1/connectors",
+      "request": {
+        "name": "Example REST source",
+        "source": "rest_api",
+        "config": { "url": "https://example.invalid" },
+        "refresh_freq": 60,
+        "prune_freq": 120,
+        "timeout_secs": 30
+      },
+      "response_data_fields": ["id", "name", "source", "status", "config", "refresh_freq", "prune_freq", "timeout_secs"]
+    },
+    "connector_oauth_start": {
+      "method": "POST",
+      "path": "/api/v1/connectors/google/oauth/web/start?type=google-drive",
+      "request_fields": ["credentials", "redirect_uri"],
+      "response_data": { "flow_id": "<ephemeral-flow-id>", "authorization_url": "<provider-url>", "expires_in": 600 },
+      "runtime_boundary": "Go 9384; PKCE/state; credential fields are never logged or persisted by the frontend"
+    },
+    "file_list": {
+      "method": "GET",
+      "path": "/api/v1/files?parent_id=<id>&keywords=<text>&page=1&page_size=50&orderby=create_time&desc=true",
+      "response_data": { "total": 1, "files": [{ "id": "<file-id>", "parent_id": "<folder-id>", "name": "note.txt", "size": 5, "type": "file", "source_type": "local" }], "parent_folder": null }
+    },
+    "file_move": {
+      "method": "POST",
+      "path": "/api/v1/files/move",
+      "request": { "src_file_ids": ["<file-id>"], "dest_file_id": "<folder-id>", "new_name": "renamed.txt" }
+    },
+    "file_dataset_link": {
+      "method": "POST",
+      "path": "/api/v1/files/link-to-datasets?mode=add",
+      "request": { "file_ids": ["<file-id>"], "kb_ids": ["<dataset-id>"] }
+    },
+    "commit_create": {
+      "method": "POST",
+      "path": "/api/v1/datasets/<dataset-id>/commits",
+      "request": { "message": "Initial", "files": [{ "file_id": "<file-id>", "file_name": "note.txt", "operation": "add", "content": "hello" }] },
+      "operation_values": ["add", "modify", "delete", "rename"]
+    }
+  },
+  "source_evidence": [
+    "api/apps/restful_apis/connector_api.py",
+    "internal/handler/connector.go",
+    "internal/service/connector.go",
+    "api/apps/restful_apis/file_api.py",
+    "api/apps/restful_apis/file_commit_api.py",
+    "internal/handler/file_commit.go",
+    "internal/service/file/file_commit.go"
+  ]
+}

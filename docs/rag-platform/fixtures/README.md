@@ -24,8 +24,9 @@ the run created.
 | `stream.json`    | 1            | completion with `stream: true`                                |
 | `cleanup.json`   | 2            | delete chat, delete dataset                                   |
 
-`phase-6-chunk-retrieval-contract.json` and
-`phase-8-chat-contract.json` and `phase-11-agent-contract.json` are deliberately
+`phase-6-chunk-retrieval-contract.json`, `phase-8-chat-contract.json`,
+`phase-11-agent-contract.json` and
+`phase-12-connectors-files-contract.json` are deliberately
 separate from these live capture
 files. They are source-verified deterministic protocol fixtures used where the
 local runtime has no configured embedding/chat/audio provider. Phase 8 records
@@ -35,6 +36,9 @@ errors. It is not presented as a live provider-success capture.
 Phase 11 likewise pins the source-verified Agent DSL, component-debug and native
 Agent SSE shapes. Its password and MCP authorization fields are redacted policy
 assertions, never captured secret values.
+Phase 12 pins connector, OAuth, file, dataset-link and commit request/response
+shapes. OAuth credentials, authorization codes and result payloads are excluded;
+the fixture records only field names and ephemeral placeholders.
 
 ## Provenance
 

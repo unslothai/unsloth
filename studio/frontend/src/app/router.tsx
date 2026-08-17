@@ -19,6 +19,8 @@ import { Route as hubRoute } from "./routes/hub";
 import { Route as onboardingRoute } from "./routes/onboarding";
 import { Route as projectsRoute } from "./routes/projects";
 import { Route as agentsRoute } from "./routes/agents";
+import { Route as filesRoute } from "./routes/files";
+import { Route as connectorOAuthCallbackRoute } from "./routes/connector-oauth.$source.callback";
 import { Route as changePasswordRoute } from "./routes/change-password";
 import { Route as settingsRoute } from "./routes/settings";
 import { Route as studioRoute } from "./routes/studio";
@@ -34,6 +36,8 @@ const routeTree = rootRoute.addChildren([
   chatRoute,
   projectsRoute,
   agentsRoute,
+  filesRoute,
+  connectorOAuthCallbackRoute,
   exportRoute,
   imagesRoute,
   videoRoute,

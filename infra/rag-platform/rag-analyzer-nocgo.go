@@ -52,6 +52,10 @@ func (a *Analyzer) SetFineGrained(value bool) { a.fineGrained = value }
 
 func (a *Analyzer) SetEnablePosition(value bool) { a.enablePosition = value }
 
+// SetLanguage keeps the pure-Go compatibility surface aligned with the native
+// analyzer. Language-specific stemming remains a native-only optimization.
+func (*Analyzer) SetLanguage(string) {}
+
 func (a *Analyzer) Analyze(text string) ([]Token, error) {
 	positioned := a.tokens(text)
 	tokens := make([]Token, len(positioned))

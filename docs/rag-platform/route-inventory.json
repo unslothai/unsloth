@@ -38,6 +38,10 @@
         "upstream": "127.0.0.1:9380"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/navigation/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
         "match": "DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
         "upstream": "127.0.0.1:9380"
       },
@@ -51,6 +55,10 @@
       },
       {
         "match": "DELETE ~ ^/api/v1/datasets/[^/]+/chunks/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/skills/?$",
         "upstream": "127.0.0.1:9380"
       },
       {
@@ -70,6 +78,34 @@
         "upstream": "127.0.0.1:9380"
       },
       {
+        "match": "POST ~ ^/api/v1/connectors/google/oauth/web/start/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/google/oauth/web/result/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/box/oauth/web/start/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/box/oauth/web/result/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/[^/]+/test/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/[^/]+/rebuild/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/files/[^/]+/parent/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
         "match": "PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$",
         "upstream": "127.0.0.1:9380"
       },
@@ -83,6 +119,102 @@
       },
       {
         "match": "POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/diff/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/changes/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/workspace/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/changes/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/datasets/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/diff/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/changes/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "GET ~ ^/api/v1/folders/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9380"
+      },
+      {
+        "match": "POST ~ ^/api/v1/folders/[^/]+/commits/?$",
         "upstream": "127.0.0.1:9380"
       },
       {
@@ -134,11 +266,19 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "POST ~ ^/api/v1/connectors/google/oauth/web/result/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/?$",
         "upstream": "127.0.0.1:9383"
       },
       {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/google/oauth/web/start/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -158,7 +298,23 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "POST ~ ^/api/v1/connectors/box/oauth/web/result/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/agents/[^/]+/components/[^/]+/input-form/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/alteration/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/children/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/connectors/box/oauth/web/start/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -166,8 +322,16 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/ingestion/tasks/summary/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/balance/?$",
@@ -187,6 +351,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/agents/attachments/[^/]+/download/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/compilation/status/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -290,6 +458,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/topics/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/metadata/summary/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -304,6 +476,10 @@
       {
         "match": "GET ~ ^/api/v1/admin/users/quota/summary/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/graph/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/metadata/config/?$",
@@ -434,6 +610,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "DELETE ~ ^/api/v1/tenant/metadata_store/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -456,6 +636,10 @@
       {
         "match": "GET ~ ^/api/v1/admin/users/documents/?$",
         "upstream": "127.0.0.1:9383"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
       },
       {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/ingestions/[^/]+/?$",
@@ -498,6 +682,10 @@
         "upstream": "127.0.0.1:9383"
       },
       {
+        "match": "PUT ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "PUT ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -507,6 +695,10 @@
       },
       {
         "match": "DELETE ~ ^/api/v1/agents/[^/]+/webhook/test/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/navigation/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -566,6 +758,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/navigation/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/providers/[^/]+/instances/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -622,6 +818,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "DELETE ~ ^/api/v1/datasets/[^/]+/documents/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -662,6 +862,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/documents/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -675,6 +879,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "HEAD ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -790,6 +998,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/all-models/[^/]+/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -827,6 +1039,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/datasets/[^/]+/commits/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -890,6 +1106,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "DELETE ~ ^/api/v1/datasets/[^/]+/skills/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/admin/all-models/?$",
         "upstream": "127.0.0.1:9383"
       },
@@ -934,6 +1154,10 @@
         "upstream": "127.0.0.1:9384"
       },
       {
+        "match": "GET ~ ^/api/v1/datasets/[^/]+/skills/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
         "match": "GET ~ ^/api/v1/files/[^/]+/ancestors/?$",
         "upstream": "127.0.0.1:9384"
       },
@@ -951,6 +1175,10 @@
       },
       {
         "match": "GET ~ ^/api/v1/system/variables/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "HEAD ~ ^/api/v1/datasets/[^/]+/skills/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1235,6 +1463,10 @@
       },
       {
         "match": "POST ~ ^/api/v1/skills/spaces/?$",
+        "upstream": "127.0.0.1:9384"
+      },
+      {
+        "match": "POST ~ ^/api/v1/tasks/[^/]+/cancel/?$",
         "upstream": "127.0.0.1:9384"
       },
       {
@@ -1599,19 +1831,19 @@
     "by_service": {
       "go-admin": 114,
       "python-admin": 34,
-      "python-api": 318,
-      "go-api": 275,
+      "python-api": 314,
+      "go-api": 279,
       "mcp": 5
     },
-    "runtime_enabled": 516,
-    "runtime_disabled": 225,
+    "runtime_enabled": 509,
+    "runtime_disabled": 232,
     "source_only_runtime_disabled": 46,
     "phase10_source_only_runtime_disabled": 34,
     "not_proxied": 5,
     "with_alternates": 110,
     "runtime_disabled_breakdown": {
-      "with_reachable_equivalent": 189,
-      "no_reachable_equivalent": 36
+      "with_reachable_equivalent": 182,
+      "no_reachable_equivalent": 50
     }
   },
   "routes": [
@@ -8062,12 +8294,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/connectors/[^/]+/rebuild/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/connectors/<connector_id>/rebuild",
+        "service": "python-api"
+      }
     },
     {
       "method": "POST",
@@ -8079,12 +8316,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/connectors/[^/]+/test/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/connectors/<connector_id>/test",
+        "service": "python-api"
+      }
     },
     {
       "method": "DELETE",
@@ -8184,17 +8426,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/connectors/[^/]+/rebuild/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/connectors/:connector_id/rebuild",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",
@@ -8206,17 +8443,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/connectors/[^/]+/test/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/connectors/:connector_id/test",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -8255,68 +8487,68 @@
     {
       "method": "POST",
       "path": "/api/v1/connectors/box/oauth/web/result",
-      "service": "python-api",
-      "auth": "login_required",
-      "source": "api/apps/restful_apis/connector_api.py:664",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:586",
       "notes": "",
-      "service_port": 9380,
+      "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
+      "proxy_destination": "127.0.0.1:9384",
       "proxy_reaches_service": true,
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/connectors/box/oauth/web/result/?$",
       "alternates": [
         {
           "method": "POST",
           "path": "/api/v1/connectors/box/oauth/web/result",
-          "service": "go-api",
-          "auth": "session",
-          "source": "internal/router/router.go:586",
+          "service": "python-api",
+          "auth": "login_required",
+          "source": "api/apps/restful_apis/connector_api.py:664",
           "notes": "",
-          "service_port": 9384,
+          "service_port": 9380,
           "service_started": true,
           "proxy_mode": "hybrid",
-          "proxy_destination": "127.0.0.1:9380",
+          "proxy_destination": "127.0.0.1:9384",
           "proxy_reaches_service": false,
           "runtime_enabled": false,
-          "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
-          "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)"
+          "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+          "proxy_match": "location ~ ^/api/v1/connectors/box/oauth/web/result/?$"
         }
       ]
     },
     {
       "method": "POST",
       "path": "/api/v1/connectors/box/oauth/web/start",
-      "service": "python-api",
-      "auth": "login_required",
-      "source": "api/apps/restful_apis/connector_api.py:576",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:585",
       "notes": "",
-      "service_port": 9380,
+      "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
+      "proxy_destination": "127.0.0.1:9384",
       "proxy_reaches_service": true,
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/connectors/box/oauth/web/start/?$",
       "alternates": [
         {
           "method": "POST",
           "path": "/api/v1/connectors/box/oauth/web/start",
-          "service": "go-api",
-          "auth": "session",
-          "source": "internal/router/router.go:585",
+          "service": "python-api",
+          "auth": "login_required",
+          "source": "api/apps/restful_apis/connector_api.py:576",
           "notes": "",
-          "service_port": 9384,
+          "service_port": 9380,
           "service_started": true,
           "proxy_mode": "hybrid",
-          "proxy_destination": "127.0.0.1:9380",
+          "proxy_destination": "127.0.0.1:9384",
           "proxy_reaches_service": false,
           "runtime_enabled": false,
-          "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
-          "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)"
+          "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+          "proxy_match": "location ~ ^/api/v1/connectors/box/oauth/web/start/?$"
         }
       ]
     },
@@ -8391,68 +8623,68 @@
     {
       "method": "POST",
       "path": "/api/v1/connectors/google/oauth/web/result",
-      "service": "python-api",
-      "auth": "login_required",
-      "source": "api/apps/restful_apis/connector_api.py:555",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:584",
       "notes": "",
-      "service_port": 9380,
+      "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
+      "proxy_destination": "127.0.0.1:9384",
       "proxy_reaches_service": true,
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/connectors/google/oauth/web/result/?$",
       "alternates": [
         {
           "method": "POST",
           "path": "/api/v1/connectors/google/oauth/web/result",
-          "service": "go-api",
-          "auth": "session",
-          "source": "internal/router/router.go:584",
+          "service": "python-api",
+          "auth": "login_required",
+          "source": "api/apps/restful_apis/connector_api.py:555",
           "notes": "",
-          "service_port": 9384,
+          "service_port": 9380,
           "service_started": true,
           "proxy_mode": "hybrid",
-          "proxy_destination": "127.0.0.1:9380",
+          "proxy_destination": "127.0.0.1:9384",
           "proxy_reaches_service": false,
           "runtime_enabled": false,
-          "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
-          "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)"
+          "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+          "proxy_match": "location ~ ^/api/v1/connectors/google/oauth/web/result/?$"
         }
       ]
     },
     {
       "method": "POST",
       "path": "/api/v1/connectors/google/oauth/web/start",
-      "service": "python-api",
-      "auth": "login_required",
-      "source": "api/apps/restful_apis/connector_api.py:364",
+      "service": "go-api",
+      "auth": "session",
+      "source": "internal/router/router.go:583",
       "notes": "",
-      "service_port": 9380,
+      "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
+      "proxy_destination": "127.0.0.1:9384",
       "proxy_reaches_service": true,
       "runtime_enabled": true,
       "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/connectors/google/oauth/web/start/?$",
       "alternates": [
         {
           "method": "POST",
           "path": "/api/v1/connectors/google/oauth/web/start",
-          "service": "go-api",
-          "auth": "session",
-          "source": "internal/router/router.go:583",
+          "service": "python-api",
+          "auth": "login_required",
+          "source": "api/apps/restful_apis/connector_api.py:364",
           "notes": "",
-          "service_port": 9384,
+          "service_port": 9380,
           "service_started": true,
           "proxy_mode": "hybrid",
-          "proxy_destination": "127.0.0.1:9380",
+          "proxy_destination": "127.0.0.1:9384",
           "proxy_reaches_service": false,
           "runtime_enabled": false,
-          "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
-          "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)"
+          "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+          "proxy_match": "location ~ ^/api/v1/connectors/google/oauth/web/start/?$"
         }
       ]
     },
@@ -8643,19 +8875,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/<dataset_id>/artifacts",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "HEAD",
@@ -8667,11 +8895,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -8687,19 +8915,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "PUT",
@@ -8711,19 +8935,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "PUT",
-        "path": "/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "GET",
@@ -8735,11 +8955,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/alteration/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -8755,19 +8975,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/graph/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/<dataset_id>/artifacts/graph",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "DELETE",
@@ -8779,11 +8995,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -8799,11 +9015,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -8819,11 +9035,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/topics/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -8839,12 +9055,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/changes/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/changes",
+        "service": "python-api"
+      }
     },
     {
       "method": "DELETE",
@@ -8895,12 +9116,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "POST",
@@ -8912,12 +9138,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/datasets/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -8929,12 +9160,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/commits/<commit_id>",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -8946,12 +9182,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/commits/<commit_id>/files",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -8963,12 +9204,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -8980,12 +9226,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/datasets/<entity_id>/commits/<commit_id>/tree",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -9019,11 +9270,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/compilation/status/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9545,11 +9796,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/[^/]+/?$",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9565,11 +9816,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9585,11 +9836,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9605,11 +9856,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/children/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9642,11 +9893,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/[^/]+/?$",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9662,19 +9913,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/<dataset_id>/skills",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "HEAD",
@@ -9686,11 +9933,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9706,11 +9953,11 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9726,19 +9973,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "DELETE",
@@ -9923,12 +10166,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "HEAD",
@@ -9940,11 +10184,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -9960,12 +10204,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "PUT",
@@ -9977,12 +10222,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "GET",
@@ -9994,11 +10240,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/alteration/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10014,12 +10260,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/graph/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "DELETE",
@@ -10031,11 +10278,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10051,11 +10298,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10071,11 +10318,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/artifacts/topics/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10835,11 +11082,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/[^/]+/?$",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10855,11 +11102,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10895,11 +11142,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -10915,11 +11162,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/children/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -11011,11 +11258,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/[^/]+/?$",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -11031,12 +11278,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "HEAD",
@@ -11048,11 +11296,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -11068,11 +11316,11 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke returns HTTP 404",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
@@ -11088,12 +11336,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "DELETE",
@@ -11200,17 +11449,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/changes/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/changes",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -11222,17 +11466,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",
@@ -11244,17 +11483,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/datasets/:dataset_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -11266,17 +11500,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/commits/:commit_id",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -11288,17 +11517,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/commits/:commit_id/files",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -11310,17 +11534,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -11332,17 +11551,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/datasets/:dataset_id/commits/:commit_id/tree",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12411,12 +12625,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/files/[^/]+/parent/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/files/<file_id>/parent",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12489,17 +12708,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/files/[^/]+/parent/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/files/:id/parent",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12601,12 +12815,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/changes/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/changes",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12618,12 +12837,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "POST",
@@ -12635,12 +12859,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/folders/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12652,12 +12881,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/commits/<commit_id>",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12669,12 +12903,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/commits/<commit_id>/files",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12686,12 +12925,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/commits/<commit_id>/files/<file_id>/content",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12703,12 +12947,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/folders/<entity_id>/commits/<commit_id>/tree",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -12742,17 +12991,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/changes/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/changes",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12764,17 +13008,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",
@@ -12786,17 +13025,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/folders/:folder_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12808,17 +13042,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/commits/:commit_id",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12830,17 +13059,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/commits/:commit_id/files",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12852,17 +13076,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/commits/:commit_id/files/:file_id/content",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -12874,17 +13093,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/folders/:folder_id/commits/:commit_id/tree",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -15891,19 +16105,15 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": false,
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": true,
       "runtime_enabled": false,
       "runtime_disabled_reason": "declared only in backend worktree a0e091e75051; absent from deployed v0.26.4 (cb93883f3f8c); authenticated hybrid/direct smoke verifies the deployed route boundary",
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
+      "proxy_match": "location ~ ^/api/v1/tasks/[^/]+/cancel/?$",
       "source_scope": "backend-worktree-only",
       "source_commit": "a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2",
       "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/tasks/<task_id>/cancel",
-        "service": "python-api"
-      }
+      "equivalent_reachable_route": null
     },
     {
       "method": "PATCH",
@@ -15932,12 +16142,13 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9380",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
-      "proxy_match": "location ~ ^/(?:v1|api)(?:/|$)",
-      "alternates": []
+      "proxy_destination": "127.0.0.1:9384",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_match": "location ~ ^/api/v1/tasks/[^/]+/cancel/?$",
+      "alternates": [],
+      "equivalent_reachable_route": null
     },
     {
       "method": "DELETE",
@@ -16462,12 +16673,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/changes/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/changes",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16479,12 +16695,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "POST",
@@ -16496,12 +16717,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "POST",
+        "path": "/api/v1/workspace/<entity_id>/commits",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16513,12 +16739,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/commits/<commit_id>",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16530,12 +16761,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/commits/<commit_id>/files",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16547,12 +16783,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/commits/<commit_id>/files/<file_id>/content",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16564,12 +16805,17 @@
       "service_port": 9384,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": true,
-      "runtime_enabled": true,
-      "runtime_disabled_reason": null,
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": false,
+      "runtime_enabled": false,
+      "runtime_disabled_reason": "proxy-shadowed onto python-api:9380 under scheme \"hybrid\"",
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": []
+      "alternates": [],
+      "equivalent_reachable_route": {
+        "method": "GET",
+        "path": "/api/v1/workspace/<entity_id>/commits/<commit_id>/tree",
+        "service": "python-api"
+      }
     },
     {
       "method": "GET",
@@ -16603,17 +16849,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/changes/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/changes",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -16625,17 +16866,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "POST",
@@ -16647,17 +16883,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "POST",
-        "path": "/api/v1/workspace/:folder_id/commits",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -16669,17 +16900,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/commits/:commit_id",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -16691,17 +16917,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/commits/:commit_id/files",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -16713,17 +16934,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/commits/:commit_id/files/:file_id/content",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",
@@ -16735,17 +16951,12 @@
       "service_port": 9380,
       "service_started": true,
       "proxy_mode": "hybrid",
-      "proxy_destination": "127.0.0.1:9384",
-      "proxy_reaches_service": false,
-      "runtime_enabled": false,
-      "runtime_disabled_reason": "proxy-shadowed onto go-api:9384 under scheme \"hybrid\"",
+      "proxy_destination": "127.0.0.1:9380",
+      "proxy_reaches_service": true,
+      "runtime_enabled": true,
+      "runtime_disabled_reason": null,
       "proxy_match": "location ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$",
-      "alternates": [],
-      "equivalent_reachable_route": {
-        "method": "GET",
-        "path": "/api/v1/workspace/:folder_id/commits/:commit_id/tree",
-        "service": "go-api"
-      }
+      "alternates": []
     },
     {
       "method": "GET",

@@ -21,6 +21,7 @@ interface PlatformBackendEnv {
   VITE_RAG_PLATFORM_PASSWORD_RECOVERY_ENABLED?: string;
   VITE_RAG_PLATFORM_OAUTH_ENABLED?: string;
   VITE_RAG_PLATFORM_MODEL_TOOLS_ENABLED?: string;
+  VITE_RAG_PLATFORM_CONNECTORS_ENABLED?: string;
 }
 
 export interface PlatformAuthConfig {
@@ -109,6 +110,16 @@ export function isPlatformModelToolsEnabled(
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
     enabledUnlessFalse(env.VITE_RAG_PLATFORM_MODEL_TOOLS_ENABLED)
+  );
+}
+
+export function isPlatformConnectorsEnabled(
+  env: PlatformBackendEnv = import.meta.env as PlatformBackendEnv,
+): boolean {
+  return (
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_AUTH_ENABLED) &&
+    enabledUnlessFalse(env.VITE_RAG_PLATFORM_CONNECTORS_ENABLED)
   );
 }
 

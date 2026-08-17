@@ -240,14 +240,22 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
       ),
       http.post("http://platform.test/api/v1/chats", async ({ request }) => {
         creates += 1;
-        expect(await request.json()).toEqual({
+        const body = (await request.json()) as Record<string, unknown>;
+        expect(body).toEqual({
           name: GENERAL_CHAT_NAME,
           dataset_ids: [],
+          prompt_config: {
+            empty_response: "",
+            system: expect.stringContaining(
+              "Respond to greetings and casual conversation naturally.",
+            ),
+          },
         });
         general = {
           id: "general-chat",
           name: GENERAL_CHAT_NAME,
           dataset_ids: [],
+          prompt_config: body.prompt_config,
           create_time: 1,
           update_time: 1,
         };
@@ -306,7 +314,12 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
     });
     expect(patch).toEqual({
       dataset_ids: ["dataset-2"],
-      prompt_config: { system: "New", prologue: "Welcome", quote: true },
+      prompt_config: {
+        system: "New",
+        prologue: "Welcome",
+        quote: true,
+        empty_response: "",
+      },
     });
   });
 
@@ -342,6 +355,54 @@ describe("Rag Platform Phase 7 chat domain adapter", () => {
       id: "general-chat",
       datasetIds: ["dataset-1"],
     });
-    expect(patch).toEqual({ dataset_ids: ["dataset-1"] });
+    expect(patch).toEqual({
+      dataset_ids: ["dataset-1"],
+      prompt_config: {
+        system: "Answer with evidence.",
+        empty_response: "",
+      },
+    });
+  });
+
+  it("migrates the General Chat away from the hard no-match reply", async () => {
+    const general = {
+      id: "general-chat",
+      name: GENERAL_CHAT_NAME,
+      dataset_ids: ["dataset-1"],
+      prompt_config: {
+        system: "Answer from the dataset when relevant.",
+        empty_response:
+          "Sorry! No relevant content was found in the knowledge base!",
+      },
+      create_time: 1,
+      update_time: 2,
+    };
+    let patch: unknown;
+    platformTestServer.use(
+      http.get("http://platform.test/api/v1/chats", () =>
+        ok({ chats: [general], total: 1 }),
+      ),
+      http.patch(
+        "http://platform.test/api/v1/chats/general-chat",
+        async ({ request }) => {
+          patch = await request.json();
+          return ok({
+            ...general,
+            prompt_config: { ...general.prompt_config, empty_response: "" },
+          });
+        },
+      ),
+    );
+
+    await expect(ensureGeneralPlatformChat()).resolves.toMatchObject({
+      id: "general-chat",
+      datasetIds: ["dataset-1"],
+    });
+    expect(patch).toEqual({
+      prompt_config: {
+        system: "Answer from the dataset when relevant.",
+        empty_response: "",
+      },
+    });
   });
 });

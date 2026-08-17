@@ -30,6 +30,12 @@ export interface PlatformDatasetDto {
   create_time?: unknown;
   update_date?: unknown;
   update_time?: unknown;
+  connectors?: unknown;
+}
+
+export interface PlatformDatasetConnectorRequest {
+  id: string;
+  auto_parse?: string;
 }
 
 export interface PlatformDatasetListQuery {
@@ -65,4 +71,5 @@ export interface PlatformDatasetUpdateRequest {
   parser_config?: Record<string, unknown>;
   pipeline_id?: string;
   parse_type?: 1 | 2;
+  connectors?: PlatformDatasetConnectorRequest[];
 }

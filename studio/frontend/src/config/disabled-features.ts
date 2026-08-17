@@ -16,3 +16,5 @@ export const FEATURE_API_MONITOR =
   getProductCapability("api-monitor").available;
 export const FEATURE_AGENTS_NAV =
   getProductCapability("agents").visibleInNavigation;
+export const FEATURE_FILES_NAV =
+  getProductCapability("files").visibleInNavigation;

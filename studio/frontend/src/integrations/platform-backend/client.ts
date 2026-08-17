@@ -26,6 +26,8 @@ export interface PlatformRequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   responseType?: PlatformResponseType;
+  /** Treat a successful JSON content type as raw bytes (for downloadable .json files). */
+  acceptJsonBlob?: boolean;
   pathMode?: PlatformPathMode;
   getRetries?: number;
   credentials?: RequestCredentials;
@@ -183,7 +185,7 @@ async function executeRequest<TData>(
     if (
       responseType === "blob" &&
       response.ok &&
-      !contentType.includes("application/json")
+      (options.acceptJsonBlob || !contentType.includes("application/json"))
     ) {
       return (await response.blob()) as TData;
     }

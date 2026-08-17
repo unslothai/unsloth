@@ -37,6 +37,17 @@ import { stripPlatformCitationMarkers } from "./platform-citation-markers";
 
 export const GENERAL_CHAT_NAME = "General";
 export const PLATFORM_CHAT_FANOUT_CONCURRENCY = 4;
+const PLATFORM_CHAT_EMPTY_RESPONSE = "";
+const BACKEND_DEFAULT_RAG_SYSTEM_PREFIX =
+  "You are an intelligent assistant. Please summarize the content of the dataset";
+const PLATFORM_CHAT_SYSTEM_PROMPT = [
+  "You are a helpful assistant. Respond to greetings and casual conversation naturally.",
+  "When the user asks about an attached dataset, ground the answer in the knowledge base below and do not invent unsupported facts.",
+  "If the requested information is not present, say so clearly. Answer in the user's language and consider the chat history.",
+  "Here is the knowledge base:",
+  "{knowledge}",
+  "The above is the knowledge base.",
+].join("\n");
 
 export interface PlatformChatFanoutMetrics {
   chatCount: number;
@@ -87,6 +98,41 @@ function promptConfig(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? { ...(value as Record<string, unknown>) }
     : {};
+}
+
+async function ensureHelpfulNoMatchBehavior(
+  dto: PlatformChatDto,
+  signal?: AbortSignal,
+): Promise<ProjectRecord> {
+  const project = mapPlatformChatToProject(dto);
+  const currentPrompt = promptConfig(dto.prompt_config);
+  const currentSystem = stringValue(currentPrompt.system);
+  const shouldUsePlatformSystem =
+    !currentSystem || currentSystem.startsWith(BACKEND_DEFAULT_RAG_SYSTEM_PREFIX);
+  if (
+    currentPrompt.empty_response === PLATFORM_CHAT_EMPTY_RESPONSE &&
+    !shouldUsePlatformSystem
+  ) {
+    return project;
+  }
+  return mapPlatformChatToProject(
+    await updatePlatformChat(
+      project.id,
+      {
+        prompt_config: {
+          ...currentPrompt,
+          // An empty fallback lets the backend continue to the chat model when
+          // retrieval finds no chunk. This keeps greetings and general
+          // questions useful while a dataset is attached to the chat.
+          empty_response: PLATFORM_CHAT_EMPTY_RESPONSE,
+          ...(shouldUsePlatformSystem
+            ? { system: PLATFORM_CHAT_SYSTEM_PROMPT }
+            : {}),
+        },
+      },
+      signal,
+    ),
+  );
 }
 
 export function mapPlatformChatToProject(dto: PlatformChatDto): ProjectRecord {
@@ -322,9 +368,13 @@ export async function createPlatformProjectForChat(input: {
     await createPlatformChat({
       name,
       dataset_ids: [...new Set(input.datasetIds ?? [])],
-      ...(input.instructions?.trim()
-        ? { prompt_config: { system: input.instructions.trim() } }
-        : {}),
+      prompt_config: {
+        empty_response: PLATFORM_CHAT_EMPTY_RESPONSE,
+        system: PLATFORM_CHAT_SYSTEM_PROMPT,
+        ...(input.instructions?.trim()
+          ? { system: input.instructions.trim() }
+          : {}),
+      },
     }),
   );
 }
@@ -369,6 +419,9 @@ export async function updatePlatformProjectForChat(
   }
   const raw = await getPlatformChat(projectId, signal);
   const currentPrompt = promptConfig(raw.prompt_config);
+  const shouldPatchPrompt =
+    patch.instructions !== undefined ||
+    currentPrompt.empty_response !== PLATFORM_CHAT_EMPTY_RESPONSE;
   const updated = await updatePlatformChat(
     projectId,
     {
@@ -379,11 +432,14 @@ export async function updatePlatformProjectForChat(
       ...(patch.platformLlmId !== undefined
         ? { llm_id: patch.platformLlmId ?? "" }
         : {}),
-      ...(patch.instructions !== undefined
+      ...(shouldPatchPrompt
         ? {
             prompt_config: {
               ...currentPrompt,
-              system: patch.instructions.trim(),
+              empty_response: PLATFORM_CHAT_EMPTY_RESPONSE,
+              ...(patch.instructions !== undefined
+                ? { system: patch.instructions.trim() }
+                : {}),
             },
           }
         : {}),
@@ -406,18 +462,26 @@ export async function ensureGeneralPlatformChat(
   const findGeneral = (chats: PlatformChatDto[]) =>
     chats.find((chat) => stringValue(chat.name) === GENERAL_CHAT_NAME);
   const existing = findGeneral(await listAllPlatformChats(signal));
-  if (existing) return mapPlatformChatToProject(existing);
+  if (existing) return ensureHelpfulNoMatchBehavior(existing, signal);
   try {
-    return mapPlatformChatToProject(
+    return ensureHelpfulNoMatchBehavior(
       await createPlatformChat(
-        { name: GENERAL_CHAT_NAME, dataset_ids: [] },
+        {
+          name: GENERAL_CHAT_NAME,
+          dataset_ids: [],
+          prompt_config: {
+            empty_response: PLATFORM_CHAT_EMPTY_RESPONSE,
+            system: PLATFORM_CHAT_SYSTEM_PROMPT,
+          },
+        },
         signal,
       ),
+      signal,
     );
   } catch (error) {
     // A second tab may have won the unique-name race. Re-read before failing.
     const raced = findGeneral(await listAllPlatformChats(signal));
-    if (raced) return mapPlatformChatToProject(raced);
+    if (raced) return ensureHelpfulNoMatchBehavior(raced, signal);
     throw error;
   }
 }

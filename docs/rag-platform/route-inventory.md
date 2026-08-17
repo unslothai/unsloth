@@ -16,11 +16,11 @@
 | routes | 746 |
 | go-admin (port 9383) | 114 |
 | python-admin (port 9381) | 34 |
-| python-api (port 9380) | 318 |
-| go-api (port 9384) | 275 |
+| python-api (port 9380) | 314 |
+| go-api (port 9384) | 279 |
 | mcp (port 9382) | 5 |
-| runtime-enabled | 516 |
-| runtime-disabled | 225 |
+| runtime-enabled | 509 |
+| runtime-disabled | 232 |
 | — source-only forward declarations | 46 |
 | not proxied by nginx | 5 |
 | method+path with alternate implementations | 110 |
@@ -35,388 +35,446 @@
 | 4 | `GET ~ ^/api/v1/workspace/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
 | 5 | `GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
 | 6 | `GET ~ ^/api/v1/folders/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
-| 7 | `DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/?$` | 127.0.0.1:9380 |
-| 8 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9380 |
-| 9 | `GET ~ ^/api/v1/messages/[^/]+:[^/]+/content/?$` | 127.0.0.1:9380 |
-| 10 | `DELETE ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9380 |
-| 11 | `DELETE ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9380 |
-| 12 | `DELETE ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9380 |
-| 13 | `DELETE ~ ^/api/v1/messages/[^/]+:[^/]+/?$` | 127.0.0.1:9380 |
-| 14 | `PUT ~ ^/api/v1/messages/[^/]+:[^/]+/?$` | 127.0.0.1:9380 |
-| 15 | `PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9380 |
-| 16 | `GET ~ ^/api/v1/documents/[^/]+/preview/?$` | 127.0.0.1:9380 |
-| 17 | `POST ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9380 |
-| 18 | `POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$` | 127.0.0.1:9380 |
-| 19 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 20 | `POST ~ ^/api/v1/datasets/[^/]+/documents/batch-update-status/?$` | 127.0.0.1:9384 |
-| 21 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/connection/?$` | 127.0.0.1:9383 |
-| 22 | `PUT ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
-| 23 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/balance/?$` | 127.0.0.1:9383 |
-| 24 | `GET ~ ^/connectors/google-drive/oauth/web/callback/?$` | 127.0.0.1:9384 |
-| 25 | `PATCH ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9383 |
-| 26 | `PUT ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/messages/[^/]+/feedback/?$` | 127.0.0.1:9384 |
-| 27 | `DELETE ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 28 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 29 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
-| 30 | `POST ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 31 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
-| 32 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
-| 33 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
-| 34 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/connection/?$` | 127.0.0.1:9384 |
-| 35 | `POST ~ ^/api/v1/tenant/insert_metadata_from_file/?$` | 127.0.0.1:9384 |
-| 36 | `GET ~ ^/api/v1/admin/sandbox/providers/[^/]+/schema/?$` | 127.0.0.1:9383 |
-| 37 | `GET ~ ^/api/v1/agents/[^/]+/components/[^/]+/input-form/?$` | 127.0.0.1:9384 |
-| 38 | `POST ~ ^/api/v1/tenant/insert_chunks_from_file/?$` | 127.0.0.1:9384 |
-| 39 | `GET ~ ^/api/v1/admin/ingestion/tasks/summary/?$` | 127.0.0.1:9383 |
-| 40 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/balance/?$` | 127.0.0.1:9384 |
-| 41 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/metadatas/?$` | 127.0.0.1:9384 |
-| 42 | `PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9384 |
-| 43 | `DELETE ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
-| 44 | `GET ~ ^/api/v1/agents/attachments/[^/]+/download/?$` | 127.0.0.1:9384 |
-| 45 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/[^/]+/?$` | 127.0.0.1:9384 |
-| 46 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/summary/?$` | 127.0.0.1:9384 |
-| 47 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
-| 48 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/tasks/[^/]+/?$` | 127.0.0.1:9384 |
-| 49 | `GET ~ ^/connectors/gmail/oauth/web/callback/?$` | 127.0.0.1:9384 |
-| 50 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/[^/]+/?$` | 127.0.0.1:9384 |
-| 51 | `POST ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
-| 52 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
-| 53 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 54 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9383 |
-| 55 | `GET ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
-| 56 | `GET ~ ^/api/v1/admin/users/[^/]+/default-models/?$` | 127.0.0.1:9383 |
-| 57 | `GET ~ ^/api/v1/agents/attachments/[^/]+/preview/?$` | 127.0.0.1:9384 |
-| 58 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 59 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/tasks/?$` | 127.0.0.1:9384 |
-| 60 | `PATCH ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
-| 61 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 62 | `POST ~ ^/api/v1/admin/providers/[^/]+/connection/?$` | 127.0.0.1:9383 |
-| 63 | `POST ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 64 | `PUT ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9383 |
-| 65 | `PUT ~ ^/api/v1/admin/system/license/config/?$` | 127.0.0.1:9383 |
-| 66 | `DELETE ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
-| 67 | `DELETE ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/messages/[^/]+/?$` | 127.0.0.1:9384 |
-| 68 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
-| 69 | `GET ~ ^/api/v1/auth/oauth/github/callback/?$` | 127.0.0.1:9384 |
-| 70 | `GET ~ ^/api/v1/datasets/[^/]+/metadata/summary/?$` | 127.0.0.1:9384 |
-| 71 | `GET ~ ^/connectors/box/oauth/web/callback/?$` | 127.0.0.1:9384 |
-| 72 | `POST ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
-| 73 | `GET ~ ^/api/v1/admin/users/quota/summary/?$` | 127.0.0.1:9383 |
-| 74 | `GET ~ ^/api/v1/datasets/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
-| 75 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
-| 76 | `POST ~ ^/api/v1/agents/[^/]+/components/[^/]+/debug/?$` | 127.0.0.1:9384 |
-| 77 | `POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$` | 127.0.0.1:9384 |
-| 78 | `POST ~ ^/api/v1/datasets/[^/]+/embedding/check/?$` | 127.0.0.1:9384 |
-| 79 | `POST ~ ^/api/v1/datasets/[^/]+/metadata/update/?$` | 127.0.0.1:9384 |
-| 80 | `POST ~ ^/api/v1/document/metadata/summary/?$` | 127.0.0.1:9384 |
-| 81 | `PUT ~ ^/api/v1/datasets/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
-| 82 | `DELETE ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
-| 83 | `GET ~ ^/api/v1/admin/providers/[^/]+/models/[^/]+/?$` | 127.0.0.1:9383 |
-| 84 | `GET ~ ^/api/v1/admin/system/fingerprint/?$` | 127.0.0.1:9383 |
-| 85 | `GET ~ ^/api/v1/admin/users/plan/summary/?$` | 127.0.0.1:9383 |
-| 86 | `GET ~ ^/api/v1/auth/oauth/lark/callback/?$` | 127.0.0.1:9384 |
-| 87 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
-| 88 | `GET ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
-| 89 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
-| 90 | `POST ~ ^/api/v1/auth/register/otp/verify/?$` | 127.0.0.1:9384 |
-| 91 | `POST ~ ^/api/v1/openai/[^/]+/chat/completions/?$` | 127.0.0.1:9384 |
-| 92 | `PUT ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
-| 93 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
-| 94 | `GET ~ ^/api/v1/admin/providers/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 95 | `GET ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
-| 96 | `GET ~ ^/api/v1/admin/users/[^/]+/permission/?$` | 127.0.0.1:9383 |
-| 97 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
-| 98 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
-| 99 | `GET ~ ^/api/v1/workspace/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
-| 100 | `POST ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
-| 101 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/?$` | 127.0.0.1:9383 |
-| 102 | `GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
-| 103 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
-| 104 | `GET ~ ^/api/v1/skills/space/by-folder/?$` | 127.0.0.1:9384 |
-| 105 | `DELETE ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
-| 106 | `DELETE ~ ^/api/v1/tenant/metadata_store/?$` | 127.0.0.1:9384 |
-| 107 | `GET ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
-| 108 | `GET ~ ^/api/v1/admin/users/[^/]+/activity/?$` | 127.0.0.1:9383 |
-| 109 | `GET ~ ^/api/v1/admin/users/[^/]+/datasets/?$` | 127.0.0.1:9383 |
-| 110 | `GET ~ ^/api/v1/admin/users/[^/]+/searches/?$` | 127.0.0.1:9383 |
-| 111 | `GET ~ ^/api/v1/admin/users/documents/?$` | 127.0.0.1:9383 |
-| 112 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/[^/]+/?$` | 127.0.0.1:9384 |
-| 113 | `GET ~ ^/api/v1/folders/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
-| 114 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9384 |
-| 115 | `POST ~ ^/api/v1/auth/register/captcha/?$` | 127.0.0.1:9384 |
-| 116 | `POST ~ ^/api/v1/providers/[^/]+/connection/?$` | 127.0.0.1:9384 |
-| 117 | `POST ~ ^/api/v1/searches/[^/]+/completions/?$` | 127.0.0.1:9384 |
-| 118 | `POST ~ ^/api/v1/tenant/metadata_store/?$` | 127.0.0.1:9384 |
-| 119 | `PUT ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
-| 120 | `PUT ~ ^/api/v1/admin/users/[^/]+/activate/?$` | 127.0.0.1:9383 |
-| 121 | `PUT ~ ^/api/v1/admin/users/[^/]+/password/?$` | 127.0.0.1:9383 |
-| 122 | `PUT ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9384 |
-| 123 | `DELETE ~ ^/api/v1/admin/users/[^/]+/tokens/[^/]+/?$` | 127.0.0.1:9383 |
-| 124 | `DELETE ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 125 | `DELETE ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
-| 126 | `GET ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
-| 127 | `GET ~ ^/api/v1/admin/roles/resource/?$` | 127.0.0.1:9383 |
-| 128 | `GET ~ ^/api/v1/admin/service_types/[^/]+/?$` | 127.0.0.1:9383 |
-| 129 | `GET ~ ^/api/v1/admin/system/license/?$` | 127.0.0.1:9383 |
-| 130 | `GET ~ ^/api/v1/admin/users/[^/]+/dataset/?$` | 127.0.0.1:9383 |
-| 131 | `GET ~ ^/api/v1/admin/users/[^/]+/storage/?$` | 127.0.0.1:9383 |
-| 132 | `GET ~ ^/api/v1/admin/users/[^/]+/summary/?$` | 127.0.0.1:9383 |
-| 133 | `GET ~ ^/api/v1/admin/users/activity/?$` | 127.0.0.1:9383 |
-| 134 | `GET ~ ^/api/v1/agents/[^/]+/webhook/logs/?$` | 127.0.0.1:9384 |
-| 135 | `GET ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 136 | `GET ~ ^/api/v1/auth/oauth/[^/]+/callback/?$` | 127.0.0.1:9384 |
-| 137 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/?$` | 127.0.0.1:9384 |
-| 138 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/?$` | 127.0.0.1:9384 |
-| 139 | `GET ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
-| 140 | `HEAD ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 141 | `PATCH ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 142 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/?$` | 127.0.0.1:9384 |
-| 143 | `POST ~ ^/api/v1/admin/license/config/?$` | 127.0.0.1:9383 |
-| 144 | `POST ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
-| 145 | `POST ~ ^/api/v1/admin/system/license/?$` | 127.0.0.1:9383 |
-| 146 | `POST ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 147 | `POST ~ ^/api/v1/audio/transcriptions/?$` | 127.0.0.1:9384 |
-| 148 | `POST ~ ^/api/v1/document/delete_meta/?$` | 127.0.0.1:9384 |
-| 149 | `POST ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
-| 150 | `POST ~ ^/api/v1/searches/[^/]+/completion/?$` | 127.0.0.1:9384 |
-| 151 | `PUT ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
-| 152 | `PUT ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
-| 153 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
-| 154 | `GET ~ ^/api/v1/admin/users/[^/]+/agents/?$` | 127.0.0.1:9383 |
-| 155 | `GET ~ ^/api/v1/admin/users/[^/]+/models/?$` | 127.0.0.1:9383 |
-| 156 | `GET ~ ^/api/v1/admin/users/[^/]+/tokens/?$` | 127.0.0.1:9383 |
-| 157 | `GET ~ ^/api/v1/admin/users/reports/?$` | 127.0.0.1:9383 |
-| 158 | `GET ~ ^/api/v1/admin/users/storage/?$` | 127.0.0.1:9383 |
-| 159 | `GET ~ ^/api/v1/admin/users/summary/?$` | 127.0.0.1:9383 |
-| 160 | `GET ~ ^/api/v1/auth/azure/callback/?$` | 127.0.0.1:9384 |
-| 161 | `GET ~ ^/api/v1/auth/login/channels/?$` | 127.0.0.1:9384 |
-| 162 | `GET ~ ^/api/v1/auth/oauth/callback/?$` | 127.0.0.1:9384 |
-| 163 | `GET ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
-| 164 | `GET ~ ^/api/v1/documents/artifact/[^/]+/?$` | 127.0.0.1:9384 |
-| 165 | `GET ~ ^/api/v1/system/environments/?$` | 127.0.0.1:9384 |
-| 166 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
-| 167 | `POST ~ ^/api/v1/admin/users/[^/]+/tokens/?$` | 127.0.0.1:9383 |
-| 168 | `POST ~ ^/api/v1/connectors/[^/]+/rebuild/?$` | 127.0.0.1:9384 |
-| 169 | `POST ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
-| 170 | `POST ~ ^/api/v1/datasets/[^/]+/embedding/?$` | 127.0.0.1:9384 |
-| 171 | `DELETE ~ ^/api/v1/admin/users/[^/]+/admin/?$` | 127.0.0.1:9383 |
-| 172 | `DELETE ~ ^/api/v1/admin/users/[^/]+/keys/[^/]+/?$` | 127.0.0.1:9383 |
-| 173 | `DELETE ~ ^/api/v1/tenant/chunk_store/?$` | 127.0.0.1:9384 |
-| 174 | `GET ~ ^/api/v1/admin/data/storage/?$` | 127.0.0.1:9383 |
-| 175 | `GET ~ ^/api/v1/admin/data/summary/?$` | 127.0.0.1:9383 |
-| 176 | `GET ~ ^/api/v1/admin/environments/?$` | 127.0.0.1:9383 |
-| 177 | `GET ~ ^/api/v1/admin/users/[^/]+/chats/?$` | 127.0.0.1:9383 |
-| 178 | `GET ~ ^/api/v1/admin/users/[^/]+/files/?$` | 127.0.0.1:9383 |
-| 179 | `GET ~ ^/api/v1/admin/users/[^/]+/index/?$` | 127.0.0.1:9383 |
-| 180 | `GET ~ ^/api/v1/admin/users/[^/]+/quota/?$` | 127.0.0.1:9383 |
-| 181 | `GET ~ ^/api/v1/auth/icbc/callback/?$` | 127.0.0.1:9384 |
-| 182 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
-| 183 | `GET ~ ^/api/v1/documents/[^/]+/preview/?$` | 127.0.0.1:9384 |
-| 184 | `GET ~ ^/api/v1/providers/[^/]+/models/[^/]+/?$` | 127.0.0.1:9384 |
-| 185 | `GET ~ ^/api/v1/workspace/[^/]+/changes/?$` | 127.0.0.1:9384 |
-| 186 | `GET ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 187 | `GET ~ ^/v1/file/all_parent_folder/?$` | 127.0.0.1:9384 |
-| 188 | `POST ~ ^/api/v1/tenant/chunk_store/?$` | 127.0.0.1:9384 |
-| 189 | `POST ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 190 | `PUT ~ ^/api/v1/admin/users/[^/]+/admin/?$` | 127.0.0.1:9383 |
-| 191 | `DELETE ~ ^/api/v1/admin/data/orphan/?$` | 127.0.0.1:9383 |
-| 192 | `DELETE ~ ^/api/v1/admin/users/[^/]+/data/?$` | 127.0.0.1:9383 |
-| 193 | `DELETE ~ ^/api/v1/agents/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
-| 194 | `DELETE ~ ^/api/v1/agents/[^/]+/versions/[^/]+/?$` | 127.0.0.1:9384 |
-| 195 | `GET ~ ^/api/v1/admin/all-models/[^/]+/?$` | 127.0.0.1:9383 |
-| 196 | `GET ~ ^/api/v1/admin/data/orphan/?$` | 127.0.0.1:9383 |
-| 197 | `GET ~ ^/api/v1/admin/fingerprint/?$` | 127.0.0.1:9383 |
-| 198 | `GET ~ ^/api/v1/admin/users/[^/]+/keys/?$` | 127.0.0.1:9383 |
-| 199 | `GET ~ ^/api/v1/admin/users/index/?$` | 127.0.0.1:9383 |
-| 200 | `GET ~ ^/api/v1/admin/users/quota/?$` | 127.0.0.1:9383 |
-| 201 | `GET ~ ^/api/v1/agents/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
-| 202 | `GET ~ ^/api/v1/agents/[^/]+/versions/[^/]+/?$` | 127.0.0.1:9384 |
-| 203 | `GET ~ ^/api/v1/datasets/[^/]+/changes/?$` | 127.0.0.1:9384 |
-| 204 | `GET ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 205 | `GET ~ ^/api/v1/documents/images/[^/]+/?$` | 127.0.0.1:9384 |
-| 206 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
-| 207 | `GET ~ ^/api/v1/messages/[^/]+/content/?$` | 127.0.0.1:9384 |
-| 208 | `GET ~ ^/api/v1/providers/[^/]+/models/?$` | 127.0.0.1:9384 |
-| 209 | `GET ~ ^/api/v1/system/variables/[^/]+/?$` | 127.0.0.1:9384 |
-| 210 | `POST ~ ^/api/v1/admin/users/[^/]+/keys/?$` | 127.0.0.1:9383 |
-| 211 | `POST ~ ^/api/v1/auth/register/otp/?$` | 127.0.0.1:9384 |
-| 212 | `POST ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 213 | `POST ~ ^/api/v1/document/set_meta/?$` | 127.0.0.1:9384 |
-| 214 | `POST ~ ^/api/v1/mcp/servers/[^/]+/test/?$` | 127.0.0.1:9384 |
-| 215 | `POST ~ ^/v1/user/setting/password/?$` | 127.0.0.1:9384 |
-| 216 | `PUT ~ ^/api/v1/admin/users/[^/]+/role/?$` | 127.0.0.1:9383 |
-| 217 | `DELETE ~ ^/api/v1/admin/users/data/?$` | 127.0.0.1:9383 |
-| 218 | `DELETE ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 219 | `DELETE ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 220 | `GET ~ ^/api/v1/admin/all-models/?$` | 127.0.0.1:9383 |
-| 221 | `GET ~ ^/api/v1/admin/config/log/?$` | 127.0.0.1:9383 |
-| 222 | `GET ~ ^/api/v1/admin/data/index/?$` | 127.0.0.1:9383 |
-| 223 | `GET ~ ^/api/v1/admin/providers/[^/]+/?$` | 127.0.0.1:9383 |
-| 224 | `GET ~ ^/api/v1/admin/variables/[^/]+/?$` | 127.0.0.1:9383 |
-| 225 | `GET ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 226 | `GET ~ ^/api/v1/agents/[^/]+/versions/?$` | 127.0.0.1:9384 |
-| 227 | `GET ~ ^/api/v1/agents/templates/?$` | 127.0.0.1:9384 |
-| 228 | `GET ~ ^/api/v1/auth/azure/login/?$` | 127.0.0.1:9384 |
-| 229 | `GET ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
-| 230 | `GET ~ ^/api/v1/connectors/[^/]+/logs/?$` | 127.0.0.1:9384 |
-| 231 | `GET ~ ^/api/v1/files/[^/]+/ancestors/?$` | 127.0.0.1:9384 |
-| 232 | `GET ~ ^/api/v1/folders/[^/]+/changes/?$` | 127.0.0.1:9384 |
-| 233 | `GET ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 234 | `GET ~ ^/api/v1/memories/[^/]+/config/?$` | 127.0.0.1:9384 |
-| 235 | `GET ~ ^/api/v1/system/variables/?$` | 127.0.0.1:9384 |
-| 236 | `PATCH ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
-| 237 | `POST ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 238 | `POST ~ ^/api/v1/chat/completions/?$` | 127.0.0.1:9384 |
-| 239 | `POST ~ ^/api/v1/connectors/[^/]+/test/?$` | 127.0.0.1:9384 |
-| 240 | `POST ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9384 |
-| 241 | `POST ~ ^/api/v1/datasets/[^/]+/search/?$` | 127.0.0.1:9384 |
-| 242 | `POST ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9384 |
-| 243 | `POST ~ ^/v1/user/set_tenant_info/?$` | 127.0.0.1:9384 |
-| 244 | `PUT ~ ^/api/v1/admin/config/log/?$` | 127.0.0.1:9383 |
-| 245 | `PUT ~ ^/api/v1/system/variables/?$` | 127.0.0.1:9384 |
-| 246 | `DELETE ~ ^/api/v1/admin/ingestors/?$` | 127.0.0.1:9383 |
-| 247 | `DELETE ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
-| 248 | `DELETE ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
-| 249 | `DELETE ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 250 | `DELETE ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 251 | `DELETE ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
-| 252 | `GET ~ ^/api/v1/admin/ingestors/?$` | 127.0.0.1:9383 |
-| 253 | `GET ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
-| 254 | `GET ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
-| 255 | `GET ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 256 | `GET ~ ^/api/v1/agents/download/?$` | 127.0.0.1:9384 |
-| 257 | `GET ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 258 | `GET ~ ^/api/v1/datasets/[^/]+/graph/?$` | 127.0.0.1:9384 |
-| 259 | `GET ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
-| 260 | `GET ~ ^/api/v1/files/[^/]+/versions/?$` | 127.0.0.1:9384 |
-| 261 | `HEAD ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 262 | `PATCH ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 263 | `POST ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
-| 264 | `POST ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
-| 265 | `POST ~ ^/api/v1/agents/[^/]+/publish/?$` | 127.0.0.1:9384 |
-| 266 | `POST ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 267 | `POST ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
-| 268 | `POST ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
-| 269 | `POST ~ ^/api/v1/datasets/search/?$` | 127.0.0.1:9384 |
-| 270 | `PUT ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
-| 271 | `PUT ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
-| 272 | `DELETE ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
-| 273 | `DELETE ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
-| 274 | `DELETE ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
-| 275 | `DELETE ~ ^/api/v1/system/tokens/[^/]+/?$` | 127.0.0.1:9384 |
-| 276 | `DELETE ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
-| 277 | `GET ~ ^/api/v1/admin/services/?$` | 127.0.0.1:9383 |
-| 278 | `GET ~ ^/api/v1/agents/prompts/?$` | 127.0.0.1:9384 |
-| 279 | `GET ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
-| 280 | `GET ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
-| 281 | `GET ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
-| 282 | `GET ~ ^/api/v1/system/configs/?$` | 127.0.0.1:9384 |
-| 283 | `GET ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
-| 284 | `GET ~ ^/v1/file/parent_folder/?$` | 127.0.0.1:9384 |
-| 285 | `PATCH ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
-| 286 | `POST ~ ^/api/v1/agents/[^/]+/upload/?$` | 127.0.0.1:9384 |
-| 287 | `POST ~ ^/api/v1/skills/reindex/?$` | 127.0.0.1:9384 |
-| 288 | `POST ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
-| 289 | `POST ~ ^/v1/connector/[^/]+/rebuild/?$` | 127.0.0.1:9384 |
-| 290 | `PUT ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
-| 291 | `PUT ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
-| 292 | `GET ~ ^/api/v1/admin/configs/?$` | 127.0.0.1:9383 |
-| 293 | `GET ~ ^/api/v1/admin/license/?$` | 127.0.0.1:9383 |
-| 294 | `GET ~ ^/api/v1/admin/version/?$` | 127.0.0.1:9383 |
-| 295 | `GET ~ ^/api/v1/agents/[^/]+/logs/[^/]+/?$` | 127.0.0.1:9384 |
-| 296 | `GET ~ ^/api/v1/files/[^/]+/parent/?$` | 127.0.0.1:9384 |
-| 297 | `GET ~ ^/api/v1/skills/config/?$` | 127.0.0.1:9384 |
-| 298 | `GET ~ ^/api/v1/skills/spaces/?$` | 127.0.0.1:9384 |
-| 299 | `POST ~ ^/api/v1/admin/license/?$` | 127.0.0.1:9383 |
-| 300 | `POST ~ ^/api/v1/admin/reports/?$` | 127.0.0.1:9383 |
-| 301 | `POST ~ ^/api/v1/agents/[^/]+/reset/?$` | 127.0.0.1:9384 |
-| 302 | `POST ~ ^/api/v1/chat/to_model/?$` | 127.0.0.1:9384 |
-| 303 | `POST ~ ^/api/v1/document/list/?$` | 127.0.0.1:9384 |
-| 304 | `POST ~ ^/api/v1/skills/config/?$` | 127.0.0.1:9384 |
-| 305 | `POST ~ ^/api/v1/skills/search/?$` | 127.0.0.1:9384 |
-| 306 | `POST ~ ^/api/v1/skills/spaces/?$` | 127.0.0.1:9384 |
-| 307 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
-| 308 | `DELETE ~ ^/api/v1/admin/users/[^/]+/?$` | 127.0.0.1:9383 |
-| 309 | `DELETE ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
-| 310 | `DELETE ~ ^/api/v1/skills/index/?$` | 127.0.0.1:9384 |
-| 311 | `DELETE ~ ^/api/v1/system/keys/[^/]+/?$` | 127.0.0.1:9384 |
-| 312 | `GET ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
-| 313 | `GET ~ ^/api/v1/admin/users/[^/]+/?$` | 127.0.0.1:9383 |
-| 314 | `GET ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
-| 315 | `GET ~ ^/v1/file/root_folder/?$` | 127.0.0.1:9384 |
-| 316 | `GET ~ ^/v1/user/tenant_info/?$` | 127.0.0.1:9384 |
-| 317 | `POST ~ ^/api/v1/admin/logout/?$` | 127.0.0.1:9383 |
-| 318 | `POST ~ ^/api/v1/audio/speech/?$` | 127.0.0.1:9384 |
-| 319 | `POST ~ ^/api/v1/chunk/update/?$` | 127.0.0.1:9384 |
-| 320 | `POST ~ ^/api/v1/skills/index/?$` | 127.0.0.1:9384 |
-| 321 | `PUT ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
-| 322 | `PUT ~ ^/api/v1/agents/[^/]+/tags/?$` | 127.0.0.1:9384 |
-| 323 | `PUT ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
-| 324 | `DELETE ~ ^/api/v1/agents/[^/]+/run/?$` | 127.0.0.1:9384 |
-| 325 | `DELETE ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
-| 326 | `GET ~ ^/api/v1/admin/queue/?$` | 127.0.0.1:9383 |
-| 327 | `GET ~ ^/api/v1/admin/users/?$` | 127.0.0.1:9383 |
-| 328 | `GET ~ ^/api/v1/agents/tags/?$` | 127.0.0.1:9384 |
-| 329 | `GET ~ ^/api/v1/all-models/[^/]+/?$` | 127.0.0.1:9384 |
-| 330 | `GET ~ ^/api/v1/auth/login/[^/]+/?$` | 127.0.0.1:9384 |
-| 331 | `GET ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
-| 332 | `GET ~ ^/api/v1/system/keys/?$` | 127.0.0.1:9384 |
-| 333 | `GET ~ ^/api/v1/tenant/list/?$` | 127.0.0.1:9384 |
-| 334 | `PATCH ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
-| 335 | `POST ~ ^/api/v1/admin/login/?$` | 127.0.0.1:9383 |
-| 336 | `POST ~ ^/api/v1/admin/users/?$` | 127.0.0.1:9383 |
-| 337 | `POST ~ ^/api/v1/agents/[^/]+/run/?$` | 127.0.0.1:9384 |
-| 338 | `POST ~ ^/api/v1/system/keys/?$` | 127.0.0.1:9384 |
-| 339 | `DELETE ~ ^/api/v1/datasets/[^/]+/[^/]+/?$` | 127.0.0.1:9384 |
-| 340 | `DELETE ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
-| 341 | `DELETE ~ ^/api/v1/providers/[^/]+/?$` | 127.0.0.1:9384 |
-| 342 | `GET ~ ^/api/v1/admin/auth/?$` | 127.0.0.1:9383 |
-| 343 | `GET ~ ^/api/v1/admin/ping/?$` | 127.0.0.1:9383 |
-| 344 | `GET ~ ^/api/v1/all-models/?$` | 127.0.0.1:9384 |
-| 345 | `GET ~ ^/api/v1/components/?$` | 127.0.0.1:9384 |
-| 346 | `GET ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
-| 347 | `GET ~ ^/api/v1/pipelines/[^/]+/?$` | 127.0.0.1:9384 |
-| 348 | `GET ~ ^/api/v1/providers/[^/]+/?$` | 127.0.0.1:9384 |
-| 349 | `GET ~ ^/v1/connector/list/?$` | 127.0.0.1:9384 |
-| 350 | `GET ~ ^/v1/system/configs/?$` | 127.0.0.1:9384 |
-| 351 | `POST ~ ^/api/v1/chunk/list/?$` | 127.0.0.1:9384 |
-| 352 | `POST ~ ^/api/v1/embeddings/?$` | 127.0.0.1:9384 |
-| 353 | `POST ~ ^/api/v1/file/parse/?$` | 127.0.0.1:9384 |
-| 354 | `PUT ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
-| 355 | `DELETE ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
-| 356 | `DELETE ~ ^/api/v1/messages/[^/]+/?$` | 127.0.0.1:9384 |
-| 357 | `DELETE ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
-| 358 | `GET ~ ^/api/v1/datasets/[^/]+/?$` | 127.0.0.1:9384 |
-| 359 | `GET ~ ^/api/v1/documents/?$` | 127.0.0.1:9384 |
-| 360 | `GET ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
-| 361 | `GET ~ ^/api/v1/pipelines/?$` | 127.0.0.1:9384 |
-| 362 | `GET ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
-| 363 | `POST ~ ^/api/v1/documents/?$` | 127.0.0.1:9384 |
-| 364 | `PUT ~ ^/api/v1/datasets/[^/]+/?$` | 127.0.0.1:9384 |
-| 365 | `PUT ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
-| 366 | `PUT ~ ^/api/v1/messages/[^/]+/?$` | 127.0.0.1:9384 |
-| 367 | `PUT ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
-| 368 | `PATCH ~ ^/api/v1/tenants/[^/]+/?$` | 127.0.0.1:9384 |
-| 369 | `POST ~ ^/api/v1/file/ocr/?$` | 127.0.0.1:9384 |
-| 370 | `POST ~ ^/v1/user/setting/?$` | 127.0.0.1:9384 |
-| 371 | `DELETE ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
-| 372 | `GET ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
-| 373 | `GET ~ ^/v1/tenant/list/?$` | 127.0.0.1:9384 |
-| 374 | `GET ~ ^/v1/user/logout/?$` | 127.0.0.1:9384 |
-| 375 | `PUT ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
-| 376 | `DELETE ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
-| 377 | `GET ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
-| 378 | `GET ~ ^/api/v1/files/[^/]+/?$` | 127.0.0.1:9384 |
-| 379 | `GET ~ ^/v1/connector/[^/]+/?$` | 127.0.0.1:9384 |
-| 380 | `PATCH ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
-| 381 | `PATCH ~ ^/api/v1/models/?$` | 127.0.0.1:9384 |
-| 382 | `POST ~ ^/api/v1/rerank/?$` | 127.0.0.1:9384 |
-| 383 | `PUT ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
-| 384 | `GET ~ ^/v1/user/info/?$` | 127.0.0.1:9384 |
-| 385 | `POST ~ ^/api/v1/mcp/?$` | 127.0.0.1:9384 |
-| 386 | `GET ~ ^/health/?$` | 127.0.0.1:9384 |
-| 387 | `~ ^/api/v1/admin(?:/|$)` | 127.0.0.1:9381 |
-| 388 | `~ ^/(?:v1|api)(?:/|$)` | 127.0.0.1:9380 |
+| 7 | `DELETE ~ ^/api/v1/datasets/[^/]+/navigation/?$` | 127.0.0.1:9380 |
+| 8 | `DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/?$` | 127.0.0.1:9380 |
+| 9 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9380 |
+| 10 | `GET ~ ^/api/v1/messages/[^/]+:[^/]+/content/?$` | 127.0.0.1:9380 |
+| 11 | `DELETE ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9380 |
+| 12 | `DELETE ~ ^/api/v1/datasets/[^/]+/skills/?$` | 127.0.0.1:9380 |
+| 13 | `DELETE ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9380 |
+| 14 | `DELETE ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9380 |
+| 15 | `DELETE ~ ^/api/v1/messages/[^/]+:[^/]+/?$` | 127.0.0.1:9380 |
+| 16 | `PUT ~ ^/api/v1/messages/[^/]+:[^/]+/?$` | 127.0.0.1:9380 |
+| 17 | `POST ~ ^/api/v1/connectors/google/oauth/web/start/?$` | 127.0.0.1:9384 |
+| 18 | `POST ~ ^/api/v1/connectors/google/oauth/web/result/?$` | 127.0.0.1:9384 |
+| 19 | `POST ~ ^/api/v1/connectors/box/oauth/web/start/?$` | 127.0.0.1:9384 |
+| 20 | `POST ~ ^/api/v1/connectors/box/oauth/web/result/?$` | 127.0.0.1:9384 |
+| 21 | `POST ~ ^/api/v1/connectors/[^/]+/test/?$` | 127.0.0.1:9380 |
+| 22 | `POST ~ ^/api/v1/connectors/[^/]+/rebuild/?$` | 127.0.0.1:9380 |
+| 23 | `GET ~ ^/api/v1/files/[^/]+/parent/?$` | 127.0.0.1:9380 |
+| 24 | `PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9380 |
+| 25 | `GET ~ ^/api/v1/documents/[^/]+/preview/?$` | 127.0.0.1:9380 |
+| 26 | `POST ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9380 |
+| 27 | `POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$` | 127.0.0.1:9380 |
+| 28 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9380 |
+| 29 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9380 |
+| 30 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9380 |
+| 31 | `GET ~ ^/api/v1/workspace/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
+| 32 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9380 |
+| 33 | `GET ~ ^/api/v1/workspace/[^/]+/changes/?$` | 127.0.0.1:9380 |
+| 34 | `GET ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 35 | `POST ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 36 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9380 |
+| 37 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9380 |
+| 38 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9380 |
+| 39 | `GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
+| 40 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9380 |
+| 41 | `GET ~ ^/api/v1/datasets/[^/]+/changes/?$` | 127.0.0.1:9380 |
+| 42 | `GET ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 43 | `POST ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 44 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9380 |
+| 45 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9380 |
+| 46 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9380 |
+| 47 | `GET ~ ^/api/v1/folders/[^/]+/commits/diff/?$` | 127.0.0.1:9380 |
+| 48 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9380 |
+| 49 | `GET ~ ^/api/v1/folders/[^/]+/changes/?$` | 127.0.0.1:9380 |
+| 50 | `GET ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 51 | `POST ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9380 |
+| 52 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 53 | `POST ~ ^/api/v1/datasets/[^/]+/documents/batch-update-status/?$` | 127.0.0.1:9384 |
+| 54 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/connection/?$` | 127.0.0.1:9383 |
+| 55 | `PUT ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
+| 56 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/balance/?$` | 127.0.0.1:9383 |
+| 57 | `GET ~ ^/connectors/google-drive/oauth/web/callback/?$` | 127.0.0.1:9384 |
+| 58 | `PATCH ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9383 |
+| 59 | `PUT ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/messages/[^/]+/feedback/?$` | 127.0.0.1:9384 |
+| 60 | `DELETE ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 61 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 62 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
+| 63 | `POST ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 64 | `POST ~ ^/api/v1/connectors/google/oauth/web/result/?$` | 127.0.0.1:9384 |
+| 65 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
+| 66 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
+| 67 | `POST ~ ^/api/v1/connectors/google/oauth/web/start/?$` | 127.0.0.1:9384 |
+| 68 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/[^/]+/content/?$` | 127.0.0.1:9384 |
+| 69 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/connection/?$` | 127.0.0.1:9384 |
+| 70 | `POST ~ ^/api/v1/tenant/insert_metadata_from_file/?$` | 127.0.0.1:9384 |
+| 71 | `GET ~ ^/api/v1/admin/sandbox/providers/[^/]+/schema/?$` | 127.0.0.1:9383 |
+| 72 | `POST ~ ^/api/v1/connectors/box/oauth/web/result/?$` | 127.0.0.1:9384 |
+| 73 | `GET ~ ^/api/v1/agents/[^/]+/components/[^/]+/input-form/?$` | 127.0.0.1:9384 |
+| 74 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/alteration/?$` | 127.0.0.1:9384 |
+| 75 | `GET ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/children/?$` | 127.0.0.1:9384 |
+| 76 | `POST ~ ^/api/v1/connectors/box/oauth/web/start/?$` | 127.0.0.1:9384 |
+| 77 | `POST ~ ^/api/v1/tenant/insert_chunks_from_file/?$` | 127.0.0.1:9384 |
+| 78 | `DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$` | 127.0.0.1:9384 |
+| 79 | `GET ~ ^/api/v1/admin/ingestion/tasks/summary/?$` | 127.0.0.1:9383 |
+| 80 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/structure/?$` | 127.0.0.1:9384 |
+| 81 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/balance/?$` | 127.0.0.1:9384 |
+| 82 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/metadatas/?$` | 127.0.0.1:9384 |
+| 83 | `PATCH ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/.*/?$` | 127.0.0.1:9384 |
+| 84 | `DELETE ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
+| 85 | `GET ~ ^/api/v1/agents/attachments/[^/]+/download/?$` | 127.0.0.1:9384 |
+| 86 | `GET ~ ^/api/v1/datasets/[^/]+/compilation/status/?$` | 127.0.0.1:9384 |
+| 87 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/[^/]+/?$` | 127.0.0.1:9384 |
+| 88 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/summary/?$` | 127.0.0.1:9384 |
+| 89 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
+| 90 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/tasks/[^/]+/?$` | 127.0.0.1:9384 |
+| 91 | `GET ~ ^/connectors/gmail/oauth/web/callback/?$` | 127.0.0.1:9384 |
+| 92 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/[^/]+/?$` | 127.0.0.1:9384 |
+| 93 | `POST ~ ^/api/v1/providers/[^/]+/instances/[^/]+/models/?$` | 127.0.0.1:9384 |
+| 94 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
+| 95 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 96 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9383 |
+| 97 | `GET ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
+| 98 | `GET ~ ^/api/v1/admin/users/[^/]+/default-models/?$` | 127.0.0.1:9383 |
+| 99 | `GET ~ ^/api/v1/agents/attachments/[^/]+/preview/?$` | 127.0.0.1:9384 |
+| 100 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 101 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/tasks/?$` | 127.0.0.1:9384 |
+| 102 | `PATCH ~ ^/api/v1/admin/roles/[^/]+/default-models/?$` | 127.0.0.1:9383 |
+| 103 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 104 | `POST ~ ^/api/v1/admin/providers/[^/]+/connection/?$` | 127.0.0.1:9383 |
+| 105 | `POST ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 106 | `PUT ~ ^/api/v1/admin/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9383 |
+| 107 | `PUT ~ ^/api/v1/admin/system/license/config/?$` | 127.0.0.1:9383 |
+| 108 | `DELETE ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
+| 109 | `DELETE ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/messages/[^/]+/?$` | 127.0.0.1:9384 |
+| 110 | `GET ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
+| 111 | `GET ~ ^/api/v1/auth/oauth/github/callback/?$` | 127.0.0.1:9384 |
+| 112 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/topics/?$` | 127.0.0.1:9384 |
+| 113 | `GET ~ ^/api/v1/datasets/[^/]+/metadata/summary/?$` | 127.0.0.1:9384 |
+| 114 | `GET ~ ^/connectors/box/oauth/web/callback/?$` | 127.0.0.1:9384 |
+| 115 | `POST ~ ^/api/v1/admin/providers/[^/]+/instances/?$` | 127.0.0.1:9383 |
+| 116 | `GET ~ ^/api/v1/admin/users/quota/summary/?$` | 127.0.0.1:9383 |
+| 117 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/graph/?$` | 127.0.0.1:9384 |
+| 118 | `GET ~ ^/api/v1/datasets/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
+| 119 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
+| 120 | `POST ~ ^/api/v1/agents/[^/]+/components/[^/]+/debug/?$` | 127.0.0.1:9384 |
+| 121 | `POST ~ ^/api/v1/datasets/[^/]+/documents/parse/?$` | 127.0.0.1:9384 |
+| 122 | `POST ~ ^/api/v1/datasets/[^/]+/embedding/check/?$` | 127.0.0.1:9384 |
+| 123 | `POST ~ ^/api/v1/datasets/[^/]+/metadata/update/?$` | 127.0.0.1:9384 |
+| 124 | `POST ~ ^/api/v1/document/metadata/summary/?$` | 127.0.0.1:9384 |
+| 125 | `PUT ~ ^/api/v1/datasets/[^/]+/metadata/config/?$` | 127.0.0.1:9384 |
+| 126 | `DELETE ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
+| 127 | `GET ~ ^/api/v1/admin/providers/[^/]+/models/[^/]+/?$` | 127.0.0.1:9383 |
+| 128 | `GET ~ ^/api/v1/admin/system/fingerprint/?$` | 127.0.0.1:9383 |
+| 129 | `GET ~ ^/api/v1/admin/users/plan/summary/?$` | 127.0.0.1:9383 |
+| 130 | `GET ~ ^/api/v1/auth/oauth/lark/callback/?$` | 127.0.0.1:9384 |
+| 131 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
+| 132 | `GET ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
+| 133 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
+| 134 | `POST ~ ^/api/v1/auth/register/otp/verify/?$` | 127.0.0.1:9384 |
+| 135 | `POST ~ ^/api/v1/openai/[^/]+/chat/completions/?$` | 127.0.0.1:9384 |
+| 136 | `PUT ~ ^/api/v1/datasets/ingestion/tasks/?$` | 127.0.0.1:9384 |
+| 137 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
+| 138 | `GET ~ ^/api/v1/admin/providers/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 139 | `GET ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
+| 140 | `GET ~ ^/api/v1/admin/users/[^/]+/permission/?$` | 127.0.0.1:9383 |
+| 141 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
+| 142 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/files/?$` | 127.0.0.1:9384 |
+| 143 | `GET ~ ^/api/v1/workspace/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
+| 144 | `POST ~ ^/api/v1/admin/roles/[^/]+/permission/?$` | 127.0.0.1:9383 |
+| 145 | `GET ~ ^/api/v1/admin/users/[^/]+/providers/?$` | 127.0.0.1:9383 |
+| 146 | `GET ~ ^/api/v1/datasets/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
+| 147 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/tree/?$` | 127.0.0.1:9384 |
+| 148 | `GET ~ ^/api/v1/skills/space/by-folder/?$` | 127.0.0.1:9384 |
+| 149 | `DELETE ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
+| 150 | `DELETE ~ ^/api/v1/datasets/[^/]+/navigation/[^/]+/?$` | 127.0.0.1:9384 |
+| 151 | `DELETE ~ ^/api/v1/tenant/metadata_store/?$` | 127.0.0.1:9384 |
+| 152 | `GET ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
+| 153 | `GET ~ ^/api/v1/admin/users/[^/]+/activity/?$` | 127.0.0.1:9383 |
+| 154 | `GET ~ ^/api/v1/admin/users/[^/]+/datasets/?$` | 127.0.0.1:9383 |
+| 155 | `GET ~ ^/api/v1/admin/users/[^/]+/searches/?$` | 127.0.0.1:9383 |
+| 156 | `GET ~ ^/api/v1/admin/users/documents/?$` | 127.0.0.1:9383 |
+| 157 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$` | 127.0.0.1:9384 |
+| 158 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/[^/]+/?$` | 127.0.0.1:9384 |
+| 159 | `GET ~ ^/api/v1/folders/[^/]+/commits/diff/?$` | 127.0.0.1:9384 |
+| 160 | `GET ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9384 |
+| 161 | `POST ~ ^/api/v1/auth/register/captcha/?$` | 127.0.0.1:9384 |
+| 162 | `POST ~ ^/api/v1/providers/[^/]+/connection/?$` | 127.0.0.1:9384 |
+| 163 | `POST ~ ^/api/v1/searches/[^/]+/completions/?$` | 127.0.0.1:9384 |
+| 164 | `POST ~ ^/api/v1/tenant/metadata_store/?$` | 127.0.0.1:9384 |
+| 165 | `PUT ~ ^/api/v1/admin/ingestion/tasks/?$` | 127.0.0.1:9383 |
+| 166 | `PUT ~ ^/api/v1/admin/users/[^/]+/activate/?$` | 127.0.0.1:9383 |
+| 167 | `PUT ~ ^/api/v1/admin/users/[^/]+/password/?$` | 127.0.0.1:9383 |
+| 168 | `PUT ~ ^/api/v1/datasets/[^/]+/artifacts/[^/]+/[^/]+/?$` | 127.0.0.1:9384 |
+| 169 | `PUT ~ ^/api/v1/providers/[^/]+/instances/[^/]+/?$` | 127.0.0.1:9384 |
+| 170 | `DELETE ~ ^/api/v1/admin/users/[^/]+/tokens/[^/]+/?$` | 127.0.0.1:9383 |
+| 171 | `DELETE ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 172 | `DELETE ~ ^/api/v1/datasets/[^/]+/navigation/?$` | 127.0.0.1:9384 |
+| 173 | `DELETE ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
+| 174 | `GET ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
+| 175 | `GET ~ ^/api/v1/admin/roles/resource/?$` | 127.0.0.1:9383 |
+| 176 | `GET ~ ^/api/v1/admin/service_types/[^/]+/?$` | 127.0.0.1:9383 |
+| 177 | `GET ~ ^/api/v1/admin/system/license/?$` | 127.0.0.1:9383 |
+| 178 | `GET ~ ^/api/v1/admin/users/[^/]+/dataset/?$` | 127.0.0.1:9383 |
+| 179 | `GET ~ ^/api/v1/admin/users/[^/]+/storage/?$` | 127.0.0.1:9383 |
+| 180 | `GET ~ ^/api/v1/admin/users/[^/]+/summary/?$` | 127.0.0.1:9383 |
+| 181 | `GET ~ ^/api/v1/admin/users/activity/?$` | 127.0.0.1:9383 |
+| 182 | `GET ~ ^/api/v1/agents/[^/]+/webhook/logs/?$` | 127.0.0.1:9384 |
+| 183 | `GET ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 184 | `GET ~ ^/api/v1/auth/oauth/[^/]+/callback/?$` | 127.0.0.1:9384 |
+| 185 | `GET ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/?$` | 127.0.0.1:9384 |
+| 186 | `GET ~ ^/api/v1/datasets/[^/]+/ingestions/?$` | 127.0.0.1:9384 |
+| 187 | `GET ~ ^/api/v1/datasets/[^/]+/navigation/?$` | 127.0.0.1:9384 |
+| 188 | `GET ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
+| 189 | `HEAD ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 190 | `PATCH ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 191 | `PATCH ~ ^/api/v1/datasets/[^/]+/documents/[^/]+/?$` | 127.0.0.1:9384 |
+| 192 | `POST ~ ^/api/v1/admin/license/config/?$` | 127.0.0.1:9383 |
+| 193 | `POST ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
+| 194 | `POST ~ ^/api/v1/admin/system/license/?$` | 127.0.0.1:9383 |
+| 195 | `POST ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 196 | `POST ~ ^/api/v1/audio/transcriptions/?$` | 127.0.0.1:9384 |
+| 197 | `POST ~ ^/api/v1/document/delete_meta/?$` | 127.0.0.1:9384 |
+| 198 | `POST ~ ^/api/v1/providers/[^/]+/instances/?$` | 127.0.0.1:9384 |
+| 199 | `POST ~ ^/api/v1/searches/[^/]+/completion/?$` | 127.0.0.1:9384 |
+| 200 | `PUT ~ ^/api/v1/admin/queue/messages/?$` | 127.0.0.1:9383 |
+| 201 | `PUT ~ ^/api/v1/agents/[^/]+/webhook/test/?$` | 127.0.0.1:9384 |
+| 202 | `DELETE ~ ^/api/v1/datasets/[^/]+/artifacts/?$` | 127.0.0.1:9384 |
+| 203 | `DELETE ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
+| 204 | `GET ~ ^/api/v1/admin/users/[^/]+/agents/?$` | 127.0.0.1:9383 |
+| 205 | `GET ~ ^/api/v1/admin/users/[^/]+/models/?$` | 127.0.0.1:9383 |
+| 206 | `GET ~ ^/api/v1/admin/users/[^/]+/tokens/?$` | 127.0.0.1:9383 |
+| 207 | `GET ~ ^/api/v1/admin/users/reports/?$` | 127.0.0.1:9383 |
+| 208 | `GET ~ ^/api/v1/admin/users/storage/?$` | 127.0.0.1:9383 |
+| 209 | `GET ~ ^/api/v1/admin/users/summary/?$` | 127.0.0.1:9383 |
+| 210 | `GET ~ ^/api/v1/auth/azure/callback/?$` | 127.0.0.1:9384 |
+| 211 | `GET ~ ^/api/v1/auth/login/channels/?$` | 127.0.0.1:9384 |
+| 212 | `GET ~ ^/api/v1/auth/oauth/callback/?$` | 127.0.0.1:9384 |
+| 213 | `GET ~ ^/api/v1/datasets/[^/]+/artifacts/?$` | 127.0.0.1:9384 |
+| 214 | `GET ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
+| 215 | `GET ~ ^/api/v1/documents/artifact/[^/]+/?$` | 127.0.0.1:9384 |
+| 216 | `GET ~ ^/api/v1/system/environments/?$` | 127.0.0.1:9384 |
+| 217 | `GET ~ ^/api/v1/workspace/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
+| 218 | `HEAD ~ ^/api/v1/datasets/[^/]+/artifacts/?$` | 127.0.0.1:9384 |
+| 219 | `POST ~ ^/api/v1/admin/users/[^/]+/tokens/?$` | 127.0.0.1:9383 |
+| 220 | `POST ~ ^/api/v1/connectors/[^/]+/rebuild/?$` | 127.0.0.1:9384 |
+| 221 | `POST ~ ^/api/v1/datasets/[^/]+/documents/?$` | 127.0.0.1:9384 |
+| 222 | `POST ~ ^/api/v1/datasets/[^/]+/embedding/?$` | 127.0.0.1:9384 |
+| 223 | `DELETE ~ ^/api/v1/admin/users/[^/]+/admin/?$` | 127.0.0.1:9383 |
+| 224 | `DELETE ~ ^/api/v1/admin/users/[^/]+/keys/[^/]+/?$` | 127.0.0.1:9383 |
+| 225 | `DELETE ~ ^/api/v1/tenant/chunk_store/?$` | 127.0.0.1:9384 |
+| 226 | `GET ~ ^/api/v1/admin/data/storage/?$` | 127.0.0.1:9383 |
+| 227 | `GET ~ ^/api/v1/admin/data/summary/?$` | 127.0.0.1:9383 |
+| 228 | `GET ~ ^/api/v1/admin/environments/?$` | 127.0.0.1:9383 |
+| 229 | `GET ~ ^/api/v1/admin/users/[^/]+/chats/?$` | 127.0.0.1:9383 |
+| 230 | `GET ~ ^/api/v1/admin/users/[^/]+/files/?$` | 127.0.0.1:9383 |
+| 231 | `GET ~ ^/api/v1/admin/users/[^/]+/index/?$` | 127.0.0.1:9383 |
+| 232 | `GET ~ ^/api/v1/admin/users/[^/]+/quota/?$` | 127.0.0.1:9383 |
+| 233 | `GET ~ ^/api/v1/auth/icbc/callback/?$` | 127.0.0.1:9384 |
+| 234 | `GET ~ ^/api/v1/datasets/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
+| 235 | `GET ~ ^/api/v1/documents/[^/]+/preview/?$` | 127.0.0.1:9384 |
+| 236 | `GET ~ ^/api/v1/providers/[^/]+/models/[^/]+/?$` | 127.0.0.1:9384 |
+| 237 | `GET ~ ^/api/v1/workspace/[^/]+/changes/?$` | 127.0.0.1:9384 |
+| 238 | `GET ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 239 | `GET ~ ^/v1/file/all_parent_folder/?$` | 127.0.0.1:9384 |
+| 240 | `POST ~ ^/api/v1/tenant/chunk_store/?$` | 127.0.0.1:9384 |
+| 241 | `POST ~ ^/api/v1/workspace/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 242 | `PUT ~ ^/api/v1/admin/users/[^/]+/admin/?$` | 127.0.0.1:9383 |
+| 243 | `DELETE ~ ^/api/v1/admin/data/orphan/?$` | 127.0.0.1:9383 |
+| 244 | `DELETE ~ ^/api/v1/admin/users/[^/]+/data/?$` | 127.0.0.1:9383 |
+| 245 | `DELETE ~ ^/api/v1/agents/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
+| 246 | `DELETE ~ ^/api/v1/agents/[^/]+/versions/[^/]+/?$` | 127.0.0.1:9384 |
+| 247 | `DELETE ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$` | 127.0.0.1:9384 |
+| 248 | `GET ~ ^/api/v1/admin/all-models/[^/]+/?$` | 127.0.0.1:9383 |
+| 249 | `GET ~ ^/api/v1/admin/data/orphan/?$` | 127.0.0.1:9383 |
+| 250 | `GET ~ ^/api/v1/admin/fingerprint/?$` | 127.0.0.1:9383 |
+| 251 | `GET ~ ^/api/v1/admin/users/[^/]+/keys/?$` | 127.0.0.1:9383 |
+| 252 | `GET ~ ^/api/v1/admin/users/index/?$` | 127.0.0.1:9383 |
+| 253 | `GET ~ ^/api/v1/admin/users/quota/?$` | 127.0.0.1:9383 |
+| 254 | `GET ~ ^/api/v1/agents/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
+| 255 | `GET ~ ^/api/v1/agents/[^/]+/versions/[^/]+/?$` | 127.0.0.1:9384 |
+| 256 | `GET ~ ^/api/v1/datasets/[^/]+/changes/?$` | 127.0.0.1:9384 |
+| 257 | `GET ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 258 | `GET ~ ^/api/v1/datasets/[^/]+/skills/[^/]+/?$` | 127.0.0.1:9384 |
+| 259 | `GET ~ ^/api/v1/documents/images/[^/]+/?$` | 127.0.0.1:9384 |
+| 260 | `GET ~ ^/api/v1/folders/[^/]+/commits/[^/]+/?$` | 127.0.0.1:9384 |
+| 261 | `GET ~ ^/api/v1/messages/[^/]+/content/?$` | 127.0.0.1:9384 |
+| 262 | `GET ~ ^/api/v1/providers/[^/]+/models/?$` | 127.0.0.1:9384 |
+| 263 | `GET ~ ^/api/v1/system/variables/[^/]+/?$` | 127.0.0.1:9384 |
+| 264 | `POST ~ ^/api/v1/admin/users/[^/]+/keys/?$` | 127.0.0.1:9383 |
+| 265 | `POST ~ ^/api/v1/auth/register/otp/?$` | 127.0.0.1:9384 |
+| 266 | `POST ~ ^/api/v1/datasets/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 267 | `POST ~ ^/api/v1/document/set_meta/?$` | 127.0.0.1:9384 |
+| 268 | `POST ~ ^/api/v1/mcp/servers/[^/]+/test/?$` | 127.0.0.1:9384 |
+| 269 | `POST ~ ^/v1/user/setting/password/?$` | 127.0.0.1:9384 |
+| 270 | `PUT ~ ^/api/v1/admin/users/[^/]+/role/?$` | 127.0.0.1:9383 |
+| 271 | `DELETE ~ ^/api/v1/admin/users/data/?$` | 127.0.0.1:9383 |
+| 272 | `DELETE ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 273 | `DELETE ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 274 | `DELETE ~ ^/api/v1/datasets/[^/]+/skills/?$` | 127.0.0.1:9384 |
+| 275 | `GET ~ ^/api/v1/admin/all-models/?$` | 127.0.0.1:9383 |
+| 276 | `GET ~ ^/api/v1/admin/config/log/?$` | 127.0.0.1:9383 |
+| 277 | `GET ~ ^/api/v1/admin/data/index/?$` | 127.0.0.1:9383 |
+| 278 | `GET ~ ^/api/v1/admin/providers/[^/]+/?$` | 127.0.0.1:9383 |
+| 279 | `GET ~ ^/api/v1/admin/variables/[^/]+/?$` | 127.0.0.1:9383 |
+| 280 | `GET ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 281 | `GET ~ ^/api/v1/agents/[^/]+/versions/?$` | 127.0.0.1:9384 |
+| 282 | `GET ~ ^/api/v1/agents/templates/?$` | 127.0.0.1:9384 |
+| 283 | `GET ~ ^/api/v1/auth/azure/login/?$` | 127.0.0.1:9384 |
+| 284 | `GET ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
+| 285 | `GET ~ ^/api/v1/connectors/[^/]+/logs/?$` | 127.0.0.1:9384 |
+| 286 | `GET ~ ^/api/v1/datasets/[^/]+/skills/?$` | 127.0.0.1:9384 |
+| 287 | `GET ~ ^/api/v1/files/[^/]+/ancestors/?$` | 127.0.0.1:9384 |
+| 288 | `GET ~ ^/api/v1/folders/[^/]+/changes/?$` | 127.0.0.1:9384 |
+| 289 | `GET ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 290 | `GET ~ ^/api/v1/memories/[^/]+/config/?$` | 127.0.0.1:9384 |
+| 291 | `GET ~ ^/api/v1/system/variables/?$` | 127.0.0.1:9384 |
+| 292 | `HEAD ~ ^/api/v1/datasets/[^/]+/skills/?$` | 127.0.0.1:9384 |
+| 293 | `PATCH ~ ^/api/v1/chats/[^/]+/sessions/[^/]+/?$` | 127.0.0.1:9384 |
+| 294 | `POST ~ ^/api/v1/agents/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 295 | `POST ~ ^/api/v1/chat/completions/?$` | 127.0.0.1:9384 |
+| 296 | `POST ~ ^/api/v1/connectors/[^/]+/test/?$` | 127.0.0.1:9384 |
+| 297 | `POST ~ ^/api/v1/datasets/[^/]+/chunks/?$` | 127.0.0.1:9384 |
+| 298 | `POST ~ ^/api/v1/datasets/[^/]+/search/?$` | 127.0.0.1:9384 |
+| 299 | `POST ~ ^/api/v1/folders/[^/]+/commits/?$` | 127.0.0.1:9384 |
+| 300 | `POST ~ ^/v1/user/set_tenant_info/?$` | 127.0.0.1:9384 |
+| 301 | `PUT ~ ^/api/v1/admin/config/log/?$` | 127.0.0.1:9383 |
+| 302 | `PUT ~ ^/api/v1/system/variables/?$` | 127.0.0.1:9384 |
+| 303 | `DELETE ~ ^/api/v1/admin/ingestors/?$` | 127.0.0.1:9383 |
+| 304 | `DELETE ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
+| 305 | `DELETE ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
+| 306 | `DELETE ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 307 | `DELETE ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 308 | `DELETE ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
+| 309 | `GET ~ ^/api/v1/admin/ingestors/?$` | 127.0.0.1:9383 |
+| 310 | `GET ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
+| 311 | `GET ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
+| 312 | `GET ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 313 | `GET ~ ^/api/v1/agents/download/?$` | 127.0.0.1:9384 |
+| 314 | `GET ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 315 | `GET ~ ^/api/v1/datasets/[^/]+/graph/?$` | 127.0.0.1:9384 |
+| 316 | `GET ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
+| 317 | `GET ~ ^/api/v1/files/[^/]+/versions/?$` | 127.0.0.1:9384 |
+| 318 | `HEAD ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 319 | `PATCH ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 320 | `POST ~ ^/api/v1/admin/providers/?$` | 127.0.0.1:9383 |
+| 321 | `POST ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
+| 322 | `POST ~ ^/api/v1/agents/[^/]+/publish/?$` | 127.0.0.1:9384 |
+| 323 | `POST ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 324 | `POST ~ ^/api/v1/chats/[^/]+/sessions/?$` | 127.0.0.1:9384 |
+| 325 | `POST ~ ^/api/v1/datasets/[^/]+/index/?$` | 127.0.0.1:9384 |
+| 326 | `POST ~ ^/api/v1/datasets/search/?$` | 127.0.0.1:9384 |
+| 327 | `PUT ~ ^/api/v1/admin/services/[^/]+/?$` | 127.0.0.1:9383 |
+| 328 | `PUT ~ ^/api/v1/agents/[^/]+/webhook/?$` | 127.0.0.1:9384 |
+| 329 | `DELETE ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
+| 330 | `DELETE ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
+| 331 | `DELETE ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
+| 332 | `DELETE ~ ^/api/v1/system/tokens/[^/]+/?$` | 127.0.0.1:9384 |
+| 333 | `DELETE ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
+| 334 | `GET ~ ^/api/v1/admin/services/?$` | 127.0.0.1:9383 |
+| 335 | `GET ~ ^/api/v1/agents/prompts/?$` | 127.0.0.1:9384 |
+| 336 | `GET ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
+| 337 | `GET ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
+| 338 | `GET ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
+| 339 | `GET ~ ^/api/v1/system/configs/?$` | 127.0.0.1:9384 |
+| 340 | `GET ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
+| 341 | `GET ~ ^/v1/file/parent_folder/?$` | 127.0.0.1:9384 |
+| 342 | `PATCH ~ ^/api/v1/chat-channels/[^/]+/?$` | 127.0.0.1:9384 |
+| 343 | `POST ~ ^/api/v1/agents/[^/]+/upload/?$` | 127.0.0.1:9384 |
+| 344 | `POST ~ ^/api/v1/skills/reindex/?$` | 127.0.0.1:9384 |
+| 345 | `POST ~ ^/api/v1/tenants/[^/]+/users/?$` | 127.0.0.1:9384 |
+| 346 | `POST ~ ^/v1/connector/[^/]+/rebuild/?$` | 127.0.0.1:9384 |
+| 347 | `PUT ~ ^/api/v1/datasets/[^/]+/tags/?$` | 127.0.0.1:9384 |
+| 348 | `PUT ~ ^/api/v1/skills/spaces/[^/]+/?$` | 127.0.0.1:9384 |
+| 349 | `GET ~ ^/api/v1/admin/configs/?$` | 127.0.0.1:9383 |
+| 350 | `GET ~ ^/api/v1/admin/license/?$` | 127.0.0.1:9383 |
+| 351 | `GET ~ ^/api/v1/admin/version/?$` | 127.0.0.1:9383 |
+| 352 | `GET ~ ^/api/v1/agents/[^/]+/logs/[^/]+/?$` | 127.0.0.1:9384 |
+| 353 | `GET ~ ^/api/v1/files/[^/]+/parent/?$` | 127.0.0.1:9384 |
+| 354 | `GET ~ ^/api/v1/skills/config/?$` | 127.0.0.1:9384 |
+| 355 | `GET ~ ^/api/v1/skills/spaces/?$` | 127.0.0.1:9384 |
+| 356 | `POST ~ ^/api/v1/admin/license/?$` | 127.0.0.1:9383 |
+| 357 | `POST ~ ^/api/v1/admin/reports/?$` | 127.0.0.1:9383 |
+| 358 | `POST ~ ^/api/v1/agents/[^/]+/reset/?$` | 127.0.0.1:9384 |
+| 359 | `POST ~ ^/api/v1/chat/to_model/?$` | 127.0.0.1:9384 |
+| 360 | `POST ~ ^/api/v1/document/list/?$` | 127.0.0.1:9384 |
+| 361 | `POST ~ ^/api/v1/skills/config/?$` | 127.0.0.1:9384 |
+| 362 | `POST ~ ^/api/v1/skills/search/?$` | 127.0.0.1:9384 |
+| 363 | `POST ~ ^/api/v1/skills/spaces/?$` | 127.0.0.1:9384 |
+| 364 | `POST ~ ^/api/v1/tasks/[^/]+/cancel/?$` | 127.0.0.1:9384 |
+| 365 | `DELETE ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
+| 366 | `DELETE ~ ^/api/v1/admin/users/[^/]+/?$` | 127.0.0.1:9383 |
+| 367 | `DELETE ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
+| 368 | `DELETE ~ ^/api/v1/skills/index/?$` | 127.0.0.1:9384 |
+| 369 | `DELETE ~ ^/api/v1/system/keys/[^/]+/?$` | 127.0.0.1:9384 |
+| 370 | `GET ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
+| 371 | `GET ~ ^/api/v1/admin/users/[^/]+/?$` | 127.0.0.1:9383 |
+| 372 | `GET ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
+| 373 | `GET ~ ^/v1/file/root_folder/?$` | 127.0.0.1:9384 |
+| 374 | `GET ~ ^/v1/user/tenant_info/?$` | 127.0.0.1:9384 |
+| 375 | `POST ~ ^/api/v1/admin/logout/?$` | 127.0.0.1:9383 |
+| 376 | `POST ~ ^/api/v1/audio/speech/?$` | 127.0.0.1:9384 |
+| 377 | `POST ~ ^/api/v1/chunk/update/?$` | 127.0.0.1:9384 |
+| 378 | `POST ~ ^/api/v1/skills/index/?$` | 127.0.0.1:9384 |
+| 379 | `PUT ~ ^/api/v1/admin/roles/[^/]+/?$` | 127.0.0.1:9383 |
+| 380 | `PUT ~ ^/api/v1/agents/[^/]+/tags/?$` | 127.0.0.1:9384 |
+| 381 | `PUT ~ ^/api/v1/mcp/servers/[^/]+/?$` | 127.0.0.1:9384 |
+| 382 | `DELETE ~ ^/api/v1/agents/[^/]+/run/?$` | 127.0.0.1:9384 |
+| 383 | `DELETE ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
+| 384 | `GET ~ ^/api/v1/admin/queue/?$` | 127.0.0.1:9383 |
+| 385 | `GET ~ ^/api/v1/admin/users/?$` | 127.0.0.1:9383 |
+| 386 | `GET ~ ^/api/v1/agents/tags/?$` | 127.0.0.1:9384 |
+| 387 | `GET ~ ^/api/v1/all-models/[^/]+/?$` | 127.0.0.1:9384 |
+| 388 | `GET ~ ^/api/v1/auth/login/[^/]+/?$` | 127.0.0.1:9384 |
+| 389 | `GET ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
+| 390 | `GET ~ ^/api/v1/system/keys/?$` | 127.0.0.1:9384 |
+| 391 | `GET ~ ^/api/v1/tenant/list/?$` | 127.0.0.1:9384 |
+| 392 | `PATCH ~ ^/api/v1/connectors/[^/]+/?$` | 127.0.0.1:9384 |
+| 393 | `POST ~ ^/api/v1/admin/login/?$` | 127.0.0.1:9383 |
+| 394 | `POST ~ ^/api/v1/admin/users/?$` | 127.0.0.1:9383 |
+| 395 | `POST ~ ^/api/v1/agents/[^/]+/run/?$` | 127.0.0.1:9384 |
+| 396 | `POST ~ ^/api/v1/system/keys/?$` | 127.0.0.1:9384 |
+| 397 | `DELETE ~ ^/api/v1/datasets/[^/]+/[^/]+/?$` | 127.0.0.1:9384 |
+| 398 | `DELETE ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
+| 399 | `DELETE ~ ^/api/v1/providers/[^/]+/?$` | 127.0.0.1:9384 |
+| 400 | `GET ~ ^/api/v1/admin/auth/?$` | 127.0.0.1:9383 |
+| 401 | `GET ~ ^/api/v1/admin/ping/?$` | 127.0.0.1:9383 |
+| 402 | `GET ~ ^/api/v1/all-models/?$` | 127.0.0.1:9384 |
+| 403 | `GET ~ ^/api/v1/components/?$` | 127.0.0.1:9384 |
+| 404 | `GET ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
+| 405 | `GET ~ ^/api/v1/pipelines/[^/]+/?$` | 127.0.0.1:9384 |
+| 406 | `GET ~ ^/api/v1/providers/[^/]+/?$` | 127.0.0.1:9384 |
+| 407 | `GET ~ ^/v1/connector/list/?$` | 127.0.0.1:9384 |
+| 408 | `GET ~ ^/v1/system/configs/?$` | 127.0.0.1:9384 |
+| 409 | `POST ~ ^/api/v1/chunk/list/?$` | 127.0.0.1:9384 |
+| 410 | `POST ~ ^/api/v1/embeddings/?$` | 127.0.0.1:9384 |
+| 411 | `POST ~ ^/api/v1/file/parse/?$` | 127.0.0.1:9384 |
+| 412 | `PUT ~ ^/api/v1/documents/[^/]+/?$` | 127.0.0.1:9384 |
+| 413 | `DELETE ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
+| 414 | `DELETE ~ ^/api/v1/messages/[^/]+/?$` | 127.0.0.1:9384 |
+| 415 | `DELETE ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
+| 416 | `GET ~ ^/api/v1/datasets/[^/]+/?$` | 127.0.0.1:9384 |
+| 417 | `GET ~ ^/api/v1/documents/?$` | 127.0.0.1:9384 |
+| 418 | `GET ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
+| 419 | `GET ~ ^/api/v1/pipelines/?$` | 127.0.0.1:9384 |
+| 420 | `GET ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
+| 421 | `POST ~ ^/api/v1/documents/?$` | 127.0.0.1:9384 |
+| 422 | `PUT ~ ^/api/v1/datasets/[^/]+/?$` | 127.0.0.1:9384 |
+| 423 | `PUT ~ ^/api/v1/memories/[^/]+/?$` | 127.0.0.1:9384 |
+| 424 | `PUT ~ ^/api/v1/messages/[^/]+/?$` | 127.0.0.1:9384 |
+| 425 | `PUT ~ ^/api/v1/searches/[^/]+/?$` | 127.0.0.1:9384 |
+| 426 | `PATCH ~ ^/api/v1/tenants/[^/]+/?$` | 127.0.0.1:9384 |
+| 427 | `POST ~ ^/api/v1/file/ocr/?$` | 127.0.0.1:9384 |
+| 428 | `POST ~ ^/v1/user/setting/?$` | 127.0.0.1:9384 |
+| 429 | `DELETE ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
+| 430 | `GET ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
+| 431 | `GET ~ ^/v1/tenant/list/?$` | 127.0.0.1:9384 |
+| 432 | `GET ~ ^/v1/user/logout/?$` | 127.0.0.1:9384 |
+| 433 | `PUT ~ ^/api/v1/agents/[^/]+/?$` | 127.0.0.1:9384 |
+| 434 | `DELETE ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
+| 435 | `GET ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
+| 436 | `GET ~ ^/api/v1/files/[^/]+/?$` | 127.0.0.1:9384 |
+| 437 | `GET ~ ^/v1/connector/[^/]+/?$` | 127.0.0.1:9384 |
+| 438 | `PATCH ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
+| 439 | `PATCH ~ ^/api/v1/models/?$` | 127.0.0.1:9384 |
+| 440 | `POST ~ ^/api/v1/rerank/?$` | 127.0.0.1:9384 |
+| 441 | `PUT ~ ^/api/v1/chats/[^/]+/?$` | 127.0.0.1:9384 |
+| 442 | `GET ~ ^/v1/user/info/?$` | 127.0.0.1:9384 |
+| 443 | `POST ~ ^/api/v1/mcp/?$` | 127.0.0.1:9384 |
+| 444 | `GET ~ ^/health/?$` | 127.0.0.1:9384 |
+| 445 | `~ ^/api/v1/admin(?:/|$)` | 127.0.0.1:9381 |
+| 446 | `~ ^/(?:v1|api)(?:/|$)` | 127.0.0.1:9380 |
 
 ## Routes
 
@@ -735,21 +793,21 @@
 | GET | `/api/v1/connectors/:connector_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:587` | — | — |
 | PATCH | `/api/v1/connectors/:connector_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:588` | — | — |
 | GET | `/api/v1/connectors/:connector_id/logs` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:589` | — | — |
-| POST | `/api/v1/connectors/:connector_id/rebuild` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:591` | — | — |
-| POST | `/api/v1/connectors/:connector_id/test` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:592` | — | — |
+| POST | `/api/v1/connectors/:connector_id/rebuild` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:591` | — | — |
+| POST | `/api/v1/connectors/:connector_id/test` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:592` | — | — |
 | DELETE | `/api/v1/connectors/<connector_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:169` | — | — |
 | GET | `/api/v1/connectors/<connector_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:123` | — | — |
 | PATCH | `/api/v1/connectors/<connector_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:49` | — | — |
 | GET | `/api/v1/connectors/<connector_id>/logs` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:136` | — | — |
-| POST | `/api/v1/connectors/<connector_id>/rebuild` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:152` | — | — |
-| POST | `/api/v1/connectors/<connector_id>/test` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/connector_api.py:181` | — | — |
+| POST | `/api/v1/connectors/<connector_id>/rebuild` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:152` | — | — |
+| POST | `/api/v1/connectors/<connector_id>/test` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:181` | — | — |
 | GET | `/api/v1/connectors/box/oauth/web/callback` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/connector_api.py:621` | go-api@9384 (`internal/router/router.go:182`) | — |
-| POST | `/api/v1/connectors/box/oauth/web/result` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:664` | go-api@9384 (`internal/router/router.go:586`) | — |
-| POST | `/api/v1/connectors/box/oauth/web/start` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:576` | go-api@9384 (`internal/router/router.go:585`) | — |
+| POST | `/api/v1/connectors/box/oauth/web/result` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:586` | python-api@9380 (`api/apps/restful_apis/connector_api.py:664`) | — |
+| POST | `/api/v1/connectors/box/oauth/web/start` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:585` | python-api@9380 (`api/apps/restful_apis/connector_api.py:576`) | — |
 | GET | `/api/v1/connectors/gmail/oauth/web/callback` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/connector_api.py:445` | go-api@9384 (`internal/router/router.go:180`) | — |
 | GET | `/api/v1/connectors/google-drive/oauth/web/callback` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/connector_api.py:500` | go-api@9384 (`internal/router/router.go:181`) | — |
-| POST | `/api/v1/connectors/google/oauth/web/result` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:555` | go-api@9384 (`internal/router/router.go:584`) | — |
-| POST | `/api/v1/connectors/google/oauth/web/start` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/connector_api.py:364` | go-api@9384 (`internal/router/router.go:583`) | — |
+| POST | `/api/v1/connectors/google/oauth/web/result` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:584` | python-api@9380 (`api/apps/restful_apis/connector_api.py:555`) | — |
+| POST | `/api/v1/connectors/google/oauth/web/start` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:583` | python-api@9380 (`api/apps/restful_apis/connector_api.py:364`) | — |
 | DELETE | `/api/v1/datasets` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:161` | go-api@9384 (`internal/router/router.go:346`) | — |
 | GET | `/api/v1/datasets` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:307` | go-api@9384 (`internal/router/router.go:329`) | — |
 | POST | `/api/v1/datasets` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:81` | go-api@9384 (`internal/router/router.go:345`) | — |
@@ -757,26 +815,26 @@
 | PUT | `/api/v1/datasets/:dataset_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:332` | — | — |
 | DELETE | `/api/v1/datasets/:dataset_id/:index_type` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:343` | — | — |
 | DELETE | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:361` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:360` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:359` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:365` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:366` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:363` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:364` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:368` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:367` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:362` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:458` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:360` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| HEAD | `/api/v1/datasets/:dataset_id/artifacts` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:359` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:365` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| PUT | `/api/v1/datasets/:dataset_id/artifacts/:page_type/:slug` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:366` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/alteration` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:363` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/graph` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:364` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:368` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/structure` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:367` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/artifacts/topics` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:362` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:458` | — | — |
 | DELETE | `/api/v1/datasets/:dataset_id/chunks` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:381` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/chunks` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:373` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:452` | — | — |
-| POST | `/api/v1/datasets/:dataset_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:451` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:454` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:455` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:457` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:456` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:452` | — | — |
+| POST | `/api/v1/datasets/:dataset_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:451` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:454` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:455` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:457` | — | — |
+| GET | `/api/v1/datasets/:dataset_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:456` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/commits/diff` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:453` | — | — |
-| GET | `/api/v1/datasets/:dataset_id/compilation/status` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:356` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/compilation/status` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:356` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:366` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:362` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/documents` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:363` | — | — |
@@ -805,16 +863,16 @@
 | PUT | `/api/v1/datasets/:dataset_id/metadata/config` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:359` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/metadata/summary` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:350` | — | — |
 | POST | `/api/v1/datasets/:dataset_id/metadata/update` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:384` | — | — |
-| DELETE | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:372` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:371` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:373` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:374` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:372` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/navigation` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:371` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/navigation/:name` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:373` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/navigation/:name/children` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:374` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | POST | `/api/v1/datasets/:dataset_id/search` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:348` | — | — |
-| DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:379` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:378` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:377` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:381` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:380` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:379` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:378` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| HEAD | `/api/v1/datasets/:dataset_id/skills` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:377` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:381` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/:dataset_id/skills/:skill_kwd` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/router.go:380` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:336` | — | — |
 | GET | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:334` | — | — |
 | PUT | `/api/v1/datasets/:dataset_id/tags` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:335` | — | — |
@@ -824,15 +882,15 @@
 | GET | `/api/v1/datasets/<dataset_id>/any_artifact` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:559` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/any_skill` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:694` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:643` | — | — |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:580` | — | — |
-| HEAD | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:584` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:667` | — | — |
-| PUT | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:770` | — | — |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts/alteration` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:803` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts/graph` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:612` | — | — |
-| DELETE | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:762` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:715` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/artifacts/topics` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:638` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:580` | — | — |
+| HEAD | `/api/v1/datasets/<dataset_id>/artifacts` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:584` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:667` | — | — |
+| PUT | `/api/v1/datasets/<dataset_id>/artifacts/<page_type>/<path:slug>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:770` | — | — |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/alteration` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:803` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/graph` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:612` | — | — |
+| DELETE | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:762` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/structure` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:715` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/artifacts/topics` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:638` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | DELETE | `/api/v1/datasets/<dataset_id>/chunks` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/chunk_api.py:258` | — | — |
 | POST | `/api/v1/datasets/<dataset_id>/chunks` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/chunk_api.py:183` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/documents` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/document_api.py:1103` | — | — |
@@ -870,32 +928,32 @@
 | PUT | `/api/v1/datasets/<dataset_id>/metadata/config` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1000` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/metadata/summary` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/document_api.py:307` | — | — |
 | POST | `/api/v1/datasets/<dataset_id>/metadata/update` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/document_api.py:345` | — | — |
-| DELETE | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1052` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:962` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1052` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:962` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | POST | `/api/v1/datasets/<dataset_id>/navigation` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1097` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| DELETE | `/api/v1/datasets/<dataset_id>/navigation/<path:name>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1074` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/navigation/<path:name>/children` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1029` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/<dataset_id>/navigation/<path:name>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1074` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/navigation/<path:name>/children` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1029` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | GET | `/api/v1/datasets/<dataset_id>/navigation/search` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:984` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
 | POST | `/api/v1/datasets/<dataset_id>/run_graphrag` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:185` | — | backward-compat shim retained by upstream for older clients |
 | POST | `/api/v1/datasets/<dataset_id>/run_raptor` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:221` | — | backward-compat shim retained by upstream for older clients |
 | POST | `/api/v1/datasets/<dataset_id>/search` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:507` | — | — |
-| DELETE | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:917` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:713` | — | — |
-| HEAD | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:881` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| DELETE | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1129` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
-| GET | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:735` | — | — |
+| DELETE | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:917` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:713` | — | — |
+| HEAD | `/api/v1/datasets/<dataset_id>/skills` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:881` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| DELETE | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:1129` | — | Phase 10 backend worktree-only contract at a0e091e75051; absent from deployed v0.26.4 |
+| GET | `/api/v1/datasets/<dataset_id>/skills/<path:skill_kwd>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:735` | — | — |
 | DELETE | `/api/v1/datasets/<dataset_id>/tags` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/dataset_api.py:435` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/tags` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:418` | — | — |
 | PUT | `/api/v1/datasets/<dataset_id>/tags` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/dataset_api.py:458` | — | — |
 | GET | `/api/v1/datasets/<dataset_id>/trace_graphrag` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:203` | — | backward-compat shim retained by upstream for older clients |
 | GET | `/api/v1/datasets/<dataset_id>/trace_raptor` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/backward_compat.py:239` | — | backward-compat shim retained by upstream for older clients |
-| GET | `/api/v1/datasets/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/datasets/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
-| POST | `/api/v1/datasets/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
+| POST | `/api/v1/datasets/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/datasets/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
 | GET | `/api/v1/datasets/<entity_id>/commits/diff` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:280` | — | Registered for 3 prefixes by a shared helper |
 | DELETE | `/api/v1/datasets/ingestion/tasks` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:378` | — | — |
 | GET | `/api/v1/datasets/ingestion/tasks` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:376` | — | — |
@@ -946,29 +1004,29 @@
 | POST | `/api/v1/files` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_api.py:45` | go-api@9384 (`internal/router/router.go:402`) | — |
 | GET | `/api/v1/files/:id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:409` | — | — |
 | GET | `/api/v1/files/:id/ancestors` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:407` | — | — |
-| GET | `/api/v1/files/:id/parent` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:408` | — | — |
+| GET | `/api/v1/files/:id/parent` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:408` | — | — |
 | GET | `/api/v1/files/:id/versions` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:410` | — | — |
 | GET | `/api/v1/files/<file_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_api.py:262` | — | — |
 | GET | `/api/v1/files/<file_id>/ancestors` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_api.py:348` | — | — |
-| GET | `/api/v1/files/<file_id>/parent` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_api.py:317` | — | — |
+| GET | `/api/v1/files/<file_id>/parent` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_api.py:317` | — | — |
 | GET | `/api/v1/files/<file_id>/versions` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:370` | — | — |
 | POST | `/api/v1/files/link-to-datasets` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file2document_api.py:85` | go-api@9384 (`internal/router/router.go:406`) | — |
 | POST | `/api/v1/files/move` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_api.py:208` | go-api@9384 (`internal/router/router.go:405`) | — |
-| GET | `/api/v1/folders/:folder_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:431` | — | — |
-| GET | `/api/v1/folders/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:425` | — | — |
-| POST | `/api/v1/folders/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:424` | — | — |
-| GET | `/api/v1/folders/:folder_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:427` | — | — |
-| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:428` | — | — |
-| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:430` | — | — |
-| GET | `/api/v1/folders/:folder_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:429` | — | — |
+| GET | `/api/v1/folders/:folder_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:431` | — | — |
+| GET | `/api/v1/folders/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:425` | — | — |
+| POST | `/api/v1/folders/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:424` | — | — |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:427` | — | — |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:428` | — | — |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:430` | — | — |
+| GET | `/api/v1/folders/:folder_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:429` | — | — |
 | GET | `/api/v1/folders/:folder_id/commits/diff` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:426` | — | — |
-| GET | `/api/v1/folders/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/folders/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
-| POST | `/api/v1/folders/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
+| POST | `/api/v1/folders/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/folders/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
 | GET | `/api/v1/folders/<entity_id>/commits/diff` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:280` | — | Registered for 3 prefixes by a shared helper |
 | DELETE | `/api/v1/langfuse/api-key` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/langfuse_api.py:85` | go-api@9384 (`internal/router/router.go:688`) | — |
 | GET | `/api/v1/langfuse/api-key` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/langfuse_api.py:61` | go-api@9384 (`internal/router/router.go:687`) | — |
@@ -1101,9 +1159,9 @@
 | PUT | `/api/v1/system/variables` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:629` | — | — |
 | GET | `/api/v1/system/variables/:var_name` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:630` | — | — |
 | GET | `/api/v1/system/version` | python-api | 9380 | hybrid | 127.0.0.1:9380 | public | enabled | `api/apps/restful_apis/system_api.py:43` | go-api@9384 (`internal/router/router.go:157`) | — |
-| POST | `/api/v1/tasks/:session_id/cancel` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/agent_routes.go:110` | — | Phase 11 backend worktree-only Agent session cancellation contract at a0e091e75051; absent from deployed v0.26.4 |
+| POST | `/api/v1/tasks/:session_id/cancel` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | **runtime-disabled** | `internal/router/agent_routes.go:110` | — | Phase 11 backend worktree-only Agent session cancellation contract at a0e091e75051; absent from deployed v0.26.4 |
 | PATCH | `/api/v1/tasks/<task_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/task_api.py:37` | — | — |
-| POST | `/api/v1/tasks/<task_id>/cancel` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/task_api.py:30` | — | — |
+| POST | `/api/v1/tasks/<task_id>/cancel` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/task_api.py:30` | — | — |
 | DELETE | `/api/v1/tenant/chunk_store` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:279` | — | Internal API only for GO |
 | POST | `/api/v1/tenant/chunk_store` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:278` | — | Internal API only for GO |
 | POST | `/api/v1/tenant/insert_chunks_from_file` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:282` | — | Internal API only for GO |
@@ -1126,21 +1184,21 @@
 | PATCH | `/api/v1/users/me` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/user_api.py:302` | go-api@9384 (`internal/router/router.go:258`) | — |
 | GET | `/api/v1/users/me/models` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/user_api.py:567` | go-api@9384 (`internal/router/router.go:260`) | — |
 | PATCH | `/api/v1/users/me/models` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/user_api.py:605` | go-api@9384 (`internal/router/router.go:262`) | — |
-| GET | `/api/v1/workspace/:folder_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:444` | — | — |
-| GET | `/api/v1/workspace/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:438` | — | — |
-| POST | `/api/v1/workspace/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:437` | — | — |
-| GET | `/api/v1/workspace/:folder_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:440` | — | — |
-| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:441` | — | — |
-| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:443` | — | — |
-| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9384 | session | enabled | `internal/router/router.go:442` | — | — |
+| GET | `/api/v1/workspace/:folder_id/changes` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:444` | — | — |
+| GET | `/api/v1/workspace/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:438` | — | — |
+| POST | `/api/v1/workspace/:folder_id/commits` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:437` | — | — |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:440` | — | — |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:441` | — | — |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/files/:file_id/content` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:443` | — | — |
+| GET | `/api/v1/workspace/:folder_id/commits/:commit_id/tree` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:442` | — | — |
 | GET | `/api/v1/workspace/:folder_id/commits/diff` | go-api | 9384 | hybrid | 127.0.0.1:9380 | session | **runtime-disabled** | `internal/router/router.go:439` | — | — |
-| GET | `/api/v1/workspace/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/workspace/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
-| POST | `/api/v1/workspace/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
-| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9384 | login_required | **runtime-disabled** | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/changes` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:301` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:140` | — | Registered for 3 prefixes by a shared helper |
+| POST | `/api/v1/workspace/<entity_id>/commits` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:107` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:199` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:249` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/files/<file_id>/content` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:328` | — | Registered for 3 prefixes by a shared helper |
+| GET | `/api/v1/workspace/<entity_id>/commits/<commit_id>/tree` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:312` | — | Registered for 3 prefixes by a shared helper |
 | GET | `/api/v1/workspace/<entity_id>/commits/diff` | python-api | 9380 | hybrid | 127.0.0.1:9380 | login_required | enabled | `api/apps/restful_apis/file_commit_api.py:280` | — | Registered for 3 prefixes by a shared helper |
 | GET | `/connectors/box/oauth/web/callback` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | enabled | `internal/router/router.go:151` | — | — |
 | GET | `/connectors/gmail/oauth/web/callback` | go-api | 9384 | hybrid | 127.0.0.1:9384 | public | enabled | `internal/router/router.go:149` | — | — |

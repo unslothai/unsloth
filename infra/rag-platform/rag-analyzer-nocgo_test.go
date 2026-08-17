@@ -12,6 +12,7 @@ func TestPureGoAnalyzerContract(t *testing.T) {
 	if err := analyzer.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
+	analyzer.SetLanguage("Turkish")
 
 	got, err := analyzer.Tokenize("Hello, 世界!")
 	if err != nil {

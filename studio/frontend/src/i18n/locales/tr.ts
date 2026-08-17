@@ -138,6 +138,7 @@ export const tr = {
       projects: "Projeler",
       hub: "Bilgi",
       agents: "Agents",
+      files: "Dosyalar",
       agentsUnavailable: "Agents alanı henüz bu sürümde kullanıma açık değil.",
       train: "Eğitim",
       recipes: "Tarifler",
