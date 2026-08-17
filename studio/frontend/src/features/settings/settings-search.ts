@@ -91,6 +91,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.chat.rememberParamsPerModel",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
