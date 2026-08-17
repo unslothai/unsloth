@@ -16,6 +16,7 @@ import {
   MessageResponseDetailsSheet,
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
+import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -284,6 +285,7 @@ import {
   useContext,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -1450,8 +1452,21 @@ export const Thread: FC<{
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  // Same element, in a ref whose identity never changes, so ProgressiveMessages can read the
+  // viewport it lives in without taking a prop that would rebuild its row array on thread switch.
+  // A ref rather than the state above because the Compare panes each mount their own Thread, so a
+  // document-wide query for the viewport class would find the wrong one.
+  const viewportElRef = useRef<HTMLElement | null>(null);
+  // Stable identity so ProgressiveMessages' memo holds across Thread re-renders. Upstream's
+  // ThreadPrimitive.Messages compared this object field by field, so a fresh literal per render
+  // was already free; hoisting it just stops building one.
+  const messageComponents = useMemo(
+    () => ({ UserMessage, EditComposer, AssistantMessage }),
+    [],
+  );
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
+      viewportElRef.current = node;
       setViewportEl(node);
       viewportRef(node);
     },
@@ -1663,12 +1678,15 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                EditComposer,
-                AssistantMessage,
-              }}
+            {/* Drop-in for ThreadPrimitive.Messages that bounds the first commit on a long
+            thread to the tail and mounts the rest over the following frames. Nothing ever
+            unmounts and the document converges to the same tree this rendered before, so every
+            DOM consumer is unaffected once it settles; the ones that cannot wait call
+            completeProgressiveMounts. See progressive-mount-controller.ts. */}
+            <ProgressiveMessages
+              components={messageComponents}
+              resetKey={runtimeThreadId}
+              viewportRef={viewportElRef}
             />
 
             {/* Bottom slack so the last message has room above the sticky

@@ -76,6 +76,17 @@ type AutoScrollContextValue = {
    * re-attaches; explicit pins (run start, button) still work.
    */
   detachFromBottom: () => void;
+  /**
+   * Content of `deltaPx` height was just inserted ABOVE the viewport, so shift
+   * the viewport by it and the user keeps looking at what they were looking at.
+   * Progressive mounting (see progressive-mount-controller) is the only caller.
+   *
+   * This hook owns scrollTop and the caller never writes it, which is the whole
+   * reason this exists as a method rather than as a scrollTop write next to the
+   * commit that inserted the rows. See the implementation for why it no-ops
+   * while the user is following.
+   */
+  adjustForContentInsertedAbove: (deltaPx: number) => void;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -87,6 +98,9 @@ const noopContext: AutoScrollContextValue = {
     /* no-op */
   },
   detachFromBottom: () => {
+    /* no viewport mounted */
+  },
+  adjustForContentInsertedAbove: () => {
     /* no viewport mounted */
   },
 };
@@ -111,6 +125,11 @@ export function useScrollThreadToBottom(): ScrollToBottom {
   return useContext(AutoScrollContext).scrollToBottom;
 }
 
+/** See AutoScrollContextValue.adjustForContentInsertedAbove. */
+export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
+  return useContext(AutoScrollContext).adjustForContentInsertedAbove;
+}
+
 export function useIsThreadAtBottom(): boolean {
   const ctx = useContext(AutoScrollContext);
   return useSyncExternalStore(ctx.subscribe, ctx.getIsAtBottom, () => true);
@@ -132,6 +151,9 @@ export function useIntentAwareAutoScroll(): {
     /* no viewport mounted */
   });
   const detachImplRef = useRef<() => void>(() => {
+    /* no viewport mounted */
+  });
+  const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
     /* no viewport mounted */
   });
 
@@ -160,6 +182,10 @@ export function useIntentAwareAutoScroll(): {
 
   const detachFromBottom = useCallback(() => {
     detachImplRef.current();
+  }, []);
+
+  const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
+    adjustImplRef.current(deltaPx);
   }, []);
 
   const attach = useCallback(
@@ -333,6 +359,46 @@ export function useIntentAwareAutoScroll(): {
       detachImplRef.current = () => {
         detach();
         requestTick();
+      };
+
+      // Content inserted above the viewport by a progressive-mount widening.
+      //
+      // Ownership, stated once so the two mechanisms are never both writing:
+      // THIS HOOK OWNS scrollTop. The progressive mount never writes it, it
+      // only reports the height it put above the fold.
+      //
+      // While the user is FOLLOWING there is deliberately nothing to do. The
+      // widening commit is a childList mutation on this subtree, so the
+      // MutationObserver below already runs onLayoutChange -> pinIfFollowing
+      // in the same frame, before paint; and because widening only ever
+      // prepends, "pin to the bottom" and "shift down by the height inserted
+      // above" are the same pixel. Correcting here as well would be a second
+      // writer for no gain, would double the forced layouts per widening
+      // frame, and the scroll event it emits could re-attach a user who had
+      // deliberately detached within RE_ATTACH_THRESHOLD_PX of the bottom.
+      //
+      // While the user is DETACHED nothing else moves the viewport at all:
+      // extendFollow early-returns, stabilize only rebases its high-water
+      // mark, and pinIfFollowing returns without scrolling. So this is the
+      // only actor, and without it the page slides down under the reader on
+      // every widening frame.
+      //
+      // `behavior: "instant"` is required, not stylistic: the viewport class
+      // list carries `scroll-smooth`, so an animated write would still be in
+      // flight when the next widening frame issued the next one.
+      adjustImplRef.current = (deltaPx: number) => {
+        if (!userDetachedRef.current || deltaPx === 0) {
+          return;
+        }
+        el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
+        // Advance the intent bookkeeping with the write so the scroll event it
+        // provokes reads as no movement. Without this the `delta > 0` branch of
+        // onScroll sees a downward scroll it did not cause; a user parked near
+        // the bottom (detachFromBottom does exactly that when the composer
+        // grows) would be silently re-attached by their own correction, and the
+        // next widening frame would yank them to the bottom.
+        lastScrollTop = el.scrollTop;
+        lastDistanceFromBottom = distanceFromBottom();
       };
 
       const onWheel = (e: WheelEvent) => {
@@ -608,8 +674,20 @@ export function useIntentAwareAutoScroll(): {
   );
 
   const context = useMemo<AutoScrollContextValue>(
-    () => ({ scrollToBottom, getIsAtBottom, subscribe, detachFromBottom }),
-    [scrollToBottom, getIsAtBottom, subscribe, detachFromBottom],
+    () => ({
+      scrollToBottom,
+      getIsAtBottom,
+      subscribe,
+      detachFromBottom,
+      adjustForContentInsertedAbove,
+    }),
+    [
+      scrollToBottom,
+      getIsAtBottom,
+      subscribe,
+      detachFromBottom,
+      adjustForContentInsertedAbove,
+    ],
   );
 
   return { ref, context };
