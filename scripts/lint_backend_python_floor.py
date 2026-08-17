@@ -76,21 +76,34 @@ EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 # Comment parsing is therefore ON, which is what makes the annotation work.
 
 
-def matrix_floor() -> tuple[int, int]:
-    """The oldest interpreter the workflow's matrix names, read from the workflow.
+# The floor is DECLARED, in the workflow, next to where the legs used to be.
+#
+# It used to be derived from the matrix, which was right while the matrix ran several
+# interpreters and became self-defeating the moment it ran one: a 3.13-only matrix would
+# have moved the floor to 3.13 and left this check asserting that code written for 3.13
+# runs on 3.13. Deriving it from pyproject.toml is not the answer either, because that
+# says >= 3.9 and is not true today: unsloth/models/_utils.py already uses
+# dataclasses.dataclass(kw_only) and tempfile.TemporaryDirectory(ignore_cleanup_errors),
+# both 3.10, so a 3.9 target fails on the tree as it stands. That mismatch is worth
+# fixing, in its own change, and this lint is what makes it visible rather than what
+# hides it.
+#
+# So it is a number, written down once, in the workflow that would otherwise have tested
+# it, and read from there.
+FLOOR_KEY = "PYTHON_FLOOR"
 
-    Taken from the FULL list rather than the pull-request subset: the subset is the
-    ceiling only, and the floor this lint defends is the oldest version main still runs.
-    """
+
+def declared_floor() -> tuple[int, int]:
+    """The floor the workflow declares, as (major, minor)."""
     text = WORKFLOW.read_text(encoding = "utf-8")
-    lists = re.findall(r"fromJSON\('(\[[^']*\])'\)", text)
-    if not lists:
-        raise SystemExit(f"no fromJSON matrix found in {WORKFLOW.name}; this lint cannot aim")
-    versions = []
-    for item in lists:
-        versions.extend(json.loads(item))
-    parsed = sorted(tuple(int(part) for part in v.split(".")) for v in versions)
-    return parsed[0]
+    found = re.search(rf"^\s*{FLOOR_KEY}:\s*['\"]?(\d+)\.(\d+)['\"]?\s*$", text, re.M)
+    if not found:
+        raise SystemExit(
+            f"{WORKFLOW.name} declares no {FLOOR_KEY}, so this lint has no target. It is "
+            f"declared there rather than here so that the number lives with the CI that "
+            f"used to test it."
+        )
+    return int(found.group(1)), int(found.group(2))
 
 
 def targets() -> list[str]:
@@ -110,7 +123,7 @@ def targets() -> list[str]:
 
 
 def main() -> int:
-    floor = matrix_floor()
+    floor = declared_floor()
     target = f"{floor[0]}.{floor[1]}"
     # The console script, not `python -m vermin`: the package has no __main__, so that
     # form exits nonzero for the wrong reason and this lint would fail on every run while
@@ -124,7 +137,7 @@ def main() -> int:
     files = targets()
     print(
         f"[floor] {len(files)} files must run on Python {target}, "
-        f"the oldest leg in the matrix"
+        f"the declared floor"
     )
     command = [
         vermin,
@@ -143,9 +156,10 @@ def main() -> int:
         f"::error title=Backend needs a newer Python than the matrix floor::"
         f"something under studio/backend or unsloth_cli requires more than Python {target}, "
         f"which is the "
-        f"oldest leg studio-backend-ci runs. A pull request only runs the newest leg, so "
-        f"this would otherwise fail on the push to main. Either guard the usage behind a "
-        f"sys.version_info check, or raise the floor in the workflow matrix and say why."
+        f"floor studio-backend-ci declares. Nothing runs that interpreter any more, so "
+        f"this check is the only thing standing between an above-floor symbol and a user "
+        f"on that version. Either guard the usage behind a sys.version_info check, or "
+        f"raise {FLOOR_KEY} in the workflow and say why."
     )
     return 1
 

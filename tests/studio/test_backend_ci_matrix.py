@@ -1,21 +1,29 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Backend CI runs both ends of its matrix on a pull request, and all four on main.
+"""Backend CI runs one interpreter, and the floor is defended statically instead.
 
-Measured on one runner over the same tree, the four interpreter legs collect the same
-26,320 tests and differ by exactly one: ``test_demonstrates_the_underlying_stdlib_regression``
-is gated on ``sys.version_info >= (3, 12)``, so 3.10 and 3.11 report 26193 passed / 127
-skipped while 3.12 and 3.13 report 26194 / 126.
+Measured on one runner over the same tree, the four interpreter legs collected the same
+26,320 tests and differed by exactly one: ``test_demonstrates_the_underlying_stdlib_regression``
+is gated on ``sys.version_info >= (3, 12)``, so 3.10 and 3.11 reported 26193 passed / 127
+skipped while 3.12 and 3.13 reported 26194 / 126. Four legs cost 97 runner-minutes per
+push to re-run one identical suite and learn the value of a single skip marker, against a
+queue observed 195 deep, and queue depth is wall-clock for every other workflow.
 
-Dropping the two interior legs rests on three things, all asserted here:
+So there is one leg, the ceiling, and what the older ones were really defending is
+asserted here instead:
 
-* both ENDS are kept. A single leg was tried and is wrong: the backend has
-  version-conditional branches that only a run can exercise, so the floor has to execute;
-* the syntax floor is still checked statically by ``tests/test_python39_compatibility.py``,
-  at the version ``pyproject.toml`` declares, which is lower than any leg here;
-* main still runs all four, so a difference peculiar to 3.11 or 3.12 is caught on merge
-  rather than never.
+* ``scripts/lint_backend_python_floor.py`` refuses any file that needs a symbol newer
+  than the declared floor, across everything shipped or executed, on every pull request;
+* the floor is DECLARED in the workflow rather than derived from the matrix, because a
+  one-leg matrix would otherwise move it to the ceiling and check nothing;
+* ``tests/test_python39_compatibility.py`` still parses at the version ``pyproject.toml``
+  declares, which is below the declared floor.
+
+The cost is stated rather than hidden: a static check does not run anything, so the
+version-conditional branches enumerated below are now covered by reading and by the
+names they use, not by execution. That is the trade, and it is the reason the floor lint
+has to keep covering the files those branches live in.
 """
 
 import ast
@@ -30,41 +38,53 @@ FLOOR_CHECK = REPO / "tests" / "test_python39_compatibility.py"
 BACKEND = REPO / "studio" / "backend"
 
 
-def _matrices() -> tuple[list[str], list[str]]:
-    """The pull-request list and the full list, read out of the matrix expression."""
+def _legs() -> list[str]:
+    """The interpreters the matrix actually runs."""
     document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    expression = str(document["jobs"]["pytest"]["strategy"]["matrix"]["python"])
-    lists = re.findall(r"fromJSON\('(\[[^']*\])'\)", expression)
-    assert len(lists) == 2, f"expected a pull-request list and a full list, found {lists}"
-    return tuple(ast.literal_eval(item) for item in lists)  # type: ignore[return-value]
+    legs = document["jobs"]["pytest"]["strategy"]["matrix"]["python"]
+    assert isinstance(legs, list) and legs, f"unreadable matrix: {legs!r}"
+    return [str(leg) for leg in legs]
+
+
+def _declared_floor() -> tuple[int, ...]:
+    """The floor the workflow declares, which is what the lint aims at."""
+    document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    floor = (document.get("env") or {}).get("PYTHON_FLOOR")
+    assert floor, (
+        "the workflow declares no PYTHON_FLOOR. With one leg in the matrix there is "
+        "nothing else for the floor lint to aim at, so it would check the ceiling "
+        "against itself and pass on anything."
+    )
+    return _version(str(floor))
 
 
 def _version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
-def test_the_pull_request_matrix_is_the_newest_leg():
-    """One leg on a pull request, and it has to be the CEILING.
+def test_the_one_leg_is_the_newest():
+    """One leg, and it has to be the CEILING.
 
-    The ceiling is where a removal lands: a stdlib function that went away, a
-    deprecation that became an error. Those break on the newest interpreter first and on
-    the oldest never, so running only the oldest would be the wrong single choice.
+    The ceiling is where a removal lands: a stdlib function that went away, a deprecation
+    that became an error. Those break on the newest interpreter first and on the oldest
+    never, so running only the oldest would be the wrong single choice.
 
-    The floor is given up here deliberately, and paid for in two other places, both
-    asserted below: scripts/lint_backend_python_floor.py refuses source that needs more
-    than the oldest leg, on every pull request; and main still runs all four, so anything
-    only a run can find is caught at merge rather than never.
+    The floor is given up as an EXECUTED version deliberately, and paid for by
+    scripts/lint_backend_python_floor.py refusing any file that needs a symbol newer than
+    the declared floor, on every pull request, across everything shipped or executed.
     """
-    subset, full = _matrices()
-    assert len(subset) == 1, (
-        f"the pull-request matrix is {subset}. If a second leg is being added back, the "
-        f"reason to do it is the one this file used to encode: a static check does not "
-        f"execute a version-conditional branch. Say so here rather than leaving it bare."
+    legs = _legs()
+    assert len(legs) == 1, (
+        f"the matrix runs {legs}. Adding a leg back is allowed, but the reason has to be "
+        f"written down here: the four legs it replaced collected the same 26,320 tests "
+        f"and differed by one skip marker, so 'more coverage' is not the reason on its own."
     )
-    assert set(subset) <= set(full), f"{subset} is not a subset of {full}"
-    assert max(full, key = _version) == subset[0], (
-        f"the pull-request leg is {subset[0]} but the newest is {max(full, key = _version)}. "
-        f"A single leg has to be the newest: removals and deprecations land there first."
+    floor = _declared_floor()
+    assert _version(legs[0]) > floor, (
+        f"the only leg is {legs[0]} and the declared floor is "
+        f"{'.'.join(str(part) for part in floor)}. A single leg has to be the newest: "
+        f"removals and deprecations land there first, and the floor is the end that a "
+        f"static check can actually defend."
     )
 
 
@@ -113,13 +133,15 @@ def test_the_floor_lint_reads_stdlib_availability_not_just_syntax():
         "the floor lint no longer uses vermin. Whatever replaces it has to read stdlib "
         "API availability and not only syntax, or it stops covering the case it exists for"
     )
-    assert "fromJSON" in text, (
-        "the floor lint no longer reads its target from the workflow matrix, so raising "
-        "the matrix floor would silently leave it checking the old one"
+    assert "PYTHON_FLOOR" in text, (
+        "the floor lint no longer reads PYTHON_FLOOR from the workflow, so the number it "
+        "checks against and the number the project declares can drift apart silently. It "
+        "must not go back to reading the matrix either: with one leg, that would aim the "
+        "check at the ceiling and pass on anything."
     )
 
 
-def _boundaries() -> dict[str, tuple[int, ...]]:
+def _boundaries() -> dict[str, Path]:
     """Every ``sys.version_info`` comparison in the backend, source and tests alike.
 
     Source is what made a single-leg matrix look indefensible on its own:
@@ -128,13 +150,13 @@ def _boundaries() -> dict[str, tuple[int, ...]]:
     parse cannot exercise any of them; it parses, it does not run. Which is why the full
     matrix stayed on main.
     """
-    found: dict[str, tuple[int, ...]] = {}
+    found: dict[str, Path] = {}
     for path in sorted(BACKEND.rglob("*.py")):
         if "vendor" in path.parts:  # third-party, pinned to its own support range
             continue
         text = path.read_text(encoding = "utf-8", errors = "replace")
         for match in re.finditer(r"version_info\s*[<>]=?\s*\((\d+),\s*(\d+)\)", text):
-            found[f"{path.name}:{match.start()}"] = (int(match.group(1)), int(match.group(2)))
+            found[f"{path.name}:{match.start()}"] = path
     return found
 
 
@@ -143,33 +165,35 @@ def _straddles(legs: list[str], boundary: tuple[int, ...]) -> bool:
     return any(v < boundary for v in versions) and any(v >= boundary for v in versions)
 
 
-def test_the_boundaries_the_subset_stops_executing_are_still_run_on_main():
-    """The trade, made explicit rather than dropped along with the legs.
+def test_every_version_boundary_lives_in_a_file_the_floor_lint_covers():
+    """The cost of one leg, made explicit rather than dropped along with the legs.
 
-    These are the version-conditional branches a pull request no longer takes either side
-    of. Nothing static covers them -- a parse reads both sides and runs neither -- so the
-    only thing that does is the full matrix on main. This lists them so the cost is
-    visible, and fails if main stops covering them.
+    These are the version-conditional branches nothing takes either side of any more. A
+    parse reads both sides and runs neither, and there is no longer a second leg to
+    execute the older one, so this is a real reduction in what CI proves. It is the trade
+    the single leg buys, and pretending otherwise in a comment would be worse than making
+    it.
+
+    What is still enforceable is that every file carrying such a branch is covered by the
+    floor lint, so the NAMES used on the older side are checked even though the branch is
+    not taken. A boundary living in a file the lint skips would be unchecked twice over,
+    and that is what this fails on.
     """
-    subset, full = _matrices()
+    import importlib.util
+
+    lint = REPO / "scripts" / "lint_backend_python_floor.py"
+    spec = importlib.util.spec_from_file_location("lint_backend_python_floor", lint)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    scanned = {Path(name) for name in module.targets()}
+
     boundaries = _boundaries()
     assert boundaries, "no version comparisons found in the backend; the scan is wrong"
-    lost = {
-        where: boundary
-        for where, boundary in boundaries.items()
-        if _straddles(full, boundary) and not _straddles(subset, boundary)
-    }
-    assert lost, (
-        "no boundary is lost by the single-leg subset, which would mean the scan found "
-        "nothing; it is the reason this file explains the trade at all"
-    )
-    document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    triggers = document.get(True) or document.get("on") or {}
-    push = triggers.get("push") or {}
-    assert "main" in (push.get("branches") or []), (
-        f"Backend CI no longer runs on push to main, so {sorted(lost)} are executed on "
-        f"neither side of their boundary anywhere, and dropping the interior legs stops "
-        f"being a trade and becomes a straight loss"
+    uncovered = sorted({str(path) for path in boundaries.values() if path not in scanned})
+    assert not uncovered, (
+        f"these files branch on sys.version_info and are not scanned by the floor lint: "
+        f"{uncovered}. Nothing executes the older side of those branches any more, so the "
+        f"lint's view of the names they use is the only check left on them."
     )
 
 
@@ -192,27 +216,45 @@ def test_the_declared_floor_is_still_checked_statically():
     )
 
 
-def test_the_static_floor_is_below_the_matrix_floor():
-    """Otherwise the static check is not covering the versions the matrix stopped running."""
+def test_the_parsed_floor_is_at_or_below_the_declared_floor():
+    """The syntax check has to reach at least as low as the floor the lint aims at.
+
+    They are two different checks of two different things: test_python39_compatibility.py
+    parses at the version pyproject.toml declares, and the floor lint reads stdlib API
+    availability at PYTHON_FLOOR. If the parsed version were the HIGHER of the two, the
+    span between them would be checked by neither.
+
+    It also records a mismatch worth fixing separately rather than papering over:
+    pyproject declares >= 3.9 and the tree does not honour it. unsloth/models/_utils.py
+    uses dataclasses.dataclass(kw_only) and
+    tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10. The declaration or the
+    code has to give; this test only insists the two numbers stay in the order that
+    leaves no gap.
+    """
     text = (REPO / "pyproject.toml").read_text(encoding = "utf-8")
     declared = re.search(r"^requires-python\s*=\s*[\"'][^\"']*>=\s*(\d+)\.(\d+)", text, re.M)
     assert declared, "no >= lower bound in requires-python"
-    floor = (int(declared.group(1)), int(declared.group(2)))
-    _subset, full = _matrices()
-    assert floor <= min(_version(leg) for leg in full), (
-        f"the declared floor {floor} is above the oldest matrix leg, so the static check "
-        f"is not covering what the matrix stopped running"
+    parsed = (int(declared.group(1)), int(declared.group(2)))
+    assert parsed <= _declared_floor(), (
+        f"pyproject.toml declares {parsed} but the workflow declares a floor of "
+        f"{_declared_floor()}. The parse has to reach at least as low as the lint, or the "
+        f"versions between them are checked by nothing at all."
     )
 
 
-def test_the_full_matrix_still_runs_on_main():
-    """Dropping the interior legs is only defensible because main runs everything."""
+def test_backend_ci_still_runs_on_push_to_main():
+    """One leg on a pull request is only defensible if that leg also runs on the merge.
+
+    A pull request tests its own merge commit, not the merged result, so main is where a
+    semantic conflict between two green pull requests shows up. That was true with four
+    legs and it is more load-bearing with one.
+    """
     document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
     triggers = document.get(True) or document.get("on") or {}
     push = triggers.get("push") or {}
     assert "main" in (push.get("branches") or []), (
-        "Backend CI no longer runs on push to main, so the interpreter versions dropped "
-        "from the pull-request matrix would not be tested anywhere"
+        "Backend CI no longer runs on push to main, so nothing tests the merged result "
+        "of two pull requests that were each green on their own merge commit"
     )
 
 

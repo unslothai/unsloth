@@ -13,7 +13,7 @@
 #     not appropriate for CPU-only runners.
 #
 # Two jobs:
-#   - pytest matrix (3.10/3.11/3.12/3.13) over studio/backend/tests
+#   - pytest on 3.13 over studio/backend/tests, with the floor checked statically
 #   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
 #
 # Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
@@ -61,6 +61,26 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The oldest interpreter this code is expected to run on.
+  #
+  # Nothing executes it any more. The 3.10, 3.11 and 3.12 legs ran the same suite as 3.13
+  # and differed by exactly one skip marker, at 97 runner-minutes per push against a queue
+  # that has been observed 195 deep, so they are gone and the wall-clock they were costing
+  # every other workflow is gone with them.
+  #
+  # What they were really defending is that nothing reaches for a symbol newer than this,
+  # which is static, and scripts/lint_backend_python_floor.py now checks it here on every
+  # pull request in seconds across 1093 files. Raise this number only with a reason, and
+  # remember that raising it is a support decision, not a CI one.
+  #
+  # 3.10 rather than the 3.9 pyproject.toml declares, because 3.9 is not true today:
+  # unsloth/models/_utils.py uses dataclasses.dataclass(kw_only) and
+  # tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10. Reconciling those two
+  # is worth doing separately; this lint is what made it visible.
+  PYTHON_FLOOR: '3.10'
+
+
 jobs:
   pytest:
     name: (Python ${{ matrix.python }})
@@ -82,31 +102,32 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both ends on a pull request, all four on main.
+        # 3.13 only, on pull requests and on main alike.
         #
-        # Measured on one runner over the same tree: the four legs collect the same
-        # 26,320 tests and differ by exactly ONE of them, the >= 3.12 gate on
-        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 report
-        # 26193 passed / 127 skipped, 3.12 and 3.13 report 26194 / 126. Four legs cost
-        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a
-        # queue that has been observed 195 deep.
+        # Measured on one runner over the same tree: the four legs collected the same
+        # 26,320 tests and differed by exactly ONE of them, the >= 3.12 gate on
+        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 reported
+        # 26193 passed / 127 skipped, 3.12 and 3.13 reported 26194 / 126. Four legs cost
+        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a queue
+        # that has been observed 195 deep, to re-run one identical suite four times and
+        # learn the value of a single skip marker.
         #
-        # A single leg was tried and is wrong. tests/test_python39_compatibility.py
-        # covers older SYNTAX statically, against the floor pyproject.toml declares
-        # (3.9), which is lower than any leg here. It cannot cover a version-conditional
-        # branch, because it parses rather than runs: sitecustomize.py repoints
-        # pathlib's pre-3.11 _NormalAccessor, native_path_leases.py and
-        # third_party_source.py branch on >= 3.12, and worker.py on a minimum below
-        # that. On 3.13 alone the older side of each is never executed.
+        # What the older legs were really defending is that nothing in the tree reaches
+        # for a symbol newer than the floor, and that is a static property. It is now
+        # checked statically, on every pull request, in seconds, by
+        # scripts/lint_backend_python_floor.py, which reads stdlib API availability
+        # rather than syntax alone and covers 1093 shipped and executed files.
         #
-        # So: the ends. The floor exercises those branches, the ceiling is where
-        # removals and deprecations land and where the one version-gated test runs
-        # rather than skipping. What is left uncovered until merge is a difference
-        # peculiar to 3.11 or 3.12 alone.
-        python: >-
-          ${{ github.event_name == 'pull_request'
-              && fromJSON('["3.13"]')
-              || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
+        # Stated plainly, because it is a real reduction and not a free one: a static
+        # check does not run anything. Two interpreters that both accept a line can
+        # still behave differently on it, and a sys.version_info branch is only ever
+        # parsed, never taken. sitecustomize.py repoints pathlib's pre-3.11
+        # _NormalAccessor, native_path_leases.py and third_party_source.py branch on
+        # >= 3.12, and worker.py on a minimum below that; on 3.13 alone the older side of
+        # each is never executed. Those branches are covered by reading, by the floor
+        # lint's view of the names they use, and by test_python39_compatibility.py's
+        # parse, not by execution.
+        python: ['3.13']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
