@@ -13,10 +13,22 @@
  */
 
 /**
- * How far back the opening `${` may sit. Providers emit short placeholders;
- * a fragment longer than this is left whole rather than cut in half, which is
- * the only direction that is safe: the scan may strip less than the unbounded
- * pattern would, never more, so it can never delete text the model wrote.
+ * How far back the opening `${` may sit. Providers emit short placeholders, so
+ * an opener further back than this is not treated as one.
+ *
+ * The guarantee is stated in terms of what is REMOVED, not what is left whole:
+ * whatever this returns, it removed no more than the unbounded pattern would,
+ * and the result is always a prefix of the input. So it can never delete text
+ * the unbounded pattern would have kept. That is asserted directly across
+ * windows of 1, 2, 4, 8 and 16 characters.
+ *
+ * "The oversized fragment is left whole" is the usual consequence but not the
+ * rule, and the difference shows up when placeholders nest. For
+ * `"answer ${" + "a".repeat(4196) + "${nested}"` the outer opener is out of
+ * window, so the inner `${nested}` is what gets stripped and the outer text
+ * stays. The unbounded pattern deletes 4,208 characters of that input; this
+ * deletes 9. Less is removed, which is the direction that matters, but the
+ * outer fragment is not returned untouched.
  */
 export const TRAILING_PLACEHOLDER_WINDOW = 4096;
 
