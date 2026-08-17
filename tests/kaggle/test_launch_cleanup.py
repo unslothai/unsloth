@@ -99,10 +99,8 @@ def _await_ready(proc: subprocess.Popen) -> None:
 def _wait_for_death(proc: subprocess.Popen) -> None:
     """Wait out the budget, and say what the launcher logged if it never dies.
 
-    The timeout is the other half of the diagnostic: a launcher that hangs and one
-    that exits with the wrong status are different faults, and the bare
-    TimeoutExpired named neither the handler nor anything it logged. Killing first
-    is what lets the pipe reach EOF so the tail can be read at all.
+    A hang and a wrong exit status are different faults, and the bare TimeoutExpired
+    named neither. Killing first is what lets the pipe reach EOF so the tail reads.
     """
     try:
         proc.wait(timeout = _DEATH_BUDGET_SEC)
@@ -118,12 +116,10 @@ def _wait_for_death(proc: subprocess.Popen) -> None:
 def _tail(proc: subprocess.Popen) -> str:
     """Whatever the launcher logged after READY, for a failure message.
 
-    A signal test that fails says only what the exit status was, and throws away the
-    one line that decides where to look: `_install_release_handlers` logs "received
-    signal N" the moment its handler runs, so its presence separates "the signal never
-    reached the handler" from "the handler ran and the process still exited 0". CI has
-    produced the second symptom on a runner where it does not reproduce locally, and
-    the output that would have said which was discarded.
+    `_install_release_handlers` logs "received signal N" the moment its handler runs,
+    which separates "the signal never reached the handler" from "the handler ran and
+    the process still exited 0". CI has produced the second symptom on a runner where
+    it does not reproduce locally, and this output was being discarded.
 
     Read only after the process has exited, so it cannot block: the pipe is at EOF.
     """
