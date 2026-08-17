@@ -126,10 +126,7 @@ def test_the_permissive_policy_widens_every_hostless_scheme_but_one():
 
 
 def test_the_shell_restores_randomuuid_for_insecure_canvases():
-    # crypto.randomUUID() is secure-context only, so a canvas served over plain
-    # http throws without it. The shell's script cannot run from here, so these
-    # pin its parts and the behaviour is checked in a browser: it defers to a
-    # real randomUUID, assigns one when there is none, and runs the installer.
+    # This test cannot execute the shell, so pin the fallback's required pieces.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     assert 'typeof crypto.randomUUID === "function"' in shell
     assert "crypto.randomUUID = () =>" in shell
@@ -137,10 +134,7 @@ def test_the_shell_restores_randomuuid_for_insecure_canvases():
 
 
 def test_the_shell_generator_matches_the_app_one():
-    # The strict CSP allows no external script, so the app's crypto-boot.js
-    # cannot be reused here and its generator is duplicated. Pin the copies to
-    # each other: crypto-boot.js is the one with a golden test over its output,
-    # so a change made to only one side would otherwise go uncovered here.
+    # The strict CSP forbids sharing crypto-boot.js, so keep both copies aligned.
     shell = inf_mod._ARTIFACT_PREVIEW_FRAME_HTML
     boot = (
         pathlib.Path(__file__).resolve().parents[2] / "frontend/public/crypto-boot.js"

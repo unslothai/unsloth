@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `crypto.randomUUID()` is secure-context only, so it is missing over plain http
-// on a LAN address, and the bundle calls it as its modules evaluate. The head is
-// ahead of the whole module graph; external because the CSP is script-src 'self'.
+// randomUUID is unavailable on insecure HTTP origins. Install it before the
+// module graph, which may call it during evaluation.
 if (globalThis.crypto && typeof globalThis.crypto.randomUUID !== "function") {
-  // Bound in the block so this classic script leaks no global.
   const cryptoRef = globalThis.crypto;
   const randomByte = () =>
     typeof cryptoRef.getRandomValues === "function"

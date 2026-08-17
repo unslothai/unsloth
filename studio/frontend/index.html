@@ -8,8 +8,7 @@
     <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Unsloth</title>
-    <!-- External because the backend CSP is script-src 'self', and non-async so
-         both run before the deferred module entry. -->
+    <!-- Classic boot scripts satisfy script-src 'self' and run before modules. -->
     <script src="/crypto-boot.js"></script>
     <script src="/theme-boot.js"></script>
   </head>

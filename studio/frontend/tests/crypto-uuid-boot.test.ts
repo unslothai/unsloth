@@ -18,9 +18,7 @@ const ASYNC_ATTR = /\basync\b/;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-// Every HTML entry, so a new page cannot ship without the polyfill. Markup, not
-// a parsed DOM: catches a tag dropped, moved or made async, not every way of
-// making it inert. Comments would otherwise satisfy that.
+// Check every HTML entry as raw markup so comments cannot satisfy the patterns.
 const PAGES = readdirSync(new URL("../", import.meta.url))
   .filter((name) => name.endsWith(".html"))
   .map((name) => [name, read(`../${name}`).replace(HTML_COMMENT, "")] as const);
@@ -36,8 +34,6 @@ function boot(cryptoStub: unknown): { randomUUID?: () => string } {
 
 test("every page loads the polyfill before its module entry", () => {
   assert.ok(PAGES.length > 0, "no HTML entries found");
-  // Generalising the entry pattern would otherwise accept index.html pointing
-  // at another page's harness.
   const index = PAGES.find(([name]) => name === "index.html")?.[1];
   assert.match(index ?? "", APP_ENTRY, "index.html must keep the app entry");
   for (const [name, markup] of PAGES) {
@@ -50,15 +46,12 @@ test("every page loads the polyfill before its module entry", () => {
 });
 
 test("no page lets the polyfill or its entry opt out of ordered execution", () => {
-  // The entry is deferred, so anything above it runs first and `defer` here
-  // would too. `async` leaves that ordering and lets the entry win.
   for (const [name, markup] of PAGES) {
     assert.doesNotMatch(POLYFILL_TAG.exec(markup)?.[0] ?? "", ASYNC_ATTR, name);
     assert.doesNotMatch(ENTRY_TAG.exec(markup)?.[0] ?? "", ASYNC_ATTR, name);
   }
 });
 
-// Arbitrary and non-sequential, so no substitute source reproduces it.
 const STREAM = [
   0x9e, 0x37, 0x79, 0xb9, 0x7f, 0x4a, 0x7c, 0x15, 0xf3, 0x9c, 0xc0, 0x60, 0x5c,
   0xed, 0xc8, 0x34,
@@ -76,9 +69,7 @@ const generate = boot({
 }).randomUUID;
 
 test("the drawn bytes are what the UUID is built from", () => {
-  // The generator is pure given its bytes, so a golden value catches masking,
-  // folding, or an ignored stream. It certifies no entropy — no unit test can —
-  // and a generator rewrite is expected to change it.
+  // A fixed byte stream catches changes to UUID masking and folding.
   cursor = 0;
   const uuid = generate?.() ?? "";
   assert.equal(uuid, "f799fac5-2c00-4cd8-8e79-8fac53c00cd8");

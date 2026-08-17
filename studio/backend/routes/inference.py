@@ -2481,9 +2481,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
-        // crypto.randomUUID() is secure-context only, so a canvas reached over
-        // plain http loses it. Inlined rather than shared with the app's
-        // crypto-boot.js because the strict CSP here allows no external script.
+        // randomUUID is unavailable in this opaque HTTP context. The strict CSP
+        // forbids crypto-boot.js, so install the same fallback inline.
         const installRandomUUIDFallback = () => {
           if (!window.crypto || typeof crypto.randomUUID === "function") return;
           const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
