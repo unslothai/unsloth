@@ -994,27 +994,60 @@ def is_resumable_partial(
     writer that reopens it is installed; the UI turns this flag into "Resume with HTTP to keep
     the progress you already have", which must not be promised for bytes about to be swept.
 
-    With a ``variant`` the answer is about THAT variant: the blob scan is repo-wide, so a
-    sibling quant's reopenable partial would otherwise answer for a row of its own that is
-    about to be purged. The variant's manifest says which blobs are its own; without one there
-    is nothing to scope by, and an unscoped yes is the promise this guards against.
+    With a ``variant`` the answer is about THAT variant, and it mirrors what
+    :func:`prepare_cache_for_transport` would keep: the blob scan is repo-wide, so a sibling
+    quant's reopenable partial would otherwise answer for a row of its own that is about to be
+    purged. Main blobs are vouched for by the variant marker checked above. A shared companion
+    (mmproj, MTP drafter) answers to ``.transport.companion`` instead, so it only counts while
+    that marker agrees; otherwise the resume it would back is swept first. Without a manifest
+    there is nothing to scope by, and an unscoped yes is the promise this guards against.
     """
     if read_active_transport_marker(repo_type, repo_id, variant) != TRANSPORT_HTTP:
         return False
     resumable = incomplete_blob_hashes(repo_type, repo_id, active_only = True, resumable_only = True)
     if not resumable or variant is None:
         return bool(resumable)
-    return bool(resumable & _manifest_blob_hashes(repo_type, repo_id, variant))
+    main, companion = _manifest_hash_split(repo_type, repo_id, variant)
+    if resumable & main:
+        return True
+    if not resumable & companion:
+        return False
+    return read_active_companion_marker(repo_type, repo_id) == TRANSPORT_HTTP
 
 
-def _manifest_blob_hashes(repo_type: str, repo_id: str, variant: Optional[str]) -> set[str]:
-    """Blob hashes the variant's own download manifest claims. Empty when unreadable."""
+def read_active_companion_marker(
+    repo_type: str,
+    repo_id: str,
+    *,
+    root: Optional[Path] = None,
+) -> Optional[str]:
+    """Transport recorded for the repo's shared companion blobs, which are not variant-scoped."""
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
+        value = _read_companion_marker(entry)
+        if value is not None:
+            return value
+    return None
+
+
+def _manifest_hash_split(
+    repo_type: str, repo_id: str, variant: Optional[str]
+) -> tuple[set[str], set[str]]:
+    """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker
+    splits them when it asks for a purge. Empty pair when either step cannot answer, which
+    reads as "no resume to promise"."""
     from hub.utils import download_manifest
 
     manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
-    if manifest is None:
-        return set()
-    return {file.sha256 for file in manifest.expected_files if file.sha256}
+    if manifest is None or not manifest.expected_files or not variant:
+        return set(), set()
+    try:
+        from hub.utils.gguf_plan import plan_from_expected_files
+
+        plan = plan_from_expected_files(variant, manifest.expected_files)
+    except Exception as exc:  # noqa: BLE001 - an unsplittable manifest promises nothing
+        logger.debug("Could not split manifest hashes for %s [%s]: %s", repo_id, variant, exc)
+        return set(), set()
+    return set(plan.main_hashes), set(plan.companion_hashes)
 
 
 def incomplete_blob_hashes(

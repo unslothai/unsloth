@@ -123,3 +123,52 @@ def test_a_siblings_resumable_partial_does_not_speak_for_this_one(cache):
 
     assert partial_resume_available("model", "Org/Model", "Q8_0") is True
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+COMPANION = "c" * 64
+
+
+def _record_with_companion(transport: str, entry: Path):
+    """A vision quant: its own shard plus the shared mmproj, which every sibling downloads."""
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        [
+            ExpectedFile(path = "model-Q4_K_M.gguf", size = 4096, sha256 = BLOB),
+            ExpectedFile(path = "mmproj-F16.gguf", size = 2048, sha256 = COMPANION),
+        ],
+        transport,
+    )
+    download_registry._write_marker(entry, transport, "Q4_K_M")
+
+
+def test_a_companion_partial_from_another_transport_is_not_a_resume(cache):
+    """The companion is governed by .transport.companion, not by this variant's marker.
+    prepare_cache_for_transport purges it on an HTTP run, so it cannot back a Resume."""
+    _record_with_companion("http", cache)
+    download_registry._write_companion_marker(cache, "xet")
+    _partial(cache, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+def test_a_companion_partial_written_by_http_still_resumes(cache):
+    _record_with_companion("http", cache)
+    download_registry._write_companion_marker(cache, "http")
+    _partial(cache, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
+
+
+def test_an_unmarked_companion_partial_is_not_a_resume(cache):
+    _record_with_companion("http", cache)
+    _partial(cache, f"{COMPANION}{hf_cache_state.INCOMPLETE_SUFFIX}")
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is False
+
+
+def test_the_variants_own_partial_still_decides_for_the_variant(cache):
+    """A companion marker disagreeing says nothing about the main shard, which this
+    variant's own marker vouches for."""
+    _record_with_companion("http", cache)
+    download_registry._write_companion_marker(cache, "xet")
+    _partial(cache, LEGACY_PARTIAL)
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
