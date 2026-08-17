@@ -159,7 +159,13 @@ test("the anchor is measured against its scroll container, not against the windo
   // Both ends go through the same function, so they cannot drift apart.
   assert.match(GLUE, /function sampleAnchor\(/);
   assert.match(GLUE, /sampleAnchor\(viewport, anchor\)/);
-  assert.match(GLUE, /sampleAnchor\(viewport, captured\.element\)/);
+  assert.match(GLUE, /anchorCorrection\(baseline, sampleAnchor\(viewport, element\)\)/);
+  // The row the anchor sits in is captured alongside it. pickAnchorRow descends to the fold, so
+  // the anchor is often the very <pre> Streamdown replaces when Shiki finishes highlighting it,
+  // and a transition-deferred widening leaves room for that. Dropping the correction when it
+  // happens would move a detached reader by a whole chunk with anchoring off.
+  assert.match(GLUE, /const row = anchor\?\.closest\("\[data-role\]"\) \?\? null;/);
+  assert.match(GLUE, /captured\.row\?\.isConnected && captured\.rowSample/);
   assert.match(GLUE, /scrollTop: viewport\.scrollTop,/);
   assert.match(
     GLUE,
