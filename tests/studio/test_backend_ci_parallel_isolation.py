@@ -146,6 +146,11 @@ _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
+    # A 600-second expiry checked against the wall clock. Reading both sides of that gap
+    # late by whole seconds still leaves it true, and it only reaches this scan at all
+    # because the widened operand walk now reads `x > time.time()` as a bound.
+    ("test_openai_codex_subscription.py",
+     "test_account_claim_and_token_response_are_validated_without_returning_raw_body"),
 }
 
 
@@ -283,17 +288,26 @@ def _fragile_timing_asserts(path: Path) -> list:
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
                 continue
-            left = cmp_node.left
-            if not _is_timed(left, names, helpers):
-                continue
-            for op, right in zip(cmp_node.ops, cmp_node.comparators):
-                if not isinstance(op, (ast.Lt, ast.LtE)):
+            # Every adjacent pair, not just the one starting at cmp_node.left. A chained
+            # `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal,
+            # so requiring the leftmost operand to be timed skipped the `elapsed < 2.0`
+            # link and let the file stay in the -n 4 run with the guard still green.
+            # test_llama_cpp_wait_for_vram_settle.py already writes bounds that way.
+            operands = [cmp_node.left, *cmp_node.comparators]
+            for index, op in enumerate(cmp_node.ops):
+                lower, upper = operands[index], operands[index + 1]
+                if isinstance(op, (ast.Gt, ast.GtE)):
+                    # `0.05 > elapsed` bounds the same thing from the same side.
+                    lower, upper = upper, lower
+                elif not isinstance(op, (ast.Lt, ast.LtE)):
                     continue
-                if _is_timed(right, names, helpers):
+                if not _is_timed(lower, names, helpers):
+                    continue
+                if _is_timed(upper, names, helpers):
                     found.append(f"{path.name}:{node.lineno} one duration against another")
-                elif isinstance(right, ast.Constant) and isinstance(right.value, (int, float)):
-                    if right.value <= TIGHT_BOUND_S:
-                        found.append(f"{path.name}:{node.lineno} duration < {right.value}")
+                elif isinstance(upper, ast.Constant) and isinstance(upper.value, (int, float)):
+                    if upper.value <= TIGHT_BOUND_S:
+                        found.append(f"{path.name}:{node.lineno} duration < {upper.value}")
     return found
 
 
