@@ -202,7 +202,9 @@ def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() 
     main = thread_weight_verdict()
     assert "GROWTH_AXES" in main
     assert "no measured axis rose with N" in main
-    # The menu cost is only the reported one if the body really went onto the modal layer.
+    # The menu is opened non-modally now, so the body must NOT go onto the modal layer; what
+    # the verdict has to reject is a run that mixes the two across N, whose columns then price
+    # different mechanisms.
     assert 'menu["body_pointer_events_while_open"]' in main
     # An empty popover satisfies "the menu opened" and costs nothing to render.
     assert 'menu["items_while_open"]' in main
@@ -216,3 +218,49 @@ def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() 
     # message, so both would grow with N for reasons the app does not have.
     assert 'row["stray_api_requests"]' in main
     assert 'row["console_warnings"]' in main
+
+
+def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
+    """One healthy column of the thread-weight table, optionally with a delete that did nothing."""
+    return {
+        "counts": {"messages": 10_000, "codeBlocks": 4, "katexNodes": 4,
+                   "actionBars": 3, "tooltipTriggers": 8},
+        "stray_api_requests": 0,
+        "console_warnings": 0,
+        "first_console_warning": None,
+        "viewport": {"scrollHeight": 9000, "clientHeight": 800, "scrollTop": 0},
+        "paint_floor_ms": 33,
+        "keystroke": {"median_ms": 120, "runtime_text": "x" * 40, "dom_text": "x" * 40},
+        "scroll": {"wall_ms": 100, "scrolled_px": 10_000},
+        "menu": {"open_ms": 10, "close_ms": 10, "body_pointer_events_after_close": "auto",
+                 "body_pointer_events_while_open": layer, "items_while_open": 5,
+                 "triggers_while_hovered": 8},
+        "delete": {"ms": 5 if deleted else None,
+                   "messages_before": 10, "messages_after": 9 if deleted else 10},
+    }
+
+
+def test_thread_weight_rejects_a_dead_delete_at_every_size() -> None:
+    """The delete checks once sat under the whole-run modal-layer `if`, so a table whose delete
+    never removed anything still passed while another axis grew. They belong to the per-size
+    loop: every measured column has to prove its own delete, not just the last one."""
+    import importlib
+    import sys
+
+    sys.path.insert(0, str(STUDIO_TESTS))
+    pytest = importlib.import_module("pytest")
+    pytest.importorskip("playwright")
+    module = importlib.import_module("playwright_thread_weight")
+
+    sizes = [10, 50]
+    for dead in sizes:
+        results = {
+            "sizes": sizes,
+            "by_size": {str(size): _thread_weight_row(deleted = size != dead) for size in sizes},
+        }
+        assert f"N={dead} never deleted a message" in module.harness_failures(results)
+    healthy = {
+        "sizes": sizes,
+        "by_size": {str(size): _thread_weight_row() for size in sizes},
+    }
+    assert not [f for f in module.harness_failures(healthy) if "delete" in f]

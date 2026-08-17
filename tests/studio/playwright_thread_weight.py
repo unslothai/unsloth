@@ -712,6 +712,7 @@ def harness_failures(results: dict) -> list[str]:
     """Only the ways this harness can be measuring nothing. No performance budgets: see the
     module docstring."""
     failures: list[str] = []
+    layers = set()
     for size in results["sizes"]:
         row = results["by_size"][str(size)]
         counts = row["counts"]
@@ -795,25 +796,24 @@ def harness_failures(results: dict) -> list[str]:
         # An empty popover satisfies "the menu opened" and costs nothing to render.
         elif not menu["items_while_open"]:
             failures.append(f"N={size} opened an action menu with no items in it")
-
-    # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
-    # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
-    # across N is comparing columns measured on different mechanisms, which is the quiet way
-    # this table stops meaning anything.
-    layers = set()
-    for size in results["sizes"]:
-        menu = results["by_size"][str(size)]["menu"]
         layers.add(menu["body_pointer_events_while_open"])
-    if len(layers) > 1:
-        failures.append(
-            f"the menu put the body on {sorted(str(x) for x in layers)} across N; the columns "
-            "are not measuring the same mechanism"
-        )
         deleted = row["delete"]
         if deleted["ms"] is None:
             failures.append(f"N={size} never deleted a message")
         elif deleted["messages_after"] >= deleted["messages_before"]:
             failures.append(f"N={size} clicked delete and the message count did not drop")
+
+    # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
+    # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them
+    # across N is comparing columns measured on different mechanisms, which is the quiet way
+    # this table stops meaning anything. Collected in the loop above rather than in a second
+    # one over the same sizes: that loop shadowed `size` and `row`, and every check written
+    # under it silently measured only the last N.
+    if len(layers) > 1:
+        failures.append(
+            f"the menu put the body on {sorted(str(x) for x in layers)} across N; the columns "
+            "are not measuring the same mechanism"
+        )
 
     # Discrimination. Not a budget: a harness where the biggest thread costs exactly what the
     # smallest does is not reporting a flat curve, it is reporting that it never drove the page.
