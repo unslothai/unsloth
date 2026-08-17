@@ -219,6 +219,11 @@ import {
   watchResearchRun,
 } from "../stores/research-run-store";
 import { cancelResearchRun, createResearchRun } from "./research-api";
+import {
+  type OffloadCounts,
+  offloadCountsFrom,
+  offloadWarning,
+} from "../lib/partial-offload";
 
 // Small models (<=9B) answer from memory instead of calling search, so "auto"
 // forces retrieval for them and leaves it to larger ones.
@@ -2607,16 +2612,26 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   const showAutoLoadSuccess = (
     message: string,
     cpuFallbackReason?: CpuFallbackReason | null,
+    offloadCounts?: OffloadCounts,
   ): void => {
+    // This is the path a new user hits first: a chat sent with no model loaded
+    // auto-loads the default, so an auto-fit split has to be reported here too or
+    // the case the warning exists for is the one case that stays silent.
+    const offloadNotice = cpuFallbackReason
+      ? null
+      : offloadWarning(offloadCounts ?? {});
     const options = {
       description: cpuFallbackReason
         ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-        : undefined,
+        : offloadNotice?.description,
       duration: 5000,
       icon: undefined,
     };
-    const showToast = cpuFallbackReason ? toast.warning : toast.success;
-    const title = cpuFallbackReason ? `${message} on CPU` : message;
+    const showToast =
+      cpuFallbackReason || offloadNotice ? toast.warning : toast.success;
+    const title = cpuFallbackReason
+      ? `${message} on CPU`
+      : `${message}${offloadNotice?.titleSuffix ?? ""}`;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
@@ -3136,7 +3151,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ggufVariant: candidate.ggufVariant,
         });
       }
-      showAutoLoadSuccess(candidate.successLabel, loadResp.cpu_fallback_reason);
+      showAutoLoadSuccess(
+        candidate.successLabel,
+        loadResp.cpu_fallback_reason,
+        offloadCountsFrom(loadResp),
+      );
     });
     return true;
   }
@@ -3448,6 +3467,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         showAutoLoadSuccess(
           `Loaded ${DEFAULT_CHAT_MODEL_LABEL} (${DEFAULT_CHAT_MODEL_VARIANT})`,
           loadResp.cpu_fallback_reason,
+          offloadCountsFrom(loadResp),
         );
       });
       return { loaded: true, blockedByTrustRemoteCode: false };

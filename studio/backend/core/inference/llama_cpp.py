@@ -307,6 +307,68 @@ _GPU_DEVICE_PREFIXES = (
 )
 
 
+def parse_gpu_offload_counts(lines: "list[str]") -> "Optional[tuple[int, int]]":
+    """``(offloaded, total)`` layers from llama.cpp's own log, or None.
+
+    classify_gpu_offload_lines already reads this line and then collapses it to a
+    bool, so 12/60 and 60/60 both answer True. That is the right answer to "did the
+    GPU work at all", and it is why a half-offloaded model is indistinguishable from
+    a fully offloaded one everywhere downstream: the user gets a model running at a
+    fraction of the speed and is told only that it loaded.
+
+    Same largest-M rule as the classifier: a draft/MTP model logs its own much
+    smaller line, and the main model is the one worth reporting. On a tie the
+    first line wins, because llama.cpp loads the main model before its drafter and
+    nothing forces a drafter to have fewer layers than its target: taking the
+    larger N there would let a fully offloaded 32-layer drafter report 32/32 over
+    a main model that only got half its layers onto the GPU.
+    """
+    max_total = -1
+    offloaded_at_max = 0
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total:
+            max_total, offloaded_at_max = total, offloaded
+    if max_total <= 0:
+        return None
+    return offloaded_at_max, max_total
+
+
+def llama_saw_gpu_device(lines: "list[str]") -> Optional[bool]:
+    """Whether llama.cpp's own device table lists a GPU, or None if it has none.
+
+    Separate from where the model landed. llama.cpp prints device_info whenever a
+    GPU backend is visible to it, so an all-CPU table is the signal that the
+    backend did not load at all: the case the cudart64_X.dll remediation below is
+    written for. That matters for more than the log, because a load that put no
+    layers on the GPU reads identically to one that had no GPU backend to put
+    them on, and only one of the two is fixed by a smaller quantization.
+
+    Rows after the header only, so an unrelated line naming a backend cannot vote.
+    """
+    after_header = False
+    saw_device_row = False
+    saw_gpu_device = False
+    for line in lines:
+        if "device_info:" in line:
+            after_header = True
+            continue
+        if not after_header:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
+            saw_gpu_device = True
+    if not saw_device_row:
+        return None
+    return saw_gpu_device
+
+
 def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
     """True if the model landed on a GPU, False if it stayed on CPU despite GPU
     intent, None when the log has no usable signal."""
@@ -342,23 +404,8 @@ def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
     # device_info: lists *available* devices (printed whenever a GPU backend is
     # visible), not where the model loaded, so it can only disconfirm: an
     # all-CPU table means no usable GPU. A visible GPU device is not proof the
-    # model used it, so it does not return True. Rows after the header only.
-    after_header = False
-    saw_device_row = False
-    saw_gpu_device = False
-    for line in lines:
-        if "device_info:" in line:
-            after_header = True
-            continue
-        if not after_header:
-            continue
-        match = _DEVICE_ROW_RE.search(line)
-        if not match:
-            continue
-        saw_device_row = True
-        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
-            saw_gpu_device = True
-    if saw_device_row and not saw_gpu_device:
+    # model used it, so it does not return True.
+    if llama_saw_gpu_device(lines) is False:
         return False
     return None
 
@@ -3706,6 +3753,12 @@ class LlamaCppBackend:
         self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
+        # (offloaded, total) layers llama.cpp reported for this load, when it said.
+        self._gpu_offload_layers: Optional[tuple[int, int]] = None
+        # Whether the user's own extras pinned the layer split for this load.
+        self._offload_overridden: bool = False
+        # Studio saw a GPU for this load but llama.cpp's device table did not.
+        self._gpu_backend_unavailable: bool = False
         # Diffusion only: the split the running child was asked for.
         self._diffusion_requested_ngl: Optional[int] = None
         self._context_length: Optional[int] = None
@@ -4066,6 +4119,39 @@ class LlamaCppBackend:
         except (TypeError, ValueError):
             slots = 1
         return max(1, slots)
+
+    @property
+    def offloaded_layers(self) -> Optional[int]:
+        """Layers llama.cpp actually put on a GPU, when its log said so.
+
+        Reported because in Auto mode Studio does not choose the split: it decides
+        the model does not provably fit and hands placement to ``--fit on``. The
+        request (``gpu_layers``) is -1 in that mode, so without this the API cannot
+        distinguish a fully offloaded load from a mostly-CPU one."""
+        return self._gpu_offload_layers[0] if self._gpu_offload_layers else None
+
+    @property
+    def offload_total_layers(self) -> Optional[int]:
+        return self._gpu_offload_layers[1] if self._gpu_offload_layers else None
+
+    @property
+    def gpu_backend_unavailable(self) -> bool:
+        """Studio found a GPU for this load but llama.cpp reported none.
+
+        Distinguishes a backend that failed to initialise from a fit that simply
+        placed no layers: both log ``offloaded 0/M``, and only the second is a
+        size problem, so only the second is answered by a smaller quantization."""
+        return self._gpu_backend_unavailable
+
+    @property
+    def offload_overridden(self) -> bool:
+        """Whether the user's own extras chose this split.
+
+        Auto mode strips neither -ngl nor --fit off from extras, so a deliberate
+        placement can arrive with gpu_memory_mode still reading "auto". Callers
+        that would otherwise suggest a smaller quantization need to know the
+        difference between a spill Studio allowed and a split the user asked for."""
+        return self._offload_overridden
 
     @property
     def requested_parallel_slots(self) -> int:
@@ -17632,6 +17718,56 @@ class LlamaCppBackend:
                         gpu_indices is not None or use_fit or gpu_memory_mode == "manual",
                         _detected_gpus,
                     )
+                # Kept alongside the boolean so a partial offload can be reported.
+                # In auto mode the placement is llama.cpp's (--fit on), so its log is
+                # the only account of what actually happened.
+                #
+                # Gated on the same question the classifier asks, because llama.cpp
+                # logs "offloaded 0/N layers to GPU" on a plain CPU-only host too.
+                # Publishing that count would tell every user without a GPU that a
+                # smaller quantization would leave room on one they do not have.
+                if (
+                    _detected_gpus
+                    and not _arch_gate_forced_cpu
+                    and not _deliberate_cpu_only
+                    and (gpu_indices is not None or use_fit or gpu_memory_mode == "manual")
+                ):
+                    self._gpu_offload_layers = parse_gpu_offload_counts(self._stdout_lines)
+                else:
+                    self._gpu_offload_layers = None
+                # A load that put no layers on the GPU reads identically to one that
+                # had no GPU backend to put them on, and only the first is helped by
+                # a smaller quantization. llama.cpp prints its device table whenever
+                # a GPU backend is visible to it, so an all-CPU table while Studio
+                # itself found a GPU is the second case: the DLL/backend failure the
+                # warning below is written for.
+                self._gpu_backend_unavailable = bool(_detected_gpus) and (
+                    llama_saw_gpu_device(self._stdout_lines) is False
+                )
+                # Auto mode respects an inherited -ngl rather than stripping it, so the
+                # split can be the user's own choice even though the first-class mode
+                # still reads "auto". A --device naming no GPU is the same thing by a
+                # different route: it overrides the layer count outright, so llama.cpp
+                # reports 0/M for a placement that was asked for.
+                #
+                # The layer flags only, not _GPU_OFFLOAD_OVERRIDE_FLAGS: that set also
+                # carries --fit, and --fit on is a request for llama.cpp to place the
+                # model, which is precisely the case worth reporting rather than
+                # suppressing. --fit off pins nothing by itself (it disables the fitter
+                # and leaves our own -ngl -1), so it cannot produce a split either.
+                self._offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_LAYER_FLAGS
+                ) or _device_selection_is_cpu(extra_args, env)
+                if (
+                    self._gpu_offload_layers is not None
+                    and 0 < self._gpu_offload_layers[0] < self._gpu_offload_layers[1]
+                ):
+                    logger.warning(
+                        "llama-server offloaded %d of %d layers to GPU; the rest run on "
+                        "CPU, which is much slower for a dense model.",
+                        self._gpu_offload_layers[0],
+                        self._gpu_offload_layers[1],
+                    )
                 if self._gpu_offload_active is False and not _deliberate_cpu_only:
                     logger.warning(
                         "llama-server appears to have loaded the model entirely "
@@ -18647,6 +18783,9 @@ class LlamaCppBackend:
             # loading) server as VRAM-resident rather than reading the killed
             # server's stale zero-offload flag until the health probe reclassifies.
             self._gpu_offload_active = None
+            self._gpu_offload_layers = None
+            self._offload_overridden = False
+            self._gpu_backend_unavailable = False
             # Drives _wait_for_vram_settle in the next load_model; set in finally
             # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()

@@ -19,8 +19,37 @@ test("an auto-load that fell back to CPU warns instead of claiming plain success
   const start = source.indexOf("const showAutoLoadSuccess = (");
   assert.ok(start >= 0, "showAutoLoadSuccess is no longer defined");
   const helper = source.slice(start, source.indexOf("\n  };", start));
-  assert.match(helper, /cpuFallbackReason \? toast\.warning : toast\.success/);
+  // Not the exact ternary: a second warning condition (a partial GPU offload) was
+  // added alongside it, and pinning the whole expression made a widening of the
+  // rule read as a break of it. What matters is that a CPU fallback still selects
+  // the warning toast and still explains itself.
+  assert.match(
+    helper,
+    /cpuFallbackReason[^\n]*\? toast\.warning : toast\.success/,
+  );
   assert.match(helper, /GPU acceleration is disabled for this model session/);
+});
+
+test("an auto-load that only partly reached the GPU warns too", () => {
+  // The path a new user hits first: a chat sent with no model loaded auto-loads
+  // the default, so without this the case the warning exists for is the one case
+  // that stays silent.
+  const start = source.indexOf("const showAutoLoadSuccess = (");
+  const helper = source.slice(start, source.indexOf("\n  };", start));
+  assert.match(helper, /offloadWarning/);
+  assert.match(helper, /offloadNotice\?\.description/);
+  assert.match(helper, /offloadNotice\?\.titleSuffix/);
+});
+
+test("every auto-load path forwards the offload counts", () => {
+  const calls = source.match(/\n\s*showAutoLoadSuccess\([\s\S]*?\);/g) ?? [];
+  assert.ok(calls.length > 0, "no showAutoLoadSuccess call sites found");
+  for (const call of calls) {
+    // Through the shared reader, so a field added to the split (the mode, and
+    // then whether extras overrode the placement) reaches every load path at
+    // once rather than the one whose call site got updated.
+    assert.match(call, /offloadCountsFrom\(loadResp\)/);
+  }
 });
 
 test("every auto-load path forwards the load response's fallback reason", () => {

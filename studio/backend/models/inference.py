@@ -800,6 +800,34 @@ class _InferenceRuntimeFields(BaseModel):
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 = Auto/--fit, or when not manual).",
     )
+    offloaded_layers: Optional[int] = Field(
+        None,
+        description = (
+            "Layers llama.cpp actually placed on a GPU, when it reported the count. "
+            "In Auto mode the placement is llama.cpp's own (--fit on), so this is the "
+            "only account of what happened; gpu_layers above is the REQUEST."
+        ),
+    )
+    offload_total_layers: Optional[int] = Field(
+        None,
+        description = "Total layers in the model, alongside offloaded_layers.",
+    )
+    gpu_backend_unavailable: bool = Field(
+        False,
+        description = (
+            "Studio detected a GPU for this load but llama.cpp's own device table "
+            "reported none, meaning its GPU backend did not initialise. Separates a "
+            "backend failure from a fit that placed no layers; both log 0/M."
+        ),
+    )
+    offload_overridden: bool = Field(
+        False,
+        description = (
+            "Whether the user's own llama-server extras pinned the layer split. "
+            "Auto mode respects an inherited -ngl instead of stripping it, so a "
+            "deliberate placement can arrive with gpu_memory_mode still 'auto'."
+        ),
+    )
     cpu_fallback_reason: Optional[Literal["vulkan_startup_crash"]] = Field(
         None,
         description = (

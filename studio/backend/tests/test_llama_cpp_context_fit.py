@@ -72,6 +72,7 @@ from core.inference.llama_cpp import (
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     classify_gpu_offload_lines,
+    parse_gpu_offload_counts,
 )
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
@@ -991,3 +992,107 @@ class TestAppleNoKvMetadataFloor:
             apple_budget_mib = 23_000,
         )
         assert plan["c_arg"] == 100_000  # explicit honored even without KV sizing
+
+
+class TestPartialOffloadIsReportable:
+    """The counts behind the boolean.
+
+    classify_gpu_offload_lines answers True for 12/60 and for 60/60 alike, which
+    is right for "did the GPU work at all" and is why a half-offloaded model was
+    indistinguishable from a fully offloaded one everywhere downstream.
+    """
+
+    def test_a_split_load_keeps_both_numbers(self):
+        assert parse_gpu_offload_counts(["load_tensors: offloaded 38/60 layers to GPU"]) == (38, 60)
+
+    def test_the_boolean_cannot_tell_these_apart(self):
+        split = ["load_tensors: offloaded 12/60 layers to GPU"]
+        whole = ["load_tensors: offloaded 60/60 layers to GPU"]
+        assert classify_gpu_offload_lines(split) is classify_gpu_offload_lines(whole) is True
+        assert parse_gpu_offload_counts(split) != parse_gpu_offload_counts(whole)
+
+    def test_the_main_model_wins_over_a_draft(self):
+        # A draft/MTP model logs its own much smaller line; reporting that one
+        # would tell the user about the wrong model. Same rule the classifier uses.
+        lines = [
+            "load_tensors: offloaded 3/3 layers to GPU",
+            "load_tensors: offloaded 12/60 layers to GPU",
+        ]
+        assert parse_gpu_offload_counts(lines) == (12, 60)
+
+    def test_a_drafter_of_equal_size_does_not_mask_the_main_model(self):
+        # Nothing forces a drafter to have fewer layers than its target. On a tie
+        # llama.cpp's load order decides: the main model is logged first, so the
+        # fully offloaded drafter behind it must not report 32/32 over a main
+        # model that only got half its layers onto the GPU.
+        lines = [
+            "load_tensors: offloaded 16/32 layers to GPU",
+            "load_tensors: offloaded 32/32 layers to GPU",
+        ]
+        assert parse_gpu_offload_counts(lines) == (16, 32)
+
+    def test_no_counted_line_is_not_a_guess(self):
+        assert parse_gpu_offload_counts(["INFO starting server"]) is None
+        assert parse_gpu_offload_counts([]) is None
+
+    def test_a_zero_total_is_not_reportable(self):
+        assert parse_gpu_offload_counts(["offloaded 0/0 layers to GPU"]) is None
+
+    def test_an_extras_ngl_reads_as_the_users_own_placement(self):
+        # Auto mode respects an inherited -ngl instead of stripping it (manual
+        # mode is the one that strips), so gpu_memory_mode alone cannot tell a
+        # split Studio allowed from one the user asked for.
+        from core.inference.llama_cpp import (
+            _GPU_OFFLOAD_OVERRIDE_FLAGS,
+            _extra_args_set_any_flag,
+        )
+
+        assert _extra_args_set_any_flag(["-ngl", "20"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert _extra_args_set_any_flag(["--gpu-layers=20"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert not _extra_args_set_any_flag(["--threads", "8"], _GPU_OFFLOAD_OVERRIDE_FLAGS)
+        assert not _extra_args_set_any_flag(None, _GPU_OFFLOAD_OVERRIDE_FLAGS)
+
+    def test_an_all_cpu_device_table_means_the_backend_did_not_load(self):
+        # llama.cpp prints its device table whenever a GPU backend is visible to
+        # it, so an all-CPU table is the DLL/backend failure rather than a fit
+        # that placed no layers. Both log the same 0/M line.
+        from core.inference.llama_cpp import llama_saw_gpu_device
+
+        cpu_only = [
+            "device_info: available devices",
+            "  - CPU: 12 cores",
+        ]
+        with_gpu = [
+            "device_info: available devices",
+            "  - CUDA0: NVIDIA GeForce RTX 4090",
+            "  - CPU: 12 cores",
+        ]
+        assert llama_saw_gpu_device(cpu_only) is False
+        assert llama_saw_gpu_device(with_gpu) is True
+        # No table at all is unknown, not a failure.
+        assert llama_saw_gpu_device(["INFO starting server"]) is None
+        # Rows before the header do not vote.
+        assert llama_saw_gpu_device(["  - CUDA0: something"]) is None
+
+    def test_a_fit_on_in_extras_is_not_a_pinned_split(self):
+        # --fit on asks llama.cpp to choose the placement, which is the case
+        # worth reporting rather than suppressing, so the provenance check reads
+        # the layer flags alone and not the wider set that also carries --fit.
+        from core.inference.llama_cpp import _GPU_LAYER_FLAGS, _extra_args_set_any_flag
+
+        assert not _extra_args_set_any_flag(["--fit", "on"], _GPU_LAYER_FLAGS)
+        assert not _extra_args_set_any_flag(["--fit", "off"], _GPU_LAYER_FLAGS)
+        assert _extra_args_set_any_flag(["-ngl", "20"], _GPU_LAYER_FLAGS)
+
+    def test_a_cpu_device_is_deliberate_placement_too(self):
+        # --device cpu overrides the layer count outright, so llama.cpp reports
+        # 0/M for a placement the user asked for. Recommending a smaller
+        # quantization there would be advice against their own choice, the same
+        # as for an -ngl, so the provenance has to cover this route as well.
+        from core.inference.llama_cpp import _device_selection_is_cpu
+
+        assert _device_selection_is_cpu(["--device", "cpu"])
+        assert _device_selection_is_cpu(["-dev", "none"])
+        assert _device_selection_is_cpu(None, {"LLAMA_ARG_DEVICE": "cpu"})
+        assert not _device_selection_is_cpu(["--device", "CUDA0"])
+        assert not _device_selection_is_cpu(None)

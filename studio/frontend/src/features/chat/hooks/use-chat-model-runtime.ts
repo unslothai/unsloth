@@ -21,6 +21,11 @@ import {
 import { consumeNativePathToken } from "@/features/native-intents/api";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
+import {
+  type OffloadCounts,
+  offloadCountsFrom,
+  offloadWarning,
+} from "../lib/partial-offload";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import {
   notifyNative,
@@ -1045,6 +1050,7 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
+      let offloadCounts: OffloadCounts = {};
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1526,6 +1532,7 @@ export function useChatModelRuntime() {
               force_cancel_active: forceCancelActive,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
+            offloadCounts = offloadCountsFrom(loadResponse);
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -2194,13 +2201,19 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
+          // A split load is a success the user still needs told about: the layers
+          // llama.cpp left on the CPU are on the critical path for every token.
+          const offloadNotice = cpuFallbackReason
+            ? null
+            : offloadWarning(offloadCounts);
           const loadedTitle = cpuFallbackReason
             ? `${toastDisplayName} loaded on CPU`
-            : `${toastDisplayName} loaded`;
+            : `${toastDisplayName} loaded${offloadNotice?.titleSuffix ?? ""}`;
           const loadedDescription = cpuFallbackReason
             ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : undefined;
-          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+            : offloadNotice?.description;
+          const showLoadedToast =
+            cpuFallbackReason || offloadNotice ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,
