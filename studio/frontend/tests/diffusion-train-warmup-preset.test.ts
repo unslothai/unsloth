@@ -118,6 +118,15 @@ test("a hand-edited ramp survives a family switch", () => {
   );
   assert.match(
     source,
-    /\(n\) => \{\s*\n\s*lrScheduleDirty\.current = true;\s*\n\s*setLrWarmupSteps\(n\);/,
+    /markDirty: \(\) => \{\s*\n\s*lrScheduleDirty\.current = true;\s*\n\s*\},\s*\n\s*\}\)\}/,
   );
+});
+
+test("tuning the ramp does not freeze the other family-seeded settings", () => {
+  // "Warmup steps" is newly visible by default for the six flow families, so it now reaches
+  // numberField's dirty mark in normal use. Charging it to the shared settingsDirty would mean
+  // typing a ramp length pinned rank/LR/resolution to the previous family: switch flux.1 ->
+  // qwen-image afterwards and the LR stays 1e-4 instead of re-seeding to 5e-5.
+  assert.match(source, /if \(extra\?\.markDirty\) extra\.markDirty\(\);\s*\n\s*else settingsDirty\.current = true;/);
+  assert.match(source, /markDirty\?: \(\) => void/);
 });

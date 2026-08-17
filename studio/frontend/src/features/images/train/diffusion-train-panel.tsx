@@ -1251,7 +1251,11 @@ export function DiffusionTrainPanel({
     value: number,
     set: (n: number) => void,
     fallback: number,
-    extra?: { min?: number; step?: number; hint?: ReactNode },
+    // markDirty overrides which dirty flag an edit claims. Only "Warmup steps" passes one: it is
+    // seeded from the family like rank/LR/resolution but tracked by lrScheduleDirty, so charging
+    // it to the shared flag would mean tuning the ramp froze the OTHER three at the previous
+    // family's values. That field is newly visible by default, so this is reachable now.
+    extra?: { min?: number; step?: number; hint?: ReactNode; markDirty?: () => void },
   ) => (
     <div className={fieldClass}>
       <FieldLabel hint={extra?.hint}>{label}</FieldLabel>
@@ -1261,7 +1265,8 @@ export function DiffusionTrainPanel({
         step={extra?.step}
         value={value}
         onChange={(e) => {
-          settingsDirty.current = true;
+          if (extra?.markDirty) extra.markDirty();
+          else settingsDirty.current = true;
           // Only fall back when the input parses to NaN; a real 0 is legal for zero-legal fields (Seed, LR warmup steps).
           const parsed = Number(e.target.value);
           set(Number.isNaN(parsed) ? fallback : parsed);
@@ -1400,21 +1405,16 @@ export function DiffusionTrainPanel({
           </Select>
         </div>
         {lrScheduler !== "constant" &&
-          numberField(
-            "Warmup steps",
-            lrWarmupSteps,
-            // The other half of the pair, so it marks the pair dirty too: a hand-typed ramp
-            // length must survive the next family change the same way the schedule does.
-            (n) => {
+          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, {
+            min: 0,
+            hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
+            // The other half of the pair, so an edit claims the pair's flag and only that: a
+            // hand-typed ramp length survives the next family change the way the schedule does,
+            // without freezing rank/LR/resolution on their way to the new family.
+            markDirty: () => {
               lrScheduleDirty.current = true;
-              setLrWarmupSteps(n);
             },
-            0,
-            {
-              min: 0,
-              hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
-            },
-          )}
+          })}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
