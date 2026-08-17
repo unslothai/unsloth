@@ -76,6 +76,7 @@ from utils.paths.scan_folder_health import (
     annotate_scan_folders,
     note_scan_folder_scanned,
     record_scan_failure,
+    refresh_failed_scan_folders,
 )
 
 # Shared with the hub inventory scans; private aliases kept for existing importers.
@@ -1215,7 +1216,10 @@ async def list_local_models(
 async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
-    return {"folders": annotate_scan_folders(list_scan_folders())}
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    await asyncio.to_thread(refresh_failed_scan_folders, folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)

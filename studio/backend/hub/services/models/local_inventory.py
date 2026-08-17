@@ -41,6 +41,7 @@ from utils.paths.scan_folder_health import (
     annotate_scan_folders,
     note_scan_folder_scanned,
     record_scan_failure,
+    refresh_failed_scan_folders,
 )
 
 logger = get_logger(__name__)
@@ -1024,7 +1025,10 @@ def get_models_folder_response() -> dict:
 
 
 def get_scan_folders_response() -> dict:
-    return {"folders": annotate_scan_folders(list_scan_folders())}
+    folders = list_scan_folders()
+    # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
+    refresh_failed_scan_folders(folders)
+    return {"folders": annotate_scan_folders(folders)}
 
 
 def add_scan_folder_response(path: str) -> dict:

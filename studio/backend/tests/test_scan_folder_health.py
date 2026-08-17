@@ -25,7 +25,9 @@ from utils.paths.scan_folder_health import (
     clear_scan_failure,
     is_readable_dir,
     note_scan_folder_scanned,
+    probe_status,
     record_scan_failure,
+    refresh_failed_scan_folders,
     scan_folder_status,
 )
 
@@ -239,6 +241,136 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
     finally:
         denied.chmod(stat.S_IRWXU)
+
+
+def test_a_root_that_lists_but_hides_every_model_is_not_ok(tmp_path: Path):
+    """Mixed permissions: the root reads fine, the model under it does not.
+
+    The scanners skip an unreadable child silently, so this arrives as the same
+    empty list as a genuinely empty folder.
+    """
+    denied_child = tmp_path / "modelA"
+    denied_child.mkdir()
+    (denied_child / "model.gguf").write_bytes(b"stub")
+    denied_child.chmod(0o000)
+    try:
+        assert probe_status(str(tmp_path)) == STATUS_OK
+        assert probe_status(str(tmp_path), children = True) == STATUS_PERMISSION_DENIED
+    finally:
+        denied_child.chmod(stat.S_IRWXU)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+def test_the_real_scan_flags_a_folder_whose_models_are_all_denied(tmp_path: Path):
+    from routes.models import collect_local_models
+
+    folder = tmp_path / "models"
+    denied_child = folder / "modelA"
+    denied_child.mkdir(parents = True)
+    (denied_child / "model.gguf").write_bytes(b"stub")
+    denied_child.chmod(0o000)
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+    try:
+        collect_local_models(tmp_path / "root", custom_folders = list(rows))
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+    finally:
+        denied_child.chmod(stat.S_IRWXU)
+
+
+def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
+    """A folder with many readable children must not turn into a walk."""
+    import utils.paths.scan_folder_health as health
+
+    for i in range(health._CHILD_PROBE_LIMIT * 3):
+        (tmp_path / f"child{i}").mkdir()
+
+    opened: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    assert probe_status(str(tmp_path), children = True) == STATUS_OK
+    # The root plus at most the capped number of children.
+    assert len(opened) <= health._CHILD_PROBE_LIMIT + 1
+
+
+def test_reopening_the_dialog_clears_a_folder_the_user_fixed(tmp_path: Path):
+    """The row tells the user to fix it and come back, so coming back must work.
+
+    Nothing rescans between inventory scans, so the folder list has to recheck.
+    """
+    (tmp_path / "model.gguf").write_bytes(b"stub")
+    rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
+    record_scan_failure(str(tmp_path), PermissionError(errno.EACCES, "Permission denied"))
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+
+    refresh_failed_scan_folders(rows)
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores mode bits")
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX mode bits")
+def test_reopening_the_dialog_keeps_a_folder_that_is_still_denied(tmp_path: Path):
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    denied.chmod(0o000)
+    rows = [{"id": 1, "path": str(denied), "created_at": "2026-01-01"}]
+    record_scan_failure(str(denied), PermissionError(errno.EACCES, "Permission denied"))
+    try:
+        refresh_failed_scan_folders(rows)
+        assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+    finally:
+        denied.chmod(stat.S_IRWXU)
+
+
+def test_the_recheck_updates_a_status_that_changed(tmp_path: Path):
+    gone = tmp_path / "gone"
+    rows = [{"id": 1, "path": str(gone), "created_at": "2026-01-01"}]
+    record_scan_failure(str(gone), PermissionError(errno.EACCES, "Permission denied"))
+    refresh_failed_scan_folders(rows)
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_MISSING
+
+
+def test_the_recheck_leaves_healthy_folders_alone(monkeypatch):
+    """No folder is marked bad, so the folder list must not open anything."""
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("the folder list touched the filesystem")
+
+    for name in ("scandir", "listdir", "stat", "access"):
+        monkeypatch.setattr(os, name, _boom)
+
+    rows = [{"id": 1, "path": "/models/a", "created_at": "2026-01-01"}]
+    refresh_failed_scan_folders(rows)
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_OK
+
+
+def test_the_recheck_only_opens_the_folder_that_failed(tmp_path: Path, monkeypatch):
+    good = tmp_path / "good"
+    good.mkdir()
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    record_scan_failure(str(bad), PermissionError(errno.EACCES, "Permission denied"))
+
+    opened: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    refresh_failed_scan_folders(
+        [
+            {"id": 1, "path": str(good), "created_at": "2026-01-01"},
+            {"id": 2, "path": str(bad), "created_at": "2026-01-02"},
+        ]
+    )
+    assert opened == [str(bad)]
 
 
 def test_reading_status_never_touches_the_filesystem(monkeypatch):

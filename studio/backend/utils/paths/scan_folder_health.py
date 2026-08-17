@@ -23,11 +23,38 @@ STATUS_MISSING = "missing"
 STATUS_UNREADABLE = "unreadable"
 
 
-def probe_status(path: str) -> str:
-    """Open ``path`` and report what the OS says. One syscall, no walking."""
+# Enough to catch a folder whose model dirs are all refused without walking a
+# large one. The scan that got here already returned nothing.
+_CHILD_PROBE_LIMIT = 64
+
+
+def probe_status(path: str, *, children: bool = False) -> str:
+    """Open ``path`` and report what the OS says. No walking.
+
+    With ``children``, also open up to ``_CHILD_PROBE_LIMIT`` subdirectories and
+    report the first refusal. A root can list fine while every model under it is
+    denied, and the scanners skip unreadable children silently, so both arrive as
+    the same empty list. Stops at the first bad child, so the denied-everything
+    case costs one extra open.
+    """
     try:
         with os.scandir(path) as entries:
-            next(entries, None)
+            if not children:
+                next(entries, None)
+                return STATUS_OK
+            probed = 0
+            for entry in entries:
+                if probed >= _CHILD_PROBE_LIMIT:
+                    break
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError as error:
+                    return classify_scan_error(error)
+                probed += 1
+                child_status = probe_status(entry.path)
+                if child_status != STATUS_OK:
+                    return child_status
     except OSError as error:
         return classify_scan_error(error)
     return STATUS_OK
@@ -84,7 +111,7 @@ def note_scan_folder_scanned(path: str, *, found: bool) -> None:
     if found:
         clear_scan_failure(path)
         return
-    status = probe_status(path)
+    status = probe_status(path, children = True)
     if status == STATUS_OK:
         clear_scan_failure(path)
         return
@@ -98,6 +125,27 @@ def scan_folder_status(path: str) -> str:
     if not _failed:
         return STATUS_OK
     return _failed.get(path, STATUS_OK)
+
+
+def refresh_failed_scan_folders(folders: list[dict]) -> None:
+    """Re-check the folders currently marked bad, and only those.
+
+    The row tells the user to fix permissions and reopen the dialog, so reopening
+    has to be able to clear it. Nothing else rechecks between inventory scans.
+    A healthy folder is not in the registry, so it is never opened here.
+    """
+    if not _failed:
+        return
+    for folder in folders:
+        path = str(folder.get("path", ""))
+        previous = _failed.get(path)
+        if previous is None:
+            continue
+        status = probe_status(path, children = True)
+        if status == STATUS_OK:
+            _failed.pop(path, None)
+        elif status != previous:
+            _failed[path] = status
 
 
 def annotate_scan_folders(folders: list[dict]) -> list[dict]:
