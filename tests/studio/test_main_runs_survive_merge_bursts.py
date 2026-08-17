@@ -92,7 +92,8 @@ def test_every_workflow_that_runs_on_main_is_grouped_per_commit():
     the workflow simply never reported on that commit.
     """
     offenders = sorted(
-        name for name, document in _protected().items()
+        name
+        for name, document in _protected().items()
         if not _is_per_commit_on_main(_group(document))
     )
     assert not offenders, (
