@@ -456,8 +456,18 @@ function useCoalescedStreamingText(
   return text;
 }
 
-const MarkdownTextImpl = () => {
-  const { text, status } = useMessagePartText();
+/**
+ * `text` overrides what is rendered without changing where the STATUS comes from.
+ *
+ * The reasoning pane renders a bounded window of a long thinking block rather than all of it
+ * (features/chat/utils/reasoning-window.ts), and this is the seam that lets it. Everything else
+ * -- the streaming status, the message id the caches key on, the coalescer, the incremental
+ * Markdown cache -- still comes from the part, so a caller cannot accidentally detach the
+ * renderer from the stream by passing a string.
+ */
+const MarkdownTextImpl = ({ text: textOverride }: { text?: string } = {}) => {
+  const { text: partText, status } = useMessagePartText();
+  const text = textOverride ?? partText;
   // Parts are keyed by index, so switching conversations hands this instance a
   // different message, and Streamdown only extends its parsed blocks: key it per
   // message. The cache generation joins the key for the case the Markdown string

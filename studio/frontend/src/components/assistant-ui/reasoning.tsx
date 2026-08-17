@@ -18,12 +18,14 @@ import {
   startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
+import { nextReasoningWindowStart } from "@/features/chat/utils/reasoning-window";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
   type ReasoningMessagePartComponent,
   useAuiState,
+  useMessagePartText,
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
@@ -271,7 +273,56 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+/**
+ * How long after the stream ends the full thinking text replaces the window.
+ *
+ * The group closes itself when the round finishes and Radix unmounts closed content, so in the
+ * ordinary case this timer is cleaned up before it fires and the whole body never mounts at all.
+ * That is the point: mounting 90,000 characters of thinking on the completion frame, only to
+ * unmount it 200ms later, was measured at a 5.8 SECOND frame on a machine with no headroom.
+ *
+ * It fires for the reader who opened the block by hand and is therefore still looking at it,
+ * which is the only case where the rest of the thinking text is wanted.
+ */
+const FULL_TEXT_DELAY_MS = ANIMATION_DURATION + 50;
+
+/**
+ * The thinking body: a bounded window of it while it streams, all of it once it has settled.
+ *
+ * See features/chat/utils/reasoning-window.ts for why the window exists and why its start moves
+ * in steps rather than continuously.
+ */
+function ReasoningBody() {
+  const { text, status } = useMessagePartText();
+  const isRunning = status.type === "running";
+  const startRef = useRef(0);
+  const [showFull, setShowFull] = useState(!isRunning);
+
+  useEffect(() => {
+    if (isRunning) {
+      setShowFull(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setShowFull(true), FULL_TEXT_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [isRunning]);
+
+  if (showFull) {
+    return <MarkdownText />;
+  }
+
+  // Advanced during render, not in an effect: the window start is a pure, monotone function of
+  // the text, and computing it after the commit would render one frame of the previous window
+  // against the new text every time it moves.
+  startRef.current = nextReasoningWindowStart(text, startRef.current);
+  return (
+    <MarkdownText
+      text={startRef.current === 0 ? text : text.slice(startRef.current)}
+    />
+  );
+}
+
+const ReasoningImpl: ReasoningMessagePartComponent = () => <ReasoningBody />;
 
 const COPY_RESET_MS = 2000;
 
