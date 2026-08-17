@@ -223,8 +223,13 @@ def test_thread_weight_proves_it_discriminates_rather_than_gating_on_a_budget() 
 def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
     """One healthy column of the thread-weight table, optionally with a delete that did nothing."""
     return {
-        "counts": {"messages": 10_000, "codeBlocks": 4, "katexNodes": 4,
-                   "actionBars": 3, "tooltipTriggers": 8},
+        "counts": {
+            "messages": 10_000,
+            "codeBlocks": 4,
+            "katexNodes": 4,
+            "actionBars": 3,
+            "tooltipTriggers": 8,
+        },
         "stray_api_requests": 0,
         "console_warnings": 0,
         "first_console_warning": None,
@@ -232,11 +237,19 @@ def _thread_weight_row(deleted: bool = True, layer: str = "auto") -> dict:
         "paint_floor_ms": 33,
         "keystroke": {"median_ms": 120, "runtime_text": "x" * 40, "dom_text": "x" * 40},
         "scroll": {"wall_ms": 100, "scrolled_px": 10_000},
-        "menu": {"open_ms": 10, "close_ms": 10, "body_pointer_events_after_close": "auto",
-                 "body_pointer_events_while_open": layer, "items_while_open": 5,
-                 "triggers_while_hovered": 8},
-        "delete": {"ms": 5 if deleted else None,
-                   "messages_before": 10, "messages_after": 9 if deleted else 10},
+        "menu": {
+            "open_ms": 10,
+            "close_ms": 10,
+            "body_pointer_events_after_close": "auto",
+            "body_pointer_events_while_open": layer,
+            "items_while_open": 5,
+            "triggers_while_hovered": 8,
+        },
+        "delete": {
+            "ms": 5 if deleted else None,
+            "messages_before": 10,
+            "messages_after": 9 if deleted else 10,
+        },
     }
 
 
