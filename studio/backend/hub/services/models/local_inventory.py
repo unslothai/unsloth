@@ -37,6 +37,7 @@ from hub.utils.paths import (
 from hub.services.models import common as model_common
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
+from utils.paths.scan_folder_health import annotate_scan_folders
 
 logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
@@ -1013,7 +1014,7 @@ def get_models_folder_response() -> dict:
 
 
 def get_scan_folders_response() -> dict:
-    return {"folders": list_scan_folders()}
+    return {"folders": annotate_scan_folders(list_scan_folders())}
 
 
 def add_scan_folder_response(path: str) -> dict:
