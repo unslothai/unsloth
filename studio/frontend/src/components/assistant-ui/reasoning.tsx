@@ -331,6 +331,8 @@ function ReasoningBody() {
   const startRef = useRef(0);
   // Once set, the whole body is mounted for the rest of this round.
   const restoredRef = useRef(false);
+  // Whether the reader is still following the end. The pane starts pinned to its own bottom.
+  const atBottomRef = useRef(true);
   const settleRef = useRef<number | null>(null);
   const [, forceRender] = useState(0);
 
@@ -348,6 +350,7 @@ function ReasoningBody() {
   if (messageIdRef.current !== messageId) {
     messageIdRef.current = messageId;
     startRef.current = 0;
+    atBottomRef.current = true;
     restoredRef.current = false;
   }
 
@@ -359,6 +362,7 @@ function ReasoningBody() {
     setWasRunning(isRunning);
     if (isRunning && !wasRunning) {
       startRef.current = 0;
+      atBottomRef.current = true;
       restoredRef.current = false;
       setHoldingThroughCollapse(false);
     } else if (!isRunning && startRef.current > 0 && !restoredRef.current) {
@@ -433,13 +437,13 @@ function ReasoningBody() {
     const element = scroller();
     if (!(element && isRunning)) return;
     const onScroll = () => {
-      if (restoredRef.current || startRef.current <= 0) return;
       const distanceFromBottom =
         element.scrollHeight - element.scrollTop - element.clientHeight;
-      if (distanceFromBottom <= AT_BOTTOM_PX) return;
-      // Scrolled back. Give them everything and stop windowing for this round. Nothing here can
-      // run twice: `restoredRef` is checked first and set before the correction starts, so the
-      // hold's own scroll writes cannot re-enter this.
+      atBottomRef.current = distanceFromBottom <= AT_BOTTOM_PX;
+      if (restoredRef.current || startRef.current <= 0 || atBottomRef.current) return;
+      // Scrolled back with a window engaged. Give them everything and stop windowing for this
+      // round. Nothing here can run twice: `restoredRef` is checked first and set before the
+      // correction starts, so the hold's own scroll writes cannot re-enter this.
       restoredRef.current = true;
       holdPlace(distanceFromBottom);
       forceRender((n) => n + 1);
@@ -451,7 +455,17 @@ function ReasoningBody() {
   // Advanced during render, not in an effect: while the reader is at the end the start is a pure
   // function of the text, and computing it after the commit would render one frame of the
   // previous window against the new text every time it moves.
-  if (isRunning && !restoredRef.current) {
+  //
+  // Gated on the reader still being at the bottom, which is the second half of this window's own
+  // rule and was previously only ever used to END the window rather than to decide whether to
+  // start one. Without the gate, a reader who scrolls back BEFORE the window first engages is not
+  // protected by anything: the scroll-back handler ignores them because the start is still zero,
+  // and the first advance then unmounts the text they are reading from above them. Measured on
+  // the 60,000-character fixture: scrolling back at 14,000 characters and waiting left the pane
+  // windowed to 15,730 characters with the reader stranded, because removing content above a
+  // reader who is not at the bottom need not move scrollTop and so need not fire a scroll event
+  // at all. The pane starts pinned, so this begins true and the ordinary case is unaffected.
+  if (isRunning && !restoredRef.current && atBottomRef.current) {
     startRef.current = nextReasoningWindowStart(text, startRef.current);
   }
   const windowed =
