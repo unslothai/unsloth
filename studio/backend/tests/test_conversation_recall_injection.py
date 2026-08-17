@@ -761,6 +761,63 @@ def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monke
     assert not seen
 
 
+def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, monkeypatch):
+    """CHUNK_TOKENS is what the chunker aims at, not what a chunk weighs.
+
+    Chunks overlap, the chunker's tokenizer is not the model's, and the rendered block
+    adds markup, sources and the tool framing. Measured on a 500-token budget: one chunk
+    came back at 1,256 estimated tokens, into an exchange the window cannot evict.
+    """
+    from core.rag import config as rag_config
+
+    asked = []
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        asked.append(top_k)
+        # Roughly what a real chunk renders to, wrapper included.
+        return ("x" * 4 * rag_config.CHUNK_TOKENS * (top_k or 1) * 6, [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    answer = tools_mod._search_conversation(
+        {"query": "pelicans", "top_k": 8},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
+    )
+
+    # Halved down to one, and refused when even that does not fit.
+    assert asked == [4, 2, 1]
+    assert "no room" in answer.lower()
+
+
+def test_conversation_search_returns_what_the_budget_does_hold(archived, monkeypatch):
+    """The backoff must not become a refusal on a result that fits."""
+    from core.rag import config as rag_config
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        return ("an earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    answer = tools_mod._search_conversation(
+        {"query": "pelicans", "top_k": 4},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 4},
+    )
+
+    assert "an earlier turn" in answer
+
+
 def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
     """Studio always sends enabled_tools, and it never names this internal tool.
 

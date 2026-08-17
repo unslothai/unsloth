@@ -1163,3 +1163,28 @@ def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
     monkeypatch.setattr(embeddings, "encode_with_identity", real)
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is False
+
+
+def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
+    """DELETE removes the rows, then awaits the sandbox pass, and only then sweeps here.
+
+    Another tab can POST the same id in that window and its generation can archive turns
+    under it before the sweep runs. The sandbox pass re-checks for exactly that; this had
+    not, so the recreated chat silently lost its memory.
+    """
+    from routes import chat_history
+    from storage import studio_db
+
+    thread_id = "recreated-thread"
+    turns = _turn("what is the code", "the code is 5150")
+    _save_thread(thread_id, turns, append = True)
+    assert conversation_archive.archive_turns(thread_id, turns) == 1
+
+    chat_history._remove_conversation_archives([thread_id])
+
+    assert conversation_archive.has_archive(thread_id) is True
+
+    # And a thread that really is gone still has its archive dropped.
+    studio_db.delete_chat_threads([thread_id])
+    chat_history._remove_conversation_archives([thread_id])
+    assert conversation_archive.has_archive(thread_id) is False

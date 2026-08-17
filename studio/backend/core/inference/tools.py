@@ -9664,16 +9664,46 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
         if affordable <= 0:
             return "There is no room left in this context to search earlier conversation."
         top_k = affordable if top_k is None else max(1, min(top_k, affordable))
+
     # The branch this request is on, so a response replaced by Retry cannot be searched
     # back out of the archive. Absent callers fall back to the whole stored thread.
-    found = conversation_archive.recall(
-        str(thread_id),
-        str(query),
-        top_k = top_k,
-        branch_messages = scope.get("branch_messages"),
-    )
+    def _recall(k):
+        return conversation_archive.recall(
+            str(thread_id),
+            str(query),
+            top_k = k,
+            branch_messages = scope.get("branch_messages"),
+        )
+
+    found = _recall(top_k)
     if not found:
         return "No earlier turns of this conversation matched that query."
+
+    # Then against what the result actually costs. CHUNK_TOKENS is what the chunker AIMS
+    # at, not what a chunk weighs: chunks overlap, the chunker's tokenizer is not the
+    # model's, and the rendered block adds markup, source metadata and the tool framing
+    # around it. Measured on a 500-token budget: one chunk came back as 1,256 estimated
+    # tokens. So the count is halved until the rendered result fits, the same backoff the
+    # forced recall uses, and a single chunk that still does not fit is refused rather
+    # than appended to an exchange the window is not allowed to evict.
+    if budget is not None:
+        from core.inference.context_window import estimate_message_tokens
+        attempt = max(1, int(top_k or 1))
+        while True:
+            rendered = _rendered_conversation_search(found)
+            if estimate_message_tokens({"role": "tool", "content": rendered}) <= int(budget):
+                return rendered
+            if attempt <= 1:
+                return "There is no room left in this context to search earlier conversation."
+            attempt = max(1, attempt // 2)
+            found = _recall(attempt)
+            if not found:
+                return "No earlier turns of this conversation matched that query."
+    return _rendered_conversation_search(found)
+
+
+def _rendered_conversation_search(found) -> str:
+    """The tool result exactly as the model would receive it."""
     text, sources = found
     if sources:
         import json as _json

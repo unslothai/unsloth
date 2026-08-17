@@ -688,6 +688,11 @@ def _remove_conversation_archives(thread_ids) -> None:
     except Exception:
         return
     for thread_id in thread_ids or []:
+        # As next to the sandbox removal: the rows went first and the sandbox pass ran in
+        # between, so another tab can have recreated this id and already be archiving
+        # turns under it. That chat is alive, and its memory is not this delete's to take.
+        if get_chat_thread(str(thread_id)) is not None:
+            continue
         try:
             conversation_archive.delete_for_thread(str(thread_id))
         except Exception:
