@@ -135,3 +135,66 @@ test("a boundary that goes BACKWARDS does not re-announce", () => {
   // tell the user, and the baseline must not be dragged down into re-announcing it.
   assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
 });
+
+/** The source of one function, by brace matching from its declaration. */
+const functionBody = (source: string, name: string): string => {
+  const start = source.indexOf(`function ${name}(`);
+  if (start < 0) return "";
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    else if (source[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, index + 1);
+    }
+  }
+  return "";
+};
+
+test("the notice is a NOTICE, never part of the conversation", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  const adapter = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const exporter = readFileSync(
+    new URL("../src/features/chat/utils/conversation-markdown-export.ts", import.meta.url),
+    "utf8",
+  );
+
+  // 1. It is a sibling of the rendered content parts, not one of them. If it ever moved
+  //    inside MessagePrimitive.Parts it would become a content part, and everything
+  //    downstream that walks parts -- replay, copy, export -- would pick it up.
+  const noticeAt = thread.indexOf("<CompactionNotice");
+  const partsAt = thread.indexOf("<MessagePrimitive.Parts", noticeAt);
+  assert.ok(noticeAt > 0 && partsAt > noticeAt);
+  assert.ok(
+    !/<MessagePrimitive\.Parts[^>]*>[\s\S]*<CompactionNotice/.test(thread),
+    "the notice must not be rendered inside the message's content parts",
+  );
+
+  // 2. Nothing that builds a request out of a message may read the key it renders from.
+  //    Replay reads metadata for two specific named keys; contextTruncation is not one.
+  //    Bounded to the function bodies: slicing to end-of-file also catches the streaming
+  //    handler, which reads contextTruncation legitimately on the way IN.
+  for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
+    const body = functionBody(adapter, name);
+    assert.ok(body.length > 0, `${name} not found`);
+    assert.ok(
+      !body.includes("contextTruncation"),
+      `${name} must never read contextTruncation`,
+    );
+  }
+
+  // 3. Nor may the user-facing export, which is the other way text leaves a thread.
+  assert.ok(!exporter.includes("contextTruncation"));
+  assert.ok(!exporter.includes("compacted"));
+
+  // 4. And it is suppressed while editing, so it can never be typed into the textarea
+  //    and saved back as message text.
+  assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
+});
