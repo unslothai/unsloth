@@ -102,12 +102,44 @@ test("the widening step is deferred and transition-wrapped", () => {
   assert.match(GLUE, /cancelAnimationFrame\(frame\)/);
 });
 
-test("the anchor is captured in document space, not viewport space", () => {
-  // The widening commit is transition-deferred, so the user can scroll between capture and
-  // commit. Viewport coordinates move when the user scrolls and document ones do not, so
-  // measuring in viewport space would fold the user's own scrolling into the correction and
-  // fight them.
-  assert.match(GLUE, /getBoundingClientRect\(\)\.top \+ viewport\.scrollTop/);
+test("the shift is measured in viewport space, as a residual", () => {
+  // This one has a bug behind it rather than a theory. Chromium implements CSS scroll anchoring
+  // and this viewport does not opt out, so on a widening commit the browser has usually ALREADY
+  // moved scrollTop by the inserted height. A document-space delta reports the full insertion
+  // regardless, so applying it doubles the browser's own correction: measured, on a reader parked
+  // 4000px above the bottom of a 300K thread, it walked scrollTop 22,897 -> 117,104 across seven
+  // widenings and dumped them at the bottom. Viewport space measures the residual, which was
+  // single-digit pixels on the same run.
+  assert.match(
+    code(GLUE),
+    /viewportOffset: first\.getBoundingClientRect\(\)\.top,/,
+    "the anchor must be captured in viewport space",
+  );
+  assert.doesNotMatch(
+    code(GLUE),
+    /getBoundingClientRect\(\)\.top \+ viewport\.scrollTop/,
+    "a document-space delta double-corrects against native scroll anchoring",
+  );
+});
+
+test("a widening frame the reader scrolled through is skipped, not corrected", () => {
+  // The flip side of measuring in viewport space: across the transition-deferred gap the reader's
+  // own gesture is indistinguishable from a layout shift. Measured, without this a 4000px wheel
+  // issued during a widening was cancelled inside the frame and the reader was put back at the
+  // bottom of the thread. The residual a widening leaves is single-digit pixels, so skipping one
+  // frame is invisible and the next widening corrects normally.
+  assert.match(GLUE, /gestureSeq: getUserGestureSeq\(\)/);
+  assert.match(
+    GLUE,
+    /if \(getUserGestureSeq\(\) !== captured\.gestureSeq\) return;/,
+  );
+  // The counter must move on EVERY wheel, not only ones that detach, or a gesture below the
+  // detach threshold still corrupts the next measurement.
+  const wheel = HOOK.slice(
+    HOOK.indexOf("const onWheel = "),
+    HOOK.indexOf("const onTouchStart"),
+  );
+  assert.match(wheel, /userGestureSeqRef\.current \+= 1;/);
 });
 
 test("the mount window never writes scrollTop itself", () => {

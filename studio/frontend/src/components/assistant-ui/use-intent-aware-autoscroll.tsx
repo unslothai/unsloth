@@ -87,6 +87,12 @@ type AutoScrollContextValue = {
    * while the user is following.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => void;
+  /**
+   * Counts scroll gestures the USER made (wheel, touch drag), whether or not they detached.
+   * A caller that measures a layout shift across two frames reads this before and after; if it
+   * moved, the reader scrolled in between and the measurement is theirs, not the layout's.
+   */
+  getUserGestureSeq: () => number;
 };
 
 const noopContext: AutoScrollContextValue = {
@@ -103,6 +109,7 @@ const noopContext: AutoScrollContextValue = {
   adjustForContentInsertedAbove: () => {
     /* no viewport mounted */
   },
+  getUserGestureSeq: () => 0,
 };
 
 const AutoScrollContext = createContext<AutoScrollContextValue>(noopContext);
@@ -128,6 +135,11 @@ export function useScrollThreadToBottom(): ScrollToBottom {
 /** See AutoScrollContextValue.adjustForContentInsertedAbove. */
 export function useAdjustForContentInsertedAbove(): (deltaPx: number) => void {
   return useContext(AutoScrollContext).adjustForContentInsertedAbove;
+}
+
+/** See AutoScrollContextValue.getUserGestureSeq. */
+export function useUserGestureSeq(): () => number {
+  return useContext(AutoScrollContext).getUserGestureSeq;
 }
 
 export function useIsThreadAtBottom(): boolean {
@@ -156,6 +168,9 @@ export function useIntentAwareAutoScroll(): {
   const adjustImplRef = useRef<(deltaPx: number) => void>(() => {
     /* no viewport mounted */
   });
+  // Hook scope, not attach scope: it must survive the viewport remounting under a thread switch,
+  // and it is read from outside the closure.
+  const userGestureSeqRef = useRef(0);
 
   const getIsAtBottom = useCallback(() => isAtBottomRef.current, []);
 
@@ -187,6 +202,8 @@ export function useIntentAwareAutoScroll(): {
   const adjustForContentInsertedAbove = useCallback((deltaPx: number) => {
     adjustImplRef.current(deltaPx);
   }, []);
+
+  const getUserGestureSeq = useCallback(() => userGestureSeqRef.current, []);
 
   const attach = useCallback(
     (el: HTMLElement, isRebind: boolean) => {
@@ -402,6 +419,9 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onWheel = (e: WheelEvent) => {
+        // Bumped for EVERY wheel, not only the ones that detach: the point is to record that the
+        // reader moved the viewport themselves, which is true whichever way they scrolled.
+        userGestureSeqRef.current += 1;
         if (
           e.deltaY < 0 &&
           canScrollUp() &&
@@ -416,6 +436,7 @@ export function useIntentAwareAutoScroll(): {
       };
 
       const onTouchMove = (e: TouchEvent) => {
+        userGestureSeqRef.current += 1;
         const y = e.touches[0]?.clientY ?? 0;
         // Finger moves DOWN on the screen = content scrolls UP.
         if (
@@ -529,10 +550,7 @@ export function useIntentAwareAutoScroll(): {
         const needed = Math.max(0, shrink);
         if (needed !== stabilizerPx) {
           stabilizerPx = needed;
-          el.style.setProperty(
-            "--aui-scroll-stabilizer",
-            `${stabilizerPx}px`,
-          );
+          el.style.setProperty("--aui-scroll-stabilizer", `${stabilizerPx}px`);
         }
         return currentContent + stabilizerPx;
       };
@@ -680,6 +698,7 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
+      getUserGestureSeq,
     }),
     [
       scrollToBottom,
@@ -687,6 +706,7 @@ export function useIntentAwareAutoScroll(): {
       subscribe,
       detachFromBottom,
       adjustForContentInsertedAbove,
+      getUserGestureSeq,
     ],
   );
 

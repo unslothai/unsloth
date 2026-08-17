@@ -38,7 +38,10 @@ import {
   initialWindow,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
-import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import {
+  useAdjustForContentInsertedAbove,
+  useUserGestureSeq,
+} from "@/components/assistant-ui/use-intent-aware-autoscroll";
 
 /** The subset of upstream's MessagesComponentConfig the thread actually passes. */
 export type ThreadMessageComponents = {
@@ -81,6 +84,7 @@ function useProgressiveMountWindow(
 ): MountWindow {
   const aui = useAui();
   const adjustForContentInsertedAbove = useAdjustForContentInsertedAbove();
+  const getUserGestureSeq = useUserGestureSeq();
 
   // `isRunning` is read imperatively rather than through useAuiState on purpose: a reactive
   // subscription would re-render this component, and therefore rebuild the whole row array, on
@@ -111,14 +115,29 @@ function useProgressiveMountWindow(
     if (threadIsRunning && mountWindow != null) setMountWindow(null);
   }, [threadIsRunning, mountWindow]);
 
-  // The row whose position is held still across a widening commit, captured in document space
-  // (viewport offset plus scrollTop). The widening is transition-deferred, so the user may scroll
-  // between capture and commit; document coordinates do not move when the user scrolls, so the
-  // difference isolates the height that was inserted above and never folds the user's own
-  // movement into the correction.
-  const anchorRef = useRef<{ element: Element; documentOffset: number } | null>(
-    null,
-  );
+  // The row whose position is held still across a widening commit, captured in VIEWPORT space
+  // (its offset from the top of the scroll container).
+  //
+  // Viewport space, not document space, and this is the whole correctness argument. Chromium
+  // implements CSS scroll anchoring, this viewport does not set `overflow-anchor: none`, and
+  // inserting rows above the scroll position is exactly what scroll anchoring exists to
+  // compensate. So by the time this is read the browser has usually ALREADY moved scrollTop by
+  // the inserted height. What has to be corrected is only the residual the browser did not
+  // absorb, and viewport space is what measures a residual: it is zero precisely when the anchor
+  // is still where the reader left it.
+  //
+  // Document space measures the wrong thing here. Rows inserted above move an element down the
+  // document by their height whether or not the viewport was compensated, so a document-space
+  // delta reports the full insertion even when nothing needs doing, and applying it on top of
+  // the browser's own compensation doubles it. Measured, on a reader parked 4000px above the
+  // bottom of a 300K thread: the document-space version walked scrollTop 22,897 -> 117,104
+  // across seven widenings and dumped them at the bottom of the thread, distance 4000px -> 0px.
+  // With this version the distance holds.
+  const anchorRef = useRef<{
+    element: Element;
+    viewportOffset: number;
+    gestureSeq: number;
+  } | null>(null);
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
@@ -127,11 +146,11 @@ function useProgressiveMountWindow(
       viewport && first
         ? {
             element: first,
-            documentOffset:
-              first.getBoundingClientRect().top + viewport.scrollTop,
+            viewportOffset: first.getBoundingClientRect().top,
+            gestureSeq: getUserGestureSeq(),
           }
         : null;
-  }, [viewportRef]);
+  }, [viewportRef, getUserGestureSeq]);
 
   useEffect(() => {
     if (mountWindow == null) return;
@@ -160,14 +179,24 @@ function useProgressiveMountWindow(
     anchorRef.current = null;
     const viewport = viewportRef.current;
     if (!captured || !viewport || !captured.element.isConnected) return;
+    // The reader scrolled between the capture and this commit. In viewport space their gesture is
+    // indistinguishable from a layout shift, so correcting here would cancel their own scroll:
+    // measured, a 4000px wheel during a widening was undone within the frame and the reader was
+    // put back at the bottom of the thread. Skip this one. The residual a widening actually
+    // leaves is single-digit pixels, so a skipped frame is invisible, and the next widening
+    // corrects normally.
+    if (getUserGestureSeq() !== captured.gestureSeq) return;
     const shift =
-      captured.element.getBoundingClientRect().top +
-      viewport.scrollTop -
-      captured.documentOffset;
+      captured.element.getBoundingClientRect().top - captured.viewportOffset;
     // The hook decides whether this is acted on; see adjustForContentInsertedAbove. Rounding
     // down to whole pixels keeps a subpixel reflow from issuing a scroll write every frame.
     if (Math.abs(shift) >= 1) adjustForContentInsertedAbove(shift);
-  }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
+  }, [
+    mountWindow,
+    adjustForContentInsertedAbove,
+    viewportRef,
+    getUserGestureSeq,
+  ]);
 
   // Registered only while rows are actually being withheld, so completeProgressiveMounts is free
   // for the settled thread that is the overwhelmingly common case.
