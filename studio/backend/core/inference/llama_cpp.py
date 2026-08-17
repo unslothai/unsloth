@@ -2758,6 +2758,26 @@ def _extra_args_set_mmproj_offload(extra_args: Optional[Sequence[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, _MMPROJ_OFFLOAD_FLAGS)
 
 
+def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Optional[bool]:
+    """The offload the extras actually resolve to, or None when they name neither.
+
+    Detecting ownership is not enough to budget for: --no-mmproj-offload means the
+    child keeps the projector in host RAM, so charging its bytes against VRAM
+    shrinks the context for memory nothing on the GPU takes. Last occurrence wins,
+    as llama.cpp pairs the two spellings into one option.
+    """
+    if not extra_args:
+        return None
+    value: Optional[bool] = None
+    for raw in extra_args:
+        flag = _flag_name(str(raw))
+        if flag == "--mmproj-offload":
+            value = True
+        elif flag == "--no-mmproj-offload":
+            value = False
+    return value
+
+
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
     {
         "-ot",
@@ -14009,9 +14029,23 @@ class LlamaCppBackend:
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
+                    # GPU-loaded is the operative word: a user who passed
+                    # --no-mmproj-offload has already put the projector in host RAM,
+                    # and llama.cpp takes the last spelling, so its bytes are not on
+                    # the card to budget for. Charging them anyway shrinks the context
+                    # (measured 9984 -> 4096) or spills layers to make room for VRAM
+                    # nothing occupies, which is worse placement than Studio deciding
+                    # on its own. Detecting ownership is not enough here; the resolved
+                    # value is what the child will run.
+                    _user_mmproj_offload = _extra_args_mmproj_offload_value(extra_args)
                     mmproj_size = (
-                        self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
+                        self._mmproj_vram_bytes(launch_mmproj_path)
+                        if (effective_is_vision and _user_mmproj_offload is not False)
+                        else 0
                     )
+                    if _user_mmproj_offload is False and launch_mmproj_path:
+                        # Still in system RAM, which the APU shortfall guard prices.
+                        _mmproj_pinned_bytes = self._mmproj_vram_bytes(launch_mmproj_path)
                     model_size = gguf_size + mmproj_size
                     # 2-tuple gpus for existing logic + a total map for the absolute
                     # per-GPU headroom (correct when the GPU is already partly used).

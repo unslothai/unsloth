@@ -635,3 +635,42 @@ def test_a_vision_off_load_does_not_need_a_cached_projector(tmp_path):
         )
 
     assert seen["require_mmproj"] is False
+
+
+def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
+    """--no-mmproj-offload puts the projector in host RAM, so its bytes are not on
+    the card. Charging them anyway shrank the context and spilled layers to make
+    room for VRAM nothing occupies, which is worse placement than Studio's own."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(backend, gguf, extra_args = ["--no-mmproj-offload"])["cmd"]
+
+    assert "--mmproj" in cmd
+    # Fully placed, exactly as an unpinned load on this card is.
+    assert "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("-c") + 1] == "9984"
+
+
+def test_a_user_demanding_gpu_offload_still_pays_for_it(tmp_path):
+    """The mirror: --mmproj-offload asks for the projector ON the card, so its bytes
+    stay in the budget and the context shrinks to fit them. Resolving the value is
+    what separates this from the case above; merely detecting ownership cannot."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(backend, gguf, extra_args = ["--mmproj-offload"])["cmd"]
+
+    assert cmd[cmd.index("-c") + 1] == "4096"
+
+
+def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):
+    """llama.cpp folds the pair into one option and takes the last occurrence, so a
+    list ending in the disable form must budget as disabled however it starts."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(
+        backend,
+        gguf,
+        extra_args = ["--mmproj-offload", "--no-mmproj-offload"],
+    )["cmd"]
+
+    assert cmd[cmd.index("-c") + 1] == "9984"
