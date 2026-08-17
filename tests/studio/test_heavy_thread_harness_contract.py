@@ -147,6 +147,24 @@ def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
     assert 'reopened["closedMs"] is None' in decision
 
 
+def test_reopen_measures_the_fixture_the_cell_was_seeded_with() -> None:
+    # `delete` runs first and takes the last assistant message out of the runtime, which `reopen`
+    # deliberately preserves. Without a restore between them the re-open column rebuilds a thread
+    # one message short, and at the smallest size that message is the only JSON fence in the
+    # fixture: 19 of 20 messages and 2520 of 3216 highlighted tokens.
+    text = source(HARNESS)
+    body = section(text, "def one_repetition(", "\n# Portable headline per action")
+    between = section(body, 'rep["delete"]', 'rep["reopen"]')
+    assert "reseed(page, size)" in between
+
+
+def test_the_verdict_compares_each_repetition_against_the_seeded_fixture() -> None:
+    # Comparing the repetitions only against each other passes on a step that leaves all of them
+    # equally short, which is exactly how the missing restore above stayed invisible.
+    decision = verdict()
+    assert 'c["messages"] != counts["messages"]' in decision
+
+
 def test_the_verdict_asserts_discrimination() -> None:
     # A harness where the largest thread costs what the smallest does is not reporting a flat
     # curve, it is reporting that it never drove the page.

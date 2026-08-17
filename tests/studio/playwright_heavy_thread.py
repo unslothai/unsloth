@@ -697,17 +697,60 @@ def fixture_census(page) -> dict[str, int]:
     )
 
 
-def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
-    """The five scripted actions, once, in the order a user meets them.
+def settle_view(page) -> None:
+    """Wait out the highlighter, then put the tool cards back. Untimed.
 
-    RE-SEEDED first, every time but the first. `delete` removes the last assistant message from
-    the RUNTIME, and re-open deliberately preserves the runtime, so without this repetition N
-    measures a thread N-1 messages shorter than the one the pre-action census passed -- and a
-    different content mix, because the message it takes is a different KIND each time. Measured
-    on chromium: at 300K the thread went 220 -> 219 -> 218 messages and 35086 -> 34438 highlighted
-    tokens across the default three repetitions (-0.9%/rep, -1.8% of tokens); at 25K, where one
-    cycle is the whole fixture, it went 20 -> 19 -> 18 messages and 3216 -> 2520 -> 2520 tokens,
-    which is 22% of the highlighting gone by repetition two.
+    A thread that has just been imported or just been re-opened is still highlighting: measured
+    on Chromium at 300K, the scroll gesture read 667ms on the first repetition and 1100ms on the
+    two that followed, and the difference was the re-highlighting, not the scroll. Re-open also
+    unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so a thread
+    that is not re-expanded carries no tool result panes at all -- a different, cheaper fixture
+    wearing the same label. Idempotent: with the cards already open nothing is clicked.
+    """
+    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
+    expanded = page.evaluate("() => window.__heavyThread.expandTools()")
+    if expanded:
+        page.wait_for_function(
+            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
+            arg = expanded,
+            timeout = ACTION_TIMEOUT_MS,
+        )
+
+
+def reseed(page, size: int) -> None:
+    """Import the seeded thread again and settle the view on it. Untimed."""
+    plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
+    page.wait_for_function(
+        "(n) => window.__heavyThread.messageCount() >= n",
+        arg = plan["messages"],
+        timeout = SEED_TIMEOUT_MS,
+    )
+    settle_view(page)
+
+
+def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
+    """The six scripted actions, once, in the order a user meets them.
+
+    RE-SEEDED at both points where `delete` has left the runtime short: at the top of every
+    repetition but the first, and again before `reopen`. `DELETE_JS` removes the last assistant
+    message from the RUNTIME and `REOPEN_JS` deliberately preserves the runtime, so without a
+    restore each of those measures a thread one message shorter than the one the pre-action
+    census passed -- and a different content mix, because the message it takes is a different
+    KIND each time.
+
+    Across repetitions, measured on chromium: at 300K the thread went 220 -> 219 -> 218 messages
+    and 35086 -> 34438 highlighted tokens across the default three repetitions (-0.9%/rep, -1.8%
+    of tokens); at 25K, where one cycle is the whole fixture, it went 20 -> 19 -> 18 messages and
+    3216 -> 2520 -> 2520 tokens, which is 22% of the highlighting gone by repetition two.
+
+    Inside one repetition it is the same defect and at the small end the larger one, because
+    `delete` takes the kind-9 JSON fence and at 25K that is the only one in the fixture. Fresh
+    page per arm, medians of 3: re-open rebuilt 19 of 20 messages, 6 of 7 <pre> and 2520 of 3216
+    tokens, and read 259.5ms against 373.2ms for the seeded fixture on chromium and 292ms against
+    330ms on webkit; at 100K, 848.5ms against 986.4ms and 1083ms against 1227ms. The deficit
+    shrinks as the thread grows (22% of the highlighting at 25K, 5.2% at 100K, 1.8% at 300K), so
+    it does not cancel out of a growth ratio: chromium's re-open curve from 25K to 100K reads
+    3.27x measured that way against 2.64x on the fixture the column names.
 
     The re-seed also puts every message back into a freshly-mounted state, and that is NOT free:
     measured on chromium at 300K, the menu open+close median moved 71.9ms -> 352.0ms, because
@@ -716,30 +759,10 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
     "the median of three repetitions of the seeded fixture".
     """
     rep: dict[str, dict] = {}
-    if not first:
-        plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
-        page.wait_for_function(
-            "(n) => window.__heavyThread.messageCount() >= n",
-            arg = plan["messages"],
-            timeout = SEED_TIMEOUT_MS,
-        )
-    # The previous repetition ended by re-opening the thread, which throws away every highlighted
-    # fence and starts Shiki again. Without this wait, repetitions 2 and 3 measure a thread that
-    # is still building itself: measured on Chromium at 300K, the scroll gesture read 667ms on
-    # the first repetition and 1100ms on the two that followed, and the difference was the
-    # re-highlighting, not the scroll.
-    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
-    # Re-open unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so
-    # without this every repetition after the first would run against a thread with no tool
-    # result panes in it -- a different, cheaper fixture wearing the same label. Idempotent: on
-    # the first repetition the cards are already open and nothing is clicked. Untimed.
-    expanded = page.evaluate("() => window.__heavyThread.expandTools()")
-    if expanded:
-        page.wait_for_function(
-            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
-            arg = expanded,
-            timeout = ACTION_TIMEOUT_MS,
-        )
+    if first:
+        settle_view(page)
+    else:
+        reseed(page, size)
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
         page,
@@ -772,6 +795,9 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
     rep["delete"] = run_action(page, cdp, "delete", DELETE_JS, SETTLE_TIMEOUT_MS)
 
+    # Put back what `delete` took, or the column below rebuilds a thread the cell was never
+    # seeded with. See the docstring for the sizes: at 25K it is a whole content kind.
+    reseed(page, size)
     rep["reopen"] = run_action(
         page,
         cdp,
@@ -1229,9 +1255,7 @@ def print_growth(results: dict, report: dict) -> None:
                 mark = "DISCRIMINATES" if row["discriminated"] else "flat"
                 small = "-" if row["small"] is None else row["small"]
                 large = "-" if row["large"] is None else row["large"]
-                info(
-                    f"  {name:<34} {small:>10} -> {large:>10}       -  " f"{mark} ({row['reason']})"
-                )
+                info(f"  {name:<34} {small:>10} -> {large:>10}       -  {mark} ({row['reason']})")
                 continue
             mark = "DISCRIMINATES" if row["discriminated"] else "flat"
             floor_note = " (paint floor removed)" if row.get("floored") else ""
@@ -1328,11 +1352,17 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                     )
             # The fixture the pre-action census passed has to be the fixture every repetition
             # measured, or the median combines threads of different sizes wearing one label.
+            #
+            # Against the SEEDED census, not just across repetitions: `delete` mutates the runtime
+            # and `reopen` preserves it, so a missing restore leaves EVERY repetition equally
+            # short, which agrees with itself and reports a fixture the cell never held.
             censuses = row.get("per_repetition_census") or []
-            if censuses and any(c["messages"] != censuses[0]["messages"] for c in censuses):
+            if censuses and any(c["messages"] != counts["messages"] for c in censuses):
                 failures.append(
-                    f"{where} measured {[c['messages'] for c in censuses]} messages across its "
-                    "repetitions; the median is over more than one fixture"
+                    f"{where} ended its repetitions holding "
+                    f"{[c['messages'] for c in censuses]} messages against the "
+                    f"{counts['messages']} it was seeded with; the median is not over the fixture "
+                    "this cell names"
                 )
             keystroke = actions["keystroke"]
             if keystroke.get("ran"):
