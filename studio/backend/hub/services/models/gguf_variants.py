@@ -413,9 +413,7 @@ def variant_remaining_bytes(repo_id: str, requirement) -> Optional[int]:
 
 
 def variant_remaining_bytes_from_state(
-    repo_id: str,
-    variant: str,
-    repo_cache_dir: Optional[Path],
+    repo_id: str, variant: str, repo_cache_dir: Optional[Path]
 ) -> Optional[int]:
     """:func:`variant_remaining_bytes` for the local and offline listings, which have no hub
     plan. The worker writes a manifest before it fetches anything, so a partial row can still
