@@ -33,13 +33,40 @@ NOT_IN_CI = {
 
 
 def _ci_text() -> str:
-    """Everything CI could name a driver from: workflows and the scripts they call."""
-    parts = []
-    for directory in ((REPO / ".github" / "workflows"), (REPO / ".github" / "scripts")):
-        for path in sorted(directory.rglob("*")):
-            if path.is_file():
+    """Everything CI could name a driver from, reachable from a workflow.
+
+    Reachability is the whole point. Reading every file under .github/scripts
+    unconditionally counts an orphaned helper as coverage: delete the workflow step
+    that calls run-studio-indicator-browser.sh, leave the script in the tree, and
+    the driver it names is still in this text while the suite runs nowhere. That is
+    the regression these tests exist to catch. So the workflows seed the text, and
+    a helper joins only once something already in it names the helper -- repeatedly,
+    since one helper may call another.
+    """
+    helpers = [
+        path
+        for directory in ((REPO / ".github" / "scripts"), (REPO / ".github" / "actions"))
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    ]
+    parts = [
+        path.read_text(encoding = "utf-8", errors = "replace")
+        for path in sorted((REPO / ".github" / "workflows").rglob("*"))
+        if path.is_file()
+    ]
+    text = "\n".join(parts)
+    remaining = list(helpers)
+    added = True
+    while added:
+        added = False
+        for path in list(remaining):
+            rel = path.relative_to(REPO).as_posix()
+            if rel in text or path.name in text:
                 parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
-    return "\n".join(parts)
+                remaining.remove(path)
+                text = "\n".join(parts)
+                added = True
+    return text
 
 
 def test_every_playwright_driver_is_invoked_by_ci():
