@@ -585,7 +585,7 @@ pub fn reveal_path_token(
         }
     }
     let target = reveal_target(&entry.canonical_path);
-    open::that_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
+    crate::process::open_detached(target).map_err(|e| format!("Failed to reveal path: {e}"))
 }
 
 #[tauri::command]
@@ -596,7 +596,7 @@ pub fn open_path_token(
 ) -> Result<(), String> {
     ensure_main_window(&window)?;
     let entry = state.path_for_operation(&token, NativePathOperation::Open)?;
-    open::that_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
+    crate::process::open_detached(entry.canonical_path).map_err(|e| format!("Failed to open path: {e}"))
 }
 
 // Covers the largest client-side limit (audio, 25 MB).

@@ -57,7 +57,7 @@
     "homepage": "https://unsloth.ai/",
     "copyright": "© 2026 Unsloth AI. All rights reserved.",
     "license": "AGPL-3.0-only",
-    "targets": ["app", "deb", "dmg", "nsis"],
+    "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -81,6 +81,12 @@
       }
     },
     "linux": {
+      "appimage": {
+        "bundleMediaFramework": false,
+        "files": {
+          "/usr/lib/libappindicator3.so.1": "/usr/lib/x86_64-linux-gnu/libappindicator3.so.1"
+        }
+      },
       "deb": {
         "desktopTemplate": "./linux/unsloth.desktop",
         "provides": ["unsloth-studio-desktop"],
