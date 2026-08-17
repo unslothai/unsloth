@@ -15,6 +15,7 @@ export interface BackendModelDetails {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }
 
 export interface ListModelsResponse {
@@ -209,6 +210,7 @@ export interface LoadModelResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -295,6 +297,7 @@ export interface InferenceStatusResponse {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
   loading: string[];
   loaded: string[];
   inference?: {
@@ -532,6 +535,7 @@ export interface OpenAIChatCompletionsRequest {
   presence_penalty?: number;
   image_base64?: string;
   audio_base64?: string;
+  video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
   reasoning_effort?:

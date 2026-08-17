@@ -11,9 +11,9 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
     };
   }
   if (state.status === "attach") {
-    // Only documents are indexed; images and audio ride the next message.
+    // Only documents are indexed; images, audio and video ride the next message.
     const description =
-      state.kind === "images" || state.kind === "audio"
+      state.kind === "images" || state.kind === "audio" || state.kind === "video"
         ? "Attached to your next message."
         : state.kind === "mixed"
           ? "Documents indexed, attachments sent with your next message."
@@ -23,7 +23,9 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
         ? "image"
         : state.kind === "audio"
           ? "audio file"
-          : "file";
+          : state.kind === "video"
+            ? "video"
+            : "file";
     return {
       title:
         state.count === 1

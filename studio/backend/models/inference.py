@@ -678,6 +678,13 @@ class _InferenceRuntimeFields(BaseModel):
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    has_video_input: bool = Field(
+        False,
+        description = (
+            "Whether llama-server accepts video input for this model, from its /props "
+            "modalities. False unless the mmproj, the build and ffmpeg all support it."
+        ),
+    )
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
@@ -1395,6 +1402,13 @@ class ChatCompletionRequest(BaseModel):
     audio_base64: Optional[str] = Field(
         None,
         description = "[x-unsloth] Base64-encoded audio (wav/mp3/ogg/flac/m4a) for audio-input models",
+    )
+    video_base64: Optional[str] = Field(
+        None,
+        description = (
+            "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
+            "models. GGUF only: llama-server samples frames with ffmpeg."
+        ),
     )
     use_adapter: Optional[Union[bool, str]] = Field(
         None,

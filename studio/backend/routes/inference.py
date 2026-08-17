@@ -11523,6 +11523,9 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
 # can expand to a far larger PCM array than the encoded-size cap implies.
 _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
+# The composer's 64 MB cap plus base64's 4/3 inflation, so a clip it accepted
+# is not refused here.
+_MAX_VIDEO_B64_CHARS = (64 * 1024 * 1024 * 4) // 3
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
@@ -11666,6 +11669,25 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     arr, sr = _decode_audio_mono(raw)
     arr, sr = _fit_transcoded_audio_to_wav_cap(arr, sr)
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
+
+
+def _inject_video_part(messages: list[dict], video_b64: str) -> None:
+    """Append an input_video part to the last user message, in place.
+
+    llama-server samples the clip into frames itself (ffmpeg via mtmd), so the
+    container is forwarded untouched. Rides the message list like image_url and
+    input_audio, so it flows through the plain and tool-calling paths alike.
+    Ref: llama.cpp tools/server/server-common.cpp, `type == "input_video"`.
+    """
+    part = {"type": "input_video", "input_video": {"data": video_b64}}
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                content.append(part)
+            else:
+                msg["content"] = [{"type": "text", "text": content or ""}, part]
+            return
 
 
 def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) -> None:
@@ -13653,6 +13675,24 @@ async def openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
 
+        # Forwarded whole: llama-server owns the frame sampling, and takes the
+        # clip only when /props reports modalities.video.
+        video_b64 = None
+        if payload.video_base64:
+            if not getattr(llama_backend, "_has_video_input", False):
+                raise _reject(
+                    400,
+                    "Video provided but the current GGUF model cannot take video input. "
+                    "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
+                )
+            if len(payload.video_base64) > _MAX_VIDEO_B64_CHARS:
+                raise _reject(413, "Video file is too large (max ~64 MB).")
+            video_b64 = payload.video_base64
+            if video_b64.startswith("data:"):
+                video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
+            if not video_b64:
+                raise _reject(400, "Could not read the provided video file.")
+
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
@@ -13661,6 +13701,8 @@ async def openai_chat_completions(
         image_b64 = None
         if audio_b64:
             _inject_audio_part(gguf_messages, audio_b64, audio_format)
+        if video_b64:
+            _inject_video_part(gguf_messages, video_b64)
 
         cancel_event = threading.Event()
 

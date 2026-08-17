@@ -2702,6 +2702,12 @@ export function ChatPage({
     },
     [artifactViewKey],
   );
+  const handleNativeVideoDrop = useCallback(
+    (intents: NativeIntent[]) => {
+      useNativeIntentStore.getState().addVideoAttachments(artifactViewKey, intents);
+    },
+    [artifactViewKey],
+  );
   const nativeModelDropState = useNativeModelDrop({
     // Compare used to disable this outright, so a drop there vanished with no
     // overlay and no message (#9036). Keep listening and refuse out loud. The
@@ -2720,6 +2726,7 @@ export function ChatPage({
     onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
     onAttachAudio: handleNativeAudioDrop,
+    onAttachVideo: handleNativeVideoDrop,
   });
 
   const handleCheckpointChange = useCallback(

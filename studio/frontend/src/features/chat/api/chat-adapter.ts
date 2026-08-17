@@ -1493,6 +1493,43 @@ export function findLatestUserAudioBase64(
   return pendingAudio ?? undefined;
 }
 
+function extractVideoPartBase64(
+  part: { type: string } | null | undefined,
+): string | undefined {
+  if (!part || part.type !== "file") return undefined;
+  const filePart = part as unknown as { data?: string; mimeType?: string };
+  if (!filePart.data || !/^video\//i.test(filePart.mimeType ?? "")) return undefined;
+  return filePart.data.startsWith("data:")
+    ? filePart.data.split(",")[1]
+    : filePart.data;
+}
+
+/** Base64 of the clip on the newest user turn. Only the newest counts, like
+ * audio: replaying an older one would re-sample it into frames and spend the
+ * context of every text follow-up. */
+export function findLatestUserVideoBase64(
+  messages: RunMessages,
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || message.role !== "user") continue;
+    for (const part of message.content ?? []) {
+      const base64 = extractVideoPartBase64(part);
+      if (base64) return base64;
+    }
+    if ("attachments" in message) {
+      for (const attachment of message.attachments ?? []) {
+        for (const part of attachment.content ?? []) {
+          const base64 = extractVideoPartBase64(part);
+          if (base64) return base64;
+        }
+      }
+    }
+    break;
+  }
+  return undefined;
+}
+
 // The Canvas instructions createOpenAIStreamAdapter appends, named so the recount prices the same
 // text the request carries.
 export const CANVAS_TOOL_INSTRUCTION =
@@ -4392,6 +4429,7 @@ export function createOpenAIStreamAdapter(
         survivingMessages,
         !queuedRunSettings && !continuation,
       );
+      const videoBase64 = findLatestUserVideoBase64(survivingMessages);
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
@@ -5304,6 +5342,7 @@ export function createOpenAIStreamAdapter(
             presence_penalty: params.presencePenalty,
             image_base64: imageBase64,
             audio_base64: audioBase64,
+            video_base64: videoBase64,
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),

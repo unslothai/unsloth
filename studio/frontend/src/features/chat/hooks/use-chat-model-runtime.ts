@@ -159,6 +159,7 @@ function describeModel(model: {
   is_mlx?: boolean;
   is_audio?: boolean;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): string | undefined {
   const tags: string[] = [];
   if (model.is_gguf) tags.push("GGUF");
@@ -189,6 +190,7 @@ function toChatModelSummary(model: {
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
+  has_video_input?: boolean;
 }): ChatModelSummary {
   return {
     id: model.id,
@@ -201,6 +203,7 @@ function toChatModelSummary(model: {
     isAudio: Boolean(model.is_audio),
     audioType: model.audio_type ?? null,
     hasAudioInput: Boolean(model.has_audio_input),
+    hasVideoInput: Boolean(model.has_video_input),
   };
 }
 
@@ -219,6 +222,7 @@ export function syncModelCapabilities(
     is_audio?: boolean;
     audio_type?: string | null;
     has_audio_input?: boolean;
+  has_video_input?: boolean;
   },
 ): void {
   const store = useChatRuntimeStore.getState();
