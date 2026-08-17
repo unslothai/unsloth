@@ -2461,8 +2461,6 @@ export function ChatPage({
     currentProjectId,
   ]);
 
-  // Owned here rather than in ProjectLanding so the hoisted runtime provider
-  // below sees the same nonce ProjectLanding's composer records claims under.
   const [projectNewThreadNonce, setProjectNewThreadNonce] = useState(() =>
     createThreadNonce(),
   );
@@ -3667,11 +3665,6 @@ export function ChatPage({
         </div>
 
         {view.mode !== "compare" ? (
-          // One provider shared by the project and single views, never keyed on
-          // thread / nonce / project. Switching between them (open an old chat
-          // mid-run in a project, come back) therefore reattaches the live run
-          // instead of remounting the runtime and aborting generation (#8908);
-          // assistant-ui keeps every alive thread's runtime mounted.
           <ChatRuntimeProvider
             modelType="base"
             projectId={view.projectId}
