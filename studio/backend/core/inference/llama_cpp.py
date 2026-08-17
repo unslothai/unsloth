@@ -6831,6 +6831,21 @@ class LlamaCppBackend:
                 return None
             return value
 
+        def _stat_integer(path: str, *keys: str) -> int:
+            """Read the first requested byte counter present in memory.stat."""
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    values = {}
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) == 2 and parts[0] in keys:
+                            value = _integer(parts[1])
+                            if value is not None:
+                                values[parts[0]] = value
+            except OSError:
+                return 0
+            return next((values[key] for key in keys if key in values), 0)
+
         def _directories(root: str, relative: Optional[str]) -> list[str]:
             root = os.path.abspath(root)
             current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
@@ -6859,6 +6874,11 @@ class LlamaCppBackend:
             if limit is None:
                 continue
             used = _integer(_first_line(os.path.join(directory, "memory.current")))
+            if used is not None:
+                # memory.current includes file-backed cache. Inactive file pages
+                # are reclaimable under pressure, so price the launch against the
+                # cgroup working set rather than charging cached GGUF pages twice.
+                used = max(0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file"))
             remaining.append(limit if used is None else limit - used)
 
         v1_root = os.path.join(_CGROUP_ROOT, "memory")
@@ -6875,6 +6895,17 @@ class LlamaCppBackend:
             if limit is None:
                 continue
             used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            if used is not None:
+                # v1 usage is hierarchical when use_hierarchy is enabled, so its
+                # matching counter is total_inactive_file. Fall back to the local
+                # counter for non-hierarchical controllers.
+                used = max(
+                    0,
+                    used
+                    - _stat_integer(
+                        os.path.join(directory, "memory.stat"), "total_inactive_file", "inactive_file"
+                    ),
+                )
             remaining.append(limit if used is None else limit - used)
 
         return max(min(remaining), 0) // (1024 * 1024) if remaining else None

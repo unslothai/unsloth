@@ -95,3 +95,54 @@ def test_available_ram_is_capped_by_cgroup_v2_remainder(tmp_path, monkeypatch):
     )
     assert msg is not None
     assert "16 GB" in msg and "10 GB usable" in msg
+
+
+def test_cgroup_v2_reclaims_inactive_file_cache_for_ram_admission(tmp_path, monkeypatch):
+    """Cached GGUF pages are reclaimable, not another permanent host-RAM charge."""
+    root = tmp_path / "cgroup"
+    leaf = root / "studio.slice"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.max").write_text(str(16 * _GB), encoding = "utf-8")
+    (leaf / "memory.current").write_text(str(12 * _GB), encoding = "utf-8")
+    (leaf / "memory.stat").write_text(f"inactive_file {8 * _GB}\n", encoding = "utf-8")
+    proc_cgroup = tmp_path / "self.cgroup"
+    proc_cgroup.write_text("0::/studio.slice\n", encoding = "utf-8")
+
+    monkeypatch.setattr(llama_cpp_module, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc_cgroup))
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(virtual_memory = lambda: SimpleNamespace(available = 64 * _GB)),
+    )
+
+    assert LlamaCppBackend._available_system_memory_mib() == 12 * _MIB_PER_GB
+
+    backend = object.__new__(LlamaCppBackend)
+    backend._get_gguf_size_bytes = lambda _path: 12 * _GB
+    assert (
+        backend._launch_host_shortfall_message(
+            ["llama-server", "-m", str(tmp_path / "model.gguf")],
+            [(0, 4 * _MIB_PER_GB)],
+        )
+        is None
+    )
+
+
+def test_cgroup_v1_reclaims_hierarchical_inactive_file_cache(tmp_path, monkeypatch):
+    root = tmp_path / "cgroup"
+    leaf = root / "memory" / "studio.slice"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.limit_in_bytes").write_text(str(16 * _GB), encoding = "utf-8")
+    (leaf / "memory.usage_in_bytes").write_text(str(12 * _GB), encoding = "utf-8")
+    (leaf / "memory.stat").write_text(
+        f"inactive_file {2 * _GB}\ntotal_inactive_file {8 * _GB}\n",
+        encoding = "utf-8",
+    )
+    proc_cgroup = tmp_path / "self.cgroup"
+    proc_cgroup.write_text("5:memory:/studio.slice\n", encoding = "utf-8")
+
+    monkeypatch.setattr(llama_cpp_module, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc_cgroup))
+
+    assert LlamaCppBackend._cgroup_available_memory_mib() == 12 * _MIB_PER_GB
