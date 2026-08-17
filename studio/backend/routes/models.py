@@ -1080,6 +1080,12 @@ async def _shared_compat_local_inventory_scan(
 
     requested_sources = sources
 
+    def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
+        # Tag each model with its task so the Images picker can filter to diffusion.
+        # Inside the shared flight so overlapping callers reuse one classified result
+        # instead of each repeating the GGUF header reads.
+        return [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
+
     async def collect(
         expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
     ) -> List[LocalModelInfo]:
@@ -1091,7 +1097,11 @@ async def _shared_compat_local_inventory_scan(
         )
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _CompatLocalCacheChanged(models)
-        return models
+        classified = await asyncio.to_thread(classify, models)
+        # That hop is an await point of its own, so a mutation can land after the check above.
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _CompatLocalCacheChanged(models)
+        return classified
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[List[LocalModelInfo]] = None
@@ -1130,7 +1140,7 @@ async def _shared_compat_local_inventory_scan(
     # current. Answer with the freshest one (the loop only reaches here through
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
-    return superseded
+    return await asyncio.to_thread(classify, superseded)
 
 
 @router.get("/local", response_model = LocalModelListResponse)
@@ -1176,9 +1186,6 @@ async def list_local_models(
 
     try:
         models = await _shared_compat_local_inventory_scan(models_root, sources)
-        # Tag each model with its task so the Images picker can filter to diffusion.
-        models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
-
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -3977,6 +3984,11 @@ _UNSUPPORTED_DIFFUSION_GGUF_ARCHS = frozenset(
 # derivative, so its GGUFs declare "lumina2"; these resolve from the repo/file name.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = frozenset({"lumina2"})
 
+# Literal placeholders gguf-connector writes into general.architecture for its diffusion
+# GGUFs. Mirrors LlamaCppBackend._PLACEHOLDER_ARCHES, which does the same normalisation on
+# the load side; the two must agree or a row is offered to chat and then refused by it.
+_PLACEHOLDER_DIFFUSION_GGUF_ARCHS = frozenset({"pig", "cow"})
+
 # Video GGUF archs the video backend CAN load (LTX-2.x ships as "ltxv", the Wan community GGUFs as "wan").
 _VIDEO_GGUF_ARCHS = frozenset({"ltxv", "wan"})
 _VIDEO_GEN_TASK = "text-to-video"
@@ -4013,10 +4025,8 @@ def _is_h3_bundle_gguf_hint(hint: Optional[str]) -> bool:
 def _gguf_architecture(path: str) -> Optional[str]:
     """The GGUF ``general.architecture``, or None. Delegates to the shared,
     bounds-checked header reader (cached by path/mtime/size)."""
-    from utils.models.gguf_metadata import read_gguf_general_metadata
-
-    arch = (read_gguf_general_metadata(path) or {}).get("general.architecture")
-    return arch.strip() if isinstance(arch, str) and arch.strip() else None
+    from utils.models.gguf_metadata import read_gguf_architecture
+    return read_gguf_architecture(path)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
@@ -4069,6 +4079,33 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
     if arch is None:
         return None
     a = arch.lower()
+    if a in _PLACEHOLDER_DIFFUSION_GGUF_ARCHS:
+        # Not an architecture at all: gguf-connector writes these literals in place of one
+        # (gguf-org/flux2-dev-gguf and calcuis/cosmos-predict2-gguf both declare "pig").
+        # Being non-null they used to fall past every media branch to "text-generation", so
+        # a diffusion GGUF was offered to chat and only refused at load. Only gguf-connector
+        # writes them and only for diffusion GGUFs, so the row is never a chat model:
+        # resolve the page by name, and stay unsupported when neither answers.
+        from core.inference.video_families import detect_video_family
+
+        for hint in name_hints:
+            fam = detect_video_family(hint) if hint else None
+            if fam is not None:
+                if not getattr(fam, "is_moe", False) and _video_family_buildable(fam):
+                    return _VIDEO_GEN_TASK
+                return _UNSUPPORTED_DIFFUSION_TASK
+        # An image family has to RESOLVE, not merely fail open: _gguf_family_buildable is
+        # permissive by design for a branch whose arch already says "image GGUF", and a
+        # placeholder says nothing, so it would advertise Images for anything.
+        from core.inference.diffusion_families import detect_family_for_pick
+
+        if any(detect_family_for_pick(hint) is not None for hint in name_hints if hint):
+            return (
+                "text-to-image"
+                if _gguf_family_buildable(name_hints)
+                else _UNSUPPORTED_DIFFUSION_TASK
+            )
+        return _UNSUPPORTED_DIFFUSION_TASK
     if a in _DIFFUSION_GGUF_ARCHS:
         # Third gate, mirroring the cached-repo picker: a family no engine here can build can only fail.
         if not _gguf_family_buildable(name_hints):
@@ -4837,51 +4874,6 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
-def _wsl_reveal_in_explorer(path: Path) -> bool:
-    import subprocess
-
-    from utils.paths.path_utils import _IS_WSL
-
-    if not _IS_WSL:
-        return False
-    try:
-        windows_path = subprocess.run(
-            ["wslpath", "-w", str(path)],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            check = True,
-            timeout = 10,
-        ).stdout.strip()
-        if not windows_path:
-            return False
-        argument = f"/select,{windows_path}" if path.is_file() else windows_path
-        subprocess.Popen(["explorer.exe", argument])
-        return True
-    except (OSError, subprocess.SubprocessError):
-        return False
-
-
-def _reveal_in_file_manager(path: Path) -> None:
-    """Open the OS file manager with *path* selected (best effort per platform)."""
-    import subprocess
-
-    target = str(path)
-    if sys.platform == "darwin":
-        cmd = ["open", "-R", target] if path.is_file() else ["open", target]
-        subprocess.Popen(cmd)
-    elif os.name == "nt":
-        if path.is_file():
-            subprocess.Popen(["explorer", f"/select,{target}"])
-        else:
-            os.startfile(target)  # noqa: S606 - local user's own file manager
-    elif not _wsl_reveal_in_explorer(path):
-        # No cross-desktop "select file" standard on Linux; open the directory.
-        directory = target if path.is_dir() else str(path.parent)
-        subprocess.Popen(["xdg-open", directory])
-
-
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -4907,12 +4899,14 @@ async def reveal_cached_model(
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a cached repo (or one GGUF variant's file) in the OS file manager."""
+    from utils.paths.path_utils import reveal_in_file_manager
+
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
     path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
     try:
-        await asyncio.to_thread(_reveal_in_file_manager, path)
+        await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:
         logger.error(f"Failed to reveal {path}: {e}")
         raise HTTPException(status_code = 500, detail = "Failed to open file manager")

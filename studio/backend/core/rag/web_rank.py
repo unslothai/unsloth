@@ -95,7 +95,11 @@ def retrieve_web_chunks(
             )
             if not chunks:
                 continue
-            vectors = embeddings.encode(
+            # The identity has to come from the encode that produced these vectors: a
+            # concurrent ST failure swaps the process embedder, and reading it after
+            # the fact would label this page with a space its vectors were never in,
+            # which the hybrid query below then searches instead of filtering out.
+            vectors, identity = embeddings.encode_with_identity(
                 [chunk.text for chunk in chunks], model_name = model, normalize = True
             )
             doc_id = store.create_document(
@@ -104,7 +108,7 @@ def retrieve_web_chunks(
                 filename = source,
                 sha256 = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(),
                 status = "ready",
-                embedding_model = model,
+                embedding_model = identity,
             )
             doc_ids.append(doc_id)
             store.add_chunks(conn, scope, doc_id, chunks, vectors)

@@ -223,6 +223,129 @@ def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
     )
 
 
+def _compat_inventory_row(tmp_path, name = "model"):
+    return models_route.LocalModelInfo(
+        id = name,
+        display_name = "Model",
+        path = str(tmp_path / f"{name}.gguf"),
+        source = "models_dir",
+        model_format = "gguf",
+    )
+
+
+def _compat_inventory_sources(tmp_path):
+    return models_route._CompatLocalInventorySources(
+        tmp_path,
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (),
+        (),
+    )
+
+
+def test_compat_local_inventory_classifies_inside_the_shared_scan(monkeypatch, tmp_path):
+    """Classification belongs to the coalesced flight, and runs off the event loop.
+
+    Producing classified rows inside the flight is what lets overlapping callers reuse one
+    result instead of each repeating the GGUF header reads on the shared executor."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    classifier_threads: list[int] = []
+    shared: list[list] = []
+    real_shared_scan = hf_cache_scan.shared_scan
+
+    async def recording_shared_scan(flights, key, factory):
+        models = await real_shared_scan(flights, key, factory)
+        shared.append(models)
+        return models
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(
+        models_route, "collect_local_models", lambda *_a, **_kw: [_compat_inventory_row(tmp_path)]
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "shared_scan", recording_shared_scan)
+
+    async def run():
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    # The flight resolves to classified rows, so waiters on it never reclassify.
+    assert [[row.task for row in models] for models in shared] == [["text-generation"]]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
+def test_compat_local_inventory_rescans_when_the_cache_changes_during_classification(
+    monkeypatch, tmp_path
+):
+    """A deletion landing during the classification hop must not be answered with old rows."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    scans: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        scans.append(epoch[0])
+        return [_compat_inventory_row(tmp_path, f"scan{len(scans)}")]
+
+    def classify(_model):
+        # The cache is invalidated while the first scan's rows are being classified.
+        if len(scans) == 1:
+            epoch[0] += 1
+        return "text-generation"
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(models_route, "_local_model_task", classify)
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    listed = asyncio.run(models_route.list_local_models(str(tmp_path), "subject"))
+    assert scans == [0, 1], scans
+    assert [row.id for row in listed.models] == ["scan2"]
+
+
+def test_compat_local_inventory_classifies_a_superseded_result(monkeypatch, tmp_path):
+    """The give-up path serves the freshest scan it has, classified like any other."""
+    from hub.utils import inventory_scan as hf_cache_scan
+
+    epoch = [0]
+    classifier_threads: list[int] = []
+
+    def collect(*_args, **_kwargs):
+        epoch[0] += 1  # every walk is invalidated before it returns
+        return [_compat_inventory_row(tmp_path)]
+
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    monkeypatch.setattr(
+        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
+    )
+    monkeypatch.setattr(models_route, "collect_local_models", collect)
+    monkeypatch.setattr(
+        models_route,
+        "_local_model_task",
+        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
+    )
+    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
+
+    async def run():
+        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
+
+    loop_thread, listed = asyncio.run(run())
+    assert [row.task for row in listed.models] == ["text-generation"]
+    assert classifier_threads and loop_thread not in classifier_threads
+
+
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
     root = tmp_path / "MTP"
     root.mkdir()
@@ -1120,6 +1243,73 @@ def test_a_projector_at_the_snapshot_root_serves_a_quant_in_a_subdirectory(monke
     }["Org/Nested"]
     assert "load_id" not in row
     assert row["has_vision"] is True
+
+
+def test_an_audio_only_projector_in_the_cache_is_not_vision(monkeypatch, tmp_path):
+    """ultravox, Voxtral and Qwen3-ASR ship a projector for audio input, so reading the row's
+    badge off the projector's presence claims an image button the model cannot honour."""
+    import struct
+
+    def _projector(path: Path, *keys: str) -> None:
+        """A minimal GGUF declaring the given ``clip.has_*_encoder`` bools, no tensors."""
+        kvs = b"".join(
+            struct.pack("<Q", len(key))
+            + key.encode()
+            + struct.pack("<I", 7)
+            + struct.pack("<?", True)
+            for key in keys
+        )
+        path.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, len(keys)) + kvs)
+
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Audio"
+    snapshot = repo_dir / "snapshots" / ("d" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder")
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+
+    repo = _repo(
+        "Org/Audio",
+        [],
+        repo_dir,
+        revisions = [
+            SimpleNamespace(
+                files = [
+                    _file("Model-Q4_K_M.gguf", 256),
+                    _file("mmproj-F16.gguf", 256),
+                ],
+                snapshot_path = snapshot,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr(
+        "hub.utils.gguf.iter_hf_cache_snapshots", lambda repo_id, root = None: [snapshot]
+    )
+
+    def _row():
+        return {
+            c["repo_id"]: c
+            for c in asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))[
+                "cached"
+            ]
+        }["Org/Audio"]
+
+    assert _row()["has_vision"] is False
+
+    # Control: the same snapshot, with a vision tower declared, is vision support.
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_vision_encoder")
+    assert _row()["has_vision"] is True
+
+    # A projector serving both modalities declares both (Qwen2.5-Omni), so the row cannot be
+    # read off the audio claim alone.
+    _projector(snapshot / "mmproj-F16.gguf", "clip.has_audio_encoder", "clip.has_vision_encoder")
+    assert _row()["has_vision"] is True
 
 
 def test_vision_is_read_from_the_cache_root_holding_the_row(monkeypatch, tmp_path):
@@ -2791,6 +2981,44 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
     except HTTPException as e:
         assert e.status_code == 400
         assert "Unload the model before deleting" in e.detail
+
+
+def test_delete_cached_rechecks_the_load_guard_after_reserving_the_scope(monkeypatch):
+    # The first guard runs before begin_delete reserves the repo, so a load starting in that gap
+    # publishes its claim too late to be seen, and begin_delete misses it too: video and image
+    # loads download directly rather than through a registry claim. Deleting anyway unlinks blobs
+    # under the running load, so the second read is what refuses it.
+    from fastapi import HTTPException
+    from hub.services.models import deletion
+    import core.inference.diffusion_engine_router as der
+    import core.inference.video as video_mod
+
+    _clear_chat_delete_guards(monkeypatch)
+    monkeypatch.setattr(der, "get_active_diffusion_engine", _idle_diffusion_engine)
+
+    reads = {"n": 0}
+
+    def _backend():
+        def _loading_repo_ids():
+            reads["n"] += 1
+            # Idle for the pre-reservation read, loading by the time the scope is reserved.
+            return () if reads["n"] == 1 else ("unsloth/MiniMax-H3-GGUF",)
+
+        return SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None},
+            loaded_repo_ids = lambda: (),
+            loading_repo_ids = _loading_repo_ids,
+        )
+
+    monkeypatch.setattr(video_mod, "get_video_backend", _backend)
+
+    try:
+        asyncio.run(deletion.delete_cached_model_response("unsloth/MiniMax-H3-GGUF"))
+        assert False, "expected HTTPException refusing the delete admitted before the load claim"
+    except HTTPException as e:
+        assert e.status_code == 400
+        assert "Video model load is using this repo" in e.detail
+    assert reads["n"] >= 2, "the guard must be re-read after the delete scope is reserved"
 
 
 def test_delete_cached_refuses_repo_a_diffusion_load_is_downloading(monkeypatch):
@@ -4907,3 +5135,248 @@ def test_a_saved_inpaint_pipeline_is_not_tagged_as_its_base_family():
         "FluxImg2ImgPipeline",
     ):
         assert families.detect_family_by_pipeline_class(variant) is None, variant
+
+
+# Diffusers listing probes
+
+
+def _listing_families():
+    from core.inference.diffusion_families import detect_family, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    z_image = detect_family("unsloth/Z-Image-Turbo")  # ZImagePipeline, from 0.36.0
+    h3 = detect_video_family("MiniMaxAI/MiniMax-H3")  # ModularPipeline, probed on its transformer
+    assert z_image is not None and h3 is not None
+    assert family_probe_class(h3) == "MiniMaxH3Transformer3DModel"
+    return z_image, h3
+
+
+def test_the_listing_probe_reads_the_installed_version_instead_of_importing_diffusers(monkeypatch):
+    """Listing models must not import diffusers' lazy pipeline modules."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    installed = ["0.39.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(z_image) is True
+    assert (
+        family_pipeline_available(h3) is False
+    )  # 0.40.0 is the first release with its transformer
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+    installed[0] = "0.40.0.dev0"  # a dev build of the release that has it
+    assert family_pipeline_available(h3) is True
+
+    installed[0] = "0.35.2"  # the last release before ZImagePipeline
+    assert family_pipeline_available(z_image) is False
+    assert "diffusers" not in sys.modules
+
+
+def test_the_listing_probe_fails_open_when_the_version_is_unknowable(monkeypatch):
+    """An unknown version must not hide models from listings."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+
+    def _not_installed(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _not_installed)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # A None entry blocks importing diffusers.
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.30.0")
+    monkeypatch.setitem(sys.modules, "diffusers", None)
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+
+def test_the_listing_probe_still_judges_a_conventional_module_by_its_attributes(monkeypatch):
+    """A conventional module can still be checked by its exported attributes."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.40.0")
+    stub = types.ModuleType("diffusers")
+    stub.__version__ = "0.40.0"  # new enough for every class, and it exports none of them
+    monkeypatch.setitem(sys.modules, "diffusers", stub)
+
+    assert family_pipeline_available(z_image) is False
+    assert family_pipeline_available(h3) is False
+
+    stub.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is False
+
+    # Classes without a version gate are still checked directly.
+    from core.inference.diffusion_families import detect_family
+
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
+    assert family_pipeline_available(sdxl) is False
+    stub.StableDiffusionXLPipeline = object
+    assert family_pipeline_available(sdxl) is True
+
+
+def test_the_listing_probe_never_touches_a_lazy_modules_attributes(monkeypatch):
+    """Attribute reads on a lazy module would trigger imports."""
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, _h3 = _listing_families()
+
+    class _Lazy(types.ModuleType):
+        def __init__(self, version: str) -> None:
+            super().__init__("diffusers")
+            self.__version__ = version
+            self.resolved: list[str] = []
+
+        def __getattr__(self, item):  # only reached for names not already in the namespace
+            self.resolved.append(item)
+            raise AttributeError(item)
+
+    lazy = _Lazy("0.40.0")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is True
+    assert lazy.resolved == [], lazy.resolved
+
+    lazy = _Lazy("0.35.2")
+    monkeypatch.setitem(sys.modules, "diffusers", lazy)
+    assert family_pipeline_available(z_image) is False
+    assert lazy.resolved == [], lazy.resolved
+
+
+def test_the_load_path_stays_the_authority_on_a_nonstandard_build(monkeypatch):
+    """The load path must reject a class omitted by a nonstandard build."""
+    import pytest
+
+    from core.inference.diffusion_families import (
+        assert_pipeline_class_available,
+        family_pipeline_available,
+    )
+
+    z_image, _h3 = _listing_families()
+
+    class _LazyMissingTheClass(types.ModuleType):
+        def __getattr__(self, item):
+            raise AttributeError(item)
+
+    nonstandard = _LazyMissingTheClass("diffusers")
+    nonstandard.__version__ = "0.40.0"
+    monkeypatch.setitem(sys.modules, "diffusers", nonstandard)
+
+    assert family_pipeline_available(z_image) is True
+    with pytest.raises(ValueError, match = "ZImagePipeline"):
+        assert_pipeline_class_available("ZImagePipeline", "z-image")
+
+
+def test_the_listing_probe_does_not_read_a_module_that_is_still_importing(monkeypatch):
+    """A partial module from a concurrent import must not hide model rows."""
+    import importlib.metadata
+    import importlib.util
+
+    from core.inference.diffusion_families import family_pipeline_available
+
+    z_image, h3 = _listing_families()
+
+    partial = types.ModuleType("diffusers")
+    spec = importlib.util.spec_from_loader("diffusers", loader = None)
+    spec._initializing = True
+    partial.__spec__ = spec
+    monkeypatch.setitem(sys.modules, "diffusers", partial)
+
+    installed = ["0.40.0"]
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    # Use package metadata while the module namespace is incomplete.
+    assert family_pipeline_available(z_image) is True
+    assert family_pipeline_available(h3) is True
+
+    # An old installed version still fails the gate.
+    installed[0] = "0.35.2"
+    assert family_pipeline_available(z_image) is False
+
+    # A fully imported conventional module is checked directly.
+    spec._initializing = False
+    installed[0] = "0.40.0"
+    assert family_pipeline_available(z_image) is False
+    partial.ZImagePipeline = object
+    assert family_pipeline_available(z_image) is True
+
+
+def test_the_listing_probe_reads_a_vendor_or_prerelease_version(monkeypatch):
+    """A local or pre-release suffix names the release the build was cut from."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import detect_family, family_pipeline_available
+
+    z_image, h3 = _listing_families()
+    sdxl = detect_family("stabilityai/stable-diffusion-xl-base-1.0")
+    assert sdxl is not None
+    installed = ["0.40.0+dfsg"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(sdxl) is True
+    # A vendor rebuild of the release that first shipped the class.
+    assert family_pipeline_available(h3) is True
+    assert family_pipeline_available(z_image) is True
+
+    for version in ("0.40.0rc1", "0.40.0.dev0", "0.40.1+local"):
+        installed[0] = version
+        assert family_pipeline_available(h3) is True, version
+
+    # An older rebuild is still too old.
+    installed[0] = "0.39.0+dfsg"
+    assert family_pipeline_available(h3) is False
+    assert family_pipeline_available(z_image) is True
+
+    # An unreadable version fails open, like a missing one.
+    installed[0] = "unknown"
+    assert family_pipeline_available(h3) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"
+
+
+def test_every_listing_probe_class_has_a_version_gate():
+    """An unlisted class reads as available, so every probed class needs an entry."""
+    from core.inference.diffusion_families import (
+        _FAMILIES,
+        _PIPELINE_MIN_DIFFUSERS,
+        family_probe_class,
+    )
+    from core.inference.video_families import _FAMILIES as _VIDEO_FAMILIES
+
+    # Exported before any diffusers still in play, so no entry can make the answer more true.
+    predates_every_release = {"StableDiffusionXLPipeline"}
+    probed = {family_probe_class(fam) for fam in (*_FAMILIES, *_VIDEO_FAMILIES)}
+    ungated = sorted(name for name in probed if name and name not in _PIPELINE_MIN_DIFFUSERS)
+    assert set(ungated) <= predates_every_release, ungated
+
+
+def test_the_listing_probe_hides_a_class_the_installed_diffusers_predates(monkeypatch):
+    """A family whose class the install predates must not reach the picker."""
+    import importlib.metadata
+
+    from core.inference.diffusion_families import family_pipeline_available, family_probe_class
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and family_probe_class(wan) == "WanPipeline"
+
+    installed = ["0.32.0"]
+    monkeypatch.delitem(sys.modules, "diffusers", raising = False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda name: installed[0])
+
+    assert family_pipeline_available(wan) is False  # WanPipeline arrived in 0.33.0
+    installed[0] = "0.33.0"
+    assert family_pipeline_available(wan) is True
+    assert "diffusers" not in sys.modules, "the listing probe imported diffusers"

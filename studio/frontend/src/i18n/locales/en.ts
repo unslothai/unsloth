@@ -13,7 +13,6 @@ export const en = {
     searchAriaLabel: "Search {noun}",
     modelSourceAriaLabel: "Model source",
     hubSectionAriaLabel: "Hub section",
-    pickModelFile: "Pick a model file from disk",
     modelDropped: "No longer offered",
     modelDroppedByProvider: "{provider} · no longer offered",
     modelDisabled: "Not enabled",
@@ -93,6 +92,8 @@ export const en = {
       export: "Export",
       recents: "Recents",
       noChatsYet: "No chats yet",
+      showMore: "Show more",
+      showLess: "Show less",
       settings: "Settings",
       api: "API",
       lightMode: "Light Mode",
@@ -106,6 +107,46 @@ export const en = {
       title: "Page not found",
       description: "{path} does not exist.",
       backToChat: "Back to chat",
+    },
+    // Bulk actions on a multi-row selection.
+    selection: {
+      pinProjects: "Pin projects",
+      unpinProjects: "Unpin projects",
+      deleteProjects: "Delete projects",
+      deleteProjectsTitle: "Delete projects",
+      deleteProjectsDescription:
+        "Delete {count} projects? Their chats are permanently deleted.",
+      deleteProjectsFilesDescription:
+        "Each project workspace folder is removed from disk.",
+      countSelected: "{count} selected",
+      pinChats: "Pin chats",
+      unpinChats: "Unpin chats",
+      archiveChats: "Archive chats",
+      markUnread: "Mark as unread",
+      deleteChats: "Delete chats",
+      deleteTitle: "Delete chats",
+      deleteDescription: "Delete {count} chats? This cannot be undone.",
+      deleteFilesDescription:
+        "Each chat's own sandbox folder is removed from disk. Files they wrote inside a project stay in that project's workspace.",
+      deleteFilesLabel: "Delete files and sandbox folder",
+      deleteChatFilesDescription:
+        "This chat's own sandbox folder is removed from disk. Files it wrote inside a project stay in that project's workspace.",
+    },
+    // Sidebar list headers: how chats are grouped and ordered.
+    organize: {
+      sidebarHeading: "Organize sidebar",
+      byProject: "By project",
+      inOneList: "In one list",
+      sortChatsBy: "Sort chats by",
+      sortPinnedBy: "Sort pinned by",
+      priority: "Priority",
+      lastUpdated: "Last updated",
+      manualOrder: "Manual order",
+      moveUp: "Move up",
+      moveDown: "Move down",
+      organizeChats: "Organize chats",
+      organizeProjects: "Organize projects",
+      sortPinnedChats: "Sort pinned chats",
     },
     dialog: {
       deleteChat: {
@@ -153,7 +194,34 @@ export const en = {
       data: "Data",
       apiKeys: "API",
       agents: "Agents",
+      debugging: "Logs",
       about: "About",
+    },
+    debugging: {
+      logSection: "Log file",
+      source: "Log file",
+      sourceHint: "The model runners write their own logs, so a failed load or generation is often explained there rather than in the server log.",
+      path: "Location",
+      pathCopy: "Copy path",
+      refreshSection: "Refresh",
+      mode: "Mode",
+      modeLive: "Live",
+      modeInterval: "Every 3 seconds",
+      modeManual: "Manual",
+      refreshNow: "Refresh now",
+      privacyNote: "Credentials are masked in this view. The file on disk is not masked.",
+      copyVisible: "Copy visible log",
+      empty: "Nothing has been logged yet.",
+      disabled: "File logging is turned off (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
+      missing: "No log file was found.",
+      unreadable: "The log file could not be read.",
+      timeout: "The log request timed out. The server may be unreachable.",
+      droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
+      morePending: "More lines are still being read; they arrive on the next refresh.",
+      staleSession: "File logging is turned off, so this is an earlier session and will not update.",
+      // Not rendered: extra terms the settings search matches this tab on, so
+      // the pane is still reachable by searching for debug or an error.
+      keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
       title: "Voice",
@@ -368,6 +436,14 @@ export const en = {
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
         idleSecondsAriaLabel: "Idle auto-unload seconds",
+        mediaEnable: "Switch image and video model by request",
+        mediaEnableDescription:
+          "Load a downloaded image or video model named in an API request before generating. Its own setting: the one above covers the chat model only. Off by default.",
+        mediaIdleUnload: "Idle auto-unload for image and video",
+        mediaIdleUnloadDescription:
+          "Free VRAM by unloading the image and video models after this many idle seconds. Its own setting: the one above covers the chat model only. 0 keeps them loaded, minimum 60.",
+        mediaIdleSecondsAriaLabel: "Image and video idle auto-unload seconds",
+        mediaIdlePaused: "Paused while Keep model in GPU memory is on.",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -419,6 +495,11 @@ export const en = {
         launchAtLogin: "Run Unsloth at login",
         launchAtLoginDescription:
           "Start Unsloth in the background when you log in. It stays in the menu bar or system tray until you open it.",
+
+        closeToTray: "Close to system tray",
+        closeToTrayDescription:
+          "Keep Unsloth and its server running in the background when you close the main window.",
+        closeToTraySaveError: "Failed to update the close to system tray setting.",
         loadError: "Failed to load the launch at login setting.",
         saveError: "Failed to update the launch at login setting.",
       },
@@ -710,6 +791,39 @@ export const en = {
         free: "{value} free",
         total: "{value} total",
       },
+      llamaBackend: {
+        title: "GGUF inference engine",
+        label: "Compute backend",
+        description: "The backend llama.cpp uses to run GGUF models.",
+        runningOn: "llama.cpp currently runs on {backend}.",
+        hint: "Installs the llama.cpp build for this backend and keeps it across updates. Useful when the automatic choice crashes or your GPU driver does not support it. Only backends with a build for this machine are listed; training is unaffected.",
+        autoWith: "Automatic ({backend})",
+        apply: "Apply",
+        applying: "Installing...",
+        applyHint: "Downloads the new build and restarts llama.cpp. A loaded model is unloaded.",
+        applyHintWithSize: "Downloads {size} and restarts llama.cpp. A loaded model is unloaded.",
+        switchedTo: "llama.cpp now runs on {backend}.",
+        switchFailed: "Could not change the llama.cpp backend.",
+        switchInterrupted: "The switch was interrupted before completion.",
+        envLocked: "Set to {backend} by the UNSLOTH_LLAMA_CPP_BACKEND environment variable, which overrides this setting.",
+        backends: {
+          auto: "Automatic",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "No managed llama.cpp install was found, so there is no backend to switch.",
+          localLink: "llama.cpp is a local directory you linked yourself, so Unsloth will not replace it.",
+          sourceBuild: "This llama.cpp was built from source, so its backend cannot be switched from here.",
+          unresolved: "The available backends could not be checked. Check your connection and try again.",
+        },
+        // Not rendered: extra terms the settings search matches these rows on.
+        llamaBackendKeywords:
+          "llama.cpp backend gguf inference cuda rocm hip vulkan metal cpu gpu accelerator prebuilt switch engine",
+      },
       modelMemory: {
         title: "Model memory",
         keepResident: "Keep model in GPU memory",
@@ -861,6 +975,9 @@ export const en = {
       },
     },
     chat: {
+      projectsSection: "Show projects section",
+      projectsSectionDescription:
+        "Group project chats under a Projects heading. Turn this off to list them in Recents instead.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -882,12 +999,21 @@ export const en = {
         compareChat: "Compare chat",
         exportChat: "Export chat",
       },
+      pastedTextThreshold: "Condense long pastes",
+      pastedTextThresholdDescription: "Pasted text longer than this becomes a .txt attachment instead of filling the message box.",
+      pastedTextThresholdOff: "Off",
       showResponseModel: "Show response model",
       showResponseModelDescription:
         "Show model metadata in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
+      projectAttachments: "Share files across a project",
+      projectAttachmentsDescription:
+        "Default for files attached in a chat that belongs to a project: index them for the whole project so every chat in it can use them. Each chat can override this from the attach menu.",
+      rememberParamsPerModel: "Remember settings per model",
+      rememberParamsPerModelDescription:
+        "Switching models restores the temperature, prompt and other settings you last used with that model. Off keeps one set of settings for every model.",
       thinking: {
         collapseByDefault: "Collapse Thinking by default",
         collapseByDefaultDescription:
@@ -920,11 +1046,13 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import a JSONL, NDJSON, or CSV export into Recents.",
+        "Import an Open WebUI, JSONL, NDJSON, or CSV export into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
       importedChatCount: "Imported {count} conversations to Recents.",
+      importingChats: "Importing chats: {count} so far ({percent}%)...",
+      importedChatCountPartial: "Imported {count} conversations to Recents; {failed} could not be saved.",
       importFailed: "Import failed.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete chat history from this device.",
@@ -996,6 +1124,9 @@ export const en = {
       confirmBeforeDeleting: "Confirm before deleting",
       confirmBeforeDeletingDescription:
         "Ask for confirmation before a chat is deleted. Turn off to delete instantly.",
+      alwaysDeleteFiles: "Always delete files",
+      alwaysDeleteFilesDescription:
+        "Deleting a chat also removes its own sandbox folder from disk. Files it wrote inside a project stay in that project workspace.",
       filesSection: "Files",
       uploadedFiles: "Uploaded files",
       uploadedFilesDescription:
@@ -1245,6 +1376,12 @@ export const en = {
         "This dataset is not on this device yet. Training will download it automatically.",
       noticeDatasetPartial:
         "Training will complete the partial dataset download before reading it.",
+      noticeTransformersUpgrade:
+        "No installed transformers supports this architecture yet. Starting the run offers to install transformers {version} first.",
+      noticeSixteenBitOnly:
+        "This architecture trains in 16-bit LoRA: 4-bit is not available for it, so the run needs far more VRAM than QLoRA.",
+      noticeInstallSwitchesSixteenBit:
+        "Installing that release instead of keeping the model's own code switches this run to 16-bit LoRA, which needs far more VRAM than QLoRA.",
       advancedSettings: "Advanced settings",
       defaultAdvancedSettings: "Defaults",
       nonDefaultAdvancedSettings: "{count} non-default",

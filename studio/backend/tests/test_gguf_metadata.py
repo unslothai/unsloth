@@ -12,7 +12,9 @@ from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
+    mmproj_accepts_image,
     pairing_score,
+    read_gguf_architecture,
     read_gguf_context_length,
     read_gguf_general_metadata,
     read_gguf_staged_dims,
@@ -414,3 +416,150 @@ def test_mmproj_audio_capability_missing_or_non_gguf(tmp_path: Path):
     junk = tmp_path / "garbage.gguf"
     junk.write_bytes(b"not a gguf header at all")
     assert read_mmproj_audio_capability(str(junk)) is None
+
+
+# read_gguf_architecture
+
+
+class _CountingFile:
+    """A file handle that records how many reads and seeks a parser performs on it."""
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+        self.operations = 0
+
+    def read(self, size = -1):
+        self.operations += 1
+        return self._handle.read(size)
+
+    def seek(
+        self,
+        offset,
+        whence = 0,
+    ):
+        self.operations += 1
+        return self._handle.seek(offset, whence)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._handle.__exit__(*exc_info)
+
+
+def _count_header_operations(monkeypatch, path: Path, read) -> int:
+    """File operations ``read`` performs against ``path``. Other files are untouched."""
+    import builtins
+
+    real_open = builtins.open
+    counters: list[_CountingFile] = []
+
+    def counting_open(file, *args, **kwargs):
+        handle = real_open(file, *args, **kwargs)
+        if str(file) != str(path):
+            return handle
+        counter = _CountingFile(handle)
+        counters.append(counter)
+        return counter
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    try:
+        read(str(path))
+    finally:
+        monkeypatch.undo()
+    return sum(counter.operations for counter in counters)
+
+
+def test_architecture_read_stops_before_a_large_tokenizer_array(tmp_path: Path, monkeypatch):
+    """Reading one key must not scan a large tokenizer array."""
+    p = _write_synthetic_gguf(
+        tmp_path / "model.gguf",
+        {"general.architecture": "llama", "general.name": "Test"},
+        extra_string_arrays = {"tokenizer.ggml.tokens": [f"tok{i}" for i in range(20000)]},
+    )
+
+    assert read_gguf_architecture(str(p)) == "llama"
+    assert read_gguf_general_metadata(str(p)) == {
+        "general.architecture": "llama",
+        "general.name": "Test",
+    }
+
+    # Use separate paths to avoid the readers' file-stat caches.
+    targeted = tmp_path / "targeted.gguf"
+    targeted.write_bytes(p.read_bytes())
+    whole = tmp_path / "whole.gguf"
+    whole.write_bytes(p.read_bytes())
+
+    targeted_ops = _count_header_operations(monkeypatch, targeted, read_gguf_architecture)
+    whole_ops = _count_header_operations(monkeypatch, whole, read_gguf_general_metadata)
+    assert targeted_ops < 10, targeted_ops
+    assert whole_ops > 20000, whole_ops
+
+
+def test_architecture_is_stripped_and_absent_values_are_none(tmp_path: Path):
+    stripped = _write_synthetic_gguf(
+        tmp_path / "padded.gguf", {"general.architecture": "  ltxv \n"}
+    )
+    assert read_gguf_architecture(str(stripped)) == "ltxv"
+
+    blank = _write_synthetic_gguf(tmp_path / "blank.gguf", {"general.architecture": "   "})
+    assert read_gguf_architecture(str(blank)) is None
+
+    empty = _write_synthetic_gguf(tmp_path / "empty.gguf", {})
+    assert read_gguf_architecture(str(empty)) is None
+
+    assert read_gguf_architecture(str(tmp_path / "nope.gguf")) is None
+    junk = tmp_path / "garbage.gguf"
+    junk.write_bytes(b"not a gguf file at all, just bytes")
+    assert read_gguf_architecture(str(junk)) is None
+
+
+def test_architecture_matches_the_general_metadata_reader(tmp_path: Path):
+    """The targeted and general readers must return the same architecture."""
+    for index, arch in enumerate(("llama", "flux2", "ltxv", "dflash", "qwen3vl")):
+        p = _write_synthetic_gguf(
+            tmp_path / f"model{index}.gguf",
+            {"general.architecture": arch, "general.name": "n", "general.type": "model"},
+            extra_uint32 = {f"{arch}.block_count": 32},
+        )
+        expected = (read_gguf_general_metadata(str(p)) or {}).get("general.architecture")
+        assert read_gguf_architecture(str(p)) == expected == arch
+
+
+# --- mmproj_accepts_image ----------------------------------------------
+
+
+def _projector(tmp_path: Path, **bools) -> str:
+    return str(
+        _write_synthetic_gguf(
+            tmp_path / "mmproj.gguf", {"general.type": "mmproj"}, extra_bools = bools
+        )
+    )
+
+
+def test_accepts_image_when_vision_declared(tmp_path: Path):
+    """A projector declaring vision accepts images, whatever it says about audio."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_vision_encoder": True})) is True
+
+
+def test_audio_only_projector_is_not_a_vision_tower(tmp_path: Path):
+    """ultravox / Voxtral / Qwen3-ASR: audio declared, vision key absent."""
+    assert mmproj_accepts_image(_projector(tmp_path, **{"clip.has_audio_encoder": True})) is False
+
+
+def test_dual_projector_still_accepts_images(tmp_path: Path):
+    """Qwen2.5-Omni declares both, which is what makes a lone audio claim evidence."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": True})
+    assert mmproj_accepts_image(p) is True
+
+
+def test_projector_declaring_neither_stays_image_capable(tmp_path: Path):
+    """An unreadable or older convert must not be refused: the load decides."""
+    assert mmproj_accepts_image(_projector(tmp_path)) is True
+    assert mmproj_accepts_image(str(tmp_path / "nope.gguf")) is True
+
+
+def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
+    """A vision projector writing audio=False is still a vision tower."""
+    p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
+    assert mmproj_accepts_image(p) is True

@@ -21,6 +21,8 @@ on:
       - 'studio/install_llama_prebuilt.py'
       - 'studio/backend/requirements/**'
       - 'unsloth_cli/commands/studio.py'
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/_system_dir_guard.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
       # The install step in this workflow is `uses:` on that composite action,

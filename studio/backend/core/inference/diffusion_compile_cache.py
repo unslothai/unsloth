@@ -118,8 +118,12 @@ def environment_fingerprint() -> dict[str, Any]:
         fp["torch"] = str(torch.__version__)
         fp["torch_cuda"] = str(torch.version.cuda)
         if torch.cuda.is_available():
-            fp["gpu_name"] = torch.cuda.get_device_name(0)
-            cap = torch.cuda.get_device_capability(0)
+            # The CURRENT device, not 0: a load pinned to another card compiles for that
+            # architecture, and keying the bundle by GPU 0 lets two cards share or overwrite
+            # each other's supposedly architecture-specific artifacts.
+            index = torch.cuda.current_device()
+            fp["gpu_name"] = torch.cuda.get_device_name(index)
+            cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
     except Exception:  # noqa: BLE001 — best-effort
         pass

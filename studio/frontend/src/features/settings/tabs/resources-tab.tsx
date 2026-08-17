@@ -30,6 +30,7 @@ import {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "../api/hugging-face-cache";
+import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
@@ -571,6 +572,10 @@ export function ResourcesTab() {
           </div>
         )}
       </SettingsSection>
+
+      {/* Below the GPU section it describes, above the memory settings that
+          apply to whichever backend is selected. */}
+      <LlamaBackendSection />
 
       <ModelMemorySection />
 

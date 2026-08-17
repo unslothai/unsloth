@@ -16,7 +16,6 @@ export const zhCN = {
     searchAriaLabel: "搜索{noun}",
     modelSourceAriaLabel: "模型来源",
     hubSectionAriaLabel: "Hub 分区",
-    pickModelFile: "从磁盘选择模型文件",
     modelDropped: "已不再提供",
     modelDroppedByProvider: "{provider} · 已不再提供",
     modelDisabled: "未启用",
@@ -93,6 +92,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      showMore: "显示更多",
+      showLess: "显示更少",
       settings: "设置",
       api: "API",
       lightMode: "浅色模式",
@@ -106,6 +107,44 @@ export const zhCN = {
       title: "页面未找到",
       description: "{path} 不存在。",
       backToChat: "返回聊天",
+    },
+    selection: {
+      pinProjects: "置顶项目",
+      unpinProjects: "取消置顶项目",
+      deleteProjects: "删除项目",
+      deleteProjectsTitle: "删除项目",
+      deleteProjectsDescription:
+        "删除 {count} 个项目？其中的对话将被永久删除。",
+      deleteProjectsFilesDescription:
+        "每个项目的工作区文件夹会从磁盘中删除。",
+      countSelected: "已选择 {count} 个",
+      pinChats: "置顶对话",
+      unpinChats: "取消置顶",
+      archiveChats: "归档对话",
+      markUnread: "标记为未读",
+      deleteChats: "删除对话",
+      deleteTitle: "删除对话",
+      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteFilesDescription:
+        "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
+      deleteFilesLabel: "删除文件和沙盒文件夹",
+      deleteChatFilesDescription:
+        "此对话自己的沙盒文件夹将从磁盘中移除。它在项目中写入的文件仍保留在该项目的工作区内。",
+    },
+    organize: {
+      sidebarHeading: "整理侧边栏",
+      byProject: "按项目",
+      inOneList: "合并为一个列表",
+      sortChatsBy: "对话排序方式",
+      sortPinnedBy: "置顶排序方式",
+      priority: "优先级",
+      lastUpdated: "最近更新",
+      manualOrder: "手动排序",
+      moveUp: "上移",
+      moveDown: "下移",
+      organizeChats: "整理对话",
+      organizeProjects: "整理项目",
+      sortPinnedChats: "对置顶对话排序",
     },
     dialog: {
       deleteChat: {
@@ -154,6 +193,31 @@ export const zhCN = {
       voice: "语音",
       data: "数据",
       agents: "智能体",
+      debugging: "日志",
+    },
+    debugging: {
+      logSection: "日志文件",
+      source: "日志文件",
+      sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
+      path: "位置",
+      pathCopy: "复制路径",
+      refreshSection: "刷新",
+      mode: "模式",
+      modeLive: "实时",
+      modeInterval: "每 3 秒",
+      modeManual: "手动",
+      refreshNow: "立即刷新",
+      privacyNote: "此视图中的凭据已被遮蔽。磁盘上的文件不会被遮蔽。",
+      copyVisible: "复制可见日志",
+      empty: "目前还没有任何日志。",
+      disabled: "文件日志已关闭 (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
+      missing: "未找到日志文件。",
+      unreadable: "无法读取日志文件。",
+      timeout: "日志请求超时。服务器可能无法访问。",
+      droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
+      morePending: "仍在读取更多行，它们将在下次刷新时显示。",
+      staleSession: "文件日志已关闭，因此这是较早的会话，不会更新。",
+      keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {
       title: "语音",
@@ -355,6 +419,15 @@ export const zhCN = {
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         idleSecondsAriaLabel: "空闲自动卸载秒数",
+        mediaEnable: "按请求切换图像和视频模型",
+        mediaEnableDescription:
+          "在生成前加载 API 请求中指定的已下载图像或视频模型。这是独立的设置：上面那项仅适用于聊天模型。默认关闭。",
+        mediaIdleUnload: "图像和视频的空闲自动卸载",
+        mediaIdleUnloadDescription:
+          "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。这是独立的设置：上面那项仅适用于聊天模型。设为 0 则保持加载，最小值为 60 秒。",
+        mediaIdleSecondsAriaLabel: "图像和视频空闲自动卸载秒数",
+        mediaIdlePaused:
+          "当“将模型保留在 GPU 内存中”开启时暂停。",
         idleNeedsEnable: "请先开启“按请求切换模型”。",
         idleActiveViaEnv: "已通过 UNSLOTH_MODEL_IDLE_TTL 启用。",
         loadError: "加载模型自动切换设置失败。",
@@ -403,6 +476,11 @@ export const zhCN = {
         launchAtLogin: "登录时运行 Unsloth",
         launchAtLoginDescription:
           "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+
+        closeToTray: "关闭到系统托盘",
+        closeToTrayDescription:
+          "关闭主窗口时，让 Unsloth 及其服务器继续在后台运行。",
+        closeToTraySaveError: "无法更新关闭到系统托盘设置。",
         loadError: "无法加载登录时启动设置。",
         saveError: "无法更新登录时启动设置。",
       },
@@ -696,6 +774,39 @@ export const zhCN = {
         free: "{value} 可用",
         total: "共 {value}",
       },
+      llamaBackend: {
+        title: "GGUF 推理引擎",
+        label: "计算后端",
+        description: "llama.cpp 运行 GGUF 模型所用的后端。",
+        runningOn: "llama.cpp 当前运行在 {backend} 上。",
+        hint: "安装该后端的 llama.cpp 构建，并在更新后继续沿用。当自动选择崩溃或显卡驱动不支持时很有用。只列出本机有对应构建的后端；训练不受影响。",
+        autoWith: "自动（{backend}）",
+        apply: "应用",
+        applying: "正在安装…",
+        applyHint: "下载新的构建并重启 llama.cpp。已加载的模型会被卸载。",
+        applyHintWithSize: "下载 {size} 并重启 llama.cpp。已加载的模型会被卸载。",
+        switchedTo: "llama.cpp 现在运行在 {backend} 上。",
+        switchFailed: "无法更改 llama.cpp 后端。",
+        switchInterrupted: "切换在完成前中断。",
+        envLocked: "已由环境变量 UNSLOTH_LLAMA_CPP_BACKEND 固定为 {backend}，其优先级高于此设置。",
+        backends: {
+          auto: "自动",
+          cpu: "CPU",
+          cuda: "CUDA",
+          rocm: "ROCm",
+          vulkan: "Vulkan",
+          metal: "Metal",
+        },
+        unsupported: {
+          notInstalled: "未找到受管理的 llama.cpp 安装，因此没有可切换的后端。",
+          localLink: "llama.cpp 是你自己链接的本地目录，Unsloth 不会替换它。",
+          sourceBuild: "此 llama.cpp 由源码编译，无法在这里切换后端。",
+          unresolved: "无法检查可用的后端。请检查网络连接后重试。",
+        },
+        // 不显示：用于设置搜索的额外词条。
+        llamaBackendKeywords:
+          "llama.cpp backend gguf 推理 cuda rocm hip vulkan metal cpu gpu 加速器 prebuilt 切换 引擎",
+      },
       modelMemory: {
         title: "模型内存",
         keepResident: "将模型保留在显存中",
@@ -844,6 +955,9 @@ export const zhCN = {
       },
     },
     chat: {
+      projectsSection: "显示项目分区",
+      projectsSectionDescription:
+        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -865,11 +979,20 @@ export const zhCN = {
         compareChat: "对比聊天",
         exportChat: "导出聊天",
       },
+      pastedTextThreshold: "压缩长粘贴内容",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      projectAttachments: "在项目内共享文件",
+      projectAttachmentsDescription:
+        "属于某个项目的聊天中所附文件的默认行为：为整个项目建立索引，使该项目中的每个聊天都能使用。每个聊天都可以在附件菜单中单独更改。",
+      rememberParamsPerModel: "按模型记住设置",
+      rememberParamsPerModelDescription:
+        "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
@@ -902,11 +1025,13 @@ export const zhCN = {
       exportPerChatSuffix: "（每个对话）",
       importChats: "导入对话",
       importChatsDescription:
-        "从 JSONL、NDJSON 或 CSV 导出文件将对话导入到最近对话。",
+        "将 Open WebUI、JSONL、NDJSON 或 CSV 导出文件导入到最近对话。",
       importChatsAction: "导入",
       importNoConversations: "文件中未找到对话。",
       importedOneChat: "已导入 1 个对话到最近对话。",
       importedChatCount: "已导入 {count} 个对话到最近对话。",
+      importingChats: "正在导入对话：已完成 {count} 个（{percent}%）...",
+      importedChatCountPartial: "已将 {count} 个对话导入到最近对话；{failed} 个未能保存。",
       importFailed: "导入失败。",
       clearHistory: "清除聊天记录",
       clearHistoryDescription: "从此设备删除本地聊天记录。",
@@ -974,6 +1099,9 @@ export const zhCN = {
       confirmBeforeDeleting: "删除前确认",
       confirmBeforeDeletingDescription:
         "删除聊天前先询问确认。关闭后将立即删除。",
+      alwaysDeleteFiles: "始终删除文件",
+      alwaysDeleteFilesDescription:
+        "删除对话时，同时从磁盘中删除它自己的沙盒文件夹。它在项目内写入的文件仍保留在该项目的工作区中。",
       filesSection: "文件",
       uploadedFiles: "上传的文件",
       uploadedFilesDescription: "查看和管理上传到聊天、项目和知识库的文件。",
@@ -1216,6 +1344,12 @@ export const zhCN = {
         "此数据集尚未存储在本设备上。训练时会自动下载。",
       noticeDatasetPartial:
         "训练会先继续并完成数据集下载，然后再读取数据集。",
+      noticeTransformersUpgrade:
+        "已安装的 transformers 均不支持该架构。启动运行时会先提示安装 transformers {version}。",
+      noticeSixteenBitOnly:
+        "该架构以 16 位 LoRA 训练：无法使用 4 位，因此显存需求远高于 QLoRA。",
+      noticeInstallSwitchesSixteenBit:
+        "安装该版本而非沿用模型自带代码，会将本次运行切换为 16 位 LoRA，显存需求远高于 QLoRA。",
       advancedSettings: "高级设置",
       defaultAdvancedSettings: "默认值",
       nonDefaultAdvancedSettings: "{count} 项非默认设置",

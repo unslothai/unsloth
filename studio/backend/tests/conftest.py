@@ -38,6 +38,8 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # it per-test; pin the default off for the whole suite so a new test elsewhere cannot
 # reintroduce that by accident. setdefault, so an explicit override still wins.
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
+# Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
+os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
 
 
 @pytest.fixture(scope = "session")

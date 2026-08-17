@@ -7,10 +7,6 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-#[cfg(windows)]
-const WINDOWS_CLI_ENTRYPOINT: &str =
-    "import sys; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
-
 // ── Types ──
 
 #[derive(Default)]
@@ -28,45 +24,28 @@ pub fn new_update_state() -> UpdateState {
 
 // ── Spawn ──
 fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
+    // Only the Windows arm below mutates it.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    // Isolated, as this call site shipped. It is the one managed invocation nobody
+    // types by hand, and the one that decides which install gets rewritten: a
+    // user-site unsloth_cli must not be able to answer `from unsloth_cli import app`
+    // here. Everything else inherits, because the console script does.
+    let mut cmd = crate::process::build_managed_cli_command_with(
+        bin,
+        &["studio", "update"],
+        crate::process::Isolation::Isolated,
+    )?;
+    // The only managed invocation that scrubs, and the only one that shipped doing it.
+    // Elsewhere inheriting is the point, since the console script honours these. Here
+    // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
+    // finding its own site-packages, and a PYTHONPATH pointing at another checkout
+    // makes `from unsloth_cli import app` update the wrong install.
     #[cfg(windows)]
     {
-        let python = bin
-            .parent()
-            .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
-            .join("python.exe");
-        if !python.is_file() {
-            return Err(format!(
-                "Managed Python interpreter not found beside Unsloth: {}",
-                python.display()
-            ));
-        }
-        let mut cmd = Command::new(python);
-        // Isolated mode prevents a project-local unsloth_cli module or an
-        // inherited Python search path from shadowing the managed package.
-        //
-        // -X utf8, not PYTHONUTF8: -I implies -E, so this process ignores every
-        // PYTHON* variable and its own output would reach read_lossy_lines in
-        // the locale encoding. The env vars still apply to descendants.
-        cmd.args([
-            "-X",
-            "utf8",
-            "-I",
-            "-c",
-            WINDOWS_CLI_ENTRYPOINT,
-            "studio",
-            "update",
-        ]);
         cmd.env_remove("PYTHONHOME");
         cmd.env_remove("PYTHONPATH");
-        Ok(cmd)
     }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = Command::new(bin);
-        cmd.args(["studio", "update"]);
-        Ok(cmd)
-    }
+    Ok(cmd)
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
@@ -96,6 +75,18 @@ fn spawn_update(
 
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
+    // to run from; the Windows branch above hits the same guard. Pin both.
+    crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
+        format!(
+            "Failed to pick a working directory for the update: {}",
+            error
+        )
+    })?;
+
+    // PYTHONPATH is dropped by the context itself on Windows, where -I covers
+    // only the first interpreter and the update starts more.
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
@@ -528,7 +519,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_update_command_uses_python_not_replaceable_console_stub() {
-        use std::ffi::{OsStr, OsString};
+        use std::ffi::OsString;
 
         let dir =
             std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
@@ -545,21 +536,23 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                // -X utf8 leads: -I implies -E, so PYTHONUTF8 would be ignored.
+                // -I here and nowhere else. This is the invocation that decides
+                // which install gets rewritten, and it shipped isolated; a
+                // user-site unsloth_cli answering `from unsloth_cli import app`
+                // would update the wrong one. Every invocation a user could have
+                // typed instead inherits, because the console script does.
                 OsString::from("-X"),
                 OsString::from("utf8"),
                 OsString::from("-I"),
                 OsString::from("-c"),
-                OsString::from(WINDOWS_CLI_ENTRYPOINT),
+                OsString::from(crate::process::WINDOWS_CLI_ENTRYPOINT),
                 OsString::from("studio"),
                 OsString::from("update")
             ]
         );
-        for name in ["PYTHONHOME", "PYTHONPATH"] {
-            assert!(cmd
-                .get_envs()
-                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
-        }
+        // The updater's PYTHONHOME / PYTHONPATH handling is asserted once, in
+        // windows_update_command_still_scrubs_the_python_search_path below. This
+        // test owns the program and the argument vector.
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -572,5 +565,55 @@ mod tests {
         assert!(build_update_command(&bin)
             .unwrap_err()
             .contains("python.exe"));
+    }
+
+    // The Windows trampoline moved into process.rs; nothing about the POSIX
+    // Dropping -I made this load bearing rather than belt and braces: without -E the
+    // child now reads both. See build_update_command for what each one breaks.
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_still_scrubs_the_python_search_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-update-scrub-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, "").unwrap();
+        std::fs::write(&bin, "").unwrap();
+
+        let cmd = build_update_command(&bin).unwrap();
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(
+                cmd.get_envs()
+                    .any(|(key, value)| key == std::ffi::OsStr::new(name) && value.is_none()),
+                "{name} is not scrubbed for the updater"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    // command may move with it. macOS and Linux still exec the console script.
+    #[cfg(not(windows))]
+    #[test]
+    fn posix_update_command_still_execs_the_console_script() {
+        use std::ffi::OsString;
+
+        let bin = std::path::Path::new("/opt/unsloth/bin/unsloth");
+        let cmd = build_update_command(bin).unwrap();
+
+        assert_eq!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![OsString::from("studio"), OsString::from("update")]
+        );
+        // No PYTHONHOME/PYTHONPATH scrubbing off Windows: the console script is
+        // not the interpreter, and callers that need it do it themselves.
+        assert!(cmd.get_envs().next().is_none());
     }
 }

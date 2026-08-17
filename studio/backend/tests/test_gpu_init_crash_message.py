@@ -73,6 +73,15 @@ def _managed_runtime(monkeypatch, tmp_path):
         "_is_unsloth_managed_binary",
         staticmethod(lambda _binary: True),
     )
+    # _cpu_isolated_binary asks whether this is an install tree, which is not
+    # the same question as whether the updater can replace the file: a
+    # --with-llama-cpp-dir checkout is the active install while being the
+    # user's to maintain. Staging a CPU copy only reads, so it uses this one.
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_llama_install_tree",
+        staticmethod(lambda _binary: True),
+    )
     monkeypatch.setattr(
         llama_cpp,
         "_swa_cache_path",
@@ -113,8 +122,8 @@ def _run_cpu_fallback_load(
     mmproj.write_bytes(b"projector")
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None: []
-    backend._get_gpu_free_memory = lambda _binary = None: []
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024
@@ -299,6 +308,9 @@ class TestPlatformMatrix:
             LlamaCppBackend, "_is_unsloth_managed_binary", staticmethod(lambda _binary: True)
         )
         monkeypatch.setattr(
+            LlamaCppBackend, "_is_llama_install_tree", staticmethod(lambda _binary: True)
+        )
+        monkeypatch.setattr(
             llama_cpp, "_swa_cache_path", lambda: tmp_path / "studio" / "swa_cache.json"
         )
         return binary
@@ -409,6 +421,22 @@ class TestAutoVulkanCpuFallbackGate:
             GgufLoadIntent(model_identifier = "m"),
             None,
             {},
+        )
+
+    def test_auto_suppresses_a_stale_legacy_vulkan_flag(self, monkeypatch, tmp_path):
+        # UNSLOTH_LLAMA_CPP_BACKEND=auto outranks UNSLOTH_FORCE_VULKAN everywhere
+        # else, so setup detected this bundle rather than being told to install it.
+        # Reading the legacy flag as a choice here would leave a crashing Vulkan
+        # install with no automatic CPU replay.
+        self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+        monkeypatch.setenv("UNSLOTH_FORCE_VULKAN", "1")
+
+        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            "/managed/llama-server", GgufLoadIntent(model_identifier = "m"), None, {}
         )
 
     @pytest.mark.parametrize(
@@ -533,6 +561,19 @@ class TestAutoVulkanCpuFallbackGate:
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
         )
+        assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
+        )
+
+    def test_auto_environment_override_does_not_make_a_custom_binary_managed(self, monkeypatch):
+        import utils.llama_cpp_update as update
+
+        monkeypatch.setenv("UNSLOTH_LLAMA_CPP_BACKEND", "auto")
+        monkeypatch.setattr(update, "_llama_install_root", lambda _binary: None)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+
         assert not LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/custom/llama-server", GgufLoadIntent(model_identifier = "m"), None
         )
@@ -829,6 +870,11 @@ class TestCpuIsolatedReplay:
         monkeypatch.setattr(
             LlamaCppBackend,
             "_is_unsloth_managed_binary",
+            staticmethod(lambda _binary: True),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_is_llama_install_tree",
             staticmethod(lambda _binary: True),
         )
         monkeypatch.setattr(
@@ -1169,8 +1215,8 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None: [(0, 8_000, 16_000)]
-    backend._get_gpu_free_memory = lambda _binary = None: [(0, 8_000)]
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 8_000, 16_000)]
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [(0, 8_000)]
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
     backend._get_gguf_size_bytes = lambda _path: 1024

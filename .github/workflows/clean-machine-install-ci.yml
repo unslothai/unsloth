@@ -355,14 +355,35 @@ jobs:
             HOME_DIR="$UNSLOTH_STUDIO_HOME"
           fi
 
-          if [ "${{ matrix.flags }}" != "--no-torch" ]; then
-            if [ "${{ matrix.delivery }}" = "tauri" ]; then
-              PY="$HOME_DIR/studio/unsloth_studio/bin/python"
-            else
-              PY="$HOME_DIR/unsloth_studio/bin/python"
+          # install.sh sets SKIP_TORCH for --no-torch AND, at install.sh:1880, for Intel
+          # Macs, where upstream no longer publishes x86_64 macOS torch wheels. Reading
+          # only matrix.flags asserted a torch the installer had deliberately skipped,
+          # so the macos-15-intel leg could never pass.
+          skip_torch=0
+          if [ "${{ matrix.flags }}" = "--no-torch" ]; then
+            skip_torch=1
+          elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "x86_64" ]; then
+            skip_torch=1
+          fi
+
+          if [ "${{ matrix.delivery }}" = "tauri" ]; then
+            PY="$HOME_DIR/studio/unsloth_studio/bin/python"
+          else
+            PY="$HOME_DIR/unsloth_studio/bin/python"
+          fi
+          [ -x "$PY" ] || { echo "::error::installer left no managed Python at $PY"; exit 1; }
+          # These representative native wheels load without the developer-only dylib patch.
+          if [ "$skip_torch" = 1 ]; then
+            "$PY" -c "import numpy, safetensors, tokenizers; print('native wheels loaded', numpy.__version__)"
+            # A skipped torch has to be genuinely absent. Silently tolerating one would
+            # hide a half-installed x86_64 wheel, which is the failure this leg exists
+            # to catch.
+            if "$PY" -c "import torch" 2>/dev/null; then
+              echo "::error::torch is importable on a leg where install.sh skips it"
+              exit 1
             fi
-            [ -x "$PY" ] || { echo "::error::installer left no managed Python at $PY"; exit 1; }
-            # These representative native wheels load without the developer-only dylib patch.
+            echo "torch correctly absent (install.sh skipped it)"
+          else
             "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
           fi
           STUDIO_HOME="$HOME_DIR" bash .github/scripts/assert-llama-loads.sh

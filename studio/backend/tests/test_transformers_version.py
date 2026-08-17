@@ -49,6 +49,7 @@ from utils.transformers_version import (
     _higher_tier,
     _config_json_cache,
     _tokenizer_class_cache,
+    _config_mapping_cache,
     _config_needs_510_cache,
     _config_needs_530_cache,
     _config_needs_550_cache,
@@ -60,6 +61,7 @@ from utils.transformers_version import (
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
     _venv_dir_is_valid_and_undamaged,
+    _CURRENT_EXT_TAG,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
@@ -1472,6 +1474,10 @@ class TestProbeGating:
         _config_needs_510_cache.clear()
         _config_needs_550_cache.clear()
         _tokenizer_class_cache.clear()
+        # Sixth cache, and the one this class used to miss. get_transformers_tier consults
+        # CONFIG_MAPPING_NAMES per tier and upgrades a model_type the ambient default does
+        # not ship, so a mapping parsed by an earlier test decides the answer here.
+        _config_mapping_cache.clear()
 
     def _patch_venvs(self, monkeypatch):
         for fn in (
@@ -1521,8 +1527,13 @@ class TestProbeGating:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
+        # A model_type the ambient default DOES ship. "brandnew" is in none of the
+        # mappings, so the static config-mapping tier upgraded it to 530 before the
+        # version-field probe under test ever ran, and the assert below only passed
+        # when an earlier test had left _config_mapping_cache in a state that skipped
+        # that path. The probe, not the mapping upgrade, is the subject here.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.0.0",
         }
         seen = []
@@ -1540,8 +1551,9 @@ class TestProbeGating:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
         )
+        # Shipped by the ambient default, for the same reason as the test above.
         _config_json_cache[("org/new", None)] = {
-            "model_type": "brandnew",
+            "model_type": "llama",
             "transformers_version": "5.6.0",
         }
         results = iter([_proc(1, "KeyError: 'x'"), _proc(1, "KeyError: 'x'"), _proc(0)])
@@ -1552,6 +1564,46 @@ class TestProbeGating:
         )
         assert get_transformers_tier("org/new") == "550"
         assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
+
+    def test_a_model_type_the_default_lacks_never_reaches_the_version_field_probe(
+        self, monkeypatch
+    ):
+        """The mapping check answers first, and short-circuits the probe below it.
+
+        This ordering is what quietly invalidated the two tests above. They pinned
+        model_type "brandnew", which no mapping ships, so once #7043 landed the mapping
+        check answered before the version-field probe they were written for ever ran, and
+        they began asserting the wrong branch's answer. Nothing pinned the ordering, so
+        the only symptom was those two failing in a way that read like a probe bug.
+
+        Pinning it here means a future reshuffle that puts the probe first fails as
+        itself, and the two tests above keep testing the probe rather than this.
+        """
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            tv,
+            "_config_model_types",
+            lambda tier: frozenset({"llama"} if tier == "default" else {"llama", "brandnew"}),
+        )
+        # Declares 5.x too, so the version-field probe below WOULD fire if it were reached.
+        _config_json_cache[("org/brandnew", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.0.0",
+        }
+        probed = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: probed.append(cmd[3]) or _proc(0),
+        )
+
+        tier = get_transformers_tier("org/brandnew")
+        assert tier != "default", f"a model_type the default lacks must be raised, got {tier!r}"
+        assert probed == [], "the mapping check must answer before any sidecar probe runs"
 
     def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
         self._patch_venvs(monkeypatch)
@@ -1893,6 +1945,110 @@ class TestVenvDirFileIntegrity:
     def test_deleted_file_is_detected(self, tmp_path: Path):
         venv_dir = self._make_venv(tmp_path / "venv")
         (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "ext_name",
+        [
+            "_regex.cpython-{tag}-darwin.so",
+            "_regex.cp{tag}-win_amd64.pyd",
+            "_regex.cpython-{tag}t-darwin.so",
+        ],
+    )
+    def test_extension_built_for_another_interpreter_is_detected(
+        self, tmp_path: Path, ext_name: str
+    ):
+        # Pick a stale tag by VERSION, not by whole tag: one template appends "t", so
+        # deriving it from _CURRENT_EXT_TAG directly builds "313t" -- the current tag --
+        # when the suite runs on a free-threaded 3.13, and the case asserts damage.
+        stale = "313" if _CURRENT_EXT_TAG.rstrip("t") != "313" else "312"
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/{ext_name.format(tag = stale)}": "y" * 40,
+            },
+        )
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_extension_for_the_running_interpreter_passes(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{_CURRENT_EXT_TAG}-darwin.so": "y" * 40,
+                "yaml/_yaml.so": "w" * 40,
+                # Spellings the tag regex deliberately does not recognise. Each has to fail
+                # OPEN: guessing wrong here costs a several-hundred-MB re-download.
+                "regex/_regex.pypy311-pp73-x86_64-linux-gnu.so": "p" * 40,
+                "regex/_regex.graalpy311-310-native-x86_64-linux.so": "g" * 40,
+                "regex/_regex.cpython-313d-x86_64-linux-gnu.so": "d" * 40,
+            },
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            # The tag sits in a DIRECTORY component; the binary itself is untagged and fine.
+            "vendor/build.cp312/libhelper.so",
+            "pkg.cp312.libs/libfoo.so",
+            "data/v.cp39/native.pyd",
+        ],
+    )
+    def test_a_version_tag_in_a_directory_name_is_not_damage(self, tmp_path: Path, rel: str):
+        """Matching the whole RECORD path wipes the sidecar over a directory name."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, rel: "y" * 40},
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "expect_damage"),
+        [("313", False), ("314", False), ("313t", True), ("314t", True)],
+    )
+    def test_stable_abi_is_damage_only_on_a_free_threaded_build(
+        self, tmp_path: Path, monkeypatch, current_tag: str, expect_damage: bool
+    ):
+        """A GIL build loads any older .abi3.so. A free-threaded one segfaults on it, and
+        the file survives an in-place interpreter swap because nothing else changes."""
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                "hf_xet/hf_xet.abi3.so": "z" * 40,
+                "win/_thing.abi3.pyd": "z" * 40,
+            },
+        )
+        if expect_damage:
+            assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        else:
+            assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    @pytest.mark.parametrize(
+        ("current_tag", "ext_tag"),
+        [
+            # Both directions of the GIL/free-threaded swap, on a fixed pair of versions so
+            # the case cannot collapse into "current tag" on whichever build runs the suite.
+            ("313t", "313"),
+            ("313", "313t"),
+            ("314t", "314"),
+            ("314", "314t"),
+        ],
+    )
+    def test_free_threaded_mismatch_is_detected_in_both_directions(
+        self, tmp_path: Path, monkeypatch, current_tag: str, ext_tag: str
+    ):
+        monkeypatch.setattr("utils.transformers_version._CURRENT_EXT_TAG", current_tag)
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {
+                "transformers/__init__.py": "x" * 40,
+                f"regex/_regex.cpython-{ext_tag}-x86_64-linux-gnu.so": "y" * 40,
+            },
+        )
         assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
 
     def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):

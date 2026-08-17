@@ -18,9 +18,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
-from core.inference.message_content import content_to_text
+from core.inference.message_content import message_text_with_pastes
 from core.inference.web_access_policy import normalize_website_policy
 from storage import research_runs_db as db
+from core.inference.providers import provider_runs_local_tools
 from storage import providers_db
 from storage.studio_db import get_chat_message, get_chat_thread, upsert_chat_message
 
@@ -204,8 +205,11 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         value is not None for value in (provider_type, provider_id, external_model)
     )
     if external_requested:
+        # A saved connection is still mandatory: the run is durable, so an
+        # inline key would have to be persisted, and _is_sensitive_key exists to
+        # stop exactly that. Only the provider-type allowlist is widened.
         if (
-            provider_type != "openai_codex"
+            not provider_runs_local_tools(provider_type)
             or not isinstance(provider_id, str)
             or not provider_id.strip()
             or not isinstance(external_model, str)
@@ -213,16 +217,26 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         ):
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research supports only a saved ChatGPT/Codex connection",
+                detail = "Durable research requires a saved connection whose provider supports Studio tools",
             )
         provider = providers_db.get_provider(provider_id)
         if provider is None:
             raise HTTPException(status_code = 404, detail = "Provider config not found")
-        if provider["provider_type"] != "openai_codex" or not provider["is_enabled"]:
+        # The saved row is the source of truth for routing, so validate against
+        # it rather than against the type the client sent. A self-hosted
+        # connection is stored under the backend "openai" type but surfaced to
+        # the UI as "custom" / "vllm" / "ollama" / "llama_cpp", and the composer
+        # offers research for those aliases because their registry entries
+        # declare Studio tools. Comparing the two for equality therefore 400s
+        # exactly the connections this path exists to serve, while the ordinary
+        # inference route already overrides the type from the row.
+        saved_provider_type = provider["provider_type"]
+        if not provider_runs_local_tools(saved_provider_type) or not provider["is_enabled"]:
             raise HTTPException(
                 status_code = 400,
-                detail = "Durable research requires an enabled ChatGPT/Codex connection",
+                detail = "Durable research requires an enabled connection whose provider supports Studio tools",
             )
+        request["providerType"] = saved_provider_type
 
     # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is
     # stringified, so {"auth": "sk-..."} would slip past the sensitive-key scan (inner key
@@ -340,7 +354,7 @@ def create_research_run(
         raise HTTPException(
             status_code = 400, detail = "userMessageId must identify a user message in the thread"
         )
-    if not content_to_text(user_message.get("content")).strip():
+    if not message_text_with_pastes(user_message).strip():
         raise HTTPException(
             status_code = 400,
             detail = "Deep research requires a user message with non-empty text",

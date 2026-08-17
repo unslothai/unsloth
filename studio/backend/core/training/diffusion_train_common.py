@@ -498,22 +498,21 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Per-family training defaults surfaced by the Train UI: starting points, not hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big flow-matching DiTs.
-    # The scheduler travels with the ramp: diffusers' "constant" builds without ever reading num_warmup_steps, so a
-    # warmup preset alone is silently discarded.
+    # Plain "constant" ignores lr_warmup_steps, so warmup defaults must use a
+    # warmup-capable scheduler.
     "flux.1": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
     },
     "qwen-image": {
         "lora_rank": 16,
         "learning_rate": 5e-5,
         "resolution": 512,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
     },
     "z-image": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 768},
     # The Krea 2 authors' recommended starting point (their DreamBooth defaults): rank/alpha 32, lr 3e-4, 512px.
@@ -523,15 +522,15 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
     },
     "flux.2-dev": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 512,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
     },
     # LTX-2, from Lightricks' own ltx-trainer LoRA configs: rank/alpha 32, lr 1e-4. The
     # resolution must be a multiple of 32 (its VAE's spatial compression), and 512 keeps a
@@ -540,8 +539,8 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 32,
         "learning_rate": 1e-4,
         "resolution": 512,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
     },
     # MiniMax-H3. ``resolution`` is the canvas SHORT EDGE, and 768 is the one the released
     # checkpoint generates on, so a training clip's spatial statistics land exactly on the
@@ -552,8 +551,8 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lora_rank": 16,
         "learning_rate": 1e-4,
         "resolution": 768,
-        "lr_warmup_steps": 20,
         "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
         "train_batch_size": 1,
     },
 }
@@ -1060,6 +1059,16 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
+        # Do not rewrite the scheduler here: it is part of checkpoint identity, so doing so would
+        # make legacy runs with ("constant", warmup > 0) impossible to resume.
+        try:
+            lr_warmup_steps = int(self.lr_warmup_steps or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"lr_warmup_steps must be a whole number, got {self.lr_warmup_steps!r}"
+            ) from exc
+        if lr_warmup_steps < 0:
+            raise ValueError("lr_warmup_steps must be >= 0")
         if not 1 <= int(self.cache_variants) <= 16:
             raise ValueError("cache_variants must be between 1 and 16")
         # Checkpointing knobs. Rejected here, before the route evicts resident GPU models, rather than deep in the loop.
@@ -1241,6 +1250,7 @@ class DiffusionLoraConfig:
         return replace(
             self,
             learning_rate = learning_rate,
+            lr_warmup_steps = lr_warmup_steps,
             lora_alpha = alpha,
             lora_target_modules = targets,
             max_grad_norm = float(self.max_grad_norm),

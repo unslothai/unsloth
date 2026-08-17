@@ -979,6 +979,19 @@ def _scan(
                 if os.path.splitext(entry.name)[1].lower() not in config.UPLOAD_EXTS:
                     continue
                 st = entry.stat(follow_symlinks = False)
+                from_path = False
+                if st.st_ino in (None, 0):
+                    # Windows builds DirEntry from FindFirstFileW, which carries no file index, so
+                    # DirEntry.stat leaves st_dev/st_ino at 0. os.lstat opens a handle and fills
+                    # both; without it the stored identity is (0, 0) forever and a replacement of
+                    # identical size and mtime never reaches the reconciliation work list.
+                    try:
+                        st = os.lstat(full)
+                        from_path = True
+                    except OSError:
+                        # A file that vanished mid-scan must still reach _snapshot as a failure
+                        # rather than abort the scan, which is never authoritative for deletion.
+                        pass
                 rel = os.path.relpath(full, root).replace(os.sep, "/")
                 found[rel] = {
                     "path": full,
@@ -986,6 +999,9 @@ def _scan(
                     "mtime_ns": st.st_mtime_ns,
                     "device": st.st_dev,
                     "inode": st.st_ino,
+                    # A recovered identity is comparable to the next scan's, but not to os.fstat's:
+                    # shared-folder and WebDAV drivers report different ids for the two call paths.
+                    "identity_from_path": from_path,
                 }
                 if config.FOLDER_MAX_FILES and len(found) > config.FOLDER_MAX_FILES:
                     raise RuntimeError(
@@ -1001,7 +1017,8 @@ def _snapshot(root: str, metadata: dict) -> str:
     resolved = os.path.realpath(source)
     if not _is_within(root, resolved):
         raise RuntimeError("File escaped the linked folder")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    # os.fdopen already forces this descriptor binary on Windows; O_BINARY only guards a raw os.read.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(source, flags)
     target = None
     try:
@@ -1017,14 +1034,21 @@ def _snapshot(root: str, metadata: dict) -> str:
             metadata["inode"],
         )
         actual = (before.st_size, before.st_mtime_ns, before.st_dev, before.st_ino)
-        if actual != expected:
+        # Only an identity os.fstat can reproduce is comparable here: os.scandir reports none at all
+        # on Windows, and the os.lstat _scan falls back to disagrees with os.fstat on file systems
+        # without stable file ids. Size and mtime still gate those, and the post-copy check below is
+        # fstat to fstat either way.
+        usable = metadata["inode"] not in (None, 0) and not metadata.get("identity_from_path")
+        compared = 4 if usable else 2
+        if actual[:compared] != expected[:compared]:
             raise RuntimeError("Linked source changed during reconciliation")
         if config.MAX_UPLOAD_BYTES and before.st_size > config.MAX_UPLOAD_BYTES:
             raise RuntimeError("Linked source exceeds the RAG file size limit")
         with os.fdopen(fd, "rb", closefd = False) as src, open(target, "xb") as dst:
             _copy_exact(src, dst, before.st_size)
         after = os.fstat(fd)
-        if (after.st_size, after.st_mtime_ns, after.st_dev, after.st_ino) != expected:
+        # Both sides are fstat here, so the identity is always comparable.
+        if (after.st_size, after.st_mtime_ns, after.st_dev, after.st_ino) != actual:
             raise RuntimeError("Linked source changed while it was copied")
         return str(target)
     except Exception:

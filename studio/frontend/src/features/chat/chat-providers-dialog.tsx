@@ -50,6 +50,7 @@ import {
 } from "./api/providers-api";
 
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
+import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -58,11 +59,14 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
+  providerModelSupportsStudioTools,
   removeExternalProviderApiKey,
+  supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -162,6 +166,10 @@ export function ChatProvidersSettings({
 
   const [clearApiKeyRequested, setClearApiKeyRequested] = useState(false);
   const [baseUrlDraft, setBaseUrlDraft] = useState("");
+  const [maxOutputTokensDraft, setMaxOutputTokensDraft] = useState("");
+  const [editingBackendProviderType, setEditingBackendProviderType] = useState<
+    string | null
+  >(null);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(
     null,
   );
@@ -186,9 +194,23 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
+  // a connection being created has no stored type yet, so only the UI type can decide
+  const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
+    providerType,
+    editingProviderId ? editingBackendProviderType : null,
+  );
   // llama.cpp hides the key field. Ollama and vLLM show an optional key:
   // Ollama cloud and secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
+  // Studio runs Search, Code, MCP and RAG on this machine for any provider that
+  // advertises the capability, with no extra opt-in. Say so where the
+  // connection is created: the tool results also travel back to the provider as
+  // the next turn's input, which is not obvious from "connect a model".
+  const runsStudioToolsLocally =
+    providerModelSupportsStudioTools(
+      toExternalBackendProviderType(providerType),
+      null,
+    ) === true;
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
@@ -282,6 +304,8 @@ export function ChatProvidersSettings({
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
+    setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
       if (isCustomProviderType(providerType)) {
@@ -324,7 +348,9 @@ export function ChatProvidersSettings({
         ]);
         if (!isMounted) return;
         syncSucceeded = true;
-        setRegistry(registryRows);
+        // Hidden entries are fetched for their capabilities only; the dropdown
+        // surfaces them through CUSTOM_PROVIDER_PRESETS instead.
+        setRegistry(registryRows.filter((entry) => !entry.hidden));
         setProviderType((current) => {
           if (
             current &&
@@ -383,6 +409,8 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft("");
+    setMaxOutputTokensDraft("");
+    setEditingBackendProviderType(null);
     setAvailableModels([]);
     setSelectedModelIds([]);
     setManualModelIds("");
@@ -460,6 +488,29 @@ export function ChatProvidersSettings({
     return parseOptionalBaseUrl(trimmed, {
       appendOpenAiVersionPath: shouldAppendOpenAiVersionPath(providerTypeForUrl),
     });
+  }
+
+  function parseMaxOutputTokens(input: string): number | null {
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error("Max Tokens limit must be an integer.");
+    }
+    const value = Number(trimmed);
+    if (!Number.isSafeInteger(value)) {
+      throw new Error("Max Tokens limit must be a safe integer.");
+    }
+    // getExternalMaxOutputTokens raises a sub-floor cap anyway, so say so instead of storing it
+    const floor = Math.max(
+      PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+      getExternalMinOutputTokens(providerType),
+    );
+    if (value < floor) {
+      throw new Error(
+        `Max Tokens limit must be at least ${floor.toLocaleString()}.`,
+      );
+    }
+    return value;
   }
 
   async function loadModels() {
@@ -663,6 +714,9 @@ export function ChatProvidersSettings({
         isCustomProvider,
         providerType,
       );
+      const maxOutputTokens = supportsMaxOutputTokens
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const created = await createProviderConfig({
         providerType: backendProviderType,
         displayName,
@@ -671,6 +725,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens,
         apiKey: apiKey.trim(),
 
       });
@@ -686,12 +741,15 @@ export function ChatProvidersSettings({
       const provider: ExternalProviderConfig = {
         id: created.id,
         providerType: uiProviderType,
+        // Now, not at the next sync, so reopening it this session knows the stored type.
+        backendProviderType: created.provider_type,
         name: created.display_name,
         baseUrl: created.base_url ?? "",
         models: modelsToSave,
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(providerType, availableModels),
+        maxOutputTokens: created.max_output_tokens ?? undefined,
 
         hasApiKey: created.has_api_key,
 
@@ -800,6 +858,9 @@ export function ChatProvidersSettings({
         isEditingCustomProvider,
         existing.providerType,
       );
+      const maxOutputTokens = supportsMaxOutputTokens
+        ? parseMaxOutputTokens(maxOutputTokensDraft)
+        : undefined;
       const updated = await updateProviderConfig(editingProviderId, {
         displayName: isEditingCustomProvider
           ? customProviderName.trim() ||
@@ -810,6 +871,7 @@ export function ChatProvidersSettings({
         availableModels: manualOnly
           ? []
           : pruneProviderModelIds(existing.providerType, availableModels),
+        maxOutputTokens,
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -831,12 +893,14 @@ export function ChatProvidersSettings({
           provider.id === editingProviderId
             ? {
                 ...provider,
+                backendProviderType: updated.provider_type,
                 name: updated.display_name,
                 baseUrl: updated.base_url ?? "",
                 models: modelsToSave,
                 availableModels: manualOnly
                   ? []
                   : pruneProviderModelIds(existing.providerType, availableModels),
+                maxOutputTokens: updated.max_output_tokens ?? undefined,
 
                 hasApiKey: updated.has_api_key,
                 isReasoningModel: supportsProviderReasoningToggle(
@@ -874,6 +938,17 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
+    // one would fail every unrelated edit. The resolver already reads it as the floor.
+    setMaxOutputTokensDraft(
+      provider.maxOutputTokens == null
+        ? ""
+        : Math.max(
+            provider.maxOutputTokens,
+            getExternalMinOutputTokens(provider.providerType),
+          ).toString(),
+    );
+    setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
       supportsProviderReasoningToggle(provider.providerType)
@@ -1250,6 +1325,61 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
+              {supportsMaxOutputTokens ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label
+                      htmlFor="provider-max-output-tokens"
+                      className="text-sm font-medium"
+                    >
+                      Max Tokens limit
+                    </Label>
+                    <p
+                      id="provider-max-output-tokens-help"
+                      className="text-xs leading-snug text-muted-foreground"
+                    >
+                      Caps Max Tokens for this connection. Never raises it past a
+                      model's documented limit. Leave blank to use that limit, or
+                      32,768 for a model without one.
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-1.5">
+                    {/*
+                      A TEXT input, deliberately, matching NumericValueInput in the
+                      run-settings panel. `type="number"` runs the HTML value
+                      sanitization algorithm, which replaces anything the engine does
+                      not read as a valid floating-point number with the EMPTY STRING
+                      (WHATWG HTML 4.10.5). Blank means "no override" here, so a
+                      grouped or localised entry such as "131,072" would leave the box
+                      looking filled, report "" to React, and silently CLEAR the
+                      user's override on save with no error. Keeping the raw string
+                      lets `parseMaxOutputTokens` reject it and say why.
+                    */}
+                    <Input
+                      id="provider-max-output-tokens"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={maxOutputTokensDraft}
+                      onChange={(event) =>
+                        setMaxOutputTokensDraft(event.target.value)
+                      }
+                      placeholder="32768"
+                      aria-describedby="provider-max-output-tokens-help provider-max-output-tokens-warning"
+                      className="h-9 text-sm"
+                    />
+                    <p
+                      id="provider-max-output-tokens-warning"
+                      className="text-xs leading-snug text-amber-700 dark:text-amber-400"
+                    >
+                      If the upstream provider does not support this value,
+                      requests may fail.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <Label
@@ -1271,6 +1401,17 @@ export function ChatProvidersSettings({
                     />
                     This server runs a reasoning model
                   </label>
+                </div>
+              ) : null}
+              {runsStudioToolsLocally ? (
+                <div className="px-4 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    Models on this connection can use Studio&apos;s Search, Code,
+                    MCP and Docs tools. Those run on this machine, and their
+                    results are sent back to the provider as part of the next
+                    message. Code and terminal calls still ask before anything
+                    risky runs.
+                  </p>
                 </div>
               ) : null}
             </div>

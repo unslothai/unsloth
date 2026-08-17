@@ -247,9 +247,11 @@ Write-Host "=== source shapes ==="
 $setupText = (Get-Content -Raw $setup) -replace "`r`n", "`n"
 
 Write-Host "the AMD WMI fallback survives a single-GPU host"
-# The trailing `\]\n` is what makes the CRLF check below bite: on a CRLF checkout the line ends
-# `[0]\r\n`, so the pattern fails rather than matching a silently empty region.
-$_wmiPat = '(?s)(\$amdGpus = @\(Get-CimInstance Win32_VideoController.*?\$ROCmGpuLabel = \$script:ROCmGpuLabels\[0\]\n)'
+# The trailing `\n` is what makes the CRLF check below bite: on a CRLF checkout the line ends
+# `\r\n`, so the pattern fails rather than matching a silently empty region. `[^\r\n]*` absorbs
+# whatever guards the assignment (#8577 wrapped it in `if (-not $HasROCm) { ... }`) WITHOUT
+# absorbing the `\r`, which would hand the CRLF check a match and retire it silently.
+$_wmiPat = '(?s)(\$amdGpus = @\(Get-CimInstance Win32_VideoController.*?\$ROCmGpuLabel = \$script:ROCmGpuLabels\[0\][^\r\n]*\n)'
 $_wmi = if ($setupText -match $_wmiPat) { $Matches[1] } else { "" }
 Check "the WMI fallback was found"        ($_wmi -ne "")
 Check "CRLF is normalised, not tolerated" (-not (($setupText -replace "`n", "`r`n") -match $_wmiPat))

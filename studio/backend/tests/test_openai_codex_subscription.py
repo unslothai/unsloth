@@ -968,6 +968,7 @@ def test_transient_refresh_failure_does_not_require_reauthorization(monkeypatch)
 
 def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1000,7 +1001,7 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
         },
     ]
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "build_rag_autoinject",
         lambda *_args: {
             "events": [{"type": "status", "text": "Searching documents"}],
@@ -1043,6 +1044,7 @@ def test_codex_tool_loop_autoinjects_rag_before_first_model_call(monkeypatch):
 
 def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1059,7 +1061,7 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
 
     executed = []
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "execute_tool",
         lambda name, arguments, **kwargs: executed.append((name, arguments, kwargs)) or "42",
     )
@@ -1121,6 +1123,7 @@ def test_codex_studio_tool_loop_executes_and_continues(monkeypatch):
 
 def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monkeypatch):
     from core.inference import openai_codex_tool_loop as tool_loop
+    from core.inference import studio_tool_loop as loop_core
 
     class FakeCodexClient:
         def __init__(self):
@@ -1137,7 +1140,7 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
 
     executed = []
     monkeypatch.setattr(
-        tool_loop,
+        loop_core,
         "execute_tool",
         lambda name, arguments, **kwargs: executed.append(name) or "ok",
     )
@@ -1174,7 +1177,12 @@ def test_codex_tool_budget_resolves_parallel_overflow_without_executing_it(monke
     assert any("per-message tool-call limit" in line and "call_2" in line for line in lines)
     assert client.requests[1]["tools"] is None
     assert client.requests[1]["tool_choice"] == "none"
-    assert [message["tool_call_id"] for message in client.requests[1]["messages"][-2:]] == [
+    replayed = client.requests[1]["messages"]
+    assert [message["tool_call_id"] for message in replayed if message["role"] == "tool"] == [
         "call_1",
         "call_2",
     ]
+    # The shared loop carries the local loops' closing nudge, so the tool results
+    # are no longer the tail of the conversation.
+    assert replayed[-1]["role"] == "user"
+    assert "provide your final answer now" in replayed[-1]["content"]

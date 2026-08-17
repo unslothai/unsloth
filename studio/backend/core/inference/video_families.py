@@ -621,6 +621,110 @@ def validate_video_request_shape(
             )
 
 
+def validate_video_keyframe_conditioning(
+    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
+
+    Pure in the family and the MiniMax-H3 partition, which is what lets the generate route judge
+    the checkpoint it is about to SWITCH TO by the same rules the backend applies to the loaded
+    one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
+    target for a request that was already known to be unservable.
+    """
+    if not has_keyframes:
+        return
+    from .video_minimax_h3 import H3_TASK_REFERENCES
+
+    if not fam.supports_keyframes:
+        raise ValueError(
+            f"{fam.name} generates from the prompt alone; it takes no first or last frame."
+        )
+    if h3_task == H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
+            "rather than keyframes. Load a minimax_h3_fl2va checkpoint to generate from a first "
+            "or last frame."
+        )
+
+
+def validate_video_flow_controls(
+    fam: VideoFamily,
+    flow_shift: Optional[float],
+    audio_flow_shift: Optional[float],
+    *,
+    engine: Optional[str] = None,
+) -> None:
+    """Raise ``ValueError`` when a request sets a shift the checkpoint cannot honour.
+
+    The backend's flow-shift rules, kept here so the generate route can judge the checkpoint it
+    is about to switch TO by the same ones. ``engine`` is optional because a target's engine is
+    normally not chosen until the load runs; where it IS determined by the pick, as MiniMax-H3
+    GGUFs are, passing it refuses an unservable request before anything is evicted.
+    """
+    if flow_shift is not None and fam.default_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose a video flow_shift control.")
+    if audio_flow_shift is not None and fam.default_audio_flow_shift is None:
+        raise ValueError(f"{fam.name} does not expose an audio_flow_shift control.")
+    if (
+        audio_flow_shift is not None
+        and engine == "sd_cpp"
+        and audio_flow_shift != fam.default_audio_flow_shift
+    ):
+        raise ValueError(
+            "stable-diffusion.cpp derives the audio schedule against a fixed "
+            f"{fam.default_audio_flow_shift:g} shift, so audio_flow_shift needs the "
+            "Diffusers engine."
+        )
+
+
+def validate_video_reference_conditioning(
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_references: bool,
+    reference_image_size: Optional[str] = None,
+    engine: Optional[str] = None,
+) -> None:
+    """Raise ``ValueError`` when a checkpoint cannot be conditioned on the request's references.
+
+    The absence of references is a rule too: the Ref2VA partition has no text-only denoiser. See
+    ``validate_video_keyframe_conditioning`` for why these live here rather than inline.
+
+    ``engine`` is optional for the same reason it is on the flow controls: a target's engine is
+    normally unknown before the load, but where the pick decides it, passing it refuses an
+    unservable sizing policy before anything is evicted.
+    """
+    from .video_minimax_h3 import H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX, H3_TASK_REFERENCES
+
+    if not has_references:
+        if h3_task == H3_TASK_REFERENCES:
+            raise ValueError(
+                "The MiniMax-H3 checkpoint is the Ref2VA partition, which generates from "
+                "references. Add at least one reference image or video, or load a "
+                "minimax_h3_fl2va checkpoint for text-to-video."
+            )
+        return
+    if not fam.supports_references:
+        raise ValueError(f"{fam.name} takes no reference images, videos or audio.")
+    if h3_task != H3_TASK_REFERENCES:
+        raise ValueError(
+            "The MiniMax-H3 checkpoint is the FL2VA partition, which conditions on keyframes "
+            "rather than references. Load a minimax_h3_ref2va checkpoint to generate from "
+            "references."
+        )
+    policy = (reference_image_size or H3_REF_SIZE_MATCH).strip().lower()
+    if policy not in (H3_REF_SIZE_MATCH, H3_REF_SIZE_MAX):
+        raise ValueError(
+            f"reference_image_size must be '{H3_REF_SIZE_MATCH}' or '{H3_REF_SIZE_MAX}'."
+        )
+    if policy == H3_REF_SIZE_MAX and engine == "sd_cpp":
+        raise ValueError(
+            "stable-diffusion.cpp scales every reference to the generation's pixel area, so "
+            f"'{H3_REF_SIZE_MAX}' reference sizing needs the Diffusers engine. Use "
+            f"'{H3_REF_SIZE_MATCH}' with this checkpoint."
+        )
+
+
 # Default (steps, guidance) per checkpoint variant, matched by substring (picked id then base repo), most specific first.
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),

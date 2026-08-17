@@ -5,7 +5,10 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only, not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
-import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import {
+  combineAbortSignals,
+  disposableTimeoutSignal,
+} from "@/features/hub/lib/abort-signals";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
@@ -52,11 +55,27 @@ const THREAD_WRITE_TIMEOUT_MS = 30_000;
 async function threadWriteFetch(
   input: string,
   init: RequestInit,
+  caller?: AbortSignal,
 ): Promise<Response> {
   const timeout = disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS);
+  if (caller === undefined) {
+    try {
+      return await authFetch(input, { ...init, signal: timeout.signal });
+    } finally {
+      timeout.dispose();
+    }
+  }
+  // Either reason ends the request. Linked by hand rather than with AbortSignal.any,
+  // which Safari only got in 17.4.
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (caller.aborted) abort();
+  caller.addEventListener("abort", abort);
+  timeout.signal.addEventListener("abort", abort);
   try {
-    return await authFetch(input, { ...init, signal: timeout.signal });
+    return await authFetch(input, { ...init, signal: controller.signal });
   } finally {
+    caller.removeEventListener("abort", abort);
     timeout.dispose();
   }
 }
@@ -258,6 +277,8 @@ export async function countChatInputTokens(payload: {
   mcp_enabled?: boolean;
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
+  /** Run the selected tools here rather than as the provider's hosted builtins. */
+  run_tools_locally?: boolean;
   // `model` is informational: the endpoint counts with whatever is resident and reports which.
 }): Promise<{ input_tokens: number; model?: string }> {
   const response = await authFetch("/api/inference/chat/count_tokens", {
@@ -297,6 +318,12 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // A --ctx-size or cache override in here changes the estimate, so a preflight
+      // that dropped them would approve a different command from the one that runs.
+      ...(payload.llama_extra_args !== undefined
+        ? // biome-ignore lint/style/useNamingConvention: API schema
+          { llama_extra_args: payload.llama_extra_args }
+        : {}),
       // batch sizes scale the same estimate; omitted when blank so they never read as set
       ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
       ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
@@ -749,21 +776,32 @@ export async function deleteChatAttachment(
 
 export async function getChatThread(
   threadId: string,
-  options: { bounded?: boolean } = {},
+  options: { bounded?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ThreadRecord | null> {
   // Bounded for the delete reconciliation: an unbounded read there would hang the delete that
   // the write timeout exists to keep moving. Callers on a render path stay unbounded.
-  const timeout = options.bounded
-    ? disposableTimeoutSignal(THREAD_WRITE_TIMEOUT_MS)
-    : null;
+  // `timeoutMs` is for a caller with a deadline of its own: the settings pairing gives up
+  // on a read long before the write timeout, and without a bound of its own each retry
+  // left the previous attempt running against the server it is already struggling to
+  // reach. `signal` ends it earlier still, which is what a chat switch wants.
+  const timeout =
+    options.bounded || options.timeoutMs !== undefined
+      ? disposableTimeoutSignal(options.timeoutMs ?? THREAD_WRITE_TIMEOUT_MS)
+      : null;
+  const combined =
+    timeout && options.signal
+      ? combineAbortSignals([timeout.signal, options.signal])
+      : null;
+  const signal = combined?.signal ?? timeout?.signal ?? options.signal;
   try {
     const response = await authFetch(
       `/api/chat/threads/${encodeURIComponent(threadId)}`,
-      timeout ? { signal: timeout.signal } : undefined,
+      signal ? { signal } : undefined,
     );
     if (response.status === 404) return null;
     return parseJsonOrThrow<ThreadRecord>(response);
   } finally {
+    combined?.dispose();
     timeout?.dispose();
   }
 }
@@ -797,11 +835,24 @@ export interface UpdateChatThreadOptions {
   expectedTitle?: string;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
+  /** Give up on the write; used to stand a superseded settings PATCH down. */
+  signal?: AbortSignal;
 }
+
+/**
+ * `settings` replaces the chat's whole snapshot; `settingsPatch` applies only the fields
+ * it names, for a writer that knows what changed but not what else the row holds.
+ */
+export type ChatThreadWritePatch = Partial<ThreadRecord> & {
+  settingsPatch?: ThreadRecord["settings"];
+  /** Orders a writer's snapshot writes against its own earlier ones, never across tabs. */
+  settingsSeq?: number;
+  settingsWriter?: string;
+};
 
 export async function updateChatThread(
   threadId: string,
-  patch: Partial<ThreadRecord>,
+  patch: ChatThreadWritePatch,
   options: UpdateChatThreadOptions = {},
 ): Promise<ThreadRecord> {
   const body: Record<string, unknown> = { ...patch };
@@ -818,6 +869,7 @@ export async function updateChatThread(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
+    options.signal,
   );
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
