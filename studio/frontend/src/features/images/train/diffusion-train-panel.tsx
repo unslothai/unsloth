@@ -106,13 +106,24 @@ import {
   resolveDiffusionTrainingBase,
 } from "./diffusion-train-deploy";
 import { resolveDiffusionTrainingFacts } from "./diffusion-train-family-facts";
+import { type LrScheduler, lrSchedulePreset } from "./diffusion-train-lr-schedule";
 
 // The families the Train tab can train, in popularity order; a fallback for an older backend whose /info reports none.
 type FamilyPreset = {
   name: string;
   label: string;
   base_repos: string[];
-  defaults: { rank: number; lr: number; resolution: number };
+  defaults: {
+    rank: number;
+    lr: number;
+    resolution: number;
+    // The family's LR ramp, when it recommends one. Both or neither: a warmup count is inert
+    // under "constant", so seeding one without the other reinstates the bug this carries.
+    // Only the backend reports them, so the static presets below leave the pair unset rather
+    // than keeping a second copy of a pairing that can drift.
+    lrScheduler?: LrScheduler;
+    lrWarmupSteps?: number;
+  };
   vram_note: string;
   gated?: boolean;
   // The note's facts, one per chip. Absent on an older backend, which falls back to vram_note prose.
@@ -312,6 +323,9 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? p.defaults.rank,
         lr: r.defaults?.learning_rate ?? p.defaults.lr,
         resolution: r.defaults?.resolution ?? p.defaults.resolution,
+        // No preset fallback for the ramp: a reported family owns it outright, so a backend that
+        // drops its warmup preset drops the ramp here too instead of a stale copy resurrecting it.
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note || p.vram_note,
       gated: r.gated ?? p.gated,
@@ -337,6 +351,7 @@ function mergeFamilies(reported?: DiffusionTrainableFamily[]): FamilyPreset[] {
         rank: r.defaults?.lora_rank ?? 16,
         lr: r.defaults?.learning_rate ?? 0.0001,
         resolution: r.defaults?.resolution ?? 768,
+        ...lrSchedulePreset(r.defaults),
       },
       vram_note: r.vram_note ?? "",
       gated: r.gated ?? false,
@@ -472,9 +487,8 @@ export function DiffusionTrainPanel({
   // so nothing is spent on disk unless the user asks to survive a crash.
   const [saveSteps, setSaveSteps] = useState(0);
   // LR schedule. Warmup only applies to the non-constant schedules; plain "constant" ignores it.
-  const [lrScheduler, setLrScheduler] = useState<
-    "constant" | "constant_with_warmup" | "cosine" | "linear"
-  >("constant");
+  // Seeded from the family below, which is where the flow-matching DiTs' short ramp comes from.
+  const [lrScheduler, setLrScheduler] = useState<LrScheduler>("constant");
   const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
   // Gradient checkpointing trades ~20-30% step time for a large activation-VRAM saving.
   const [gradCheckpoint, setGradCheckpoint] = useState(true);
@@ -622,6 +636,11 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
+      // The ramp is seeded from the family or reset with it: a family with no warmup preset goes
+      // back to the plain default, or the 20 steps recommended for a flow-matching DiT ride along
+      // into SDXL, which never asked for one.
+      setLrScheduler(family.defaults.lrScheduler ?? "constant");
+      setLrWarmupSteps(family.defaults.lrWarmupSteps ?? 0);
     }
     // Re-seed the DiT base precision from the family recommendation (unless the user picked one); "auto" is always safe.
     if (!precisionDirty.current) {
@@ -1354,7 +1373,12 @@ export function DiffusionTrainPanel({
           </FieldLabel>
           <Select
             value={lrScheduler}
-            onValueChange={(v) => setLrScheduler(v as typeof lrScheduler)}
+            onValueChange={(v) => {
+              // Dirty like every other settings control: the family re-seed now writes this
+              // field, so without it a hand-picked schedule is replaced on the next family switch.
+              settingsDirty.current = true;
+              setLrScheduler(v as LrScheduler);
+            }}
           >
             <SelectTrigger className={selectClass} aria-label="LR schedule">
               <SelectValue />
