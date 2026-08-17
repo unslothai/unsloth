@@ -38,12 +38,23 @@ FLOOR_CHECK = REPO / "tests" / "test_python39_compatibility.py"
 BACKEND = REPO / "studio" / "backend"
 
 
-def _legs() -> list[str]:
-    """The interpreters the matrix actually runs."""
+# The interpreter the full suite runs on. Written down rather than derived, so moving to
+# 3.14 is a decision somebody makes and defends here, not something that follows silently
+# from an edit elsewhere. Asserting only "newer than the floor" was not enough: 3.11 and
+# 3.12 satisfy that too, and either would quietly give up the removals-and-deprecations
+# coverage that is the whole reason the single leg is the newest one.
+CEILING = "3.13"
+
+
+def _legs() -> dict[str, str]:
+    """Each leg the matrix runs, as scope -> interpreter."""
     document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
-    legs = document["jobs"]["pytest"]["strategy"]["matrix"]["python"]
-    assert isinstance(legs, list) and legs, f"unreadable matrix: {legs!r}"
-    return [str(leg) for leg in legs]
+    matrix = document["jobs"]["pytest"]["strategy"]["matrix"]
+    entries = matrix.get("include")
+    assert entries, f"the matrix no longer lists its legs by scope: {matrix!r}"
+    legs = {str(entry["scope"]): str(entry["python"]) for entry in entries}
+    assert len(legs) == len(entries), f"two legs share a scope: {entries!r}"
+    return legs
 
 
 def _declared_floor() -> tuple[int, ...]:
@@ -62,29 +73,49 @@ def _version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
-def test_the_one_leg_is_the_newest():
-    """One leg, and it has to be the CEILING.
+def test_the_full_suite_runs_on_the_ceiling():
+    """One full leg, and it has to be the CEILING, by name.
 
     The ceiling is where a removal lands: a stdlib function that went away, a deprecation
     that became an error. Those break on the newest interpreter first and on the oldest
-    never, so running only the oldest would be the wrong single choice.
-
-    The floor is given up as an EXECUTED version deliberately, and paid for by
-    scripts/lint_backend_python_floor.py refusing any file that needs a symbol newer than
-    the declared floor, on every pull request, across everything shipped or executed.
+    never, so running only the oldest would be the wrong single choice, and running 3.11
+    or 3.12 would be wrong in the same direction while still sitting above the floor.
+    That is why this compares against a written-down CEILING rather than against the
+    floor: "newer than 3.10" is satisfied by versions that give up exactly what the
+    single leg exists to keep.
     """
     legs = _legs()
-    assert len(legs) == 1, (
-        f"the matrix runs {legs}. Adding a leg back is allowed, but the reason has to be "
-        f"written down here: the four legs it replaced collected the same 26,320 tests "
-        f"and differed by one skip marker, so 'more coverage' is not the reason on its own."
+    assert legs.get("full") == CEILING, (
+        f"the full suite runs on {legs.get('full')!r}, not {CEILING!r}. Moving it is a "
+        f"decision worth making deliberately: update CEILING here in the same change, "
+        f"and say why the new one is the version where removals land first."
     )
-    floor = _declared_floor()
-    assert _version(legs[0]) > floor, (
-        f"the only leg is {legs[0]} and the declared floor is "
-        f"{'.'.join(str(part) for part in floor)}. A single leg has to be the newest: "
-        f"removals and deprecations land there first, and the floor is the end that a "
-        f"static check can actually defend."
+
+
+def test_the_pre_312_branches_are_still_executed_somewhere():
+    """What the dropped legs actually took away, and where it went.
+
+    Seven backend files carry a sys.version_info branch. The 3.10 ones were never
+    straddled even by the old matrix, whose oldest leg was 3.10, so every leg took the
+    same side of them. 3.14 is above every leg there has ever been. The pre-3.12 side is
+    the only thing a 3.13-only matrix stops executing, so it keeps a leg of its own,
+    running those files and nothing else.
+    """
+    legs = _legs()
+    spot = legs.get("floor-spot-check")
+    assert spot, (
+        "the floor spot-check leg is gone. With it, nothing anywhere takes the pre-3.12 "
+        "side of native_path_leases.py, third_party_source.py or the folder-permission "
+        "check, on a pull request or on main."
+    )
+    assert _version(spot) < (3, 12), (
+        f"the spot-check leg runs {spot}, which takes the >= 3.12 side, so it re-tests "
+        f"what the full leg already covers and the older side is executed nowhere."
+    )
+    assert _version(spot) >= _declared_floor(), (
+        f"the spot-check leg runs {spot}, below the declared floor. It should be the "
+        f"NEWEST version that still takes the old side, so a failure is about the "
+        f"boundary rather than about being old."
     )
 
 
