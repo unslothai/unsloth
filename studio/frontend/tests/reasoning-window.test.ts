@@ -8,6 +8,7 @@ import {
   REASONING_WINDOW_CHARS,
   alignWindowStart,
   isOutsideFence,
+  linkDefinitionsBefore,
   nextReasoningWindowStart,
 } from "../src/features/chat/utils/reasoning-window.ts";
 
@@ -189,4 +190,68 @@ test("the window never begins inside a fence, at any length", () => {
     // and treat the rest of the thinking block as code.
     assert.equal(isOutsideFence(slice, start), true);
   }
+});
+
+// ── the shapes the first fence guard still missed ───────────────────
+
+test("a fence opened on the list marker line is a fence", () => {
+  const text = "- ```js\n  let x = 1;\n\n  let y = 2;\n  ```\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("let y")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside a list-marker fence", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}- \`\`\`js\n  let x = 1;\n\n  let y = 2;\n  \`\`\`\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("let x"));
+  assert.ok(!text.slice(start).startsWith("  let y"), text.slice(start, start + 20));
+});
+
+test("a fence inside a blockquote is a fence", () => {
+  const text = "> ```py\n> x = 1\n\n> y = 2\n> ```\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("y = 2")), false);
+});
+
+test("a display math block is not a safe place to cut", () => {
+  const text = "intro\n\n$$\n\\begin{aligned}\na &= 1\n\nb &= 2\n\\end{aligned}\n$$\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("b &= 2")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside a display math block", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}$$\na &= 1\n\nb &= 2\n$$\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("a &= 1"));
+  assert.ok(!text.slice(start).startsWith("b &= 2"), text.slice(start, start + 20));
+});
+
+test("inline $$ pairs on one line do not open display math", () => {
+  const text = "the cost is $$5$$ per unit\n\ntail";
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("a link definition before the window start is carried across", () => {
+  const text = "[spec]: https://example.com/spec\n\n" + "filler\n\n".repeat(50) + "see [spec]\n";
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  const carried = linkDefinitionsBefore(text, start);
+  assert.ok(carried.includes("[spec]: https://example.com/spec"), carried);
+  assert.ok((carried + text.slice(start)).includes("[spec]:"));
+});
+
+test("no link definitions means nothing is prepended", () => {
+  const text = "filler\n\n".repeat(50);
+  assert.equal(linkDefinitionsBefore(text, 100), "");
+});
+
+test("aligning inside a long unfinished fence does not rescan per blank line", () => {
+  // The scan is one pass over the text. Before this it was one pass PER candidate boundary, and
+  // inside an unfinished fence no candidate is ever safe, so every blank line paid a full prefix
+  // scan and the whole sum repeated on every streamed token.
+  const text = "intro\n\n```py\n" + "x = 1\n\n".repeat(20_000);
+  const started = performance.now();
+  for (let i = 0; i < 20; i += 1) assert.equal(alignWindowStart(text, 1000), 0);
+  const elapsed = performance.now() - started;
+  // Twenty aligns over a 140,000 character unfinished fence. Quadratic takes tens of seconds.
+  assert.ok(elapsed < 4000, `${elapsed.toFixed(0)}ms for 20 aligns`);
 });

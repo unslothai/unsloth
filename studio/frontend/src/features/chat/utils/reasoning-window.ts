@@ -53,15 +53,37 @@ export const REASONING_WINDOW_CHARS = 12_000;
 export const REASONING_WINDOW_SLACK = 0.5;
 
 /**
+ * A line with its container prefixes removed, so a fence opened inside a list item or a quote is
+ * still seen as a fence.
+ *
+ * CommonMark opens a fence on `- ```js` exactly as it does on `  ```js`: the list marker is
+ * container structure and the fence begins in the item's content. Matching only the indented form
+ * catches the CLOSING marker of such a block and not its opener, which is worse than matching
+ * neither, because the scanner then believes a fence opens where one closes.
+ */
+const CONTAINER_PREFIX = / {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/y;
+
+function stripContainers(line: string): string {
+  let index = 0;
+  for (;;) {
+    CONTAINER_PREFIX.lastIndex = index;
+    const match = CONTAINER_PREFIX.exec(line);
+    if (!match || match[0].length === 0) return line.slice(index);
+    index += match[0].length;
+  }
+}
+
+/**
  * The fence marker a line opens or closes, or null if the line is not a fence line.
  *
- * CommonMark, section "Fenced code blocks": up to three leading spaces, then at least three
- * backticks or at least three tildes. Counting only bare ``` at column zero misses the two
- * shapes that occur constantly in real thinking text -- a fence indented because it sits in a
- * list item, and a ~~~ fence used because the code itself contains backticks -- and a missed
+ * CommonMark, "Fenced code blocks": up to three leading spaces, then at least three backticks or
+ * at least three tildes. Counting only bare ``` at column zero misses every shape that occurs in
+ * real thinking text -- a fence indented because it sits in a list item, one opened on the list
+ * marker line itself, and a ~~~ fence used because the code contains backticks -- and a missed
  * fence is not a missed optimisation, it is a slice into the middle of a code block.
  */
-function fenceMarker(line: string): { char: string; length: number; info: string } | null {
+function fenceMarker(rawLine: string): { char: string; length: number; info: string } | null {
+  const line = stripContainers(rawLine);
   let index = 0;
   while (index < 3 && line[index] === " ") index += 1;
   const char = line[index];
@@ -72,68 +94,129 @@ function fenceMarker(line: string): { char: string; length: number; info: string
   return { char, length, info: line.slice(index + length) };
 }
 
+/** How many `$$` markers a line carries, which is what flips display-math parity. */
+function displayMathMarkers(line: string): number {
+  let count = 0;
+  for (let index = line.indexOf("$$"); index !== -1; index = line.indexOf("$$", index + 2)) {
+    count += 1;
+  }
+  return count;
+}
+
+/** Whether a line is a link-reference definition, `[label]: destination`. */
+const LINK_DEFINITION = /^ {0,3}\[[^\]]+\]:/;
+
 /**
- * Whether an offset is outside a fenced code block.
+ * The state a scan of the text so far leaves the renderer in.
  *
- * Slicing Markdown at an arbitrary offset can leave the remainder starting INSIDE a fence, and
- * the renderer would then read that fence's closing marker as an opening one and treat the rest
- * of the thinking block as code. So walk the lines before the offset and track whether a fence is
- * open, following CommonMark's own rules: an open fence is closed only by a marker of the SAME
- * character that is at least as long and carries no info string, and while a fence is open no
- * other marker means anything. A backtick fence's info string may not contain a backtick, which
- * is what keeps inline ``` in prose from opening one.
+ * Fences and display math are both "the marker that closes me reads as the marker that opens you",
+ * so a slice landing inside either one makes the renderer treat everything after it as that
+ * construct. `streaming-render-schedule.ts` already refuses to commit a block on non-neutral
+ * display-math parity for the same reason; this is the same rule applied to the window.
+ */
+type ScanState = {
+  fence: { char: string; length: number } | null;
+  mathOpen: boolean;
+};
+
+function advance(state: ScanState, line: string): void {
+  const marker = fenceMarker(line);
+  if (marker) {
+    if (state.fence === null) {
+      // A backtick fence's info string may not contain a backtick, which is what keeps inline
+      // ``` in prose from opening one.
+      if (!(marker.char === "`" && marker.info.includes("`"))) {
+        state.fence = { char: marker.char, length: marker.length };
+      }
+    } else if (
+      marker.char === state.fence.char &&
+      marker.length >= state.fence.length &&
+      marker.info.trim() === ""
+    ) {
+      state.fence = null;
+    }
+    return;
+  }
+  if (state.fence === null && displayMathMarkers(line) % 2 === 1) {
+    state.mathOpen = !state.mathOpen;
+  }
+}
+
+const neutral = (state: ScanState): boolean => state.fence === null && !state.mathOpen;
+
+/**
+ * Whether an offset is outside every construct a slice must not land inside.
+ *
+ * Kept as its own export because it is what the tests assert against; the window itself uses the
+ * single pass below rather than calling this per candidate.
  */
 export function isOutsideFence(text: string, offset: number): boolean {
-  let open: { char: string; length: number } | null = null;
+  const state: ScanState = { fence: null, mathOpen: false };
   let lineStart = 0;
   while (lineStart < offset) {
     let lineEnd = text.indexOf("\n", lineStart);
     if (lineEnd === -1 || lineEnd > offset) lineEnd = Math.min(offset, text.length);
-    const marker = fenceMarker(text.slice(lineStart, lineEnd));
-    if (marker) {
-      if (open === null) {
-        if (!(marker.char === "`" && marker.info.includes("`"))) {
-          open = { char: marker.char, length: marker.length };
-        }
-      } else if (
-        marker.char === open.char &&
-        marker.length >= open.length &&
-        marker.info.trim() === ""
-      ) {
-        open = null;
-      }
-    }
+    advance(state, text.slice(lineStart, lineEnd));
     lineStart = lineEnd + 1;
   }
-  return open === null;
+  return neutral(state);
 }
 
 /**
- * The first block boundary at or after `target` that leaves the remainder outside a fence.
+ * The first block boundary at or after `target` that leaves the remainder outside everything.
  *
- * Returns 0 when there is none, which mounts the whole body. That is the right failure: showing
- * everything is correct and merely slow, whereas cutting into a fence is wrong.
+ * ONE pass over the text, deliberately. The obvious shape -- walk the blank lines and ask
+ * `isOutsideFence` about each -- rescans from byte zero for every candidate, and the case where
+ * that bites is the exact case the window exists for: inside a still-open fence containing blank
+ * lines, NO candidate is ever safe, so every blank line pays a full prefix scan and the whole
+ * quadratic sum is repeated on every streamed token. On a 100,000-character unfinished fence that
+ * is a frame or more per chunk, which would recreate the slowdown this is here to remove.
+ *
+ * Returns 0 when there is no safe boundary, which mounts the whole body. That is the right
+ * failure: showing everything is correct and merely slow, whereas cutting into a fence is wrong.
  */
 export function alignWindowStart(text: string, target: number): number {
   if (target <= 0) return 0;
-  let cursor = target;
-  while (cursor < text.length) {
-    const boundary = text.indexOf("\n\n", cursor);
-    if (boundary === -1) return 0;
-    const start = boundary + 2;
-    if (isOutsideFence(text, start)) return start;
-    cursor = start;
+  const state: ScanState = { fence: null, mathOpen: false };
+  let lineStart = 0;
+  const length = text.length;
+  while (lineStart < length) {
+    let lineEnd = text.indexOf("\n", lineStart);
+    if (lineEnd === -1) lineEnd = length;
+    const line = text.slice(lineStart, lineEnd);
+    const nextLine = lineEnd + 1;
+    // A blank line is a block boundary, and the boundary the renderer sees is the START of the
+    // line after it. Trimming rather than testing for "" also makes a whitespace-only line and a
+    // CRLF stream work, both of which the previous "\n\n" search silently declined to window.
+    if (nextLine >= target && line.trim() === "" && neutral(state)) return nextLine;
+    advance(state, line);
+    lineStart = nextLine;
   }
   return 0;
 }
 
 /**
- * Where the mounted window should start, given where it starts now, while the reader is at the
- * end of a streaming block.
+ * The link-reference definitions before `start`, so a `[label]` left in the window still resolves.
  *
- * Monotone: never less than `currentStart`, so the mounted body never grows backwards on its own
- * and the renderer never sees the string it just rendered with a prefix glued back on.
+ * A definition is document-wide and invisible, so slicing it away turns a link in the mounted tail
+ * into literal text. `IncrementalMarkdownCache` retains definitions for exactly this reason and
+ * cannot recover ones this slice already removed, so they are carried across instead. They render
+ * to nothing, so the visible text is unchanged.
  */
+export function linkDefinitionsBefore(text: string, start: number): string {
+  if (start <= 0) return "";
+  const definitions: string[] = [];
+  let lineStart = 0;
+  while (lineStart < start) {
+    let lineEnd = text.indexOf("\n", lineStart);
+    if (lineEnd === -1 || lineEnd > start) lineEnd = start;
+    const line = text.slice(lineStart, lineEnd);
+    if (LINK_DEFINITION.test(line)) definitions.push(line);
+    lineStart = lineEnd + 1;
+  }
+  return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;
+}
+
 export function nextReasoningWindowStart(
   text: string,
   currentStart: number,

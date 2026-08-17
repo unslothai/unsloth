@@ -18,7 +18,10 @@ import {
   startsNewReasoningRound,
   useChatPreferencesStore,
 } from "@/features/chat";
-import { nextReasoningWindowStart } from "@/features/chat/utils/reasoning-window";
+import {
+  linkDefinitionsBefore,
+  nextReasoningWindowStart,
+} from "@/features/chat/utils/reasoning-window";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -352,6 +355,13 @@ function ReasoningBody() {
     startRef.current = 0;
     atBottomRef.current = true;
     restoredRef.current = false;
+    // Cancel any correction still in flight. It resolves the scroller afresh every frame, so a
+    // settle left running across a thread switch would find the NEW thread's pane and drive it to
+    // the old thread's distance from the bottom.
+    if (settleRef.current !== null) {
+      cancelAnimationFrame(settleRef.current);
+      settleRef.current = null;
+    }
   }
 
   // A regenerate reuses this instance, so a new round has to start windowed again rather than
@@ -490,7 +500,11 @@ function ReasoningBody() {
     <div ref={hostRef} className="contents">
       <MarkdownText
         key={renderKey}
-        text={windowed ? text.slice(startRef.current) : undefined}
+        text={
+          windowed
+            ? linkDefinitionsBefore(text, startRef.current) + text.slice(startRef.current)
+            : undefined
+        }
       />
     </div>
   );
