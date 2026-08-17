@@ -257,3 +257,32 @@ def test_the_floor_lint_scans_the_tree_rather_than_a_list_of_packages():
     assert (
         len(scanned) > 300
     ), f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
+
+
+def test_the_floor_lint_covers_every_tree_the_matrix_legs_run():
+    """The lint has to cover what the deleted legs covered, not just the backend.
+
+    studio-backend-ci runs `pytest unsloth_cli/tests` as a step on every leg and lists
+    unsloth_cli/** in its own paths filter, so the old 3.10 leg executed shipped CLI code
+    on the floor interpreter. A lint aimed only at studio/backend replaces part of that
+    and reads like it replaces all of it.
+    """
+    import importlib.util
+
+    lint = REPO / "scripts" / "lint_backend_python_floor.py"
+    spec = importlib.util.spec_from_file_location("lint_backend_python_floor", lint)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    workflow = WORKFLOW.read_text(encoding = "utf-8")
+    # What it would hand to vermin, not what its source says it aims at.
+    scanned = [str(Path(name).relative_to(REPO).as_posix()) for name in module.targets()]
+    for tree in ("studio/backend", "unsloth_cli"):
+        assert tree in workflow, (
+            f"{tree} is no longer run by {WORKFLOW.name}; drop it from the lint's ROOTS too"
+        )
+        assert any(name.startswith(tree + "/") for name in scanned), (
+            f"{WORKFLOW.name} still executes {tree} on the matrix, but the floor lint does "
+            f"not scan it, so a post-floor stdlib name there passes the pull request and "
+            f"fails on the push to main."
+        )

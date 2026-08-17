@@ -38,7 +38,15 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-backend-ci.yml"
 
-BACKEND = REPO / "studio" / "backend"
+# Both trees the matrix legs actually execute. studio-backend-ci lists 'unsloth_cli/**'
+# in its own paths filter and runs `pytest unsloth_cli/tests` as a step on every leg, so
+# a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly
+# as a backend one was. Scanning only the backend would have moved that coverage to the
+# push to main while looking like it had replaced it.
+ROOTS = (
+    REPO / "studio" / "backend",
+    REPO / "unsloth_cli",
+)
 
 # Everything shipped under studio/backend is scanned. The first version of this listed the
 # packages instead, and that is exactly the wrong shape for a floor check: it named core,
@@ -82,14 +90,18 @@ def matrix_floor() -> tuple[int, int]:
 
 
 def targets() -> list[str]:
-    """Every shipped .py under the backend, found rather than listed."""
-    found = [
-        str(path)
-        for path in sorted(BACKEND.rglob("*.py"))
-        if not any(part in EXCLUDE_PARTS for part in path.relative_to(BACKEND).parts)
-    ]
+    """Every shipped .py under the trees the matrix runs, found rather than listed."""
+    found = []
+    for root in ROOTS:
+        if not root.is_dir():
+            raise SystemExit(f"{root} is gone; the scan would silently stop covering it")
+        found.extend(
+            str(path)
+            for path in sorted(root.rglob("*.py"))
+            if not any(part in EXCLUDE_PARTS for part in path.relative_to(root).parts)
+        )
     if not found:
-        raise SystemExit(f"no python files found under {BACKEND}; the scan would pass on nothing")
+        raise SystemExit(f"no python files found under {ROOTS}; the scan would pass on nothing")
     return found
 
 
@@ -107,7 +119,7 @@ def main() -> int:
         )
     files = targets()
     print(
-        f"[floor] {len(files)} backend files must run on Python {target}, "
+        f"[floor] {len(files)} shipped files must run on Python {target}, "
         f"the oldest leg in the matrix"
     )
     command = [
@@ -121,11 +133,12 @@ def main() -> int:
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     if result.returncode == 0:
-        print(f"[floor] OK: nothing in the backend needs more than {target}")
+        print(f"[floor] OK: nothing shipped needs more than {target}")
         return 0
     print(
         f"::error title=Backend needs a newer Python than the matrix floor::"
-        f"something under studio/backend requires more than Python {target}, which is the "
+        f"something under studio/backend or unsloth_cli requires more than Python {target}, "
+        f"which is the "
         f"oldest leg studio-backend-ci runs. A pull request only runs the newest leg, so "
         f"this would otherwise fail on the push to main. Either guard the usage behind a "
         f"sys.version_info check, or raise the floor in the workflow matrix and say why."
