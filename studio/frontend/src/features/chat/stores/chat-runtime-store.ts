@@ -46,6 +46,7 @@ import {
 } from "../utils/mirrored-chat-settings";
 import { retryablePatchAfterFailure } from "../utils/settings-retry";
 import {
+  THREAD_SCOPED_PARAM_KEYS,
   THREAD_SCOPED_SETTING_KEYS,
   type ThreadScopedSettingKey,
   type ThreadScopedSettings,
@@ -803,6 +804,24 @@ const CLAMPED_PILL_KEYS = [
 ] as const;
 type ClampedPillKey = (typeof CLAMPED_PILL_KEYS)[number];
 
+/**
+ * Put back the sampling keys the open chat owns, so a model load or a status poll
+ * applying that model's recommendation leaves the chat running on what it stored.
+ * A chat holding nothing for a key takes the model's value, which is what a chat
+ * that never set one should do.
+ */
+function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
+  const kept: Record<string, unknown> = {};
+  for (const key of THREAD_SCOPED_PARAM_KEYS) {
+    const held = threadScopedOverride(key);
+    if (held === undefined || isSameThreadScopedValue(held, params[key])) {
+      continue;
+    }
+    kept[key] = held;
+  }
+  return hasKeys(kept) ? { ...params, ...kept } : params;
+}
+
 function isSameThreadScopedValue(next: unknown, current: unknown): boolean {
   if (Object.is(next, current)) return true;
   // ragSource is the only object among these, and its variants carry at most a kb id.
@@ -1458,8 +1477,15 @@ function heldThreadScopedChanges(
   held: { field: string }[],
 ): ThreadScopedSettings {
   const edited: Record<string, unknown> = {};
-  const live = useChatRuntimeStore.getState() as Record<string, unknown>;
-  for (const edit of held) edited[edit.field] = live[edit.field];
+  const live = useChatRuntimeStore.getState();
+  // Through the same reader the snapshot path uses: the sampling keys sit under
+  // `params`, so a direct field read returns undefined and the sanitizer drops them.
+  for (const edit of held) {
+    edited[edit.field] = readThreadScopedValue(
+      live,
+      edit.field as ThreadScopedSettingKey,
+    );
+  }
   return sanitizeThreadScopedSettings(edited);
 }
 
@@ -3177,12 +3203,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params, options) =>
     set((state) => {
+      // A model's recommendation is applied through this setter too, and it must
+      // not overwrite the sampling this chat is running with. Only keys the chat
+      // actually holds are put back, so one it never set still follows the model.
+      const effective =
+        options?.fromModelDefaults === true
+          ? restoreThreadScopedParams(params)
+          : params;
       // Bump version unconditionally so a late hydration response won't clobber
       // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
-      const changedParams = getChangedInferenceParams(params, state.params);
+      const changedParams = getChangedInferenceParams(effective, state.params);
       const queuedSettingsChanged = shouldAdvanceQueuedSettingsEpoch(
         state.params,
-        params,
+        effective,
         options?.trackQueuedSettings !== false,
       );
       if (
@@ -3213,9 +3246,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
       // counters under the new checkpoint.
-      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      const checkpointChanged = state.params.checkpoint !== effective.checkpoint;
       return {
-        params,
+        params: effective,
         ...(queuedSettingsChanged
           ? { queuedSettingsEpoch: state.queuedSettingsEpoch + 1 }
           : {}),

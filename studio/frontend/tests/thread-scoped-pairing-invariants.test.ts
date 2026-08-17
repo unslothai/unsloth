@@ -589,3 +589,49 @@ test("only a user edit to a sampling param lands on the chat", () => {
     );
   }
 });
+
+// The store holds the edit under `params`, so the flush that runs when the user leaves
+// mid-read has to look there too. Reading the field directly yields undefined, the
+// sanitizer drops it, and the edit the user watched happen is gone with no error.
+test("an edit held through the pairing window keeps its sampling value", () => {
+  const changes = slice(store, "function heldThreadScopedChanges", "\n}");
+  assert.match(changes, /readThreadScopedValue\(\s*live,\s*edit\.field as ThreadScopedSettingKey,\s*\)/);
+  assert.doesNotMatch(
+    changes,
+    /edited\[edit\.field\] = live\[edit\.field\]/,
+    "reads the field directly, which is undefined for every sampling key",
+  );
+});
+
+// fromModelDefaults only ever changed where the value was persisted. The recommendation
+// still landed in the live params, so the chat ran the model's sampling instead of its
+// own, and the next unrelated edit snapshotted that over what the chat had stored.
+test("a model's recommendation does not overwrite the chat's sampling", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(
+    setParams,
+    /options\?\.fromModelDefaults === true\s*\?\s*restoreThreadScopedParams\(params\)\s*:\s*params/,
+  );
+  // and the restored object is the one that reaches the store and the diff, not `params`
+  assert.match(setParams, /getChangedInferenceParams\(effective, state\.params\)/);
+  assert.match(setParams, /params: effective,/);
+  assert.doesNotMatch(setParams, /^\s*params,$/m);
+
+  // Only what the chat actually holds is put back; the rest follows the model.
+  const restore = slice(store, "function restoreThreadScopedParams", "\n}");
+  assert.match(restore, /const held = threadScopedOverride\(key\)/);
+  assert.match(restore, /if \(held === undefined/);
+});
+
+// Same recommendation table, two triggers: loading the model and toggling Think. Marking
+// one and not the other pins the chat to sampling it never chose by the other route.
+test("both Qwen recommendation paths are marked as model defaults", () => {
+  const qwen = read("../src/features/chat/utils/qwen-params.ts");
+  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  for (const source of [qwen, runtime]) {
+    assert.match(
+      source,
+      /setParams\(\s*\{ \.\.\.store\.params, \.\.\.p(arams)? \},\s*\{ fromModelDefaults: true \},?\s*\)/,
+    );
+  }
+});

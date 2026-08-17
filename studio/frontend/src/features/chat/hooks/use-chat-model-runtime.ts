@@ -1543,7 +1543,12 @@ export function useChatModelRuntime() {
                         ? { presencePenalty: 1.5 }
                         : {}),
                     };
-                store.setParams({ ...store.params, ...p });
+                // The model's recommendation for the mode, not a value the user
+                // picked, so it moves the defaults and leaves the chat's own alone.
+                store.setParams(
+                  { ...store.params, ...p },
+                  { fromModelDefaults: true },
+                );
               }
             }
             await refresh({ signal: abortCtrl.signal });
