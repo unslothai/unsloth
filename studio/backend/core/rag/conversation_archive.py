@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Optional
 
 from storage import rag_db
@@ -212,6 +213,59 @@ def has_archive(thread_id: str) -> bool:
                 pass
 
 
+def _normalise(text: str) -> str:
+    return " ".join((text or "").split()).lower()
+
+
+def _live_transcript(thread_id: str) -> Optional[str]:
+    """The thread's saved messages as one normalised blob, or None if it has none.
+
+    Used to keep recall on the branch the user is actually on. Editing an earlier message
+    rewinds a thread and continues down a new branch, but the archive is append-only and
+    still holds the turns the abandoned continuation produced -- so without this, asking
+    the right question after a rewind can pull back a turn that, on this branch, never
+    happened. Verified: after rewinding past a turn, querying its distinctive text still
+    returned it.
+
+    None means "this thread has no saved transcript" -- an API client passing a thread_id
+    without persisting messages -- and the caller then does not filter, because an empty
+    transcript is absence of evidence, not evidence the turns are gone.
+    """
+    try:
+        from storage import studio_db
+        messages = studio_db.list_chat_messages(thread_id)
+    except Exception:
+        return None
+    if not messages:
+        return None
+    parts = [_text_of(message.get("content")) for message in messages]
+    blob = _normalise("\n".join(part for part in parts if part))
+    return blob or None
+
+
+_ROLE_PREFIX = re.compile(
+    r"^(?:user|assistant|system|developer|tool result|message):\s*", re.IGNORECASE
+)
+
+
+def _on_live_branch(text: str, transcript: str) -> bool:
+    """Whether an archived turn still exists in the saved thread.
+
+    Substring containment on a normalised prefix rather than a digest match: the archived
+    text was rendered from the inference projection and the saved copy comes back through
+    the message store, so exact equality is too brittle to bet the feature on.
+
+    The role labels ``render_turn`` writes ("user: ...") exist only in the archived copy,
+    so they are stripped first -- leaving them in made every probe miss and filtered out
+    the turns this feature exists to return.
+    """
+    for line in (text or "").splitlines():
+        probe = _normalise(_ROLE_PREFIX.sub("", line))[:160]
+        if probe and probe in transcript:
+            return True
+    return False
+
+
 def recall(
     thread_id: str,
     query: str,
@@ -274,6 +328,23 @@ def recall(
         if not hits:
             return None
         rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
+        transcript = _live_transcript(thread_id)
+        if transcript:
+            kept = [
+                hit
+                for hit in hits
+                if hit.chunk_id in rows and _on_live_branch(rows[hit.chunk_id]["text"], transcript)
+            ]
+            if len(kept) != len(hits):
+                logger.info(
+                    "conversation_archive.branch_filtered thread_id=%s kept=%d of %d",
+                    thread_id,
+                    len(kept),
+                    len(hits),
+                )
+            hits = kept
+        if not hits:
+            return None
         text, sources = tool._format(rows, hits)
         return (text, sources) if sources else None
     except Exception:

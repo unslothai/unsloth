@@ -238,3 +238,79 @@ def test_recall_finds_a_rare_token_buried_in_boilerplate(conn):
 
     assert found is not None
     assert "VULPINE-9134-QK" in found[0]
+
+
+def _save_thread(thread_id, turns):
+    """Persist a transcript the way the chat history route does."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{thread_id}-{index}",
+                "threadId": thread_id,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+
+
+def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkeypatch):
+    """Editing an earlier message rewinds the thread onto a new branch.
+
+    The archive is append-only and still holds what the abandoned continuation produced,
+    so without a branch check the right question pulls back a turn that, on this branch,
+    never happened. Verified against the live build before the check existed.
+    """
+    kept = [
+        {"role": "user", "content": "section one, code KEEPME-1111"},
+        {"role": "assistant", "content": "noted section one"},
+    ]
+    rolled_back = [
+        {"role": "user", "content": "section two, code GONEAWAY-2222"},
+        {"role": "assistant", "content": "noted section two"},
+    ]
+    _archive(kept, thread_id = "branch-thread")
+    _archive(rolled_back, thread_id = "branch-thread")
+    # The saved thread now holds only the surviving branch.
+    _save_thread("branch-thread", kept)
+
+    survived = conversation_archive.recall("branch-thread", "KEEPME-1111")
+    abandoned = conversation_archive.recall("branch-thread", "GONEAWAY-2222")
+
+    assert survived is not None and "KEEPME-1111" in survived[0]
+    # Recall has no relevance floor, so a query for the abandoned turn can still come back
+    # with the surviving one. The property that matters is that the rolled-back content
+    # itself is never returned.
+    assert abandoned is None or "GONEAWAY-2222" not in abandoned[0]
+    assert "GONEAWAY-2222" not in (survived[0] or "")
+
+
+def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
+    """An API caller can pass a thread_id without persisting anything.
+
+    An empty transcript is absence of evidence, not evidence that the turns are gone, so
+    the branch check must not silently disable recall for those callers.
+    """
+    _archive(
+        [
+            {"role": "user", "content": "unsaved section, code ORPHAN-3333"},
+            {"role": "assistant", "content": "noted"},
+        ],
+        thread_id = "unsaved-thread",
+    )
+
+    found = conversation_archive.recall("unsaved-thread", "ORPHAN-3333")
+
+    assert found is not None
+    assert "ORPHAN-3333" in found[0]
