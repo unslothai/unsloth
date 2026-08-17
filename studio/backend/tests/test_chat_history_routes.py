@@ -295,6 +295,37 @@ def test_chat_settings_payload_accepts_fast_mode_presets():
     assert dumped["customPresets"][0]["params"]["fastMode"] is True
 
 
+def test_chat_settings_payload_carries_per_model_params():
+    """The payload is extra="forbid", so per-model memory only reaches the DB if the
+    schema names both keys. A patch also has to survive exclude_unset with just the
+    one model it touched, since that is what keeps other models' settings intact."""
+    payload = chat_history.ChatSettingsPayload.model_validate(
+        {
+            "rememberParamsPerModel": True,
+            "inferenceParamsByModel": {
+                "unsloth/Qwen3.5-9B-GGUF": {"temperature": 0.2, "maxTokens": 4096},
+            },
+        }
+    )
+
+    dumped = payload.model_dump(exclude_unset = True)
+    assert dumped["rememberParamsPerModel"] is True
+    assert dumped["inferenceParamsByModel"] == {
+        "unsloth/Qwen3.5-9B-GGUF": {"temperature": 0.2, "maxTokens": 4096},
+    }
+    # Nothing else is implied by the patch, so the merge cannot clobber it.
+    assert "inferenceParams" not in dumped
+
+
+def test_chat_settings_payload_rejects_junk_per_model_params():
+    """Provider-qualified ids are opaque keys, but the values are still real
+    inference settings -- an unknown field must 400 rather than reach the DB."""
+    with pytest.raises(ValidationError):
+        chat_history.ChatSettingsPayload.model_validate(
+            {"inferenceParamsByModel": {"openai:gpt-x": {"notAParam": 1}}}
+        )
+
+
 def test_chat_settings_payload_accepts_preset_load_config():
     payload = chat_history.ChatSettingsPayload.model_validate(
         {

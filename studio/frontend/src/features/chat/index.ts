@@ -121,6 +121,17 @@ export {
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
 export {
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
+} from "./utils/prompt-queue-reorder";
+export {
+  PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+} from "./utils/prompt-queue-input";
+export {
   localPromptQueueModelBoundary,
   planLocalPromptQueueStop,
   shouldAbortPendingQueueForModelBoundary,
@@ -183,6 +194,7 @@ export {
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
   listStoredChatThreads,

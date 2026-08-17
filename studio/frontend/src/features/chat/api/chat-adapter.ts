@@ -149,6 +149,7 @@ import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
   getStoredChatProject,
+  isThreadIncognito,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -162,10 +163,11 @@ import {
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  createThinkTagTracker,
   extractDeltaText,
-  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { stripTrailingTemplatePlaceholder } from "../utils/trailing-template-placeholder";
 import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
@@ -1771,21 +1773,70 @@ async function resolveChatInstructions(
     .join("\n\n");
 }
 
-async function resolveProjectId(
+// A run resolves the project separately for the sandbox, the RAG scope and the
+// instructions, and while a fresh thread's row is still being written they all
+// take the composer fallback. Answered once per thread and reused, or a
+// navigation between those calls mixes two projects into one request.
+const composerProjectByPendingThread = new Map<string, string | null>();
+
+/** The project the run started in, kept for the whole run. Only the first send
+ * for a thread records one: a later run finds the row and never consults it. */
+function rememberComposerProjectForRun(
+  threadId: string,
+  projectId: string | null,
+): void {
+  // An incognito thread never has a row, so resolveProjectId answers before it
+  // reads the map: an entry here would be one nothing ever removes.
+  if (isThreadIncognito(threadId)) return;
+  if (!composerProjectByPendingThread.has(threadId)) {
+    composerProjectByPendingThread.set(threadId, projectId);
+  }
+}
+
+export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  // A caller that gates on the answer (the queue's indexing probe) has to tell
+  // "no project" from "could not read the row": one sends, the other waits. It
+  // also names its own fallback, since the store names whichever project is on
+  // screen when it polls rather than the one it is waiting for.
+  opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
+  // Read before the await: a send survives navigation, so a store read after the
+  // lookup could hand this request the project the user moved to.
+  const composerProjectId =
+    opts?.composerProjectId !== undefined
+      ? opts.composerProjectId
+      : useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
-    const thread = await (
-      readThreadRecord?.() ?? getStoredChatThread(threadId)
-    ).catch(() => null);
-    return thread?.projectId ?? null;
+    let thread: ThreadRecord | undefined;
+    try {
+      thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    } catch (error) {
+      // A failed lookup is not proof the row is missing, so it must not adopt
+      // whichever project the composer last had open.
+      if (opts?.rethrowReadFailure) throw error;
+      return null;
+    }
+    if (thread) {
+      composerProjectByPendingThread.delete(threadId);
+      return thread.projectId ?? null;
+    }
+    // No row yet: initialize() does not await the write, so a fresh chat's first
+    // send can read ahead of it and drop the project's sources, instructions and
+    // sandbox. An incognito thread is never persisted, so its miss is the answer.
+    if (isThreadIncognito(threadId)) {
+      return null;
+    }
+    const pending = composerProjectByPendingThread.get(threadId);
+    if (pending !== undefined) {
+      return pending;
+    }
+    // Not recorded here: the send records it, and this also runs off a run (the
+    // queue probe, the token-count extras), where a poll landing mid-navigation
+    // would pin the run to whichever project is on screen.
   }
-  const projectId = useChatRuntimeStore.getState().activeProjectId;
-  if (!projectId) {
-    return null;
-  }
-  return projectId;
+  return composerProjectId ?? null;
 }
 
 async function resolveSandboxSessionId(
@@ -1993,6 +2044,8 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
+      // The model being stepped off is the one the background load put there.
+      persist: false,
     });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
@@ -2949,6 +3002,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
+          fromModelDefaults: true,
+          // A budget remembered from a larger context does not fit this load.
+          maxTokensCap:
+            candidate.kind === "gguf"
+              ? (loadResp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -3329,6 +3388,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
+            fromModelDefaults: true,
+            maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
         const defaultModel: ChatModelSummary = {
@@ -3527,6 +3588,11 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // Before the first await: hydration and a model load both run ahead of the
+      // first resolveProjectId, and a send survives navigation. Only consulted
+      // while the thread's own row is still missing.
+      const composerProjectIdAtSend =
+        useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();
       // Every run reaches here: the composer, Reload, Continue, and send from the edit
       // composer. Waiting for the open chat's own settings in this one place is what
@@ -3549,7 +3615,11 @@ export function createOpenAIStreamAdapter(
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
-      const resolvedThreadId = (runThreadId ?? runtime.activeThreadId) || undefined;
+      const resolvedThreadId =
+        (runThreadId ?? runtime.activeThreadId) || undefined;
+      if (resolvedThreadId) {
+        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+      }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),
@@ -4600,6 +4670,11 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // Answers "does the text end inside <think>" from what each arrival adds
+      // rather than from the whole buffer. It has to see every state the buffer
+      // passes through, so it is updated once per arrival, next to the strip
+      // below, and never behind a short-circuiting condition.
+      const thinkTags = createThinkTagTracker();
       // What the cap is measured against: only grows, unlike cumulativeText,
       // and counts tool-argument deltas, which never reach it.
       let streamedChars = 0;
@@ -6259,11 +6334,14 @@ export function createOpenAIStreamAdapter(
               // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
-                cumulativeText = cumulativeText.replace(
-                  /\s*\$\{[^}]*\}\s*$/,
-                  "",
-                );
+                cumulativeText =
+                  stripTrailingTemplatePlaceholder(cumulativeText);
               }
+              // Right after the strip, so the tracker sees the buffer the
+              // arrival ended with. Kept out of the short-circuiting condition
+              // below: skipping arrivals would leave the strip's removals
+              // unaccounted for.
+              const textEndsInsideThink = thinkTags.update(cumulativeText);
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -6291,7 +6369,7 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
+                !textEndsInsideThink
               ) {
                 reasoningDurationTracker.finishGroup();
               }

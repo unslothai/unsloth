@@ -1902,40 +1902,53 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     assert "status.requested_parallel_slots !== null && {" not in src
 
 
-def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
-    """`hydratingExistingModel` is true whenever the incoming status disagrees with what
-    this tab last recorded, which includes RE-ADOPTING a model the tab never lost: the
-    resident-adopt branch restores the model's own per-model config and only then
-    hydrates, passing the EXTERNAL id as `previousCheckpoint`."""
+def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
+    """The controls in the store belong to the model that just LEFT, so adoption reseeds them.
+
+    This test used to assert the opposite, through a `readoptingSameModel` option that
+    suppressed the reseed on re-adoption. #8943 removed the option deliberately and said
+    why: the adopt path rolls the outgoing model's config back into the store before it
+    hydrates, so the slot and batch controls sitting there describe the model the tab
+    just left. Suppressing the reseed left a resident model running 4 slots showing the
+    outgoing count, and the next Apply saved that over it.
+
+    So `slotsModelChanged` is `hydratingExistingModel` with nothing subtracted, which is
+    how every other load param at this call site already treats a changed checkpoint or
+    variant.
+
+    Reseeding is only safe because the same flag gates the remembered lookup: it does
+    not blank the control, it re-reads THIS model's own saved config through
+    resolveResidentInitialConfig. That is what makes #8943 right rather than merely
+    different, so it is asserted here too -- a future change that reseeds without
+    re-reading would take the user's saved slot count away for real.
+    """
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    assert (
-        "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
-        in status
-    )
+    assert "const slotsModelChanged = hydratingExistingModel;" in status
+    # Nothing may reintroduce a same-model exemption without this test being rewritten.
+    assert "readoptingSameModel" not in status
     assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
     # Never a slot-count proxy for "same model".
     assert "prevState.loadedNParallel === (status.requested_parallel_slots" not in status
     # The baseline seed stays ungated, or a rollback after a tab reload restores
     # the model at the server default slots.
     assert "loadedNParallel: status.requested_parallel_slots," in status
+    # The batch pair is told the same thing, from the same local, so the two cannot drift.
+    assert "modelChanged: slotsModelChanged," in status
+    # And the reseed re-reads this model's remembered config rather than blanking.
+    assert (
+        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged) "
+        "? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)" in status
+    ), "the model-change reseed must feed the remembered lookup, or it discards the saved config"
 
-    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    resident = runtime.split("if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1)[
-        1
-    ].split("const stopDecision", 1)[0]
-    # What makes the scenario reachable: the branch restores the model's own
-    # config, then hydrates against the external id.
-    assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
-    assert "previousCheckpoint: selectedCheckpoint," in resident
-    # Only reachable because the branch matched the id AND the variant first.
-    assert "resolveInferenceCheckpointId(residentStatus) === modelId" in resident
-    assert "readoptingSameModel: true," in resident
-    # The refresh() hydrate must NOT claim it: there the model really can change.
-    poll = runtime.split("setModels(listRes.models.map(toChatModelSummary));", 1)[1].split(
-        "} else if (!statusRes.active_model", 1
-    )[0]
-    assert "applyActiveModelStatusToStore(statusRes, {" in poll
-    assert "readoptingSameModel" not in poll
+    # And the rollback that makes the reseed necessary is still ordered before the
+    # hydration it protects, in the adopt path.
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
+    adopt = adopt[: adopt.index("void refreshContextUsage(")]
+    assert (
+        adopt.index("restorePreviousConfig();")
+        < adopt.index("applyActiveModelStatusToStore(confirmedStatus, {")
+    ), "the rollback must precede the hydration, or the staged snapshot wins over the resident status"
 
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
@@ -2285,19 +2298,24 @@ def test_auth_retries_tag_transport_failures_like_the_first_attempt():
     assert "throw asTransportFailure(err);" in first
 
 
-def test_external_readoption_drops_a_pin_taken_for_another_model():
+def test_adoption_takes_its_own_pin_before_moving_the_checkpoint():
     """Status polling skips its own pin clearing while an external provider is selected, so the
-    re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
-    old model. The branch has to clear it itself."""
+    adoption branch can adopt a resident the pin was never taken for and Apply would reload the
+    old model. The branch has to write the pin itself.
+
+    It used to clear the pin to null. #8943 replaced that with adopting THIS pick's pin by
+    the rule a completed load writes it -- the load path, or null where that is just the id
+    -- which drops a stale pin the same way and additionally keeps a pinned cached row
+    loadable. The ordering requirement is unchanged and is what this still pins.
+    """
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
-    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
-    assert "activeLoadId !== modelId" in branch
-    assert "setState({ activeLoadId: null })" in branch
-    # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
-    assert branch.index("activeLoadId: null") < branch.index(
-        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
-    ), "the pin must be cleared before the checkpoint is adopted"
+    branch = src[src.index("const confirmedStatus = await getInferenceStatus()") :]
+    branch = branch[: branch.index("void refreshContextUsage(")]
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in branch
+    # Landing before the checkpoint moves, so nothing reads the pair half updated.
+    assert branch.index("activeLoadId: loadPath === modelId ? null : loadPath,") < branch.index(
+        ".setCheckpoint(modelId, confirmedStatus.gguf_variant)"
+    ), "the pin must be written before the checkpoint is adopted"
 
 
 def test_only_gguf_configs_are_mirrored_to_the_server():
