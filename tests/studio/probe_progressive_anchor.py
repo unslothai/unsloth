@@ -45,7 +45,7 @@ CHARS = int(os.environ.get("SMOKE_HEAVY_CHARS", "300000"))
 REPEATS = int(os.environ.get("SMOKE_ANCHOR_REPEATS", "3"))
 LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/progressive-anchor"))
-OUT.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(parents = True, exist_ok = True)
 
 # How far up to scroll on the frame the thread comes back. Two viewports puts the reader well clear
 # of the bottom, so the hook's follow window is genuinely disarmed rather than merely expired.
@@ -54,7 +54,7 @@ SETTLE_MS = int(os.environ.get("SMOKE_ANCHOR_SETTLE_MS", "8000"))
 
 
 def info(message: str) -> None:
-    print(f"[anchor] {message}", flush=True)
+    print(f"[anchor] {message}", flush = True)
 
 
 # Runs in the page. Returns the per-frame document-space top of one message, plus enough context to
@@ -169,22 +169,22 @@ def main() -> int:
     vite = start_vite(PORT)
     results: list[dict] = []
     try:
-        wait_for_smoke_page(PAGE, "smoke-heavy-thread-main.tsx", proc=vite, info=info)
+        wait_for_smoke_page(PAGE, "smoke-heavy-thread-main.tsx", proc = vite, info = info)
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=chromium_launch_args())
-            context = browser.new_context(viewport={"width": 1280, "height": 900})
+            browser = p.chromium.launch(headless = True, args = chromium_launch_args())
+            context = browser.new_context(viewport = {"width": 1280, "height": 900})
             # Reuse #9016's page instrumentation rather than reimplement it: __nextPaint is the
             # double-rAF this probe samples on, and it must be the SAME clock the re-open column
             # uses or the two sets of numbers are not comparable.
             context.add_init_script(RECORDER_INIT)
             page = context.new_page()
-            page.goto(PAGE, wait_until="domcontentloaded")
-            page.wait_for_function("() => Boolean(window.__heavyThread)", timeout=60_000)
+            page.goto(PAGE, wait_until = "domcontentloaded")
+            page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 60_000)
             plan = page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
             page.wait_for_function(
                 "(n) => window.__heavyThread.messageCount() >= n",
-                arg=plan["messages"],
-                timeout=300_000,
+                arg = plan["messages"],
+                timeout = 300_000,
             )
             page.evaluate("() => window.__heavyThread.expandTools()")
             for repetition in range(1, REPEATS + 1):
@@ -214,7 +214,7 @@ def main() -> int:
                         window.__anchorTop = el.scrollTop;
                         return settled;
                     }""",
-                    timeout=10_000,
+                    timeout = 10_000,
                 )
                 out = page.evaluate(SAMPLE_JS, [opened["before"], SETTLE_MS])
                 if out is None:
@@ -229,7 +229,7 @@ def main() -> int:
         info("vite stopped")
 
     payload = {"label": LABEL, "chars": CHARS, "repetitions": results}
-    (OUT / f"{LABEL}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    (OUT / f"{LABEL}.json").write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
 
     print()
     print(
