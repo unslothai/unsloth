@@ -19,6 +19,7 @@ ignore appears without a step that runs the same path, or the other way round.
 """
 
 import ast
+import importlib.util
 import re
 from pathlib import Path
 
@@ -477,3 +478,102 @@ def test_the_scan_finds_all_three_shapes():
         "an inline clock difference is not recognised as a duration, so a test written "
         "that way could assert a 20ms bound and run under -n 4 unnoticed"
     )
+
+
+def test_an_isolated_file_never_shadows_an_installed_library_with_a_stub():
+    """A stub may stand in for a MISSING library, never for an installed one.
+
+    `sys.modules.setdefault("httpx", stub)` reads as deferring to the real library and
+    does not: sys.modules holds what has been IMPORTED, not what is installed, so in a
+    process where nothing has touched httpx yet the stub wins and shadows it for the rest
+    of the session. These stubs carry no Response, starlette.testclient reads
+    httpx.Response at import, and every module collected afterwards that reaches
+    fastapi.testclient or routes.inference dies on it.
+
+    In a 26,000-test run something always imports httpx first, so this was invisible for
+    as long as the suite ran as one process. The serial step collects ten files and
+    nothing else, and the 3.10 leg failed collection on two of them the first time it
+    ran.
+
+    Scoped to the isolated files on purpose. Roughly fifty other backend modules stub
+    structlog the same way, and they are load-bearing in a run that also imports the real
+    one; rewriting them is a separate change with its own risk, and the full parallel run
+    is not the process where a small file list makes the shadowing decisive. What has to
+    hold here is that anything moved OUT of that run stands on its own.
+    """
+    offenders = {}
+    for name, _reason in BACKEND_ISOLATED:
+        path = BACKEND_TESTS / Path(name).name
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        stubbed = {
+            node.args[0].value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and _installs_into_sys_modules(node)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        }
+        stubbed |= _assigned_into_sys_modules(tree)
+        imported = {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        for stub in sorted(stubbed - imported):
+            if _is_installed(stub):
+                offenders.setdefault(path.name, []).append(stub)
+    assert not offenders, (
+        f"these files run in the serial step and install a stub over a library that IS "
+        f"installed, without first trying to import it: {offenders}.\n"
+        f"\n"
+        f"Wrap the install in `try: import <name>` / `except ImportError:` the way "
+        f"test_llama_cpp_placement.py does. setdefault is not that guard: sys.modules is "
+        f"what has been imported, not what is available, so the stub wins whenever this "
+        f"module is collected first and shadows the real library for the whole session. "
+        f"That is decisive here precisely because the step collects ten files, so there "
+        f"is no longer an unrelated module importing the real one first."
+    )
+
+
+def _installs_into_sys_modules(node: ast.Call) -> bool:
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "setdefault"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "modules"
+    )
+
+
+def _assigned_into_sys_modules(tree: ast.AST) -> set:
+    """`sys.modules["name"] = stub`, the other spelling."""
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Attribute)
+                and target.value.attr == "modules"
+                and isinstance(target.slice, ast.Constant)
+                and isinstance(target.slice.value, str)
+            ):
+                names.add(target.slice.value)
+    return names
+
+
+def _is_installed(name: str) -> bool:
+    """Whether a stub for this name would shadow something real.
+
+    Anything the machinery cannot resolve counts as absent, including the errors it
+    raises rather than returning None for: an in-repo name such as `utils` or `loggers`
+    is importable only with studio/backend on sys.path, which this test does not have and
+    should not add.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
