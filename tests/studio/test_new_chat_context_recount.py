@@ -468,7 +468,6 @@ __FAST_PATH__
 """
 
 
-
 def _rendered_effects(effects: list[tuple[list[str], str]]) -> str:
     blocks = []
     for deps, body in effects:

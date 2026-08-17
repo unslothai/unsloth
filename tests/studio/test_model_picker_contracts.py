@@ -1934,8 +1934,9 @@ def test_adopting_a_resident_model_reseeds_the_slot_and_batch_controls():
     runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     adopt = runtime[runtime.index("const confirmedStatus = await getInferenceStatus()") :]
     adopt = adopt[: adopt.index("void refreshContextUsage(")]
-    assert adopt.index("restorePreviousConfig();") < adopt.index(
-        "applyActiveModelStatusToStore(confirmedStatus, {"
+    assert (
+        adopt.index("restorePreviousConfig();")
+        < adopt.index("applyActiveModelStatusToStore(confirmedStatus, {")
     ), "the rollback must precede the hydration, or the staged snapshot wins over the resident status"
 
 
