@@ -86,7 +86,14 @@ def _ci_text() -> str:
         added = False
         for path in list(remaining):
             rel = path.relative_to(REPO).as_posix()
-            if rel in text or path.name in text:
+            names = {rel, path.name}
+            # A composite action is referenced by its DIRECTORY
+            # (`uses: ./.github/actions/install-unsloth-local`), never by the
+            # action.yml inside it, so matching only the file path never opens one
+            # and a driver it launches reads as an orphan. Reported on PR #9060.
+            if path.name in ("action.yml", "action.yaml"):
+                names.add(path.parent.relative_to(REPO).as_posix())
+            if any(name in text for name in names):
                 parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
                 remaining.remove(path)
                 text = "\n".join(parts)
@@ -129,4 +136,14 @@ def test_the_scan_reads_the_workflows_it_claims_to():
     assert "playwright_loaded_models_indicator.py" in text, (
         "the indicator driver is named by a CI script, so a scan that misses it is not "
         "reading .github/scripts"
+    )
+    # A composite action is reached by its directory, so a walk that only matched the
+    # action.yml path would never open one. install-unsloth-local is the repo's only
+    # composite action and several workflows use it.
+    assert "actions/install-unsloth-local" in text
+    # A line from inside that action's body, not from any workflow, so this fails if the
+    # walk matched the `uses:` reference without ever opening the action.
+    assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
+        "the composite action's own contents are not in the text, so a driver launched "
+        "from inside one would read as an orphan"
     )
