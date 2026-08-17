@@ -827,6 +827,8 @@ def _fake_tuning(
             "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE": str(limit // 2),
             "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE": str(limit // 32),
             "HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS": "8",
+            "HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY": "32",
+            "HF_XET_CLIENT_READ_TIMEOUT": "60s",
         }
 
     return types.SimpleNamespace(
@@ -981,3 +983,20 @@ def test_clamp_holds_against_the_real_zoo_formulas():
     clamped = shim.clamp_to_available_ram({}, dict(sized), module = _module_for(loaded))
     assert int(clamped[_LIMIT]) <= 8 * _GB // 4, "a 27B model resident must shrink the budget"
     assert int(clamped[_LIMIT]) < int(sized[_LIMIT])
+
+
+def test_clamp_never_raises_a_value_the_zoo_had_lowered():
+    """The recompute runs without the throttled flag that a 429 backoff sets, so the clamp must take
+    the smaller of the two per key. Otherwise shrinking buffers would restore the stream ceiling."""
+    import utils.hf_xet_fallback as shim
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    unclamped = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    # As if a 429 had halved the ceiling on the way in.
+    throttled = dict(unclamped, HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY = "4")
+
+    written = shim.clamp_to_available_ram({}, dict(throttled), module = module)
+    assert int(written[_LIMIT]) < int(throttled[_LIMIT]), "the budget still has to shrink"
+    assert written["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] == "4", (
+        "a clamp that raises anything is not a clamp"
+    )

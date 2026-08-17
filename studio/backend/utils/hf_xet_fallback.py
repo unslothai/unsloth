@@ -312,6 +312,14 @@ _CLAMP_MAX_PASSES = 3
 _BUFFER_LIMIT_KEY = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"
 
 
+def _as_int(value: str) -> "Optional[int]":
+    """``value`` as a plain int, or None for the unit-suffixed ones ("60s") that never scale."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def clamp_to_available_ram(
     env: dict,
     sized: "dict[str, str]",
@@ -376,7 +384,17 @@ def clamp_to_available_ram(
             # Monotonic in total RAM, so scaling by the overshoot converges.
             synthetic = max(floor, synthetic * budget // new_limit)
 
-        written = {key: value for key, value in clamped.items() if key in sized}
+        # Reduce-only: keep a value the recompute would RAISE. `xet_env_overrides` is called raw
+        # here, without the throttled flag `apply_xet_env` threads through after a 429, so an
+        # un-throttled recompute could otherwise hand back the stream ceiling that backoff lowered.
+        # Every derived number is monotonic in total RAM, so taking the smaller of the two is
+        # always a coherent config.
+        written = {}
+        for key, value in clamped.items():
+            if key not in sized:
+                continue
+            before, after = _as_int(sized[key]), _as_int(value)
+            written[key] = sized[key] if before is not None and after is not None and after > before else value
         env.update(written)
         import logging as _logging
 
