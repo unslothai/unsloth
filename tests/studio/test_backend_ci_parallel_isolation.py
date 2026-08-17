@@ -120,8 +120,11 @@ def _tight_elapsed_bounds(path: Path) -> list[str]:
                     continue
                 if isinstance(bound, ast.Constant) and isinstance(bound.value, (int, float)):
                     if bound.value <= TIGHT_BOUND_S:
-                        found.append(f"{path.name}:{node.lineno} {cmp_node.left.id} < {bound.value}")
+                        found.append(
+                            f"{path.name}:{node.lineno} {cmp_node.left.id} < {bound.value}"
+                        )
     return found
+
 
 BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
 
