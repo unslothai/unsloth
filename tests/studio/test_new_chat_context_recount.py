@@ -161,6 +161,10 @@ const state: any = {
   // Deep Research sends a research run instead of this history, so the count would price
   // a request that is never made.
   deepResearchEnabled: false,
+  // Per-model parameter memory, off and empty: the recount is about the window, not
+  // about which model last set the temperature.
+  rememberParamsPerModel: false,
+  paramsByModel: {},
 };
 
 function set(updater: any): void {
@@ -171,6 +175,27 @@ function set(updater: any): void {
 // What the sliced setCheckpoint reducer reads through: nothing is persisted here, and
 // no external provider is configured, so its output-cap clamp is a no-op.
 const CHAT_DEEP_RESEARCH_ENABLED_KEY = "unsloth_deep_research_enabled";
+// The per-model memory, with the toggle off above: nothing is snapshotted, no map is
+// written back, and a switch keeps the params on screen. Only the loaded-context cap
+// is kept real, since that one clamps a value the recount prices.
+function rememberOutgoingModel(_state: any, _outgoing: any): any {
+  return null;
+}
+function getReplayedParams(
+  _enabled: any,
+  _byModel: any,
+  current: any,
+  _modelId: string,
+  _checkpointChanged: boolean,
+  maxTokensCap?: number,
+): any {
+  return maxTokensCap !== undefined && current.maxTokens > maxTokensCap
+    ? { ...current, maxTokens: maxTokensCap }
+    : current;
+}
+function getReplayStatePatch(): any {
+  return {};
+}
 function saveLastExternalCheckpoint(_id: string | null): void {}
 function saveBool(_key: string, _value: boolean): void {}
 function parseExternalModelId(id: string): any {

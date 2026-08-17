@@ -6992,6 +6992,139 @@ class _LoadPlacement(NamedTuple):
     diffusion_kind: Optional[bool]
 
 
+def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
+    """``spec_binary_fallback_can_retry``, for the status poll.
+
+    Only the two binary stand-downs can be repaired by an identical reload, so a client
+    that reloads for any ``binary_*`` reason prompts to stop running chats for a load
+    that would dedupe. Answered only for those reasons: this is polled from first paint,
+    and neither the binary lookup nor the capability probe has business running on every
+    poll of a healthy runtime.
+
+    The whole predicate, not just its revision half. ``binary_no_mtp`` also asks whether
+    the replacement advertises what the drafter kind needs, and a replacement that still
+    lacks it never repairs: the live process keeps its launch revision, so a half answer
+    would prompt on every later re-pick and never stop. The probe caches on the binary's
+    revision, and this route already relies on that elsewhere.
+    """
+    if getattr(llama_backend, "spec_fallback_reason", None) not in (
+        "binary_no_mtp",
+        "binary_outdated",
+    ):
+        return None
+    try:
+        return bool(llama_backend.spec_binary_fallback_can_retry())
+    except Exception:
+        return None
+
+
+def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether the capability probe has started answering since a degraded launch.
+
+    Mirrors the ``_capability_probe_inconclusive`` arm of ``_runtime_matches_intent``,
+    which rejects an identical load once the probe turns conclusive so the degraded
+    runtime is re-derived. No speculative mode gates it, and it records the conclusive
+    probe and clears, so it is one reload rather than a loop. Probing is cheap here:
+    ``probe_server_capabilities`` caches on the binary's revision and this route already
+    calls it.
+    """
+    if not getattr(llama_backend, "_capability_probe_inconclusive", False):
+        return False
+    if getattr(llama_backend, "_is_diffusion", False):
+        return False
+    try:
+        return not llama_backend.probe_server_capabilities().get("mtp_probe_inconclusive")
+    except Exception:
+        return None
+
+
+def _diffusion_split_supported(llama_backend) -> Optional[bool]:
+    """Whether a diffusion launch right now would honour --ngl.
+
+    Only meaningful for a resident diffusion runner. ``_runtime_matches_intent`` rejects
+    an otherwise identical request once this turns true and the live gpu_layers differs
+    from the requested NGL, so the split an older shim dropped can finally be applied.
+    A client comparing only the retained request would skip that load.
+    """
+    if not getattr(llama_backend, "_is_diffusion", False):
+        return None
+    try:
+        return bool(llama_backend.diffusion_split_supported())
+    except Exception:
+        return None
+
+
+def _audio_probe_pending(llama_backend) -> bool:
+    """Whether the post-launch audio probe still has to be retried.
+
+    ``_reuse_loaded_gguf`` refuses the route's own already-loaded answer while this is
+    true, so ``load_model`` reaches its fast path and re-probes there. A client that
+    skips /load skips the retry with it, and nothing else re-probes, so the model's
+    audio capabilities would stay undetected for as long as the server runs.
+    """
+    return not getattr(llama_backend, "_audio_probed", True)
+
+
+def _gpu_placement_paravirtual() -> Optional[bool]:
+    """Whether every GGUF request on this host is rewritten to the CPU pin.
+
+    ``paravirtual_normalized_request`` maps any placement to manual / zero layers / no
+    split / no MoE on a virtualised Metal device, and ``adopt_load_intent_if_matched``
+    applies it before comparing, so placement cannot distinguish two requests here at
+    all. A client comparing the raw values sees its Auto pick against a manual status and
+    reloads on every re-pick. The detector is lru_cached, so this costs one probe per
+    process and nothing after.
+    """
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+        return bool(_metal_device_is_paravirtual())
+    except Exception:
+        return None
+
+
+def _arch_gate_dropped_tensor_parallel(llama_backend) -> Optional[bool]:
+    """Whether the GPU architecture gate normalized a tensor-parallel request away.
+
+    ``_runtime_matches_intent`` accepts the same true request against the resulting
+    layer-mode runtime, since that runtime IS the request as the gate rewrote it. Status
+    reports the mode that launched, so a client comparing it raw prompts to stop running
+    chats on every re-pick of a model whose split was gated off.
+    """
+    try:
+        return bool(llama_backend._arch_gate_dropped_tensor_parallel)
+    except Exception:
+        return None
+
+
+def _spec_dspark_sidecar_absent(llama_backend) -> Optional[bool]:
+    """Whether the DSpark drafter is missing permanently rather than transiently.
+
+    The ``drafter_not_found`` arm of ``_runtime_matches_intent`` reloads so the next
+    Apply retries the fetch, but excludes an absent DSpark sidecar: that is the permanent
+    state of every repo but one, and retrying it would relaunch an identical server
+    forever. A client reading only the reason cannot tell the two apart and prompts to
+    stop running chats for a load that dedupes.
+    """
+    try:
+        return bool(llama_backend._dspark_sidecar_absent)
+    except Exception:
+        return None
+
+
+def _spec_dflash_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether a DFlash sidecar fetch failed in a way the next identical load retries.
+
+    Under Auto a failed fetch records no ``spec_fallback_reason``, so a client reading
+    only that adopts a runtime the backend would have rebuilt. Set only for retryable
+    failures: a repo publishing no sidecar is ``_dflash_sidecar_absent``'s business.
+    Applies to the Auto and DFlash modes, as the arm does.
+    """
+    try:
+        return bool(llama_backend._dflash_retry_needed)
+    except Exception:
+        return None
+
+
 class _NoParallelRequest:
     """A stand-in for a load that named no slot count, for reading the default."""
 
@@ -10506,6 +10639,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
+                spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
+                spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
+                spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
+                spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
+                gpu_placement_paravirtual = _gpu_placement_paravirtual(),
+                audio_probe_pending = _audio_probe_pending(llama_backend),
+                diffusion_split_supported = _diffusion_split_supported(llama_backend),
+                tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
+                    llama_backend
+                ),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,

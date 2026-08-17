@@ -1544,6 +1544,14 @@ export function SharedComposer({
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          // Same cap as the interactive load: this replays the model's
+          // remembered settings, and a budget kept from a larger context does
+          // not fit the one it just loaded with.
+          {
+            maxTokensCap: resp.is_gguf
+              ? (resp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
+          },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,

@@ -1023,6 +1023,9 @@ export const ru = {
       modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
         "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
+      rememberParamsPerModel: "Запоминать настройки для каждой модели",
+      rememberParamsPerModelDescription:
+        "При переключении модели восстанавливаются температура, промпт и другие настройки, которые вы использовали с ней в последний раз. Если выключено, для всех моделей действует один набор настроек.",
       thinking: {
         collapseByDefault: "Сворачивать размышления по умолчанию",
         collapseByDefaultDescription:
