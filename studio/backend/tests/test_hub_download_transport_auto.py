@@ -739,3 +739,39 @@ def test_the_probe_reads_free_ram_even_when_health_raises(monkeypatch):
     caps = download_registry.get_download_transport_capabilities(probe = True)
     assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
     assert "2.0GB RAM free" in caps.auto_reason
+
+
+def test_spawn_binds_the_ram_reservation_to_the_worker(monkeypatch):
+    """The sizing reserves RAM for a spawn that has not happened yet. spawn_worker has to hand that
+    reservation the worker's pid, or it ages out and siblings oversubscribe the machine."""
+    import utils.hf_xet_fallback as shim
+
+    bound = []
+    monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
+    _spawn_env(monkeypatch, use_xet = True)
+    assert bound == [4242], "the worker's pid never reached the reservation"
+
+    bound.clear()
+    _spawn_env(monkeypatch, use_xet = False)
+    assert bound == [], "an HTTP worker allocates no Xet buffers, so it reserves nothing"
+
+
+def test_a_failed_spawn_releases_its_reservation(monkeypatch):
+    """Popen raising must drop the reservation rather than pin RAM until it ages out."""
+    import utils.hf_xet_fallback as shim
+
+    bound = []
+    monkeypatch.setattr(shim, "bind_worker_budget", lambda pid: bound.append(pid))
+
+    def _boom(*a, **k):
+        raise OSError("no fork for you")
+
+    paths = _types.SimpleNamespace(child_env = lambda *a, **k: {})
+    fake_settings = _types.ModuleType("utils.hf_cache_settings")
+    fake_settings.get_hf_cache_paths = lambda: paths
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", fake_settings)
+    monkeypatch.setattr(dl.subprocess, "Popen", _boom)
+
+    with pytest.raises(OSError):
+        dl.spawn_worker(["--repo-id", "a/b"], None, use_xet = True)
+    assert bound == [None], "a spawn that never produced a process must release, not leak"

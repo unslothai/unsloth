@@ -207,23 +207,34 @@ def spawn_worker(
         env["HF_TOKEN"] = hf_token
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{cwd}{os.pathsep}{existing_path}" if existing_path else str(cwd)
-    return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "hub.workers.hf_download",
-            *args,
-            "--parent-pid",
-            str(os.getpid()),
-            "--transport",
-            mode,
-        ],
-        env = env,
-        cwd = str(cwd),
-        stdout = subprocess.DEVNULL,
-        stderr = subprocess.PIPE,
-        start_new_session = sys.platform != "win32",
-    )
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "hub.workers.hf_download",
+                *args,
+                "--parent-pid",
+                str(os.getpid()),
+                "--transport",
+                mode,
+            ],
+            env = env,
+            cwd = str(cwd),
+            stdout = subprocess.DEVNULL,
+            stderr = subprocess.PIPE,
+            start_new_session = sys.platform != "win32",
+        )
+        return proc
+    finally:
+        if use_xet:
+            # Tie the sizing's RAM reservation to the worker, so it frees when the worker exits and
+            # a sibling starting in this window sizes against the remainder. A spawn that raised
+            # passes None, which drops the reservation instead of leaking it.
+            from utils import hf_xet_fallback
+
+            hf_xet_fallback.bind_worker_budget(proc.pid if proc is not None else None)
 
 
 def drain_stderr_excerpt(stream, edge_bytes: int = 500) -> bytes:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -320,6 +321,80 @@ def _as_int(value: str) -> "Optional[int]":
         return None
 
 
+# --- concurrent-worker budget ledger -------------------------------------------------------------
+# A worker allocates inside the child, after Popen returns, so free RAM does not drop until well
+# after we sized it. Four downloads starting together would each read the same untouched `available`
+# and each take a quarter of it, promising the whole machine. Reservations bridge that window:
+# sizing subtracts what live siblings were already promised.
+_budget_lock = threading.Lock()
+# token -> [bytes, pid or None, monotonic stamp]
+_budget_reservations: "dict[int, list]" = {}
+_budget_token_seq = 0
+# A reservation never bound to a pid means the spawn died between sizing and Popen.
+_UNBOUND_RESERVATION_TTL = 60.0
+# Backstop against pid reuse keeping a dead reservation alive; no download worker outlives this.
+_BOUND_RESERVATION_TTL = 12 * 60 * 60.0
+# Set by the sizing call, consumed by the spawn that follows it on the SAME thread.
+_pending_reservation = threading.local()
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _live_reserved_locked() -> int:
+    """Bytes promised to workers still alive, pruning anything finished or never spawned."""
+    now = time.monotonic()
+    for token, entry in list(_budget_reservations.items()):
+        nbytes, pid, stamp = entry
+        if pid is None:
+            if now - stamp > _UNBOUND_RESERVATION_TTL:
+                _budget_reservations.pop(token, None)
+        elif now - stamp > _BOUND_RESERVATION_TTL or not _pid_alive(pid):
+            _budget_reservations.pop(token, None)
+    return sum(entry[0] for entry in _budget_reservations.values())
+
+
+def _reserve_worker_budget(nbytes: int) -> None:
+    """Hold *nbytes* against this thread's imminent spawn, replacing any reservation it still owns
+    (a retried sizing must not stack)."""
+    global _budget_token_seq
+    with _budget_lock:
+        stale = getattr(_pending_reservation, "token", None)
+        if stale is not None:
+            _budget_reservations.pop(stale, None)
+        _budget_token_seq += 1
+        token = _budget_token_seq
+        _budget_reservations[token] = [max(0, int(nbytes)), None, time.monotonic()]
+    _pending_reservation.token = token
+
+
+def bind_worker_budget(pid: "Optional[int]") -> None:
+    """Attach the reservation this thread just made to *pid*, so it frees when the worker exits.
+
+    ``None`` drops it, for a spawn that never produced a process."""
+    token = getattr(_pending_reservation, "token", None)
+    _pending_reservation.token = None
+    if token is None:
+        return
+    with _budget_lock:
+        entry = _budget_reservations.get(token)
+        if entry is None:
+            return
+        if pid is None:
+            _budget_reservations.pop(token, None)
+        else:
+            entry[1], entry[2] = int(pid), time.monotonic()
+
+
 def clamp_to_available_ram(
     env: dict,
     sized: "dict[str, str]",
@@ -340,6 +415,10 @@ def clamp_to_available_ram(
     - Only keys the zoo wrote are rewritten, so an explicit user setting survives. A user-set
       ``HF_XET_HIGH_PERFORMANCE`` makes the zoo drop its caps, leaving no budget key to clamp.
     - Unmeasurable RAM, or a zoo too old to report it, leaves the download alone.
+
+    Whatever budget ends up in force is reserved for this thread's imminent spawn, so siblings
+    starting in the same window size against the remainder instead of against the same snapshot.
+    ``bind_worker_budget`` ties that reservation to the worker's pid.
     """
     if module is None:
         module = _load_optional("unsloth_zoo.hf_xet_tuning")
@@ -356,9 +435,13 @@ def clamp_to_available_ram(
         if available <= 0 or total <= 0:
             return sized
         floor = int(getattr(module, "_MIN_BUFFER_LIMIT", 1_000_000_000))
-        budget = max(floor, available // _AVAILABLE_RAM_SHARE)
+        with _budget_lock:
+            unclaimed = max(0, available - _live_reserved_locked())
+        budget = max(floor, unclaimed // _AVAILABLE_RAM_SHARE)
         limit = int(sized[_BUFFER_LIMIT_KEY])
         if limit <= budget:
+            # Still reserved: four unclamped workers would otherwise promise four full budgets.
+            _reserve_worker_budget(limit)
             return sized
 
         # Re-ask the zoo about a machine the download can afford, so buffer, per-file and file
@@ -398,15 +481,18 @@ def clamp_to_available_ram(
                 sized[key] if before is not None and after is not None and after > before else value
             )
         env.update(written)
+        effective = _as_int(written.get(_BUFFER_LIMIT_KEY, "")) or budget
+        _reserve_worker_budget(effective)
         import logging as _logging
 
         _logging.getLogger(__name__).info(
             "Xet download buffers clamped to free RAM: %.2fGB -> %.2fGB "
-            "(%.1fGB free of %.1fGB total)",
+            "(%.1fGB free of %.1fGB total, %.2fGB already promised to running downloads)",
             limit / 1e9,
-            int(written.get(_BUFFER_LIMIT_KEY, limit)) / 1e9,
+            effective / 1e9,
             available / 1e9,
             total / 1e9,
+            (available - unclaimed) / 1e9,
         )
         return written
     except Exception as exc:  # noqa: BLE001 - a clamp must never be what breaks a download
@@ -444,9 +530,16 @@ def free_ram_pressure_reason() -> "Optional[str]":
 
     One rule with two callers, which must agree: the capabilities probe resolves what the UI submits
     as an explicit transport, and ``resolve_auto_use_xet`` covers an API caller that sends "auto".
-    Unmeasurable RAM is not evidence of pressure, so anything unreadable keeps Xet."""
+    Unmeasurable RAM is not evidence of pressure, so anything unreadable keeps Xet.
+
+    RAM already promised to running downloads is subtracted, so the Nth concurrent download is sent
+    to HTTP rather than handed Xet's floor. The clamp alone cannot bound that: its budget bottoms out
+    at the floor, so enough simultaneous workers would still add up past free RAM."""
     try:
         available, floor = available_ram_bytes()
+        if available is not None:
+            with _budget_lock:
+                available = max(0, available - _live_reserved_locked())
     except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
         import logging as _logging
         _logging.getLogger(__name__).debug("free_ram_pressure_reason failed: %s", exc)
@@ -455,7 +548,7 @@ def free_ram_pressure_reason() -> "Optional[str]":
         return None
     return (
         f"HTTP: only {available / 1e9:.1f}GB RAM free (Xet wants {floor / 1e9:.0f}GB); "
-        "close a loaded model to use Xet"
+        "close a loaded model or wait for running downloads to use Xet"
     )
 
 
@@ -730,6 +823,7 @@ __all__ = [
     "clamp_to_available_ram",
     "available_ram_bytes",
     "free_ram_pressure_reason",
+    "bind_worker_budget",
     "xet_health",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",

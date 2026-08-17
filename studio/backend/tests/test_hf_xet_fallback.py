@@ -1024,3 +1024,109 @@ def test_free_ram_pressure_reason_applies_the_zoos_own_floor(monkeypatch):
 
     monkeypatch.setattr(shim, "available_ram_bytes", _boom)
     assert shim.free_ram_pressure_reason() is None
+
+
+# --- concurrent-worker reservations --------------------------------------------------------------
+# A worker allocates in the child, after Popen returns, so free RAM does not move until well after
+# sizing. Without reservations, downloads starting together each read the same untouched number.
+
+
+@pytest.fixture(autouse = True)
+def clean_ledger():
+    """Autouse: sizing reserves RAM, so any clamp test leaves a reservation that would otherwise
+    follow the process into the next test and shrink its budget."""
+    import utils.hf_xet_fallback as shim
+
+    shim._budget_reservations.clear()
+    shim._pending_reservation.token = None
+    yield shim
+    shim._budget_reservations.clear()
+    shim._pending_reservation.token = None
+
+
+def test_workers_starting_together_do_not_promise_the_same_ram_twice(clean_ledger):
+    """Four downloads queued at once each used to take a quarter of the same snapshot, promising the
+    whole machine before any of them had allocated a byte."""
+    import os
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    promised, budgets = 0, []
+    for _ in range(4):
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())  # this process stands in for a live worker
+        budgets.append(int(written[_LIMIT]))
+        promised += budgets[-1]
+
+    # Strictly under, not merely equal: without the ledger these four land on exactly 8GB, a
+    # quarter each of the same snapshot, which is the whole bug.
+    assert promised < 8 * _GB, f"four workers promised {promised / _GB:.2f}GB of 8GB free"
+    assert budgets[1] < budgets[0], "the second worker ignored what the first was already promised"
+
+
+def test_a_reservation_frees_when_its_worker_exits(clean_ledger):
+    """Held forever, one finished download would shrink every later one on the machine."""
+    import subprocess
+    import sys
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    dead = subprocess.Popen([sys.executable, "-c", ""])
+    dead.wait()
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(dead.pid)
+
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "a finished worker still held RAM"
+
+
+def test_a_spawn_that_never_happened_does_not_leak(clean_ledger):
+    """Popen raising must not strand the reservation its sizing took."""
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(None)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0
+
+    # And one never bound at all ages out rather than pinning RAM for the process's life.
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    for entry in shim._budget_reservations.values():
+        entry[2] -= shim._UNBOUND_RESERVATION_TTL + 1
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0
+
+
+def test_one_download_on_an_idle_machine_is_still_untouched(clean_ledger):
+    """The ledger must not cost the common case: nothing is reserved yet, so sizing is the zoo's."""
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 30 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 30 * _GB))
+
+    assert shim.clamp_to_available_ram({}, dict(sized), module = module) == sized
+
+
+def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledger, monkeypatch):
+    """The clamp bottoms out at Xet's floor, so enough simultaneous workers would still add up past
+    free RAM. Subtracting reservations sends the next one to HTTP instead."""
+    import os
+
+    shim = clean_ledger
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is None, "8GB free is not pressure on its own"
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    for _ in range(3):
+        shim.clamp_to_available_ram({}, dict(sized), module = module)
+        shim.bind_worker_budget(os.getpid())
+
+    reason = shim.free_ram_pressure_reason()
+    assert reason is not None, "three running downloads left too little RAM for a fourth on Xet"
+    assert "RAM free" in reason
