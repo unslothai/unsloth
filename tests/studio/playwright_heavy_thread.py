@@ -974,6 +974,23 @@ def sequenced_repetition(page, cdp) -> dict[str, dict]:
     # The scroll position has not moved since the menu, so the hover alone is enough here.
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
     rep["delete"] = drive(page, cdp, "delete")
+    # `reopen` here measures a thread one message SHORTER than the fixture, and always short of
+    # the same kind. `delete` has just taken the last assistant message out of the runtime, reopen
+    # deliberately preserves the runtime, and the fixture is whole cycles of one message per kind,
+    # so the message that goes missing is always kind 9, the json fence. Measured on chromium at
+    # the instant reopen began: at 25K, 19 of 20 messages, 0 of the 1 json fence, and 2520 of 3216
+    # highlighted tokens once the rebuild finished, so 21.6% of the highlighting the seed gate
+    # passed is not in this column; at 300K, 219 of 220 messages, 10 of 11 fences, 34675 of 35086
+    # tokens. Re-seeding between the two moves the 25K figure from 360.5/374.4 ms to 559.6/564.7,
+    # 13x the 3.9% base-vs-base spread.
+    #
+    # Left as it is ON PURPOSE. This table's contract is that nothing is reset between actions, so
+    # that the carry-over row means what the old table's row meant, and re-seeding here would
+    # silently redefine it. The isolated table is the one to quote for reopen: there, reopen runs
+    # on a page that has only ever done reopen, against the full seeded fixture.
+    #
+    # The per-repetition census cannot catch this, because it is taken after reopen, at which
+    # point every repetition agrees on the same reduced fixture.
     rep["reopen"] = drive(page, cdp, "reopen")
     return rep
 
