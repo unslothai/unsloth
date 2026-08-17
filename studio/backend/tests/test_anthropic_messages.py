@@ -1416,6 +1416,41 @@ class TestAnthropicReasoningArgs:
         assert payload.thinking.budget_tokens == 4096
         assert payload.resolved_enable_thinking() is True
 
+    def test_replayed_thinking_blocks_are_accepted(self):
+        """Anthropic's tool-use protocol makes clients replay thinking blocks
+        with tool results. Rejecting them 422s turn 2 of every thinking session."""
+        from core.inference.anthropic_compat import anthropic_messages_to_openai
+        from models.inference import AnthropicMessagesRequest
+
+        payload = AnthropicMessagesRequest(
+            model = "m",
+            max_tokens = 16,
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "let me check", "signature": ""},
+                        {"type": "redacted_thinking", "data": "opaque"},
+                        {"type": "tool_use", "id": "toolu_1", "name": "ls", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}
+                    ],
+                },
+            ],
+        )
+        converted = anthropic_messages_to_openai(
+            [m.model_dump() for m in payload.messages]
+        )
+        assistant = next(m for m in converted if m["role"] == "assistant")
+        # Thinking is dropped from the prompt; the tool call survives.
+        assert "thinking" not in json.dumps(assistant)
+        assert assistant["tool_calls"][0]["function"]["name"] == "ls"
+
 
 # =====================================================================
 # Vision guard + PNG normalization (/v1/messages)

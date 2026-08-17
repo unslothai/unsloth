@@ -1388,11 +1388,29 @@ class AnthropicToolResultBlock(BaseModel):
     content: Union[str, list] = ""
 
 
+class AnthropicThinkingBlock(BaseModel):
+    # Clients replay thinking blocks with tool results (Anthropic's tool-use
+    # protocol requires it), so the request model must accept them; conversion
+    # drops them from the prompt.
+    type: Literal["thinking"]
+    thinking: str = ""
+    signature: str = ""
+    model_config = {"extra": "allow"}
+
+
+class AnthropicRedactedThinkingBlock(BaseModel):
+    type: Literal["redacted_thinking"]
+    data: str = ""
+    model_config = {"extra": "allow"}
+
+
 AnthropicContentBlock = Union[
     AnthropicTextBlock,
     AnthropicImageBlock,
     AnthropicToolUseBlock,
     AnthropicToolResultBlock,
+    AnthropicThinkingBlock,
+    AnthropicRedactedThinkingBlock,
 ]
 
 
