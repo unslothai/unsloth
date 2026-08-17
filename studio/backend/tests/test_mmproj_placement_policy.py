@@ -674,3 +674,26 @@ def test_the_last_placement_spelling_is_what_gets_budgeted(tmp_path):
     )["cmd"]
 
     assert cmd[cmd.index("-c") + 1] == "9984"
+
+
+def test_the_projector_probe_agrees_with_the_layer_loop_it_gates(tmp_path):
+    """The probe answers "is the projector resident", and the layer placement that
+    follows must not then contradict it by spilling model layers. The context-compute
+    buffer is replicated per device, so a probe pricing it once could call a
+    multi-GPU split resident and hand the fit a load it cannot place. Whatever the
+    probe decides, the launch has to be self-consistent: either the projector went
+    to the CPU, or the model is fully placed."""
+    backend, gguf = _backend(
+        tmp_path,
+        memory = [(0, 6_000, 8_192), (1, 6_000, 8_192)],
+        model_bytes = 9 * GIB,
+    )
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    pinned = "--no-mmproj-offload" in cmd
+    fitted = "--fit" in cmd and cmd[cmd.index("--fit") + 1] == "off"
+    assert pinned or fitted, (
+        "the probe left the projector on the GPU and the fit then could not place "
+        f"the model: {[c for c in cmd if 'fit' in str(c) or 'mmproj' in str(c)]}"
+    )

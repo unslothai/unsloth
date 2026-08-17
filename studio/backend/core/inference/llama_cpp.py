@@ -13482,12 +13482,19 @@ class LlamaCppBackend:
                             hf_variant = hf_variant,
                             hf_token = hf_token,
                         )
-                    # Auto-download mmproj for vision models unless opted out. Vision
-                    # switched off opts out here too: fetching a projector this load
-                    # will never attach spends the bandwidth and the disk for nothing.
+                    # Auto-download mmproj for vision models unless opted out.
+                    # Vision switched off does NOT opt out here. Remote discovery
+                    # calls any mmproj filename vision, and only the file's own
+                    # metadata says whether it carries an image tower or just an
+                    # audio encoder (ultravox, Voxtral, Qwen3-ASR). Skipping the
+                    # fetch to save bandwidth would therefore take audio input away
+                    # from an audio-only model, which the switch never promised and
+                    # which the local path deliberately avoids. Downloading a
+                    # projector the resolve step may then suppress costs one small
+                    # companion file next to the weights; losing audio costs the
+                    # feature. The suppression itself happens at the resolve.
                     if (
                         is_vision
-                        and not disable_vision
                         and not mmproj_path
                         and not extra_args_disable_mmproj(extra_args)
                     ):
