@@ -19,7 +19,12 @@ import {
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
+import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  proplessSlot,
+  threadMessageKind,
+} from "@/components/assistant-ui/thread-message-slot";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -1461,6 +1466,29 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+// One message, picked from its role and edit state rather than from a `components` map. See
+// thread-message-slot.ts for why the map form costs a full-thread re-render on every delete.
+// The selectors are ThreadMessageComponent's own, so what a message subscribes to is unchanged.
+const ThreadMessage: FC = () => {
+  const role = useAuiState(({ message }) => message.role);
+  const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  switch (threadMessageKind(role, isEditing)) {
+    case "edit":
+      return <EditComposer />;
+    case "user":
+      return <UserMessage />;
+    case "assistant":
+      return <AssistantMessage />;
+    default:
+      return null;
+  }
+};
+
+// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
+// inline arrow changes identity each time, invalidating the memo that keeps the message array from
+// being rebuilt, and the bail-out below it would never get to run.
+const renderThreadMessage = proplessSlot(ThreadMessage);
+
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.
 export const Thread: FC<{
@@ -1709,13 +1737,9 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                EditComposer,
-                AssistantMessage,
-              }}
-            />
+            <ThreadPrimitive.Messages>
+              {renderThreadMessage}
+            </ThreadPrimitive.Messages>
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -6701,20 +6725,28 @@ const useResearchMessageRunId = () => {
   return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
 
+// Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
+// counted as "no research reply" before. Keeping that stops an empty id hiding a message's edit
+// and delete controls.
+const hasResearchRunId = (metadata: unknown): boolean =>
+  Boolean(getResearchRunId(metadata));
+
 const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const messages = useAuiState(({ thread }) => thread.messages);
-  if (messages.length === 0) {
-    return false;
-  }
-  return aui
-    .thread()
-    .export()
-    .messages.some(
-      ({ parentId, message }) =>
-        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
-    );
+  // The ANSWER is selected, not the message array: selecting the array subscribed every user
+  // message's action bar (and its tooltips) to every thread change, so one delete re-rendered all
+  // of them even when the answer had not moved. The export is shared across one revision.
+  return useAuiState(({ thread }) => {
+    if (thread.messages.length === 0) {
+      return false;
+    }
+    return researchReplyOwners(
+      thread.messages,
+      () => aui.thread().export().messages,
+      hasResearchRunId,
+    ).has(messageId);
+  });
 };
 
 // Whether the active thread has a non-terminal durable research run. After a reload the
