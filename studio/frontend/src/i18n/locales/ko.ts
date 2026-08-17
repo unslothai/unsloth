@@ -356,6 +356,7 @@ export const ko = {
         modelLabel: "TTS 모델",
         modelDescription:
           "모델 선택기에서 오디오 모델을 로드하세요(예: Orpheus TTS)",
+        openAudioAction: "오디오 열기",
         voiceLabel: "음성",
         voiceDescription: "이 기기에서 가장 좋은 음성",
         speedLabel: "속도",
@@ -364,6 +365,7 @@ export const ko = {
         previewLabel: "음성 미리 듣기",
         previewDescription: "짧은 샘플을 재생합니다",
         previewAction: "미리 듣기",
+        preparingAction: "생성 중…",
         previewFailed: "TTS 미리 듣기에 실패했습니다",
         stopAction: "정지",
         ttsLabel: "텍스트 음성 변환",

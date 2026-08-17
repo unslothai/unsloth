@@ -361,6 +361,7 @@ export const hi = {
         modelLabel: "TTS मॉडल",
         modelDescription:
           "मॉडल सिलेक्टर से एक ऑडियो मॉडल लोड करें (जैसे Orpheus TTS)",
+        openAudioAction: "ऑडियो खोलें",
         voiceLabel: "आवाज़",
         voiceDescription: "इस डिवाइस पर सबसे अच्छी आवाज़ें",
         speedLabel: "गति",
@@ -370,6 +371,7 @@ export const hi = {
         previewDescription: "एक छोटा नमूना चलाएँ",
         previewFailed: "TTS पूर्वावलोकन विफल रहा",
         previewAction: "सुनें",
+        preparingAction: "बना रहे हैं…",
         stopAction: "रोकें",
         ttsLabel: "टेक्स्ट-टू-स्पीच",
         notSupported: "इस ब्राउज़र में समर्थित नहीं है",

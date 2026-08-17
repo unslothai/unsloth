@@ -356,6 +356,7 @@ export const ar = {
         modelLabel: "نموذج TTS",
         modelDescription:
           "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
+        openAudioAction: "فتح الصوت",
         voiceLabel: "الصوت",
         voiceDescription: "أفضل الأصوات على هذا الجهاز",
         speedLabel: "السرعة",
@@ -365,6 +366,7 @@ export const ar = {
         previewDescription: "تشغيل عيّنة قصيرة",
         previewFailed: "فشلت معاينة تحويل النص إلى كلام",
         previewAction: "معاينة",
+        preparingAction: "جارٍ الإنشاء…",
         stopAction: "إيقاف",
         ttsLabel: "تحويل النص إلى كلام",
         notSupported: "غير مدعوم في هذا المتصفح",

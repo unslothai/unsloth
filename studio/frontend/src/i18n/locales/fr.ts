@@ -366,6 +366,7 @@ export const fr = {
         modelLabel: "Modèle TTS",
         modelDescription:
           "Chargez un modèle audio depuis le sélecteur de modèles (par exemple Orpheus TTS)",
+        openAudioAction: "Ouvrir Audio",
         voiceLabel: "Voix",
         voiceDescription: "Meilleures voix sur cet appareil",
         speedLabel: "Vitesse",
@@ -375,6 +376,7 @@ export const fr = {
         previewDescription: "Lire un court extrait",
         previewFailed: "Échec de l’aperçu de la synthèse vocale",
         previewAction: "Écouter",
+        preparingAction: "Génération…",
         stopAction: "Arrêter",
         ttsLabel: "Synthèse vocale",
         notSupported: "Indisponible dans ce navigateur",

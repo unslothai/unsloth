@@ -362,6 +362,7 @@ export const ptBR = {
         modelLabel: "Modelo de TTS",
         modelDescription:
           "Carregue um modelo de áudio pelo seletor de modelos (por exemplo, Orpheus TTS)",
+        openAudioAction: "Abrir Áudio",
         voiceLabel: "Voz",
         voiceDescription: "As melhores vozes deste dispositivo",
         speedLabel: "Velocidade",
@@ -370,6 +371,7 @@ export const ptBR = {
         previewLabel: "Ouvir a voz",
         previewDescription: "Reproduz uma amostra curta",
         previewAction: "Ouvir",
+        preparingAction: "Gerando…",
         previewFailed: "Não foi possível reproduzir a prévia de TTS",
         stopAction: "Parar",
         ttsLabel: "Conversão de texto em fala",
