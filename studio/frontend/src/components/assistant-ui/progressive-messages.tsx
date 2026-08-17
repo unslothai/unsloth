@@ -142,6 +142,16 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   //
   // Bounded: markdown nests, but the block that straddles the fold is a handful of levels down,
   // and this runs once per re-pick rather than per frame.
+  // What this deliberately does NOT cover, stated so the bound is known: if the fold lands inside
+  // a tall LEAF block, a plain paragraph with no element children, the descent stops there with
+  // its top still above the reader. Lines reflowing inside that one block, above the reader's eye
+  // line, then move what they see without moving the block. Everything else is covered, since a
+  // change in an earlier block moves this one's top and a change in a later block does not move
+  // what the reader is looking at, so the residual is one paragraph's height change, for a
+  // detached reader, during the few hundred milliseconds a window is open. Closing it means a
+  // caret point at the fold, which is spelled differently on all three engines, costs a Range and
+  // a rect on every frame rather than once per re-pick, and is not itself stable across the
+  // reflow it would be measuring.
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
