@@ -74,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # One interpreter on a pull request, all four on main.
+        # Both ends on a pull request, all four on main.
         #
         # Measured on one runner over the same tree: the four legs collect the same
         # 26,320 tests and differ by exactly ONE of them, the >= 3.12 gate on
@@ -83,23 +83,21 @@ jobs:
         # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a
         # queue that has been observed 195 deep.
         #
-        # What the other three legs were really guarding is syntax and evaluated
-        # annotations on older interpreters, and tests/test_python39_compatibility.py
-        # already does that statically, against the floor pyproject.toml declares
-        # (3.9) rather than the oldest leg here (3.10). It parses every packaged module
-        # with feature_version = the declared floor and separately catches PEP 604
-        # unions in evaluated positions, which is the failure that created it. That
-        # check needs no matrix: it is one AST pass on one interpreter, and it covers a
-        # version this matrix never ran.
+        # A single leg was tried and is wrong. tests/test_python39_compatibility.py
+        # covers older SYNTAX statically, against the floor pyproject.toml declares
+        # (3.9), which is lower than any leg here. It cannot cover a version-conditional
+        # branch, because it parses rather than runs: sitecustomize.py repoints
+        # pathlib's pre-3.11 _NormalAccessor, native_path_leases.py and
+        # third_party_source.py branch on >= 3.12, and worker.py on a minimum below
+        # that. On 3.13 alone the older side of each is never executed.
         #
-        # So the leg here is the CEILING, where removals and deprecations bite and
-        # where the one version-gated test actually executes rather than skipping.
-        # What is left uncovered until merge is a stdlib BEHAVIOUR difference on 3.11
-        # or 3.12, which no static check can see. Exactly one test in 26,320 is gated
-        # on such a difference, and the push-to-main run below still runs all four.
+        # So: the ends. The floor exercises those branches, the ceiling is where
+        # removals and deprecations land and where the one version-gated test runs
+        # rather than skipping. What is left uncovered until merge is a difference
+        # peculiar to 3.11 or 3.12 alone.
         python: >-
           ${{ github.event_name == 'pull_request'
-              && fromJSON('["3.13"]')
+              && fromJSON('["3.10", "3.13"]')
               || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
