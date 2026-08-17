@@ -118,6 +118,48 @@ test("the blocked message stops pointing desktop users at a padlock", () => {
   );
 });
 
+test("the blocked toast only promises another prompt on the desktop", () => {
+  // resetMicrophonePermission returns early off the desktop app, so a browser
+  // tab keeps its saved deny and cannot be asked again by clicking the button.
+  assert.match(
+    VOICE_TAB,
+    /isTauri\s*\?\s*"settings\.voice\.dictation\.micAccessBlockedDesktop"\s*:\s*"settings\.voice\.dictation\.micAccessBlocked"/,
+    "the toast must pick the message for the platform it is running on",
+  );
+});
+
+test("the browser message still points at the page permission", () => {
+  const en = readFileSync(
+    fileURLToPath(new URL("../src/i18n/locales/en.ts", import.meta.url)),
+    "utf8",
+  );
+  const blocked = en.match(/micAccessBlocked:\s*\n?\s*"([^"]+)"/);
+  assert.ok(blocked, "micAccessBlocked is missing");
+  assert.match(blocked[1], /for this Unsloth page/);
+});
+
+test("every locale carries both blocked messages", () => {
+  const locales = [
+    "ar", "de", "en", "es", "fr", "hi",
+    "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+  ];
+  for (const locale of locales) {
+    const source = readFileSync(
+      fileURLToPath(new URL(`../src/i18n/locales/${locale}.ts`, import.meta.url)),
+      "utf8",
+    );
+    // Strict parity is enforced in CI, so a key added to en only fails the build.
+    assert.ok(
+      source.includes("micAccessBlockedDesktop:"),
+      `${locale} is missing micAccessBlockedDesktop`,
+    );
+    assert.ok(
+      source.includes("micAccessBlocked:"),
+      `${locale} is missing micAccessBlocked`,
+    );
+  }
+});
+
 test("the command is registered with the app", () => {
   // A command that is only defined is not callable; invoke fails at runtime instead.
   assert.ok(

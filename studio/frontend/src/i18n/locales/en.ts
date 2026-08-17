@@ -282,7 +282,9 @@ export const en = {
         microphoneGrantDescription: "Allow mic access to show device names",
         allowMicrophone: "Allow microphone",
         micAccessBlocked:
-          "Microphone access was blocked. Click Allow microphone to be asked again.",
+          "Microphone access was blocked. Allow microphone access for this Unsloth page, then try again.",
+        micAccessBlockedDesktop:
+          "Microphone access was blocked. Try again and choose Allow, or enable the microphone in your system privacy settings.",
         micAccessUnsupported:
           "Microphone access is not supported in this browser or context.",
         systemDefault: "System default",

@@ -282,6 +282,8 @@ export const ko = {
         allowMicrophone: "마이크 허용",
         micAccessBlocked:
           "마이크 접근이 차단되었습니다. 이 Unsloth 페이지에 마이크 접근을 허용한 뒤 다시 시도하세요.",
+        micAccessBlockedDesktop:
+          "마이크 접근이 차단되었습니다. 다시 시도하여 허용을 선택하거나 시스템 개인 정보 보호 설정에서 마이크를 켜세요.",
         micAccessUnsupported:
           "이 브라우저나 환경에서는 마이크 접근을 지원하지 않습니다.",
         systemDefault: "시스템 기본값",

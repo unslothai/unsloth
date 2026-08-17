@@ -360,7 +360,15 @@ function useAudioInputDevices() {
       }
       await refresh();
     } catch {
-      toast.error(t("settings.voice.dictation.micAccessBlocked"));
+      // A browser keeps its own saved deny and resetMicrophonePermission cannot
+      // touch it, so only the desktop build can promise another prompt.
+      toast.error(
+        t(
+          isTauri
+            ? "settings.voice.dictation.micAccessBlockedDesktop"
+            : "settings.voice.dictation.micAccessBlocked",
+        ),
+      );
     }
   }, [refresh, t]);
 
