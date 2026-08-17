@@ -31,13 +31,12 @@ SKIPPED = {"skipped": "no user message in view"}
 INCONCLUSIVE = {"inconclusive": True}
 
 
-@pytest.fixture(scope = "module")
-def probe(tmp_path_factory):
-    """The probe module, imported for real.
+def load_probe(artifact_dir, env: dict | None = None):
+    """Import the probe for real, under a controlled environment.
 
     It pulls in `playwright.sync_api` and creates its artifact directory at import time, so the
-    browser binding is stubbed when absent and `PW_ART_DIR` is pointed at a temp dir. Both are
-    undone before the fixture returns: a stub left in `sys.modules` would be handed to
+    browser binding is stubbed when absent and `PW_ART_DIR` is pointed at a temp dir. Every
+    change is undone before this returns: a stub left in `sys.modules` would be handed to
     test_playwright_server_lifecycle.py, which runs in the same pytest process and imports the
     real one.
     """
@@ -53,8 +52,9 @@ def probe(tmp_path_factory):
             if name not in sys.modules:
                 sys.modules[name] = stub
                 stubbed.append(name)
-    previous = os.environ.get("PW_ART_DIR")
-    os.environ["PW_ART_DIR"] = str(tmp_path_factory.mktemp("hover_probe_artifacts"))
+    overrides = {"PW_ART_DIR": str(artifact_dir), **(env or {})}
+    previous = {name: os.environ.get(name) for name in overrides}
+    os.environ.update(overrides)
     try:
         spec = importlib.util.spec_from_file_location("_probe_under_test", STUDIO_TESTS / PROBE)
         module = importlib.util.module_from_spec(spec)
@@ -63,10 +63,16 @@ def probe(tmp_path_factory):
     finally:
         for name in stubbed:
             sys.modules.pop(name, None)
-        if previous is None:
-            os.environ.pop("PW_ART_DIR", None)
-        else:
-            os.environ["PW_ART_DIR"] = previous
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+@pytest.fixture(scope = "module")
+def probe(tmp_path_factory):
+    return load_probe(tmp_path_factory.mktemp("hover_probe_artifacts"))
 
 
 def gated_case(probe) -> tuple[str, str]:
@@ -128,6 +134,23 @@ def test_an_observational_case_that_never_ran_is_not_reported(probe) -> None:
     # It has nothing to assert, so it cannot fail to assert it.
     for name in probe.OBSERVATIONAL:
         assert probe.failures_in("chromium", name, [SKIPPED, SKIPPED]) == []
+
+
+def test_an_unknown_case_filter_is_rejected(tmp_path) -> None:
+    # A name that matches nothing selects nothing, and a run with no cases has nothing to report,
+    # so one typo in PROBE_CASES exits 0 under PROBE_STRICT having asserted precisely nothing. A
+    # targeted run is exactly where that reads as "the case I was chasing is fixed".
+    with pytest.raises(SystemExit) as caught:
+        load_probe(tmp_path / "typo", {"PROBE_CASES": "h3_contnuous"})
+    assert "h3_contnuous" in str(caught.value)
+    # The message has to be usable, so it names what IS available.
+    assert "h3_continuous" in str(caught.value)
+
+
+def test_a_known_case_filter_is_accepted(tmp_path) -> None:
+    # The control: rejecting every filter would satisfy the test above just as well.
+    module = load_probe(tmp_path / "ok", {"PROBE_CASES": "h3_continuous,h5_keyboard"})
+    assert module.ONLY == ["h3_continuous", "h5_keyboard"]
 
 
 def test_strict_is_what_turns_a_break_into_an_exit_code(probe) -> None:

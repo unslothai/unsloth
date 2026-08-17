@@ -783,6 +783,17 @@ CASES = {
 }
 
 ONLY = [c.strip() for c in os.environ.get("PROBE_CASES", "").split(",") if c.strip()]
+
+# A name that matches nothing selects nothing, and a run with no cases has nothing to report, so
+# under PROBE_STRICT one typo in PROBE_CASES exits 0 having asserted precisely nothing -- a
+# targeted run is exactly where that reads as "the case I was chasing is fixed". Reject the filter
+# rather than quietly honouring whichever half of it happened to parse.
+_unknown_cases = [name for name in ONLY if name not in CASES]
+if _unknown_cases:
+    raise SystemExit(
+        f"PROBE_CASES names no such case: {', '.join(sorted(_unknown_cases))}. "
+        f"Known cases: {', '.join(sorted(CASES))}"
+    )
 STRICT = os.environ.get("PROBE_STRICT", "").strip() not in ("", "0")
 
 # The key each case sets when it has seen the break it exists to look for. Under PROBE_STRICT the
