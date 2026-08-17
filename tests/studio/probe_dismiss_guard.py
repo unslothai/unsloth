@@ -336,7 +336,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default = "run")
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
-    ap.add_argument("--cases", default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral")
+    ap.add_argument(
+        "--cases",
+        default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral",
+    )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
 
@@ -365,15 +368,13 @@ def main() -> int:
     deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
     # A guard that swallows the dismissing click so thoroughly that Radix never sees it would
     # leave the menu OPEN, which is its own bug and one this probe used to record and ignore.
-    stuck = [
-        c["case"] for c in result["cases"]
-        if "menuClosed" in c and not c["menuClosed"]
-    ]
+    stuck = [c["case"] for c in result["cases"] if "menuClosed" in c and not c["menuClosed"]]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
         c["case"]
         for c in result["cases"]
-        if c.get("swallowedSelection") or c.get("swallowedSecondClick")
+        if c.get("swallowedSelection")
+        or c.get("swallowedSecondClick")
         or c.get("swallowedLaterClick")
     ]
     if over:
