@@ -140,13 +140,12 @@ def main() -> int:
                 page = ctx.new_page()
                 try:
                     page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
-                    page.wait_for_function(
-                        "() => Boolean(window.__heavyThread)", timeout = 180_000
-                    )
+                    page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 180_000)
                     plan = page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
                     page.wait_for_function(
                         "(n) => window.__heavyThread.messageCount() >= n",
-                        arg = plan["messages"], timeout = 600_000,
+                        arg = plan["messages"],
+                        timeout = 600_000,
                     )
                     hv.wait_for_highlighting_settled(page, 600_000)
                     # Park the pointer where it is on nothing, so "at rest" really is at rest.
@@ -184,8 +183,13 @@ def main() -> int:
                     page.wait_for_timeout(400)
                     after = page.evaluate(CENSUS_JS)
 
-                    row = {"at_rest": at_rest, "hovered": hovered, "during": during,
-                           "settled_after_scroll": settled, "after": after}
+                    row = {
+                        "at_rest": at_rest,
+                        "hovered": hovered,
+                        "during": during,
+                        "settled_after_scroll": settled,
+                        "after": after,
+                    }
                     results["engines"][engine] = row
                     info(f"{engine}: at rest {json.dumps(at_rest)}")
                     info(f"{engine}: hovered {json.dumps(hovered)}")
