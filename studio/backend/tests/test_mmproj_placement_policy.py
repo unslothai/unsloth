@@ -305,9 +305,7 @@ def test_the_drafters_vram_is_part_of_the_pin_decision(tmp_path):
     with_drafter, gguf = _drafter_backend(tmp_path, memory)
     pinned = _launch_with_drafter(with_drafter, gguf, tmp_path)
 
-    without_drafter, gguf2 = _backend(
-        tmp_path, memory = memory, native_ctx = DRAFTER_NATIVE_CTX
-    )
+    without_drafter, gguf2 = _backend(tmp_path, memory = memory, native_ctx = DRAFTER_NATIVE_CTX)
     unpinned = _launch(without_drafter, gguf2)["cmd"]
 
     assert "--no-mmproj-offload" in pinned

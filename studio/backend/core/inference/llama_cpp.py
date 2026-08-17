@@ -14707,10 +14707,7 @@ class LlamaCppBackend:
                         _mm_mtp_on_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
                         _mm_frac = _vram_frac - (
                             _MTP_VRAM_RESERVE_FRAC
-                            if (
-                                _mm_mtp_on_gpu
-                                and (mtp_overhead_fn is None or _mtp_kv_unsized)
-                            )
+                            if (_mm_mtp_on_gpu and (mtp_overhead_fn is None or _mtp_kv_unsized))
                             else 0.0
                         )
                         _mm_floor_ctx = min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
@@ -14733,9 +14730,7 @@ class LlamaCppBackend:
                             # _mtp_bytes at the native length and no context it hands
                             # out lowers it, so charging the reserve at a floor the fit
                             # never applies would promise room the fit never sees.
-                            _mm_need += _mtp_bytes(
-                                self._context_length or effective_ctx or 4096
-                            )
+                            _mm_need += _mtp_bytes(self._context_length or effective_ctx or 4096)
                         # The comparison. _select_gpus is the same machinery the
                         # placement loop uses, at the same fraction and the same
                         # per-device overhead, so "does not fit" here is a placement
