@@ -129,7 +129,12 @@ def test_think_parsing_expected_gates_on_capability_and_request():
     from routes.inference import _think_parsing_expected
 
     class _Backend:
-        def __init__(self, supports = True, always_on = False, default = True):
+        def __init__(
+            self,
+            supports = True,
+            always_on = False,
+            default = True,
+        ):
             self.supports_reasoning = supports
             self.reasoning_always_on = always_on
             self.reasoning_default = default
@@ -137,16 +142,11 @@ def test_think_parsing_expected_gates_on_capability_and_request():
     # Non-reasoning model never parses; always-on always does.
     assert _think_parsing_expected(_Backend(supports = False), _basic_payload()) is False
     assert (
-        _think_parsing_expected(_Backend(supports = False, always_on = True), _basic_payload())
-        is True
+        _think_parsing_expected(_Backend(supports = False, always_on = True), _basic_payload()) is True
     )
     # Request-level off wins on a switchable model.
-    assert (
-        _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = False)) is False
-    )
-    assert (
-        _think_parsing_expected(_Backend(), _basic_payload(reasoning_effort = "none")) is False
-    )
+    assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = False)) is False
+    assert _think_parsing_expected(_Backend(), _basic_payload(reasoning_effort = "none")) is False
     # Unspecified follows the template default; explicit on parses.
     assert _think_parsing_expected(_Backend(default = False), _basic_payload()) is False
     assert _think_parsing_expected(_Backend(), _basic_payload()) is True

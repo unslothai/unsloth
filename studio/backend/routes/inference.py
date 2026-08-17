@@ -20942,7 +20942,12 @@ async def _anthropic_tool_non_streaming(
     )
 
 
-async def _anthropic_plain_non_streaming(run_gen, message_id, model_name, parse_think = True):
+async def _anthropic_plain_non_streaming(
+    run_gen,
+    message_id,
+    model_name,
+    parse_think = True,
+):
     """Non-streaming response for the no-tool path."""
     text_parts = []
     usage = {}
