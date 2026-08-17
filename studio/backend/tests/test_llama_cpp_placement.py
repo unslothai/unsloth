@@ -1303,6 +1303,4 @@ def test_a_paravirtual_metal_launch_prices_the_whole_model(tmp_path, monkeypatch
     argv = ["llama-server", "-m", str(gguf), "--gpu-layers", "0", "--device", "none"]
 
     assert backend._launch_host_shortfall_message(argv, [], {}) is None
-    assert (
-        backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
-    )
+    assert backend._launch_host_shortfall_message(argv, [], {}, child_has_no_gpu = True) is not None
