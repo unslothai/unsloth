@@ -202,3 +202,34 @@ test("a narrow window only ever strips less than the unbounded pattern", () => {
     `only ${differed} inputs were stripped at all across the narrow windows`,
   );
 });
+
+test("an out-of-window opener strips the nested placeholder, not the outer one", () => {
+  // The window's guarantee is about what is REMOVED, not about leaving an
+  // oversized fragment whole, and nested placeholders are where those two
+  // readings come apart. The module comment states this case; without a test,
+  // "fix" it to decline the strip and nothing here would notice.
+  //
+  // The outer `${` sits further back than the window, so it is not an opener as
+  // far as the bounded scan is concerned, and the inner `${nested}` is an
+  // ordinary trailing placeholder. Stripping it is correct: it is a complete,
+  // well-formed fragment at the end of the buffer.
+  const input = `answer \${${"a".repeat(4196)}\${nested}`;
+  const bounded = stripTrailingTemplatePlaceholder(input);
+  const unbounded = stripUnbounded(input);
+
+  assert.equal(
+    bounded,
+    input.slice(0, input.length - "${nested}".length),
+    "the inner placeholder, and only it, should be removed",
+  );
+  // The direction that matters. The unbounded pattern's `[^}]*` spans the whole
+  // reply here and takes 4,208 characters of model-written text with it; the
+  // bounded scan takes 9.
+  assert.equal(input.length - unbounded.length, 4208);
+  assert.equal(input.length - bounded.length, 9);
+  assert.equal(
+    input.startsWith(bounded),
+    true,
+    "the result must stay a prefix of the input",
+  );
+});
