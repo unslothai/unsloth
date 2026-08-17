@@ -625,6 +625,8 @@ def test_sampling_params_are_part_of_the_snapshot():
         ("temperature", 0, -0.1),
         ("topP", 1, 1.5),
         ("topK", 100, 101),
+        # -1 disables top-k; the floor is below it, not at zero.
+        ("topK", -1, -2),
         ("minP", 0, -1),
         ("repetitionPenalty", 1, 0.5),
         ("presencePenalty", 2, 3),
@@ -635,6 +637,12 @@ def test_sampling_params_take_the_slider_range_and_no_more(field, inside, outsid
     assert getattr(ChatThreadSettings.model_validate({field: inside}), field) == inside
     with pytest.raises(ValidationError):
         ChatThreadSettings.model_validate({field: outside})
+
+
+def test_the_disabled_top_k_value_round_trips():
+    """ChatCompletionRequest allows -1 and default.yaml falls back to it, so a chat
+    running with top-k off has to be able to store that."""
+    assert ChatThreadSettings.model_validate({"topK": -1}).topK == -1
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])

@@ -187,6 +187,14 @@ test("a sampling value outside the slider range is dropped", () => {
   );
 });
 
+// -1 disables top-k. default.yaml falls back to it and whole model families resolve
+// to it, so dropping it means those chats cannot keep the value they actually run,
+// and reopening one silently takes whatever top-k the installation last saw.
+test("the disabled top-k value is kept, and it is the floor", () => {
+  assert.deepEqual(sanitizeThreadScopedSettings({ topK: -1 }), { topK: -1 });
+  assert.deepEqual(sanitizeThreadScopedSettings({ topK: -2 }), {});
+});
+
 test("a non-string prompt is dropped rather than coerced", () => {
   assert.deepEqual(
     sanitizeThreadScopedSettings({ systemPrompt: 12, systemVariables: null }),

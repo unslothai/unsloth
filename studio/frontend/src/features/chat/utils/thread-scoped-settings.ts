@@ -101,7 +101,9 @@ const THREAD_SCOPED_NUMBER_BOUNDS = {
   // Same ranges as the sampling sliders, and as the ge/le on the same fields.
   temperature: { min: 0, max: 2, integer: false },
   topP: { min: 0, max: 1, integer: false },
-  topK: { min: 0, max: 100, integer: true },
+  // -1 disables top-k and is what default.yaml and several model families
+  // resolve to, so the floor is -1 rather than 0, matching the inference schema.
+  topK: { min: -1, max: 100, integer: true },
   minP: { min: 0, max: 1, integer: false },
   repetitionPenalty: { min: 1, max: 2, integer: false },
   presencePenalty: { min: 0, max: 2, integer: false },

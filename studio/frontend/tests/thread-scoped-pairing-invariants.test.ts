@@ -569,14 +569,20 @@ test("the sampling params are read and applied through params", () => {
 // A model's own recommendation is not a choice the user made in this chat. Storing it
 // would pin every chat to whatever model happened to load while it was open.
 test("only a user edit to a sampling param lands on the chat", () => {
+  const drop = slice(store, "function withoutCapturedThreadEdits", "\n}");
   assert.match(
-    store,
-    /isThreadScopedParamKey\(key\) &&\s*options\?\.fromModelDefaults !== true &&\s*captureThreadScopedEdit\(key\)/,
+    drop,
+    /isThreadScopedParamKey\(key\) &&\s*!fromModelDefaults &&\s*captureThreadScopedEdit\(key\)/,
   );
-  // What the chat does not take still moves the installation defaults.
-  assert.match(
-    store,
-    /if \(hasKeys\(globalParams\)\) \{\s*saveSettingsPatch\(\{ inferenceParams: globalParams \}\);/,
+  // What the chat takes reaches neither the installation defaults nor this
+  // model's memory: both are shared with every other chat.
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(setParams, /persistParamEdit\(\s*sharedParams,/);
+  assert.match(setParams, /getParamsByModelAfterEdit\([\s\S]{0,200}?sharedParams,/);
+  assert.doesNotMatch(
+    setParams,
+    /getParamsByModelAfterEdit\([\s\S]{0,200}?changedParams,/,
+    "the chat's edit is remembered against the model and leaks to new chats on it",
   );
 
   // Both paths that apply a model's own params say so.
@@ -585,7 +591,7 @@ test("only a user edit to a sampling param lands on the chat", () => {
   for (const source of [runtime, status]) {
     assert.match(
       source,
-      /mergeBackendRecommendedInference\([\s\S]{0,400}?\{ fromModelDefaults: true \}/,
+      /mergeBackendRecommendedInference\([\s\S]{0,700}?fromModelDefaults: true/,
     );
   }
 });
@@ -608,31 +614,37 @@ test("an edit held through the pairing window keeps its sampling value", () => {
 // own, and the next unrelated edit snapshotted that over what the chat had stored.
 test("a model's recommendation does not overwrite the chat's sampling", () => {
   const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  // Laid over the replay, not the raw params: a chat outranks this model's
+  // remembered settings as well as its defaults.
   assert.match(
     setParams,
-    /options\?\.fromModelDefaults === true\s*\?\s*restoreThreadScopedParams\(params\)\s*:\s*params/,
+    /const effective = replayed\s*\?\s*restoreThreadScopedParams\(nextParams\)\s*:\s*nextParams;/,
   );
+  assert.match(setParams, /const replayed = checkpointChanged \|\| fromModelDefaults;/);
   // and the restored object is the one that reaches the store
   assert.match(setParams, /params: effective,/);
-  assert.doesNotMatch(setParams, /^\s*params,$/m);
+  assert.doesNotMatch(setParams, /params: nextParams,/);
 
-  // Only what the chat actually holds is put back; the rest follows the model.
   const restore = slice(store, "function restoreThreadScopedParams", "\n}");
   assert.match(restore, /const held = threadScopedOverride\(key\)/);
   assert.match(restore, /if \(held === undefined/);
 });
 
-// Same recommendation table, two triggers: loading the model and toggling Think. Marking
-// one and not the other pins the chat to sampling it never chose by the other route.
-test("both Qwen recommendation paths are marked as model defaults", () => {
+// A pinned chat stores every sampling key, so restoring them all would mean the mode
+// the user just asked for arrives with the previous mode's temperature and top-p.
+// The load-time path applies the same table without the user asking, so it stays marked.
+test("toggling Think applies its params even in a chat that pins sampling", () => {
   const qwen = read("../src/features/chat/utils/qwen-params.ts");
+  assert.match(qwen, /store\.setParams\(\{ \.\.\.store\.params, \.\.\.params \}\);/);
+  assert.doesNotMatch(
+    qwen,
+    /fromModelDefaults/,
+    "the toggle is treated as a model default, so a pinned chat never changes mode params",
+  );
+  // The post-load application of the same table stays marked.
   const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
-  for (const source of [qwen, runtime]) {
-    assert.match(
-      source,
-      /setParams\(\s*\{ \.\.\.store\.params, \.\.\.p(arams)? \},\s*\{ fromModelDefaults: true \},?\s*\)/,
-    );
-  }
+  const post = slice(runtime, "store.setParams({ ...store.params, ...p }", "\n              }");
+  assert.match(post, /fromModelDefaults: true/);
 });
 
 // Restoring the chat's value makes it equal on both sides of the diff, so diffing the
@@ -641,14 +653,31 @@ test("both Qwen recommendation paths are marked as model defaults", () => {
 // on whatever model loaded before it.
 test("a chat pinning a param does not withhold the model's default from the rest", () => {
   const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
-  assert.match(setParams, /getChangedInferenceParams\(params, state\.params\)/);
+  assert.match(
+    setParams,
+    /getChangedInferenceParams\(\s*nextParams,\s*state\.params,\s*!fromModelDefaults,\s*\)/,
+  );
   assert.doesNotMatch(
     setParams,
-    /getChangedInferenceParams\(effective,/,
+    /getChangedInferenceParams\(\s*effective,/,
     "the restored object decides what is persisted, so pinned keys are withheld",
   );
   // Called once: it bumps the mutation versions, so a second diff double-counts.
   assert.equal(setParams.match(/getChangedInferenceParams\(/g)?.length, 1);
   // The live store still gets the restored object; only persistence uses the model's.
   assert.match(setParams, /params: effective,/);
+});
+
+// The write above changes the installation default, but applyThreadScopedSettings falls
+// back to an in-memory copy taken on the way into a chat. Left stale, a chat opened
+// after a model load runs the sampling of whichever model was loaded before it.
+test("the in-memory defaults follow the model defaults that were just written", () => {
+  const setParams = slice(store, "setParams: (params, options)", "\n  setCustomPresets:");
+  assert.match(setParams, /noteThreadScopedDefaults\(sharedParams\);/);
+  const note = slice(store, "function noteThreadScopedDefaults", "\n}");
+  assert.match(note, /if \(!isThreadScopedParamKey\(key\)\) continue;/);
+  // Only ever updated, never created: with no chat open there is nothing to hold.
+  assert.match(note, /if \(globalThreadScopedDefaults === null\) return;/);
+  // and it is the fallback apply() actually reads
+  assert.match(store, /stored\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/);
 });

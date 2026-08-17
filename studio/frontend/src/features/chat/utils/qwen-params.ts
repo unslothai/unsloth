@@ -28,8 +28,8 @@ export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const params = needsPresencePenalty
     ? { ...base, presencePenalty: 1.5 }
     : base;
-  // Same table as the post-load path: the model's recommendation for the mode,
-  // reached by toggling Think. Marked so it moves the defaults rather than
-  // pinning this chat to sampling the user never picked.
-  store.setParams({ ...store.params, ...params }, { fromModelDefaults: true });
+  // Deliberately unmarked, unlike the post-load path that applies the same
+  // table. The user asked for this mode in this chat, so the values have to
+  // land even on a chat pinning sampling, and they belong to that chat after.
+  store.setParams({ ...store.params, ...params });
 }

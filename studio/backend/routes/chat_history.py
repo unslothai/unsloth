@@ -112,7 +112,9 @@ class ChatThreadSettings(BaseModel):
     # The sampling params a chat runs with. Ranges match the sliders that set them.
     temperature: Optional[float] = Field(default = None, ge = 0, le = 2)
     topP: Optional[float] = Field(default = None, ge = 0, le = 1)
-    topK: Optional[int] = Field(default = None, ge = 0, le = 100)
+    # -1 disables top-k, matching ChatCompletionRequest and the default.yaml
+    # fallback, so a chat can keep it the way any other model's value is kept.
+    topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
@@ -413,6 +415,10 @@ class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
     inferenceParams: Optional[ChatInferenceSettings] = None
+    # Last-used params per checkpoint id. Deep-merged per key, so patching one
+    # model cannot drop another's.
+    inferenceParamsByModel: Optional[dict[str, ChatInferenceSettings]] = None
+    rememberParamsPerModel: Optional[bool] = None
     customPresets: Optional[list[ChatPreset]] = None
     activePreset: Optional[str] = None
     activePresetSource: Optional[Literal["builtin-default", "custom", "modified"]] = None
