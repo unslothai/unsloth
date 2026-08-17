@@ -110,7 +110,12 @@ jobs:
           # would resolve that from PyPI, and the CUDA wheel it picks satisfies the range
           # the next line asks for, leaving this nominally CPU-only job carrying the CUDA
           # distribution and its nvidia-* dependencies.
-          pip install peft
+          # The version comes from the requirements file rather than being written here:
+          # extras-no-deps.txt pins peft==0.18.1 deliberately (0.19.0 breaks Unsloth's
+          # export subprocess), and an unconstrained install takes the newest release,
+          # so this job would test against a peft production never ships and no other
+          # job installs. Read out of the file so the two cannot drift apart.
+          pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
           # torchao: the pre-quant allowlist is built by importing the torchao tensor
           # constructors a checkpoint names, and registration refuses unless at least one of
           # them resolves. Without it every pre-quant load returns None and 21 tests across
