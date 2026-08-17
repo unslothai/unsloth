@@ -287,6 +287,51 @@ def _offenders() -> list[str]:
     ]
 
 
+def _import_time_nodes(node: ast.AST):
+    """``node`` and every descendant evaluated while the module is being imported.
+
+    Wider than ``_runtime_nodes``, which stops at every ``def``/``class``. That is
+    right for "did a stub get installed", but wrong for "when does this call run":
+    a class BODY executes at import time, and so do decorators, default values and
+    annotations on a ``def``. Only a function body is deferred.
+    """
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        # Lambda.body is one expression; a def's is a list. Compared by identity so a
+        # node is never tested with `in` against another AST node.
+        body = node.body if isinstance(node.body, list) else [node.body]
+        deferred = {id(statement) for statement in body}
+        for child in ast.iter_child_nodes(node):
+            if id(child) not in deferred:
+                yield from _import_time_nodes(child)
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _import_time_nodes(child)
+
+
+def _eagerly_imports(tree: ast.Module, target: str) -> bool:
+    """Whether the module imports ``target`` itself, at module scope.
+
+    A file may install the stubs, import the heavy module under them, then drop the
+    stubs -- which is the shape this PR's fix uses and the shape the sibling files
+    use. A later lazy ``importorskip`` then resolves out of ``sys.modules`` and never
+    touches the real dependency. Without this, a copy of that file that forgot the
+    eager import would read as stubbed and still raise at test time.
+    """
+    for statement in tree.body:
+        for node in _runtime_nodes(statement):
+            if isinstance(node, ast.Import):
+                if any(alias.name == target for alias in node.names):
+                    return True
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                if module == target or any(
+                    f"{module}.{alias.name}" == target for alias in node.names
+                ):
+                    return True
+    return False
+
+
 def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[str, int]]:
     """``(target, line the stub must be installed before)`` per heavy ``importorskip``.
 
@@ -304,7 +349,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
       call's own line. Scanning to the end of the module here would see that later
       stub and call the file safe while it still breaks collection.
     """
-    module_scope = {id(node) for statement in tree.body for node in _runtime_nodes(statement)}
+    module_scope = {id(node) for statement in tree.body for node in _import_time_nodes(statement)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
@@ -329,6 +374,46 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     return calls
 
 
+def _drops_stubs(tree: ast.Module) -> bool:
+    """Whether the module removes its stubs again, at module scope.
+
+    The convention is ``sys.modules.pop(name, None)`` over the recorded list, so that
+    the stubs do not outlive the module. A module that never drops them can reach a
+    heavy module lazily and still resolve, because the stub is still installed when
+    the test runs; one that drops them cannot, unless it imported the target first.
+    """
+    for statement in tree.body:
+        for node in _runtime_nodes(statement):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "pop"
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "modules"
+            ):
+                return True
+    return False
+
+
+def _importorskip_offence(tree: ast.Module, heavy: frozenset[str]) -> bool:
+    """Whether this module reaches a heavy module through importorskip unsafely.
+
+    One entry point, used by the guard and by the test that pins it, so the pinned
+    answers cannot drift away from the answers the guard actually gives.
+    """
+    calls = _importorskip_calls(tree, heavy)
+    end = max((statement.lineno for statement in tree.body), default = 0) + 1
+    for target, boundary in calls:
+        if not _stubs_before(tree, boundary):
+            return True
+        # A lazy call runs after the module body, by which point a well-behaved
+        # module has dropped its stubs again. What makes it resolve then is the
+        # module having imported the target itself while they were live.
+        if boundary == end and _drops_stubs(tree) and not _eagerly_imports(tree, target):
+            return True
+    return False
+
+
 def _importorskip_offenders() -> list[str]:
     heavy = _heavy_backend_modules()
     offenders: list[str] = []
@@ -337,8 +422,7 @@ def _importorskip_offenders() -> list[str]:
             tree = _parse(path.read_text(encoding = "utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        calls = _importorskip_calls(tree, heavy)
-        if calls and not all(_stubs_before(tree, boundary) for _target, boundary in calls):
+        if _importorskip_offence(tree, heavy):
             offenders.append(path.name)
     return offenders
 
@@ -378,10 +462,11 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     def calls(source):
         return _importorskip_calls(_parse(source), heavy)
 
+    def _offender_free(source):
+        return not _importorskip_offence(_parse(source), heavy)
+
     def safe(source):
-        tree = _parse(source)
-        found = _importorskip_calls(tree, heavy)
-        return bool(found) and all(_stubs_before(tree, line) for _t, line in found)
+        return not _importorskip_offence(_parse(source), heavy)
 
     lazy_unstubbed = (
         "import pytest\n"
@@ -424,6 +509,52 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert safe(stub_in_time)
+
+    # A class body runs at import time, so a stub below it is too late, exactly like a
+    # module-scope call. Only a function BODY is deferred.
+    class_body_late = (
+        "import pytest, sys\n"
+        "class T:\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(class_body_late) == [("core.inference.inference", 3)]
+    assert not safe(class_body_late)
+
+    # So do default expressions on a def.
+    default_arg_late = (
+        "import pytest, sys\n"
+        "def f(x = pytest.importorskip('core.inference.inference')):\n"
+        "    pass\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(default_arg_late) == [("core.inference.inference", 2)]
+    assert not safe(default_arg_late)
+
+    # A lazy call in a module that stubs, imports the target, then DROPS the stubs is
+    # fine, because the module is in sys.modules by then.
+    stub_import_drop = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(stub_import_drop)
+
+    # The same file without the eager import is NOT fine: the stubs are gone by the
+    # time the lazy call runs, so it raises. This is the shape a copy-paste drops.
+    stub_drop_no_import = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert not _offender_free(stub_drop_no_import)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
