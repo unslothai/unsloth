@@ -268,3 +268,23 @@ test("a link definition inside a fence is code, not a definition", () => {
   assert.ok(start > 0);
   assert.equal(linkDefinitionsBefore(text, start), "");
 });
+
+test("a blank line inside a loose list item is not a safe boundary", () => {
+  // The item is still open across the blank line, and its continuation is indented BECAUSE that
+  // indentation keeps it in the item. Slicing there drops the marker and a four-space
+  // continuation becomes an indented code block.
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}1. first point here\n\n    the continuation of the first point\n\n2. second point\n`;
+  const start = alignWindowStart(text, text.indexOf("first point"));
+  assert.ok(
+    !text.slice(start).startsWith("    the continuation"),
+    JSON.stringify(text.slice(start, start + 30)),
+  );
+});
+
+test("a top-level boundary is still accepted", () => {
+  const text = "alpha\n\n".repeat(60);
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  assert.ok(text.slice(start).startsWith("alpha"));
+});

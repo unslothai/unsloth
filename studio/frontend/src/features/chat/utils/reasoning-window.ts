@@ -192,6 +192,25 @@ export function isOutsideFence(text: string, offset: number): boolean {
 }
 
 /**
+ * Whether the line at `offset` begins a block at the TOP level, with nothing indented about it.
+ *
+ * A blank line inside a loose list item is a block boundary, but the item is still open across it,
+ * and the paragraph after it is INDENTED because that indentation is what keeps it inside the
+ * item. Slice there and the marker is gone, so a four-space continuation that was ordinary list
+ * text becomes an indented code block, and a two-space one becomes a paragraph that lost its
+ * bullet. The container the reader can see is not in the slice, so there is nothing to carry it.
+ *
+ * Requiring column zero refuses every such boundary without having to model list containers: a
+ * line that is indented at all is continuing something, and the window simply waits for the next
+ * boundary that is not. Refusing too much only costs a later window; accepting one of these
+ * changes what the reader is shown.
+ */
+function startsTopLevelBlock(text: string, offset: number): boolean {
+  const character = text[offset];
+  return character !== undefined && character !== " " && character !== "\t";
+}
+
+/**
  * The first block boundary at or after `target` that leaves the remainder outside everything.
  *
  * ONE pass over the text, deliberately. The obvious shape -- walk the blank lines and ask
@@ -217,7 +236,14 @@ export function alignWindowStart(text: string, target: number): number {
     // A blank line is a block boundary, and the boundary the renderer sees is the START of the
     // line after it. Trimming rather than testing for "" also makes a whitespace-only line and a
     // CRLF stream work, both of which the previous "\n\n" search silently declined to window.
-    if (nextLine >= target && line.trim() === "" && neutral(state)) return nextLine;
+    if (
+      nextLine >= target &&
+      line.trim() === "" &&
+      neutral(state) &&
+      startsTopLevelBlock(text, nextLine)
+    ) {
+      return nextLine;
+    }
     advance(state, line);
     lineStart = nextLine;
   }
