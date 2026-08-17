@@ -3382,19 +3382,16 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
-    # Same rule for the conversation archive: offer it only once this thread has actually
-    # had turns evicted, so an ordinary short chat never sees the extra schema. On the very
-    # first compaction the tool is still absent (the archive is written mid-request), but
-    # the forced recall covers that turn and the tool appears from the next one.
-    # getattr, not attribute access: this helper also serves the token-count request
+    # Same rule for the conversation archive: offered only once this thread has had turns
+    # evicted, so a short chat never sees the extra schema. On the first compaction the
+    # tool is still absent (the archive is written mid-request) and the forced recall
+    # covers that turn. getattr, because this helper also serves the token-count request
     # model, which carries no thread_id.
-    # Follows the ARCHIVE, not the caller's allowlist. Studio always sends an explicit
-    # enabled_tools array (documents/web/code/artifacts), and it has no reason to name an
-    # internal tool it does not expose as a pill -- so the filter above removed
-    # search_conversation before this ran, and the tool, plus the compaction nudge gated
-    # on it, never appeared in a Studio chat at all. It is read-only, always-safe, and
-    # only exists once this thread has actually had turns evicted, so it is added on that
-    # condition rather than requested.
+    # Follows the ARCHIVE, not the caller's allowlist: Studio always sends an explicit
+    # enabled_tools array and has no reason to name an internal tool it shows no pill for,
+    # so the filter above removed search_conversation and neither it nor the compaction
+    # nudge gated on it ever reached a Studio chat. It is read-only and always-safe, so it
+    # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
     if has_archive and tools_on:
@@ -3421,8 +3418,8 @@ _COMPACTED_SESSION_NUDGE = (
 def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
-    Gated on the tool rather than on separate state, so it appears exactly when there is
-    an archive to search and stays a no-op for every chat that never compacted."""
+    Gated on the tool rather than separate state, so it appears exactly when there is an
+    archive to search and stays a no-op for chats that never compacted."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge

@@ -476,18 +476,14 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         from core.rag import config as rag_config
         from core.rag import conversation_archive
 
-        # Eligibility, not just availability. A temporary chat is never archived, so
-        # nothing can ever be recalled into the room held back for it -- and the reserve
-        # is subtracted from the trim target, so on a small window it evicts most of the
-        # history to reserve space that stays empty. Measured on a 4K chat: 15 tokens of
-        # conversation survived instead of 1,615.
+        # Eligibility, not just availability. A temporary chat is never archived, so the
+        # reserve stays empty while still being subtracted from the trim target. Measured
+        # on a 4K chat: 15 tokens of conversation survived instead of 1,615.
         if not conversation_archive.can_archive(thread_id):
             return 0
-        # And whether it is actually working. sqlite-vec can be present and the thread
-        # persisted while the embedder cannot start, in which case archiving fails
-        # quietly and the recall injects nothing -- so the room held back is pure loss,
-        # on every compaction, and this failure mode forgets more history than having the
-        # feature turned off.
+        # And that it works: sqlite-vec can be present while the embedder cannot start,
+        # so archiving fails quietly and the reserved room is pure loss on every
+        # compaction, forgetting more history than having the feature off.
         if conversation_archive.degraded():
             return 0
         return max(0, int(rag_config.CONVERSATION_RECALL_RESERVE_TOKENS))
@@ -510,18 +506,14 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     """How many of the REQUEST's own leading messages a fit has evicted.
 
     The boundary is persisted and re-applied to the NEXT request's saved transcript, so it
-    has to be counted in those terms. ``dropped_messages`` is not: the tool loop refits on
-    every iteration and the client sums the counts, so a long agent run adds the tool
-    exchanges this turn created -- messages the next request's transcript does not contain
-    -- and the boundary advances far past the turns that were actually evicted.
+    must be counted in those terms. ``dropped_messages`` is not: the tool loop refits each
+    iteration and the client sums the counts, so a long agent run also counts the tool
+    exchanges it created, which the next request's transcript does not contain.
 
-    Counted by identity. Instruction messages are skipped rather than treated as the
-    front of the branch: a fit never evicts them, so a Studio request -- which always
-    prepends a system prompt -- would otherwise report a boundary of zero on every
-    compaction, and the boundary would slide forward on every single turn again.
-
-    The newest turn is excluded because it is never evicted and an inline recall rewrites
-    it in place, which would read as an eviction.
+    Counted by identity. Instruction messages are skipped rather than treated as the front
+    of the branch, or a Studio request (always system-prefixed) would report zero on every
+    compaction and the boundary would slide every turn again. The newest turn is excluded:
+    it is never evicted, and an inline recall rewrites it in place.
     """
     messages = list(branch or ())[:-1]
     live = {id(message) for message in conversation}
@@ -559,28 +551,23 @@ def _sticky_compaction_boundary(
 ) -> int:
     """How many leading messages this thread last compacted away, or 0.
 
-    The fit is otherwise stateless: the client re-sends the whole saved transcript on
-    every request, so "keep the newest N tokens" slides forward a turn or two at a time
-    and every reply compacts a little more than the last. That is bad for the user, who
-    can never be told anything more useful than "still compacting", and bad for
-    llama-server, whose prefix cache is thrown away each time the head of the prompt
-    moves. Reading the boundary back turns compaction into an occasional event.
+    The fit is otherwise stateless: the client re-sends the whole transcript each request,
+    so "keep the newest N tokens" slides forward every turn, which tells the user nothing
+    useful and throws away llama-server's prefix cache each time the head moves. Reading
+    the boundary back makes compaction an occasional event.
 
-    The source is the thread's own newest assistant turn, which already persists this
-    number for the UI, so nothing new is stored and it survives a restart. Never raises:
-    a thread with no history, an API client that persists nothing, or a storage error
-    all mean "no boundary", which is exactly the old stateless behaviour.
+    Read from the thread's newest assistant turn, which already persists this number for
+    the UI, so nothing new is stored and it survives a restart. Never raises: no history,
+    a non-persisting API client, or a storage error all mean "no boundary".
     """
     if not thread_id:
         return 0
     try:
         from storage import studio_db
 
-        # The stored rows are the whole message DAG, ordered by creation time, so the
-        # newest assistant turn can belong to a sibling branch left behind by Retry or
-        # regenerate. Its boundary describes a different conversation: applied to the
-        # branch actually being sent, it evicts a block sized for history this branch
-        # does not have. Skip the rows the request's own messages do not contain.
+        # The stored rows are the whole DAG, so the newest assistant turn can belong to a
+        # sibling branch left by Retry, whose boundary is sized for history this branch
+        # does not have. Skip rows the request's own messages do not contain.
         _branch = _archive_branch_transcript(branch_messages)
         candidates = [
             message
@@ -591,19 +578,14 @@ def _sticky_compaction_boundary(
         if not candidates:
             return 0
 
-        # The newest on-branch assistant turn decides, EXCEPT that the branch check is
-        # textual, so two siblings whose replies read the same ("Done") are
-        # indistinguishable from here -- and Retry is exactly what produces them. Taking
-        # the first match would then apply a boundary measured on a different, possibly
-        # much deeper branch. Where the text cannot tell them apart, take the SMALLEST
-        # boundary offered: too small costs one more compaction later, too large evicts
-        # live history that this branch still has.
-        # The branch check is a substring test, because an archived turn is compared
-        # against fragments of itself. Here both sides are whole messages, and substring
-        # lets an abandoned short reply ("Done") ride in on any live message that merely
-        # contains it ("Not done yet") -- and then, having no live twin, decide the
-        # boundary on its own. Where any candidate matches a live message exactly, only
-        # the exact ones are considered.
+        # The newest on-branch assistant turn decides, except that the branch check is
+        # textual, so two Retry siblings that both read "Done" are indistinguishable here
+        # and the first match could apply a much deeper branch's boundary. Where the text
+        # cannot separate them, take the SMALLEST boundary: too small costs one extra
+        # compaction, too large evicts live history.
+        # That check is also a substring test (an archived turn is matched against
+        # fragments of itself), so an abandoned "Done" can ride in on a live "Not done
+        # yet" and then decide the boundary alone. Prefer exact matches where any exist.
         _live = set(_branch or ())
         _exact = [
             message
@@ -629,10 +611,9 @@ def _sticky_compaction_boundary(
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
                 return 0
-            # Counted against the request's own transcript, which is what this is about
-            # to be applied to. `dropped_messages` is the fallback for turns saved before
-            # that was recorded: it is the same number for a single fit, and too large for
-            # a turn that refit several times.
+            # Counted against the request's own transcript, which is what it is applied
+            # to. `dropped_messages` is the fallback for turns saved before that was
+            # recorded: equal for a single fit, too large for a turn that refit often.
             recorded = truncation.get("boundary_messages")
             if recorded is None:
                 recorded = truncation.get("dropped_messages")
@@ -661,13 +642,11 @@ def _prefix_user_text(message: dict, prefix: str) -> dict:
 def _recall_top_k(budget_tokens: int) -> int:
     """How many archived chunks actually fit in the room a fit obtained.
 
-    The reserve is what the fit AIMS to hold back, not what it always gets: protected
-    messages (system, the latest turn, anchored recalls) can stop the trim reaching its
-    target while the result is still under the prompt budget, which the fit accepts.
-    Injecting a full reserve's worth of recall on top of that pushes the request back
-    over the window, turning a successful compaction into a context-length error --
-    reproduced at ctx 8000 with a large latest turn: fit accepted at 6900, recall took
-    it to 8948. So the recall is sized from the room actually left, not from the wish.
+    The reserve is what the fit AIMS to hold back, not what it gets: protected messages
+    (system, latest turn, anchored recalls) can stop the trim reaching its target while
+    still passing the prompt budget. Injecting a full reserve on top then overflows the
+    window -- reproduced at ctx 8000: fit accepted at 6900, recall took it to 8948. So
+    size the recall from the room actually left.
     """
     try:
         from core.rag import config as rag_config
@@ -691,12 +670,9 @@ def _archive_and_recall(
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
-    Returns ``{"conversation", "events", "counts", "recalled"}``. Never raises: a chat
-    that cannot archive still has to answer, so every failure degrades to the plain
-    fitted messages.
-
-    Recall fires at most once per request. The tool loop refits on every iteration, and
-    without the guard each pass would stack another recall block onto the prompt.
+    Returns ``{"conversation", "events", "counts", "recalled"}``. Never raises: every
+    failure degrades to the plain fitted messages. Recall fires at most once per request,
+    or the tool loop's per-iteration refit would stack a recall block onto each pass.
     """
     result = {
         "conversation": conversation,
@@ -724,23 +700,18 @@ def _archive_and_recall(
 
         top_k = _recall_top_k(recall_budget_tokens)
         if top_k <= 0:
-            # No room was actually obtained. Archiving still happened above, so nothing
-            # is lost: the turns stay searchable and the next fit can recall them.
+            # No room obtained. Archiving still happened, so the turns stay searchable
+            # and the next fit can recall them.
             result["counts"] = counts
             return result
 
-        # An EXACT recount decides whether a recall is affordable, because the chunk
-        # arithmetic above is an estimate twice over: CHUNK_TOKENS is an embedding-token
-        # limit rather than the chat template's cost for the same text, and neither it
-        # nor the budget accounts for the <recalled_conversation> or synthetic tool
-        # wrappers around it. Overshooting eats the reply's reserve first and the window
-        # after that, which is the failure this whole path exists to prevent.
-        #
-        # So when the recount says no, ask for FEWER turns rather than giving up. With
-        # the shipped defaults a full top-K of long turns lands just over the reserve
-        # once wrapped, and dropping the lot there would disable the one retrieval this
-        # feature forces, on exactly the long conversations it exists for. Halving is
-        # bounded (4 -> 2 -> 1), and each attempt costs one small per-thread query.
+        # An EXACT recount decides affordability: the chunk arithmetic above is doubly an
+        # estimate, since CHUNK_TOKENS is an embedding-token limit rather than the chat
+        # template's cost and neither it nor the budget covers the wrapper text.
+        # When the recount says no, ask for FEWER turns rather than giving up: with the
+        # shipped defaults a full top-K of long turns lands just over the reserve once
+        # wrapped, and dropping it would disable recall on exactly the long conversations
+        # this exists for. Halving is bounded (4 -> 2 -> 1), one small query per attempt.
         attempts = []
         attempt_k = top_k
         while True:
@@ -803,10 +774,9 @@ def _archive_and_recall(
 def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Optional[dict]:
     """The conversation with ``recall`` added, or None if there was nowhere to put it.
 
-    ``anchored`` is exactly what this injection is responsible for keeping: the two
-    synthetic messages for a tool exchange, or the single rewritten user message inline.
-    The caller protects those from a later refit, and protecting anything else would pin
-    a real turn that the fit is entitled to evict.
+    ``anchored`` is only what this injection added: the two synthetic tool messages, or
+    the rewritten user message inline. The caller protects those from a later refit, and
+    anything else would pin a real turn the fit is entitled to evict.
     """
     if style == "inline":
         prefix = recall.get("prefix") or ""
@@ -20097,7 +20067,7 @@ class LlamaCppBackend:
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
-                    # and strict chat templates reject a tool role that has no catalogue.
+                    # and strict templates reject a tool role with no catalogue.
                     _recalled = _archive_and_recall(
                         openai_messages,
                         _before_fit,
@@ -20131,18 +20101,17 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
-                # Reuse the exact fitted request after a respawn. Re-running this
-                # preflight would emit the same truncation event a second time.
+                # Reuse the exact fitted request after a respawn; re-running the preflight
+                # would emit the same truncation event twice.
                 retry_messages = openai_messages
                 retry_image_b64 = None
                 retry_max_tokens = payload["max_tokens"]
                 retry_context_overflow = None
                 retry_preflight_context_length = self._effective_context_length
-                # `fits` False too: it carries the diagnosis for a request that cannot
-                # be made to fit, and the client needs it to explain WHY. Without it the
-                # user only sees llama-server's error, which reports the size of the
-                # whole conversation and advises shortening it even when the single
-                # message just sent is the part that does not fit.
+                # `fits` False too: it carries the diagnosis the client needs to explain
+                # WHY. Otherwise the user only sees llama-server's error, which reports
+                # the whole conversation's size and advises shortening it even when the
+                # single message just sent is the part that does not fit.
                 if truncation:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
@@ -20308,11 +20277,10 @@ class LlamaCppBackend:
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
                     context_overflow = retry_context_overflow,
-                    # The retry refits for the replacement window, so it can evict more
-                    # of the conversation than the first attempt did. Without the thread
-                    # those extra turns are archived nowhere, nothing is recalled in
-                    # their place, and the fit holds back no reserve and re-applies no
-                    # boundary -- on the one path that deliberately compacts again.
+                    # The retry refits for the replacement window and can evict more than
+                    # the first attempt did. Without the thread those extra turns are
+                    # archived nowhere and no reserve or boundary applies, on the one path
+                    # that deliberately compacts again.
                     thread_id = thread_id,
                     _allow_respawn_retry = False,
                 )
@@ -20408,25 +20376,21 @@ class LlamaCppBackend:
         # The loop refits on every iteration; recall must fire once per request, or each
         # pass stacks another block of recalled turns onto the prompt.
         _conversation_recall_done = False
-        # The sticky boundary describes the ORIGINAL transcript, so it may be applied at
-        # most once per request. The tool loop refits every iteration on the conversation
-        # the previous fit returned; re-applying the count there evicts another
-        # boundary-sized block of still-live history, and the truncation events sum, so
-        # the inflated total is persisted and the next request starts from it.
+        # The sticky boundary describes the ORIGINAL transcript, so apply it at most once
+        # per request. Each later refit runs on what the previous fit returned, so
+        # re-applying the count evicts another boundary-sized block of live history, and
+        # the summed events persist the inflated total into the next request.
         _sticky_boundary_applied = False
-        # exact templated prompt tokens minus what the estimator says about the same
-        # messages, measured once by the preflight. The estimator knows nothing about the
-        # tool catalogue or the template's own framing, and with a large catalogue (MCP
-        # schemas especially) that is thousands of tokens of the prompt it cannot see --
-        # enough for a conversation search to be told there is room for chunks the
-        # request cannot hold. Carrying the difference makes the estimate exact at the
-        # point it was measured and only approximate for what the loop appends after.
+        # Exact templated prompt tokens minus the estimator's view of the same messages,
+        # measured once by the preflight. The estimator cannot see the tool catalogue or
+        # the template framing, thousands of tokens with a large (MCP) catalogue: enough
+        # for a conversation search to be told there is room it does not have. Carrying
+        # the difference makes the estimate exact where it was measured.
         _prompt_token_offset: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
-        # injected into `conversation`. The archive is keyed by thread, and a thread's
-        # stored rows are the whole message DAG -- Retry and regenerate keep the replaced
-        # response as a sibling -- so recall has to be told which branch is live, and the
-        # messages the client sent are the only authoritative answer.
+        # injected into `conversation`. The archive is keyed by thread and the stored rows
+        # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
+        # has to be told which branch is live, and the client's messages are the answer.
         _request_branch: list[dict] = list(messages)
         for message in reversed(conversation):
             if message.get("role") == "user":
@@ -20708,13 +20672,11 @@ class LlamaCppBackend:
                             else _sticky_compaction_boundary(thread_id, _request_branch)
                         ),
                     )
-                    # Set whatever the fit decided: the boundary has now been accounted
-                    # for in this request, whether or not it changed anything.
+                    # Accounted for in this request now, whatever the fit decided.
                     _sticky_boundary_applied = True
                     if truncation and truncation.get("fits"):
-                        # Before the recall injection, so the two sides describe the same
-                        # messages: this count came from the fit, which priced them with
-                        # the tool catalogue and the template.
+                        # Before the recall injection, so both sides describe the same
+                        # messages, priced by the fit with the catalogue and template.
                         _prompt_token_offset = int(
                             truncation.get("prompt_tokens_after") or 0
                         ) - estimate_messages_tokens(conversation)
@@ -20724,12 +20686,11 @@ class LlamaCppBackend:
                             _before_fit,
                             branch_messages = _request_branch,
                             thread_id = thread_id,
-                            # Tool style forges an assistant tool_call plus a tool
-                            # result for search_conversation. That is only safe when the
-                            # request actually advertises it: on the FIRST compaction the
-                            # archive did not exist at tool-selection time, so it is
-                            # absent, and a tool role with no matching catalogue entry is
-                            # the same strict-template hazard the plain path avoids.
+                            # Tool style forges an assistant tool_call plus a tool result
+                            # for search_conversation, safe only when the request
+                            # advertises it. On the FIRST compaction the archive did not
+                            # exist at tool-selection time, so it is absent, and a tool
+                            # role with no catalogue entry breaks strict templates.
                             style = (
                                 "tool" if "search_conversation" in _enabled_tool_names else "inline"
                             ),
@@ -20753,13 +20714,11 @@ class LlamaCppBackend:
                         truncation = {**truncation, **_recalled["counts"]}
                         if _recalled["recalled"]:
                             _conversation_recall_done = True
-                            # Anchor exactly what the injection added, so a later refit in
-                            # this same request cannot evict what we just paid to bring
-                            # back. NOT the last two messages: inline recall appends
-                            # nothing and rewrites the latest user turn in place, so that
-                            # slice also pinned the assistant turn before it, and with it
-                            # a whole eviction unit the fit was entitled to drop -- enough
-                            # to fail a later iteration that would otherwise have fit.
+                            # Anchor exactly what the injection added, so a later refit
+                            # cannot evict what we just paid to bring back. NOT the last
+                            # two messages: inline recall appends nothing and rewrites the
+                            # latest user turn in place, so that slice also pinned a whole
+                            # eviction unit the fit was entitled to drop.
                             for _message in _recalled["anchored"]:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
@@ -20769,8 +20728,7 @@ class LlamaCppBackend:
                             **truncation,
                             "boundary_messages": _branch_boundary(conversation, _request_branch),
                         }
-                    # `fits` False too, as on the other paths: it carries the diagnosis
-                    # for a request that cannot be made to fit.
+                    # `fits` False too: it carries the does-not-fit diagnosis.
                     if truncation:
                         yield {"type": "context_truncated", **truncation}
                     _preflight_succeeded = True
@@ -20855,11 +20813,10 @@ class LlamaCppBackend:
                         protected_message_ids = _rolling_anchor_ids,
                     )
                     if truncation and truncation["fits"]:
-                        # Archive only, deliberately: this refit runs against a smaller
-                        # replacement window with no reserve held back for a recall, so
-                        # injecting one here is what would push the retry back over the
-                        # window. Losing the turns is the part that cannot be undone --
-                        # the next request can still recall them.
+                        # Archive only: this refit runs against a smaller replacement
+                        # window with no reserve held back, so injecting a recall is
+                        # exactly what would push the retry over. The next request can
+                        # still recall these turns.
                         truncation.update(
                             _archive_and_recall(
                                 conversation,
@@ -21923,19 +21880,17 @@ class LlamaCppBackend:
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
                                 kwargs["conversation_branch"] = _request_branch
-                            # And the room actually left. The model picks its own top_k,
-                            # and the result lands in the current tool exchange, which
-                            # rolling truncation protects and therefore cannot evict: a
-                            # top_k the window cannot hold ends the turn in a
-                            # context-length error that no later refit can undo.
+                            # And the room actually left: the model picks its own top_k and
+                            # the result lands in the current tool exchange, which rolling
+                            # truncation protects, so a top_k the window cannot hold ends
+                            # the turn in an unrecoverable context-length error.
                             if self._effective_context_length and accepts_kwarg(
                                 execute_tool, "conversation_budget_tokens"
                             ):
-                                # Priced against the catalogue too. Estimating the
-                                # messages alone leaves the tools array out of the
-                                # prompt, and a big catalogue is enough of it that the
-                                # request can already be near its budget while this still
-                                # reports room for several 500-token chunks.
+                                # Priced against the catalogue too: the messages alone
+                                # leave the tools array out, and a big catalogue can put
+                                # the request near its budget while this still reports
+                                # room for several 500-token chunks.
                                 _spent = estimate_messages_tokens(conversation) + (
                                     _prompt_token_offset
                                     if _prompt_token_offset is not None
@@ -22142,9 +22097,8 @@ class LlamaCppBackend:
                         branch_messages = _request_branch,
                         thread_id = thread_id,
                         # Inline, not tool: this final-answer request is counted and sent
-                        # with no tools array at all (the count above passes None), so a
-                        # forged tool_call plus tool role has no catalogue to match and is
-                        # a strict-template hazard.
+                        # with no tools array, so a forged tool role has no catalogue to
+                        # match and breaks strict templates.
                         style = "inline",
                         recall_done = _conversation_recall_done,
                         recall_budget_tokens = max(
@@ -22175,11 +22129,10 @@ class LlamaCppBackend:
                         **truncation,
                         "boundary_messages": _branch_boundary(conversation, _request_branch),
                     }
-                # `fits` False too: it carries the diagnosis for a request that cannot
-                # be made to fit, and the client needs it to explain WHY. Without it the
-                # user only sees llama-server's error, which reports the size of the
-                # whole conversation and advises shortening it even when the single
-                # message just sent is the part that does not fit.
+                # `fits` False too: it carries the diagnosis the client needs to explain
+                # WHY. Otherwise the user only sees llama-server's error, which reports
+                # the whole conversation's size and advises shortening it even when the
+                # single message just sent is the part that does not fit.
                 if truncation:
                     yield {"type": "context_truncated", **truncation}
                 _final_preflight_succeeded = True

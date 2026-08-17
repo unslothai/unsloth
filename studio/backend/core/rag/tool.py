@@ -59,10 +59,9 @@ def _resolve_scope(
     """KB (an explicit pick) is exclusive; project and thread scopes combine so a
     project chat also retrieves from its own attached documents.
 
-    The conversation archive is exclusive too, and takes precedence. It is a different
-    corpus -- this chat's own evicted turns rather than anybody's documents -- so mixing
-    it into the same top-K would let old turns crowd out document passages and the other
-    way round."""
+    The conversation archive is exclusive too, and takes precedence: it is a different
+    corpus (this chat's evicted turns), so sharing a top-K would have old turns and
+    document passages crowd each other out."""
     if scope_conversation_id:
         return conversation_archive_scope(scope_conversation_id)
     if scope_kb_id:

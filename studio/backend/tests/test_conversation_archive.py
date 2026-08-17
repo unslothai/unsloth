@@ -32,9 +32,9 @@ def _save_thread(
 ):
     """Persist a transcript the way the chat history route does.
 
-    ``append`` matters: a real thread grows, and replacing its rows on every archive call
-    would leave only the newest turn saved, so the live-branch filter would reject
-    everything archived earlier. Tests that rewind a thread pass append=False to replace.
+    ``append`` matters: replacing the rows on every archive call would leave only the
+    newest turn saved and the branch filter would reject everything archived earlier.
+    Tests that rewind a thread pass append=False to replace.
     """
     from storage import studio_db
 
@@ -75,10 +75,9 @@ def _archive(
 ):
     """The module opens its own connection to the same temp DB the fixture points at.
 
-    Archiving now requires the thread to exist in studio.db, so the default persists a
-    matching transcript. That is not scaffolding: only a persisted thread can ever be
-    deleted, and an archive no delete can reach is exactly the temporary-chat leak the
-    rule exists to prevent. ``persist=False`` exercises the refusal.
+    Archiving requires the thread to exist in studio.db, so the default persists a
+    matching transcript: only a persisted thread can be deleted, and an unreachable
+    archive is the temporary-chat leak. ``persist=False`` exercises the refusal.
     """
     if persist:
         _save_thread(thread_id, messages, append = True)
@@ -114,8 +113,8 @@ def test_re_archiving_the_same_turns_writes_nothing(conn):
 def test_archive_accumulates_across_compaction_epochs(conn):
     """Compaction N must still find what compaction 1 evicted.
 
-    An archive holding only the latest compaction's evictions measured 0.058 against
-    0.450 for this cumulative one, so this is the property the feature rests on.
+    Latest-compaction-only measured 0.058 against 0.450 cumulative, so this is the
+    property the feature rests on.
     """
     _archive(_turn("tell me about pelicans", "they have large bills"))
     _archive(_turn("tell me about otters", "they use tools"))
@@ -134,9 +133,8 @@ def test_archive_accumulates_across_compaction_epochs(conn):
 def test_whole_document_context_never_sees_archived_turns(conn):
     """The hazard that decided the scope layout.
 
-    Thread-attached documents are injected in full on every request. If the archive lived
-    in the thread scope, compaction would re-inject the entire evicted history each turn
-    and undo itself.
+    Thread-attached documents are injected in full on every request, so an archive in the
+    thread scope would re-inject the evicted history each turn and undo itself.
     """
     _archive(_turn("secret archived question", "secret archived answer"))
 
@@ -264,10 +262,9 @@ def test_delete_for_thread_drops_the_archive(conn):
 def test_recall_finds_a_rare_token_buried_in_boilerplate(conn):
     """Lexical first, because recalling a conversation is mostly exact matching.
 
-    Measured on a real 30-turn document walkthrough where every turn shared the same
-    wrapper text: the chunk holding the needle ranked 3rd lexically at any k, was never
-    returned by dense retrieval, and RRF fusion pushed it to 16th. Hybrid alone lost the
-    answer outright, so this pins the ordering rather than the plumbing.
+    Measured on a 30-turn walkthrough with identical wrapper text per turn: the needle
+    chunk ranked 3rd lexically at any k, was never returned by dense retrieval, and RRF
+    pushed it to 16th. Hybrid alone lost the answer, so this pins the ordering.
     """
     for index in range(1, 9):
         code = " Internal tracking code: VULPINE-9134-QK." if index == 1 else ""
@@ -299,9 +296,8 @@ def test_recall_finds_a_rare_token_buried_in_boilerplate(conn):
 def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkeypatch):
     """Editing an earlier message rewinds the thread onto a new branch.
 
-    The archive is append-only and still holds what the abandoned continuation produced,
-    so without a branch check the right question pulls back a turn that, on this branch,
-    never happened. Verified against the live build before the check existed.
+    The archive is append-only and still holds the abandoned continuation, so without a
+    branch check a recall returns a turn that never happened here. Verified live.
     """
     kept = [
         {"role": "user", "content": "section one, code KEEPME-1111"},
@@ -320,9 +316,8 @@ def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkey
     abandoned = conversation_archive.recall("branch-thread", "GONEAWAY-2222")
 
     assert survived is not None and "KEEPME-1111" in survived[0]
-    # Recall has no relevance floor, so a query for the abandoned turn can still come back
-    # with the surviving one. The property that matters is that the rolled-back content
-    # itself is never returned.
+    # Recall has no relevance floor, so this query can still return the surviving turn.
+    # What matters is that the rolled-back content itself never comes back.
     assert abandoned is None or "GONEAWAY-2222" not in abandoned[0]
     assert "GONEAWAY-2222" not in (survived[0] or "")
 
@@ -330,11 +325,9 @@ def test_recall_does_not_resurrect_a_turn_the_user_rolled_back_past(conn, monkey
 def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     """Retry keeps the replaced response as a sibling, and siblings are stored rows.
 
-    Rewinding by editing prunes the abandoned rows, so filtering against the whole thread
-    is enough there. Retry and regenerate do not: both responses are kept on purpose,
-    which is what the branch arrows navigate between, and the thread-wide blob therefore
-    still contains a response the user replaced. Only the branch the request was sent on
-    can tell the two apart.
+    Editing prunes the abandoned rows, so thread-wide filtering suffices there. Retry
+    keeps both responses on purpose, so the thread-wide blob still contains the one the
+    user replaced, and only the branch the request was sent on separates them.
     """
     live = [
         {"role": "user", "content": "what is the code, code KEEPME-1111"},
@@ -354,8 +347,7 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     thread_wide = conversation_archive.recall("retry-thread", "SIBLING-3333")
     assert thread_wide is not None and "SIBLING-3333" in thread_wide[0]
 
-    # Told which branch the request is on, it is rejected, and the live answer still comes
-    # back rather than the filter simply refusing everything.
+    # Told which branch this is, it is rejected while the live answer still comes back.
     on_branch = conversation_archive.recall("retry-thread", "SIBLING-3333", branch_messages = live)
     assert on_branch is None or "SIBLING-3333" not in on_branch[0]
     survived = conversation_archive.recall("retry-thread", "KEEPME-1111", branch_messages = live)
@@ -365,10 +357,8 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
 def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
     """group_turns keeps a tool call, its result and the reply after it in one group.
 
-    Rejecting that whole group because our own injection is in it threw away the model's
-    actual answer: the question was archived from its own group and the answer was not,
-    so a later search could find what was asked and never what was said -- and this
-    happens on compaction turns specifically, which is where the feature is used.
+    Rejecting the whole group over our own injection threw away the model's answer, so a
+    later search found what was asked and never what was said, on compaction turns.
     """
     evicted = [
         {"role": "user", "content": "what was the passphrase"},
@@ -409,9 +399,8 @@ def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
 def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
     """An archive is only written while vec0 loads, but it can stop loading afterwards.
 
-    A venv change is enough (the common macOS case). A delete that quietly does nothing
-    then leaves a deleted conversation's turns on disk, ready to answer again the day the
-    extension loads once more.
+    A venv change is enough (common on macOS), and a delete that silently does nothing
+    leaves the turns on disk, ready to answer again once the extension loads.
     """
     turns = _turn("what is the passphrase", "the passphrase is VECGONE-2020")
     _save_thread("vecless-thread", turns, append = True)
@@ -433,9 +422,8 @@ def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
 def test_a_turns_CHUNKS_must_all_sit_in_the_same_place_on_the_branch(conn):
     """The chunks of one turn are consecutive slices of one rendering.
 
-    Validating them independently lets a turn be reassembled out of parts that never sat
-    together: the head matching the question and its current answer, the tail matching
-    some later message that repeats the passage the edit removed.
+    Validating them independently reassembles a turn from parts that never sat together:
+    head on the current answer, tail on a later message repeating what the edit removed.
     """
     rows = [
         {
@@ -481,13 +469,10 @@ def test_a_turns_CHUNKS_must_all_sit_in_the_same_place_on_the_branch(conn):
 def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     """The run is bounded by the MESSAGES the turn was rendered from, not by its lines.
 
-    A turn is two or three messages however long it is, so bounding the run by the line
-    count let the tail of a long answer be satisfied by a message well outside the turn.
-    Here the edit removes the end of the answer and the very next message repeats it,
-    which is the shape a short correction takes in an ordinary chat.
-
-    The chunks are shaped the way the chunker really produces them: only the rendered
-    text carries the role labels, so a continuation chunk starts mid-message.
+    A turn is two or three messages however long it is, so bounding by line count let a
+    long answer's tail be satisfied well outside the turn. Here the edit removes the end
+    of the answer and the next message repeats it, the shape of a short correction.
+    Chunks are shaped as the chunker produces them, so a continuation starts mid-message.
     """
     rows = [
         {
@@ -530,10 +515,9 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
 def test_a_pasted_transcript_cannot_widen_a_turns_run(conn):
     """Counting role labels counts lines the USER wrote, not just the renderer's.
 
-    A pasted chat log carries lines that look exactly like the ones `render_turn` writes,
-    and every one of them widened the run by a message -- enough for the message after an
-    edited turn to supply the passage the edit removed. The turn's real size is recorded
-    when it is archived.
+    A pasted chat log carries lines that look exactly like `render_turn`'s, each widening
+    the run by a message, enough for the message after an edited turn to supply what the
+    edit removed. The turn's real size is recorded when it is archived.
     """
     rows = [
         {"text": "user: look at this log\nassistant: Here is what it says:\nuser: hello there"},
@@ -588,9 +572,8 @@ def test_an_archived_turn_records_how_many_messages_it_came_from(conn):
 def test_one_turn_archived_twice_at_once_is_stored_once(conn, monkeypatch):
     """Two generations compacting the same thread both clear the hash check.
 
-    The slow part is the embedding pass that sits between the check and the insert, and
-    `(scope, sha256)` carries a plain index rather than a unique one, so both wrote. The
-    turn was then stored twice and its copies took two of the few recall slots.
+    The embedding pass sits between the check and the insert, and `(scope, sha256)` is a
+    plain index, so both wrote and the duplicate took two of the few recall slots.
     """
     import threading
 
@@ -657,9 +640,8 @@ def test_one_turn_archived_twice_at_once_is_stored_once(conn, monkeypatch):
 def test_a_LATER_turn_cannot_supply_a_line_the_edit_removed(conn):
     """The branch check has to stay inside the turn it is checking.
 
-    Against one flattened transcript, a missing line is satisfied by any later message
-    that repeats the words. Short answers repeat constantly, so an archived question and
-    the answer it got could survive that answer being edited away.
+    Against one flattened transcript, any later message repeating the words satisfies a
+    missing line, so a short answer could survive being edited away.
     """
     archived = conversation_archive.render_turn(
         [{"role": "user", "content": "Should I deploy?"}, {"role": "assistant", "content": "No"}]
@@ -695,8 +677,7 @@ def test_a_LATER_turn_cannot_supply_a_line_the_edit_removed(conn):
 def test_a_turn_whose_lines_were_REORDERED_is_no_longer_on_the_branch(conn):
     """Independent line membership accepts a turn that was merely rearranged.
 
-    Every probe still occurs somewhere in the transcript, so the pre-edit ordering stays
-    eligible and would be served back as what happened.
+    Every probe still occurs somewhere, so the pre-edit ordering would be served back.
     """
     original = [{"role": "assistant", "content": "REORDER-A first\nREORDER-B second"}]
     archived = conversation_archive.render_turn(original)
@@ -714,8 +695,8 @@ def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
     """Ordered matching only works if both sides agree on the order.
 
     render_turn writes a tool call before any assistant text on the same message and the
-    result after it, so the transcript builders have to lay a turn out the same way, in
-    both the request shape (`tool_calls`) and the stored shape (`tool-call` parts).
+    result after it, so both transcript shapes (`tool_calls`, `tool-call` parts) must lay
+    a turn out the same way.
     """
     request_shape = [
         {"role": "user", "content": "check the log"},
@@ -757,12 +738,11 @@ def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
 def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
     """A turn longer than CHUNK_TOKENS is stored as several chunks of one document.
 
-    Checking the branch per chunk means editing the second half of a long answer retires
-    only the chunks carrying the edit, and an untouched earlier chunk of the same retired
-    turn stays eligible on its own. The unit that was archived is the turn.
+    Per-chunk checking retires only the chunks carrying an edit, leaving untouched
+    earlier chunks of the same retired turn eligible. The archived unit is the turn.
     """
-    # The head is several chunks long on its own, so the FIRST chunk lies entirely
-    # inside the part that is never edited and passes a per-chunk check unchanged.
+    # The head spans several chunks, so the FIRST chunk lies entirely inside the part
+    # that is never edited and passes a per-chunk check unchanged.
     head = "opening CHUNKSPLIT-7373 marker. " + ("unchanged opening sentence. " * 300)
     turn = [
         {"role": "user", "content": "explain the deploy process"},
@@ -793,8 +773,7 @@ def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
     )
     assert len(document_ids) == 1 and chunk_count > 1
 
-    # The branch now carries the same turn with its TAIL rewritten. The head, which is
-    # the chunk holding the marker, is untouched.
+    # Same turn with its TAIL rewritten; the head holding the marker is untouched.
     rewritten = [
         turn[0],
         {"role": "assistant", "content": head + ("a completely different ending. " * 300)},
@@ -823,11 +802,9 @@ def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
 def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
     """render_turn caps a tool result and marks the cut with a truncation marker.
 
-    That result is ONE appended string containing many newlines, so only its first line
-    carries the "tool result:" label. Every continuation line took the full-string path,
-    including the last one, which is the only line the marker is on, and nothing in a
-    real transcript ends in that marker: every archived tool turn over the cap was
-    rejected as rolled back.
+    That result is ONE string of many newlines, so only its first line carries the "tool
+    result:" label while the marker is on its last, and nothing in a real transcript ends
+    in the marker: every archived tool turn over the cap was rejected as rolled back.
     """
     body = "opening line TOOLWALL-6060\n" + ("filler output line\n" * 400) + "trailing line"
     group = [
@@ -860,10 +837,9 @@ def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
 def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
     """One over-fetch is not enough when the abandoned branch is long.
 
-    Rewinding or retrying a continuation that had already been compacted leaves enough
-    stale turns to fill any fixed candidate window. Filtering after a single fetch then
-    rejects the whole page while the live match sitting just below it is never looked at,
-    so recall reports nothing although the answer is in the archive.
+    Rewinding a compacted continuation leaves enough stale turns to fill any fixed
+    candidate window, so a single fetch rejects the whole page and never looks at the
+    live match just below it, reporting nothing while the answer is in the archive.
     """
     # The live answer mentions the marker once, in a turn that is mostly other words.
     live = _turn(
@@ -871,8 +847,8 @@ def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
         "the marker is WIDEN-5150 and the rest of this answer is about unrelated matters "
         "such as scheduling, packaging, release notes and the weather in three cities",
     )
-    # The abandoned branch repeats it, so every one of these outranks the live turn
-    # lexically and fills any fixed candidate window ahead of it.
+    # The abandoned branch repeats it, so these outrank the live turn lexically and fill
+    # any fixed candidate window ahead of it.
     abandoned = [
         _turn(
             f"where is the marker attempt {index}",
@@ -884,7 +860,7 @@ def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
     _save_thread("wall-thread", live, append = True)
     conversation_archive.archive_turns("wall-thread", live)
     for turn in abandoned:
-        # Stored as siblings: Retry keeps them, so they are on the thread but not the branch.
+        # Stored as siblings, as Retry leaves them: on the thread, not on the branch.
         _save_thread("wall-thread", turn, append = True)
         conversation_archive.archive_turns("wall-thread", turn)
 
@@ -898,8 +874,8 @@ def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
 def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
     """A tool turn's arguments live in `tool_calls`, not in content, on the wire.
 
-    render_turn indexes those arguments, so a branch blob built from content alone would
-    miss every archived tool turn and filter out the whole exchange as rolled back.
+    render_turn indexes them, so a branch blob built from content alone misses every
+    archived tool turn and filters the whole exchange out as rolled back.
     """
     branch = [
         {
@@ -927,10 +903,9 @@ def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
 def test_a_thread_that_was_never_persisted_is_never_archived(conn):
     """The temporary-chat guarantee.
 
-    An incognito chat is never written to studio.db and is documented to vanish on
-    reload, but the frontend still sends its thread_id and the request carries no
-    incognito flag. Archiving it would persist the one conversation the user asked not
-    to keep, in a scope no deletion flow could reach.
+    An incognito chat is never written to studio.db, yet the frontend still sends its
+    thread_id and the request carries no incognito flag. Archiving it would persist the
+    one conversation the user asked not to keep, where no deletion flow could reach it.
     """
     written = _archive(
         [
@@ -944,18 +919,17 @@ def test_a_thread_that_was_never_persisted_is_never_archived(conn):
     assert written == 0
     assert conversation_archive.has_archive("temporary-thread") is False
     assert conversation_archive.recall("temporary-thread", "EPHEMERAL-4444") is None
-    # Same predicate the fit asks before holding a recall reserve back, so a chat that
-    # is never archived never pays for the room to recall into either.
+    # Same predicate the fit asks before reserving, so an unarchivable chat never pays
+    # for room to recall into.
     assert conversation_archive.can_archive("temporary-thread") is False
 
 
 def test_a_thread_deleted_mid_ingest_does_not_leave_its_turns_behind(conn, monkeypatch):
     """Deleting a chat while it is compacting must not resurrect the archive.
 
-    Deletion cancels the generation, but cancellation is cooperative and the embedding
-    pass between the liveness check and the commit does not observe it. A delete that
-    sweeps the scope in that window is undone by the commit, and the rows it puts back
-    are in a scope no later delete can reach, since the thread is gone.
+    Cancellation is cooperative and the embedding pass between the liveness check and the
+    commit does not observe it, so a sweep in that window is undone by the commit, into a
+    scope no later delete can reach now the thread is gone.
     """
     from storage import studio_db
 
@@ -965,8 +939,7 @@ def test_a_thread_deleted_mid_ingest_does_not_leave_its_turns_behind(conn, monke
     original = conversation_archive.embeddings.encode_with_identity
 
     def delete_the_thread_mid_ingest(*args, **kwargs):
-        # Exactly the interleaving that matters: rows first, archive sweep last, both
-        # completing before this ingest commits.
+        # The interleaving that matters: rows first, sweep last, both before this commit.
         studio_db.delete_chat_threads(["doomed-thread"])
         conversation_archive.delete_for_thread("doomed-thread")
         return original(*args, **kwargs)
@@ -985,8 +958,8 @@ def test_a_thread_deleted_mid_ingest_does_not_leave_its_turns_behind(conn, monke
 def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
     """A thread archived earlier whose saved rows are gone still answers.
 
-    An empty transcript is absence of evidence, not evidence that the turns are gone, so
-    the branch check must not silently disable recall for an archive that already exists.
+    An empty transcript is absence of evidence, not evidence the turns are gone, so the
+    branch check must not silently disable recall for an existing archive.
     """
     _archive(
         [
@@ -1009,8 +982,8 @@ def test_recall_is_unfiltered_when_the_thread_has_no_saved_transcript(conn):
 def test_editing_only_the_assistant_half_retires_the_archived_turn(conn):
     """A turn is archived as a unit, so it lives or dies as a unit.
 
-    Matching on the first line that is still present kept serving the old answer after
-    the user edited it: the unchanged user line vouched for the whole turn.
+    Matching on the first surviving line kept serving the old answer: the unchanged user
+    line vouched for the whole turn.
     """
     original = [
         {"role": "user", "content": "what is the launch code"},
@@ -1042,9 +1015,8 @@ def test_a_failed_chunk_write_leaves_the_turn_retryable(conn, monkeypatch):
     def explode(*args, **kwargs):
         raise RuntimeError("disk full")
 
-    # Restored by re-setting, not by monkeypatch.undo(): fixtures requesting monkeypatch
-    # share this function's instance, so undo() would also revert stub_embeddings and the
-    # retry would fail for an unrelated reason.
+    # Restored by re-setting, not monkeypatch.undo(): fixtures share this instance, so
+    # undo() would also revert stub_embeddings and fail the retry for another reason.
     real_add_chunks = store.add_chunks
     monkeypatch.setattr(store, "add_chunks", explode)
     assert _archive(turns, thread_id = "retry-thread") == 0
@@ -1084,10 +1056,9 @@ def test_archived_tool_turns_keep_what_the_call_actually_did(conn):
 def test_an_archived_tool_turn_survives_the_branch_filter(conn):
     """The two previous fixes together could make tool turns permanently unrecallable.
 
-    render_turn archives a tool turn as "assistant called X: args" and "tool result: ..."
-    while assistant-ui persists the call as a structured tool-call content part, which
-    the transcript flattener used to drop. With every archived line required to appear in
-    that transcript, no archived tool turn could ever match.
+    render_turn archives a tool turn as "assistant called X: args" and "tool result: ...",
+    while assistant-ui persists a structured tool-call part the flattener used to drop, so
+    with every archived line required in the transcript no tool turn could match.
     """
     from storage import studio_db
 
@@ -1144,8 +1115,8 @@ def test_an_archived_tool_turn_survives_the_branch_filter(conn):
 def test_an_edit_past_the_probe_cutoff_still_retires_the_turn(conn):
     """A prefix probe cannot see a change after its cut-off.
 
-    Rewriting the tail of a long answer left the archived copy matching on its first 160
-    characters, so the stale text stayed eligible for recall.
+    Rewriting a long answer's tail left the archived copy matching on its first 160
+    characters, so the stale text stayed eligible.
     """
     head = "the deployment steps are as follows and here is the full detail " * 4
     original = [

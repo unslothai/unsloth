@@ -3662,12 +3662,11 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
             ],
             payloads,
         )
-        # Sized so each window overflows by roughly one turn-group. A compaction now
-        # trims a headroom margin BELOW the budget rather than to the brim, and the
-        # turn-picking estimator is coarser than the exact count, so a fixture whose
-        # every turn is a single group-sized step evicts the whole history in one pass
-        # and the second preflight has nothing left to refit. The property under test is
-        # that BOTH preflight paths refit against the window they were given.
+        # Sized so each window overflows by roughly one turn-group. Compaction trims a
+        # headroom margin BELOW the budget and the turn-picking estimator is coarser than
+        # the exact count, so single-group steps would evict the whole history in one pass
+        # and leave the second preflight nothing to refit. The property under test is that
+        # BOTH preflight paths refit against the window they were given.
         backend._effective_context_length = 2000
         monkeypatch.setattr(
             backend,
@@ -3929,9 +3928,8 @@ def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
 def test_the_respawn_retry_keeps_the_thread(monkeypatch):
     """The retry refits for the replacement window, so it can evict more.
 
-    Without the thread those extra turns are archived nowhere and nothing is recalled in
-    their place, and the fit holds back no reserve and re-applies no boundary, on the one
-    path that deliberately compacts a second time.
+    Without the thread those extra turns are archived nowhere and no reserve or boundary
+    applies, on the one path that deliberately compacts a second time.
     """
     import httpx
     from core.inference import llama_cpp
@@ -3992,12 +3990,11 @@ def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeyp
         [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
         payloads,
     )
-    # Sized so each window overflows by roughly one turn-group. A compaction now
-    # trims a headroom margin BELOW the budget rather than to the brim, and the
-    # turn-picking estimator is coarser than the exact count, so a fixture whose
-    # every turn is a single group-sized step evicts the whole history in one pass
-    # and the second preflight has nothing left to refit. The property under test is
-    # that BOTH preflight paths refit against the window they were given.
+    # Sized so each window overflows by roughly one turn-group. Compaction trims a
+    # headroom margin BELOW the budget and the turn-picking estimator is coarser than
+    # the exact count, so single-group steps would evict the whole history in one pass
+    # and leave the second preflight nothing to refit. The property under test is that
+    # BOTH preflight paths refit against the window they were given.
     backend._effective_context_length = 2000
     monkeypatch.setattr(
         backend,
@@ -5612,9 +5609,8 @@ def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
 def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
     """The estimator sees the messages only; the tools array is prompt too.
 
-    A large catalogue (MCP schemas especially) can be thousands of tokens, so a budget
-    that ignores it reports room for chunks the request cannot hold -- and the resulting
-    tool exchange is protected from eviction, so the next iteration cannot recover it.
+    A large (MCP) catalogue can be thousands of tokens, so a budget ignoring it reports
+    room the request lacks, into a tool exchange the next iteration cannot evict.
     """
     payloads: list[dict] = []
     backend = _make_backend(
@@ -5687,11 +5683,10 @@ def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
 def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatch):
     """dropped_messages is summed by the client, and it counts THIS request's messages.
 
-    A tool loop refits every iteration, so a long agent run adds the tool exchanges the
-    turn itself created -- messages the next request's saved transcript does not contain.
-    Re-applying that total as a count of leading saved messages advances the compaction
-    boundary far past the turns actually evicted, so the boundary is carried separately
-    and measured against the messages the request was sent with.
+    A tool loop refits every iteration, so a long agent run also counts the tool
+    exchanges it created, which the next request's transcript lacks. Re-applying that
+    total advances the boundary past the turns actually evicted, so the boundary is
+    carried separately, measured against the messages the request was sent with.
     """
     calls = 6
     streams = []
@@ -5734,9 +5729,8 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     )
 
     branch = [
-        # Studio always prepends one, and a fit never evicts it. Counting it as the front
-        # of the branch reported a boundary of zero on every compaction, which is the
-        # same as not having one.
+        # Studio always prepends one and a fit never evicts it, so counting it as the
+        # front of the branch reported zero on every compaction.
         {"role": "system", "content": "you are helpful"},
         {"role": "user", "content": "u" * 1200},
         {"role": "assistant", "content": "a" * 1200},
@@ -5760,6 +5754,5 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     assert len(notices) > 1, "the fixture must refit more than once"
     # Summed, this passes the number of evictable messages the branch ever had.
     assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
-    # The boundary does not: it is where the branch was cut, however many refits it took,
-    # and it counts the evicted turns rather than stopping at the preserved system prompt.
+    # The boundary does not: it is where the branch was cut, however many refits it took.
     assert {notice["boundary_messages"] for notice in notices} == {4}

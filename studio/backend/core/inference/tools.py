@@ -4530,8 +4530,8 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # Tools that are read-only regardless of their arguments, so auto mode never has
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
-# search_conversation only ever reads this chat's own past turns, so it never needs an
-# approval prompt. Leaving it out would make auto mode prompt on every single call.
+# search_conversation only reads this chat's own past turns, so auto mode would otherwise
+# prompt for approval on every call.
 _ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
 
 
@@ -9477,7 +9477,7 @@ def execute_tool(
         )
     if name == "search_conversation":
         # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
-        # works whether or not the request carries a document rag_scope.
+        # works with or without a document rag_scope.
         return _search_knowledge_base_with_budget(
             arguments,
             {
@@ -9618,8 +9618,8 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
-# The ceiling for a model-supplied top_k. Small on purpose: this returns whole
-# archived turns into a protected exchange the rolling window cannot trim.
+# Ceiling for a model-supplied top_k. Small on purpose: this returns whole archived turns
+# into a protected exchange the rolling window cannot trim.
 _MAX_CONVERSATION_SEARCH_TOP_K = 8
 
 
@@ -9641,23 +9641,19 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     if not conversation_archive.enabled():
         return "Searching earlier conversation is unavailable on this server."
 
-    # Clamped, not trusted. top_k is written by the model, and a negative value reaches
-    # a Python slice as out[:-1], which returns nearly the whole candidate pool instead
-    # of one result: a ~30k-token tool result that the rolling window cannot evict,
-    # because it protects the current user/tool exchange.
+    # Clamped, not trusted: top_k comes from the model, and a negative value reaches a
+    # Python slice as out[:-1], returning nearly the whole candidate pool as a ~30k-token
+    # tool result that the protected current exchange cannot evict.
     requested = _opt_int((arguments or {}).get("top_k"))
-    # None, not the ceiling: an omitted top_k must fall through to the configured
-    # conversation-recall default. Defaulting to the maximum turned an ordinary search
-    # into eight chunks of archived turns, landing in the protected current exchange
-    # that rolling truncation cannot evict -- enough to fail the next pass on a 4K chat.
+    # None, not the ceiling: an omitted top_k must fall through to the configured recall
+    # default. Defaulting to the maximum returned eight chunks into that same protected
+    # exchange, enough to fail the next pass on a 4K chat.
     top_k = (
         None if requested is None else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
     )
-    # Then against the room the window actually has left. The fixed cap bounds what the
-    # model can ask for; it says nothing about what fits. Eight chunks is roughly 4,000
-    # tokens once wrapped, which a 4K chat cannot hold, and the result lands in the
-    # current tool exchange, which rolling truncation protects and cannot evict -- so
-    # overshooting here is a context-length error the next preflight cannot recover from.
+    # Then against the room actually left: the fixed cap bounds what the model may ask
+    # for, not what fits. Eight chunks is roughly 4,000 tokens once wrapped, so on a 4K
+    # chat overshooting here is a context-length error no later preflight can recover.
     budget = scope.get("budget_tokens")
     if budget is not None:
         try:
@@ -9668,9 +9664,8 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
         if affordable <= 0:
             return "There is no room left in this context to search earlier conversation."
         top_k = affordable if top_k is None else max(1, min(top_k, affordable))
-    # The branch this request is on, so a response the user replaced with Retry cannot
-    # be searched back up out of the archive. Absent for callers that have none, which
-    # falls back to filtering against the whole stored thread.
+    # The branch this request is on, so a response replaced by Retry cannot be searched
+    # back out of the archive. Absent callers fall back to the whole stored thread.
     found = conversation_archive.recall(
         str(thread_id),
         str(query),
@@ -9696,8 +9691,7 @@ def _search_knowledge_base_with_budget(
     """Admission-controlled RAG search.
 
     ``search_fn`` swaps in a different search over the same capacity-of-one slot, so
-    conversation-archive lookups queue behind document lookups instead of racing them
-    for the embedder."""
+    archive lookups queue behind document lookups instead of racing for the embedder."""
     search_fn = search_fn or _search_knowledge_base
     if cancel_event is not None and cancel_event.is_set():
         return "Error: knowledge base search cancelled."
@@ -9894,9 +9888,9 @@ def build_synthetic_search_exchange(
 ) -> dict:
     """Render a retrieval the loop never asked for as a normal tool exchange.
 
-    Returns ``{"events": [...], "messages": [...]}``. The messages are what the model
-    reads; the events are what the UI draws, so a forced retrieval shows up as an
-    ordinary tool card with working citations instead of appearing from nowhere.
+    Returns ``{"events": [...], "messages": [...]}``: the messages are what the model
+    reads, the events what the UI draws, so a forced retrieval shows up as an ordinary
+    tool card with working citations instead of appearing from nowhere.
     """
     import json as _json
     import uuid as _uuid
@@ -9964,20 +9958,17 @@ def build_conversation_recall(
 ) -> dict | None:
     """Retrieve the archived turns most relevant to the latest user message.
 
-    Deliberately NOT gated on ``rag_scope``: compaction happens whether or not the user
-    turned document RAG on, and the turns being recalled are the conversation's own, not
-    somebody's uploaded files.
+    Deliberately NOT gated on ``rag_scope``: compaction happens whether or not document
+    RAG is on, and these turns are the conversation's own, not uploaded files.
 
-    Forcing this one retrieval is the whole feature. Given only a search tool the model
-    decides for itself whether to look, and measured on MRCR v2 a 35B declined on 56% of
-    rows, scoring 0.099 when it skipped against 0.461 when it searched. Forcing the
-    lookup on the turn that evicted took tool-only 0.258 to 0.604, and the model then
-    called the tool on 0% of rows, so it costs nothing on the common path.
+    Forcing this one retrieval is the whole feature. Given only a search tool, a 35B on
+    MRCR v2 declined on 56% of rows, scoring 0.099 when it skipped against 0.461 when it
+    searched; forcing the lookup on the evicting turn took tool-only 0.258 to 0.604, and
+    the model then called the tool on 0% of rows, so it costs nothing on the common path.
 
-    ``style="tool"`` renders a tool exchange (the tool loop, which already carries a
-    tools array). ``style="inline"`` prefixes the latest user message instead, for the
-    plain path that sends no tools at all -- forging tool_calls without a tools array is
-    a chat-template hazard on strict templates.
+    ``style="tool"`` renders a tool exchange, for the tool loop which already carries a
+    tools array. ``style="inline"`` prefixes the latest user message instead, for the
+    plain path: forging tool_calls without a tools array breaks strict templates.
     """
     if not thread_id:
         return None
@@ -9988,11 +9979,9 @@ def build_conversation_recall(
     if not conversation_archive.enabled():
         return None
 
-    # The BRANCH's latest user turn, not the loop conversation's. By the time a later
-    # tool-loop iteration overflows, the conversation can end with an internal user-role
-    # re-prompt (the plan-without-action nudge, or a deferred no-op), and searching the
-    # archive for that controller instruction instead of what the user asked returns
-    # whatever happens to sit near it, defeating the one retrieval this feature forces.
+    # The BRANCH's latest user turn, not the loop conversation's: a later tool-loop
+    # iteration can end with an internal user-role re-prompt (the plan-without-action
+    # nudge), and searching for that controller instruction defeats the forced retrieval.
     # branch_messages is what the client sent, so its last user turn is the real request.
     query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
     if not query:

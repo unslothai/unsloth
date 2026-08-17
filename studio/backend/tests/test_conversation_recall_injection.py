@@ -60,8 +60,8 @@ def _conversation():
 def test_recall_runs_even_when_document_rag_is_off(archived):
     """Compaction happens regardless of the user's RAG toggle.
 
-    The turns being recalled are the conversation's own, so gating this on rag_scope
-    would mean a compacted chat silently loses its history whenever documents are off.
+    The recalled turns are the conversation's own, so gating on rag_scope would lose a
+    compacted chat's history whenever documents are off.
     """
     built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "tool")
 
@@ -305,8 +305,7 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
     """Retry keeps the replaced response, and the stored rows are the whole DAG.
 
     Ordered by creation time, the newest assistant can be the sibling the user switched
-    away from. Its boundary was measured on a different conversation, so applying it to
-    the branch being sent evicts a block sized for history this branch does not have.
+    away from, whose boundary is sized for history this branch does not have.
     """
     from core.inference import llama_cpp
 
@@ -345,10 +344,9 @@ def test_sticky_boundary_ignores_a_sibling_branchs_assistant_turn(monkeypatch):
 def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch):
     """Retry on a short reply gives two siblings whose text is the same.
 
-    The branch check is textual, so "Done." on the live branch and "Done." on the branch
-    the user switched away from both look on-branch, and the newest row wins -- applying a
-    boundary measured on a much deeper branch and evicting live history this branch still
-    has. Where the text cannot separate them, the smaller boundary is the safe one.
+    The branch check is textual, so both look on-branch and the newest row wins, applying
+    a much deeper branch's boundary and evicting live history. Where the text cannot
+    separate them, the smaller boundary is the safe one.
     """
     from core.inference import llama_cpp
 
@@ -384,8 +382,8 @@ def test_sticky_boundary_takes_the_smaller_of_two_identical_replies(monkeypatch)
 def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypatch):
     """Only replies indistinguishable from the newest are folded in.
 
-    Otherwise the smallest boundary anywhere in a long thread would win every time, and
-    the boundary would ratchet backwards over the life of the chat.
+    Otherwise the smallest boundary anywhere in a long thread wins every time and the
+    boundary ratchets backwards over the life of the chat.
     """
     from core.inference import llama_cpp
 
@@ -420,8 +418,7 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
     """The branch check is a substring test, and short replies ride in on longer ones.
 
     "Done" is contained in the live "Not done yet, still running.", so an abandoned
-    sibling looked active; having no live twin it then decided the boundary alone, and
-    its much deeper count evicted history the branch still had.
+    sibling looked active and, having no live twin, decided the boundary alone.
     """
     from core.inference import llama_cpp
 
@@ -457,9 +454,8 @@ def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeyp
 def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(monkeypatch):
     """The exact preference must not become a requirement.
 
-    A stored row is not always byte-identical to what the client re-sends (blocks the
-    request omits, for one), and demanding equality would silently switch the boundary
-    off for every such thread.
+    A stored row is not always byte-identical to what the client re-sends, and demanding
+    equality would silently switch the boundary off for every such thread.
     """
     from core.inference import llama_cpp
 
@@ -486,9 +482,8 @@ def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(m
 def test_sticky_boundary_prefers_the_recorded_branch_boundary(monkeypatch):
     """A turn that refit several times persists a dropped count larger than the branch.
 
-    The counts are summed by the client and include the tool exchanges the turn itself
-    created, which the next request's saved transcript does not contain. The boundary
-    recorded against the request's own messages is the one to restore.
+    The counts are summed and include the tool exchanges the turn created, which the next
+    request's transcript lacks. Restore the boundary recorded against its own messages.
     """
     from core.inference import llama_cpp
 
@@ -537,9 +532,8 @@ def test_sticky_boundary_falls_back_for_turns_saved_before_the_boundary_existed(
 def test_the_recall_reserve_is_dropped_once_archiving_has_failed(monkeypatch):
     """sqlite-vec present and the thread saved, but the embedder cannot start.
 
-    archive_turns swallows that, and recall then injects nothing, so the room the fit held
-    back is pure loss -- on every compaction. This failure mode forgot substantially more
-    history than having the feature turned off.
+    archive_turns swallows that and recall injects nothing, so the reserved room is pure
+    loss on every compaction, forgetting more history than having the feature off.
     """
     from core.inference import llama_cpp
     from core.rag import conversation_archive as archive
@@ -626,10 +620,9 @@ def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
 def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
     """The reserve is what the fit AIMS for, not what it always gets.
 
-    Protected messages (system, the latest turn, anchored recalls) can stop the trim
-    reaching its target while the result is still under the prompt budget, which the fit
-    accepts. Reproduced at ctx 8000: the fit accepted at 6900, and a full reserve of
-    recall on top took the request to 8948, past the window it had just been made to fit.
+    Protected messages can stop the trim reaching its target while still passing the
+    prompt budget. Reproduced at ctx 8000: accepted at 6900, and a full reserve of recall
+    on top took the request to 8948, past the window it had just been made to fit.
     """
     from core.inference import llama_cpp
 
@@ -644,9 +637,8 @@ def test_recall_is_sized_by_the_room_the_fit_actually_obtained():
 def test_the_sticky_boundary_is_applied_once_per_request():
     """The tool loop refits on the conversation the previous fit returned.
 
-    Re-applying the persisted count there evicts another boundary-sized block of live
-    history. Measured before the fix: a second fit dropped 28 of the 30 surviving
-    messages instead of 14, leaving 4.
+    Re-applying the persisted count evicts another boundary-sized block of live history:
+    before the fix a second fit dropped 28 of 30 surviving messages instead of 14.
     """
     from core.inference.context_window import fit_rolling_context
 
@@ -687,8 +679,8 @@ def test_the_sticky_boundary_is_applied_once_per_request():
         sticky_dropped = 0,
     )
     assert reapplied["dropped_messages"] > once["dropped_messages"]
-    # The request path must take the second shape: the boundary describes the ORIGINAL
-    # transcript, so it is spent after the first fit.
+    # The second shape: the boundary describes the ORIGINAL transcript, so the first
+    # fit spends it.
     from pathlib import Path
 
     source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
@@ -725,9 +717,8 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
 def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monkeypatch):
     """The fixed ceiling bounds what the model may ask for, not what the context holds.
 
-    Eight chunks is roughly 4,000 tokens once wrapped, and the result lands in the current
-    tool exchange, which rolling truncation protects and cannot evict -- so on a small
-    context an unbudgeted search is a context-length error the next preflight cannot undo.
+    Eight chunks is roughly 4,000 tokens once wrapped, landing in the protected current
+    exchange, so on a small context an unbudgeted search is an unrecoverable error.
     """
     from core.rag import config as rag_config
 
@@ -774,8 +765,7 @@ def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
     """Studio always sends enabled_tools, and it never names this internal tool.
 
     While the gate could only REMOVE, the allowlist filter dropped search_conversation
-    before it ran, so the tool (and the compaction nudge gated on it) never appeared in a
-    Studio chat at all, however long the conversation got.
+    first, so neither it nor the compaction nudge ever appeared in a Studio chat.
     """
     import asyncio
     import types
@@ -804,16 +794,16 @@ def test_the_conversation_tool_survives_studios_explicit_allowlist(monkeypatch):
 def test_both_retrieval_tools_share_the_per_turn_search_cap():
     """Each search appends passages into the protected current exchange.
 
-    The rolling window cannot evict those, so an uncapped tool can only end the turn in
-    a context-length error after paying for the embeddings.
+    The rolling window cannot evict those, so an uncapped tool only ends the turn in a
+    context-length error after paying for the embeddings.
     """
     from pathlib import Path
 
     from core.inference.tool_call_parser import RAG_SEARCH_TOOLS
 
     assert RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
-    # BOTH loops: the tool is advertised per thread, so a chat compacted under a GGUF
-    # model can go on to call it under a safetensors one.
+    # BOTH loops: the tool is advertised per thread, so a GGUF-compacted chat can call
+    # it under a safetensors model.
     backend = Path(__file__).resolve().parent.parent / "core/inference"
     for module in ("llama_cpp.py", "safetensors_agentic.py"):
         text = (backend / module).read_text()
@@ -825,8 +815,8 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
 def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monkeypatch):
     """Defaulting to the CEILING made an ordinary search return eight archived turns.
 
-    Those land in the protected current exchange, which rolling truncation cannot evict,
-    so a single search could fail the next pass on a small window.
+    Those land in the protected current exchange, so one search could fail the next pass
+    on a small window.
     """
     seen = {}
 
@@ -850,9 +840,9 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
 def test_a_thread_that_cannot_be_archived_holds_back_no_reserve(monkeypatch):
     """The reserve is room for recalled turns, and a temporary chat never has any.
 
-    archive_turns refuses a thread with no saved messages, so nothing can ever be
-    recalled into that room -- while the fit subtracts it from the trim target, so it
-    is paid for in evicted history. On a 4K window that was most of the conversation.
+    archive_turns refuses a thread with no saved messages, so nothing can be recalled
+    into that room, while the fit still pays for it in evicted history. On a 4K window
+    that was most of the conversation.
     """
     from core.inference import llama_cpp
     from core.rag import conversation_archive
@@ -871,9 +861,8 @@ def test_a_thread_that_cannot_be_archived_holds_back_no_reserve(monkeypatch):
 def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch):
     """The loop conversation can end with an internal user-role re-prompt.
 
-    The plan-without-action nudge and the deferred no-op both append one, so a first
-    overflow on a later iteration would search the archive for a generic controller
-    instruction instead of what the user asked, and return whatever sits near it.
+    The plan-without-action nudge and the deferred no-op both append one, so a later
+    overflow would search for that controller instruction instead of the user's question.
     """
     seen = {}
 
@@ -906,8 +895,8 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
 def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):
     """The forced recall is branch-filtered, so the tool the model can call must be too.
 
-    Otherwise the model simply asks for what the forced recall correctly refused, and a
-    response the user replaced with Retry comes back through the other door.
+    Otherwise the model asks for what the forced recall refused, and a response replaced
+    by Retry comes back through the other door.
     """
     seen = {}
 
@@ -937,9 +926,8 @@ def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, mo
 def test_inline_recall_anchors_only_the_turn_it_rewrote(archived, monkeypatch):
     """Inline recall appends nothing; it rewrites the latest user message in place.
 
-    Anchoring the last two messages therefore pinned the assistant turn before it as well,
-    and with it a whole eviction unit the fit was entitled to drop. On a request whose
-    next iteration overflows, that is the difference between compacting and failing.
+    Anchoring the last two messages therefore also pinned the assistant turn before it,
+    and with it a whole eviction unit the fit was entitled to drop.
     """
     from core.inference import llama_cpp
 
@@ -1003,9 +991,8 @@ def test_tool_recall_anchors_the_synthetic_exchange(archived, monkeypatch):
 def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch):
     """Dropping the lot is the wrong answer when three of four chunks would fit.
 
-    A full top-K of long archived turns lands just over the reserve once the wrappers
-    are priced, which is the common case on exactly the long conversations this feature
-    exists for, so an all-or-nothing check disables the forced retrieval there.
+    A full top-K of long turns lands just over the reserve once the wrappers are priced,
+    which is the common case here, so an all-or-nothing check disables forced retrieval.
     """
     from core.inference import llama_cpp
 
@@ -1047,9 +1034,8 @@ def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch
 def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, monkeypatch):
     """The chunk arithmetic is an estimate; the tokenizer is not.
 
-    CHUNK_TOKENS is an embedding-token limit rather than the chat template's cost for the
-    same text, and neither it nor the budget prices the <recalled_conversation> or tool
-    wrappers around the injection, so a nominally-fitting recall can still overshoot.
+    CHUNK_TOKENS is an embedding-token limit, not the chat template's cost, and neither
+    it nor the budget prices the wrappers, so a nominally-fitting recall can overshoot.
     """
     from core.inference import llama_cpp
 
@@ -1066,8 +1052,8 @@ def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, mon
     )
     chars = lambda messages: sum(len(m.get("content") or "") for m in messages)
 
-    # Budget far below what the injection actually costs: dropped, and the conversation
-    # comes back untouched rather than over the window.
+    # Budget far below what the injection costs: dropped, and the conversation comes
+    # back untouched rather than over the window.
     tight = llama_cpp._archive_and_recall(
         conversation,
         conversation,

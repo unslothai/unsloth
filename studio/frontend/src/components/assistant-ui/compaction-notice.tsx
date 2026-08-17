@@ -9,18 +9,14 @@ import type { ContextTruncation } from "@/features/chat/utils/context-truncation
 /**
  * Tells the user their conversation was compacted, on the turn where it STARTED.
  *
- * Deliberately NOT a message. It renders inside the assistant message's own container from
- * `metadata.custom.contextTruncation`, so it is never part of the conversation sent to the
- * model, never editable, and never exported as content -- but unlike the toast that used to
- * be the only signal, it survives a reload and stays attached to the turn it describes. A
- * toast that vanishes after eight seconds leaves the user with no way to find out why the
- * model suddenly seemed to forget the start of a long chat.
+ * Deliberately NOT a message: it renders inside the assistant message's container from
+ * `metadata.custom.contextTruncation`, so it is never sent to the model, editable, or
+ * exported as content, yet unlike a toast it survives a reload and stays attached to the
+ * turn it describes.
  *
- * Rendered once per COMPACTION, gated by the caller, not once per compacted turn. A
- * thread that has outgrown its window runs the fit on every request from then on, so a
- * notice per compacted turn is a notice on every reply forever. The caller shows this
- * only when the eviction boundary actually moved, which with the server's compaction
- * headroom happens in occasional steps rather than on every turn.
+ * Rendered once per COMPACTION, gated by the caller, not once per compacted turn: a
+ * thread past its window refits on every request, so per-turn would mean a notice on
+ * every reply forever. The caller shows this only when the eviction boundary moved.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,

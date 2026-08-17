@@ -221,9 +221,8 @@ def test_structured_call_executes_and_continues(executed):
 def test_a_conversation_search_here_gets_the_active_branch(executed):
     """The provider loops share the local paths' tool catalogue.
 
-    So search_conversation is advertised here too once a thread has an archive, and it
-    needs the branch for the same reason: the stored rows are the whole message DAG, and
-    Retry keeps the response it replaced.
+    So search_conversation is advertised here once a thread has an archive, and needs the
+    branch for the same reason: the stored rows are the whole DAG, Retry included.
     """
     branch = [
         {"role": "user", "content": "what was the code"},
@@ -258,9 +257,9 @@ def test_a_conversation_search_here_gets_the_active_branch(executed):
 
     assert [call["name"] for call in executed] == ["search_conversation"]
     assert executed[0]["conversation_branch"] == branch
-    # And a budget, or the clamp in the tool is skipped and a model-chosen top_k of 8
-    # appends roughly 4K tokens to a prompt this loop replays on the next call. Studio
-    # knows no window for an external model, so the cap is one ordinary recall's worth.
+    # And a budget, or the tool's clamp is skipped and a model-chosen top_k of 8 appends
+    # roughly 4K tokens to a prompt this loop replays. Studio cannot measure an external
+    # model's window, so the cap is one ordinary recall's worth.
     from core.rag import config as rag_config
 
     assert (

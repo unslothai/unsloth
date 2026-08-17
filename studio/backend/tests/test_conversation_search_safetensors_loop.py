@@ -3,10 +3,9 @@
 
 """`search_conversation` under a safetensors model.
 
-The tool is advertised by thread, not by backend: a chat compacted under a GGUF model
-keeps its archive when the user switches models, and `_select_request_tools` is shared,
-so the safetensors loop offers the tool too. Both guards the GGUF loop applies to it
-have to apply here as well.
+The tool is advertised by thread, not by backend: a GGUF-compacted chat keeps its
+archive across a model switch and `_select_request_tools` is shared, so this loop offers
+the tool too and needs both guards the GGUF loop applies.
 """
 
 import os
@@ -76,9 +75,8 @@ def test_the_loop_hands_its_search_the_active_branch():
 def test_conversation_searches_share_the_per_turn_cap():
     """Paraphrased re-searches slip past the exact-args duplicate guard.
 
-    Each one appends archived passages into the current tool exchange, which the rolling
-    window protects and so cannot evict: uncapped, the turn can only end in a
-    context-length error.
+    Each appends passages into the protected current tool exchange, so uncapped the turn
+    can only end in a context-length error.
     """
     executed = []
 
@@ -94,8 +92,8 @@ def test_conversation_searches_share_the_per_turn_cap():
 def test_the_loop_budgets_its_search_against_this_models_context():
     """Without it the clamp in the tool is skipped and top_k 8 lands unbudgeted.
 
-    That is roughly 4K tokens appended to an already populated prompt, into the current
-    tool exchange, which the rolling window protects and cannot evict.
+    Roughly 4K tokens appended into the current tool exchange, which the rolling window
+    protects and cannot evict.
     """
     from core.inference.context_window import estimate_messages_tokens, prompt_budget
 

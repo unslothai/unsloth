@@ -3353,8 +3353,8 @@ def count_forks_for_message(thread_id: str, message_id: str) -> int:
 def chat_thread_has_messages(thread_id: str) -> bool:
     """Whether this thread has any saved message. Existence only, no rows hydrated.
 
-    A temporary (incognito) chat is never written here, so this is what separates a
-    thread whose turns can be archived from one whose turns must not be.
+    A temporary (incognito) chat is never written here, so this is what tells a thread
+    whose turns can be archived from one whose turns must not be.
     """
     conn = get_connection()
     try:

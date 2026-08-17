@@ -20,11 +20,10 @@ export function compactionBoundary(
   truncation: ContextTruncation | undefined,
 ): number {
   if (!truncation?.fits) return 0;
-  // boundary_messages is where the boundary actually sits in the saved transcript.
-  // dropped_messages is the accumulated count of what each fit removed from the request
-  // in front of it, so a tool-heavy turn reports far more than it moved the boundary by,
-  // and a later real advance would then look like no advance at all. Fallback only, for
-  // turns saved before the boundary was recorded.
+  // boundary_messages is where the boundary sits in the saved transcript.
+  // dropped_messages accumulates what each fit removed, so a tool-heavy turn reports far
+  // more than the boundary moved and a later real advance looks like none. Fallback only,
+  // for turns saved before the boundary was recorded.
   return truncation.boundary_messages ?? truncation.dropped_messages ?? 0;
 }
 
@@ -43,24 +42,20 @@ export function mergeContextTruncation(
     prompt_tokens_after:
       incoming.prompt_tokens_after ?? current.prompt_tokens_after,
     // A turn can compact more than once (the tool loop refits per iteration), so these
-    // accumulate like dropped_messages rather than taking the last chunk's value. Spread
-    // conditionally so a plain rolling-window response keeps exactly the shape it had
-    // before this feature existed, with no archive keys set to undefined.
+    // accumulate rather than taking the last chunk's value. Spread conditionally so a
+    // plain rolling-window response keeps its old shape, with no archive keys set to
+    // undefined.
     ...spreadSum("archived_messages", current.archived_messages, incoming.archived_messages),
     ...spreadSum("recalled_chunks", current.recalled_chunks, incoming.recalled_chunks),
   };
 
-  // boundary_messages needs no rule here: it is absolute, measured against the messages
-  // the request was sent with, so the spread above already keeps the latest fit's value.
-  // Summing it, the way dropped_messages is summed, is exactly the bug it exists to fix.
+  // boundary_messages needs no rule: it is absolute, so the spread above already keeps
+  // the latest fit's value. Summing it is the bug it exists to fix.
 
-  // The irreducible diagnosis describes ONE fit that gave up. The tool loop refits per
-  // iteration, so an earlier failure followed by a later success would otherwise leave
-  // those numbers on a result that did fit, where they describe nothing.
-  //
-  // Deleted rather than spread as undefined: assigning undefined would put both keys on
-  // every ordinary response, which is the shape regression spreadSum exists to prevent.
-  // delete on an absent key is a no-op, so this cannot add them either.
+  // The irreducible diagnosis describes ONE fit that gave up, so an earlier failure
+  // followed by a later success would otherwise leave those numbers on a result that fit.
+  // Deleted rather than spread as undefined, which would put both keys on every ordinary
+  // response; delete on an absent key is a no-op.
   if (incoming.fits) {
     delete merged.irreducible_tokens;
     delete merged.latest_turn_tokens;

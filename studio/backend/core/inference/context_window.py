@@ -13,19 +13,10 @@ from typing import Any, Optional
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
 
 # How far BELOW the prompt budget a compaction trims, as a fraction of that budget.
-#
-# Trimming to exactly the budget looks efficient and behaves badly. The client re-sends
-# the whole saved transcript on every request, so the fit runs from scratch each time,
-# and a prompt trimmed to the brim is over it again as soon as the next turn is
-# appended. The eviction boundary then creeps forward on nearly every turn, which costs
-# twice: llama-server's prefix cache is invalidated each time the head moves, so the
-# whole prompt is reprocessed, and there is no such thing as a discrete "compaction
-# event" to tell the user about -- every reply has compacted a little more.
-#
-# Taking a chunk out in one go instead buys a stretch of turns whose eviction boundary
-# does not move at all: same head, so the prefix cache holds, and one thing to report
-# rather than a running commentary. The cost is the headroom itself, which is context
-# that could have held conversation, so it is deliberately a minority of the budget.
+# Trimming to exactly the budget puts the next turn over it again, so the boundary creeps
+# forward every turn: llama-server's prefix cache dies each time and there is no discrete
+# compaction event to report. Taking a chunk out in one go buys a stretch of turns with a
+# fixed head, at the cost of the headroom itself, hence a minority of the budget.
 _COMPACTION_HEADROOM_RATIO = max(
     0.0, min(0.9, float(os.environ.get("ROLLING_COMPACTION_HEADROOM_RATIO", "0.25")))
 )
@@ -45,12 +36,9 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
 def group_turns(messages: list[dict]) -> list[list[dict]]:
     """Split messages into the turn groups the rolling window evicts as single units.
 
-    Normal user/assistant turns stay together. Each assistant tool call starts a
-    separate group containing its tool results, so long agent runs can evict old
-    exchanges without orphaning results or losing the task that initiated them.
-
-    Exposed so callers that need to do something with the evicted turns operate on the
-    same unit the evictor does, rather than on loose messages.
+    Each assistant tool call starts its own group holding its tool results, so long agent
+    runs evict old exchanges without orphaning results. Exposed so callers that act on
+    evicted turns use the same unit the evictor does.
     """
     groups: list[list[dict]] = []
     for message in messages:
@@ -74,9 +62,8 @@ def group_turns(messages: list[dict]) -> list[list[dict]]:
 def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
     """Messages present in ``before`` and absent from ``after``, in their original order.
 
-    Identity, not equality: the truncation helpers reuse the very same dict objects in
-    their output, and a conversation can legitimately contain two byte-identical turns
-    ("continue" twice), which an equality diff would collapse.
+    Identity, not equality: the truncation helpers reuse the same dict objects, and a
+    chat can contain two byte-identical turns ("continue" twice) that equality collapses.
     """
     kept = {id(message) for message in after}
     return [message for message in before if id(message) not in kept]
@@ -91,9 +78,8 @@ def truncate_oldest_messages(
 ) -> tuple[list[dict], int]:
     """Drop complete oldest turns while preserving system messages and the latest turn.
 
-    ``min_dropped`` keeps evicting past the point where the prompt fits, until at least
-    that many messages are gone. It is how a thread re-applies the boundary it already
-    compacted to, rather than recomputing one that slides forward a little every turn.
+    ``min_dropped`` keeps evicting past the point where the prompt fits, so a thread can
+    re-apply the boundary it already compacted to instead of one that slides every turn.
     """
     if not messages or (keep_ratio >= 1.0 and min_dropped <= 0):
         return messages, 0
@@ -162,8 +148,8 @@ def truncate_oldest_messages(
     for index, group in enumerate(groups):
         if index not in dropped_groups:
             if kept and kept[-1].get("role") == "user" and group and group[0].get("role") == "user":
-                # Strict chat templates reject adjacent user turns. This occurs when
-                # an internal tool re-prompt follows an evicted exchange.
+                # Strict chat templates reject adjacent user turns, which happens when an
+                # internal tool re-prompt follows an evicted exchange.
                 kept.append({"role": "assistant", "content": _OMITTED_TOOL_EXCHANGE})
             kept.extend(group)
     return kept, dropped
@@ -185,10 +171,8 @@ def messages_have_media(messages: list[dict]) -> bool:
 def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
     """Tokens available to the PROMPT, once room for the reply is set aside.
 
-    Exported because two other things need the same number and must not re-derive it:
-    the caller sizing a forced recall against the room a fit actually obtained, and the
-    client explaining which part of an over-long request does not fit. A second copy of
-    this formula would drift from the fit it is supposed to describe.
+    Exported so the recall sizing and the client's over-long-request explanation share
+    this formula rather than each keeping a copy that drifts from the actual fit.
     """
     if context_length <= 1:
         return context_length
@@ -197,15 +181,11 @@ def prompt_budget(context_length: int, max_tokens: Optional[int]) -> int:
 
 
 def _latest_turn_tokens(messages: list[dict], count_tokens: Callable[[list[dict]], int]) -> int:
-    """Tokens in the newest message, counted without handing the template an orphan.
+    """Tokens in the newest message, estimated if the template refuses to render it.
 
-    The diagnosis this feeds is produced when a request cannot be made to fit, and a tool
-    loop reaches that point with a tool result last. On its own that slice is not a
-    conversation: templates that require a tool result to follow its assistant tool call
-    refuse to render it, and the exception would escape the fit entirely -- the caller
-    falls back to the untrimmed request and the client is told nothing at all, which is
-    the opposite of what this branch exists for. A number that is approximate is worth
-    more here than a diagnosis that never arrives.
+    A tool loop can reach the does-not-fit diagnosis with a tool result last, which strict
+    templates reject on its own; letting that raise would abort the fit and tell the user
+    nothing. An approximate number beats a diagnosis that never arrives.
     """
     if not messages:
         return 0
@@ -227,26 +207,19 @@ def fit_rolling_context(
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
-    The exact tokenizer/template count decides whether trimming is needed. The
-    inexpensive estimator only chooses candidate turns; exact recounts verify the
-    result. The current turn is never clipped, so an irreducibly large request still
-    reaches llama-server's normal context-length error.
+    The exact tokenizer/template count decides whether trimming is needed; the cheap
+    estimator only picks candidate turns. The current turn is never clipped, so an
+    irreducibly large request still reaches llama-server's context-length error.
 
-    ``reserve_tokens`` leaves room for something the caller intends to add back after
-    fitting (recalled earlier turns). It deliberately does NOT participate in the
-    decision of whether to trim at all: a conversation that already fits is returned
-    untouched even when the reserve would not fit alongside it. Charging the reserve up
-    front would make chats start evicting turns that comfortably fit today, which is a
-    silent regression in the common case for the benefit of the rare one.
+    ``reserve_tokens`` leaves room for what the caller adds back after fitting (recalled
+    turns). It deliberately does not affect whether to trim at all, so a chat that fits
+    today is never evicted just because the reserve would not fit alongside it.
 
-    ``sticky_dropped`` is the boundary this thread last compacted to, in messages. The
-    fit re-applies it before deciding anything, and only moves it when what is left still
-    does not fit. Without it the fit is stateless: the client re-sends the whole saved
-    transcript every request, so "keep the newest N tokens" slides forward a turn or two
-    at a time and every single reply has compacted a little more than the last. With it,
-    plus ``_COMPACTION_HEADROOM_RATIO`` of slack taken out when the boundary does move,
-    compaction becomes an occasional event with quiet turns in between, which is both what
-    a user can be told about and what lets llama-server's prefix cache survive a turn.
+    ``sticky_dropped`` is the boundary this thread last compacted to, in messages,
+    re-applied before anything else and moved only if what is left still does not fit.
+    Without it the fit is stateless (the client re-sends the whole transcript each turn)
+    so the boundary slides every reply; with it plus ``_COMPACTION_HEADROOM_RATIO`` of
+    slack, compaction is an occasional event the prefix cache can survive.
 
     Acceptance is still checked against the untightened ``prompt_target``: falling short
     of the headroom is not a failure to fit.
@@ -260,14 +233,10 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    # Phase one: put the boundary back where this thread already had it. Cheap, and it
-    # is what makes a compacted thread stop compacting further on every turn.
-    #
-    # Gated on the prompt not already fitting, exactly as the reserve and the headroom
-    # are. A saved boundary describes the branch it was measured on, and rolling back to
-    # an early message leaves one that is far too aggressive for the conversation now in
-    # front of us; applying it anyway would evict most of a chat that comfortably fits
-    # and report a compaction that did not need to happen.
+    # Phase one: put the boundary back where this thread already had it, so a compacted
+    # thread stops compacting further every turn. Gated on the prompt not already
+    # fitting: a saved boundary describes the branch it was measured on, and after a
+    # rollback it would evict most of a chat that comfortably fits.
     if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, dropped = truncate_oldest_messages(
             fitted,
@@ -280,16 +249,12 @@ def fit_rolling_context(
             dropped_total = dropped
             current_tokens = count_tokens(fitted)
 
-    # Phase two, only if what is left still does not fit: move the boundary, and take a
-    # chunk out rather than skimming to the brim, so it can stay put for a while.
-    #
-    # The reserve and the headroom deliberately play no part in the decision to trim at
-    # all, so a conversation that fits today is never evicted to satisfy either.
+    # Phase two, only if what is left still does not fit: move the boundary, taking a
+    # chunk out rather than skimming to the brim so it can stay put for a while.
     trim_target = prompt_target
     if current_tokens > prompt_target:
-        # Summed, not max()'d: the reserve is spent immediately on recalled passages,
-        # so counting it as headroom would hand back room that is already taken and
-        # the next turn would compact again.
+        # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
+        # counting it as headroom would hand back room that is already taken.
         headroom = int(prompt_target * _COMPACTION_HEADROOM_RATIO)
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
@@ -307,33 +272,23 @@ def fit_rolling_context(
         current_tokens = count_tokens(fitted)
 
     if current_tokens > prompt_target:
-        # Evicted everything evictable and it still does not fit. The ORIGINAL messages
-        # are returned, not the partial eviction: the request is going to be refused
-        # either way, and silently dropping turns off a doomed request would lose them
-        # from the model's view with nothing to show for it.
-        #
-        # The diagnosis is worth returning even so. Without it the only thing the user
-        # is told is llama-server's own error, which reports the size of the WHOLE
-        # conversation and advises shortening it -- advice that cannot possibly work,
-        # because what is left after maximal eviction is the system prompt and the
-        # latest turn, and one of those is the thing that does not fit.
-        #
-        # Every consumer already gates on `fits`, so this is inert everywhere that
-        # treats a truncation as a compaction.
+        # Evicted everything evictable and it still does not fit. Return the ORIGINAL
+        # messages, not the partial eviction: the request is refused either way, so
+        # dropping turns off a doomed request loses them for nothing. The diagnosis is
+        # still worth returning; llama-server's own error reports the size of the WHOLE
+        # conversation and advises shortening it, which cannot work when what is left is
+        # the system prompt plus the latest turn. Consumers all gate on `fits`.
         return messages, {
             "fits": False,
             "dropped_messages": 0,
             "prompt_tokens_before": initial_tokens,
             "prompt_tokens_after": initial_tokens,
-            # What the conversation cannot be reduced below, and how much of that is
-            # the message just sent. Between them these say whether the conversation
-            # or the single message is the problem.
+            # Floor for the conversation, and how much of it is the message just sent:
+            # together they say whether the chat or the single message is the problem.
             "irreducible_tokens": current_tokens,
             "latest_turn_tokens": _latest_turn_tokens(messages, count_tokens),
-            # ...and WHOSE message that is. A tool loop refits with the tool result
-            # appended, so the last message is often a tool result rather than anything
-            # the user wrote: telling them to shorten it names something they did not
-            # write and cannot edit, while their own question may be one line.
+            # ...and whose message that is. In a tool loop the last message is often a
+            # tool result, which the user did not write and cannot shorten.
             "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
             "context_length": context_length,
             "prompt_target": prompt_target,

@@ -5813,16 +5813,11 @@ const AssistantMessage: FC = () => {
       ? (value as ContextTruncation)
       : null;
   });
-  // Once a thread outgrows the window, EVERY subsequent request runs the fit, because the
-  // whole saved transcript is re-sent each time. So "this turn compacted" is true of every
-  // reply from then on and is useless as a trigger: it puts a notice on every message.
-  //
-  // What the user actually wants to know is when MORE of the conversation fell out of the
-  // model's view. That is the eviction boundary moving, which shows up as dropped_messages
-  // rising above the last turn that reported it. Between two such moves the model sees the
-  // same history it saw before, so there is nothing new to say. Paired with the compaction
-  // headroom on the server, which stops the boundary creeping every turn, this gives one
-  // notice per real compaction and silence in between.
+  // Once a thread outgrows the window every request runs the fit, so "this turn
+  // compacted" is true of every later reply and would put a notice on all of them. What
+  // matters is when MORE of the conversation fell out of view: the eviction boundary
+  // rising above the last turn that reported one. Between moves the model sees the same
+  // history, so there is nothing new to say.
   const showsNotice = useAuiState(({ thread }) => {
     let previousDropped = 0;
     for (const message of thread.messages) {

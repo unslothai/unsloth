@@ -675,9 +675,8 @@ async def delete_threads(
     # In a worker: right after an upgrade this also runs the legacy move, and a
     # cross-filesystem copy on the event loop stops every other request.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
-    # The rolling context window writes archived turns keyed by thread id. Nothing else
-    # references them once the thread is gone, so drop them rather than leaking a scope
-    # per deleted chat.
+    # Archived turns are keyed by thread id and unreferenced once the thread is gone, so
+    # drop them rather than leaking a scope per deleted chat.
     await run_in_threadpool(_remove_conversation_archives, payload.ids)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
 
@@ -1309,9 +1308,8 @@ async def clear_history(
         _cancel_active_generations(late)
     # By id: the rows went with the threads, so nothing can look them up now.
     _cancel_research_runs(request, cleared_runs)
-    # Same content deletion as DELETE /threads, so the same archive cleanup. Without it
-    # "Clear all chats" leaves every conversation searchable in rag.db, and a client that
-    # reuses a thread id can read the old archive from a new chat.
+    # Same archive cleanup as DELETE /threads. Without it "Clear all chats" leaves every
+    # conversation searchable in rag.db, and a reused thread id reads the old archive.
     await run_in_threadpool(
         _remove_conversation_archives, list(dict.fromkeys(thread_ids + cleared))
     )

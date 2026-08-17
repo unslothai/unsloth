@@ -1212,19 +1212,16 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
-                # The provider loops take their catalogue from the same selector as the
-                # local ones, so search_conversation is advertised here too once a thread
-                # has an archive, and it needs the same branch: the stored rows are the
-                # whole message DAG, and Retry leaves the replaced response in them.
+                # Provider loops share the local catalogue selector, so
+                # search_conversation is advertised here too once a thread has an archive
+                # and needs the same branch: the stored rows are the whole DAG, and Retry
+                # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
                     kwargs["conversation_branch"] = request_branch
-                # And a budget, so the clamp in the tool is not skipped here. Studio
-                # knows no window for an external model -- there is no context length on
-                # the request and no registry to look one up in -- and a custom
-                # OpenAI-compatible endpoint can be a small local server, so the model
-                # picking the ceiling of 8 chunks is roughly 4K tokens appended to a
-                # prompt that is replayed on the next call. Where the window cannot be
-                # measured, spend no more than one ordinary recall's worth.
+                # And a budget, so the tool's clamp is not skipped. Studio cannot measure
+                # an external model's window, and a custom OpenAI-compatible endpoint can
+                # be a small local server, so a model-chosen 8 chunks is roughly 4K tokens
+                # replayed on every later call. Unmeasurable means one recall's worth.
                 if accepts_kwarg(execute_tool, "conversation_budget_tokens"):
                     try:
                         from core.rag import config as rag_config

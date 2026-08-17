@@ -510,10 +510,10 @@ def run_safetensors_tool_loop(
     * ``{"type": "tool_end", "tool_name", "tool_call_id", "result"}``
     """
     conversation = list(messages)
-    # The branch this request is on, before the loop appends anything. A thread compacted
-    # under a GGUF model keeps its archive when the user switches to a safetensors one, so
-    # search_conversation is advertised here too and needs the same branch filtering: the
-    # stored rows are the whole DAG, and Retry leaves the replaced response in them.
+    # The branch this request is on, before the loop appends anything. A GGUF-compacted
+    # thread keeps its archive across a switch to safetensors, so search_conversation is
+    # advertised here too and needs the same filtering: the stored rows are the whole
+    # DAG, and Retry leaves the replaced response in them.
     request_branch = list(messages)
 
     # Mirrors the GGUF loop: "full" and bypass_permissions are the same switch;
@@ -1309,11 +1309,9 @@ def run_safetensors_tool_loop(
                     )
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = request_branch
-                    # And the room the model has left, as the GGUF loop does. A thread
-                    # compacted under a GGUF model keeps its archive when the user
-                    # switches models, so this loop offers search_conversation too; with
-                    # no budget the clamp in the tool is skipped and a model-chosen
-                    # top_k of 8 appends roughly 4K tokens to an already full prompt.
+                    # And the room the model has left, as the GGUF loop does: without a
+                    # budget the tool's clamp is skipped and a model-chosen top_k of 8
+                    # appends roughly 4K tokens to an already full prompt.
                     if context_length and _accepts_kwarg(
                         execute_tool, "conversation_budget_tokens"
                     ):

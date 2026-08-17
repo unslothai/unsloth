@@ -664,22 +664,20 @@ export interface OpenAIChatChunk {
     // message text: this rides an SSE chunk that reaches the client.
     archived_messages?: number;
     recalled_chunks?: number;
-    // Present only when `fits` is false: what the conversation could not be reduced
-    // below, and how much of that is the message just sent. Between them they say
-    // whether the history or that single message is what does not fit, which decides
-    // whether "shorten the conversation" is useful advice or a dead end.
+    // Present only when `fits` is false: the floor the conversation cannot go below, and
+    // how much of it is the message just sent. Together they say whether the history or
+    // that one message is the problem, i.e. whether "shorten the conversation" helps.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
     // Where the compaction boundary sits in the messages THIS request was sent with.
-    // Unlike dropped_messages it is absolute, so re-sending it after a turn that refit
-    // several times cannot advance the boundary past the turns actually evicted.
+    // Absolute, unlike dropped_messages, so re-sending it after a turn that refit several
+    // times cannot advance the boundary past the turns actually evicted.
     boundary_messages?: number;
-    // Whose message that is. A tool loop refits with the tool result appended, so the
-    // last message is often a tool result rather than anything the user typed.
+    // Whose message that is: in a tool loop the last one is often a tool result rather
+    // than anything the user typed.
     latest_turn_role?: string;
-    // The prompt's share of the window, i.e. context_length minus the reply
-    // reserve. It is what a single turn actually has to fit inside, and the
-    // client must not re-derive it: the reserve formula lives in the fit.
+    // The prompt's share of the window (context_length minus the reply reserve), which is
+    // what one turn must fit inside. Not re-derived here: the formula lives in the fit.
     prompt_target?: number;
   };
 }

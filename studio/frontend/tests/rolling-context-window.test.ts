@@ -48,10 +48,9 @@ test("the compaction notice follows the boundary, not the accumulated drops", ()
 });
 
 test("the compaction boundary takes the latest value, never the sum", () => {
-  // dropped_messages counts what each fit removed from the conversation IN FRONT OF IT,
-  // tool messages this turn created included. Summing those and re-applying the total to
-  // the next request's saved transcript advances the boundary past the turns actually
-  // evicted, so the boundary is carried separately and absolutely.
+  // dropped_messages counts what each fit removed in front of it, this turn's tool
+  // messages included, so summing it and re-applying the total advances the boundary
+  // past the turns actually evicted. The boundary is carried separately and absolutely.
   const combined = mergeContextTruncation(
     mergeContextTruncation(undefined, {
       dropped_messages: 4,
@@ -131,12 +130,12 @@ test("the compaction notice is gated on the eviction boundary MOVING", () => {
   );
   // Every request after the window fills runs the fit, so "this turn compacted" puts a
   // notice on every reply. The trigger is dropped_messages rising above the last turn
-  // that reported it, which is more of the conversation actually leaving the context.
+  // that reported it: more of the conversation actually leaving the context.
   assert.match(thread, /const showsNotice = useAuiState/);
   assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
   assert.match(thread, /dropped > previousDropped/);
-  // Walked in order, rather than compared against the immediately preceding message:
-  // turns between two moves report the same count and must not reset the baseline.
+  // Walked in order, not against the preceding message: turns between two moves report
+  // the same count and must not reset the baseline.
   assert.match(thread, /for \(const message of thread\.messages\)/);
 });
 
@@ -168,9 +167,8 @@ test("one notice per compaction, and silence on the turns in between", () => {
 });
 
 test("a boundary that goes BACKWARDS does not re-announce", () => {
-  // Rolling back to an earlier message leaves a shorter branch, which needs less
-  // evicting. Less of the conversation is missing than before, so there is nothing to
-  // tell the user, and the baseline must not be dragged down into re-announcing it.
+  // A rollback leaves a shorter branch needing less eviction. Less is missing than
+  // before, so there is nothing to say and the baseline must not be dragged down.
   assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
 });
 
@@ -204,9 +202,8 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     "utf8",
   );
 
-  // 1. It is a sibling of the rendered content parts, not one of them. If it ever moved
-  //    inside MessagePrimitive.Parts it would become a content part, and everything
-  //    downstream that walks parts -- replay, copy, export -- would pick it up.
+  // 1. A sibling of the rendered content parts, not one of them: inside
+  //    MessagePrimitive.Parts everything that walks parts would pick it up.
   const noticeAt = thread.indexOf("<CompactionNotice");
   const partsAt = thread.indexOf("<MessagePrimitive.Parts", noticeAt);
   assert.ok(noticeAt > 0 && partsAt > noticeAt);
@@ -215,10 +212,9 @@ test("the notice is a NOTICE, never part of the conversation", () => {
     "the notice must not be rendered inside the message's content parts",
   );
 
-  // 2. Nothing that builds a request out of a message may read the key it renders from.
-  //    Replay reads metadata for two specific named keys; contextTruncation is not one.
-  //    Bounded to the function bodies: slicing to end-of-file also catches the streaming
-  //    handler, which reads contextTruncation legitimately on the way IN.
+  // 2. Nothing that builds a request may read the key it renders from. Bounded to the
+  //    function bodies: slicing to end-of-file also catches the streaming handler,
+  //    which reads contextTruncation legitimately on the way IN.
   for (const name of ["toOpenAIMessages", "serializeAssistantReplayMessages"]) {
     const body = functionBody(adapter, name);
     assert.ok(body.length > 0, `${name} not found`);
@@ -232,8 +228,7 @@ test("the notice is a NOTICE, never part of the conversation", () => {
   assert.ok(!exporter.includes("contextTruncation"));
   assert.ok(!exporter.includes("compacted"));
 
-  // 4. And it is suppressed while editing, so it can never be typed into the textarea
-  //    and saved back as message text.
+  // 4. Suppressed while editing, so it cannot be saved back as message text.
   assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
 });
 
@@ -251,8 +246,8 @@ test("an irreducible fit reports a diagnosis, and it is dropped once something f
   assert.equal(failed.fits, false);
   assert.equal(failed.latest_turn_tokens, 5000);
 
-  // The tool loop refits per iteration. A later iteration that DOES fit must not carry
-  // the earlier failure's numbers forward, where they would describe nothing.
+  // The loop refits per iteration, and an iteration that DOES fit must not carry the
+  // earlier failure's numbers forward, where they describe nothing.
   const recovered = mergeContextTruncation(failed, {
     dropped_messages: 12,
     fits: true,
@@ -290,8 +285,7 @@ test("a fits:false diagnosis is not a compaction", () => {
     "utf8",
   );
   // The fitter returned the ORIGINAL messages with dropped_messages 0, so "older turns
-  // were removed" is untrue -- and toasting it also burns the once-per-thread flag, so
-  // a later genuine compaction would say nothing at all.
+  // were removed" is untrue, and toasting it burns the once-per-thread flag.
   assert.match(source, /const reallyCompacted =/);
   assert.match(source, /context_truncated\.fits === true/);
   assert.match(source, /dropped_messages \?\? 0\) > 0/);
@@ -302,9 +296,8 @@ test("the advice depends on WHOSE turn does not fit", () => {
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
     "utf8",
   );
-  // A tool loop refits with the tool result appended, so the turn that does not fit is
-  // often output the user never wrote and cannot edit. "Shorten this message" then names
-  // the wrong thing and offers no remedy at all.
+  // A tool loop refits with the tool result appended, so the offending turn is often
+  // output the user never wrote and cannot edit, leaving no remedy.
   assert.match(source, /latest_turn_role/);
   assert.match(source, /const userCanShortenIt =/);
   assert.match(source, /The last tool result is/);
@@ -320,9 +313,8 @@ test("the too-long check uses the prompt budget, not the raw window", () => {
     "utf8",
   );
   // The fit reserves up to a quarter of the window for the reply, so a 3,500-token
-  // message already cannot fit a 4,096-token context. Comparing against the raw window
-  // calls that "the conversation is too long" and sends the user to a new chat, which
-  // fails identically.
+  // message cannot fit a 4,096-token context. The raw window would blame the
+  // conversation and send the user to a new chat that fails identically.
   assert.match(source, /irreducible\?\.prompt_target \?\? irreducible\?\.context_length/);
   assert.match(source, /latest_turn_tokens \?\? 0\) > budget/);
 });

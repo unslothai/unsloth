@@ -274,10 +274,9 @@ def test_rolling_truncation_can_drop_assistant_after_instruction(instruction_rol
 def no_compaction_headroom(monkeypatch):
     """Pin the compaction headroom to zero.
 
-    For tests whose subject is the MINIMUM eviction needed to fit, the headroom is
-    noise: it deliberately drops more than strictly necessary, so an exact expected
-    count would be asserting the headroom's value rather than the fit's behaviour.
-    Tests about the headroom itself set it explicitly instead.
+    For tests about the MINIMUM eviction needed to fit, the headroom is noise: it drops
+    more than necessary, so an exact count would assert the headroom's value rather than
+    the fit's behaviour. Tests about the headroom set it explicitly.
     """
     monkeypatch.setattr(context_window, "_COMPACTION_HEADROOM_RATIO", 0.0)
 
@@ -326,8 +325,8 @@ def test_rolling_fit_never_clips_an_irreducible_latest_turn():
 
     assert fitted is messages
     assert fitted == messages
-    # Unchanged messages, but no longer a silent None: the fit says WHY it gave up, so
-    # the user can be told the single message is the problem rather than the history.
+    # Unchanged messages, but not a silent None: the fit says WHY it gave up, so the
+    # user hears the single message is the problem rather than the history.
     assert info is not None and info["fits"] is False
     assert info["dropped_messages"] == 0
     assert info["latest_turn_tokens"] > info["context_length"]
@@ -363,8 +362,8 @@ def test_evicted_messages_returns_dropped_turns_in_original_order(no_compaction_
 def test_evicted_messages_uses_identity_not_equality():
     """Two byte-identical turns must not collapse into one.
 
-    An equality diff would report BOTH copies as evicted when only the older one was,
-    and anything downstream would then act on a turn the model can still see.
+    An equality diff reports BOTH copies as evicted when only the older one was, so
+    downstream acts on a turn the model can still see.
     """
     first = {"role": "user", "content": "same question"}
     second = {"role": "user", "content": "same question"}
@@ -401,9 +400,8 @@ def test_group_turns_matches_the_unit_truncation_drops():
 def test_reserve_tokens_does_not_trim_a_prompt_that_already_fits():
     """The reserve must never be what causes eviction.
 
-    A conversation comfortably inside the window has to come back untouched even when
-    the reserve would not fit alongside it, or enabling recall would silently start
-    evicting turns from chats that are nowhere near the limit.
+    A conversation inside the window comes back untouched even when the reserve would
+    not fit alongside it, or recall would start evicting chats nowhere near the limit.
     """
     messages = [
         {"role": "system", "content": "system"},
@@ -482,8 +480,7 @@ def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
     """A tool loop refits with the tool result appended.
 
     The turn that will not fit is then output the user never wrote and cannot edit, so
-    "shorten this message" names the wrong thing and offers no remedy. The role is what
-    lets the client tell the two apart.
+    "shorten this message" has no remedy. The role is what tells the two apart.
     """
     user_turn = [
         {"role": "system", "content": "system"},
@@ -516,10 +513,9 @@ def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
 def test_an_irreducible_fit_survives_a_template_that_refuses_a_lone_tool_result():
     """The diagnosis is produced exactly where a tool loop is most likely to be.
 
-    A tool result on its own is not a conversation, and templates that require it to
-    follow its assistant tool call refuse to render one. Counting that slice directly
-    threw the exception out of the fit, so the caller fell back to the untrimmed request
-    and the client was told nothing at all -- on the one path this diagnosis exists for.
+    Strict templates refuse to render a tool result on its own, so counting that slice
+    threw out of the fit and the caller fell back to the untrimmed request, telling the
+    client nothing on the one path this diagnosis exists for.
     """
 
     def strict_counter(messages):
@@ -545,17 +541,15 @@ def test_an_irreducible_fit_survives_a_template_that_refuses_a_lone_tool_result(
 
     assert info is not None and info["fits"] is False
     assert info["latest_turn_role"] == "tool"
-    # Estimated rather than counted, but present: an approximate number beats a
-    # diagnosis that never reaches the client.
+    # Estimated rather than counted: an approximation beats no diagnosis at all.
     assert info["latest_turn_tokens"] > 0
 
 
 def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault():
     """The two numbers that make the error actionable.
 
-    llama-server's own error reports the size of the WHOLE conversation and advises
-    shortening it. When the latest turn alone is over the window that advice cannot
-    work, and this is what lets the client say so instead.
+    llama-server's error reports the WHOLE conversation's size and advises shortening
+    it, which cannot work when the latest turn alone is over the window.
     """
     huge_message = [
         {"role": "system", "content": "system"},
@@ -570,8 +564,8 @@ def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault(
     assert info["fits"] is False
     assert info["latest_turn_tokens"] > info["context_length"]
 
-    # A conversation that fits comfortably reports nothing at all, rather than a
-    # fits:False dict that a caller might mistake for a failure.
+    # A conversation that fits reports nothing, not a fits:False dict a caller could
+    # mistake for a failure.
     small = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "hello"},
@@ -848,9 +842,8 @@ def test_reasoning_clip_alone_prevents_middle_eviction():
 def test_compaction_headroom_does_not_trim_a_prompt_that_already_fits():
     """Same rule as the reserve: headroom must never be what causes eviction.
 
-    The headroom exists to make a compaction take a chunk out in one go. Charging it
-    up front would make chats that comfortably fit today start evicting turns, which
-    is a regression in the common case for the benefit of the compacted one.
+    The headroom makes a compaction take a chunk out in one go; charging it up front
+    would evict from chats that comfortably fit today.
     """
     messages = [
         {"role": "system", "content": "system"},
@@ -873,9 +866,8 @@ def test_compaction_headroom_does_not_trim_a_prompt_that_already_fits():
 def test_compaction_leaves_headroom_below_the_budget():
     """A compaction lands clear of the budget, not flush against it.
 
-    Trimming to the brim is what makes the eviction boundary creep forward on every
-    turn: the client re-sends the whole transcript, so a prompt fitted exactly is over
-    again as soon as the next turn is appended. This is the regression test for that.
+    Trimming to the brim makes the boundary creep every turn: the client re-sends the
+    whole transcript, so an exactly fitted prompt is over again on the next turn.
     """
     messages = [{"role": "system", "content": "system"}]
     for index in range(12):
@@ -929,19 +921,18 @@ def _fit_with_appended(
 def test_sticky_boundary_holds_still_while_short_turns_are_appended():
     """After a compaction, ordinary turns do not push the boundary again.
 
-    This is the property the notice depends on, and the reason the boundary has to be
-    read back rather than recomputed: the client re-sends the whole saved transcript
-    every request, so a fit that recomputes "keep the newest N tokens" slides forward a
-    turn or two at a time and every single reply reports a fresh compaction.
+    The notice depends on this, and it is why the boundary is read back rather than
+    recomputed: the client re-sends the whole transcript, so a recomputed "keep the
+    newest N tokens" slides forward and every reply reports a fresh compaction.
     """
     base = _long_thread()
     first = _fit_with_appended(base, 0)
     assert first is not None and first["dropped_messages"] > 0
 
     boundary = first["dropped_messages"]
-    # Not "forever": the appended turns do consume the headroom, and the next test is
-    # the one that pins down that it eventually moves. A handful of turns is the claim
-    # here, against a baseline that moved on nearly every one.
+    # Not "forever": the appended turns consume the headroom and the next test pins
+    # down that it eventually moves. A handful of turns, against a baseline that moved
+    # on nearly every one.
     for appended in range(1, 6):
         info = _fit_with_appended(base, appended, sticky = boundary)
         assert info is not None
@@ -969,9 +960,8 @@ def test_sticky_boundary_moves_again_once_the_headroom_is_used_up():
 def test_sticky_boundary_never_causes_eviction_on_a_thread_that_fits():
     """A stale boundary from a longer branch must not evict a conversation that fits.
 
-    Rolling back to an early message leaves the saved boundary describing a branch that
-    no longer exists. The fit is allowed to reapply it, but must never report a
-    compaction on a prompt that is comfortably inside the window.
+    After a rollback the saved boundary describes a branch that no longer exists. The
+    fit may reapply it, but never report a compaction on a prompt that already fits.
     """
     messages = [
         {"role": "system", "content": "system"},
