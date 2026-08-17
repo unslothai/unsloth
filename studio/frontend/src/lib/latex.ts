@@ -20,9 +20,9 @@ const CURRENCY_REGEX =
   /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
 
 /**
- * Merge two ascending span lists into their union, so the result is sorted and
- * non-overlapping. `isInRegion` binary-searches, which answers correctly only
- * for spans of that shape.
+ * Union of two span lists, each ascending by start (overlap within a list is
+ * fine, non-ascending input silently drops spans). The sorted, non-overlapping
+ * result is the shape `isInRegion`'s binary search needs.
  */
 function mergeRegions(
   left: ReadonlyArray<readonly [number, number]>,
@@ -79,12 +79,8 @@ function findCodeBlockRegions(content: string): Array<[number, number]> {
     }
   }
 
-  // The cursor above drops an inline span nested inside a fence, but an inline
-  // span can also CONTAIN one (`` `~~~a~~~ $5` ``), and that overlap made the
-  // binary search land on the inner span and miss the outer one. Which way it
-  // went depended on how many spans the rest of the reply added, so the same
-  // code span was escaped or left alone according to what came after it. Take
-  // the union of the two ascending lists instead.
+  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
+  // the binary search land on the inner span and miss the outer one.
   return mergeRegions(fenced, inline);
 }
 

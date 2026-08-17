@@ -7,12 +7,8 @@ import test from "node:test";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 test("currency inside inline code survives unrelated later code spans", () => {
-  // `findCodeBlockRegions` looks up a position with a binary search, which needs
-  // sorted, non-overlapping spans. An inline span that CONTAINS a `~~~...~~~`
-  // pair produced two overlapping spans, and the search then landed on the
-  // inner one and missed the outer. Whether it did so depended on how many
-  // spans the rest of the reply happened to add, so the same code span was
-  // escaped or not according to what came after it.
+  // An inline span containing a `~~~...~~~` pair used to yield overlapping
+  // spans, so the binary search hit the inner one and missed the outer.
   const span = "`~~~a~~~ $5`";
   assert.equal(preprocessLaTeX(span), span);
 
@@ -30,8 +26,7 @@ test("currency inside inline code survives unrelated later code spans", () => {
 });
 
 test("a code span's own text decides its escaping, whatever follows it", () => {
-  // The property the binary search was silently breaking: appending an
-  // unrelated code span must never change an earlier one.
+  // Appending an unrelated code span must never change an earlier one.
   const heads = [
     "`~~~a~~~ $5`",
     "`~~~ $5 ~~~`",
@@ -55,16 +50,14 @@ test("a code span's own text decides its escaping, whatever follows it", () => {
 });
 
 test("LaTeX inside inline code stays literal whatever follows it", () => {
-  // The same lookup guards `convertLatexDelimiters`, so the overlap could also
-  // turn a code sample showing `\(x\)` into real math.
+  // The same lookup guards `convertLatexDelimiters`.
   const span = "`~~~a~~~ \\(x\\)`";
   assert.equal(preprocessLaTeX(span), span);
   assert.equal(preprocessLaTeX(`${span}\n\n\`x\``), `${span}\n\n\`x\``);
 });
 
 test("ordinary code spans and fences are unchanged", () => {
-  // The regression guard for the merge itself: nothing that was already
-  // non-overlapping may move.
+  // Nothing that was already non-overlapping may move.
   const cases: [string, string][] = [
     ["`costs $5`", "`costs $5`"],
     ["`costs $5`\n\n`x`", "`costs $5`\n\n`x`"],
