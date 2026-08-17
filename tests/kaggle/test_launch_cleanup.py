@@ -576,14 +576,14 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
             "        launch.main()",
             "\n".join(
                 [
-                    "        _real_log = launch._log",
-                    "        def _reentrant(msg):",
-                    "            if 'received signal' in msg:",
+                    "        _real_emit = launch._emit",
+                    "        def _reentrant(line):",
+                    "            if 'received signal' in line:",
                     "                raise RuntimeError(",
                     '                    "reentrant call inside <_io.BufferedWriter "',
                     "                    \"name='<stdout>'>\")",
-                    "            _real_log(msg)",
-                    "        launch._log = _reentrant",
+                    "            _real_emit(line)",
+                    "        launch._emit = _reentrant",
                     "        launch.main()",
                 ]
             ),
@@ -636,6 +636,189 @@ def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
     assert proc.returncode == -signal.SIGTERM, (
         f"the launcher exited {proc.returncode} rather than dying of SIGTERM after its "
         f"logging blocked"
+    )
+
+
+def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_path):
+    """The transitive path, where a dropped line costs a whole retry budget.
+
+    ``delete_kernel`` reports a refused delete through the ordinary ``_log``. If that
+    raises the reentrancy above, the exception propagates out of ``delete_kernel`` and
+    out of ``release()``, so a kernel Kaggle would have accepted on the third attempt is
+    never asked a third time. Distinct from the handler's own lines, which were already
+    wrapped, and from a full pipe, which drops rather than raises.
+
+    Here the shim refuses twice and accepts on the third, and every ``_emit`` raises
+    while the handler is running, so the retries only complete if the failure is
+    swallowed where it happens.
+    """
+    record = tmp_path / "kaggle_calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        record = pathlib.Path({str(record)!r})
+        record.open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        seen = sum(1 for l in record.read_text().splitlines() if l.startswith("kernels delete"))
+        if seen < 3:            # refuse the first two, accept the third
+            sys.stderr.write("500 Server Error\\n")
+            sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    script = tmp_path / "runner.py"
+    script.write_text(
+        textwrap.dedent(f"""\
+        import sys, time
+        sys.path.insert(0, {str(CI_DIR)!r})
+        import launch
+        launch.INFLIGHT = __import__("pathlib").Path({str(tmp_path / "inflight.json")!r})
+        launch.DELETE_BACKOFF_SEC = 0
+        _real_emit = launch._emit
+        def _reentrant(line):
+            if launch._IN_SIGNAL_HANDLER:
+                raise RuntimeError(
+                    "reentrant call inside <_io.BufferedWriter name='<stdout>'>")
+            _real_emit(line)
+        launch._emit = _reentrant
+        def release():
+            if launch.delete_kernel("me/k-1"):
+                launch._inflight_drop("me/k-1")
+        launch._inflight_add("me/k-1")
+        launch._install_release_handlers(release)
+        print("READY", flush=True)
+        time.sleep({_STALL_SEC})
+    """),
+        encoding = "utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        env = env, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True,
+    )
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    attempts = _deletions(tmp_path)
+    assert len(attempts) >= 3, (
+        f"only {len(attempts)} delete attempts were made. A log line raising inside "
+        f"delete_kernel abandoned the retries, so a kernel Kaggle would have released "
+        f"on the third attempt keeps billing. Launcher said: {_tail(proc)}"
+    )
+    assert json.loads((tmp_path / "inflight.json").read_text()) == []
+
+
+def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
+    """The branch that only opens when cleanup has already failed.
+
+    ``release()`` ends by warning about kernels it could not delete. That line is
+    emitted on exactly the path where a kernel is still billing, so a raw write there
+    blocks on a full pipe before the ``finally`` can re-raise the signal: the launcher
+    neither dies nor reports, and the kernel runs on. Every other test in this file has
+    a deletion that eventually succeeds, which leaves the warning unreached.
+    """
+    record = tmp_path / "kaggle_calls.txt"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        sys.stderr.write("500 Server Error\\n")
+        sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+    body = _flooding_launcher(tmp_path / "out").replace(
+        "        launch.main()", "        launch.DELETE_BACKOFF_SEC = 0\n        launch.main()"
+    )
+    script = tmp_path / "runner.py"
+    script.write_text(
+        textwrap.dedent(f"""\
+        import sys, time
+        sys.path.insert(0, {str(CI_DIR)!r})
+        import launch
+        launch.INFLIGHT = __import__("pathlib").Path({str(tmp_path / "inflight.json")!r})
+        {body}
+    """),
+        encoding = "utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    proc = subprocess.Popen(
+        [sys.executable, str(script)],
+        env = env, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True,
+    )
+    try:
+        _await_ready(proc)
+        time.sleep(2)  # let the pipe fill and the write park
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == -signal.SIGTERM, (
+        f"the launcher exited {proc.returncode} rather than dying of SIGTERM. Its "
+        f"warning about the kernel it could not delete is the last thing it writes, "
+        f"and on a full pipe that write is where it stopped."
+    )
+    # It really did reach the branch, so the assertion above is not vacuous.
+    assert _deletions(tmp_path), "no delete was attempted, so nothing could leak"
+
+
+def _failing_kaggle(bin_dir: Path, record: Path) -> None:
+    """A `kaggle` that records the call and then refuses it, so nothing is ever
+    released and release() reaches its leaked-kernel warning."""
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    shim = bin_dir / "kaggle"
+    shim.write_text(
+        textwrap.dedent(f"""\
+        #!{sys.executable}
+        import sys, pathlib
+        pathlib.Path({str(record)!r}).open("a").write(" ".join(sys.argv[1:]) + "\\n")
+        sys.stderr.write("500 Server Error\\n")
+        sys.exit(1)
+        """),
+        encoding = "utf-8",
+    )
+    shim.chmod(0o755)
+
+
+def test_the_leaked_warning_is_still_a_github_annotation(tmp_path, monkeypatch, capsys):
+    """Routing it through the safe writer must not add the [launch] prefix.
+
+    GitHub matches an annotation from the START of the line, so a prefixed one is an
+    ordinary log line that nothing surfaces, and this warning exists precisely to be
+    surfaced: it is the only thing that tells a human a kernel is still billing.
+
+    Driven through main() with a kaggle that always refuses, so this reads what
+    release() actually wrote. Calling the writer directly would pass whatever the call
+    site does, which is the thing that can regress.
+    """
+    _run_main(tmp_path, monkeypatch, push_impl = _push_ok("me/k-1"), kaggle = _failing_kaggle)
+    lines = capsys.readouterr().out.splitlines()
+    warnings = [l for l in lines if "Kaggle kernels may still be running" in l]
+    assert warnings, (
+        f"release() never warned about the kernel it could not delete. Output was: "
+        f"{lines[-8:]}"
+    )
+    assert warnings[0].startswith("::warning"), (
+        f"the annotation was written as {warnings[0]!r}. GitHub matches ::warning at the "
+        f"start of the line, so a prefix silently demotes the one message that says a "
+        f"kernel is still billing into an ordinary log line nobody sees."
     )
 
 

@@ -219,20 +219,13 @@ def worst_case_seconds(max_wait: int, kernels: int) -> int:
 _STDOUT_FD = 1
 
 # Set once, on entry to the signal handler, and never cleared: the process is dying.
-# What it buys is that every _log below it drops rather than stalls, including the ones
-# release() reaches transitively -- delete_kernel() reports a refused delete through the
-# ordinary path, and that is exactly the moment stdout is least likely to drain. Putting
-# the check in _log rather than at the handler's own call sites is what makes it cover
-# them; a handler that stalls inside its own cleanup never reaches its retry either.
+# Below it, NO line written to stdout may either block or raise, and both have to be
+# handled here rather than at the handler's own call sites. release() reports a refused
+# delete and warns about a kernel it could not delete through the ordinary path, so those
+# lines are reached transitively, and either failure strands the cleanup: a block never
+# reaches the retry or the `finally`, and a raise propagates out of delete_kernel() and
+# abandons the remaining delete attempts for a kernel that is still billing.
 _IN_SIGNAL_HANDLER = False
-
-
-def _log(msg: str) -> None:
-    # Costs nothing and drops nothing on the ordinary path, which is every line this
-    # script prints before something kills it.
-    if _IN_SIGNAL_HANDLER and not _writable(_STDOUT_FD):
-        return
-    print(f"[launch] {msg}", flush = True)
 
 
 def _writable(fd: int) -> bool:
@@ -248,38 +241,59 @@ def _writable(fd: int) -> bool:
         return False
 
 
-def _log_from_signal(msg: str) -> None:
-    """``_log`` for use inside a signal handler, where the usual path can raise.
+def _line_from_signal(line: str) -> None:
+    """One line out, from a context where the ordinary path can raise OR block.
 
-    A handler runs on the main thread wherever that thread happened to be. If it was
-    inside a write to stdout, the interpreter refuses the second one outright:
-    ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``. That
-    is not hypothetical here; it was captured on a loaded CI runner, where it escaped
-    the handler and left a cancelled launcher exiting 1 instead of dying of its signal.
+    It can RAISE: a handler runs on the main thread wherever that thread happened to be,
+    and if it was inside a write to stdout the interpreter refuses the second one
+    outright, ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``.
+    That is not hypothetical; it was captured on a loaded CI runner, where it escaped the
+    handler and left a cancelled launcher exiting 1 instead of dying of its signal.
+    ``os.write`` goes straight to the descriptor and takes no lock the interrupted frame
+    could already hold, which is what makes it usable as the fallback.
 
-    So the buffered path is attempted and its failure is not fatal. ``os.write`` goes
-    straight to the file descriptor and takes no lock the interrupted frame could
-    already hold, which is what makes it usable from here.
-
-    Nothing here may BLOCK either, which raising does not cover. This handler announces
-    itself before calling ``release()``, and stdout in CI is a pipe: if the collector
-    stops draining it, both the buffered flush and the raw write block in the kernel
-    rather than failing, and no ``except`` or ``finally`` runs. The kernels then keep
-    billing until something kills the launcher from outside. That backpressure is also
-    what makes the interrupted-mid-write case above likely in the first place, so the
-    two arrive together. A readiness check first turns the stall into a dropped line:
-    POSIX reports a pipe writable only when at least PIPE_BUF bytes fit, and these lines
-    are far shorter than that.
+    It can also BLOCK, which raising does not cover and no ``except`` or ``finally``
+    catches. stdout in CI is a pipe, and if the collector stops draining it both the
+    buffered flush and the raw write sleep in the kernel. That backpressure is also what
+    leaves the main thread parked mid-write, so the two arrive together. Asking first
+    turns the stall into a dropped line: POSIX reports a pipe writable only when at least
+    PIPE_BUF bytes fit, and these lines are far shorter than that.
     """
     if not _writable(_STDOUT_FD):
         return
     try:
-        _log(msg)
+        _emit(line)
     except BaseException:  # noqa: BLE001 -- a log line may never decide whether we die
         try:
-            os.write(_STDOUT_FD, f"[launch] {msg}\n".encode("utf-8", "replace"))
+            os.write(_STDOUT_FD, (line + "\n").encode("utf-8", "replace"))
         except BaseException:  # noqa: BLE001
             pass
+
+
+def _emit(line: str) -> None:
+    print(line, flush = True)
+
+
+def _write_line(line: str) -> None:
+    """Every line this script puts on stdout goes through here.
+
+    Unconditional on the ordinary path, which is everything before something kills us:
+    nothing dropped, nothing swallowed, no syscall added.
+    """
+    if not _IN_SIGNAL_HANDLER:
+        _emit(line)
+        return
+    _line_from_signal(line)
+
+
+def _log(msg: str) -> None:
+    _write_line(f"[launch] {msg}")
+
+
+def _log_from_signal(msg: str) -> None:
+    """``_log`` for the handler's own lines. Kept as its own name because the handler
+    runs before the flag it sets can matter to anything else reading this."""
+    _line_from_signal(f"[launch] {msg}")
 
 
 def _out(key: str, value: str) -> None:
@@ -1140,12 +1154,16 @@ def main() -> int:
             entry["released"] = all(s in done for s in _slugs_filed(entry))
         result["unreleased"] = leaked
         if leaked:
-            print(
+            # _write_line, not _log: the [launch] prefix would stop GitHub parsing
+            # this as an annotation. Not print: release() runs from the signal handler
+            # too, and this line is emitted on exactly the path where a kernel is still
+            # billing, so a raw write here blocks or raises before the handler can
+            # re-raise its signal.
+            _write_line(
                 "::warning title=Kaggle kernels may still be running::"
                 + ", ".join(leaked)
                 + " could not be deleted, so they may keep billing accelerator "
-                "quota until they hit their own ceiling. Delete them by hand.",
-                flush = True,
+                "quota until they hit their own ceiling. Delete them by hand."
             )
 
     # From here on release() is reachable from a signal and from atexit too,
