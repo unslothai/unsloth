@@ -1010,7 +1010,6 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
     # begin_load, so a newly admitted generation could be cut short by the orphaned switch.
     import core.inference.media_keepwarm as keepwarm
 
-    monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1023,9 +1022,43 @@ def test_setup_keeps_the_gate_and_lock_after_the_caller_gives_up(
         started.set()
         await release.wait()
 
-    monkeypatch.setattr(mas, "_start_load", _slow_setup)
-
     async def _drive():
+        # One warm pass over the same path, at the production budget, with a setup that
+        # returns instead of blocking. Reaching _start_load the FIRST time measured 1.98s
+        # here, and media_auto_switch counts that against the switch budget on purpose
+        # ("the cold scan is part of the wait the caller experiences"). At the production
+        # 90s that is nothing. This test shrinks the budget to 0.3s because a large one
+        # has to be waited out -- at 30s the test took 31.8s -- and a cold path then blows
+        # 0.3s before setup is entered: the 503 comes from the scan rather than from the
+        # block under test, the status-code assertion still passes, and the failure lands
+        # further down on `started.is_set()` explaining nothing. That is how it failed on
+        # the 3.13 leg while 3.10 passed the same commit. Warming is what makes the small
+        # budget measure the block and only the block.
+        warmed = asyncio.Event()
+
+        async def _quick_setup(
+            owner,
+            pick,
+            current_subject,
+            hf_token = None,
+        ):
+            warmed.set()
+
+        monkeypatch.setattr(mas, "_start_load", _quick_setup)
+        with contextlib.suppress(HTTPException):
+            await mas.maybe_auto_switch_media_model(
+                "black-forest-labs/FLUX.1-dev",
+                owner = arb.DIFFUSION,
+                current_subject = "test-user",
+                openai_errors = True,
+            )
+        assert warmed.is_set(), (
+            "the warm pass never reached _start_load at the production budget, so the "
+            "timed run below cannot be measuring what this test is about"
+        )
+
+        monkeypatch.setattr(mas, "_SWITCH_BUDGET_S", 0.3)
+        monkeypatch.setattr(mas, "_start_load", _slow_setup)
         task = asyncio.ensure_future(
             mas.maybe_auto_switch_media_model(
                 "black-forest-labs/FLUX.1-dev",
