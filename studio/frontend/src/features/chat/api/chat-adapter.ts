@@ -6535,14 +6535,30 @@ export function createOpenAIStreamAdapter(
               duration: 8000,
             });
           } else if (isContextLimitError(msg)) {
-            // llama-server runs with --no-context-shift, returning a hard
-            // error instead of silently dropping old KV-cache turns. Point
-            // the user at the control that raises the ceiling.
+            // The rolling window reports `fits: false` when it evicted everything it
+            // could and the request STILL does not fit. That happens when the message
+            // just sent is itself too big, and it makes the usual advice wrong: the
+            // history has already been removed, so trimming it or starting a new chat
+            // changes nothing. Say which part is actually too long.
+            const irreducible =
+              contextTruncation?.fits === false ? contextTruncation : null;
+            const messageIsTheProblem =
+              irreducible != null &&
+              (irreducible.latest_turn_tokens ?? 0) >
+                (irreducible.context_length ?? 0);
             toast.error("Context limit reached", {
-              description:
-                "The conversation has filled the model's context window. " +
-                'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
-                "or start a new chat.",
+              description: messageIsTheProblem
+                ? `This message is ${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+                  `against a ${irreducible?.context_length?.toLocaleString()}-token window. ` +
+                  "The earlier turns were already removed and it still does not fit, so " +
+                  'shortening the conversation will not help. Shorten this message, or raise "Context Length" ' +
+                  "in the chat Settings panel (⚙ in the top-right)."
+                : // llama-server runs with --no-context-shift, returning a hard
+                  // error instead of silently dropping old KV-cache turns. Point
+                  // the user at the control that raises the ceiling.
+                  "The conversation has filled the model's context window. " +
+                  'Increase "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                  "or start a new chat.",
               duration: 8000,
             });
           } else {

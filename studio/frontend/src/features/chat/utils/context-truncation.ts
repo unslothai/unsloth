@@ -22,7 +22,7 @@ export function mergeContextTruncation(
 ): ContextTruncation {
   if (!current) return incoming;
 
-  return {
+  const merged = {
     ...current,
     ...incoming,
     dropped_messages: current.dropped_messages + incoming.dropped_messages,
@@ -37,4 +37,17 @@ export function mergeContextTruncation(
     ...spreadSum("archived_messages", current.archived_messages, incoming.archived_messages),
     ...spreadSum("recalled_chunks", current.recalled_chunks, incoming.recalled_chunks),
   };
+
+  // The irreducible diagnosis describes ONE fit that gave up. The tool loop refits per
+  // iteration, so an earlier failure followed by a later success would otherwise leave
+  // those numbers on a result that did fit, where they describe nothing.
+  //
+  // Deleted rather than spread as undefined: assigning undefined would put both keys on
+  // every ordinary response, which is the shape regression spreadSum exists to prevent.
+  // delete on an absent key is a no-op, so this cannot add them either.
+  if (incoming.fits) {
+    delete merged.irreducible_tokens;
+    delete merged.latest_turn_tokens;
+  }
+  return merged;
 }

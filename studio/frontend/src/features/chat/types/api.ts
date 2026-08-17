@@ -664,5 +664,11 @@ export interface OpenAIChatChunk {
     // message text: this rides an SSE chunk that reaches the client.
     archived_messages?: number;
     recalled_chunks?: number;
+    // Present only when `fits` is false: what the conversation could not be reduced
+    // below, and how much of that is the message just sent. Between them they say
+    // whether the history or that single message is what does not fit, which decides
+    // whether "shorten the conversation" is useful advice or a dead end.
+    irreducible_tokens?: number;
+    latest_turn_tokens?: number;
   };
 }

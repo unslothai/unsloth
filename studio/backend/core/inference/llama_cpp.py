@@ -19888,7 +19888,12 @@ class LlamaCppBackend:
                 retry_max_tokens = payload["max_tokens"]
                 retry_context_overflow = None
                 retry_preflight_context_length = self._effective_context_length
-                if truncation and truncation["fits"]:
+                # `fits` False too: it carries the diagnosis for a request that cannot
+                # be made to fit, and the client needs it to explain WHY. Without it the
+                # user only sees llama-server's error, which reports the size of the
+                # whole conversation and advises shortening it even when the single
+                # message just sent is the part that does not fit.
+                if truncation:
                     yield {"type": "context_truncated", **truncation}
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
@@ -20437,7 +20442,9 @@ class LlamaCppBackend:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
-                    if truncation and truncation["fits"]:
+                    # `fits` False too, as on the other paths: it carries the diagnosis
+                    # for a request that cannot be made to fit.
+                    if truncation:
                         yield {"type": "context_truncated", **truncation}
                     _preflight_succeeded = True
                 except Exception as exc:
@@ -21764,7 +21771,12 @@ class LlamaCppBackend:
                             _rolling_anchor_ids.add(id(_message))
                         for _ev in _recalled["events"]:
                             yield _ev
-                if truncation and truncation["fits"]:
+                # `fits` False too: it carries the diagnosis for a request that cannot
+                # be made to fit, and the client needs it to explain WHY. Without it the
+                # user only sees llama-server's error, which reports the size of the
+                # whole conversation and advises shortening it even when the single
+                # message just sent is the part that does not fit.
+                if truncation:
                     yield {"type": "context_truncated", **truncation}
                 _final_preflight_succeeded = True
             except Exception as exc:

@@ -326,7 +326,11 @@ def test_rolling_fit_never_clips_an_irreducible_latest_turn():
 
     assert fitted is messages
     assert fitted == messages
-    assert info is None
+    # Unchanged messages, but no longer a silent None: the fit says WHY it gave up, so
+    # the user can be told the single message is the problem rather than the history.
+    assert info is not None and info["fits"] is False
+    assert info["dropped_messages"] == 0
+    assert info["latest_turn_tokens"] > info["context_length"]
 
 
 def _length_counter(candidate):
@@ -467,7 +471,46 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
 
     assert fitted is messages
     assert fitted == messages
-    assert info is None
+    assert info is not None and info["fits"] is False
+    # The partial eviction is deliberately NOT applied: the request fails either way,
+    # and dropping turns off a doomed request loses them for nothing.
+    assert info["dropped_messages"] == 0
+    assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
+
+
+def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault():
+    """The two numbers that make the error actionable.
+
+    llama-server's own error reports the size of the WHOLE conversation and advises
+    shortening it. When the latest turn alone is over the window that advice cannot
+    work, and this is what lets the client say so instead.
+    """
+    huge_message = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "latest" * 200},
+    ]
+    _, info = fit_rolling_context(
+        huge_message,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    assert info["fits"] is False
+    assert info["latest_turn_tokens"] > info["context_length"]
+
+    # A conversation that fits comfortably reports nothing at all, rather than a
+    # fits:False dict that a caller might mistake for a failure.
+    small = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "hello"},
+    ]
+    _, none_info = fit_rolling_context(
+        small,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    assert none_info is None
 
 
 # ---------------------------------------------------------------------------

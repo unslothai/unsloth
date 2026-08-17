@@ -198,3 +198,50 @@ test("the notice is a NOTICE, never part of the conversation", () => {
   //    and saved back as message text.
   assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
 });
+
+test("an irreducible fit reports a diagnosis, and it is dropped once something fits", () => {
+  // A fit that gave up carries the numbers that say WHICH part is too long.
+  const failed = mergeContextTruncation(undefined, {
+    dropped_messages: 0,
+    fits: false,
+    prompt_tokens_before: 10290,
+    prompt_tokens_after: 10290,
+    context_length: 4096,
+    irreducible_tokens: 5050,
+    latest_turn_tokens: 5000,
+  });
+  assert.equal(failed.fits, false);
+  assert.equal(failed.latest_turn_tokens, 5000);
+
+  // The tool loop refits per iteration. A later iteration that DOES fit must not carry
+  // the earlier failure's numbers forward, where they would describe nothing.
+  const recovered = mergeContextTruncation(failed, {
+    dropped_messages: 12,
+    fits: true,
+    prompt_tokens_after: 3000,
+    context_length: 4096,
+  });
+  assert.equal(recovered.fits, true);
+  assert.ok(!("irreducible_tokens" in recovered));
+  assert.ok(!("latest_turn_tokens" in recovered));
+
+  // And an ordinary response never grows the keys at all, not even set to undefined.
+  const plain = mergeContextTruncation(
+    { dropped_messages: 1, fits: true },
+    { dropped_messages: 2, fits: true },
+  );
+  assert.ok(!("irreducible_tokens" in plain));
+  assert.ok(!("latest_turn_tokens" in plain));
+});
+
+test("the too-long advice depends on WHICH part does not fit", () => {
+  const adapterSource = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // Telling someone to shorten the conversation is a dead end when the history has
+  // already been evicted and the single message is what overflows.
+  assert.match(adapterSource, /contextTruncation\?\.fits === false/);
+  assert.match(adapterSource, /shortening the conversation will not help/);
+  assert.match(adapterSource, /latest_turn_tokens/);
+});

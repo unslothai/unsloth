@@ -275,7 +275,33 @@ def fit_rolling_context(
         dropped_total += dropped
         current_tokens = count_tokens(fitted)
 
-    if dropped_total == 0 or current_tokens > prompt_target:
+    if current_tokens > prompt_target:
+        # Evicted everything evictable and it still does not fit. The ORIGINAL messages
+        # are returned, not the partial eviction: the request is going to be refused
+        # either way, and silently dropping turns off a doomed request would lose them
+        # from the model's view with nothing to show for it.
+        #
+        # The diagnosis is worth returning even so. Without it the only thing the user
+        # is told is llama-server's own error, which reports the size of the WHOLE
+        # conversation and advises shortening it -- advice that cannot possibly work,
+        # because what is left after maximal eviction is the system prompt and the
+        # latest turn, and one of those is the thing that does not fit.
+        #
+        # Every consumer already gates on `fits`, so this is inert everywhere that
+        # treats a truncation as a compaction.
+        return messages, {
+            "fits": False,
+            "dropped_messages": 0,
+            "prompt_tokens_before": initial_tokens,
+            "prompt_tokens_after": initial_tokens,
+            # What the conversation cannot be reduced below, and how much of that is
+            # the message just sent. Between them these say whether the conversation
+            # or the single message is the problem.
+            "irreducible_tokens": current_tokens,
+            "latest_turn_tokens": count_tokens(messages[-1:]) if messages else 0,
+            "context_length": context_length,
+        }
+    if dropped_total == 0:
         return messages, None
     return fitted, {
         "dropped_messages": dropped_total,
