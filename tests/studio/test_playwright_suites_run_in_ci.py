@@ -160,7 +160,12 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
     job = document["jobs"]["ui-indicator"]
-    runs = "\n".join(str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict))
+    # Uncommented for the same reason the repo-wide scan is: commenting a line out is how
+    # an invocation gets disabled, and a raw substring test reads `# bash ...engine` as
+    # coverage. Reported on this PR: all three could be commented out with this green.
+    runs = _uncommented(
+        "\n".join(str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict))
+    )
     missing = [
         engine
         for engine in ("chromium", "firefox", "webkit")
@@ -171,6 +176,10 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         f"coverage this job was split out to keep, and the repo-wide check above cannot "
         f"see it go: the Mac and Windows workflows name the same helper."
     )
+    # And the disabled form of each of those lines does not read as coverage, or the
+    # check above passes on three commented-out commands.
+    disabled = _uncommented("\n".join(f"# bash x.sh 18899 {e}" for e in ("chromium", "webkit")))
+    assert "18899 chromium" not in disabled and "18899 webkit" not in disabled
 
 
 def test_the_scan_reads_the_workflows_it_claims_to():
