@@ -2018,6 +2018,31 @@ export HSA_ENABLE_DXG_DETECTION="${HSA_ENABLE_DXG_DETECTION:-1}"
 if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
     PATH="$PATH:/opt/rocm/bin"
 fi
+_has_intel_xpu_gpu() {
+    if [ "$_setup_nvidia_usable" = true ]; then
+        return 1
+    fi
+    if command -v sycl-ls >/dev/null 2>&1; then
+        if sycl-ls 2>/dev/null | grep -qi "gpu"; then
+            return 0
+        fi
+    fi
+    if command -v xpu-smi >/dev/null 2>&1; then
+        return 0
+    fi
+    if [ -d /sys/bus/pci/devices ]; then
+        for _pci_dev in /sys/bus/pci/devices/*; do
+            [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] || continue
+            read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue
+            read -r _c < "$_pci_dev/class" 2>/dev/null || continue
+            if [ "$_v" = "0x8086" ] && [ "${_c#0x03}" != "$_c" ]; then
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
 _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
@@ -2869,6 +2894,13 @@ else
                 fi
             fi
 
+            # Check for SYCL (Intel) only if CUDA/ROCm was not selected
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_usable" != true ]; then
+                if [ "$_setup_xpu_ready" = true ] || _has_intel_xpu_gpu; then
+                    GPU_BACKEND="sycl"
+                fi
+            fi
+
             _BUILD_DESC="building"
             if [ "$_IS_MACOS_ARM64" = true ]; then
                 # Metal takes precedence on Apple Silicon (CUDA/ROCm not functional on macOS)
@@ -3024,6 +3056,12 @@ else
                 if [ -n "$GPU_TARGETS" ]; then
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
+                fi
+            elif [ "$GPU_BACKEND" = "sycl" ]; then
+                _BUILD_DESC="building (Intel SYCL FP16)"
+                CMAKE_ARGS="$CMAKE_ARGS -DGGML_SYCL=ON -DGGML_SYCL_F16=ON"
+                if command -v icpx >/dev/null 2>&1; then
+                    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx"
                 fi
             elif [ -d /usr/local/cuda ] || _setup_run_smi nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
