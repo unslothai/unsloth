@@ -7,8 +7,10 @@
 // assistant-ui gives the client ONE notification manager. `useAuiState` subscribes every caller
 // to it through `useSyncExternalStore`, and the selector IS the getSnapshot, so a single store
 // write runs every selector in the tree. Writing one character calls `composer.setText`, so a
-// keystroke pays one pass over every subscription the thread holds. Measured on
-// tests/studio/playwright_heavy_thread.py's fixture, instrumented at the notification manager:
+// keystroke pays one pass over every subscription the thread holds. Measured by driving a
+// synthetic heavy thread (20, 80 and 220 assistant messages, up to 310K characters of finished
+// replies) with the notification manager instrumented to count live subscriptions and selector
+// runs:
 //
 //     20 messages   955 subscriptions   1,020 selector runs per keystroke    1.8ms
 //     80 messages  3,726 subscriptions  3,791 selector runs per keystroke    7.2ms
@@ -20,8 +22,10 @@
 // The two seams below are what stops a subscription being minted per markdown BLOCK and per
 // non-newest message. Neither is visible in the rendered output: undo either and the thread
 // still renders identically, every other test here still passes, and the keystroke goes back to
-// carrying the extra subscriptions. So, as thread-delete-render-budget.test.ts and
-// chat-autoscroll-frame-budget.test.ts do, the wiring is pinned at the source.
+// carrying the extra subscriptions. So, as chat-autoscroll-frame-budget.test.ts and
+// drag-costs-no-render.test.ts do, the wiring is pinned at the source. The counts above are the
+// reason the seams exist, not something asserted here: these are source-shape assertions, and a
+// regression in the counts alone would not fail them.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -45,7 +49,10 @@ function body(text: string, start: string, terminator = "\n}"): string {
 }
 
 test("a markdown block reads the render_html presence from context, not the store", () => {
-  const block = body(markdown, "function StreamdownBlockContent(props: BlockProps) {");
+  const block = body(
+    markdown,
+    "function StreamdownBlockContent(props: BlockProps) {",
+  );
   assert.match(block, /useContext\(\s*RenderHtmlToolPresenceContext,?\s*\)/);
   // The block component is mounted once per markdown block: 800 of the 10,193 subscriptions at
   // 300K characters came from this one call, and each re-scanned message.parts per keystroke.

@@ -18,7 +18,9 @@ import {
   threadHasResearchMessage,
 } from "../src/components/assistant-ui/thread-research-presence.ts";
 
-const withRun = (id: unknown) => ({ metadata: { custom: { researchRunId: id } } });
+const withRun = (id: unknown) => ({
+  metadata: { custom: { researchRunId: id } },
+});
 
 test("a thread with a research reply anywhere in it answers true", () => {
   assert.equal(threadHasResearchMessage([{}, withRun("run_1"), {}]), true);
@@ -28,10 +30,7 @@ test("a thread with a research reply anywhere in it answers true", () => {
 test("a thread with no research reply answers false", () => {
   assert.equal(threadHasResearchMessage([]), false);
   assert.equal(threadHasResearchMessage([{}, { metadata: {} }]), false);
-  assert.equal(
-    threadHasResearchMessage([{ metadata: { custom: {} } }]),
-    false,
-  );
+  assert.equal(threadHasResearchMessage([{ metadata: { custom: {} } }]), false);
   assert.equal(threadHasResearchMessage([{ metadata: undefined }]), false);
 });
 

@@ -18,6 +18,12 @@
  * keeps the answer byte-identical to the scan it replaces, including for a thread whose research
  * reply sits in metadata that arrives later: that arrival replaces the array.
  *
+ * Two cases where the cache simply misses, both perf-only and neither worse than the scan it
+ * replaces, which ran on every notification regardless. While a reply streams, the array is
+ * rebuilt per token, so every arrival is a miss. And `MessageRepository.getMessages(headId)` for
+ * an explicit non-head branch builds a fresh array on every call, so anything reading a branch
+ * head rather than `thread.messages` would miss permanently.
+ *
  * Weak, so a thread that goes away takes its entry with it. Sibling of research-reply-owners.ts,
  * which answers the per-message ownership question the same way; kept separate because they key
  * different answers off the same revision and one cache holding both would hand a caller the
