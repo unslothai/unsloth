@@ -96,11 +96,28 @@ test("the family re-seed writes the ramp, and resets it for a family without one
   assert.match(source, /setLrWarmupSteps\(family\.defaults\.lrWarmupSteps \?\? 0\);/);
 });
 
-test("a hand-picked schedule survives a family switch", () => {
-  // The re-seed is gated on settingsDirty, and the LR schedule Select now sets it like every
-  // other settings control; without that the user's pick is silently replaced.
+test("an edit to an unrelated setting cannot suppress the family ramp", () => {
+  // settingsDirty is one flag over every numeric control, Steps and Seed included. Gating the
+  // ramp on it meant typing a step count and then switching to a flow-matching DiT left the
+  // panel on "constant" with the Warmup steps field hidden, so the ramp this panel exists to
+  // seed silently never ran. The pair gets its own flag, outside the settingsDirty block.
+  assert.match(source, /const lrScheduleDirty = useRef\(false\);/);
   assert.match(
     source,
-    /onValueChange=\{\(v\) => \{[\s\S]{0,400}?settingsDirty\.current = true;\s*\n\s*setLrScheduler\(v as LrScheduler\);/,
+    /\}\s*\n\s*\/\/[\s\S]{0,400}?if \(!lrScheduleDirty\.current\) \{\s*\n\s*setLrScheduler\(/,
+  );
+  // And it is NOT re-gated on settingsDirty anywhere.
+  assert.doesNotMatch(source, /settingsDirty\.current = true;\s*\n\s*setLrScheduler\(/);
+});
+
+test("a hand-edited ramp survives a family switch", () => {
+  // Both halves mark the pair dirty, or the re-seed replaces the user's pick on the next switch.
+  assert.match(
+    source,
+    /onValueChange=\{\(v\) => \{[\s\S]{0,400}?lrScheduleDirty\.current = true;\s*\n\s*setLrScheduler\(v as LrScheduler\);/,
+  );
+  assert.match(
+    source,
+    /\(n\) => \{\s*\n\s*lrScheduleDirty\.current = true;\s*\n\s*setLrWarmupSteps\(n\);/,
   );
 });

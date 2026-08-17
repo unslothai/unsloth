@@ -504,6 +504,12 @@ export function DiffusionTrainPanel({
   );
   // Track whether the user hand-edited the numeric settings; if not, a family change re-seeds them from that family defaults.
   const settingsDirty = useRef(false);
+  // The LR schedule pair tracks its own edits rather than riding on settingsDirty. It is the one
+  // setting whose control DISAPPEARS -- "Warmup steps" is hidden under plain "constant" -- so a
+  // value carried past a family change is invisible rather than merely stale, and an edit to
+  // something unrelated like Steps or Seed would otherwise leave a flow-matching DiT on
+  // "constant" with the family's ramp silently never applied.
+  const lrScheduleDirty = useRef(false);
   // Track whether the user hand-picked a base precision; if not, a family change re-seeds it from recommended_precision.
   const precisionDirty = useRef(false);
   // Same for the base repo: once the user picks one, only a real family change may re-seed it. `family` is a fresh object after every
@@ -636,9 +642,11 @@ export function DiffusionTrainPanel({
       setLearningRate(family.defaults.lr);
       setRank(family.defaults.rank);
       setResolution(family.defaults.resolution);
-      // The ramp is seeded from the family or reset with it: a family with no warmup preset goes
-      // back to the plain default, or the 20 steps recommended for a flow-matching DiT ride along
-      // into SDXL, which never asked for one.
+    }
+    // The ramp is seeded from the family or reset with it: a family with no warmup preset goes
+    // back to the plain default, or the 20 steps recommended for a flow-matching DiT ride along
+    // into SDXL, which never asked for one.
+    if (!lrScheduleDirty.current) {
       setLrScheduler(family.defaults.lrScheduler ?? "constant");
       setLrWarmupSteps(family.defaults.lrWarmupSteps ?? 0);
     }
@@ -1374,9 +1382,9 @@ export function DiffusionTrainPanel({
           <Select
             value={lrScheduler}
             onValueChange={(v) => {
-              // Dirty like every other settings control: the family re-seed now writes this
-              // field, so without it a hand-picked schedule is replaced on the next family switch.
-              settingsDirty.current = true;
+              // The family re-seed now writes this field, so without a dirty mark a hand-picked
+              // schedule is replaced on the next family switch.
+              lrScheduleDirty.current = true;
               setLrScheduler(v as LrScheduler);
             }}
           >
@@ -1392,10 +1400,21 @@ export function DiffusionTrainPanel({
           </Select>
         </div>
         {lrScheduler !== "constant" &&
-          numberField("Warmup steps", lrWarmupSteps, setLrWarmupSteps, 0, {
-            min: 0,
-            hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
-          })}
+          numberField(
+            "Warmup steps",
+            lrWarmupSteps,
+            // The other half of the pair, so it marks the pair dirty too: a hand-typed ramp
+            // length must survive the next family change the same way the schedule does.
+            (n) => {
+              lrScheduleDirty.current = true;
+              setLrWarmupSteps(n);
+            },
+            0,
+            {
+              min: 0,
+              hint: "Ramps the learning rate up over the first steps instead of starting at full size.",
+            },
+          )}
       </div>
 
       <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
