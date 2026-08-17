@@ -11922,31 +11922,40 @@ _MINTED_TOOL_CALL_ID_SUFFIX = _re.compile(
 _MISTRAL_TOOL_CALL_ID = _re.compile(r"[a-zA-Z0-9]{9}")
 
 
-def _replay_tool_call_id(value: Any, provider_type: Optional[str] = None) -> Any:
-    """Restore the provider's original tool-call id for replay; hash-shorten
-    anything else over 64 chars (same scheme as openai_codex_client._codex_call_id,
-    so call/output pairs shorten identically). Mistral only accepts 9-char
-    alphanumeric ids, so foreign ids get a stable 9-char hex mapping instead."""
-    if not isinstance(value, str):
-        return value
-    base = _MINTED_TOOL_CALL_ID_SUFFIX.sub("", value)
-    if provider_type == "mistral":
-        if _MISTRAL_TOOL_CALL_ID.fullmatch(base):
-            return base
-        return _hashlib.sha256(base.encode("utf-8")).hexdigest()[:9]
-    if len(base) <= 64:
-        return base
-    digest = _hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
-    return f"{base[:31]}_{digest}"
+def _replay_tool_call_id_map(
+    originals: "set[str]", provider_type: Optional[str] = None
+) -> dict[str, str]:
+    """Map stored tool-call ids to replay ids: the suffix-stripped base when
+    exactly one distinct original claims it, else the full stored value (backend
+    ids like "call_0" restart every response, so the minted uuid suffix is the
+    only cross-response uniqueness). Then per-provider: Mistral only accepts
+    9-char alphanumeric ids, so anything else gets a stable sha256[:9] mapping;
+    other providers hash-shorten past 64 chars (same scheme as
+    openai_codex_client._codex_call_id, so call/output pairs stay paired)."""
+    bases = {v: _MINTED_TOOL_CALL_ID_SUFFIX.sub("", v) for v in originals}
+    claims: dict[str, int] = {}
+    for base in bases.values():
+        claims[base] = claims.get(base, 0) + 1
+    out = {}
+    for value, base in bases.items():
+        replay = base if claims[base] == 1 else value
+        if provider_type == "mistral":
+            if not _MISTRAL_TOOL_CALL_ID.fullmatch(replay):
+                replay = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:9]
+        elif len(replay) > 64:
+            digest = _hashlib.sha256(replay.encode("utf-8")).hexdigest()[:32]
+            replay = f"{replay[:31]}_{digest}"
+        out[value] = replay
+    return out
 
 
-def _replay_tool_call_ids(tool_calls: Any, provider_type: Optional[str] = None) -> Any:
+def _replay_tool_call_ids(tool_calls: Any, replay_ids: dict[str, str]) -> Any:
     if not isinstance(tool_calls, list):
         return tool_calls
     out = []
     for tc in tool_calls:
         if isinstance(tc, dict) and isinstance(tc.get("id"), str):
-            fixed = _replay_tool_call_id(tc["id"], provider_type)
+            fixed = replay_ids.get(tc["id"], tc["id"])
             if fixed != tc["id"]:
                 tc = {**tc, "id": fixed}
         out.append(tc)
@@ -12262,11 +12271,26 @@ def _build_external_messages(
                 if emit_extra_content and msg.role == "assistant" and msg.extra_content:
                     entry["extra_content"] = msg.extra_content
                 result.append(entry)
-    for entry in result:
-        if entry.get("tool_calls"):
-            entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], provider_type)
-        if isinstance(entry.get("tool_call_id"), str):
-            entry["tool_call_id"] = _replay_tool_call_id(entry["tool_call_id"], provider_type)
+    originals = {
+        tc["id"]
+        for entry in result
+        if isinstance(entry.get("tool_calls"), list)
+        for tc in entry["tool_calls"]
+        if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+    } | {
+        entry["tool_call_id"]
+        for entry in result
+        if isinstance(entry.get("tool_call_id"), str)
+    }
+    if originals:
+        replay_ids = _replay_tool_call_id_map(originals, provider_type)
+        for entry in result:
+            if entry.get("tool_calls"):
+                entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], replay_ids)
+            if isinstance(entry.get("tool_call_id"), str):
+                entry["tool_call_id"] = replay_ids.get(
+                    entry["tool_call_id"], entry["tool_call_id"]
+                )
     return result
 
 
