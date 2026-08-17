@@ -85,3 +85,20 @@ test("the compaction notice renders from persisted metadata, not from a message"
   assert.match(thread, /<CompactionNotice truncation=\{contextTruncation\}/);
   assert.match(notice, /This conversation got long, so it was compacted/);
 });
+
+test("the compaction notice is gated to the FIRST compacted turn", () => {
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  // A thread that has outgrown its window compacts on every turn from then on, so an
+  // ungated notice is a notice on every reply for the rest of the conversation.
+  assert.match(thread, /const isFirstCompaction = useAuiState/);
+  assert.match(
+    thread,
+    /contextTruncation && isFirstCompaction && !isEditing/,
+  );
+  // The gate walks the thread and stops at the first compacted assistant turn, rather
+  // than assuming the compacted ones are contiguous or that this message is the last.
+  assert.match(thread, /for \(const message of thread\.messages\)/);
+});

@@ -5810,6 +5810,24 @@ const AssistantMessage: FC = () => {
       ? (value as ContextTruncation)
       : null;
   });
+  // Once a thread outgrows the window it compacts on EVERY subsequent turn, so a notice
+  // per compacted turn is a notice on every reply for the rest of the conversation. The
+  // user needs telling once, on the turn where it started; after that it is chrome. This
+  // returns a boolean rather than the message so the selector stays identity-stable.
+  const isFirstCompaction = useAuiState(({ thread }) => {
+    for (const message of thread.messages) {
+      if (message.role !== "assistant") continue;
+      const value = (
+        message.metadata as
+          | { custom?: { contextTruncation?: unknown } }
+          | undefined
+      )?.custom?.contextTruncation as ContextTruncation | undefined;
+      if (value && value.fits && value.dropped_messages) {
+        return message.id === messageId;
+      }
+    }
+    return false;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -5870,7 +5888,7 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        {contextTruncation && !isEditing && (
+        {contextTruncation && isFirstCompaction && !isEditing && (
           <CompactionNotice truncation={contextTruncation} />
         )}
         {isEditing ? (
