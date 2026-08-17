@@ -1902,16 +1902,20 @@ def test_hydration_clears_the_slot_baseline_for_a_slotless_model():
     assert "status.requested_parallel_slots !== null && {" not in src
 
 
-def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
-    """`hydratingExistingModel` is true whenever the incoming status disagrees with what
-    this tab last recorded, which includes RE-ADOPTING a model the tab never lost: the
-    resident-adopt branch restores the model's own per-model config and only then
-    hydrates, passing the EXTERNAL id as `previousCheckpoint`."""
+def test_the_slot_control_reseeds_on_any_model_change_underneath_the_tab():
+    """`slotsModelChanged` is plain `hydratingExistingModel`: any status that disagrees
+    with what this tab last recorded reseeds the slot control, because the controls in
+    the store belong to the model that just left.
+
+    This used to carry a `&& !options.readoptingSameModel` guard, so that re-adopting a
+    model the tab never lost kept its slot control. #8943 removed the guard and the
+    option with it, and asserted the removal from the frontend side in
+    `studio/frontend/tests/resident-config-match.test.ts`. This test asserted the
+    opposite and was not updated, so it failed on every PR that rebased onto main."""
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    assert (
-        "const slotsModelChanged = hydratingExistingModel && !options.readoptingSameModel;"
-        in status
-    )
+    assert "const slotsModelChanged = hydratingExistingModel;" in status
+    # The option is gone, not merely unread, so nothing can quietly start passing it.
+    assert "readoptingSameModel" not in status
     assert "...(seedLoadParams && slotsModelChanged && { nParallel: null })," in status
     # Never a slot-count proxy for "same model".
     assert "prevState.loadedNParallel === (status.requested_parallel_slots" not in status
@@ -1920,22 +1924,12 @@ def test_hydration_keeps_the_slot_control_when_readopting_the_running_model():
     assert "loadedNParallel: status.requested_parallel_slots," in status
 
     runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
-    resident = runtime.split("if (!forceReload && isExternalModelId(selectedCheckpoint)) {", 1)[
-        1
-    ].split("const stopDecision", 1)[0]
-    # What makes the scenario reachable: the branch restores the model's own
-    # config, then hydrates against the external id.
-    assert "applyPerModelConfigToRuntime(selection.previousConfig);" in resident
-    assert "previousCheckpoint: selectedCheckpoint," in resident
-    # Only reachable because the branch matched the id AND the variant first.
-    assert "resolveInferenceCheckpointId(residentStatus) === modelId" in resident
-    assert "readoptingSameModel: true," in resident
-    # The refresh() hydrate must NOT claim it: there the model really can change.
-    poll = runtime.split("setModels(listRes.models.map(toChatModelSummary));", 1)[1].split(
-        "} else if (!statusRes.active_model", 1
-    )[0]
-    assert "applyActiveModelStatusToStore(statusRes, {" in poll
-    assert "readoptingSameModel" not in poll
+    # The resident-adopt path still restores the model's own config and then hydrates
+    # against the id the tab came in with. Only the slot-control exemption is gone.
+    assert "applyPerModelConfigToRuntime(selection.previousConfig);" in runtime
+    assert "previousCheckpoint: selectedCheckpoint," in runtime
+    # No caller anywhere may reintroduce the option, on any hydrate path.
+    assert "readoptingSameModel" not in runtime
 
 
 def test_parallel_slots_are_never_recorded_for_a_diffusion_load():
@@ -2290,13 +2284,14 @@ def test_external_readoption_drops_a_pin_taken_for_another_model():
     re-adoption branch can adopt a resident the pin was never taken for and Apply would reload the
     old model. The branch has to clear it itself."""
     src = _read("features/chat/hooks/use-chat-model-runtime.ts")
-    branch = src.split("if (!forceReload && isExternalModelId(selectedCheckpoint))", 1)[1]
-    branch = branch.split("const stopDecision = await confirmStopRunningChatsIfNeeded", 1)[0]
-    assert "activeLoadId !== modelId" in branch
-    assert "setState({ activeLoadId: null })" in branch
+    # #8943 restructured this path, so the assertions below anchor on the behaviour
+    # rather than on the old `if (!forceReload && isExternalModelId(...))` header:
+    # the pin is adopted for THIS pick, which clears it when the pick is the load
+    # itself, and that write lands before the checkpoint moves.
+    assert "activeLoadId: loadPath === modelId ? null : loadPath," in src
     # Clearing must land before the checkpoint moves, so nothing reads the pair half updated.
-    assert branch.index("activeLoadId: null") < branch.index(
-        ".setCheckpoint(modelId, residentStatus.gguf_variant)"
+    assert src.index("activeLoadId: loadPath === modelId ? null : loadPath,") < src.index(
+        ".setCheckpoint(modelId, confirmedStatus.gguf_variant)"
     ), "the pin must be cleared before the checkpoint is adopted"
 
 
