@@ -75,6 +75,9 @@ jobs:
         with:
           python-version: '${{ matrix.python }}'
           cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       - name: Install backend test dependencies (CPU only)
         run: |
@@ -142,6 +145,9 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          cache-dependency-path: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # node + uv unlock ~60 tests that previously skipped on CI:
       #   - 9 tests in test_chat_preset_builtin_invariants.py need node to

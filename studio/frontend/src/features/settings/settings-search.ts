@@ -91,12 +91,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
   chat: [
     "settings.general.chatDefaults",
     "settings.general.autoTitleNewChats",
+    "settings.chat.rememberParamsPerModel",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.collapseByDefault",
     "settings.chat.artifacts.title",
     "settings.chat.artifacts.collapseHtmlBlocks",
     "settings.chat.artifacts.allowNetworkAccess",
     "settings.chat.modelDisclaimer",
+    "settings.chat.projectsSection",
   ],
   // Chat data management moved to the Data tab; keep these rows findable there.
   data: [
@@ -104,6 +106,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.data.archivedChats",
     "settings.data.archiveAllChats",
     "settings.data.confirmBeforeDeleting",
+    "settings.data.alwaysDeleteFiles",
     "settings.data.uploadedFiles",
     "settings.chat.exportHistory",
     "settings.chat.exportConversations",
@@ -145,6 +148,14 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.voice.readAloud.pitchLabel",
     "settings.voice.readAloud.volumeLabel",
     "settings.voice.readAloud.previewLabel",
+  ],
+  debugging: [
+    "settings.debugging.logSection",
+    "settings.debugging.source",
+    "settings.debugging.path",
+    "settings.debugging.refreshSection",
+    "settings.debugging.mode",
+    "settings.debugging.keywords",
   ],
   about: [
     "settings.about.updates",

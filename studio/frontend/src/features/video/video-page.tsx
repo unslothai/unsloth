@@ -83,11 +83,13 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
+import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
+import { useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -161,7 +163,11 @@ import {
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts as data (HunyuanVideo carries both repacks), and the load kind per artifact via loadSpecFor.
 // The picker renders groups with a format second level, which also surfaces LTX-2.3 in Recommended (its HF pipeline_tag is image-to-video).
-const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
+// Host-dependent, so it is built per render rather than once at module load: a Mac is offered
+// only the GGUF rows, and an accelerated host gets the speed qualifiers.
+function useVideoModels(host: HostClass): ModelOption[] {
+  return useMemo(() => catalogToModelOptions(VIDEO_CATALOG, host), [host]);
+}
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
@@ -819,6 +825,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 }
 
 function VideoGenerator({ active = true }: { active?: boolean }) {
+  const hostClass = useHostClass();
+  const videoModels = useVideoModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
@@ -1860,14 +1868,39 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     [],
   );
 
-  const refreshStatus = useCallback(async () => {
+  // Answers with what it wrote, or null when the read failed or a newer one superseded it,
+  // so a caller can act on what the server now says.
+  const refreshStatus = useCallback(async (): Promise<VideoStatus | null> => {
     const ticket = ++statusTicket.current;
     try {
-      setStatusIfNewest(ticket, await getVideoStatus());
+      const next = await getVideoStatus();
+      setStatusIfNewest(ticket, next);
+      return ticket === statusTicket.current ? next : null;
     } catch {
       // Status is best-effort; a failed poll shouldn't surface an error toast.
+      return null;
     }
   }, [setStatusIfNewest]);
+
+  // A generation can be refused because the runtime went away under the page: an idle
+  // auto-unload frees it server-side and the browser hears nothing, since the eject event
+  // is raised by whoever clicked eject. Without a re-read here Generate stays enabled off
+  // the stale flag and every retry 409s again, so the refusal is the news that the model
+  // is gone. Also clears the state that only means anything while one is resident (the
+  // Reapply target, a replacement load's tracking), as the indicator eject does.
+  const resyncAfterGenerateRefusal = useCallback(async () => {
+    // A model picked while this read is in flight makes the answer stale rather than wrong:
+    // /video/status reports committed state, so it says loaded: false for the load that has
+    // just started. Acting on it would dismiss that load's toast and poll, and -- while its
+    // start request is still out -- the cancel it counts as sends the compensating unload
+    // that tears it down. The load counter is the fence handleLoad already bumps.
+    const startLoad = loadSeq.current;
+    const next = await refreshStatus();
+    if (!isMounted.current || next === null || next.loaded) return;
+    if (startLoad !== loadSeq.current) return;
+    dropResidentState();
+    setQuant(null);
+  }, [refreshStatus, dropResidentState]);
 
   // Track mount so a long generate stops issuing GPU work when the page is truly unmounted.
   useEffect(() => {
@@ -3003,6 +3036,9 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
       toast.error(err instanceof Error ? err.message : "Video generation failed");
       setBusy(null);
       setGenStep(null);
+      // The refusal can be "No video model is loaded": re-read rather than leave Generate
+      // enabled against a runtime that is already free.
+      void resyncAfterGenerateRefusal();
       return;
     }
     // Track live progress + the terminal outcome via the shared poll loop (also used by the mount-time resume).
@@ -3033,6 +3069,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
     defaultAudioFlowShift,
     canPickAudioFlowShift,
     startGenPoll,
+    resyncAfterGenerateRefusal,
   ]);
 
   // The Advanced (load-time) tuning controls, rendered in the right-docked panel below.
@@ -3237,7 +3274,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
-            models={VIDEO_MODELS}
+            models={videoModels}
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
