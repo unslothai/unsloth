@@ -74,7 +74,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.11', '3.12', '3.13']
+        # Both ends on a pull request, all four on main.
+        #
+        # Measured on one runner over the same tree: the four legs collect the same
+        # 26,320 tests and differ by exactly ONE of them, the >= 3.12 gate on
+        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 report
+        # 26193 passed / 127 skipped, 3.12 and 3.13 report 26194 / 126. Four legs cost
+        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a
+        # queue that has been observed 195 deep.
+        #
+        # A single leg was tried and is wrong. tests/test_python39_compatibility.py
+        # covers older SYNTAX statically, against the floor pyproject.toml declares
+        # (3.9), which is lower than any leg here. It cannot cover a version-conditional
+        # branch, because it parses rather than runs: sitecustomize.py repoints
+        # pathlib's pre-3.11 _NormalAccessor, native_path_leases.py and
+        # third_party_source.py branch on >= 3.12, and worker.py on a minimum below
+        # that. On 3.13 alone the older side of each is never executed.
+        #
+        # So: the ends. The floor exercises those branches, the ceiling is where
+        # removals and deprecations land and where the one version-gated test runs
+        # rather than skipping. What is left uncovered until merge is a difference
+        # peculiar to 3.11 or 3.12 alone.
+        python: >-
+          ${{ github.event_name == 'pull_request'
+              && fromJSON('["3.10", "3.13"]')
+              || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
