@@ -11672,6 +11672,22 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
+def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
+    """The clip's base64 without its data URI header, plus why it is refused.
+
+    The header is not payload, so counting it would refuse a clip of exactly the
+    size the composer allows. Returned rather than raised so the pre-switch and
+    post-load checks share one rule while raising their own way.
+    """
+    if video_b64.startswith("data:"):
+        video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
+    if not video_b64:
+        return "", (400, "Could not read the provided video file.")
+    if len(video_b64) > _MAX_VIDEO_B64_CHARS:
+        return video_b64, (413, "Video file is too large (max 64 MB).")
+    return video_b64, None
+
+
 def _inject_video_part(messages: list[dict], video_b64: str) -> None:
     """Append an input_video part to the last user message, in place.
 
@@ -13053,6 +13069,13 @@ async def openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
+        # input_video is llama.cpp's own part type, so the proxy has nowhere to
+        # put the clip. Say so rather than answering as if there were no video.
+        if payload.video_base64:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Video input is only supported on a local GGUF model with video support.",
+            )
         return await _proxy_to_external_provider(payload, request, current_subject)
 
     # Reject a malformed function tool here: it would otherwise reach
@@ -13191,7 +13214,20 @@ async def openai_chat_completions(
         # audio-only request asks for the projector alone, since an audio model's
         # projector carries no vision tower.
         _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
-        _needs_vision = _needs_image or bool(payload.audio_base64)
+        # Video rides that projector too. Its own /props gate can only run after
+        # the load, so this at least keeps a text-only target from evicting a
+        # working model to serve a clip it could never take.
+        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(
+            payload.video_base64
+        )
+        # Size is knowable now and the switch is not cheap: refuse an oversized
+        # clip before it costs a model load.
+        if payload.video_base64:
+            _, _video_rejection = _video_b64_rejection(payload.video_base64)
+            if _video_rejection is not None:
+                raise HTTPException(
+                    status_code = _video_rejection[0], detail = _video_rejection[1]
+                )
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
@@ -13521,6 +13557,15 @@ async def openai_chat_completions(
             ),
         )
 
+    # Injection lives in the GGUF branch below, since input_video is llama.cpp's
+    # own part type. Without this a transformers model answers as if the clip
+    # were never attached.
+    if payload.video_base64 and not using_gguf:
+        raise _reject(
+            400,
+            "Video input is only supported on a local GGUF model with video support.",
+        )
+
     # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
     # fields the client omitted, so agents and API clients get the model's tuned defaults
     # unless they set the field explicitly. Placed after external-provider routing (which
@@ -13694,15 +13739,9 @@ async def openai_chat_completions(
                     "Video provided but the current GGUF model cannot take video input. "
                     "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
                 )
-            video_b64 = payload.video_base64
-            # Strip before measuring: the data URI header is not payload, and
-            # counting it would refuse a clip of exactly the allowed size.
-            if video_b64.startswith("data:"):
-                video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
-            if not video_b64:
-                raise _reject(400, "Could not read the provided video file.")
-            if len(video_b64) > _MAX_VIDEO_B64_CHARS:
-                raise _reject(413, "Video file is too large (max 64 MB).")
+            video_b64, video_rejection = _video_b64_rejection(payload.video_base64)
+            if video_rejection is not None:
+                raise _reject(*video_rejection)
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
@@ -19369,6 +19408,12 @@ async def chat_count_tokens(
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing audio.",
+        )
+    # And video, whose frames llama-server samples at completion time.
+    if getattr(payload, "video_base64", None):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing video.",
         )
 
     llama_backend = get_llama_cpp_backend()

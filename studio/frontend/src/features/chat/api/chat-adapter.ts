@@ -2066,6 +2066,7 @@ function queuedResolvedModelFromStore(
           isAudio: activeModel.isAudio,
           audioType: activeModel.audioType,
           hasAudioInput: activeModel.hasAudioInput,
+          hasVideoInput: activeModel.hasVideoInput,
         }
       : null,
   };
@@ -3494,6 +3495,7 @@ async function resolveQueuedEmptyLocalModel(
               isAudio: status.is_audio ?? false,
               audioType: status.audio_type ?? null,
               hasAudioInput: status.has_audio_input ?? false,
+              hasVideoInput: status.has_video_input ?? false,
             },
           },
         };

@@ -2584,7 +2584,7 @@ const Composer: FC<{
             try {
               file = await nativeAttachmentIntentToFile(intent);
             } catch (error) {
-              toast.error("Could not attach dropped audio", {
+              toast.error("Could not attach dropped video", {
                 description:
                   error instanceof Error ? error.message : String(error),
               });

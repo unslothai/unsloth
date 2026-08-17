@@ -110,15 +110,72 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
     assert 4 * math.ceil((limit_bytes + 1024) / 3) > _MAX_VIDEO_B64_CHARS
 
 
+def _inference_source() -> str:
+    return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+
+
 def test_video_is_refused_on_the_tool_passthrough_path():
     """That branch forwards an explicit field list and returns before the
     injection below, so the clip would be dropped and the model would answer
     without it. The audio path already refuses; video has to match."""
-    source = (
-        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
-    ).read_text()
+    source = _inference_source()
     start = source.index("if using_gguf and _takes_tool_passthrough(payload, llama_backend):")
     branch = source[start : start + 2500]
     assert "payload.audio_base64" in branch
     assert "payload.video_base64" in branch
     assert "Video input is not supported together with guided decoding" in branch
+
+
+def test_the_size_check_runs_before_the_automatic_switch():
+    """A cheap length check must not cost a model load first: an oversized clip
+    would otherwise evict a working model and 413 only afterwards."""
+    source = _inference_source()
+    # Anchor inside the chat-completions handler; other routes switch too.
+    handler = source.index("_needs_image = bool(_pre_parsed[2])")
+    guard = source.index("_video_b64_rejection(payload.video_base64)", handler)
+    switch = source.index("await _maybe_auto_switch_model(", handler)
+    assert guard < switch
+
+
+def test_video_joins_the_projector_requirement_before_switching():
+    """Video rides the same companion mmproj as vision, so a text-only target
+    cannot serve it either. Audio already votes here."""
+    source = _inference_source()
+    start = source.index("_needs_image = bool(_pre_parsed[2])")
+    block = source[start : start + 400]
+    assert "payload.audio_base64" in block
+    assert "payload.video_base64" in block
+
+
+def test_an_external_provider_refuses_video_rather_than_ignoring_it():
+    """input_video is llama.cpp's own part type, so the proxy has nowhere to put
+    the clip and returns before any video handling below."""
+    source = _inference_source()
+    start = source.index("if payload.provider_id or payload.provider_type:")
+    branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
+    assert "payload.video_base64" in branch
+    assert "Video input is only supported on a local GGUF model" in branch
+
+
+def test_a_non_gguf_model_refuses_video_rather_than_ignoring_it():
+    """Injection lives in the GGUF branch, so a transformers model would answer
+    as if nothing were attached."""
+    source = _inference_source()
+    assert "if payload.video_base64 and not using_gguf:" in source
+
+
+def test_token_counting_refuses_video_like_image_and_audio():
+    """The completion injects the clip; this route cannot, so counting here
+    would silently undercount the turn."""
+    source = _inference_source()
+    start = source.index("Cannot count tokens for messages containing images.")
+    block = source[start : start + 700]
+    assert "Cannot count tokens for messages containing audio." in block
+    assert "Cannot count tokens for messages containing video." in block
+
+
+def test_both_video_checks_share_one_rule():
+    """Two size checks that drift let the pre-switch one pass what the post-load
+    one refuses, which is the model load this was meant to avoid."""
+    source = _inference_source()
+    assert source.count("_video_b64_rejection(payload.video_base64)") == 2
