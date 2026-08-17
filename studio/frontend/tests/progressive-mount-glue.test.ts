@@ -23,7 +23,9 @@ const read = (path: string): string =>
 const code = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 
-const GLUE = code(read("../src/components/assistant-ui/progressive-messages.tsx"));
+const GLUE = code(
+  read("../src/components/assistant-ui/progressive-messages.tsx"),
+);
 const HOOK = code(
   read("../src/components/assistant-ui/use-intent-aware-autoscroll.tsx"),
 );
@@ -62,13 +64,12 @@ const GLUE_WINDOW = () =>
 
 test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Messages", () => {
   // ThreadPrimitive.Messages renders MessageByIndexProvider -> RenderChildrenWithAccessor ->
-  // ThreadMessageComponent; MessageByIndex drops the middle one. Rendering Messages while the
-  // window is closed and MessageByIndex while it is open would change the element type at that
-  // position on the convergence commit, and React would unmount and rebuild every message in the
-  // thread, which is the exact cost this change exists to avoid.
-  // Matched as JSX rather than as bare text: the file's own header explains at length why the
-  // swap is permanent, and naming the primitive there must not fail its own test.
-  assert.match(GLUE, /<ThreadPrimitive\.MessageByIndex/);
+  // children; the row map here renders MessageByIndexProvider -> children, dropping the accessor
+  // wrapper the thread's slot does not use. Rendering upstream's tree while settled and this one
+  // while windowed would change the element type at that position on the convergence commit, and
+  // React would unmount and rebuild every message in the thread, which is the exact cost this
+  // change exists to avoid.
+  assert.match(GLUE, /<MessageByIndexProvider key=\{index\} index=\{index\}>/);
   assert.doesNotMatch(
     GLUE,
     /<ThreadPrimitive\.Messages\b/,
@@ -80,6 +81,16 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
     "Thread must render the progressive list, not the unbounded one",
   );
   assert.match(THREAD, /<ProgressiveMessages/);
+  // And it takes the same propless slot #9042 gave ThreadPrimitive.Messages. One shared element
+  // per row is what React's own bail-out needs; a `components` object allocates fresh props per
+  // row per commit, so every delete re-renders every body, action bar and tooltip in the thread.
+  assert.match(THREAD, /renderMessage=\{renderThreadMessage\}/);
+  assert.match(GLUE, /const message = renderMessage\(\);/);
+  assert.doesNotMatch(
+    GLUE,
+    /components=\{components\}/,
+    "the row map must not go back to the components form",
+  );
 });
 
 test("rows outside the window are not rendered rather than rendered and hidden", () => {
@@ -161,7 +172,10 @@ test("a completion waiter is settled when its thread goes away", () => {
   // completeProgressiveMounts awaits a promise this component resolves. Without an unmount path
   // the layout effect's cleanup removed the completer from the set but left that promise pending
   // forever, so a DOM capture that raced a thread switch hung rather than completing.
-  assert.match(GLUE, /useEffect\(\(\) => flushCompletionWaiters, \[flushCompletionWaiters\]\)/);
+  assert.match(
+    GLUE,
+    /useEffect\(\(\) => flushCompletionWaiters, \[flushCompletionWaiters\]\)/,
+  );
   // And a cancelled frame must not drop them either, so the ref is emptied by the flush rather
   // than by the effect that schedules it.
   const scheduler = section(
@@ -249,19 +263,16 @@ test("the viewport comes from a ref, not a document-wide query", () => {
   assert.match(GLUE, /viewportRef\.current/);
 });
 
-test("the row map is memoized on the component identities", () => {
-  // ThreadPrimitive.Messages compared its components field by field and skipped re-rendering
-  // entirely. A replacement that rebuilt 220 elements on every Thread re-render would hand back
+test("the row map is memoized on the slot identity", () => {
+  // ThreadPrimitive.Messages skipped re-rendering entirely when its children function held its
+  // identity. A replacement that rebuilt 220 elements on every Thread re-render would hand back
   // a share of what the windowing collects.
   assert.match(
     GLUE,
-    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, components\]\)/,
+    /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage\]\)/,
   );
-  assert.match(
-    GLUE,
-    /prev\.components\.AssistantMessage === next\.components\.AssistantMessage/,
-  );
-  assert.match(THREAD, /const messageComponents = useMemo\(/);
+  assert.match(GLUE, /prev\.renderMessage === next\.renderMessage/);
+  assert.match(THREAD, /const renderThreadMessage = proplessSlot\(/);
 });
 
 test("a thread that shrank under a live window drops the restriction, it does not clamp", () => {
@@ -325,4 +336,3 @@ test("the hook is told about every widening, including the ones with nothing to 
   );
   assert.match(body, /lastScrollTop = el\.scrollTop;/);
 });
-

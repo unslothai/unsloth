@@ -77,9 +77,9 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Agents & Tools:** Use local models with [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex), and [MCP](https://unsloth.ai/docs/basics/mcp), including tool calling and code execution.
 * **Search & RAG:** Use private and unlimited web search, deep research, and RAG.
 * **Image and video:** Run and train [image](https://unsloth.ai/docs/basics/diffusion-image) and video diffusion or multimodal models
-* **Audio:** Use private and unlimited web search, deep research, and RAG.
-* **Hardware:** Supports CPU, NVIDIA, AMD, Intel, macOS, and multi GPU setups.
-* **Remote Access:** Access your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Search:** Use private and unlimited web search, deep research, and RAG.
+* **Hardware:** Supports CPU, Apple, NVIDIA, AMD, Intel, and multi GPU setups.
+* **Remote Access:** Serve your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
 
 
 ### Train & Deploy

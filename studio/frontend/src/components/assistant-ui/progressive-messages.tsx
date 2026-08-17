@@ -4,22 +4,31 @@
 // React glue for the widen-only mount window. The state machine it drives, and the reasoning for
 // why this is not a virtualizer, are in progressive-mount-controller.ts.
 //
-// This replaces `<ThreadPrimitive.Messages components={...} />` with an equivalent map over
-// `ThreadPrimitive.MessageByIndex`. That replacement is permanent rather than a mode the thread
-// leaves once the window closes, and it has to be: `ThreadPrimitive.Messages` renders
-// MessageByIndexProvider -> RenderChildrenWithAccessor -> ThreadMessageComponent, while
-// MessageByIndex renders MessageByIndexProvider -> ThreadMessageComponent. Switching between the
-// two after convergence would change the element type at that position and React would unmount and
-// rebuild every message, which is precisely the cost being avoided. Rendering one of them
-// throughout means the only thing that ever changes is how many rows the map emits.
+// This replaces `<ThreadPrimitive.Messages>{renderThreadMessage}</ThreadPrimitive.Messages>` with
+// an equivalent map over a bounded index range. `ThreadPrimitive.Messages` renders
+// `MessageByIndexProvider -> RenderChildrenWithAccessor -> children({ message })`; this renders
+// `MessageByIndexProvider -> children`, dropping the accessor wrapper that the thread's slot does
+// not use. RenderChildrenWithAccessor emits no DOM, so the document is the same either way.
 //
-// The output is identical either way: RenderChildrenWithAccessor emits no DOM (it returns
-// `children(getItem)` through a propless-element memo), and in the `components` form upstream
-// passes a child that ignores the accessor, so it is a pure pass-through here.
+// That replacement is permanent rather than a mode the thread leaves once the window closes, and
+// it has to be: rendering upstream's tree while settled and this one while windowed would change
+// the element type at that position and React would unmount and rebuild every message on the
+// convergence commit, which is precisely the cost being avoided. Rendering one of them throughout
+// means the only thing that ever changes is how many rows the map emits.
+//
+// It takes the SAME propless slot #9042 gave `ThreadPrimitive.Messages`, and depends on it for the
+// same reason. `renderMessage()` returns one shared element object, so a commit that changes the
+// row count hands React an identical element for every row that already existed and React skips
+// those subtrees. Passing a `components` object instead would allocate fresh props per row per
+// commit and every delete would re-render every body, action bar and tooltip in the thread, which
+// is the regression #9042 removed.
 
-import { ThreadPrimitive, useAui, useAuiState } from "@assistant-ui/react";
 import {
-  type ComponentType,
+  MessageByIndexProvider,
+  useAui,
+  useAuiState,
+} from "@assistant-ui/react";
+import {
   type FC,
   type ReactElement,
   type RefObject,
@@ -41,13 +50,6 @@ import {
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
-
-/** The subset of upstream's MessagesComponentConfig the thread actually passes. */
-export type ThreadMessageComponents = {
-  UserMessage: ComponentType;
-  EditComposer: ComponentType;
-  AssistantMessage: ComponentType;
-};
 
 /**
  * Every mount window currently withholding rows. Module-level rather than context because the
@@ -337,13 +339,14 @@ function useProgressiveMountWindow(
  * re-render of `Thread` does not rebuild the row array.
  */
 export const ProgressiveMessages: FC<{
-  components: ThreadMessageComponents;
+  /** The thread's propless message slot. See thread-message-slot.ts. */
+  renderMessage: () => ReactElement;
   /** Changing this re-arms the window. The runtime thread id. */
   resetKey: string | undefined;
   /** The scroll viewport these rows live in. Identity is stable, so it is not compared below. */
   viewportRef: RefObject<HTMLElement | null>;
 }> = memo(
-  ({ components, resetKey, viewportRef }) => {
+  ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
     const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef);
 
@@ -360,24 +363,23 @@ export const ProgressiveMessages: FC<{
         mountWindow == null || mountWindow.start >= count
           ? 0
           : Math.max(mountWindow.start, 0);
+      // One shared element for every row, which is what makes React skip the rows that did not
+      // change when the count does. See the header.
+      const message = renderMessage();
       const rows: ReactElement[] = [];
       for (let index = first; index < count; index += 1) {
         rows.push(
-          <ThreadPrimitive.MessageByIndex
-            key={index}
-            index={index}
-            components={components}
-          />,
+          <MessageByIndexProvider key={index} index={index}>
+            {message}
+          </MessageByIndexProvider>,
         );
       }
       return <>{rows}</>;
-    }, [count, mountWindow, components]);
+    }, [count, mountWindow, renderMessage]);
   },
   (prev, next) =>
     prev.resetKey === next.resetKey &&
-    prev.components.UserMessage === next.components.UserMessage &&
-    prev.components.EditComposer === next.components.EditComposer &&
-    prev.components.AssistantMessage === next.components.AssistantMessage,
+    prev.renderMessage === next.renderMessage,
 );
 
 ProgressiveMessages.displayName = "ProgressiveMessages";

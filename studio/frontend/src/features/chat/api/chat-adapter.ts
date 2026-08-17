@@ -163,10 +163,11 @@ import {
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  createThinkTagTracker,
   extractDeltaText,
-  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { stripTrailingTemplatePlaceholder } from "../utils/trailing-template-placeholder";
 import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
@@ -4669,6 +4670,11 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // Answers "does the text end inside <think>" from what each arrival adds
+      // rather than from the whole buffer. It has to see every state the buffer
+      // passes through, so it is updated once per arrival, next to the strip
+      // below, and never behind a short-circuiting condition.
+      const thinkTags = createThinkTagTracker();
       // What the cap is measured against: only grows, unlike cumulativeText,
       // and counts tool-argument deltas, which never reach it.
       let streamedChars = 0;
@@ -6328,11 +6334,14 @@ export function createOpenAIStreamAdapter(
               // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
-                cumulativeText = cumulativeText.replace(
-                  /\s*\$\{[^}]*\}\s*$/,
-                  "",
-                );
+                cumulativeText =
+                  stripTrailingTemplatePlaceholder(cumulativeText);
               }
+              // Right after the strip, so the tracker sees the buffer the
+              // arrival ended with. Kept out of the short-circuiting condition
+              // below: skipping arrivals would leave the strip's removals
+              // unaccounted for.
+              const textEndsInsideThink = thinkTags.update(cumulativeText);
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -6360,7 +6369,7 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
+                !textEndsInsideThink
               ) {
                 reasoningDurationTracker.finishGroup();
               }
