@@ -42,7 +42,9 @@ def _shell_expanded(assignment: str, tmp_path: Path) -> str:
     # as_posix + quotes: a raw C:\... path pasted into bash loses its backslashes
     # outside quotes, and Git-Bash on Windows accepts the forward-slash spelling.
     script.write_text(
-        "#!/usr/bin/env bash\n" + assignment + f'\nprintf "%s" "$_PKG_PROBE_PY" > "{out.as_posix()}"\n',
+        "#!/usr/bin/env bash\n"
+        + assignment
+        + f'\nprintf "%s" "$_PKG_PROBE_PY" > "{out.as_posix()}"\n',
         encoding = "utf-8",
     )
     subprocess.run(["bash", str(script)], check = True)
