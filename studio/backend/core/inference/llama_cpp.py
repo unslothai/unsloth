@@ -6817,6 +6817,26 @@ class LlamaCppBackend:
             pass
         return None
 
+    @staticmethod
+    def _total_system_memory_mib() -> Optional[int]:
+        """Total system RAM in MiB (psutil, then /proc/meminfo), or None if neither is
+        readable. The ceiling on what ``MemAvailable`` can ever become, so a preflight that
+        runs before the resident model and pipeline are torn down can price against it
+        without charging for host memory that is about to come back."""
+        try:
+            import psutil
+            return int(psutil.virtual_memory().total // (1024 * 1024))
+        except Exception:
+            pass
+        try:
+            with open("/proc/meminfo", encoding = "utf-8") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) // 1024  # kB -> MiB
+        except Exception:
+            pass
+        return None
+
     _ARGV_MODEL = frozenset({"-m", "--model"})
     _ARGV_RPC = frozenset({"--rpc"})
 
@@ -6854,6 +6874,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
         *,
         child_has_no_gpu: bool = False,
+        avail_mib: Optional[int] = None,
     ) -> Optional[str]:
         """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 
@@ -6872,6 +6893,9 @@ class LlamaCppBackend:
 
         UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
         paging can still load a variant the picker offers.
+
+        ``avail_mib`` overrides the host figure for a caller that runs before the resident
+        owners are released; the launch reads what is available now.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -6905,7 +6929,7 @@ class LlamaCppBackend:
         free_vram_mib = sum(max(0, row[1]) for row in gpus)
         return self._host_offload_shortfall_message(
             model_bytes - free_vram_mib * 1024 * 1024,
-            self._available_system_memory_mib(),
+            self._available_system_memory_mib() if avail_mib is None else avail_mib,
         )
 
     @staticmethod
@@ -8478,14 +8502,16 @@ class LlamaCppBackend:
         ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
         both, exactly as the non-chat header check above does.
 
-        It credits each device's PHYSICAL TOTAL, not its free reading. Free here still counts
-        the resident llama-server, Unsloth model and Images/Video pipeline that the route and
-        ``load_model`` are about to reclaim, so pricing against it would refuse a switch to a
-        model the freed card holds easily. Total is the ceiling on what the launch can ever
-        see, and every narrowing the launch applies (the ROCm arch gate, the Vulkan discrete
-        preference, a ``gpu_ids`` pin) only shrinks the pool further, so this charges no more
-        than the launch copy and can refuse nothing the launch would allow. What survives is
-        the pick no reclaim can rescue, which is the one worth catching before the teardown.
+        Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
+        resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
+        a host KV cache, CPU-offloaded weights and locked mappings, host RAM as well, and the
+        route and ``load_model`` reclaim all of it after this runs. Pricing against the free
+        readings would refuse a switch to a model the reclaimed machine holds easily. Each
+        total is the ceiling on what the launch can ever see, and every narrowing the launch
+        applies to the pool (the ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids``
+        pin) only shrinks it further, so this charges no more than the launch copy and can
+        refuse nothing the launch would allow. What survives is the pick no reclaim can
+        rescue, which is the one worth catching before the teardown.
 
         Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
         here would start a download the route has not committed to.
@@ -8506,12 +8532,17 @@ class LlamaCppBackend:
                 str(gguf_path),
                 *(str(arg) for arg in getattr(intent, "extra_args", None) or ()),
             ]
+            total_ram_mib = self._total_system_memory_mib()
+            if total_ram_mib is None:
+                return None
             probed = self._get_gpu_memory(binary)
             # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
             if any(total <= 0 for _idx, _free, total in probed):
                 return None
             return self._launch_host_shortfall_message(
-                argv, [(idx, total) for idx, _free, total in probed]
+                argv,
+                [(idx, total) for idx, _free, total in probed],
+                avail_mib = total_ram_mib,
             )
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Host-RAM preflight failed for the route: %s", e)
