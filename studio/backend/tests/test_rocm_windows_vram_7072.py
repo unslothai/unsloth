@@ -47,20 +47,21 @@ def _fake_torch(
     free_equals_total = False,
     used_per_device = None,
 ):
-    """Build a fake `torch` module. devices: list of (name, total_bytes)."""
+    """Build a fake `torch` module. devices: list of (name, total_bytes[, gfx])."""
     dev = list(devices)
 
     class _Props:
-        def __init__(self, name, total):
+        def __init__(self, name, total, gfx):
             self.name = name
             self.total_memory = total
+            self.gcnArchName = gfx
 
     def get_device_properties(i):
-        name, total = dev[i]
-        return _Props(name, total)
+        name, total, *arch = dev[i]
+        return _Props(name, total, arch[0] if arch else "")
 
     def mem_get_info(i):
-        _, total = dev[i]
+        total = dev[i][1]
         if free_equals_total:
             return (total, total)
         used = used_per_device[i] if used_per_device is not None else 0
@@ -112,7 +113,7 @@ def win_rocm(monkeypatch):
     # Capacity-ranking path by default: without this a Windows dev box reads its
     # own registry here and the LUID join answers instead. The LUID tests below
     # opt in with their own map.
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: {})
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     # Visible set via HIP mask so we don't shell out to amd-smi for the count.
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0,1")
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -343,9 +344,9 @@ def test_perf_counter_parser_and_sentinel(monkeypatch):
 # forces nothing -- there is no smaller card for its usage to exceed -- so every
 # single-GPU AMD Windows host read Unknown, the common case. The counters name
 # each instance after the adapter LUID and DirectX records the same LUID with
-# torch's props.name, so they join on identity instead.
+# torch's props.name and gcnArchName, so they join on identity instead.
 # ----------------------------------------------------------------------------- #
-SOLO_DEVICE = [("AMD Radeon RX 9060 XT", 16 * GB)]
+SOLO_DEVICE = [("AMD Radeon RX 9060 XT", 16 * GB, "gfx1200")]
 # One dGPU at 3 GiB beside the Basic Render Driver and a second idle placeholder:
 # three counters for one visible card, straight off the reporting host.
 SOLO_ADAPTERS = [
@@ -353,7 +354,7 @@ SOLO_ADAPTERS = [
     ("luid_0x00000000_0x000183fe_phys_0", 0.0),
     ("luid_0x00000000_0x0001842f_phys_0", 0.0),
 ]
-SOLO_REGISTRY = {0x15369: "AMD Radeon RX 9060 XT"}
+SOLO_REGISTRY = {0x15369: {"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200"}}
 
 
 @pytest.fixture
@@ -364,7 +365,7 @@ def win_rocm_solo(win_rocm, monkeypatch):
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(SOLO_ADAPTERS))
     )
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
     return monkeypatch
 
 
@@ -375,6 +376,29 @@ def test_parse_adapter_luid():
     assert hw._parse_adapter_luid("LUID_0X00000000_0X00015369_PHYS_0") == 0x15369
     assert hw._parse_adapter_luid("Total") is None
     assert hw._parse_adapter_luid("luid_zz_0x1_phys_0") is None
+
+
+def test_normalize_adapter_name():
+    # The two sides spell one card differently; only the marks and spacing move.
+    assert hw._normalize_adapter_name("AMD Radeon(TM) 780M Graphics") == hw._normalize_adapter_name(
+        "AMD Radeon 780M Graphics"
+    )
+    assert hw._normalize_adapter_name("AMD Radeon™ RX 9070") == hw._normalize_adapter_name(
+        "amd radeon rx 9070"
+    )
+    # Two models stay two models.
+    assert hw._normalize_adapter_name("AMD Radeon RX 9070") != hw._normalize_adapter_name(
+        "AMD Radeon RX 9070 XT"
+    )
+
+
+def test_parse_adapter_family_gfx():
+    # The driver writes the family, torch the target plus its feature suffixes.
+    assert hw._parse_adapter_family_gfx("AMD_NAVI44:gfx1200") == "gfx1200"
+    assert hw._parse_adapter_family_gfx("gfx1201:sramecc-:xnack-") == "gfx1201"
+    assert hw._parse_adapter_family_gfx("GFX1103") == "gfx1103"
+    assert hw._parse_adapter_family_gfx("AMD_NAVI44") == ""
+    assert hw._parse_adapter_family_gfx("") == ""
 
 
 def test_single_gpu_reports_used_instead_of_unknown(win_rocm_solo):
@@ -407,7 +431,7 @@ def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
     )
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0])
     assert devices[0]["used_gb"] == pytest.approx(0.4, abs = 0.01)
@@ -415,12 +439,12 @@ def test_luid_join_beats_a_busy_foreign_adapter(win_rocm, monkeypatch):
 
 
 def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch):
-    """Two of the same card share one Description, so nothing says which counter
-    is which ordinal. The sum does not depend on the pairing, so it survives."""
+    """Two of the same card share one Description AND one arch, so nothing says
+    which counter is which ordinal. The sum does not depend on the pairing."""
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB)] * 2, free_equals_total = True),
+        _fake_torch([("AMD Radeon RX 7900 XTX", 24 * GB, "gfx1100")] * 2, free_equals_total = True),
     )
     adapters = [
         ("luid_0x00000000_0x0000aaaa_phys_0", 10 * GB),
@@ -429,10 +453,9 @@ def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch
     monkeypatch.setattr(
         hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
     )
+    record = {"name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
     monkeypatch.setattr(
-        hw,
-        "_windows_amd_adapter_names_by_luid",
-        lambda: {0xAAAA: "AMD Radeon RX 7900 XTX", 0xBBBB: "AMD Radeon RX 7900 XTX"},
+        hw, "_windows_amd_adapter_records_by_luid", lambda: {0xAAAA: record, 0xBBBB: record}
     )
 
     devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
@@ -440,24 +463,152 @@ def test_identical_cards_keep_aggregate_but_not_per_device(win_rocm, monkeypatch
     assert aggregate == pytest.approx(14.0, abs = 0.01)
 
 
+# ── The mixed hosts nobody here owns hardware for ────────────────────────────
+IGPU_DGPU_DEVICES = [
+    ("AMD Radeon(TM) 780M Graphics", 2 * GB, "gfx1103"),
+    ("AMD Radeon RX 9070 XT", 16 * GB, "gfx1201"),
+]
+IGPU_DGPU_ADAPTERS = [
+    ("luid_0x00000000_0x0000c001_phys_0", 0.5 * GB),  # iGPU, driving the display
+    ("luid_0x00000000_0x0000d002_phys_0", 1.2 * GB),  # dGPU, small model loaded
+]
+
+
+def test_igpu_and_dgpu_each_report_their_own(win_rocm, monkeypatch):
+    """Both visible: two different cards, two counters, and identity says which
+    is which. Capacity ranking cannot: the dGPU's 1.2 GiB would also fit the
+    2 GiB iGPU, so the two are swappable and it reports both unknown."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xC001: {"name": "AMD Radeon(TM) 780M Graphics", "gfx": "gfx1103"},
+            0xD002: {"name": "AMD Radeon RX 9070 XT", "gfx": "gfx1201"},
+        },
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [
+        pytest.approx(0.5, abs = 0.01),
+        pytest.approx(1.2, abs = 0.01),
+    ]
+    assert aggregate == pytest.approx(1.7, abs = 0.01)
+
+
+def test_a_name_the_two_sides_spell_differently_still_joins(win_rocm, monkeypatch):
+    """DirectX takes the Description from the driver INF and HIP from the ASIC
+    record, so an iGPU reaches the join under two spellings of one card."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xC001: {"name": "AMD Radeon 780M Graphics", "gfx": "gfx1103"},  # no (TM)
+            0xD002: {"name": "AMD Radeon(R) RX 9070 XT", "gfx": "gfx1201"},  # (R), not (TM)
+        },
+    )
+
+    devices, _ = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [
+        pytest.approx(0.5, abs = 0.01),
+        pytest.approx(1.2, abs = 0.01),
+    ]
+
+
+def test_the_arch_answers_when_the_names_do_not(win_rocm, monkeypatch):
+    """A generic iGPU Description that normalizing cannot reconcile. The gfx
+    target both sides carry separates an iGPU from the dGPU beside it."""
+    monkeypatch.setitem(
+        sys.modules, "torch", _fake_torch(IGPU_DGPU_DEVICES, free_equals_total = True)
+    )
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(IGPU_DGPU_ADAPTERS))
+    )
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xC001: {"name": "AMD Radeon(TM) Graphics", "gfx": "gfx1103"},
+            0xD002: {"name": "Radeon RX 9070 XT Series", "gfx": "gfx1201"},
+        },
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0, 1])
+    assert [d["used_gb"] for d in devices] == [
+        pytest.approx(0.5, abs = 0.01),
+        pytest.approx(1.2, abs = 0.01),
+    ]
+    assert aggregate == pytest.approx(1.7, abs = 0.01)
+
+
+def test_the_arch_pass_needs_every_record_to_have_one(win_rocm, monkeypatch):
+    """A driver too old to write AdapterFamily leaves a record the arch cannot
+    key. Running the pass on the rest would let the adapters that do carry one
+    stand in for the adapter that does not, so it does not run at all."""
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        _fake_torch([("AMD Radeon RX 9070", 16 * GB, "gfx1201")], free_equals_total = True),
+    )
+    adapters = [
+        ("luid_0x00000000_0x0000c001_phys_0", 6 * GB),  # the visible card
+        ("luid_0x00000000_0x0000d002_phys_0", 9 * GB),  # its hidden same-arch sibling
+    ]
+    monkeypatch.setattr(
+        hw.subprocess, "run", _subprocess_run(adapter_output = _adapter_output(adapters))
+    )
+    # Neither Description matches what torch calls the card, so the name pass
+    # declines and only the arch could answer -- and one record has no arch.
+    monkeypatch.setattr(
+        hw,
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {
+            0xC001: {"name": "AMD Radeon RX 9070 Series"},
+            0xD002: {"name": "AMD Radeon RX 9070 Series", "gfx": "gfx1201"},
+        },
+    )
+
+    devices, aggregate = hw._rocm_windows_per_device_vram([0])
+    assert devices[0]["used_gb"] is None
+    assert aggregate is None
+
+
 def test_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
     """Every decline hands the counters back to capacity ranking rather than
     inventing a figure."""
-    dev_meta = [{"name": "AMD Radeon RX 9060 XT", "total_bytes": 16 * GB}]
+    dev_meta = [{"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200", "total_bytes": 16 * GB}]
     join = hw._match_adapter_used_by_luid
 
-    # No registry at all (non-Windows, missing key, denied read).
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: {})
+    # No registry at all (non-Windows, missing key, denied read, partial map).
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: {})
     assert join(SOLO_ADAPTERS, dev_meta) is None
 
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
     # A visible card whose adapter has no record: its counter is unidentified.
-    assert join(SOLO_ADAPTERS, [{"name": "AMD Radeon RX 7800 XT", "total_bytes": 16 * GB}]) is None
-    # A same-named adapter HIP does not enumerate: two counters, one ordinal.
+    assert (
+        join(
+            SOLO_ADAPTERS,
+            [{"name": "AMD Radeon RX 7800 XT", "gfx": "gfx1101", "total_bytes": 16 * GB}],
+        )
+        is None
+    )
+    # A same-named, same-arch adapter HIP does not enumerate: two counters, one ordinal.
     monkeypatch.setattr(
         hw,
-        "_windows_amd_adapter_names_by_luid",
-        lambda: {**SOLO_REGISTRY, 0x77777: "AMD Radeon RX 9060 XT"},
+        "_windows_amd_adapter_records_by_luid",
+        lambda: {**SOLO_REGISTRY, 0x77777: dict(SOLO_REGISTRY[0x15369])},
     )
     assert (
         join(
@@ -466,14 +617,134 @@ def test_luid_join_declines_and_falls_back(win_rocm, monkeypatch):
         )
         is None
     )
-    monkeypatch.setattr(hw, "_windows_amd_adapter_names_by_luid", lambda: dict(SOLO_REGISTRY))
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", lambda: dict(SOLO_REGISTRY))
     # A record outliving its hardware: usage above the card's own capacity.
     assert join([("luid_0x00000000_0x00015369_phys_0", 20 * GB)], dev_meta) is None
 
 
+# ── Reading the registry itself ──────────────────────────────────────────────
+def _fake_winreg(subkeys):
+    """A `winreg` over ``{subkey: {value: data}}``. An Exception in place of a
+    subkey's dict raises on open; one in place of a value raises on read."""
+
+    class _Key:
+        def __init__(self, name):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    names = list(subkeys)
+    mod = types.ModuleType("winreg")
+    mod.HKEY_LOCAL_MACHINE = object()
+
+    def open_key(root, path):
+        if root is mod.HKEY_LOCAL_MACHINE:
+            return _Key("")  # the DirectX key itself
+        entry = subkeys[path]
+        if isinstance(entry, Exception):
+            raise entry
+        return _Key(path)
+
+    def query_value_ex(key, value):
+        values = subkeys[key.name]
+        if value not in values:
+            raise FileNotFoundError(2, "value does not exist")
+        data = values[value]
+        if isinstance(data, Exception):
+            raise data
+        return (data, 0)
+
+    mod.OpenKey = open_key
+    mod.QueryInfoKey = lambda key: (len(names), 0, 0)
+    mod.EnumKey = lambda key, index: names[index]
+    mod.QueryValueEx = query_value_ex
+    return mod
+
+
+AMD_RECORD = {
+    "VendorId": 0x1002,
+    "AdapterLuid": 0x14CF5,
+    "Description": "AMD Radeon RX 9060 XT",
+    "AdapterFamily": "AMD_NAVI44:gfx1200",
+}
+BASIC_RENDER_RECORD = {
+    "VendorId": 0x1414,
+    "AdapterLuid": 0x17DEA,
+    "Description": "Microsoft Basic Render Driver",
+}
+
+
+@pytest.fixture
+def on_windows(monkeypatch):
+    monkeypatch.setattr(hw.platform, "system", lambda: "Windows")
+    return monkeypatch
+
+
+def test_registry_reads_the_amd_adapters_and_skips_the_rest(on_windows, monkeypatch):
+    # ShaderCache is a real sibling of the adapter records and holds an
+    # AdapterLuid of 0 -- it is not GUID-named, which is what excludes it.
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        _fake_winreg(
+            {
+                "ShaderCache": {"AdapterLuid": 0},
+                "{aaaaaaaa-0000-0000-0000-000000000000}": BASIC_RENDER_RECORD,
+                "{bbbbbbbb-0000-0000-0000-000000000000}": AMD_RECORD,
+            }
+        ),
+    )
+    assert hw._windows_amd_adapter_records_by_luid() == {
+        0x14CF5: {"name": "AMD Radeon RX 9060 XT", "gfx": "gfx1200"}
+    }
+
+
+def test_a_record_that_will_not_read_declines_the_whole_map(on_windows, monkeypatch):
+    """A partial map is indistinguishable from a complete one at the join, which
+    would then hand a visible card its hidden twin's counter."""
+    denied = PermissionError(5, "access is denied")
+    for broken in (
+        denied,  # the subkey will not open
+        {**AMD_RECORD, "Description": denied},  # an AMD adapter this cannot name
+        {**AMD_RECORD, "Description": ""},  # ...or that names itself nothing
+        {k: v for k, v in AMD_RECORD.items() if k != "AdapterLuid"},
+        {k: v for k, v in AMD_RECORD.items() if k != "VendorId"},  # vendor unknown
+    ):
+        monkeypatch.setitem(
+            sys.modules,
+            "winreg",
+            _fake_winreg(
+                {
+                    "{aaaaaaaa-0000-0000-0000-000000000000}": broken,
+                    "{bbbbbbbb-0000-0000-0000-000000000000}": AMD_RECORD,
+                }
+            ),
+        )
+        assert hw._windows_amd_adapter_records_by_luid() == {}, broken
+
+
+def test_a_driver_without_adapter_family_still_gives_the_name(on_windows, monkeypatch):
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        _fake_winreg(
+            {
+                "{bbbbbbbb-0000-0000-0000-000000000000}": {
+                    k: v for k, v in AMD_RECORD.items() if k != "AdapterFamily"
+                }
+            }
+        ),
+    )
+    assert hw._windows_amd_adapter_records_by_luid() == {0x14CF5: {"name": "AMD Radeon RX 9060 XT"}}
+
+
 def test_registry_read_is_windows_only(monkeypatch):
     monkeypatch.setattr(hw.platform, "system", lambda: "Linux")
-    assert hw._windows_amd_adapter_names_by_luid() == {}
+    assert hw._windows_amd_adapter_records_by_luid() == {}
 
 
 # ----------------------------------------------------------------------------- #
