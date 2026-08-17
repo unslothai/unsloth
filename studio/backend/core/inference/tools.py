@@ -9968,7 +9968,13 @@ def build_conversation_recall(
     if not conversation_archive.enabled():
         return None
 
-    query = _last_user_text(conversation)
+    # The BRANCH's latest user turn, not the loop conversation's. By the time a later
+    # tool-loop iteration overflows, the conversation can end with an internal user-role
+    # re-prompt (the plan-without-action nudge, or a deferred no-op), and searching the
+    # archive for that controller instruction instead of what the user asked returns
+    # whatever happens to sit near it, defeating the one retrieval this feature forces.
+    # branch_messages is what the client sent, so its last user turn is the real request.
+    query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
     if not query:
         return None
     try:

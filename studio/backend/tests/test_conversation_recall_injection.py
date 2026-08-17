@@ -551,13 +551,17 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
     """
     from pathlib import Path
 
-    from core.inference.llama_cpp import _RAG_SEARCH_TOOLS
+    from core.inference.tool_call_parser import RAG_SEARCH_TOOLS
 
-    assert _RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
-    text = (Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py").read_text()
-    # The cap and the counter must both key on the set, not on one tool name.
-    assert "decision.tool_name in _RAG_SEARCH_TOOLS" in text
-    assert 'decision.tool_name == "search_knowledge_base"' not in text
+    assert RAG_SEARCH_TOOLS == {"search_knowledge_base", "search_conversation"}
+    # BOTH loops: the tool is advertised per thread, so a chat compacted under a GGUF
+    # model can go on to call it under a safetensors one.
+    backend = Path(__file__).resolve().parent.parent / "core/inference"
+    for module in ("llama_cpp.py", "safetensors_agentic.py"):
+        text = (backend / module).read_text()
+        # The cap and the counter must both key on the set, not on one tool name.
+        assert "decision.tool_name in RAG_SEARCH_TOOLS" in text, module
+        assert 'decision.tool_name == "search_knowledge_base"' not in text, module
 
 
 def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monkeypatch):
@@ -583,6 +587,41 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
     tools_mod._search_conversation({"query": "pelicans"}, {"thread_id": THREAD})
 
     assert seen["top_k"] is None
+
+
+def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch):
+    """The loop conversation can end with an internal user-role re-prompt.
+
+    The plan-without-action nudge and the deferred no-op both append one, so a first
+    overflow on a later iteration would search the archive for a generic controller
+    instruction instead of what the user asked, and return whatever sits near it.
+    """
+    seen = {}
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        seen["query"] = query
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    branch = [
+        {"role": "user", "content": "what was the VULPINE code from earlier"},
+        {"role": "assistant", "content": "checking"},
+    ]
+    conversation = branch + [
+        {"role": "user", "content": "You said you would use a tool. Do it now or answer."}
+    ]
+
+    tools_mod.build_conversation_recall(
+        conversation, THREAD, style = "inline", branch_messages = branch
+    )
+
+    assert seen["query"] == "what was the VULPINE code from earlier"
 
 
 def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, monkeypatch):

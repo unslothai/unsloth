@@ -91,6 +91,7 @@ from core.inference.tool_call_parser import (
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
+    RAG_SEARCH_TOOLS,
     parse_tool_calls_from_text as _shared_parse_tool_calls_from_text,
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
@@ -462,12 +463,6 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
 
 # Default max_tokens to the effective context when known. The floor is high
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
-# Both retrieval tools share the per-turn cap. Paraphrased re-searches slip past
-# the duplicate guard, and each one appends top-K passages into the current
-# user/tool exchange, which the rolling window protects and therefore cannot
-# evict -- so an uncapped tool can only end the turn in a context-length error.
-_RAG_SEARCH_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
 
@@ -21711,7 +21706,7 @@ class LlamaCppBackend:
                     _effective_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
                     # RAG: cap paraphrased KB re-searches that slip past the dup guard.
                     if (
-                        decision.tool_name in _RAG_SEARCH_TOOLS
+                        decision.tool_name in RAG_SEARCH_TOOLS
                         and _kb_search_count >= RAG_MAX_SEARCHES_PER_TURN
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
@@ -21749,7 +21744,7 @@ class LlamaCppBackend:
                             tool_call_id = decision.tool_call_id,
                             cancel_event = cancel_event,
                         )
-                        if decision.tool_name in _RAG_SEARCH_TOOLS:
+                        if decision.tool_name in RAG_SEARCH_TOOLS:
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
                     resolved_provisional_tool_call_ids.add(decision.tool_call_id)

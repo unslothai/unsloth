@@ -158,6 +158,11 @@ BUDGET_EXHAUSTED_NUDGE = (
 
 # The exact-args dup guard misses paraphrased re-searches, so also cap KB searches per turn.
 RAG_MAX_SEARCHES_PER_TURN = 3
+# Both retrieval tools share that cap. Each search appends top-K passages into the
+# current user/tool exchange, which the rolling window protects and therefore cannot
+# evict, so an uncapped one can only end the turn in a context-length error. Defined
+# here beside the cap itself because both tool loops have to agree on it.
+RAG_SEARCH_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 RAG_SEARCH_CAP_NUDGE = (
     "You have already searched the knowledge base several times this turn. "
     "Do not search again. Answer the question using the passages already "
