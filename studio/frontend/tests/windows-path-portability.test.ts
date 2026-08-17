@@ -130,9 +130,9 @@ function declarationTable(
   walk(source, (n) => {
     if (ts.isVariableDeclaration(n) || ts.isParameter(n)) record(n.name, n);
     else if (ts.isFunctionDeclaration(n) && n.name) record(n.name, n);
-    else if (ts.isImportSpecifier(n) || ts.isImportClause(n)) {
-      if (n.name) record(n.name, n);
-    }
+    else if (ts.isImportSpecifier(n) || ts.isNamespaceImport(n))
+      record(n.name, n);
+    else if (ts.isImportClause(n) && n.name) record(n.name, n);
   });
   return table;
 }
@@ -153,11 +153,59 @@ function resolve(
   return null;
 }
 
-const isFileURLToPathCall = (n: ts.Node): boolean =>
-  ts.isCallExpression(n) &&
-  ((ts.isIdentifier(n.expression) && n.expression.text === "fileURLToPath") ||
-    (ts.isPropertyAccessExpression(n.expression) &&
-      n.expression.name.text === "fileURLToPath"));
+/** The module an import binding came from, so a rule can require the right one. */
+function importModuleOf(declaration: ts.Node): string | null {
+  for (let n: ts.Node | undefined = declaration; n; n = n.parent) {
+    if (ts.isImportDeclaration(n)) {
+      return ts.isStringLiteralLike(n.moduleSpecifier)
+        ? n.moduleSpecifier.text
+        : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * What a call names on its module's side, and which module that is.
+ *
+ * Both halves matter. Without the first, `import { readFile as read }` hides an
+ * fs call behind a local spelling. Without the second, an unrelated
+ * `router.open(...)` or `dom.link(...)` is classified as one, and a rule that
+ * fires on correct code is worse than no rule.
+ */
+function resolvedCallee(
+  call: ts.CallExpression,
+  table: Map<ts.Node, Map<string, ts.Node>>,
+): { name: string; module: string | null } | null {
+  if (ts.isPropertyAccessExpression(call.expression)) {
+    const receiver = call.expression.expression;
+    const declaration = ts.isIdentifier(receiver)
+      ? resolve(receiver, table)
+      : null;
+    return {
+      name: call.expression.name.text,
+      module: declaration ? importModuleOf(declaration) : null,
+    };
+  }
+  if (!ts.isIdentifier(call.expression)) return null;
+  const declaration = resolve(call.expression, table);
+  const module = declaration ? importModuleOf(declaration) : null;
+  if (declaration && ts.isImportSpecifier(declaration)) {
+    return {
+      name: (declaration.propertyName ?? declaration.name).text,
+      module,
+    };
+  }
+  return { name: call.expression.text, module };
+}
+
+const FS_MODULES = new Set([
+  "node:fs",
+  "node:fs/promises",
+  "fs",
+  "fs/promises",
+]);
+const URL_MODULES = new Set(["node:url", "url"]);
 
 const isPathnameRead = (n: ts.Node): boolean =>
   (ts.isPropertyAccessExpression(n) && n.name.text === "pathname") ||
@@ -236,24 +284,14 @@ const FS_PATH_APIS = new Map([
 ]);
 
 /**
- * The fs entry point a call names, seen through an alias. `import { readFile as
- * read }` makes the callee text `read`, so matching the spelling at the call site
- * would let `read(url.pathname)` past. Resolve to the import binding and read the
- * name on the module's side of the `as`.
- */
-function calleeName(
+/** How many leading arguments of `call` are a filesystem path, if any are. */
+function fsPathArguments(
   call: ts.CallExpression,
   table: Map<ts.Node, Map<string, ts.Node>>,
-): string | null {
-  if (ts.isPropertyAccessExpression(call.expression)) {
-    return call.expression.name.text; // fs.readFile(...)
-  }
-  if (!ts.isIdentifier(call.expression)) return null;
-  const declaration = resolve(call.expression, table);
-  if (declaration && ts.isImportSpecifier(declaration)) {
-    return (declaration.propertyName ?? declaration.name).text;
-  }
-  return call.expression.text;
+): number | undefined {
+  const callee = resolvedCallee(call, table);
+  if (!callee?.module || !FS_MODULES.has(callee.module)) return undefined;
+  return FS_PATH_APIS.get(callee.name);
 }
 
 /**
@@ -354,6 +392,18 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
     pathnameToFs: [],
   };
   const table = declarationTable(source);
+  // Alias-aware and module-aware, like the fs rule: `import { fileURLToPath as
+  // toPath }` must still seed the taint, and a same-named helper from elsewhere
+  // must not.
+  const isFileURLToPathCall = (n: ts.Node): boolean => {
+    if (!ts.isCallExpression(n)) return false;
+    const callee = resolvedCallee(n, table);
+    return (
+      callee?.name === "fileURLToPath" &&
+      callee.module !== null &&
+      URL_MODULES.has(callee.module)
+    );
+  };
   const nativePaths = taintedBindings(source, table, isFileURLToPathCall);
   const urlPathnames = taintedBindings(source, table, isPathnameRead);
   const reaches = (
@@ -379,8 +429,7 @@ function scanSource(source: ts.SourceFile, label: string): Scan {
       return;
     }
     if (ts.isCallExpression(n)) {
-      const name = calleeName(n, table);
-      const pathArguments = name === null ? undefined : FS_PATH_APIS.get(name);
+      const pathArguments = fsPathArguments(n, table);
       if (pathArguments !== undefined) {
         result.fsCalls += 1;
         // Every path-bearing position, not only the source: a destination
@@ -522,6 +571,19 @@ test("the rules fire on the shapes they exist for, and only those", () => {
        createReadStream(new URL("./x.ts", import.meta.url).pathname);`,
       "pathnameToFs",
     ],
+    [
+      // fileURLToPath under an alias is still fileURLToPath.
+      `import { fileURLToPath as toPath } from "node:url";
+       const M = toPath(new URL("../src/x.ts", import.meta.url));
+       await import(M);`,
+      "nativePathImports",
+    ],
+    [
+      // Reached through a namespace import rather than a named one.
+      `import * as fs from "node:fs";
+       fs.readFileSync(new URL("./x.ts", import.meta.url).pathname, "utf8");`,
+      "pathnameToFs",
+    ],
   ];
   for (const [code, rule] of broken) {
     assert.ok(
@@ -543,7 +605,10 @@ test("the rules fire on the shapes they exist for, and only those", () => {
      files.push(new URL("./x.ts", import.meta.url));
      for (const f of files) { await readFile(f, "utf8"); f.pathname.slice(1); }
      function label() { const path = new URL("./y.ts", import.meta.url).pathname; return path; }
-     async function read() { const path = new URL("./y.ts", import.meta.url); return readFile(path, "utf8"); }`,
+     async function read() { const path = new URL("./y.ts", import.meta.url); return readFile(path, "utf8"); }
+     const router = { open(_: string) {}, link(_: string) {} };
+     router.open(new URL("https://example.test/x").pathname);
+     router.link(new URL("https://example.test/y").pathname);`,
     "fixed.ts",
   );
   assert.deepEqual(
