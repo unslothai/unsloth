@@ -320,29 +320,62 @@ test("a long but healthy download is never abandoned", async () => {
   stop();
 });
 
-test("a healthy read resets the stall window", async () => {
+const STALL_MS = 400;
+
+/**
+ * Poll until the notice settles, with the read at `healthyAt` reporting progress
+ * and every other read unreadable. `healthyAt: 0` means none of them do.
+ * Returns how many reads the loop survived.
+ */
+async function readsBeforeSettling(healthyAt: number): Promise<number> {
   const { settled, stop } = record();
   let read = 0;
-
   await withBackgroundLoadNotice(
     "image",
     "unsloth/flux",
     async () => null,
     async () => {
       read += 1;
-      // Unreadable, then healthy, then unreadable again. Without the reset the
-      // second run of failures would inherit the first one's elapsed time.
-      if (read === 1 || read === 2) throw new Error("backend restarting");
-      if (read === 3) return "downloading";
+      if (read === healthyAt) return "downloading";
       throw new Error("backend restarting");
     },
-    { pollMs: 1, readTimeoutMs: 25, stallMs: 30 },
+    // readTimeoutMs is generous on purpose: the read answers immediately, and a
+    // busy runner must not turn a healthy read into an unreadable one.
+    { pollMs: 1, readTimeoutMs: 5_000, stallMs: STALL_MS },
+  );
+  await settled;
+  stop();
+  return read;
+}
+
+test("a healthy read resets the stall window", async () => {
+  // The source reads `Date.now()` and arms `setTimeout` itself, so this runs on
+  // the wall clock. That rules out asserting a read count against a millisecond
+  // budget: one poll costs about 1 ms here and about 15 ms on a Windows runner,
+  // whose default timer granularity is coarser than any margin small enough to
+  // keep the test quick. The previous version asserted `reads > 4` against a
+  // 30 ms window and was both flaky on Windows (2 reads consumed it before the
+  // healthy one arrived) and vacuous on Linux, where 30 ms of 1 ms polls clears
+  // 4 reads whether or not the window is ever reset.
+  //
+  // So measure the reset against the same loop without one. The comparison
+  // divides the platform out: whatever a poll costs, a window restarted halfway
+  // through must carry the loop about half as far again.
+  const withoutReset = await readsBeforeSettling(0);
+  assert.ok(
+    withoutReset > 8,
+    `the baseline is too short to compare against: ${withoutReset} reads. ` +
+      "Raise STALL_MS.",
   );
 
-  await settled;
-  // It survived past the point an unreset window would have expired.
-  assert.ok(read > 4, `expected the window to restart, got ${read} reads`);
-  stop();
+  const withReset = await readsBeforeSettling(Math.floor(withoutReset / 2));
+  assert.ok(
+    withReset >= withoutReset * 1.25,
+    "a healthy read did not restart the stall window: " +
+      `${withReset} reads with one, ${withoutReset} without. A run of ` +
+      "unreadable polls is inheriting the elapsed time of the run before it, so " +
+      "a slow download that keeps reporting progress can still be abandoned.",
+  );
 });
 
 test("the load is announced again once the POST has committed", async () => {
