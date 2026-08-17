@@ -3314,6 +3314,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
+_CGROUP_ROOT = "/sys/fs/cgroup"
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
 
 
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
@@ -6799,23 +6801,110 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """Memory this process can still charge to an enforcing cgroup.
+
+        ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
+        containers. Walk the process's cgroup plus its ancestors and pair each
+        limit with that same directory's usage; an ancestor slice can be the
+        binding limit and includes sibling usage that a leaf does not see.
+        Supports cgroup v2 and the legacy v1 memory controller. ``None`` means
+        no finite readable limit, so callers retain their host reading.
+        """
+
+        def _first_line(path: str) -> Optional[str]:
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    return f.readline().strip()
+            except OSError:
+                return None
+
+        def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
+            if not raw or raw == "max":
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                return None
+            # cgroup v1 spells unlimited as a near-2^63 sentinel.
+            if value < 0 or (limit and value >= 1 << 60):
+                return None
+            return value
+
+        def _directories(root: str, relative: Optional[str]) -> list[str]:
+            root = os.path.abspath(root)
+            current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
+            try:
+                if os.path.commonpath((root, current)) != root:
+                    return [root]
+            except ValueError:
+                return [root]
+            out = []
+            while True:
+                out.append(current)
+                if current == root:
+                    return out
+                current = os.path.dirname(current)
+
+        try:
+            with open(_PROC_SELF_CGROUP, "r", encoding = "utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+        except OSError:
+            lines = []
+
+        remaining: list[int] = []
+        v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
+        for directory in _directories(_CGROUP_ROOT, v2_relative):
+            limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.current")))
+            remaining.append(limit if used is None else limit - used)
+
+        v1_root = os.path.join(_CGROUP_ROOT, "memory")
+        v1_relative = None
+        for line in lines:
+            parts = line.split(":", 2)
+            if len(parts) == 3 and "memory" in parts[1].split(","):
+                v1_relative = parts[2]
+                break
+        for directory in _directories(v1_root, v1_relative):
+            limit = _integer(
+                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
+            )
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            remaining.append(limit if used is None else limit - used)
+
+        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+
+    @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
-        neither is readable. On a unified-memory APU this, not the ROCm-reported
-        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        neither is readable, capped by this process's cgroup remainder. On a
+        unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling:
+        the weights load into shared system RAM."""
+        available = None
         try:
             import psutil
-            return int(psutil.virtual_memory().available // (1024 * 1024))
+
+            available = int(psutil.virtual_memory().available // (1024 * 1024))
         except Exception:
             pass
-        try:
-            with open("/proc/meminfo", encoding = "utf-8") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        return int(line.split()[1]) // 1024  # kB -> MiB
-        except Exception:
-            pass
-        return None
+        if available is None:
+            try:
+                with open("/proc/meminfo", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("MemAvailable:"):
+                            available = int(line.split()[1]) // 1024  # kB -> MiB
+                            break
+            except Exception:
+                pass
+        cgroup_available = LlamaCppBackend._cgroup_available_memory_mib()
+        if available is None:
+            return cgroup_available
+        return min(available, cgroup_available) if cgroup_available is not None else available
 
     @staticmethod
     def _total_system_memory_mib() -> Optional[int]:
@@ -6875,6 +6964,7 @@ class LlamaCppBackend:
         *,
         child_has_no_gpu: bool = False,
         avail_mib: Optional[int] = None,
+        shared_gpu_ids: Iterable[int] = (),
     ) -> Optional[str]:
         """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
 
@@ -6895,7 +6985,9 @@ class LlamaCppBackend:
         paging can still load a variant the picker offers.
 
         ``avail_mib`` overrides the host figure for a caller that runs before the resident
-        owners are released; the launch reads what is available now.
+        owners are released; the launch reads what is available now. ``shared_gpu_ids``
+        names Vulkan iGPUs whose reported free memory is the same host pool, so it must
+        not also be credited as dedicated VRAM.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
@@ -6926,7 +7018,8 @@ class LlamaCppBackend:
         # vouch for cannot be told from a host that has no gpu at all
         if not model_bytes or (not gpus and not child_has_no_gpu):
             return None
-        free_vram_mib = sum(max(0, row[1]) for row in gpus)
+        shared = set(shared_gpu_ids or ())
+        free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
         return self._host_offload_shortfall_message(
             model_bytes - free_vram_mib * 1024 * 1024,
             self._available_system_memory_mib() if avail_mib is None else avail_mib,
@@ -13610,6 +13703,7 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                _shared_gpu_ids: set[int] = set()
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -13726,6 +13820,17 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    # Vulkan reports total 0 only for integrated GPUs. Their
+                    # free "VRAM" is the same host pool the RAM guard prices.
+                    _shared_gpu_ids = (
+                        {
+                            idx
+                            for idx, _free in _detected_gpus
+                            if total_by_idx.get(idx, 1) <= 0
+                        }
+                        if is_vulkan_backend
+                        else set()
+                    )
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -16162,6 +16267,7 @@ class LlamaCppBackend:
                             )
                         )
                     ),
+                    shared_gpu_ids = _shared_gpu_ids,
                 )
                 if _offload_msg:
                     raise RuntimeError(_offload_msg)

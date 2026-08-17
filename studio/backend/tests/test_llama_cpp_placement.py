@@ -938,6 +938,25 @@ def test_free_vram_offsets_the_charge(tmp_path, monkeypatch):
     assert "--fit" in _launch(backend, gguf)["cmd"]
 
 
+def test_vulkan_igpu_shared_memory_is_not_counted_twice(tmp_path, monkeypatch):
+    """A Vulkan iGPU's free memory and MemAvailable describe the same unified pool.
+    Crediting both let a 20 GiB model through on a 14 GiB host (12 + 14 on paper)."""
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = True,
+        memory = [(0, 12 * 1024, 0)],
+    )
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: 20 * 1024**3
+    backend._select_gpus = lambda *args, **kwargs: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 14 * 1024)
+    )
+
+    with pytest.raises(RuntimeError, match = "does not fit in GPU memory"):
+        _launch(backend, gguf)
+
+
 def test_unknown_available_ram_abstains(tmp_path, monkeypatch):
     backend, gguf = _offload_backend(
         tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = None, monkeypatch = monkeypatch

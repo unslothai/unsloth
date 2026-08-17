@@ -8,6 +8,10 @@ refused before llama-server is spawned."""
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
+import core.inference.llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
 
 _GB = 1024**3
@@ -60,3 +64,34 @@ class TestHostOffloadShortfall:
         msg = _shortfall(7 * _GB, 8 * _MIB_PER_GB)
         assert msg is not None
         assert "About 7 GB" in msg and "6 GB usable" in msg
+
+
+def test_available_ram_is_capped_by_cgroup_v2_remainder(tmp_path, monkeypatch):
+    """A container sees host-wide MemAvailable through psutil, but can only charge
+    memory.max - memory.current before the kernel enforces its own OOM boundary."""
+    root = tmp_path / "cgroup"
+    leaf = root / "studio.slice"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.max").write_text(str(16 * _GB), encoding = "utf-8")
+    (leaf / "memory.current").write_text(str(4 * _GB), encoding = "utf-8")
+    proc_cgroup = tmp_path / "self.cgroup"
+    proc_cgroup.write_text("0::/studio.slice\n", encoding = "utf-8")
+
+    monkeypatch.setattr(llama_cpp_module, "_CGROUP_ROOT", str(root))
+    monkeypatch.setattr(llama_cpp_module, "_PROC_SELF_CGROUP", str(proc_cgroup))
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(virtual_memory = lambda: SimpleNamespace(available = 64 * _GB)),
+    )
+
+    assert LlamaCppBackend._available_system_memory_mib() == 12 * _MIB_PER_GB
+
+    backend = object.__new__(LlamaCppBackend)
+    backend._get_gguf_size_bytes = lambda _path: 20 * _GB
+    msg = backend._launch_host_shortfall_message(
+        ["llama-server", "-m", str(tmp_path / "model.gguf")],
+        [(0, 4 * _MIB_PER_GB)],
+    )
+    assert msg is not None
+    assert "16 GB" in msg and "10 GB usable" in msg
