@@ -42,10 +42,13 @@ import { usePlatformStore } from "@/config/env";
 import {
   type InferenceStatusResponse,
   ParamSlider,
+  cancelPreStreamRunReservations,
+  confirmStopRunningChatsIfNeeded,
   getInferenceStatus,
   listGgufVariants,
   listLoras,
   loadModel,
+  requestLocalPromptQueueStop,
   unloadModel,
 } from "@/features/chat";
 import {
@@ -695,6 +698,17 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         pendingRoutedTtsPick.current = { repoId, ggufFilename, loadId };
         return;
       }
+      // A load stops every chat on the shared llama-server, so ask the way Chat does
+      // instead of dead-ending on the backend's 409. Claimed before the await: a routed
+      // pick arriving while the dialog is open must queue, not start a second load.
+      ttsLoadInFlight.current = true;
+      const stopDecision = await confirmStopRunningChatsIfNeeded();
+      if (!stopDecision.proceed) {
+        ttsLoadInFlight.current = false;
+        // Declining refuses the swap, so a queued pick must not reopen the dialog.
+        pendingRoutedTtsPick.current = null;
+        return;
+      }
       const generation = ++ttsLoadGeneration.current;
       const controller = new AbortController();
       const loadRequestId = crypto.randomUUID();
@@ -718,10 +732,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setBusy("loading");
       const toastId = toast.loading(`Loading ${audioModelLabel(repoId)}…`);
       try {
+        // Queued prompts would otherwise start on the model this load replaces.
+        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
         const res = await loadModel(
           {
             model_path: loadId || repoId,
             load_request_id: loadRequestId,
+            force_cancel_active: stopDecision.forceCancelActive,
             hf_token: hfApiToken(getHfToken()) ?? null,
             max_seq_length: TTS_MAX_TOKENS + TTS_PROMPT_CONTEXT_RESERVE,
             load_in_4bit: false,
@@ -1322,18 +1340,35 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const activeModel = status?.active_model;
     if (!activeModel) return;
 
-    // An old managed completion must not immediately replace the model the
-    // user just ejected. The global download may continue for later use.
-    invalidatePendingStagedTts();
-    stageTtsDownload([]);
-
+    // Busy before the dialog, so a second eject cannot start behind the first.
     setBusy("unloading");
-    const toastId = toast.loading("Unloading model…");
     void (async () => {
+      // Ejecting stops every chat on the shared llama-server. Unforced, the backend
+      // refused with a 409 the user could only read. Nothing is torn down until the
+      // answer is in, so declining leaves the page as it was.
+      const stopDecision = await confirmStopRunningChatsIfNeeded(
+        "Unloading the model",
+        "unload",
+      );
+      if (!stopDecision.proceed) {
+        setBusy(null);
+        return;
+      }
+
+      // An old managed completion must not immediately replace the model the
+      // user just ejected. The global download may continue for later use.
+      invalidatePendingStagedTts();
+      stageTtsDownload([]);
+
+      const toastId = toast.loading("Unloading model…");
       try {
-        // Non-forced unload is deliberate: the backend refuses rather than
-        // killing an active Chat or API generation owned by another surface.
-        await unloadModel({ model_path: activeModel });
+        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
+        await unloadModel({
+          model_path: activeModel,
+          force_cancel_active: stopDecision.forceCancelActive,
+        });
+        requestLocalPromptQueueStop();
         await refreshStatus();
         toast.success("Model unloaded", { id: toastId, duration: 1200 });
       } catch (error) {

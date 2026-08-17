@@ -32,13 +32,52 @@ test("Audio exposes the shared picker eject action only while idle", () => {
 test("Speak eject unloads the live main model and cancels stale auto-load", () => {
   assert.match(
     source,
-    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{ model_path: activeModel \}\)/,
+    /const activeModel = status\?\.active_model;[\s\S]*unloadModel\(\{\s*model_path: activeModel,\s*force_cancel_active: stopDecision\.forceCancelActive,\s*\}\)/,
   );
   assert.match(
     source,
     /pendingStagedTtsLoad\.current = null;[\s\S]*stagedTtsLoadDeferred\.current = false;[\s\S]*stageTtsDownload\(\[\]\)/,
   );
   assert.match(source, /await unloadModel[\s\S]*await refreshStatus\(\)/);
+});
+
+test("Speak eject asks about running chats before tearing anything down", () => {
+  // Unforced, the backend refused with a 409 the page could only print as a toast.
+  assert.match(
+    source,
+    /const activeModel = status\?\.active_model;[\s\S]*confirmStopRunningChatsIfNeeded\(\s*"Unloading the model",\s*"unload",\s*\)/,
+  );
+  // Declining leaves the page as it was: the staged download dies only past the check.
+  assert.match(
+    source,
+    /if \(!stopDecision\.proceed\) \{\s*setBusy\(null\);\s*return;\s*\}\s*\n\s*\/\/ An old managed completion[\s\S]*invalidatePendingStagedTts\(\);/,
+  );
+  // Queues would otherwise start a fresh run on the model this eject removes.
+  assert.match(
+    source,
+    /cancelPreStreamRunReservations\(stopDecision\.preStreamRunTokens\);\s*requestLocalPromptQueueStop\(stopDecision\.promptQueueThreadIds\);\s*await unloadModel/,
+  );
+});
+
+test("a Speak load asks the same question and forces from the answer", () => {
+  assert.match(
+    source,
+    /ttsLoadInFlight\.current = true;\s*const stopDecision = await confirmStopRunningChatsIfNeeded\(\);/,
+  );
+  // The slot is claimed before the await, so a routed pick arriving mid-dialog queues.
+  assert.match(
+    source,
+    /if \(ttsLoadInFlight\.current\) \{\s*pendingRoutedTtsPick\.current = \{ repoId, ggufFilename, loadId \};\s*return;\s*\}[\s\S]{0,600}?ttsLoadInFlight\.current = true;\s*const stopDecision/,
+  );
+  // Declining releases the slot and drops the queued pick, which would else re-ask.
+  assert.match(
+    source,
+    /if \(!stopDecision\.proceed\) \{\s*ttsLoadInFlight\.current = false;[\s\S]*?pendingRoutedTtsPick\.current = null;\s*return;\s*\}/,
+  );
+  assert.match(
+    source,
+    /load_request_id: loadRequestId,\s*force_cancel_active: stopDecision\.forceCancelActive,/,
+  );
 });
 
 test("Transcribe eject only unloads a sidecar owned by the current selection", () => {
