@@ -38,11 +38,9 @@ NOT_IN_CI = {
 def _uncommented(text: str) -> str:
     """``text`` with ``#`` comments removed, so a disabled command stops counting.
 
-    Commenting an invocation out is how one gets disabled, and the scan reads workflow
-    `run:` bodies and helper scripts verbatim, so `# python tests/studio/x.py` matched
-    as an invocation. Reported on PR #9060. Shell, YAML and Python all take `#` to end
-    of line, and a `#` inside a string only ever appears in prose here, which is not an
-    invocation either way.
+    Commenting an invocation out is how one gets disabled, and this scan reads `run:`
+    bodies verbatim, so `# python tests/studio/x.py` used to match. Shell, YAML and
+    Python all take `#` to end of line.
     """
     return "\n".join(re.sub(r"(?:^|(?<=\s))#.*", "", line) for line in text.splitlines())
 
@@ -50,14 +48,10 @@ def _uncommented(text: str) -> str:
 def _invoked(name: str, text: str) -> bool:
     """Whether ``text`` RUNS ``name``, rather than merely mentioning it.
 
-    Substring presence is not coverage. `.github/scripts/kaggle_studio_ci/report.py`
-    names playwright_chat_ui.py inside a result description, and the workflows name
-    drivers in comments and in trigger paths, so deleting every real invocation could
-    leave this guard green on prose. Reported on PR #9060.
-
-    Every driver and helper in this repo is run the same way, as an argument to an
-    interpreter, so that is what is matched: the name at the end of a path token that
-    an interpreter is being handed.
+    Substring presence is not coverage: report.py names playwright_chat_ui.py in a
+    result description, so deleting every real invocation could leave this green on
+    prose. Every driver and helper here is run as an argument to an interpreter, so
+    that is what is matched.
     """
     pattern = (
         rf"(?:^|[\s;&|(])(?:python3?|node|bash|sh)\s+(?:-\S+\s+)*[^\s;&|<>'\"]*{re.escape(name)}\b"
@@ -68,11 +62,9 @@ def _invoked(name: str, text: str) -> bool:
 def _executable_text(path: Path) -> str:
     """The parts of a workflow that RUN something: step `run` bodies and `uses` refs.
 
-    Reading the whole file counts a driver named in `on.pull_request.paths` as an
-    invocation. studio-frontend-ci.yml names playwright_strip_ansi_smoke.py in both
-    its trigger list and its step, so deleting the step alone would leave the guard
-    green while the suite runs nowhere. Trigger paths say when CI runs, not what it
-    runs. Reported on PR #9060.
+    Trigger paths say when CI runs, not what it runs. studio-frontend-ci.yml names
+    playwright_strip_ansi_smoke.py in both, so reading the whole file left deleting
+    the step alone undetected.
     """
     document = yaml.safe_load(path.read_text(encoding = "utf-8"))
     if not isinstance(document, dict):
@@ -93,11 +85,9 @@ def _executable_text(path: Path) -> str:
 def _ci_text() -> str:
     """Everything CI could name a driver from, reachable from something that runs.
 
-    Two ways a name can look like coverage without being it, both live in this repo:
-    a driver named only in a workflow's trigger `paths`, and a driver named only by a
-    helper script no workflow calls. So the executable fields of the workflows seed
-    the text, and a helper joins only once something already in it names the helper --
-    repeatedly, since one helper may call another.
+    The workflows' executable fields seed the text, and a helper joins only once
+    something already in it names the helper, repeatedly since one helper may call
+    another. A helper no workflow calls is not coverage.
     """
     helpers = [
         path
@@ -117,10 +107,8 @@ def _ci_text() -> str:
         added = False
         for path in list(remaining):
             rel = path.relative_to(REPO).as_posix()
-            # A composite action is referenced by its DIRECTORY
-            # (`uses: ./.github/actions/install-unsloth-local`), never by the
-            # action.yml inside it, so matching only the file path never opens one
-            # and a driver it launches reads as an orphan. Reported on PR #9060.
+            # A composite action is referenced by its DIRECTORY, never by the
+            # action.yml inside it, so matching the file path never opens one.
             if path.name in ("action.yml", "action.yaml"):
                 reached = path.parent.relative_to(REPO).as_posix() in text
             else:
@@ -163,11 +151,10 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
 def test_the_linux_job_still_drives_all_three_browser_engines():
     """The repo-wide check cannot see this job disappear.
 
-    run-studio-indicator-browser.sh is named by the Mac and Windows UI workflows too,
-    so deleting all three calls from the Linux workflow leaves every guard above green
-    while the Chromium/Firefox/WebKit coverage this job exists for is gone. Reported on
-    PR #9060. Asserted against the job, not the file: a step moved back into ui-smoke
-    would put it behind the 30-minute limit this change moved it out of.
+    The Mac and Windows UI workflows name the same helper, so deleting all three calls
+    from the Linux one leaves every guard above green. Asserted against the job, not
+    the file: a step moved back into ui-smoke lands behind the 30-minute limit this
+    change moved it out of.
     """
     document = yaml.safe_load(
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
@@ -195,12 +182,9 @@ def test_the_scan_reads_the_workflows_it_claims_to():
         "the indicator driver is named by a CI script, so a scan that misses it is not "
         "reading .github/scripts"
     )
-    # A composite action is reached by its directory, so a walk that only matched the
-    # action.yml path would never open one. install-unsloth-local is the repo's only
-    # composite action and several workflows use it.
     assert "actions/install-unsloth-local" in text
-    # A line from inside that action's body, not from any workflow, so this fails if the
-    # walk matched the `uses:` reference without ever opening the action.
+    # From inside that action's body, not any workflow, so this fails if the walk
+    # matched the `uses:` reference without opening the action.
     assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
         "the composite action's own contents are not in the text, so a driver launched "
         "from inside one would read as an orphan"
