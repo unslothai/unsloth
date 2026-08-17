@@ -47,7 +47,9 @@ def _invoked(name: str, text: str) -> bool:
     interpreter, so that is what is matched: the name at the end of a path token that
     an interpreter is being handed.
     """
-    pattern = rf"(?:^|[\s;&|(])(?:python3?|node|bash|sh)\s+(?:-\S+\s+)*[^\s;&|<>'\"]*{re.escape(name)}\b"
+    pattern = (
+        rf"(?:^|[\s;&|(])(?:python3?|node|bash|sh)\s+(?:-\S+\s+)*[^\s;&|<>'\"]*{re.escape(name)}\b"
+    )
     return re.search(pattern, text, re.M) is not None
 
 
