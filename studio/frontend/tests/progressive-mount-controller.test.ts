@@ -155,9 +155,10 @@ test("the constants stay inside the range they were measured over", () => {
 // engine that had already compensated -- was found by a browser probe rather than by a test.
 // This is the arithmetic, extracted.
 
-const sample = (viewportOffset: number, scrollTop: number) => ({
+const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_000) => ({
   viewportOffset,
   scrollTop,
+  maxScrollTop,
 });
 
 test("the correction is the height inserted above, in document space", () => {
@@ -215,4 +216,23 @@ test("widening is monotone in start for every reachable window and count", () =>
       );
     }
   }
+});
+
+test("a shrink the browser already clamped is not corrected twice", () => {
+  // With anchoring off the browser moves scrollTop for exactly one reason: content above a reader
+  // near the bottom shrinks, the offset they were at stops existing, and it is clamped to the new
+  // maximum. The document-space delta reports the whole shrink regardless, so applying it on top
+  // of the clamp moves the viewport twice by the clamped part.
+  //
+  // 500px removed above a reader at scrollTop 9000 in a document whose maximum drops to 8600:
+  // the browser has already absorbed 400 of it, so 100 is left to apply.
+  assert.equal(
+    anchorCorrection(sample(200, 9000, 9100), sample(100, 8600, 8600)),
+    -100,
+  );
+  // The same shrink with room to spare is corrected in full, because nothing was clamped.
+  assert.equal(
+    anchorCorrection(sample(200, 9000, 50_000), sample(-300, 9000, 49_500)),
+    -500,
+  );
 });

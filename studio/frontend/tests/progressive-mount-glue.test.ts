@@ -365,7 +365,18 @@ test("the anchor is the first row the reader can see, not the first row in the l
   // row above a detached reader while the window was open: 600px of movement, reported as 0 by a
   // topmost-row anchor, and 0px of movement once the anchor was the visible one.
   assert.match(GLUE, /function pickAnchorRow\(viewport: HTMLElement\)/);
-  assert.match(GLUE, /if \(row\.getBoundingClientRect\(\)\.bottom > fold\) return row;/);
+  assert.match(GLUE, /if \(row\.getBoundingClientRect\(\)\.bottom > fold\) \{/);
+  // And then down to the fold itself, because a row can be taller than the viewport: a reader
+  // partway through a long answer has the row's top ABOVE them, so an image or a Shiki block
+  // earlier in that same message moves everything they can see and leaves the row's top still.
+  assert.match(GLUE, /for \(const child of anchor\.children\)/);
+  // Visibility is tested by the row's own box, not by its top offset: a tall row scrolled just
+  // past can have its top within a viewport of the fold while none of it is on screen.
+  assert.match(GLUE, /function isAnchorVisible\(/);
+  assert.match(GLUE, /return box\.bottom > fold && box\.top < fold \+ viewport\.clientHeight;/);
+  // And a widening hands the sampler a post-correction baseline rather than nulling it, or a
+  // reflow landing before the next frame is folded into the new baseline and never corrected.
+  assert.doesNotMatch(GLUE, /idleRef\.current = null;\s*\}, \[mountWindow/);
   assert.doesNotMatch(
     GLUE,
     /querySelector\("\[data-role\]"\)/,

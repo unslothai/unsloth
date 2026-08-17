@@ -134,6 +134,16 @@ export type AnchorSample = {
   viewportOffset: number;
   /** The scroll container's scrollTop at the same instant. */
   scrollTop: number;
+  /**
+   * The largest scrollTop the container could have had at the same instant, i.e.
+   * `scrollHeight - clientHeight`.
+   *
+   * Only used for the one case where the browser moves scrollTop even with anchoring off: content
+   * above a reader near the bottom SHRINKING forces a clamp, because the old offset no longer
+   * exists. The document-space delta reports the whole shrink regardless, so applying it on top of
+   * the clamp moves the viewport twice by the clamped part. See anchorCorrection.
+   */
+  maxScrollTop: number;
 };
 
 /**
@@ -172,10 +182,15 @@ export function anchorCorrection(
   captured: AnchorSample,
   now: AnchorSample,
 ): number | null {
+  // What the browser was forced to absorb. With anchoring off it moves scrollTop for exactly one
+  // reason: the offset the reader was at stopped existing because the document got shorter above
+  // them. That part of the correction has already happened, so only the remainder is applied.
+  const clamped = Math.max(0, captured.scrollTop - now.maxScrollTop);
   const shift =
     now.viewportOffset +
     now.scrollTop -
-    (captured.viewportOffset + captured.scrollTop);
+    (captured.viewportOffset + captured.scrollTop) +
+    clamped;
   // Rounding down to whole pixels keeps a subpixel reflow from issuing a scroll write every frame.
   return Math.abs(shift) >= 1 ? shift : null;
 }

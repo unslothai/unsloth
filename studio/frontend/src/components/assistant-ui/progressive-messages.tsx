@@ -126,10 +126,35 @@ export function hasPendingProgressiveMounts(): boolean {
 function pickAnchorRow(viewport: HTMLElement): Element | null {
   const fold = viewport.getBoundingClientRect().top;
   const rows = viewport.querySelectorAll("[data-role]");
+  let anchor: Element | null = rows.item(rows.length - 1);
   for (const row of rows) {
-    if (row.getBoundingClientRect().bottom > fold) return row;
+    if (row.getBoundingClientRect().bottom > fold) {
+      anchor = row;
+      break;
+    }
   }
-  return rows.item(rows.length - 1);
+  if (!anchor) return null;
+  // Then descend to the fold itself. A row can be taller than the viewport -- a long answer with
+  // images and code usually is -- and a reader partway through one has the row's top ABOVE them.
+  // An image or a Shiki block earlier in that same message growing moves everything the reader can
+  // see and leaves the row's top exactly where it was, so a whole-row anchor reports zero. The
+  // first descendant that reaches the fold does not.
+  //
+  // Bounded: markdown nests, but the block that straddles the fold is a handful of levels down,
+  // and this runs once per re-pick rather than per frame.
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (anchor.getBoundingClientRect().top >= fold) break;
+    let next: Element | null = null;
+    for (const child of anchor.children) {
+      if (child.getBoundingClientRect().bottom > fold) {
+        next = child;
+        break;
+      }
+    }
+    if (!next) break;
+    anchor = next;
+  }
+  return anchor;
 }
 
 function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
@@ -138,7 +163,15 @@ function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
       element.getBoundingClientRect().top -
       viewport.getBoundingClientRect().top,
     scrollTop: viewport.scrollTop,
+    maxScrollTop: viewport.scrollHeight - viewport.clientHeight,
   };
+}
+
+/** True while `element` still covers some of what the reader can see. */
+function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
+  const box = element.getBoundingClientRect();
+  const fold = viewport.getBoundingClientRect().top;
+  return box.bottom > fold && box.top < fold + viewport.clientHeight;
 }
 
 function useProgressiveMountWindow(
@@ -227,11 +260,7 @@ function useProgressiveMountWindow(
   // AnchorSample. The arithmetic that turns the two samples into a scrollTop delta is
   // anchorCorrection, which is document space and assumes nothing else moved scrollTop -- which is
   // what disarming native anchoring, below, is for.
-  const anchorRef = useRef<{
-    element: Element;
-    viewportOffset: number;
-    scrollTop: number;
-  } | null>(null);
+  const anchorRef = useRef<({ element: Element } & AnchorSample) | null>(null);
   /** The row the idle sampler below holds still, and where it last saw it. */
   const idleRef = useRef<{ element: Element; sample: AnchorSample } | null>(
     null,
@@ -301,8 +330,14 @@ function useProgressiveMountWindow(
     // reader did not make. The hook decides whether anything is written; see
     // adjustForContentInsertedAbove.
     adjustForContentInsertedAbove(shift ?? 0);
-    // Make the idle sampler below re-pick, since everything it knew has just moved.
-    idleRef.current = null;
+    // Hand the idle sampler below a POST-correction baseline rather than nulling it. Nulling it
+    // meant the next frame merely re-picked and re-based, so an image or a Shiki block landing
+    // between this layout effect and that frame was folded into the new baseline and never
+    // corrected: with anchoring off, the reader kept the whole displacement.
+    idleRef.current = {
+      element: captured.element,
+      sample: sampleAnchor(viewport, captured.element),
+    };
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
   // Content above the reader also moves for reasons that are not a widening, and while the window
@@ -343,15 +378,15 @@ function useProgressiveMountWindow(
           : null;
         return;
       }
-      const now = sampleAnchor(viewport, held.element);
       // Out of view: the reader has scrolled past it, so hold something they can see instead.
-      if (
-        now.viewportOffset > viewport.clientHeight ||
-        now.viewportOffset < -viewport.clientHeight
-      ) {
+      // Tested by the row's own box rather than by its top offset: a tall row scrolled just past
+      // can have its top within a viewport of the fold while none of it is on screen, and a
+      // reflow between it and the first visible row then moves the reader while leaving it still.
+      if (!isAnchorVisible(viewport, held.element)) {
         idleRef.current = null;
         return;
       }
+      const now = sampleAnchor(viewport, held.element);
       const shift = anchorCorrection(held.sample, now);
       if (shift == null) return;
       adjustForContentInsertedAbove(shift);
