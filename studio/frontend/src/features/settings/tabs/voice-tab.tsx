@@ -1244,7 +1244,12 @@ export function VoiceTab() {
                   size="sm"
                   onClick={() => {
                     useSettingsDialogStore.getState().closeDialog();
-                    void navigate({ to: "/audio", search: {} });
+                    // Audio keeps the mode it was left in, so name the task: this row is
+                    // about the TTS model, not the transcription one.
+                    void navigate({
+                      to: "/audio",
+                      search: { task: "text-to-speech" },
+                    });
                   }}
                 >
                   <HugeiconsIcon

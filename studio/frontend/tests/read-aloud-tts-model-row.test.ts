@@ -13,16 +13,39 @@ const en = readFileSync(
   new URL("../src/i18n/locales/en.ts", import.meta.url),
   "utf8",
 );
+const audioSource = readFileSync(
+  new URL("../src/features/audio/audio-page.tsx", import.meta.url),
+  "utf8",
+);
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
   // Settings is a modal over the current route, so it has to close or the Audio page
   // opens behind it.
   assert.match(
     source,
-    /label=\{t\("settings\.voice\.readAloud\.modelLabel"\)\}[\s\S]*?useSettingsDialogStore\.getState\(\)\.closeDialog\(\);\s*void navigate\(\{ to: "\/audio", search: \{\} \}\);/,
+    /label=\{t\("settings\.voice\.readAloud\.modelLabel"\)\}[\s\S]*?useSettingsDialogStore\.getState\(\)\.closeDialog\(\);[\s\S]{0,200}?void navigate\(\{\s*to: "\/audio",/,
   );
   assert.match(source, /t\("settings\.voice\.readAloud\.openAudioAction"\)/);
   assert.match(en, /openAudioAction: "Open Audio",/);
+});
+
+test("the row lands on the TTS selector, not the mode Audio was left in", () => {
+  // AudioPage stays mounted off-route and keeps its `mode` state, so a plain /audio
+  // navigation can show the transcription selector this row is not talking about.
+  assert.match(
+    source,
+    /to: "\/audio",\s*search: \{ task: "text-to-speech" \},/,
+  );
+  // Audio ignored a task without a model, so the intent needs handling at the other end.
+  assert.match(
+    audioSource,
+    /const task = routeSearch\.task;\s*if \(!task\) return;\s*const intended =\s*task === "automatic-speech-recognition" \? "transcribe" : "speak";/,
+  );
+  // A refused switch keeps the parameter, so the retry rides the effect's busy dep.
+  assert.match(
+    audioSource,
+    /if \(intended !== mode && !transitionMode\(intended\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+  );
 });
 
 test("a studio preview shows the generate wait instead of an idle button", () => {

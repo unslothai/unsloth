@@ -1241,6 +1241,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
+      // A task with no model is a mode intent, used by Settings to send the user here for
+      // a TTS model. The page keeps the mode it was left in, so without this it can land
+      // on the transcription selector.
+      const task = routeSearch.task;
+      if (!task) return;
+      const intended =
+        task === "automatic-speech-recognition" ? "transcribe" : "speak";
+      // Left in the URL when the switch is refused, so it retries once busy releases.
+      if (intended !== mode && !transitionMode(intended)) return;
+      void navigateSelf({ to: "/audio", search: {}, replace: true });
       return;
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}`;
@@ -1263,12 +1273,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, [
     active,
     busy,
+    mode,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.ggufQuant,
     routeSearch.task,
     handleModelSelect,
     navigateSelf,
+    transitionMode,
   ]);
 
   // --- Speak --------------------------------------------------------------
