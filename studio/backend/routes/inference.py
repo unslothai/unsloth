@@ -8655,14 +8655,13 @@ async def _load_model_impl(
                 _hub_download_blocks_gguf_load,
                 config.gguf_hf_repo,
                 config.gguf_variant,
-                # Vision off means this load opens no projector, so it does not need
-                # one cached to be reusable. This gate runs BEFORE the marker's own
-                # check, so leaving it out here 409s the request first and the fix
-                # below never gets a say.
+                # Same predicate as the marker's own check, and as the loader's
+                # download gate: the projector is fetched whenever the repo ships one
+                # and the extras have not opted out, so the switch must not relax this
+                # interlock. Relaxing it let a vision-off load bypass the 409 and then
+                # download into the shared Hub cache beside a running download job.
                 require_mmproj = bool(
-                    config.is_vision
-                    and not getattr(request, "disable_vision", False)
-                    and not extra_args_disable_mmproj(extra_llama_args)
+                    config.is_vision and not extra_args_disable_mmproj(extra_llama_args)
                 ),
                 hf_token = request.hf_token,
             ):

@@ -1831,14 +1831,16 @@ def _with_gguf_load_marker(load: Callable):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
-                # A load that opens no projector does not need one cached to be
-                # reusable: demanding it rejects the request while another variant of
-                # the repo downloads, over a file this load was never going to read.
-                # The switch is the only signal available here, since a remote
-                # projector is not on disk yet to be asked what it can encode.
+                # Mirrors the download gate below EXACTLY, which is the whole point:
+                # this load fetches the projector whenever the repo ships one and the
+                # extras have not opted out, switch or no switch, because only the
+                # file's metadata says whether it is an image tower or an audio
+                # encoder. So the switch must not relax the interlock here. It did
+                # briefly, and the two together let a vision-off load skip the 409 and
+                # then write into the shared Hub cache next to a running download job,
+                # which is the race this check exists to stop.
                 require_mmproj = bool(
                     intent.is_vision
-                    and not intent.disable_vision
                     and not extra_args_disable_mmproj(intent.extra_args)
                 ),
                 hf_token = intent.hf_token,
@@ -17219,8 +17221,16 @@ class LlamaCppBackend:
                 # loaded on purpose above and has no image encoder, so claiming the
                 # switch is what withholds images would promise a capability turning it
                 # back on cannot deliver.
+                # An advanced argument that drops the projector is the same story
+                # again: resolution is skipped so nothing reads the file, the
+                # capability default stays True, and the switch would take the blame
+                # for images that turning it back on cannot restore while the argument
+                # still suppresses the projector.
                 self._vision_disabled_by_user = bool(
-                    is_vision and disable_vision and self._mmproj_accepts_image
+                    is_vision
+                    and disable_vision
+                    and self._mmproj_accepts_image
+                    and not extra_args_disable_mmproj(extra_args)
                 )
                 self._model_identifier = model_identifier
 

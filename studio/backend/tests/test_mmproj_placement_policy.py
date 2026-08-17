@@ -596,45 +596,46 @@ def test_the_training_guard_still_charges_an_audio_only_projector(tmp_path):
     assert vision < charged
 
 
-def test_a_vision_off_load_does_not_need_a_cached_projector(tmp_path):
-    """The download-conflict check asks whether a reusable cached load exists. A
-    load that opens no projector does not need one cached to qualify, so demanding
-    it rejects the request over a file this load was never going to read."""
+def test_the_download_interlock_is_not_relaxed_by_the_vision_switch(tmp_path):
+    """The load fetches a remote projector whenever the repo ships one and the extras
+    have not opted out, switch or no switch, because only the file's metadata says
+    whether it is an image tower or an audio encoder. So the interlock has to hold
+    for it: relaxing it let a vision-off load skip the 409 and then write into the
+    shared Hub cache beside a running download job, which is the race the check
+    exists to stop. The predicate must mirror the download gate, not the switch."""
     from core.inference.llama_cpp import GgufLoadIntent, _with_gguf_load_marker
 
     seen = {}
 
-    def fake_blocks(
-        repo,
-        variant,
-        *,
-        require_mmproj,
-        hf_token = None,
-    ):
+    def fake_blocks(repo, variant, *, require_mmproj, hf_token = None):
         seen["require_mmproj"] = require_mmproj
         return False
 
-    def inner(
-        self,
-        intent,
-        load_cancel_event = None,
-    ):
+    def inner(self, intent, load_cancel_event = None):
         return True
 
-    wrapped = _with_gguf_load_marker(inner)
-    with patch("core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks):
-        wrapped(
+    def _run(**intent_kwargs):
+        seen.clear()
+        _with_gguf_load_marker(inner)(
             object(),
             GgufLoadIntent(
                 gguf_path = str(tmp_path / "model.gguf"),
                 model_identifier = "test",
                 hf_repo = "unsloth/some-vl-GGUF",
                 is_vision = True,
-                disable_vision = True,
+                **intent_kwargs,
             ),
         )
+        return seen["require_mmproj"]
 
-    assert seen["require_mmproj"] is False
+    with patch(
+        "core.inference.llama_cpp._hub_download_blocks_gguf_load", fake_blocks
+    ):
+        # Vision off still downloads, so the interlock still applies.
+        assert _run(disable_vision = True) is True
+        assert _run(disable_vision = False) is True
+        # The extras opting out is the one case that downloads nothing.
+        assert _run(disable_vision = True, extra_args = ["--no-mmproj"]) is False
 
 
 def test_a_user_pinned_projector_is_not_charged_against_vram(tmp_path):
@@ -781,3 +782,21 @@ def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
     assert backend._runtime_matches_intent(_intent(True), None) == (
         backend._runtime_matches_intent(_intent(False), None)
     )
+
+
+def test_an_advanced_argument_that_drops_the_projector_is_not_blamed_on_the_switch(
+    tmp_path,
+):
+    """vision_disabled_by_user drives the composer's "you turned it off" message. With
+    --no-mmproj in the extras the projector is suppressed by the ARGUMENT, resolution
+    is skipped so nothing reads the file and the capability default stays True, and
+    the switch would take the blame for images that turning it back on cannot
+    restore while the argument still applies."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    _launch(
+        backend, gguf, disable_vision = True, extra_args = ["--no-mmproj"]
+    )
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False
