@@ -6350,6 +6350,35 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
+/**
+ * At module scope on purpose. The memo comparator in
+ * `MessagePrimitivePartByIndex` checks `components.tools` by identity, so an
+ * inline literal handed it a fresh object every render, failed the comparator
+ * and rebuilt every already-finished part of a streaming reply on each chunk.
+ *
+ * Anything added here must stay referentially stable; an entry that really
+ * depends on props or state belongs in a `useMemo`, not inline in the JSX.
+ */
+const ASSISTANT_PART_COMPONENTS = {
+  Text: MarkdownText,
+  Reasoning: Reasoning,
+  ReasoningGroup: ReasoningGroup,
+  Source: Sources,
+  ToolGroup: ToolGroup,
+  tools: {
+    by_name: {
+      web_search: WebSearchToolUIConfirmable,
+      search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      python: PythonToolUIConfirmable,
+      terminal: TerminalToolUIConfirmable,
+      code_execution: CodeExecutionToolUIConfirmable,
+      image_generation: ImageGenerationToolUIConfirmable,
+      render_html: RenderHtmlToolUIConfirmable,
+    },
+    Fallback: ToolFallbackConfirmable,
+  },
+} as const;
+
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
 // out of noise. Transient (store-only, cleared on run end), so the finished message
@@ -6510,27 +6539,7 @@ const AssistantMessage: FC = () => {
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-                <MessagePrimitive.Parts
-              components={{
-                Text: MarkdownText,
-                Reasoning: Reasoning,
-                ReasoningGroup: ReasoningGroup,
-                Source: Sources,
-                ToolGroup: ToolGroup,
-                tools: {
-                  by_name: {
-                    web_search: WebSearchToolUIConfirmable,
-                    search_knowledge_base: KnowledgeBaseToolUIConfirmable,
-                    python: PythonToolUIConfirmable,
-                    terminal: TerminalToolUIConfirmable,
-                    code_execution: CodeExecutionToolUIConfirmable,
-                    image_generation: ImageGenerationToolUIConfirmable,
-                    render_html: RenderHtmlToolUIConfirmable,
-                  },
-                  Fallback: ToolFallbackConfirmable,
-                },
-              }}
-                />
+                <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
                 <RagSourcesGroup />
                 <MessageHtmlArtifacts />
