@@ -299,15 +299,11 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
-  newThreadNonce,
-  projectId,
   artifact,
   artifactSurface,
   onCloseArtifact,
 }: {
   threadId?: string;
-  newThreadNonce?: string;
-  projectId?: string | null;
   artifact?: ChatArtifact | null;
   artifactSurface: ChatArtifactSurface;
   onCloseArtifact: () => void;
@@ -417,13 +413,7 @@ const SingleContent = memo(function SingleContent({
   );
 
   return (
-    <ChatRuntimeProvider
-      modelType="base"
-      initialThreadId={threadId}
-      newThreadNonce={newThreadNonce}
-      projectId={projectId}
-      listThreads={false}
-    >
+    <>
       <ResizablePanelGroup
         orientation="horizontal"
         data-artifact-layout-animating={
@@ -511,7 +501,7 @@ const SingleContent = memo(function SingleContent({
           }}
         />
       ) : null}
-    </ChatRuntimeProvider>
+    </>
   );
 });
 
@@ -1118,10 +1108,14 @@ function ProjectLanding({
   projectId,
   projectName,
   items,
+  newThreadNonce,
+  rotateNewThreadNonce,
 }: {
   projectId: string;
   projectName: string;
   items: SidebarItem[];
+  newThreadNonce: string;
+  rotateNewThreadNonce: () => void;
 }): ReactElement {
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they can't linger or act while the landing
@@ -1139,9 +1133,6 @@ function ProjectLanding({
   }, [projectId]);
   const [pendingNewThreadId, setPendingNewThreadId] = useState<string | null>(
     null,
-  );
-  const [newThreadNonce, setNewThreadNonce] = useState(() =>
-    createThreadNonce(),
   );
   const [previews, setPreviews] = useState<
     Record<string, { snippet: string; date: string }>
@@ -1218,10 +1209,10 @@ function ProjectLanding({
     useChatRuntimeStore.getState().setActiveThreadId(null);
     useChatRuntimeStore.getState().setContextUsage(null);
     setPendingNewThreadId(null);
-    setNewThreadNonce(createThreadNonce());
+    rotateNewThreadNonce();
     setRenamingId(null);
     setPendingRename(null);
-  }, [projectId]);
+  }, [projectId, rotateNewThreadNonce]);
 
   useEffect(() => {
     if (!pendingRename) return;
@@ -1385,7 +1376,7 @@ function ProjectLanding({
       // Leaving a created chat for a new one: rotate the nonce so the runtime
       // switches to a fresh thread instead of appending to the old chat.
       if (pendingNewThreadId) {
-        setNewThreadNonce(createThreadNonce());
+        rotateNewThreadNonce();
         setPendingNewThreadId(null);
       }
       return;
@@ -1406,7 +1397,7 @@ function ProjectLanding({
         captured?.nonce === newThreadNonce ? captured.claim : NO_SUCH_CLAIM,
       );
     setPendingNewThreadId(activeThreadId);
-  }, [activeThreadId, pendingNewThreadId, newThreadNonce]);
+  }, [activeThreadId, pendingNewThreadId, newThreadNonce, rotateNewThreadNonce]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1454,12 +1445,7 @@ function ProjectLanding({
   }, [items]);
 
   return (
-    <ChatRuntimeProvider
-      key={projectId}
-      projectId={projectId}
-      newThreadNonce={newThreadNonce}
-      listThreads={false}
-    >
+    <>
       {pendingNewThreadId ? (
         <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
           <Thread hideWelcome={true} targetThreadId={pendingNewThreadId} />
@@ -1908,7 +1894,7 @@ function ProjectLanding({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </ChatRuntimeProvider>
+    </>
   );
 }
 
@@ -2474,6 +2460,15 @@ export function ChatPage({
     persistedActiveThreadId,
     currentProjectId,
   ]);
+
+  // Owned here rather than in ProjectLanding so the hoisted runtime provider
+  // below sees the same nonce ProjectLanding's composer records claims under.
+  const [projectNewThreadNonce, setProjectNewThreadNonce] = useState(() =>
+    createThreadNonce(),
+  );
+  const rotateProjectNewThreadNonce = useCallback(() => {
+    setProjectNewThreadNonce(createThreadNonce());
+  }, []);
 
   // Temporary chat only applies to a fresh single-view chat. Exit incognito
   // when we land on anything else (compare, a project, or an existing thread
@@ -3671,31 +3666,44 @@ export function ChatPage({
           </div>
         </div>
 
-        {view.mode === "project" ? (
-          <ProjectLanding
-            key={view.projectId}
+        {view.mode !== "compare" ? (
+          // One provider shared by the project and single views, never keyed on
+          // thread / nonce / project. Switching between them (open an old chat
+          // mid-run in a project, come back) therefore reattaches the live run
+          // instead of remounting the runtime and aborting generation (#8908);
+          // assistant-ui keeps every alive thread's runtime mounted.
+          <ChatRuntimeProvider
+            modelType="base"
             projectId={view.projectId}
-            projectName={currentProject?.name ?? "Project"}
-            items={currentProjectItems}
-          />
-        ) : view.mode === "single" ? (
-          // Keyed by project only (not thread / new-chat nonce) so switching threads or
-          // starting a New Chat reuses the same provider and switches in place. This keeps
-          // an in-flight generation streaming in the background (assistant-ui keeps every
-          // alive thread's runtime mounted) instead of remounting the provider and cutting
-          // it off; returning to that thread reattaches the live run rather than reloading
-          // a half-saved one.
-          <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
-            <SingleContent
-              key={view.projectId ?? "single"}
-              threadId={view.threadId}
-              newThreadNonce={view.newThreadNonce}
-              projectId={view.projectId}
-              artifact={selectedArtifact}
-              artifactSurface={artifactSurface}
-              onCloseArtifact={closeArtifactSurface}
-            />
-          </NativeAttachmentTargetContext.Provider>
+            initialThreadId={view.mode === "single" ? view.threadId : undefined}
+            newThreadNonce={
+              view.mode === "project"
+                ? projectNewThreadNonce
+                : view.newThreadNonce
+            }
+            listThreads={false}
+          >
+            {view.mode === "project" ? (
+              <ProjectLanding
+                key={view.projectId}
+                projectId={view.projectId}
+                projectName={currentProject?.name ?? "Project"}
+                items={currentProjectItems}
+                newThreadNonce={projectNewThreadNonce}
+                rotateNewThreadNonce={rotateProjectNewThreadNonce}
+              />
+            ) : (
+              <NativeAttachmentTargetContext.Provider value={artifactViewKey}>
+                <SingleContent
+                  key={view.projectId ?? "single"}
+                  threadId={view.threadId}
+                  artifact={selectedArtifact}
+                  artifactSurface={artifactSurface}
+                  onCloseArtifact={closeArtifactSurface}
+                />
+              </NativeAttachmentTargetContext.Provider>
+            )}
+          </ChatRuntimeProvider>
         ) : (
           <CompareContent
             key={view.pairId}
