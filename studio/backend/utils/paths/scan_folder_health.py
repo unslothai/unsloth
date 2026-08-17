@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import errno
 import os
+from typing import Optional
 
 # Readable, or not scanned yet.
 STATUS_OK = "ok"
@@ -24,6 +25,9 @@ STATUS_UNREADABLE = "unreadable"
 # The folder works, but something inside it is refused, so models are missing
 # from the list without the list looking wrong.
 STATUS_PARTIAL = "partial"
+# Internal only: the probe ran out of budget before it saw everything, so it
+# proved nothing. Never recorded and never sent to the UI.
+STATUS_UNKNOWN = "unknown"
 
 
 # Deep enough for <root>/<publisher>/<model>, the LM Studio and HF cache shape.
@@ -32,39 +36,51 @@ _PROBE_DEPTH = 2
 _PROBE_OPEN_LIMIT = 64
 
 
-def _probe_dir(path: str, *, depth: int, budget: list[int]) -> str:
+def _probe_dir(
+    path: str, *, depth: int, budget: list[int]
+) -> tuple[str, Optional[str]]:
     """Open ``path``, then its subdirectories down to ``depth``, depth first.
 
-    Depth first so a denied model is found in three opens rather than after every
-    publisher. ``budget`` is shared across the whole walk and decremented per open.
+    Returns the status and the directory that refused. Depth first so a denied
+    model is found in three opens rather than after every publisher. ``budget``
+    is shared across the walk and spent one per open. Running out returns
+    ``STATUS_UNKNOWN``: the tail was never looked at, which is not the same as
+    finding it healthy.
     """
     if budget[0] <= 0:
-        return STATUS_OK
+        return STATUS_UNKNOWN, None
     budget[0] -= 1
     subdirs: list[str] = []
+    truncated = False
     try:
         with os.scandir(path) as entries:
             if depth <= 0:
                 # Only need to know it opens.
                 next(entries, None)
-                return STATUS_OK
+                return STATUS_OK, None
             for entry in entries:
                 if len(subdirs) >= budget[0]:
+                    truncated = True
                     break
                 try:
                     if entry.is_dir():
                         subdirs.append(entry.path)
                 except OSError as error:
-                    return classify_scan_error(error)
+                    return classify_scan_error(error), entry.path
     except OSError as error:
-        return classify_scan_error(error)
+        return classify_scan_error(error), path
     for subdir in subdirs:
-        status = _probe_dir(subdir, depth = depth - 1, budget = budget)
+        status, cause = _probe_dir(subdir, depth = depth - 1, budget = budget)
         if status != STATUS_OK:
-            return status
-        if budget[0] <= 0:
-            break
-    return STATUS_OK
+            return status, cause or subdir
+    return (STATUS_UNKNOWN, None) if truncated else (STATUS_OK, None)
+
+
+def probe_folder(path: str, *, children: bool = False) -> tuple[str, Optional[str]]:
+    """Status of ``path`` plus the directory that refused, if any."""
+    if not children:
+        return _probe_dir(path, depth = 0, budget = [1])
+    return _probe_dir(path, depth = _PROBE_DEPTH, budget = [_PROBE_OPEN_LIMIT])
 
 
 def probe_status(path: str, *, children: bool = False) -> str:
@@ -74,9 +90,7 @@ def probe_status(path: str, *, children: bool = False) -> str:
     models below it are denied, and the scanners skip an unreadable entry
     silently, so both arrive as the same empty list.
     """
-    if not children:
-        return _probe_dir(path, depth = 0, budget = [1])
-    return _probe_dir(path, depth = _PROBE_DEPTH, budget = [_PROBE_OPEN_LIMIT])
+    return probe_folder(path, children = children)[0]
 
 
 def is_readable_dir(path: str) -> bool:
@@ -101,16 +115,21 @@ def classify_scan_error(error: OSError) -> str:
 
 
 # Read on every folder list, written only when a probe finds something wrong.
-# Bounded by the registered folder count.
+# Each value is (status, the directory that refused), so a recheck can settle a
+# folder in one open instead of walking it again. Bounded by the folder count.
 _MAX_TRACKED = 256
-_failed: dict[str, str] = {}
+_failed: dict[str, tuple[str, str]] = {}
+
+
+def _record(path: str, status: str, cause: str) -> None:
+    if len(_failed) >= _MAX_TRACKED:
+        _failed.clear()
+    _failed[path] = (status, cause)
 
 
 def record_scan_failure(path: str, error: OSError) -> None:
     """Remember why a scan skipped ``path``."""
-    if len(_failed) >= _MAX_TRACKED:
-        _failed.clear()
-    _failed[path] = classify_scan_error(error)
+    _record(path, classify_scan_error(error), path)
 
 
 def clear_scan_failure(path: str) -> None:
@@ -127,7 +146,12 @@ def note_scan_folder_scanned(path: str, *, found: bool) -> None:
     ask the OS instead of trying to read it back out of them. Bounded by
     ``_PROBE_OPEN_LIMIT`` opens per folder.
     """
-    status = probe_status(path, children = True)
+    status, cause = probe_folder(path, children = True)
+    if status == STATUS_UNKNOWN:
+        # Budget gone before the tail was reached, so this proves nothing either
+        # way. Settle it on the one directory that refused last time.
+        _recheck_cause(path)
+        return
     if status == STATUS_OK:
         clear_scan_failure(path)
         return
@@ -135,16 +159,28 @@ def note_scan_folder_scanned(path: str, *, found: bool) -> None:
     # refused. Saying it cannot be read would contradict the rows on screen.
     if found:
         status = STATUS_PARTIAL
-    if len(_failed) >= _MAX_TRACKED:
-        _failed.clear()
-    _failed[path] = status
+    _record(path, status, cause or path)
+
+
+def _recheck_cause(path: str) -> None:
+    """Clear ``path`` if the directory that refused last time opens now.
+
+    One open, and it does not depend on the probe reaching that directory again,
+    so recovery works on a folder too wide to walk inside the budget.
+    """
+    entry = _failed.get(path)
+    if entry is None:
+        return
+    if probe_status(entry[1]) == STATUS_OK:
+        _failed.pop(path, None)
 
 
 def scan_folder_status(path: str) -> str:
     """Last known status for ``path``. A dict lookup, never touches the disk."""
     if not _failed:
         return STATUS_OK
-    return _failed.get(path, STATUS_OK)
+    entry = _failed.get(path)
+    return STATUS_OK if entry is None else entry[0]
 
 
 def refresh_failed_scan_folders(folders: list[dict]) -> None:
@@ -158,18 +194,22 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
         return
     for folder in folders:
         path = str(folder.get("path", ""))
-        previous = _failed.get(path)
-        if previous is None:
+        entry = _failed.get(path)
+        if entry is None:
             continue
-        status = probe_status(path, children = True)
+        previous = entry[0]
+        status, cause = probe_folder(path, children = True)
+        if status == STATUS_UNKNOWN:
+            _recheck_cause(path)
+            continue
         if status == STATUS_OK:
             _failed.pop(path, None)
-        elif previous == STATUS_PARTIAL:
-            # The probe cannot tell that models were found, so keep what the
-            # scan concluded rather than downgrading it to "cannot be read".
             continue
-        elif status != previous:
-            _failed[path] = status
+        if previous == STATUS_PARTIAL and status == STATUS_PERMISSION_DENIED:
+            # The probe cannot see that models were found, so keep the wording
+            # the scan chose. A folder that is gone still replaces it below.
+            status = STATUS_PARTIAL
+        _record(path, status, cause or path)
 
 
 def annotate_scan_folders(folders: list[dict]) -> list[dict]:
@@ -177,6 +217,6 @@ def annotate_scan_folders(folders: list[dict]) -> list[dict]:
     if not _failed:
         return [{**folder, "status": STATUS_OK} for folder in folders]
     return [
-        {**folder, "status": _failed.get(str(folder.get("path", "")), STATUS_OK)}
+        {**folder, "status": scan_folder_status(str(folder.get("path", "")))}
         for folder in folders
     ]

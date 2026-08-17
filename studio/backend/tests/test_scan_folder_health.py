@@ -20,6 +20,7 @@ from utils.paths.scan_folder_health import (
     STATUS_OK,
     STATUS_PARTIAL,
     STATUS_PERMISSION_DENIED,
+    STATUS_UNKNOWN,
     STATUS_UNREADABLE,
     annotate_scan_folders,
     classify_scan_error,
@@ -337,6 +338,7 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         denied.chmod(stat.S_IRWXU)
 
 
+@requires_posix_permissions
 def test_a_root_that_lists_but_hides_every_model_is_not_ok(tmp_path: Path):
     """Mixed permissions: the root reads fine, the model under it does not.
 
@@ -453,7 +455,9 @@ def test_the_child_probe_is_bounded(tmp_path: Path, monkeypatch):
         return real_scandir(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "scandir", counting_scandir)
-    assert probe_status(str(tmp_path), children = True) == STATUS_OK
+    # Too wide to finish inside the budget, so the answer is "did not see
+    # everything", not "healthy". Only an exhaustive probe may report ok.
+    assert probe_status(str(tmp_path), children = True) == STATUS_UNKNOWN
     # One shared budget across the whole walk, however deep or wide the tree.
     assert len(opened) <= health._PROBE_OPEN_LIMIT
 
@@ -530,6 +534,81 @@ def test_the_recheck_only_opens_the_folder_that_failed(tmp_path: Path, monkeypat
         ]
     )
     assert opened == [str(bad)]
+
+
+@requires_posix_permissions
+def test_an_exhausted_budget_does_not_clear_a_known_failure(tmp_path: Path):
+    """Running out of budget proves nothing, so it must not report healthy.
+
+    The folder is too wide to finish probing, and the denied directory sits past
+    the cutoff, so a probe that treated exhaustion as ok would drop the warning.
+    """
+    import utils.paths.scan_folder_health as health
+
+    for i in range(health._PROBE_OPEN_LIMIT * 3):
+        (tmp_path / f"model{i:03d}").mkdir()
+    # Deterministically past the budget: pick by real listing order, not by name.
+    order = [entry.name for entry in os.scandir(tmp_path)]
+    denied = tmp_path / order[-1]
+    denied.chmod(0o000)
+    try:
+        record_scan_failure(str(tmp_path), PermissionError(errno.EACCES, "Permission denied"))
+        health._failed[str(tmp_path)] = (STATUS_PARTIAL, str(denied))
+
+        note_scan_folder_scanned(str(tmp_path), found = True)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PARTIAL
+    finally:
+        denied.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_a_wide_folder_still_clears_once_it_is_fixed(tmp_path: Path):
+    """The flip side: recovery cannot depend on the probe reaching the tail."""
+    import utils.paths.scan_folder_health as health
+
+    for i in range(health._PROBE_OPEN_LIMIT * 3):
+        (tmp_path / f"model{i:03d}").mkdir()
+    order = [entry.name for entry in os.scandir(tmp_path)]
+    fixed = tmp_path / order[-1]
+    # Recorded as the cause, but readable again by the time the scan runs.
+    health._failed[str(tmp_path)] = (STATUS_PARTIAL, str(fixed))
+
+    note_scan_folder_scanned(str(tmp_path), found = True)
+    assert scan_folder_status(str(tmp_path)) == STATUS_OK
+
+
+@requires_posix_permissions
+def test_a_partial_folder_that_disappears_reports_missing(tmp_path: Path):
+    """Deleting the folder outranks "some models could not be read"."""
+    import shutil
+
+    folder = tmp_path / "models"
+    bad = folder / "bad"
+    bad.mkdir(parents = True)
+    bad.chmod(0o000)
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+
+    note_scan_folder_scanned(str(folder), found = True)
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_PARTIAL
+
+    bad.chmod(stat.S_IRWXU)
+    shutil.rmtree(folder)
+    refresh_failed_scan_folders(rows)
+    assert annotate_scan_folders(rows)[0]["status"] == STATUS_MISSING
+
+
+def test_the_internal_unknown_status_never_reaches_the_api(tmp_path: Path):
+    """STATUS_UNKNOWN is a probe result, not something the UI can render."""
+    import utils.paths.scan_folder_health as health
+
+    for i in range(health._PROBE_OPEN_LIMIT * 3):
+        (tmp_path / f"model{i:03d}").mkdir()
+    rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
+
+    note_scan_folder_scanned(str(tmp_path), found = True)
+    refresh_failed_scan_folders(rows)
+    assert annotate_scan_folders(rows)[0]["status"] != STATUS_UNKNOWN
+    assert STATUS_UNKNOWN not in {status for status, _cause in health._failed.values()}
 
 
 def test_reading_status_never_touches_the_filesystem(monkeypatch):
