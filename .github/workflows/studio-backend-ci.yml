@@ -217,6 +217,7 @@ jobs:
             --ignore=tests/test_tunnel_safe_long_post.py \
             --ignore=tests/test_scan_loras_off_event_loop.py \
             --ignore=tests/test_anthropic_messages.py \
+            --ignore=tests/test_profile_stats.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -234,7 +235,8 @@ jobs:
             tests/test_tool_call_parser_strict.py \
             tests/test_tunnel_safe_long_post.py \
             tests/test_scan_loras_off_event_loop.py \
-            tests/test_anthropic_messages.py
+            tests/test_anthropic_messages.py \
+            tests/test_profile_stats.py
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by

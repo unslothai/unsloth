@@ -83,6 +83,7 @@ BACKEND_ISOLATED = [
     ("tests/test_tunnel_safe_long_post.py", "work sleeps 0.2s past a 0.05s keepalive timer"),
     ("tests/test_scan_loras_off_event_loop.py", "counts heartbeats during a 0.3s sleep"),
     ("tests/test_anthropic_messages.py", "counts SSE keepalives emitted during a 0.24s stall"),
+    ("tests/test_profile_stats.py", "counts event-loop ticks during a 0.5s blocking call"),
 ]
 
 # What the scan above does NOT cover, recorded because the gap is structural rather than a
@@ -196,7 +197,10 @@ def _timing_helpers(tree: ast.AST) -> set:
         for node in functions:
             if node.name in helpers:
                 continue
-            local = _timed_names(node)
+            # With the helpers found so far, not without them: `value = base()` inside
+            # a wrapper only counts as timed once `base` is known, and the pass that
+            # learns `base` is not the pass that reads the wrapper.
+            local = _timed_names(node, helpers)
             for inner in ast.walk(node):
                 if not isinstance(inner, ast.Return) or inner.value is None:
                     continue
