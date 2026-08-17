@@ -101,7 +101,14 @@ def run_anthropic() -> list[str]:
 def check(label: str, first: list[str], second: list[str]) -> None:
     for i, (a, b) in enumerate(zip(first, second), start = 1):
         print(f"[{label} turn {i}] {a!r}")
-        assert a, f"{label}: empty turn {i} response"
+        # BOTH runs, not just the first. Stripping makes the comparison below blind to
+        # the difference between "\n" and "": a second run that returned nothing at all
+        # would compare equal to a first that returned only tolerated whitespace, and the
+        # smoke test would print OK for a server that had stopped answering. The Linux
+        # copy asserted both before this was consolidated; the macOS one it was taken
+        # from asserted only the first.
+        assert a, f"{label}: empty turn {i} response in the first run"
+        assert b, f"{label}: empty turn {i} response in the second run"
         # Compared stripped: llama-server varies trailing whitespace (a final newline)
         # between otherwise identical greedy runs, depending on the batch-flush boundary
         # at which the stream is closed. The generated tokens are the same; only that

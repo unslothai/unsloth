@@ -84,10 +84,23 @@ def test_trailing_whitespace_alone_is_still_tolerated(script):
     script.check("whitespace", clean, [t + "\n" for t in clean])
 
 
-def test_an_empty_reply_is_a_failure(script):
-    """A server answering nothing at all is deterministic, and the worst outcome."""
+def test_an_empty_reply_is_a_failure_in_either_run(script):
+    """A server answering nothing at all is deterministic, and the worst outcome.
+
+    Both runs, because the stripped comparison cannot tell them apart: a second run
+    returning "" against a first returning "\n" compares EQUAL, so checking only the
+    first would print OK for a server that had stopped answering halfway through. The
+    Linux copy asserted both before this was consolidated onto the macOS one, which
+    asserted only the first.
+    """
+    clean = ["1 is 2", "you asked about 1+1", "paris", "paris"]
     with pytest.raises(AssertionError, match = "empty turn"):
-        script.check("empty", ["", "b", "paris", "paris"], ["", "b", "paris", "paris"])
+        script.check("first", ["", "b", "paris", "paris"], ["", "b", "paris", "paris"])
+    with pytest.raises(AssertionError, match = "empty turn"):
+        script.check("second", clean, ["", "b", "paris", "paris"])
+    # The exact pair the stripped comparison is blind to.
+    with pytest.raises(AssertionError, match = "empty turn"):
+        script.check("whitespace vs nothing", ["\n", "b", "paris", "paris"], ["", "b", "paris", "paris"])
 
 
 def test_history_grounding_is_still_checked(script):
