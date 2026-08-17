@@ -135,8 +135,7 @@ WATCH_NEUTRAL_JS = """
 
 async def hover_last_assistant(page) -> None:
     await page.evaluate(
-        "() => window.__heavyThread.lastAssistantMessage()"
-        "?.scrollIntoView({ block: 'center' })"
+        "() => window.__heavyThread.lastAssistantMessage()?.scrollIntoView({ block: 'center' })"
     )
     box = await page.evaluate(
         "() => { const m = window.__heavyThread.lastAssistantMessage();"
@@ -239,12 +238,8 @@ async def run(engine: str, cases: list[str]) -> dict:
                 has_touch = case == "touch",
             )
             page = await context.new_page()
-            await page.goto(
-                f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded"
-            )
-            await page.wait_for_function(
-                "() => Boolean(window.__heavyThread)", timeout = 60_000
-            )
+            await page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
+            await page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 60_000)
             plan = await page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
             await page.wait_for_function(
                 "(n) => window.__heavyThread.messageCount() >= n",
@@ -293,12 +288,12 @@ def main() -> int:
     deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
-        c["case"] for c in result["cases"]
+        c["case"]
+        for c in result["cases"]
         if c.get("swallowedSelection") or c.get("swallowedSecondClick")
     ]
     if over:
-        print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}",
-              flush = True)
+        print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}", flush = True)
         broken = broken + over
     if deleted:
         print(
