@@ -1001,6 +1001,60 @@ def test_the_guard_reads_the_model_the_child_opens(tmp_path, monkeypatch):
     assert str(gguf) in seen
 
 
+def test_the_env_escape_loads_a_variant_the_guard_refuses(tmp_path, monkeypatch):
+    """The picker still offers a variant `classifyGgufFit` calls "oom", and no load
+    field carries a force, so an unconditional refusal leaves that selection with no way
+    through. UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains, and the refusal names it."""
+    refused, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    with pytest.raises(RuntimeError, match = "UNSLOTH_ALLOW_HOST_OFFLOAD=1"):
+        _launch(refused, gguf)
+
+    allowed_dir = tmp_path / "allowed"
+    allowed_dir.mkdir()
+    allowed, gguf2 = _offload_backend(
+        allowed_dir, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    assert "--fit" in _launch(allowed, gguf2)["cmd"]
+
+
+def _load_intent(gguf, **kwargs):
+    return GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **kwargs)
+
+
+def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch):
+    """`acquire_for(CHAT)` evicts a resident Images/Video pipeline and the reload
+    confirmation cancels the running generations, both before the launch guard can read the
+    finished argv. The route asks first, so a refused load tears nothing down."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+
+    verdict = backend.host_offload_refusal_for_intent(_load_intent(gguf))
+    assert verdict is not None and "does not fit in GPU memory" in verdict
+
+
+def test_the_route_precheck_only_refuses_what_the_launch_would(tmp_path, monkeypatch):
+    """It credits the ungated probe, which every narrowing the launch applies only shrinks,
+    and abstains on an undownloaded repo, an unreadable pool and the escape. So it can never
+    reject a load the launch guard would have allowed."""
+    backend, gguf = _offload_backend(
+        tmp_path, gguf_gb = 13.3, free_mib = 4877, avail_mib = 10_000, monkeypatch = monkeypatch
+    )
+
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf, hf_repo = "org/repo")) is None
+    # a card big enough to hold it leaves no shortfall to charge
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 20_000, 24_000)]
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+    backend._get_gpu_memory = lambda _binary = None, **_kw: [(0, 4877, 6141)]
+    monkeypatch.setenv("UNSLOTH_ALLOW_HOST_OFFLOAD", "1")
+    assert backend.host_offload_refusal_for_intent(_load_intent(gguf)) is None
+
+
 def test_an_arch_gated_cpu_launch_prices_the_whole_model(tmp_path, monkeypatch):
     """The arch gate empties the pool AND masks every card, so the child is knowingly
     on the CPU rather than unprobed. Abstaining there ran an oversized GGUF wholly from
@@ -1050,6 +1104,38 @@ def test_an_unprobed_pool_still_abstains_when_nothing_was_masked(tmp_path, monke
     )
 
     assert backend._launch_host_shortfall_message(["llama-server", "-m", str(gguf)], []) is None
+
+
+def test_a_gpu_less_host_running_a_cpu_only_build_still_abstains(tmp_path, monkeypatch):
+    """Studio installs a CPU-only prebuilt on a host with no GPU, so that host probes an
+    empty pool AND reports a build with no GPU backend. Letting the build state alone
+    charge the whole model refused a 7.5 GB GGUF with 9 GB of RAM, which loads on main,
+    and blamed GPU memory on a machine that has no GPU."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(7.5 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    backend._binary_ships_no_gpu_backend = lambda _binary = None, _env = None: True
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9_216)
+    )
+
+    assert _launch(backend, gguf)["cmd"]
+
+
+def test_a_gpu_less_host_still_abstains_on_a_zero_offload_request(tmp_path, monkeypatch):
+    """gpu_layers=0 is a request, not a probe result, so it says nothing about whether a
+    card exists. Charging the whole model on an empty pool repeats the CPU-only-build
+    refusal on the same GPU-less host."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [])
+    _restore_host_guard(backend)
+    backend._get_gguf_size_bytes = lambda _path: int(7.5 * 1024**3)
+    backend._select_gpus = lambda *args, **kw: (None, True)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 9_216)
+    )
+
+    assert _launch(backend, gguf, gpu_memory_mode = "manual", gpu_layers = 0)["cmd"]
 
 
 def test_a_cpu_only_build_takes_no_vram_credit(tmp_path, monkeypatch):

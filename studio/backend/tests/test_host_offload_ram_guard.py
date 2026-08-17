@@ -47,6 +47,13 @@ class TestHostOffloadShortfall:
         assert _shortfall(20 * _GB, 23 * _MIB_PER_GB) is None
         assert _shortfall(20 * _GB, 21 * _MIB_PER_GB) is not None
 
+    def test_a_refusal_names_the_escape(self):
+        """The picker still offers a variant this refuses, so the message has to say how
+        to load it anyway."""
+        msg = _shortfall(20 * _GB, 21 * _MIB_PER_GB)
+        assert msg is not None
+        assert "UNSLOTH_ALLOW_HOST_OFFLOAD=1" in msg
+
     def test_a_refusal_never_prints_a_need_at_or_under_the_usable_figure(self):
         """A spill inside available RAM but inside the headroom too is still refused, so
         the message must not read as 7 GB not fitting in 8 GB."""

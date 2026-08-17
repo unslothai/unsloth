@@ -6869,12 +6869,23 @@ class LlamaCppBackend:
         which means the probe threw. ``child_has_no_gpu`` is the launch reporting a
         placement it already knows reaches no card, rather than one it could not read:
         there the whole model is host-resident and takes no VRAM credit.
+
+        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
+        paging can still load a variant the picker offers.
         """
         argv = [str(a) for a in cmd or ()]
         if not argv:
             return None
         model_path = _extra_args_device(argv, self._ARGV_MODEL)
         if not model_path:
+            return None
+        # the user's own opt-out, so read the real environment, not the curated child env
+        if os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
             return None
         # rpc places layers on remote devices this cannot size, in either spelling
         _env = os.environ if env is None else env
@@ -6946,7 +6957,8 @@ class LlamaCppBackend:
             f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
             f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
             "so the machine pages them in and out until it stops responding and the OS "
-            "kills the app. Use a smaller or more quantized GGUF, or free memory."
+            "kills the app. Use a smaller or more quantized GGUF, free memory, or set "
+            "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
         )
 
     # Skip the wait when the last kill is older than this; the driver has
@@ -8456,6 +8468,44 @@ class LlamaCppBackend:
                 return verdict
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
+        return None
+
+    def host_offload_refusal_for_intent(self, intent) -> Optional[str]:
+        """The host-RAM verdict for a resolved load intent, or None.
+
+        ``_launch_host_shortfall_message`` stays authoritative, since it reads the finished
+        argv, but it runs after the ROUTE has evicted a resident Images/Video pipeline via
+        ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
+        both, exactly as the non-chat header check above does.
+
+        This copy credits the ungated probe, and every narrowing the launch applies to it (the
+        ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids`` pin) only shrinks the
+        pool, so it charges no more than the launch copy and can refuse nothing the launch
+        would allow. Fails open the same way.
+
+        Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
+        here would start a download the route has not committed to.
+        """
+        try:
+            gguf_path = getattr(intent, "gguf_path", None)
+            if not gguf_path or getattr(intent, "hf_repo", None):
+                return None
+            if not Path(gguf_path).is_file():
+                return None
+            binary = self._find_llama_server_binary()
+            if not binary:
+                return None
+            # extras are appended after -m at launch and llama.cpp is last-wins, so read them
+            argv = [
+                binary,
+                "-m",
+                str(gguf_path),
+                *(str(arg) for arg in getattr(intent, "extra_args", None) or ()),
+            ]
+            gpus = [(idx, free) for idx, free, _total in self._get_gpu_memory(binary)]
+            return self._launch_host_shortfall_message(argv, gpus)
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
 
     # Each ask is a repo listing, a cache verification and a range request, every one bounded
@@ -16060,10 +16110,17 @@ class LlamaCppBackend:
                     _detected_gpus,
                     env,
                     child_has_no_gpu = (
-                        _cpu_only_zero_offload
-                        or _arch_gate_forced_cpu
+                        # each names a device present but unusable, so it owns the empty pool
+                        _arch_gate_forced_cpu
                         or _paravirtual_cpu_forced
-                        or self._binary_ships_no_gpu_backend(binary, env)
+                        # neither says a device exists, so an empty pool stays unreadable
+                        or (
+                            bool(_detected_gpus)
+                            and (
+                                _cpu_only_zero_offload
+                                or self._binary_ships_no_gpu_backend(binary, env)
+                            )
+                        )
                     ),
                 )
                 if _offload_msg:
