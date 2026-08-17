@@ -270,3 +270,21 @@ test("half a definition is never hoisted on its own", () => {
     assert.ok(carried.includes("https://example.com/spec"), carried);
   }
 });
+
+test("a label containing an escaped bracket is still a definition", () => {
+  const text = `[spec\\]]: https://example.com/spec\n\n${"filler\n\n".repeat(50)}see [spec\\]]\n`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  assert.ok(
+    linkDefinitionsBefore(text, start).includes("https://example.com/spec"),
+    linkDefinitionsBefore(text, start),
+  );
+});
+
+test("a bare label with no destination is still not a definition", () => {
+  // The control: widening the label pattern must not start hoisting half-definitions again.
+  const text = `[spec]:\n\n${"filler\n\n".repeat(50)}`;
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  assert.equal(linkDefinitionsBefore(text, start), "");
+});

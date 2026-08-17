@@ -114,8 +114,14 @@ export const REASONING_WINDOW_SLACK = 0.5;
  */
 export const REASONING_WINDOW_RETRY_CHARS = 2_000;
 
-/** A link-reference definition, `[label]: destination`, possibly inside a container. */
-const LINK_DEFINITION = /^ {0,3}>?\s*\[[^\]]+\]:\s*\S/;
+/**
+ * A link-reference definition, `[label]: destination`, possibly inside a container.
+ *
+ * The label alternation allows a backslash escape, because CommonMark lets a label contain an
+ * escaped bracket: `[spec\]]: /url` is one definition, not a label that ends at the first `]`.
+ * A destination is required, so a bare `[spec]:` is never mistaken for one.
+ */
+const LINK_DEFINITION = /^ {0,3}>?\s*\[(?:[^\]\\]|\\.)+\]:\s*\S/;
 
 /** Container prefixes, so `> [spec]: url` is recognised and carried without its quote marker. */
 const CONTAINER_PREFIX = /^ {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/;
