@@ -20,6 +20,7 @@ pub(super) struct BackendHealth {
     desktop_manageability_version: Option<u16>,
     supports_desktop_auth: Option<bool>,
     supports_desktop_backend_ownership: Option<bool>,
+    native_path_leases_supported: Option<bool>,
     studio_root_id: Option<String>,
     desktop_owner: Option<DesktopOwnerHealth>,
     version: Option<String>,
@@ -68,6 +69,9 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
     let supports_desktop_backend_ownership = json
         .get("supports_desktop_backend_ownership")
         .and_then(|v| v.as_bool());
+    let native_path_leases_supported = json
+        .get("native_path_leases_supported")
+        .and_then(|v| v.as_bool());
     let studio_root_id = json
         .get("studio_root_id")
         .and_then(|v| v.as_str())
@@ -91,6 +95,7 @@ pub(super) async fn backend_health(client: &reqwest::Client, port: u16) -> Optio
         desktop_manageability_version,
         supports_desktop_auth,
         supports_desktop_backend_ownership,
+        native_path_leases_supported,
         studio_root_id,
         desktop_owner,
         version,
@@ -163,6 +168,21 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
     }
 }
 
+/// Deliberately NOT part of `backend_capability_stale_reason`.
+///
+/// Only the desktop spawn sets the lease secret (`process.rs`), so this does not
+/// mean "too old to talk to", it means "this app did not start it" -- permanently
+/// true of a terminal-started backend. Folded in with the protocol bits it would
+/// make every one of those an ExternalConflict and the app would refuse to start,
+/// to fix a picker `use-linked-folders.ts` already greys out. Apply it only where
+/// a restart is ours to perform.
+fn backend_native_lease_stale_reason(health: &BackendHealth) -> Option<String> {
+    if health.native_path_leases_supported != Some(true) {
+        return Some("native_path_leases_unsupported".to_string());
+    }
+    None
+}
+
 #[derive(Serialize)]
 struct DesktopLoginProbe<'a> {
     secret: &'a str,
@@ -177,6 +197,10 @@ pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
         return BackendProbe::Missing;
     };
     if let Some(reason) = backend_capability_stale_reason(&health) {
+        return BackendProbe::Old { port, reason };
+    }
+    // One WE spawned: a missing secret is a defect in our own start, so restart.
+    if let Some(reason) = backend_native_lease_stale_reason(&health) {
         return BackendProbe::Old { port, reason };
     }
 
@@ -249,6 +273,14 @@ pub(super) async fn backend_desktop_auth_status(
         } else {
             BackendProbe::Old { port, reason }
         };
+    }
+    // Owned only: ours to restart, and the restart re-injects the secret. An
+    // ownerless same-root backend is terminal-started, so blocking on it would
+    // make the app unstartable. See backend_native_lease_stale_reason.
+    if !same_root_external {
+        if let Some(reason) = backend_native_lease_stale_reason(health) {
+            return BackendProbe::Old { port, reason };
+        }
     }
 
     let url = format!("http://127.0.0.1:{port}/api/auth/desktop-login");
@@ -378,6 +410,7 @@ mod tests {
             desktop_manageability_version: None,
             supports_desktop_auth: None,
             supports_desktop_backend_ownership: None,
+            native_path_leases_supported: None,
             studio_root_id: studio_root_id.map(str::to_string),
             desktop_owner: None,
             version: None,

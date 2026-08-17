@@ -4,8 +4,13 @@
 import { Button } from "@/components/ui/button";
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useRef } from "react";
-import { invalidateProjectSources, listProjectDocuments } from "../api/rag-api";
+import { useCallback, useEffect, useRef } from "react";
+import {
+  announceProjectSourcesUpdated,
+  invalidateProjectSources,
+  listProjectDocuments,
+  subscribeProjectSourcesUpdated,
+} from "../api/rag-api";
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
@@ -22,14 +27,16 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const { documents, loading, uploading, refresh, upload, remove } =
     useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before and after each mutation: a chat sent
-  // mid-upload must not cache "no sources" for the probe's TTL.
+  // Invalidate the sources probe before each mutation so a chat sent mid-upload
+  // cannot cache "no sources" for the probe's TTL, and announce after it, which
+  // is the half other instances and other tabs listen for. Announcing before
+  // would refetch and resurrect the row this panel has already dropped.
   const handleFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
       invalidateProjectSources(projectId);
       await upload(files);
-      invalidateProjectSources(projectId);
+      announceProjectSourcesUpdated(projectId);
     },
     [projectId, upload],
   );
@@ -38,14 +45,26 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     async (documentId: string) => {
       invalidateProjectSources(projectId);
       await remove(documentId);
-      invalidateProjectSources(projectId);
+      announceProjectSourcesUpdated(projectId);
     },
     [projectId, remove],
   );
   const handleLinkedSourcesChanged = useCallback(() => {
-    invalidateProjectSources(projectId);
+    announceProjectSourcesUpdated(projectId);
     void refresh({ quiet: true });
   }, [projectId, refresh]);
+
+  // External mutators (sidebar/thread saves, deletes elsewhere) announce when
+  // they are done; refresh the mounted list so a source saved from a chat shows
+  // up here without a remount. The list only polls while a row it already knows
+  // is indexing, so nothing else would ever fetch it.
+  useEffect(
+    () =>
+      subscribeProjectSourcesUpdated(projectId, () => {
+        void refresh({ quiet: true });
+      }),
+    [projectId, refresh],
+  );
 
   const empty = documents.length === 0;
 

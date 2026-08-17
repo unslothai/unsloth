@@ -446,14 +446,12 @@ function TauriUpdateLayer({
 }
 
 const HIDDEN_TITLEBAR_SIDEBAR_ROUTES = new Set([
-  "/onboarding",
   "/login",
   "/change-password",
   "/signup",
 ]);
 
 const WEB_UPDATE_HIDDEN_ROUTES = new Set([
-  "/onboarding",
   "/login",
   "/change-password",
   "/signup",

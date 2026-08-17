@@ -644,7 +644,7 @@ def boot(page, path: str) -> None:
     page.wait_for_timeout(SETTLED_MS)
     settle_stack(page)
     landed = page.evaluate("location.pathname")
-    if landed.startswith(("/login", "/onboarding", "/change-password")):
+    if landed.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {landed}")
 
 

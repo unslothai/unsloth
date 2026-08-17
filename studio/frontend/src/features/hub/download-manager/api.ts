@@ -211,11 +211,6 @@ export async function getDownloadTransportCapabilities(options: {
   return request;
 }
 
-export function __resetDownloadTransportCapabilitiesForTests(): void {
-  downloadTransportCapabilitiesCache = null;
-  downloadTransportCapabilitiesInFlight = null;
-}
-
 export async function startModelDownload(payload: {
   repo_id: string;
   gguf_variant?: string | null;

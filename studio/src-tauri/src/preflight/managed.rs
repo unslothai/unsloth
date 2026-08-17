@@ -9,10 +9,49 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
-use tokio::process::Command;
 
 // 3: the cached capability gained studio_install_ok / studio_install_reason.
 const MANAGED_CAPABILITY_CACHE_SCHEMA: u16 = 3;
+
+/// The install is fine; the directory its children must run from is not reachable.
+pub(super) const WORKING_DIRECTORY_UNAVAILABLE: &str = "working_directory_unavailable";
+/// The profile is reachable but a user-written path setting is not resolvable,
+/// so reinstalling hits the same wall. Mirrored in the frontend message map.
+pub(super) const PATH_SETTING_UNRESOLVABLE: &str = "path_setting_unresolvable";
+
+/// The reason a managed context failure is reported under, with the setting that
+/// caused it where there is one: "one of Unsloth's folder settings" is not
+/// something a user can act on, and every pin failure names the setting it could
+/// not preserve. The name only, never the value, since this reaches the window.
+pub(super) fn context_reason(error: &crate::process::ManagedContextError) -> String {
+    match error {
+        crate::process::ManagedContextError::WorkingDirectory(_) => {
+            WORKING_DIRECTORY_UNAVAILABLE.to_string()
+        }
+        crate::process::ManagedContextError::PathSetting(detail) => {
+            match setting_name(detail) {
+                Some(name) => format!("{PATH_SETTING_UNRESOLVABLE}:{name}"),
+                None => PATH_SETTING_UNRESOLVABLE.to_string(),
+            }
+        }
+    }
+}
+
+/// The leading token of a pin failure, when it looks like an environment name.
+fn setting_name(detail: &str) -> Option<&str> {
+    let name = detail.split_whitespace().next()?;
+    let named = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    named.then_some(name)
+}
+
+/// Whether the reason is a context the app cannot build, not a repairable install.
+pub(super) fn is_context_reason(reason: &str) -> bool {
+    let head = reason.split(':').next().unwrap_or(reason);
+    head == WORKING_DIRECTORY_UNAVAILABLE || head == PATH_SETTING_UNRESOLVABLE
+}
 
 const FNV64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV64_PRIME: u64 = 0x100000001b3;
@@ -162,8 +201,35 @@ fn marker_candidates_for_bin(bin: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The file whose size and mtime stand for "this CLI", which is the launcher when there
+/// is one.
+///
+/// On Windows there may not be. Antivirus quarantine deletes the generated unsloth.exe
+/// and leaves a venv that still runs through its interpreter, and since that is now a
+/// supported layout, find_unsloth_binary_in_studio_dir hands back a launcher path that
+/// does not exist. Keying the fingerprint on it would fail fs::metadata, so the
+/// capability cache could be neither read nor written, and every preflight would pay
+/// both the -h and the desktop-capabilities subprocess with their own 10s ceilings.
+/// python.exe is the right stand-in: it is what actually starts the CLI there, and an
+/// update replaces the whole venv, so it moves when the launcher would have.
+fn fingerprint_identity_file(bin: &Path) -> Option<PathBuf> {
+    if bin.exists() {
+        return Some(bin.to_path_buf());
+    }
+    #[cfg(windows)]
+    {
+        let interpreter = bin.parent()?.join("python.exe");
+        if interpreter.exists() {
+            return Some(interpreter);
+        }
+    }
+    None
+}
+
 fn managed_bin_fingerprint(bin: &Path) -> Option<ManagedBinFingerprint> {
-    let bin_metadata = fs::metadata(bin).ok()?;
+    // Metadata from whatever identifies this CLI, but the cache key below stays the
+    // launcher path, so the two layouts of one install cannot collide.
+    let bin_metadata = fs::metadata(fingerprint_identity_file(bin)?).ok()?;
     let bin_path = bin
         .canonicalize()
         .unwrap_or_else(|_| bin.to_path_buf())
@@ -302,10 +368,30 @@ fn write_cached_capability(fingerprint: &ManagedBinFingerprint, capability: &Des
     }
 }
 
-async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
+async fn run_cli_probe(bin: &Path, args: &[&str]) -> Result<bool, String> {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(bin, args) else {
+        info!(
+            "Managed preflight probe {:?} has no managed interpreter to run",
+            args
+        );
+        // Ok, not Err: main's Err arm means "the probe could not be set up and the
+        // install is untested". A venv with no interpreter beside the launcher IS a
+        // result, and the same one this arm always gave.
+        return Ok(false);
+    };
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
+
+    // Reported, not folded into `false`: the CLI never ran, so calling it broken
+    // would start a repair needing the same context. Re-checking afterwards is not
+    // enough: a context that recovers in between makes an untested install look bad.
+    if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
+        info!(
+            "Managed preflight probe {:?} has no usable working directory: {}",
+            args, error
+        );
+        return Err(error);
+    }
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
@@ -329,7 +415,7 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
             args,
             started.elapsed().as_millis()
         );
-        return false;
+        return Ok(false);
     };
 
     let ok = match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
@@ -346,15 +432,29 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
         ok,
         started.elapsed().as_millis()
     );
-    ok
+    Ok(ok)
 }
 
-async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
+async fn probe_cli_capability(bin: &Path) -> Result<Option<DesktopCapability>, String> {
     let started = Instant::now();
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "desktop-capabilities", "--json"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    let Ok(mut cmd) = crate::process::build_managed_cli_command_tokio(
+        bin,
+        &["studio", "desktop-capabilities", "--json"],
+    ) else {
+        info!("Managed desktop-capabilities probe has no managed interpreter to run");
+        // As above: a missing interpreter is a verdict, not a failure to ask.
+        return Ok(None);
+    };
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+
+    // As above: a context that cannot be built is not a probe result.
+    if let Err(error) = crate::process::apply_managed_cli_context_tokio(&mut cmd) {
+        info!(
+            "Managed desktop-capabilities probe has no usable working directory: {}",
+            error
+        );
+        return Err(error);
+    }
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
@@ -377,9 +477,11 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
             "Managed desktop-capabilities probe failed to spawn in {}ms",
             started.elapsed().as_millis()
         );
-        return None;
+        return Ok(None);
     };
-    let mut stdout = child.stdout.take()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        return Ok(None);
+    };
 
     match tokio::time::timeout(Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {}
@@ -390,20 +492,20 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
                 "Managed desktop-capabilities probe timed out in {}ms",
                 started.elapsed().as_millis()
             );
-            return None;
+            return Ok(None);
         }
         _ => {
             info!(
                 "Managed desktop-capabilities probe exited unsuccessfully in {}ms",
                 started.elapsed().as_millis()
             );
-            return None;
+            return Ok(None);
         }
     }
 
     let mut output = Vec::new();
     if stdout.read_to_end(&mut output).await.is_err() {
-        return None;
+        return Ok(None);
     }
 
     let capability = serde_json::from_slice::<DesktopCapability>(&output).ok();
@@ -412,7 +514,7 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
         capability.is_some(),
         started.elapsed().as_millis()
     );
-    capability
+    Ok(capability)
 }
 
 fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<String> {
@@ -451,24 +553,65 @@ fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
     desktop_capability_stale_reason(capability).is_none()
 }
 
+/// The reason an unbuildable context is reported under, if that is what went
+/// wrong. Checked after a probe that did run and failed anyway.
+fn working_directory_reason() -> Option<String> {
+    // The whole context: an unresolvable override fails the same spawn, and is a
+    // different thing to fix.
+    let error = crate::process::managed_cli_context_error()?;
+    info!("Managed preflight: managed context unavailable: {error}");
+    Some(context_reason(&error))
+}
+
 pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     let started = Instant::now();
+
+    // An unmounted roaming profile fails every probe below, which is not a broken
+    // install: "cli_unusable" would start a repair needing the same directory.
+    if let Some(error) = crate::process::managed_cli_context_error() {
+        info!(
+            "Managed preflight: no usable managed context for {:?}: {}",
+            bin, error
+        );
+        return ManagedProbe::Stale {
+            bin,
+            reason: context_reason(&error),
+        };
+    }
+
     // Always verify the managed CLI actually launches before trusting the cache.
     // A matching capability fingerprint does not prove the binary can still run:
     // its venv interpreter or a runtime dependency can be broken while the
     // path/size/mtime/markers are unchanged, so the -h probe runs first and a
     // non-launchable install is reported Stale for repair. The capability cache
     // below still skips the heavier desktop-capabilities probe on a hit.
-    if !run_cli_probe(&bin, &["-h"]).await {
-        info!(
-            "Managed preflight: cli unusable for {:?} in {}ms",
-            bin,
-            started.elapsed().as_millis()
-        );
-        return ManagedProbe::Stale {
-            bin,
-            reason: "cli_unusable".to_string(),
-        };
+    match run_cli_probe(&bin, &["-h"]).await {
+        // The CLI was never asked, so do not report a broken install.
+        Err(_) => {
+            info!(
+                "Managed preflight: no usable managed context for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Stale {
+                bin,
+                reason: working_directory_reason()
+                    .unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string()),
+            };
+        }
+        Ok(false) => {
+            info!(
+                "Managed preflight: cli unusable for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            // The profile can drop between the check above and the probe, so ask again.
+            return ManagedProbe::Stale {
+                bin,
+                reason: working_directory_reason().unwrap_or_else(|| "cli_unusable".to_string()),
+            };
+        }
+        Ok(true) => {}
     }
 
     if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
@@ -482,7 +625,21 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         }
     }
 
-    let capability = probe_cli_capability(&bin).await;
+    let capability = match probe_cli_capability(&bin).await {
+        Ok(capability) => capability,
+        Err(_) => {
+            info!(
+                "Managed preflight: no usable managed context for {:?} in {}ms",
+                bin,
+                started.elapsed().as_millis()
+            );
+            return ManagedProbe::Stale {
+                bin,
+                reason: working_directory_reason()
+                    .unwrap_or_else(|| WORKING_DIRECTORY_UNAVAILABLE.to_string()),
+            };
+        }
+    };
     if let Some(capability) = capability {
         if let Some(fingerprint) = managed_bin_fingerprint(&bin) {
             write_cached_capability(&fingerprint, &capability);
@@ -514,7 +671,8 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
     );
     ManagedProbe::Stale {
         bin,
-        reason: "desktop_capability_probe_failed".to_string(),
+        reason: working_directory_reason()
+            .unwrap_or_else(|| "desktop_capability_probe_failed".to_string()),
     }
 }
 
@@ -522,7 +680,17 @@ pub(super) async fn probe_managed_install() -> ManagedProbe {
     let started = Instant::now();
     let result = match crate::process::find_unsloth_binary() {
         Some(bin) => probe_managed_bin(bin).await,
-        None => ManagedProbe::Missing,
+        // The managed install lives under the profile, so an unreachable one looks
+        // like no install. Say which, or a late network profile sends them to reinstall.
+        None => match crate::process::home_dir_available() {
+            Ok(()) => ManagedProbe::Missing,
+            Err(error) => {
+                info!("Managed preflight: {}", error);
+                ManagedProbe::Unavailable {
+                    reason: WORKING_DIRECTORY_UNAVAILABLE.to_string(),
+                }
+            }
+        },
     };
     info!(
         "Managed preflight: install probe result {:?} in {}ms",
@@ -654,6 +822,42 @@ mod tests {
         assert!(!cache_matches(&cache, &fingerprint));
     }
 
+    // Quarantine deletes the generated unsloth.exe, so the supported stubless layout
+    // hands back a launcher path that is not on disk. Without a stand-in the
+    // fingerprint is None, the capability cache can be neither read nor written, and
+    // every preflight pays both probe subprocesses again.
+    #[cfg(windows)]
+    #[test]
+    fn a_quarantined_launcher_is_fingerprinted_through_its_interpreter() {
+        let venv = std::env::temp_dir().join(format!(
+            "unsloth-fingerprint-quarantined-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let scripts = venv.join("Scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        let bin = scripts.join("unsloth.exe");
+        let interpreter = scripts.join("python.exe");
+        fs::write(&interpreter, "python").unwrap();
+        assert!(!bin.exists(), "this case is about the launcher being gone");
+
+        let fingerprint = managed_bin_fingerprint(&bin)
+            .expect("a stubless venv must still fingerprint, through python.exe");
+        // The identity stays the launcher path, so the two layouts of one install
+        // cannot share a cache entry.
+        assert!(fingerprint.bin_path.ends_with("unsloth.exe"));
+        // And it tracks the interpreter, so a venv replaced by an update invalidates.
+        fs::write(&interpreter, "python-after-an-update").unwrap();
+        let after = managed_bin_fingerprint(&bin).unwrap();
+        assert_ne!(fingerprint.bin_size, after.bin_size);
+
+        // With no interpreter either there is nothing to stand in, and None is right.
+        fs::remove_file(&interpreter).unwrap();
+        assert!(managed_bin_fingerprint(&bin).is_none());
+
+        let _ = fs::remove_dir_all(&venv);
+    }
+
     #[test]
     fn dropping_the_manifest_changes_the_fingerprint() {
         // Otherwise a cache entry written while healthy outlives the manifest,
@@ -750,5 +954,27 @@ mod tests {
             "a removed studio package must not keep serving the cached Ready answer"
         );
         let _ = fs::remove_dir_all(&venv);
+    }
+
+    #[test]
+    fn a_context_reason_names_the_setting_it_could_not_preserve() {
+        use crate::process::ManagedContextError;
+        // Every pin failure names the setting first, and the window needs that
+        // name: "one of Unsloth's folder settings" is not something to act on.
+        let reason = context_reason(&ManagedContextError::PathSetting(
+            "HF_HOME names a path this machine cannot resolve".to_string(),
+        ));
+        assert_eq!(reason, "path_setting_unresolvable:HF_HOME");
+        assert!(is_context_reason(&reason));
+        // The name is carried, never the value or the sentence around it.
+        assert!(!reason.contains("cannot resolve"));
+        // A failure that does not start with a setting name still classifies.
+        let bare = context_reason(&ManagedContextError::PathSetting(
+            "the environment block is too long".to_string(),
+        ));
+        assert_eq!(bare, PATH_SETTING_UNRESOLVABLE);
+        assert!(is_context_reason(&bare));
+        assert!(is_context_reason(WORKING_DIRECTORY_UNAVAILABLE));
+        assert!(!is_context_reason("cli_unusable"));
     }
 }

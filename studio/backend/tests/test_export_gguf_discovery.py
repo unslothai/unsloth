@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import os
 import sys
+import types
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -424,3 +426,309 @@ def test_modelfile_relocation_failure_does_not_fail_the_export(monkeypatch, tmp_
     assert success is True, message
     assert (save_dir / "MyModel.Q5_K_M.gguf").is_file()
     assert not (save_dir / "Modelfile").exists()
+
+
+# The upstream imatrix lives in a Hub repo, so the local export needs the token too -- without
+# disturbing the push path, which already passes it explicitly.
+
+
+def _imatrix_model(accepts_token: bool, calls: dict):
+    class _WithToken:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+            token = None,
+        ):
+            calls["save"] = {"imatrix_file": imatrix_file, "token": token}
+            _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
+
+        def push_to_hub_gguf(
+            self,
+            repo_id,
+            tokenizer,
+            quantization_method = None,
+            token = None,
+            imatrix_file = None,
+        ):
+            calls["push"] = {"repo_id": repo_id, "token": token, "imatrix_file": imatrix_file}
+
+    class _WithoutToken:
+        def save_pretrained_gguf(
+            self,
+            model_save_path,
+            tokenizer,
+            quantization_method,
+            imatrix_file = None,
+        ):
+            calls["save"] = {"imatrix_file": imatrix_file}
+            _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
+
+    return (_WithToken if accepts_token else _WithoutToken)()
+
+
+def test_local_gguf_export_forwards_the_token_for_the_upstream_imatrix(monkeypatch, tmp_path):
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "iq2_xxs", hf_token = "hf_secret", imatrix_file = True
+    )
+
+    assert success is True, message
+    assert calls["save"] == {"imatrix_file": True, "token": "hf_secret"}
+
+
+def test_hub_push_with_an_imatrix_passes_the_token_exactly_once(monkeypatch, tmp_path):
+    """push_to_hub_gguf already names token=, so the local extra must not reach it as well."""
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir),
+        "iq2_xxs",
+        push_to_hub = True,
+        repo_id = "org/model",
+        hf_token = "hf_secret",
+        imatrix_file = True,
+    )
+
+    assert success is True, message
+    assert calls["push"] == {"repo_id": "org/model", "token": "hf_secret", "imatrix_file": True}
+
+
+def test_gguf_export_without_an_imatrix_does_not_forward_the_token(monkeypatch, tmp_path):
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q4_k_m", hf_token = "hf_secret")
+
+    assert success is True, message
+    assert calls["save"] == {"imatrix_file": None, "token": None}
+
+
+def test_older_build_without_token_support_still_exports(monkeypatch, tmp_path):
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(False, calls))
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "iq2_xxs", hf_token = "hf_secret", imatrix_file = True
+    )
+
+    assert success is True, message
+    assert calls["save"] == {"imatrix_file": True}
+
+
+class _KwargsOnlyModel:
+    """The MLX binding's shape: it accepts anything and filters against an allow-list."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method, **kwargs):
+        self._calls["save"] = kwargs
+        _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
+
+
+def test_imatrix_refused_when_unsloth_zoo_cannot_apply_it(monkeypatch, tmp_path):
+    """A kwargs-only binding proves nothing: an older zoo would swallow the imatrix silently."""
+    calls: dict = {}
+    module, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _KwargsOnlyModel(calls))
+    monkeypatch.setattr(module, "_imatrix_export_supported", lambda save_fn: False, raising = True)
+
+    success, message, _p = backend.export_gguf(str(save_dir), "iq2_xxs", imatrix_file = True)
+
+    assert success is False
+    assert "imatrix" in message.lower()
+    assert calls == {}, "must not spend a merge and conversion first"
+
+
+def test_imatrix_export_supported_probes_unsloth_zoo_for_kwargs_only_bindings(
+    monkeypatch, tmp_path
+):
+    module, _b, _s, _cwd = _backend(monkeypatch, tmp_path, object())
+    zoo = sys.modules.get("unsloth_zoo.llama_cpp")
+
+    def named(
+        save_directory,
+        tokenizer,
+        quantization_method,
+        imatrix_file = None,
+    ):
+        pass
+
+    def kwargs_only(save_directory, tokenizer, quantization_method, **kwargs):
+        pass
+
+    def positional_only(save_directory, tokenizer, quantization_method):
+        pass
+
+    # A build that names the argument needs no zoo probe at all.
+    assert module._imatrix_export_supported(named) is True
+    assert module._imatrix_export_supported(positional_only) is False
+
+    fake_zoo = types.ModuleType("unsloth_zoo.llama_cpp")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", fake_zoo)
+    assert module._imatrix_export_supported(kwargs_only) is False, "no resolver -> old zoo"
+    fake_zoo.resolve_imatrix_file = lambda *a, **kw: None
+    assert module._imatrix_export_supported(kwargs_only) is True
+    if zoo is not None:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", zoo)
+
+
+def test_imatrix_disabled_explicitly_does_not_forward_the_token(monkeypatch, tmp_path):
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir), "q4_k_m", hf_token = "hf_secret", imatrix_file = False
+    )
+
+    assert success is True, message
+    # Neither the credential nor the disabled flag itself is forwarded.
+    assert calls["save"] == {"imatrix_file": None, "token": None}
+
+
+def test_disabled_imatrix_is_never_blocked_by_the_capability_probe(monkeypatch, tmp_path):
+    """imatrix_file=False asks for no imatrix, so an old zoo must not refuse the export."""
+    calls: dict = {}
+    module, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _KwargsOnlyModel(calls))
+    monkeypatch.setattr(
+        module,
+        "_imatrix_export_supported",
+        lambda save_fn: pytest.fail("no imatrix was requested"),
+        raising = True,
+    )
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q4_k_m", imatrix_file = False)
+
+    assert success is True, message
+
+
+def test_broken_unsloth_zoo_yields_a_failure_tuple_not_an_exception(monkeypatch, tmp_path):
+    """The probe runs before export_gguf's try block, so it must swallow more than ImportError."""
+    module, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _KwargsOnlyModel({}))
+
+    class _Exploding(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("partially initialised unsloth_zoo")
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", _Exploding("unsloth_zoo.llama_cpp"))
+
+    success, message, _p = backend.export_gguf(str(save_dir), "iq2_xxs", imatrix_file = True)
+
+    assert success is False
+    assert "imatrix" in message.lower()
+
+
+class _OldSaver:
+    """Predates the imatrix kwarg entirely: no `imatrix_file`, no `**kwargs`."""
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+        self._calls["save"] = quantization_method
+        _gguf(Path(model_save_path) / "Model.Q4_K_M.gguf")
+
+
+def test_disabled_imatrix_does_not_reach_an_older_exporter(monkeypatch, tmp_path):
+    """imatrix_file=False means off, so the keyword must be omitted, not passed as False."""
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _OldSaver(calls))
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q4_k_m", imatrix_file = False)
+
+    assert success is True, message
+    assert calls["save"] == "q4_k_m"
+
+
+# A probe that says "supported" must be right about the call it authorises, and the
+# materialized imatrix must stay an input under whichever name the filesystem gave it.
+
+
+def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_path):
+    """Named is not passable by keyword, and every call site passes one."""
+    module, _b, _s, _cwd = _backend(monkeypatch, tmp_path, object())
+
+    namespace: dict = {}
+    exec(
+        "def f(save_directory, tokenizer, quantization_method, imatrix_file = None,"
+        " token = None, /): pass",
+        namespace,
+    )
+
+    with pytest.raises(TypeError):
+        namespace["f"]("d", "t", "q", imatrix_file = True)
+    assert module._imatrix_export_supported(namespace["f"]) is False
+    assert module._supports_kwarg(namespace["f"], "token") is False
+
+
+class _ImatrixNamingModel:
+    """Writes the imatrix under the name the filesystem chose, as a folding or NFD mount does."""
+
+    def __init__(self, on_disk_name):
+        self.on_disk_name = on_disk_name
+
+    def save_pretrained_gguf(
+        self,
+        model_save_path,
+        tokenizer,
+        quantization_method,
+        imatrix_file = None,
+        token = None,
+    ):
+        _gguf(Path(model_save_path) / "Model.IQ2_XXS.gguf")
+        _gguf(Path(model_save_path) / self.on_disk_name)
+
+
+_NFC = unicodedata.normalize("NFC", "im\u00e4trix")
+_NFD = unicodedata.normalize("NFD", "im\u00e4trix")
+
+
+@pytest.mark.parametrize(
+    "on_disk,requested",
+    [
+        ("imatrix_unsloth.gguf", "/x/imatrix_unsloth.gguf_file"),
+        (f"{_NFD}.gguf", f"/x/{_NFC}.gguf_file"),  # APFS stores NFD, the request carried NFC
+        (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),  # and the other way round
+    ],
+)
+def test_the_materialized_imatrix_is_never_exported_as_a_model(
+    monkeypatch, tmp_path, on_disk, requested
+):
+    _m, backend, save_dir, _cwd = _backend(
+        monkeypatch,
+        tmp_path,
+        _ImatrixNamingModel(on_disk),
+    )
+
+    success, message, _p = backend.export_gguf(
+        str(save_dir),
+        "iq2_xxs",
+        imatrix_file = requested,
+    )
+
+    assert success is True, message
+    landed = sorted(p.name for p in save_dir.iterdir() if p.suffix == ".gguf")
+    assert landed == ["Model.IQ2_XXS.gguf"], f"the imatrix was exported as a model: {landed}"
+
+
+def test_a_broken_unsloth_zoo_does_not_fail_a_plain_export(monkeypatch, tmp_path):
+    """The scripts pin is an optimisation, so a half-built zoo must not fail the export: it
+    raises RuntimeError or AttributeError, which `except ImportError` did not catch."""
+
+    class _Exploding(types.ModuleType):
+        def __getattr__(self, name):
+            raise RuntimeError("half-built native dep")
+
+    calls: dict = {}
+    _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _imatrix_model(True, calls))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", _Exploding("unsloth_zoo.llama_cpp"))
+
+    success, message, _p = backend.export_gguf(str(save_dir), "q4_k_m")
+
+    assert success is True, message
+    assert calls["save"] == {"imatrix_file": None, "token": None}

@@ -23,8 +23,9 @@ computed exactly like the local overlay answer.
 
 Results are cached in memory and in a small JSON snapshot under ``studio_root()/cache``
 (ttl ~1 day) so repeated tier resolutions never re-fetch; failures are backed off in
-memory. Every fetch is bounded (<=5s, one retry), so a hung network cannot block model
-loading. Fully offline-safe: offline env vars or the kill switch
+memory. Every fetch is bounded by an explicit wall-clock budget on the transfer (not just
+the socket timeout, which only bounds one read), so a hung or drip-feeding network cannot
+block model loading. Fully offline-safe: offline env vars or the kill switch
 ``UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS=1`` make every check return None (current
 behavior preserved).
 
@@ -68,6 +69,15 @@ _AUTO_FILES = ("configuration_auto.py", "auto_mappings.py")
 
 _FETCH_TIMEOUT_SECONDS = 5.0
 _FETCH_RETRIES = 1
+# urlopen's timeout bounds each individual read, never the whole transfer, so a mirror
+# dribbling a few bytes just inside it keeps resp.read() alive indefinitely (measured:
+# 12 chunks 1s apart read in 12.0s under timeout=5.0). The transfer gets its own
+# wall-clock budget instead: one timeout for the connect, one for the body.
+_FETCH_DEADLINE_SECONDS = 2 * _FETCH_TIMEOUT_SECONDS
+# One attempt's true worst case: the budget, plus the single socket read already blocking
+# when it runs out (the deadline is only tested between reads).
+_FETCH_ATTEMPT_SECONDS = _FETCH_DEADLINE_SECONDS + _FETCH_TIMEOUT_SECONDS
+_READ_CHUNK_BYTES = 1 << 16
 _CACHE_TTL_SECONDS = 24 * 60 * 60
 _FAILURE_BACKOFF_SECONDS = 300
 
@@ -80,6 +90,19 @@ _lock = threading.Lock()
 _memory_snapshot: dict | None = None
 _last_failure_at: float = 0.0
 _is_fetching: bool = False
+# Set whenever no refresh is in flight; a concurrent caller waits on it for the running
+# fetch's answer instead of reporting "no answer" (see _get_snapshot).
+_fetch_done: threading.Event = threading.Event()
+_fetch_done.set()
+# Backstop for that wait, bounded by the refresh's OWN worst case: the PyPI version plus
+# both auto files at each of the two refs, each allowed its retry at _FETCH_ATTEMPT_SECONDS.
+# Derived rather than a literal, so tuning a timeout, a retry or the transfer budget cannot
+# silently shrink it below what it bounds. Only a backstop: giving up early is not graceful
+# here, since the answer it falls through to reads as "no upgrade needed" all the way to the
+# Start button, launching the run on the architecture this gate exists to stop. So the
+# waiter re-waits while the refresh is genuinely in flight (_get_snapshot).
+_REFRESH_URL_COUNT = 1 + 2 * len(_AUTO_FILES)
+_INFLIGHT_WAIT_SECONDS = _REFRESH_URL_COUNT * (1 + _FETCH_RETRIES) * _FETCH_ATTEMPT_SECONDS + 5.0
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -99,8 +122,30 @@ def _cache_file() -> Path:
 _FETCH_MISSING = "__unsloth_fetch_missing__"
 
 
+def _read_within(resp, deadline: float) -> str | None:
+    """Body of *resp*, or None if the transfer is still running at *deadline*.
+
+    ``resp.read()`` in one call has no bound at all: the socket timeout only fires on a
+    read that stalls longer than itself, so a drip-fed response never trips it. ``read1``
+    returns what has arrived instead of blocking for a full chunk, which is what lets the
+    budget be checked as the body comes in.
+    """
+    read1 = getattr(resp, "read1", None)
+    if read1 is None:
+        # A file-like that hands back the whole body in one go has nothing to dribble.
+        return resp.read().decode("utf-8", "replace")
+    chunks: list[bytes] = []
+    while True:
+        if time.monotonic() >= deadline:
+            return None
+        chunk = read1(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks).decode("utf-8", "replace")
+        chunks.append(chunk)
+
+
 def _fetch_text(url: str) -> str | None:
-    """GET *url* with a bounded timeout and one retry; None on any failure.
+    """GET *url* within a bounded wall-clock budget, one retry; None on any failure.
 
     Returns ``_FETCH_MISSING`` (without retrying) on HTTP 404 so callers can tell
     "absent at this ref" apart from "network flaked".
@@ -109,10 +154,19 @@ def _fetch_text(url: str) -> str | None:
     import urllib.request
 
     for attempt in range(1 + _FETCH_RETRIES):
+        deadline = time.monotonic() + _FETCH_DEADLINE_SECONDS
         try:
             req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _FETCH_TIMEOUT_SECONDS) as resp:
-                return resp.read().decode("utf-8", "replace")
+                body = _read_within(resp, deadline)
+            if body is not None:
+                return body
+            logger.debug(
+                "Fetch (attempt %d) for %s outran its %.1fs budget",
+                attempt + 1,
+                url,
+                _FETCH_DEADLINE_SECONDS,
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return _FETCH_MISSING
@@ -236,10 +290,13 @@ def _get_snapshot() -> dict | None:
     """Current support snapshot: memory -> disk -> network, with TTL and failure backoff.
 
     The network refresh runs outside the lock so a slow fetch cannot stall other
-    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes
-    (losers return None, the graceful fallthrough, rather than waiting).
+    threads in the ASGI pool; _is_fetching deduplicates concurrent refreshes, and a
+    loser waits (bounded) for the winner's answer rather than stacking a second fetch.
+    Waiting is what makes this safe to gate on: the Configure preview and the Start
+    button both ask, and a loser that answered "no answer" told the start there was no
+    upgrade, so the run launched on a model no installed transformers can load.
     """
-    global _memory_snapshot, _last_failure_at, _is_fetching
+    global _memory_snapshot, _last_failure_at, _is_fetching, _fetch_done
     with _lock:
         if _snapshot_is_fresh(_memory_snapshot):
             return _memory_snapshot
@@ -252,14 +309,31 @@ def _get_snapshot() -> dict | None:
         if time.time() - _last_failure_at < _FAILURE_BACKOFF_SECONDS:
             return None
         if _is_fetching:
-            return None
-        _is_fetching = True
+            in_flight = _fetch_done
+        else:
+            in_flight = None
+            _is_fetching = True
+            _fetch_done = done = threading.Event()
+    if in_flight is not None:
+        # Wait for the refresh's actual completion, not for a clock. An expiry here is
+        # not "no upgrade needed", it is "the answer is still being fetched", and the
+        # callers above cannot tell those apart. So re-wait while this same refresh is
+        # running; the winner clears _is_fetching and sets the event in one locked
+        # finally, so either condition means it is done.
+        while not in_flight.wait(_INFLIGHT_WAIT_SECONDS):
+            with _lock:
+                if not _is_fetching or _fetch_done is not in_flight:
+                    break
+            logger.debug("Still waiting on the in-flight transformers support refresh")
+        with _lock:
+            return _memory_snapshot if _snapshot_is_fresh(_memory_snapshot) else None
     fresh = None
     try:
         fresh = _refresh_snapshot()
     finally:
         with _lock:
             _is_fetching = False
+            done.set()
             if fresh is None:
                 _last_failure_at = time.time()
             else:
@@ -278,6 +352,7 @@ def clear_caches() -> None:
         _memory_snapshot = None
         _last_failure_at = 0.0
         _is_fetching = False
+        _fetch_done.set()
     from utils.transformers_version import end_sidecar_swap
 
     end_sidecar_swap()

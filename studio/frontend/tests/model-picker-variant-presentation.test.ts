@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ggufQuantChipLabel,
+  ggufQuantDetailLabel,
   ggufVariantPickerLabel,
   groupGgufVariantsForPicker,
   h3PickerHasOnlyPrunedBuilds,
@@ -168,4 +170,58 @@ test("each workflow uses the nearest-size fallback for different quant names", (
 
   assert.equal(preferred.get("text-frames"), textRecommended);
   assert.equal(preferred.get("reference-media"), referenceQ3);
+});
+
+test("an H3 quant chip is the quant alone, because the column is capped", () => {
+  // The column fits UD-Q4_K_XL and no more.
+  assert.equal(ggufQuantChipLabel("minimax_h3_fl2va_pruned-Q4_K_M"), "Q4_K_M");
+  assert.equal(
+    ggufQuantChipLabel("minimax_h3_ref2va-UD-Q3_K_XL"),
+    "UD-Q3_K_XL",
+  );
+  // A suffix still on, and a shard counter, read alike.
+  assert.equal(
+    ggufQuantChipLabel("minimax_h3_ref2va_pruned-Q4_K_M.gguf"),
+    "Q4_K_M",
+  );
+  assert.equal(
+    ggufQuantChipLabel("minimax_h3_fl2va_pruned-Q4_K_M-00001-of-00002"),
+    "Q4_K_M",
+  );
+});
+
+test("the tooltip keeps the workflow the chip has no room for", () => {
+  assert.equal(
+    ggufQuantDetailLabel("minimax_h3_fl2va_pruned-Q4_K_M"),
+    "Text & frames · Q4_K_M · Pruned",
+  );
+  assert.equal(
+    ggufQuantDetailLabel("minimax_h3_ref2va-UD-Q3_K_XL"),
+    "References · UD-Q3_K_XL · Full",
+  );
+});
+
+test("an ordinary quant key is left exactly as it is", () => {
+  for (const label of [ggufQuantChipLabel, ggufQuantDetailLabel]) {
+    assert.equal(label("Q4_K_M"), "Q4_K_M");
+    assert.equal(label("UD-Q2_K_XL"), "UD-Q2_K_XL");
+    assert.equal(label("distilled-1.1/Q4_K_M"), "distilled-1.1/Q4_K_M");
+    assert.equal(
+      label("qwen3vl_32b_minimax_h3-Q4_K_M"),
+      "qwen3vl_32b_minimax_h3-Q4_K_M",
+    );
+  }
+});
+
+test("the picker label is unchanged by the key-shaped parse", () => {
+  // The optional suffix must not change what a ROW reads under its heading.
+  const pruned = variant("minimax_h3_fl2va_pruned-UD-Q3_K_XL.gguf", 9);
+  assert.equal(
+    ggufVariantPickerLabel(pruned, {
+      h3Grouped: true,
+      hideH3PrunedBuild: true,
+    }),
+    "UD-Q3_K_XL",
+  );
+  assert.equal(groupGgufVariantsForPicker([pruned])[0]?.key, "text-frames");
 });

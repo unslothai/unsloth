@@ -19,12 +19,18 @@ import {
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { resolveInitialConfig } from "@/features/model-picker";
 import { isMlxId } from "@/features/model-picker/components/model-selector/recommended-fit";
+import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
+import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
+import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   SANDBOX_FILE_TOOLS,
   extractCreatedFiles,
+  isSandboxFileList,
+  isSandboxToolResult,
   type SandboxFile,
+  sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
 import { parseParamCountB } from "@/lib/model-size";
@@ -55,11 +61,34 @@ import {
   isPromptCacheTtl,
   loadExternalProviders,
   parseExternalModelId,
-  providerTypeSupportsVision,
+
+  providerModelSupportsStudioTools,
+  providerModelSupportsVision,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
+
+import {
+  addCodexReasoning,
+
+  codexLocalToolRoundId,
+  codexReasoningForToolCalls,
+  readCodexReasoning,
+
+  shouldReplayAssistantReasoning,
+
+  startsNewCodexToolRound,
+  type CodexReasoningLedger,
+} from "../codex-reasoning";
+
+import { toolCallReplayArguments } from "../tool-call-arguments";
+import {
+  findStreamedToolCallPartIndex,
+  resolveToolCallPartId,
+} from "../tool-call-id";
+
+import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   reasoningCapsFromLoad,
@@ -74,12 +103,14 @@ import {
   getExternalReasoningCapabilities,
   getProviderCapabilities,
   isGeminiCustomOpenAICompatBase,
+  providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
   providerSupportsFastMode,
 } from "../provider-capabilities";
+import { selectCodeToolNames } from "./code-tool-placement";
 import {
   type PendingImageEditReference,
   type RagAutoInject,
@@ -91,6 +122,7 @@ import {
   persistGpuMemoryModeOnLoad,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
+  awaitThreadScopedPairing,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import { resolveFitMaxSeqLength, resolveManualAutoCtxPin } from "../presets/preset-policy";
@@ -117,6 +149,7 @@ import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
   getStoredChatProject,
+  isThreadIncognito,
   listStoredChatThreads,
   listStoredChatMessages,
   saveStoredChatMessage,
@@ -130,10 +163,12 @@ import {
 import { createRetryableSharedRead } from "../utils/retryable-shared-read";
 import { getImageInputUnavailableReason } from "../utils/image-input-support";
 import {
+  createThinkTagTracker,
   extractDeltaText,
-  hasUnclosedThinkTag,
   parseAssistantContent,
 } from "../utils/parse-assistant-content";
+import { stripTrailingTemplatePlaceholder } from "../utils/trailing-template-placeholder";
+import { createStreamPublishGate } from "../utils/stream-pacing";
 import {
   countReasoningGroups,
   createReasoningDurationTracker,
@@ -949,10 +984,7 @@ function serializeAssistantToolCallPart(
     return null;
   }
 
-  const argumentsStr =
-    typeof tc.argsText === "string" && tc.argsText.length > 0
-      ? tc.argsText
-      : JSON.stringify(tc.args ?? {});
+  const argumentsStr = toolCallReplayArguments(tc.argsText, tc.args);
   const entry: SerializedToolCall = {
     id: tc.toolCallId,
     type: "function" as const,
@@ -975,45 +1007,6 @@ function serializeAssistantToolCallPart(
 export interface McpImageToolResult {
   text: string;
   images: { data: string; mimeType: string }[];
-}
-
-/**
- * A python/terminal result carrying the chat's sandbox context alongside the
- * text the model actually saw.
- */
-/** ``files`` as the cards need it: absent, or entries with a usable name. */
-export function isSandboxFileList(val: unknown): boolean {
-  if (val === undefined || val === null) return true;
-  if (!Array.isArray(val)) return false;
-  return val.every(
-    (entry) =>
-      typeof entry === "object" &&
-      entry !== null &&
-      typeof (entry as { name?: unknown }).name === "string",
-  );
-}
-
-export function isSandboxToolResult(
-  val: unknown,
-): val is { text: string; sessionId: string } {
-  if (typeof val !== "object" || val === null) return false;
-  const v = val as {
-    text?: unknown;
-    sessionId?: unknown;
-    images?: unknown;
-    files?: unknown;
-  };
-  // images too: it is always in Studio's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
-  return (
-    typeof v.text === "string" &&
-    typeof v.sessionId === "string" &&
-    Array.isArray(v.images) &&
-    // Persisted content can carry anything: the cards map over this and read
-    // name off each entry, so anything else takes the whole chat view down.
-    isSandboxFileList(v.files)
-  );
 }
 
 /**
@@ -1152,6 +1145,21 @@ function collectAssistantTextThoughtSignature(
   return undefined;
 }
 
+function setAssistantCodexReasoning(
+  message: SerializedMessage,
+  reasoning: unknown[] | undefined,
+): void {
+  if (!reasoning) return;
+  const extra =
+    message.extra_content &&
+    typeof message.extra_content === "object" &&
+    !Array.isArray(message.extra_content)
+      ? (message.extra_content as Record<string, unknown>)
+      : {};
+  message.extra_content = { ...extra, openai_codex_reasoning: reasoning };
+}
+
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1191,12 +1199,18 @@ function serializeAssistantReplayMessages(
   }
 
   const imageParts = collectImageParts(message);
+
+  const codexReasoning = readCodexReasoning(
+    (message as { metadata?: unknown }).metadata,
+  );
   const messages: SerializedMessage[] = [];
   const pendingTextParts: string[] = [];
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
   let imagePartsPending = imageParts.length > 0;
+
+  let pendingLocalToolRoundId: number | null = null;
 
   const flushAssistantAndToolResults = (force = false): void => {
     const textContent = sanitizeAssistantReplayText(
@@ -1206,13 +1220,16 @@ function serializeAssistantReplayMessages(
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
-    const reasoningOnlyTurnIsComplete =
-      message.status?.type !== "incomplete" &&
-      readIncompleteInfo((message as { metadata?: unknown }).metadata) === null;
-    const hasReasoningContent =
-      includeReasoningContent &&
-      reasoningContent.length > 0 &&
-      (hasContent || hasToolCalls || reasoningOnlyTurnIsComplete);
+    const incomplete =
+      message.status?.type === "incomplete" ||
+      readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null;
+    const hasReasoningContent = shouldReplayAssistantReasoning({
+      enabled: includeReasoningContent,
+      reasoningContent,
+      hasContent,
+      hasToolCalls,
+      incomplete,
+    });
 
     if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
       return;
@@ -1237,6 +1254,16 @@ function serializeAssistantReplayMessages(
       assistantMessage.reasoning_content = reasoningContent;
     }
 
+    if (hasToolCalls) {
+      setAssistantCodexReasoning(
+        assistantMessage,
+        codexReasoningForToolCalls(
+          codexReasoning,
+          pendingToolCalls.map((call) => call.id),
+        ),
+      );
+    }
+
     messages.push(assistantMessage);
     if (pendingToolResults.length > 0) {
       messages.push(...pendingToolResults);
@@ -1247,6 +1274,8 @@ function serializeAssistantReplayMessages(
     pendingToolCalls = [];
     pendingToolResults = [];
     imagePartsPending = false;
+
+    pendingLocalToolRoundId = null;
   };
 
   for (const part of message.content ?? []) {
@@ -1276,7 +1305,18 @@ function serializeAssistantReplayMessages(
         continue;
       }
 
-      const flushLocalPair = shouldFlushCompletedLocalToolPair(toolPart);
+
+      const provenance = getToolReplayProvenance(toolPart);
+      const localRoundId = codexLocalToolRoundId(provenance);
+      if (
+        pendingToolCalls.length > 0 &&
+        startsNewCodexToolRound(pendingLocalToolRoundId, localRoundId)
+      ) {
+        flushAssistantAndToolResults();
+      }
+      if (localRoundId !== null) pendingLocalToolRoundId = localRoundId;
+      const flushLocalPair =
+        localRoundId === null && shouldFlushCompletedLocalToolPair(toolPart);
       if (flushLocalPair && pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
@@ -1297,6 +1337,13 @@ function serializeAssistantReplayMessages(
     messages,
     collectAssistantTextThoughtSignature(message),
   );
+
+  const finalAssistant = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "assistant");
+  if (finalAssistant) {
+    setAssistantCodexReasoning(finalAssistant, codexReasoning?.final);
+  }
   return messages;
 }
 
@@ -1587,6 +1634,7 @@ export async function buildLocalTokenCountExtras(
     ragMode,
     ragTopK,
     autoHealToolCalls,
+    bypassPermissions,
   } = useChatRuntimeStore.getState();
   if (!supportsTools) return {};
 
@@ -1602,13 +1650,23 @@ export async function buildLocalTokenCountExtras(
     !mcpEnabledForChat &&
     !ragOn
   ) {
-    return {};
+    // Explicit false, not an omitted field: the server defaults tools on for a
+    // request that never mentions them, so every pill being off has to say so.
+    // The permission level rides along because `--enable-tools` still outranks
+    // that false in _effective_enable_tools, so a CLI policy can inject
+    // python/terminal into a pill-less request and the count would otherwise
+    // price sandboxed schemas against an unsandboxed completion. Inert whenever
+    // the false stands and no tool list is built.
+    return { enable_tools: false, bypass_permissions: bypassPermissions };
   }
 
   return {
     enable_tools: true,
     // Auto-Heal off leaves leaked tool markup in the real prompt, so the count keeps it.
     auto_heal_tool_calls: autoHealToolCalls,
+    // Full access swaps the python/terminal descriptions and adds a nudge
+    // sentence, so the count needs the flag to price the same prompt.
+    bypass_permissions: bypassPermissions,
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
@@ -1715,21 +1773,70 @@ async function resolveChatInstructions(
     .join("\n\n");
 }
 
-async function resolveProjectId(
+// A run resolves the project separately for the sandbox, the RAG scope and the
+// instructions, and while a fresh thread's row is still being written they all
+// take the composer fallback. Answered once per thread and reused, or a
+// navigation between those calls mixes two projects into one request.
+const composerProjectByPendingThread = new Map<string, string | null>();
+
+/** The project the run started in, kept for the whole run. Only the first send
+ * for a thread records one: a later run finds the row and never consults it. */
+function rememberComposerProjectForRun(
+  threadId: string,
+  projectId: string | null,
+): void {
+  // An incognito thread never has a row, so resolveProjectId answers before it
+  // reads the map: an entry here would be one nothing ever removes.
+  if (isThreadIncognito(threadId)) return;
+  if (!composerProjectByPendingThread.has(threadId)) {
+    composerProjectByPendingThread.set(threadId, projectId);
+  }
+}
+
+export async function resolveProjectId(
   threadId: string | undefined,
   readThreadRecord?: ThreadRecordReader,
+  // A caller that gates on the answer (the queue's indexing probe) has to tell
+  // "no project" from "could not read the row": one sends, the other waits. It
+  // also names its own fallback, since the store names whichever project is on
+  // screen when it polls rather than the one it is waiting for.
+  opts?: { rethrowReadFailure?: boolean; composerProjectId?: string | null },
 ): Promise<string | null> {
+  // Read before the await: a send survives navigation, so a store read after the
+  // lookup could hand this request the project the user moved to.
+  const composerProjectId =
+    opts?.composerProjectId !== undefined
+      ? opts.composerProjectId
+      : useChatRuntimeStore.getState().activeProjectId;
   if (threadId) {
-    const thread = await (
-      readThreadRecord?.() ?? getStoredChatThread(threadId)
-    ).catch(() => null);
-    return thread?.projectId ?? null;
+    let thread: ThreadRecord | undefined;
+    try {
+      thread = await (readThreadRecord?.() ?? getStoredChatThread(threadId));
+    } catch (error) {
+      // A failed lookup is not proof the row is missing, so it must not adopt
+      // whichever project the composer last had open.
+      if (opts?.rethrowReadFailure) throw error;
+      return null;
+    }
+    if (thread) {
+      composerProjectByPendingThread.delete(threadId);
+      return thread.projectId ?? null;
+    }
+    // No row yet: initialize() does not await the write, so a fresh chat's first
+    // send can read ahead of it and drop the project's sources, instructions and
+    // sandbox. An incognito thread is never persisted, so its miss is the answer.
+    if (isThreadIncognito(threadId)) {
+      return null;
+    }
+    const pending = composerProjectByPendingThread.get(threadId);
+    if (pending !== undefined) {
+      return pending;
+    }
+    // Not recorded here: the send records it, and this also runs off a run (the
+    // queue probe, the token-count extras), where a poll landing mid-navigation
+    // would pin the run to whichever project is on screen.
   }
-  const projectId = useChatRuntimeStore.getState().activeProjectId;
-  if (!projectId) {
-    return null;
-  }
-  return projectId;
+  return composerProjectId ?? null;
 }
 
 async function resolveSandboxSessionId(
@@ -1737,7 +1844,7 @@ async function resolveSandboxSessionId(
   readThreadRecord?: ThreadRecordReader,
 ): Promise<string | undefined> {
   const projectId = await resolveProjectId(threadId, readThreadRecord);
-  return projectId ? `project-${projectId}` : threadId;
+  return sandboxSessionIdFor(threadId, projectId);
 }
 
 /** Wait for an in-progress model load to finish (polls store every 500ms). */
@@ -1937,6 +2044,8 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
   liveUsage
     .setCheckpoint(snapshot.settings.params.checkpoint, undefined, {
       trackQueuedSettings: false,
+      // The model being stepped off is the one the background load put there.
+      persist: false,
     });
   useChatRuntimeStore.setState({
     ...snapshot.runtime,
@@ -2682,6 +2791,58 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         })
       ).isDiffusion;
     }
+    // The stored override can live only on the server (written through the API, or
+    // from another browser), and this config comes from local storage. Nothing is
+    // resident at startup, so /load's omission path has nothing to inherit from, and
+    // the model would come up without the arguments that were saved for it.
+    //
+    // Sanitized like every other hydration: this becomes an EXPLICIT list, which
+    // /load validates strictly rather than putting through the carry-over paths that
+    // drop a newly denied flag quietly.
+    let resolvedExtraArgs = config.llamaExtraArgs;
+    if (candidate.kind === "gguf" && !isDiffusion) {
+      try {
+        const managed = await loadManagedLlamaFlags();
+        const clean = (tokens: readonly string[]) =>
+          sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
+            maxBytes: managed?.maxBytes,
+            windowsCommandBudget: managed?.windowsCommandBudget,
+          });
+        if (resolvedExtraArgs === undefined) {
+          const stored = await fetchLoadExtraArgs(
+            modelPath,
+            // The advertised repository id as well as the path this load resolves
+            // to: cached inventory can hand back a different loadId, and the row
+            // was written under whichever of the two the user was looking at.
+            candidate.id,
+            candidate.ggufVariant ?? null,
+          );
+          if (stored.tokens.length > 0) {
+            const cleaned = clean(stored.tokens);
+            if (cleaned.length > 0) {
+              resolvedExtraArgs = cleaned;
+            }
+          } else if (stored.explicit) {
+            // A row carrying an EMPTY list is a cleared box, not an absent one, and
+            // the difference decides what /load does: omitting the field lets it
+            // carry the resident model's arguments over, which is what was cleared.
+            resolvedExtraArgs = [];
+          }
+        } else if (resolvedExtraArgs !== null && resolvedExtraArgs.length > 0) {
+          // The local copy gets the same treatment as the fetched one. It was
+          // written by whatever build was running then, so a flag added to the
+          // managed set since would be sent explicitly and answered with a 400,
+          // and the remembered model would not come up at all.
+          const cleaned = clean(resolvedExtraArgs);
+          if (cleaned.length !== resolvedExtraArgs.length) {
+            resolvedExtraArgs = cleaned.length > 0 ? cleaned : [];
+          }
+        }
+      } catch {
+        // An overrides outage must not stop a startup load: without this the model
+        // comes up as it did before the feature existed.
+      }
+    }
     const effectiveTensorParallel = isDiffusion
       ? false
       : config.tensorParallel;
@@ -2734,6 +2895,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // omitted when blank: a null counts as set and strips inherited -b / -ub
               ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
               ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+              // Checked with the same arguments the load below sends, or a list
+              // the backend refuses would pass this gate and fail the launch.
+              ...(resolvedExtraArgs !== undefined
+                ? { llama_extra_args: resolvedExtraArgs ?? [] }
+                : {}),
             }
           : {}),
       }))
@@ -2779,6 +2945,14 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             n_parallel: config.nParallel ?? null,
             ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
             ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
+            // Remembered pass-through arguments, for the same reason as the rest of
+            // this block: nothing is resident at startup, so the omission path has
+            // nothing to inherit them from and the model would come up without the
+            // flags the user asked to be remembered. Undefined means this config
+            // predates the field; a cleared list is an explicit none.
+            ...(resolvedExtraArgs !== undefined
+              ? { llama_extra_args: resolvedExtraArgs ?? [] }
+              : {}),
           }
         : {}),
     }).catch((error: unknown) => {
@@ -2828,6 +3002,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         {
           persist: !options?.preserveVisibleSettings,
           trackQueuedSettings: !options?.preserveVisibleSettings,
+          fromModelDefaults: true,
+          // A budget remembered from a larger context does not fit this load.
+          maxTokensCap:
+            candidate.kind === "gguf"
+              ? (loadResp.context_length ?? undefined)
+              : effectiveMaxSeqLength,
         },
       );
       // Upsert: a pre-load catalog entry has no backend-derived audio
@@ -2882,6 +3062,15 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
           loadedNUbatch: committedNUbatch,
+          // What this launch is running, for a later rollback. The status applier
+          // cannot seed it: the model-loading lease is held for the whole of this
+          // load, which is exactly the guard that stops a mid-switch poll writing
+          // here. Without it an immediate switch snapshots the previous model's
+          // list, and a failed switch restores this one with the wrong arguments.
+          loadedLlamaExtraArgs:
+            loadResp.requested_llama_extra_args !== undefined
+              ? (loadResp.requested_llama_extra_args ?? [])
+              : (resolvedExtraArgs ?? null),
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           ...loadedGpuMemoryFields(loadResp),
@@ -2918,6 +3107,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNBatch: null,
           nUbatch: null,
           loadedNUbatch: null,
+          // Same reason, and the baseline has to be cleared rather than left: a
+          // rollback to THIS model must not resend a GGUF's arguments.
+          loadedLlamaExtraArgs: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -3196,6 +3388,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           {
             persist: !options?.preserveVisibleSettings,
             trackQueuedSettings: !options?.preserveVisibleSettings,
+            fromModelDefaults: true,
+            maxTokensCap: loadResp.context_length ?? undefined,
           },
         );
         const defaultModel: ChatModelSummary = {
@@ -3394,12 +3588,38 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      // Before the first await: hydration and a model load both run ahead of the
+      // first resolveProjectId, and a send survives navigation. Only consulted
+      // while the thread's own row is still missing.
+      const composerProjectIdAtSend =
+        useChatRuntimeStore.getState().activeProjectId ?? null;
       await useChatRuntimeStore.getState().hydratePersistedSettings();
+      // Every run reaches here: the composer, Reload, Continue, and send from the edit
+      // composer. Waiting for the open chat's own settings in this one place is what
+      // keeps the message-level controls from starting a run on the installation
+      // defaults that stand in while the read is out, which for a chat stored as "ask"
+      // would mean running tools without asking.
+      // Bound to this run's own chat: a run for A released by B's pairing ending would
+      // resume and read B's settings for A.
+      const runThreadId =
+        unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      // Refused rather than run on whatever the store holds now: the wait only runs out
+      // for a chat the user left mid-read, and the settings on screen are then some
+      // other chat's. The run is recoverable by reopening the chat; a message sent with
+      // another chat's tools and permission level is not.
+      if (!(await awaitThreadScopedPairing(runThreadId))) {
+        throw new Error(
+          "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
+        );
+      }
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable even if the user
       // switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
-        (unstable_threadId ?? runtime.activeThreadId) || undefined;
+        (runThreadId ?? runtime.activeThreadId) || undefined;
+      if (resolvedThreadId) {
+        rememberComposerProjectForRun(resolvedThreadId, composerProjectIdAtSend);
+      }
       const sharedThreadRecordRead = resolvedThreadId
         ? createRetryableSharedRead(
             () => getStoredChatThreadReadResult(resolvedThreadId),
@@ -3545,53 +3765,47 @@ export function createOpenAIStreamAdapter(
           userMessageIndex > 0 ? messages[userMessageIndex - 1]!.id : null;
         const { params } = runtime;
         await persistResolvedQueuedModel(params.checkpoint);
-        const model = params.checkpoint.trim();
-        if (!model || parseExternalModelId(model)) {
-          throw new Error("Deep research requires a selected local model.");
-        }
-        const inferenceRequest: {
-          model: string;
-          temperature?: number;
-          topP?: number;
-          maxTokens?: number;
-          enableThinking?: boolean;
-          reasoningEffort?: string;
-        } = { model };
+        const selectedCheckpoint = params.checkpoint.trim();
+        const researchExternalSelection = parseExternalModelId(selectedCheckpoint);
+        const researchExternalProvider = researchExternalSelection
+          ? loadExternalProviders().find(
+              (provider) => provider.id === researchExternalSelection.providerId,
+            )
+          : null;
         if (
-          Number.isFinite(params.temperature) &&
-          params.temperature >= 0 &&
-          params.temperature <= 2
+          !selectedCheckpoint ||
+          (researchExternalSelection &&
+            providerModelSupportsStudioTools(
+              researchExternalProvider?.providerType,
+              researchExternalSelection.modelId,
+            ) !== true)
         ) {
-          inferenceRequest.temperature = params.temperature;
-        }
-        if (Number.isFinite(params.topP) && params.topP > 0 && params.topP <= 1) {
-          inferenceRequest.topP = params.topP;
-        }
-        if (Number.isFinite(params.maxTokens) && params.maxTokens > 0) {
-          inferenceRequest.maxTokens = Math.min(8192, Math.floor(params.maxTokens));
+          throw new Error(
+            "Deep research requires a selected local model or a connection whose provider supports Studio tools.",
+          );
         }
         const reasoningRequested =
           runtime.reasoningAlwaysOn ||
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
-        if (
-          runtime.reasoningStyle === "enable_thinking" ||
-          runtime.reasoningStyle === "enable_thinking_effort"
-        ) {
-          inferenceRequest.enableThinking = reasoningRequested;
-        }
-        if (
-          reasoningRequested &&
-          (runtime.reasoningStyle === "reasoning_effort" ||
-            runtime.reasoningStyle === "enable_thinking_effort")
-        ) {
-          // Clamp like normal chat does. reasoningEffort is one shared persisted setting and
-          // the load paths refresh reasoningEffortLevels without re-clamping it, so a level
-          // this model lacks is dropped by llama.cpp and the run falls back to the default.
-          inferenceRequest.reasoningEffort = clampReasoningEffortToLevels(
-            runtime.reasoningEffort,
-            runtime.reasoningEffortLevels,
-          );
-        }
+        const inferenceRequest = buildResearchInferenceRequest({
+          checkpoint: selectedCheckpoint,
+          external:
+            researchExternalSelection && researchExternalProvider
+              ? {
+                  providerId: researchExternalProvider.id,
+                  providerType: researchExternalProvider.providerType,
+                  modelId: researchExternalSelection.modelId,
+                }
+              : undefined,
+          temperature: params.temperature,
+          topP: params.topP,
+          maxTokens: params.maxTokens,
+          reasoningRequested,
+          reasoningStyle: runtime.reasoningStyle,
+          reasoningEffort: runtime.reasoningEffort,
+          reasoningEffortLevels: runtime.reasoningEffortLevels,
+          clampReasoningEffort: clampReasoningEffortToLevels,
+        });
         const researchProjectId = await resolveProjectId(
           resolvedThreadId,
           readThreadRecord,
@@ -3937,6 +4151,16 @@ export function createOpenAIStreamAdapter(
             (provider) => provider.id === externalSelection.providerId,
           )
         : null;
+
+      const externalUsesStudioTools =
+        providerModelSupportsStudioTools(
+          externalProvider?.providerType,
+          externalSelection?.modelId,
+        ) === true;
+
+      const supportsStudioToolsForThisTurn = isExternalRequest
+        ? externalUsesStudioTools
+        : supportsTools;
       const selectedModelSummary = runtime.models.find(
         (model) => model.id === params.checkpoint,
       );
@@ -3961,10 +4185,15 @@ export function createOpenAIStreamAdapter(
           externalProvider.providerType === "gemini" &&
           isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
       );
+      const externalProviderUsesOAuth =
+        externalProvider?.authKind === "chatgpt_oauth";
+
       if (
         isExternalRequest &&
         !externalApiKey &&
         !externalProvider?.hasApiKey &&
+
+        !externalProviderUsesOAuth &&
         !externalProviderIsCustom &&
         !externalProviderIsGeminiCustomBase
       ) {
@@ -4025,6 +4254,19 @@ export function createOpenAIStreamAdapter(
         externalProvider &&
           providerSupportsBuiltinWebFetch(externalProvider.providerType),
       );
+      // Which side of the connection the Code pill runs code on. Hosted
+      // `code_execution` and local `python` / `terminal` are two trust
+      // boundaries, not two spellings of one feature, so the stored pill keeps
+      // meaning the provider's sandbox wherever it meant that before the Studio
+      // loop reached these providers. See code-tool-placement.ts.
+      const { local: studioLocalCodeTools, hosted: hostedCodeToolsForThisTurn } =
+        selectCodeToolNames({
+          codeToolsEnabled,
+          hostedCodeExecutionForThisTurn: codeExecEnabledForThisTurn,
+          providerHostsCodeExecution: providerHostsCodeExecution(
+            externalProvider?.providerType,
+          ),
+        });
 
       if (selectedImageEditReference && !imageGenerationEnabledForThisTurn) {
         clearSelectedImageEditReference();
@@ -4254,8 +4496,9 @@ export function createOpenAIStreamAdapter(
         const imageGateReason = getImageInputUnavailableReason({
           activeModel,
           isExternalModel: isExternalRequest,
-          externalSupportsVision: providerTypeSupportsVision(
+          externalSupportsVision: providerModelSupportsVision(
             externalProvider?.providerType,
+            externalSelection?.modelId,
           ),
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
@@ -4427,6 +4670,14 @@ export function createOpenAIStreamAdapter(
       // Seeded with the partial so the bubble reads as one response; the boundary lets
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
+      // Answers "does the text end inside <think>" from what each arrival adds
+      // rather than from the whole buffer. It has to see every state the buffer
+      // passes through, so it is updated once per arrival, next to the strip
+      // below, and never behind a short-circuiting condition.
+      const thinkTags = createThinkTagTracker();
+      // What the cap is measured against: only grows, unlike cumulativeText,
+      // and counts tool-argument deltas, which never reach it.
+      let streamedChars = 0;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -4444,6 +4695,9 @@ export function createOpenAIStreamAdapter(
       // Every streamed yield carries the repaired text, not just the terminal ones:
       // assistant-ui drops whatever is yielded after an abort, so on Stop the last
       // STREAMED yield is what gets saved.
+      let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
+      let codexRoundToolCallIds: string[] = [];
+
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Provisional reason on every streamed yield: an abort skips the terminal yields
@@ -4451,6 +4705,7 @@ export function createOpenAIStreamAdapter(
       // lose why it was short. The terminal yields overwrite or clear it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
+        openaiCodexReasoning: codexReasoningLedger,
         incomplete: { reason: "cancelled" as const },
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -4476,6 +4731,7 @@ export function createOpenAIStreamAdapter(
       type PositionedToolCallPart = ToolCallMessagePart & {
         textCursor?: number;
         _delta_index?: number;
+        _has_stable_id?: boolean;
         extra_content?: unknown;
         provenance?: ToolCallProvenance;
       };
@@ -4493,22 +4749,14 @@ export function createOpenAIStreamAdapter(
       // key is unique; every tool_start/output/args/end resolves the same id via
       // this map, dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
-      const resolveToolPartId = (backendToolCallId: string): string => {
-        if (!backendToolCallId) {
-          return toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "";
-        }
-        const confirmationId =
-          toolConfirmationIdsByBackendId.get(backendToolCallId);
-        if (confirmationId) {
-          return confirmationId;
-        }
-        let partId = toolPartIdByBackendId.get(backendToolCallId);
-        if (!partId) {
-          partId = `${backendToolCallId}:${crypto.randomUUID()}`;
-          toolPartIdByBackendId.set(backendToolCallId, partId);
-        }
-        return partId;
-      };
+      const resolveToolPartId = (backendToolCallId: string): string =>
+        resolveToolCallPartId(
+          toolPartIdByBackendId,
+          backendToolCallId,
+          toolConfirmationIdsByBackendId.get(backendToolCallId),
+          toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
+          () => `${backendToolCallId}:${crypto.randomUUID()}`,
+        );
       // Latest Gemini text-part thoughtSignature; pinned onto the final
       // text MessagePart so next-turn replay carries it.
       let latestTextThoughtSignature: string | undefined;
@@ -4728,11 +4976,10 @@ export function createOpenAIStreamAdapter(
               codeExecEnabledForThisTurn ||
               (!isExternalRequest && supportsTools && codeToolsEnabled),
             images: imageGenerationEnabledForThisTurn,
-            mcp: !isExternalRequest && supportsTools && mcpEnabledForChat,
+            mcp:
+              supportsStudioToolsForThisTurn && mcpEnabledForChat,
             docs:
-              !isExternalRequest &&
-              supportsTools &&
-              (ragEnabled || projectRagEnabled),
+              supportsStudioToolsForThisTurn && (ragEnabled || projectRagEnabled),
             artifacts: renderHtmlToolEnabledForThisTurn,
             confirmToolCalls,
             bypassPermissions,
@@ -4928,31 +5175,133 @@ export function createOpenAIStreamAdapter(
                 getExternalMaxOutputTokens(
                   externalProvider?.providerType,
                   externalSelection?.modelId,
+                  externalProvider?.maxOutputTokens,
                 ),
               ),
+
+              ...(externalUsesStudioTools && resolvedThreadId
+                ? { thread_id: resolvedThreadId }
+                : {}),
               // Forward only sampling knobs the provider accepts.
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // enabled_tools from active pills; backend maps each name
-              // to the provider's tool schema.
-              ...(webSearchEnabledForThisTurn ||
-              webFetchEnabledForThisTurn ||
-              codeExecEnabledForThisTurn ||
-              imageGenerationEnabledForThisTurn
+              // Studio executes the calls for any provider that advertises the
+              // capability. Providers that do not keep their provider-hosted
+              // tool envelope in the branch below.
+              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that
+              // resolved to the provider's own sandbox is a hosted request and
+              // belongs in the branch below. Sending this body for it would
+              // attach permission_mode to a passthrough turn, which the route
+              // answers with a 400.
+              ...(supportsStudioToolsForThisTurn &&
+              (toolsEnabled ||
+                studioLocalCodeTools.length > 0 ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled)
                 ? {
                     enable_tools: true,
                     enabled_tools: [
-                      ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
-                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
-                      ...(codeExecEnabledForThisTurn ? ["code_execution"] : []),
+                      ...(ragEnabled || projectRagEnabled
+                        ? ["search_knowledge_base"]
+                        : []),
+                      ...(toolsEnabled ? ["web_search"] : []),
+                      ...studioLocalCodeTools,
+                      // Hosted tools Studio has no local stand-in for. Their
+                      // pills stay lit whether or not a Studio tool is on, so
+                      // listing only the local names here would silently drop
+                      // Images (or Fetch) the moment Search, Code, MCP or a
+                      // project's automatic RAG selected this branch. Search
+                      // deliberately does not ride along: that is the one
+                      // Studio runs itself just above. Code rides along only
+                      // when it resolved to the provider's sandbox, which is
+                      // mutually exclusive with the local names above.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
+                      ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                      ...hostedCodeToolsForThisTurn,
                     ],
+                    mcp_enabled: mcpEnabledForChat,
+                    permission_mode: permissionMode,
+                    ...(permissionMode === "auto"
+                      ? {}
+                      : { confirm_tool_calls: permissionMode === "ask" }),
+                    bypass_permissions: bypassPermissions,
+                    max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
+                    tool_call_timeout:
+                      runtime.toolCallTimeout >= 9999
+                        ? 9999
+                        : runtime.toolCallTimeout * 60,
+                    // Self-hosted models often write a call as text rather than
+                    // emitting structured tool_calls, so the external loop heals
+                    // like the local one. Omitting this left the backend on its
+                    // process default, which is not what the user set in Settings.
+                    // nudge_tool_calls is deliberately absent: it is the
+                    // non-streaming client-tool passthrough retry, which this
+                    // streaming server-side loop does not perform.
+                    auto_heal_tool_calls: runtime.autoHealToolCalls,
+                    // This branch runs the tools here, so say so by name:
+                    // enabled_tools ["web_search"] is byte-identical to what an
+                    // older bundle sent meaning hosted search, so without this
+                    // flag Search silently stayed hosted.
+                    run_tools_locally: true,
+                    ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
+                    ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+                    ...(ragEnabled || projectRagEnabled
+                      ? {
+                          rag_scope: {
+                            ...(ragEnabled && ragSource.type === "kb"
+                              ? { kb_id: ragSource.kbId }
+                              : {
+                                  ...(ragEnabled && resolvedThreadId
+                                    ? { thread_id: resolvedThreadId }
+                                    : {}),
+                                  ...(projectRagEnabled && ragProjectId
+                                    ? { project_id: ragProjectId }
+                                    : {}),
+                                }),
+                            default_top_k: ragTopK,
+                            mode: ragMode,
+                            autoinject: resolveAutoInject(
+                              ragAutoInject,
+                              params.checkpoint,
+                            ),
+                            autoinject_min_score: ragAutoInjectMinScore,
+                            ...(ragAutoInject === "off"
+                              ? { whole_doc: false }
+                              : {}),
+                            context_length:
+                              runtime.ggufContextLength ??
+                              params.maxSeqLength ??
+                              undefined,
+                          },
+                        }
+                      : {}),
                   }
-                : {}),
+                : webSearchEnabledForThisTurn ||
+                    webFetchEnabledForThisTurn ||
+                    codeExecEnabledForThisTurn ||
+                    imageGenerationEnabledForThisTurn
+                  ? {
+                      enable_tools: true,
+                      enabled_tools: [
+                        ...(webSearchEnabledForThisTurn ? ["web_search"] : []),
+                        ...(webFetchEnabledForThisTurn ? ["web_fetch"] : []),
+                        ...(codeExecEnabledForThisTurn
+                          ? ["code_execution"]
+                          : []),
+                        ...(imageGenerationEnabledForThisTurn
+                          ? ["image_generation"]
+                          : []),
+                      ],
+                    }
+                  : // Explicit false: an omitted field falls back to the
+                    // server's tools-on default, which would bill provider
+                    // server tools.
+                    { enable_tools: false }),
               provider_id: externalProvider.id,
               provider_type: externalBackendProviderType,
               external_model: externalSelection.modelId,
@@ -5132,7 +5481,10 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              : {}),
+              : // Explicit false, not an omitted field: the server defaults tools
+                // on for a request that never mentions them, so a model with no
+                // tool pill lit has to say so.
+                { enable_tools: false }),
           };
         };
 
@@ -5152,6 +5504,8 @@ export function createOpenAIStreamAdapter(
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             const stream = streamChatCompletions(requestPayload, runSignal);
+            // Per run, not per module: two turns must not share a cycle.
+            const canPublish = createStreamPublishGate();
 
             for await (const chunk of stream) {
               const chunkModel = (chunk as { model?: unknown }).model;
@@ -5303,6 +5657,7 @@ export function createOpenAIStreamAdapter(
                     const accum =
                       (liveArgsTextById.get(liveId) ?? "") + fragment;
                     liveArgsTextById.set(liveId, accum);
+                    streamedChars += fragment.length;
                     const partial = parseLiveToolArgs(accum);
                     const idx = toolCallParts.findIndex(
                       (p) => p.toolCallId === liveId,
@@ -5316,17 +5671,22 @@ export function createOpenAIStreamAdapter(
                         args: partial.args as ToolCallMessagePart["args"],
                         argsText: partial.argsText,
                       };
-                      yield {
-                        content: liveAssistantContent(),
-                        metadata: {
-                          timing: buildTiming(
-                            streamStartTime,
-                            totalChunks,
-                            firstTokenTime,
-                          ),
-                          custom: liveCustom(),
-                        },
-                      };
+                      // A preview: it repeats per argument delta and
+                      // tool_start replaces it. Tool events carry state, so
+                      // they stay ungated.
+                      if (canPublish(streamedChars)) {
+                        yield {
+                          content: liveAssistantContent(),
+                          metadata: {
+                            timing: buildTiming(
+                              streamStartTime,
+                              totalChunks,
+                              firstTokenTime,
+                            ),
+                            custom: liveCustom(),
+                          },
+                        };
+                      }
                     }
                   }
                   continue;
@@ -5525,9 +5885,18 @@ export function createOpenAIStreamAdapter(
                       } catch {
                         parsedResult = rawResult;
                       }
-                    } else if (createdFiles.length > 0) {
-                      // Files but no images: still structured, so the card can
-                      // offer downloads.
+                    } else if (
+                      createdFiles.length > 0 ||
+                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                    ) {
+                      // Structured with files, for the download card, and with
+                      // neither, because the session is the only record of WHERE
+                      // this call ran: _created_file_sentinels emits nothing
+                      // when a concurrent call shared the directory, so a run
+                      // that wrote files can arrive bare and a moved chat would
+                      // then name a folder from its current scope. Downstream is
+                      // unaffected: both toolResultModelText and the outbound
+                      // translator unwrap a sandbox wrapper to this same .text.
                       parsedResult = {
                         text: rawResult,
                         images: [],
@@ -5651,15 +6020,16 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
-              // OpenAI-standard usage chunk: choices=[], usage populated.
-              if (chunk.choices?.length === 0 && chunk.usage) {
+              // OpenAI usage may arrive either in an empty trailing chunk or on
+              // the terminal Codex chunk that also carries reasoning metadata.
+              if (chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
                   timings: (chunk as Record<string, unknown>).timings as
                     | ServerTimings
                     | undefined,
                 };
-                continue;
+                if (chunk.choices?.length === 0) continue;
               }
 
               totalChunks += 1;
@@ -5701,16 +6071,33 @@ export function createOpenAIStreamAdapter(
                   | { extra_content?: unknown }
                   | undefined
               )?.extra_content;
+              // Replay state reaches the message only through a yield, so a
+              // Stop while the gate holds one persists a turn that cannot
+              // replay. Pace previews, never state.
+              let replayStateChanged = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
-                const eGoogle = (deltaExtraContent as Record<string, unknown>)
-                  .google;
+                const extraRecord = deltaExtraContent as Record<string, unknown>;
+                const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const sig = (eGoogle as Record<string, unknown>).thought_signature;
                   if (typeof sig === "string" && sig) {
+                    replayStateChanged ||= sig !== latestTextThoughtSignature;
                     latestTextThoughtSignature = sig;
                   }
                 }
+                const codexReasoning = extraRecord.openai_codex_reasoning;
+                if (Array.isArray(codexReasoning) && codexReasoning.length > 0) {
+                  codexReasoningLedger = addCodexReasoning(
+                    codexReasoningLedger,
+                    codexReasoning,
+                    codexRoundToolCallIds,
+                  );
+                  replayStateChanged = true;
+                }
+              }
+
+              if (chunk.choices?.[0]?.finish_reason) {
+                codexRoundToolCallIds = [];
               }
               // Kimi / DeepSeek stream thinking via delta.reasoning_content;
               // wrap inline as <think>...</think> for parseAssistantContent.
@@ -5751,6 +6138,9 @@ export function createOpenAIStreamAdapter(
                 rawDeltaToolCalls.length > 0
               ) {
                 closeReasoningContent();
+                // Extending a call's arguments is a preview; introducing one
+                // is state, so it always publishes.
+                let addedToolCall = false;
                 for (const tc of rawDeltaToolCalls) {
                   if (!tc || typeof tc !== "object") continue;
                   const call = tc as {
@@ -5762,18 +6152,35 @@ export function createOpenAIStreamAdapter(
                   const idx =
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
-                  // Match an existing fragment by id first (canonical), then
-                  // by index slot; fall back to a minted tool_call_<n> id
-                  // for streams that send neither.
-                  let existing = stableId
-                    ? toolCallParts.find((p) => p.toolCallId === stableId)
+                  // Studio's local Codex loop follows the OpenAI tool-call delta with
+                  // tool_start/tool_end events. Resolve the backend id now so all three
+                  // event shapes update one run-unique card instead of leaving the raw
+                  // provisional card beside a second execution card.
+                  const stablePartId = stableId
+                    ? resolveToolPartId(stableId)
                     : undefined;
-                  if (!existing && idx !== undefined) {
-                    existing = toolCallParts.find(
-                      (p) => (p as PositionedToolCallPart)._delta_index === idx,
-                    );
+                  // match by resolved id when the fragment carries one, else by
+                  // index slot; streams that send neither get a minted
+                  // tool_call_<n> id.
+                  const existingIndex = findStreamedToolCallPartIndex(
+                    toolCallParts,
+                    stablePartId,
+                    idx,
+                  );
+                  const existing =
+                    existingIndex === -1
+                      ? undefined
+                      : toolCallParts[existingIndex];
+
+                  if (
+                    stablePartId &&
+                    !codexRoundToolCallIds.includes(stablePartId)
+                  ) {
+                    codexRoundToolCallIds.push(stablePartId);
                   }
                   const argsFragment = call.function?.arguments ?? "";
+                  streamedChars +=
+                    argsFragment.length + (call.function?.name?.length ?? 0);
                   if (existing) {
                     const prevName = existing.toolName ?? "";
                     const nextName = call.function?.name ?? prevName;
@@ -5793,8 +6200,22 @@ export function createOpenAIStreamAdapter(
                     }
                     const prevExtra = (existing as PositionedToolCallPart)
                       .extra_content;
+                    if (
+                      call.extra_content !== undefined &&
+                      JSON.stringify(call.extra_content) !==
+                        JSON.stringify(prevExtra)
+                    ) {
+                      // Gemini puts the thought signature on the call, and
+                      // the next turn is rejected without it.
+                      replayStateChanged = true;
+                    }
                     const updated: PositionedToolCallPart = {
                       ...(existing as PositionedToolCallPart),
+                      // a late id claims the slot its id-less opening fragment
+                      // created, so tool_start and tool_end find the same card.
+                      ...(stablePartId
+                        ? { toolCallId: stablePartId, _has_stable_id: true }
+                        : {}),
                       toolName: nextName,
                       argsText: merged,
                       args: parsedArgs,
@@ -5805,13 +6226,14 @@ export function createOpenAIStreamAdapter(
                           : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
-                    const replaceIdx = toolCallParts.indexOf(existing);
-                    if (replaceIdx >= 0) {
-                      toolCallParts[replaceIdx] = updated;
-                    }
+                    toolCallParts[existingIndex] = updated;
                   } else {
                     const callId =
-                      stableId || `tool_call_${idx ?? toolCallParts.length}`;
+                      stablePartId || `tool_call_${idx ?? toolCallParts.length}`;
+
+                    if (!codexRoundToolCallIds.includes(callId)) {
+                      codexRoundToolCallIds.push(callId);
+                    }
                     const argsText = argsFragment;
                     let parsedArgs: ToolCallMessagePart["args"] = {};
                     if (argsText) {
@@ -5835,27 +6257,57 @@ export function createOpenAIStreamAdapter(
                       ...(call.extra_content !== undefined
                         ? { extra_content: call.extra_content }
                         : {}),
+                      ...(stablePartId ? { _has_stable_id: true } : {}),
                       ...(idx !== undefined ? { _delta_index: idx } : {}),
                     };
                     toolCallParts.push(fresh);
+                    addedToolCall = true;
                   }
                 }
-                yield {
-                  content: liveAssistantContent(),
-                  metadata: {
-                    timing: buildTiming(
-                      streamStartTime,
-                      totalChunks,
-                      firstTokenTime,
-                    ),
-                    custom: liveCustom(),
-                  },
-                };
+                if (
+                  addedToolCall ||
+                  replayStateChanged ||
+                  canPublish(streamedChars)
+                ) {
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
+                continue;
+              }
+              // extra_content can arrive with no content at all: a Gemini
+              // thoughtSignature fragment, or the codex reasoning ledger on a
+              // terminal delta. The skip below would drop both.
+              if (replayStateChanged && !delta && !reasoning) {
+                const replayContent = liveAssistantContent();
+                if (replayContent.length > 0) {
+                  yield {
+                    content: replayContent,
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                }
                 continue;
               }
               if (!delta && !reasoning) {
                 continue;
               }
+              // So the strip below can be told from a chunk that added nothing.
+              const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
                 firstTokenTime = Date.now() - streamStartTime;
@@ -5878,14 +6330,18 @@ export function createOpenAIStreamAdapter(
                 }
                 cumulativeText += delta;
               }
+              streamedChars += reasoning.length + delta.length;
               // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
-                cumulativeText = cumulativeText.replace(
-                  /\s*\$\{[^}]*\}\s*$/,
-                  "",
-                );
+                cumulativeText =
+                  stripTrailingTemplatePlaceholder(cumulativeText);
               }
+              // Right after the strip, so the tracker sees the buffer the
+              // arrival ended with. Kept out of the short-circuiting condition
+              // below: skipping arrivals would leave the strip's removals
+              // unaccounted for.
+              const textEndsInsideThink = thinkTags.update(cumulativeText);
               const assistantContent = liveAssistantContent();
 
               // Fallback when no server-side reasoning_summary arrives.
@@ -5913,9 +6369,28 @@ export function createOpenAIStreamAdapter(
                 reasoningDurationTracker.hasActiveGroup &&
                 !reasoningContentOpen &&
                 !structuredReasoningContinues &&
-                !hasUnclosedThinkTag(cumulativeText)
+                !textEndsInsideThink
               ) {
                 reasoningDurationTracker.finishGroup();
+              }
+
+              // Everything above runs on every arrival; only the publish is
+              // coalesced. The cost being removed is downstream of the yield
+              // (assistant-ui, React, markdown, paint), not the rebuild, which
+              // is tens of milliseconds across a whole reply.
+              //
+              // A chunk with nothing new is skipped rather than paced: the gate
+              // would spend this cycle on an identical publish and hold the
+              // next real one.
+              if (
+                !replayStateChanged &&
+                (assistantContent.length === 0 ||
+                  cumulativeText.length === textLenBeforeChunk)
+              ) {
+                continue;
+              }
+              if (!replayStateChanged && !canPublish(streamedChars)) {
+                continue;
               }
 
               if (assistantContent.length > 0) {
@@ -6055,6 +6530,8 @@ export function createOpenAIStreamAdapter(
             custom: {
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
+
+              openaiCodexReasoning: codexReasoningLedger,
               incomplete: incompleteReason ? { reason: incompleteReason } : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,

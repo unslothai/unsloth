@@ -5,16 +5,33 @@ import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 
+
+export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
+export type ProviderAuthStatus =
+  | "disconnected"
+  | "connected"
+  | "reauthorization_required";
+
 export interface ProviderRegistryEntry {
   provider_type: string;
   display_name: string;
   base_url: string;
   default_models: string[];
+
+  model_capabilities?: Record<string, { vision?: boolean; studio_tools?: boolean }>;
   supports_streaming: boolean;
   supports_vision: boolean;
   supports_tool_calling: boolean;
+  /** Studio runs its own tool loop (search/code/MCP/RAG) against this provider. */
+  supports_studio_tools?: boolean;
+  /** Backend-only entry, surfaced through a custom preset rather than the dropdown. */
+  hidden?: boolean;
   /** remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only */
   model_list_mode?: "remote" | "curated";
+
+  auth_kind?: ProviderAuthKind;
+  base_url_editable?: boolean;
+  model_ids_editable?: boolean;
 }
 
 export interface ProviderConfig {
@@ -25,8 +42,12 @@ export interface ProviderConfig {
   is_enabled: boolean;
 
   has_api_key: boolean;
+
+  auth_kind?: ProviderAuthKind;
+  auth_status?: ProviderAuthStatus;
   models?: string[];
   available_models?: string[];
+  max_output_tokens?: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -114,7 +135,11 @@ export async function encryptProviderApiKey(
 }
 
 export async function listProviderRegistry(): Promise<ProviderRegistryEntry[]> {
-  const response = await authFetch("/api/providers/registry");
+  // include_hidden asks for the backend-only entries (the self-hosted presets),
+  // which carry the studio-tools capability the composer gates on. An older
+  // backend ignores the parameter and returns the visible entries, so the
+  // capability simply reads as unknown and the pills stay closed.
+  const response = await authFetch("/api/providers/registry?include_hidden=true");
   return parseJsonOrThrow<ProviderRegistryEntry[]>(response);
 }
 
@@ -129,6 +154,7 @@ export async function createProviderConfig(payload: {
   baseUrl?: string | null;
   models?: string[];
   availableModels?: string[];
+  maxOutputTokens?: number | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -141,6 +167,9 @@ export async function createProviderConfig(payload: {
         base_url: payload.baseUrl ?? null,
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -172,6 +201,7 @@ export async function updateProviderConfig(
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
+    maxOutputTokens?: number | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -188,6 +218,9 @@ export async function updateProviderConfig(
         ...(payload.availableModels === undefined
           ? {}
           : { available_models: payload.availableModels }),
+        ...(payload.maxOutputTokens === undefined
+          ? {}
+          : { max_output_tokens: payload.maxOutputTokens }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
@@ -278,4 +311,70 @@ export async function listProviderModels(payload: {
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
   });
+}
+
+
+export interface CodexOAuthFlow {
+  flow_id: string;
+  method: "browser" | "device";
+  status: "pending" | "connected" | "error" | "cancelled";
+  expires_at: number;
+  authorization_url?: string | null;
+  verification_url?: string | null;
+  user_code?: string | null;
+  message?: string | null;
+}
+
+export async function startCodexOAuth(
+  providerId: string,
+  method: "browser" | "device",
+): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method }),
+  });
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function getCodexOAuthFlow(providerId: string, flowId: string): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/flows/${flowId}`);
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function completeCodexOAuth(
+  providerId: string,
+  flowId: string,
+  callbackUrl: string,
+): Promise<CodexOAuthFlow> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth/flows/${flowId}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_url: callbackUrl }),
+  });
+  return parseJsonOrThrow<CodexOAuthFlow>(response);
+}
+
+export async function cancelCodexOAuthFlow(
+  providerId: string,
+  flowId: string,
+): Promise<void> {
+  const response = await authFetch(
+    `/api/providers/${providerId}/oauth/flows/${flowId}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
+}
+
+
+
+export async function disconnectCodexOAuth(providerId: string): Promise<void> {
+  const response = await authFetch(`/api/providers/${providerId}/oauth`, { method: "DELETE" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(parseErrorText(response.status, body));
+  }
 }

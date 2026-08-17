@@ -62,7 +62,7 @@ export function GalleryItemMenu({
   }, [active]);
 
   const overlay = variant === "overlay";
-  return (
+  const menu = (
     <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <DropdownMenuTrigger asChild={true}>
         <Button
@@ -95,5 +95,19 @@ export function GalleryItemMenu({
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+
+  if (!overlay) return menu;
+  return (
+    <span
+      className={cn(
+        "inline-flex",
+        active && open
+          ? "opacity-100"
+          : "opacity-0 group-hover:opacity-100 has-[button:focus-visible]:opacity-100 pointer-coarse:opacity-100",
+      )}
+    >
+      {menu}
+    </span>
   );
 }

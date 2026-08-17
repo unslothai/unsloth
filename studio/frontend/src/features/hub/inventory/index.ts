@@ -11,7 +11,6 @@ export {
 } from "./constants";
 export {
   addScanFolder,
-  browseFolders,
   listCachedDatasets,
   listCachedGguf,
   listCachedModels,
@@ -25,7 +24,6 @@ export {
   listLocalModels,
   listScanFolders,
   removeScanFolder,
-  type BrowseFoldersResponse,
   type CachedDatasetRepo,
   type CachedGgufRepo,
   type CachedModelRepo,

@@ -171,7 +171,6 @@ def _install_lightweight_backend_stubs(monkeypatch):
     )
 
     utils_model_config = types.ModuleType("utils.models.model_config")
-    utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None
     utils_model_config._extract_quant_label = lambda value: value
     utils_model_config._is_big_endian_gguf_path = lambda *args, **kwargs: False
     utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False

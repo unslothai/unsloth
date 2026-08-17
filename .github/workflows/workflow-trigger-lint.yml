@@ -1,0 +1,94 @@
+# Workflow-trigger lint. Refuses two patterns that together powered the
+# TanStack GHSA-g7cv-rxg3-hmpx supply-chain compromise:
+#
+#   1. `pull_request_target` -- runs a fork's workflow YAML against the
+#      base repository's secrets. There is no safe use of this trigger
+#      for a public open-source project.
+#
+#   2. Shared cache keys between PR-triggered workflows and the publish
+#      workflow. A fork PR can poison the cache; the publish workflow
+#      then restores the poisoned cache on next run.
+#
+# This lives in its own workflow, not inside security-audit.yml, for one
+# reason: `on.pull_request` here carries NO `paths` / `paths-ignore`
+# filter, and must never gain one. A gate that only runs for some PRs
+# does not gate workflow changes, which is exactly what it exists to
+# review. security-audit.yml is a heavy nightly audit whose filters are
+# tuned for cost; coupling this lint to them once already opened that
+# hole. scripts/lint_workflow_triggers.py enforces the invariant on
+# whichever workflow runs it, so this file cannot quietly re-acquire a
+# filter.
+#
+# Cheap pure-Python lint, runs in seconds. Fail-closed.
+
+name: Workflow trigger lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-trigger-lint:
+    name: workflow-trigger lint (pull_request_target / cache-poisoning)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden runner (egress block)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: block
+          disable-sudo: true
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            codeload.github.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            files.pythonhosted.org:443
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml pytest
+
+      - name: Lint workflow triggers + cache keys
+        run: python3 scripts/lint_workflow_triggers.py
+
+      # Runs here rather than in the Repo tests job, for this workflow's own reason:
+      # the regression it catches is a workflow or .github/scripts edit that drops a
+      # Playwright invocation, and studio-backend-ci.yml's paths do not include
+      # .github/workflows/**, .github/scripts/** or .github/actions/**, so such a PR
+      # never collected the guard and stayed green until the post-merge main run.
+      # This workflow carries no paths filter at all, by design, so it sees every PR.
+      # Same cost shape as the lint above: filesystem reads, seconds.
+      - name: Playwright suites still run somewhere
+        run: python3 -m pytest tests/studio/test_playwright_suites_run_in_ci.py -q
+
+      # Here for the same reason, one step further out: this guard reads the concurrency
+      # block of EVERY workflow, so the PR that breaks it is a PR that edits some other
+      # workflow's YAML. No workflow's paths filter contains .github/workflows/**, so a
+      # revert of, say, wheel-smoke.yml back to a shared main group never collected this
+      # test and merged green. Only this job sees such a PR.
+      - name: Main runs still survive a merge burst
+        run: python3 -m pytest tests/studio/test_main_runs_survive_merge_bursts.py -q
+
+      # And here for the same reason: this one reads the three OS smoke workflows, so
+      # the change that breaks it edits a workflow and nothing else, which no paths
+      # filter in the repo matches. Filesystem reads, seconds.
+      - name: The OS smoke legs still share one script
+        run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q

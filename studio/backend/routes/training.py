@@ -3419,6 +3419,12 @@ async def upload_diffusion_dataset(
         allowed = _DIFFUSION_DATASET_MEDIA_EXTS | _DIFFUSION_DATASET_TEXT_EXTS
         # Validate every filename up front so a valid file ahead of a bad one is not left on disk when the 400 fires; the upload is all-or-nothing.
         names: list[str] = []
+        # Indexes over `names` so the three batch-local duplicate checks below are hash
+        # lookups, not scans over every earlier filename (O(N^2) at the 1000-file cap). First
+        # / insertion order is kept, so each error still names the filename the scans picked.
+        seen_names: set = set()
+        first_name_by_casefold: dict = {}
+        media_names_by_stem_cf: dict = {}
         for f in files:
             # Normalise to a safe basename. Path.name does not split on a backslash on POSIX, so fold
             # backslashes first or a Windows client's path is stored verbatim, ".." and all.
@@ -3433,7 +3439,7 @@ async def upload_diffusion_dataset(
             # Reject an EXACT duplicate name within THIS batch: the same-name exemption below is for
             # SEPARATE repeat uploads, while inside one batch the later replace would discard the earlier.
             fname_cf = filename.casefold()
-            if filename in names:
+            if filename in seen_names:
                 raise HTTPException(
                     status_code = 400,
                     detail = (
@@ -3468,7 +3474,11 @@ async def upload_diffusion_dataset(
                     None,
                 )
                 if clash is None:
-                    clash = next((n for n in names if _shares_sidecar(n)), None)
+                    # Only a media name with this casefolded stem can share the sidecar.
+                    clash = next(
+                        (n for n in media_names_by_stem_cf.get(stem_cf, ()) if _shares_sidecar(n)),
+                        None,
+                    )
                 if clash is not None:
                     kind = "clip" if ext in _DIFFUSION_DATASET_CLIP_EXTS else "image"
                     raise HTTPException(
@@ -3483,10 +3493,8 @@ async def upload_diffusion_dataset(
             # case: there 'Cat.png' and 'cat.png' are ONE destination, so the commit would replace the
             # first staged part with the second while `uploaded` counted both. The same-name exemption
             # above is for a SEPARATE repeat upload; on a case-sensitive filesystem both stay allowed.
-            if any(n.casefold() == fname_cf for n in names) and _dataset_folder_is_case_insensitive(
-                folder
-            ):
-                clash_cf = next(n for n in names if n.casefold() == fname_cf)
+            clash_cf = first_name_by_casefold.get(fname_cf)
+            if clash_cf is not None and _dataset_folder_is_case_insensitive(folder):
                 raise HTTPException(
                     status_code = 400,
                     detail = (
@@ -3494,6 +3502,12 @@ async def upload_diffusion_dataset(
                         "case, so on this filesystem they are one file and would overwrite each "
                         "other. Rename one before uploading."
                     ),
+                )
+            seen_names.add(filename)
+            first_name_by_casefold.setdefault(fname_cf, filename)
+            if ext in _DIFFUSION_DATASET_MEDIA_EXTS:
+                media_names_by_stem_cf.setdefault(Path(filename).stem.casefold(), []).append(
+                    filename
                 )
             names.append(filename)
         # Stage each file to a temp name and move it in only once the whole batch is written, so a mid-batch failure leaves the dataset untouched, including any same-name file a direct write would truncate.

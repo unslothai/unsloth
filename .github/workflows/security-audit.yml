@@ -26,8 +26,6 @@
 #                        does not block the supply-chain pattern scan
 #                        (or vice versa).
 #   - npm-scan-packages: npm tarball content scan, no npm install.
-#   - workflow-trigger-lint:
-#                        bans pull_request_target + shared cache keys.
 #   - tests-security:    pytest tests/security regression suite.
 #   - npm-provenance-and-install-scripts:
 #                        npm audit signatures + new-postinstall gate.
@@ -55,7 +53,31 @@
 name: Security audit
 
 on:
+  # PRs run this only when they touch something it actually reads. Every job here is a
+  # function of the dependency manifests, the lockfiles, or the scanner sources: the pip
+  # shards build their input entirely from pyproject.toml + studio/backend/requirements/**,
+  # the npm jobs read studio/frontend/package*.json, and advisory-audit adds
+  # studio/src-tauri/Cargo.lock. A PR touching none of those cannot change any verdict, and
+  # over a 198 PR sample only 3.5% touched them, so the other 96.5% were re-scanning an
+  # unchanged dependency tree for roughly 40 minutes each.
+  #
+  # The floating pins that CAN change a verdict without a diff (a version range resolving to
+  # a new release, a fresh advisory) are covered by the daily cron below, which is
+  # deliberately left unfiltered, as is every push to main. So the worst case a filter
+  # introduces is that a newly published malicious version is caught by the nightly run or at
+  # merge instead of on the PR that did not touch dependencies.
   pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'studio/backend/requirements/**'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/src-tauri/Cargo.lock'
+      - 'studio/src-tauri/Cargo.toml'
+      - 'scripts/scan_packages.py'
+      - 'scripts/scan_packages_baseline.json'
+      - 'tests/security/**'
+      - '.github/workflows/security-audit.yml'
   push:
     branches: [main]
   schedule:
@@ -67,11 +89,11 @@ concurrency:
   # coalesce. Both resolve to refs/heads/main, and the default queue: single keeps
   # only one pending run, so without this a merge burst silently drops the nightly:
   # cancel-in-progress protects the running run, never the pending one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -1044,52 +1066,6 @@ jobs:
           name: scan-npm-packages-log
           path: logs-scan-npm.txt
           retention-days: 30
-
-  # ─────────────────────────────────────────────────────────────────────
-  # Workflow-trigger lint. Refuses two patterns that together powered the
-  # TanStack GHSA-g7cv-rxg3-hmpx supply-chain compromise:
-  #
-  #   1. `pull_request_target` -- runs a fork's workflow YAML against
-  #      the base repository's secrets. There is no safe use of this
-  #      trigger for a public open-source project.
-  #
-  #   2. Shared cache keys between PR-triggered workflows and the
-  #      publish workflow. A fork PR can poison the cache; the publish
-  #      workflow then restores the poisoned cache on next run.
-  #
-  # Cheap pure-Python lint, runs in seconds. Fail-closed.
-  # ─────────────────────────────────────────────────────────────────────
-  workflow-trigger-lint:
-    name: workflow-trigger lint (pull_request_target / cache-poisoning)
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Harden runner (egress block)
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-          disable-sudo: true
-          allowed-endpoints: >
-            api.github.com:443
-            github.com:443
-            codeload.github.com:443
-            objects.githubusercontent.com:443
-            pypi.org:443
-            files.pythonhosted.org:443
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Install PyYAML
-        run: pip install pyyaml
-
-      - name: Lint workflow triggers + cache keys
-        run: python3 scripts/lint_workflow_triggers.py
 
   # ─────────────────────────────────────────────────────────────────────
   # Regression tests: pin scanner IOC tables and pre-install fixtures.

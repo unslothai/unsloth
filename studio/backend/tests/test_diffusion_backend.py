@@ -3572,6 +3572,25 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
     # The same CPU host with `auto` must sail through: delegating the choice is not a contract.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
+
+    # Hold the worker thread at its first instruction, so `loaded` CANNOT be True yet.
+    # begin_load documents "Returns at once", and the assertion below used to race the
+    # daemon thread for it: on an idle host the caller wins and it passes, on a busy one
+    # the thread finishes first and it fails with `assert True is False`. Blocking the
+    # worker makes the same claim unraceable. The refusal this test is named for happens
+    # in begin_load's validation, before the thread is spawned, so stubbing the body
+    # costs no coverage.
+    release = threading.Event()
+    entered = threading.Event()
+    worker: dict = {}
+
+    def _blocked_run_load(self, **kwargs):
+        worker["thread"] = threading.current_thread()
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(DiffusionBackend, "_run_load", _blocked_run_load)
+
     started = backend.begin_load(
         str(tmp_path),
         gguf_filename = "m.gguf",
@@ -3579,7 +3598,15 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
         model_kind = "gguf",
         transformer_quant = "auto",
     )
-    assert started["loaded"] is False  # returns immediately; the load runs on a thread
+    assert started["loaded"] is False  # returned without waiting on the load
+    assert entered.wait(30), "begin_load never started the load thread"
+    # The load is still in flight, which is the whole claim. Checked from the caller,
+    # not with an assert inside the worker: an assertion that fails on a non-main
+    # thread does not fail the test, so that version reported a pass against a
+    # begin_load mutated to join its own thread.
+    assert worker["thread"].is_alive(), "begin_load waited for the load instead of returning"
+    release.set()
+    worker["thread"].join(30)
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(
@@ -4132,9 +4159,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        # Spelled out rather than swallowed by a **kwargs: this double exists to pin the exact
+        # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
+        # that keeps the no-download promise has to be one _assemble_pipe really passes.
+        local_files_only = False,
     ):
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["local_files_only"] = local_files_only
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
@@ -4158,7 +4190,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     )
     assert isinstance(pipe, Pipe)
     # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
-    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    assert calls == {
+        "base": "unsloth/Krea-2-Turbo",
+        "transformer": marker,
+        "device": "cuda:0",
+        # Default here (a direct call), but PASSED rather than left to the loader's own default:
+        # the parameter this test binds is what an API-initiated load flips.
+        "local_files_only": False,
+    }
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(
@@ -8577,19 +8616,45 @@ def test_generate_refuses_a_resolution_whose_activations_cannot_fit(
 def test_generate_guard_measures_the_input_image_not_the_sliders(
     fake_runtime, tmp_path, monkeypatch
 ):
-    # img2img / inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading
-    # the width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
+    # inpaint / upscale / edit take their OUTPUT size from the uploaded image, so reading the
+    # width/height kwargs would check a frame this call never renders. A 2048x2048 upload with
     # the sliders left at 1024 is four times the planned area.
     backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match = "2048x2048"):
+    with pytest.raises(ValueError) as excinfo:
         backend.generate(
             prompt = "a sloth",
             width = 1024,
             height = 1024,
             steps = 4,
             init_image = _png_b64(2048),
+            mask_image = _mask_b64(2048),
         )
+    message = str(excinfo.value)
+    assert "2048x2048" in message
+    # ...and must not advise changing the Resolution control, which cannot move that number
+    # for a workflow whose canvas comes from the upload.
+    assert "Upload a smaller source image" in message
+    assert "smaller resolution" not in message
+
+
+def test_transform_fits_the_upload_to_the_sliders_instead_of_refusing(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Reported: Transform refused at 2048x2048 however small the sliders were set, because
+    # img2img sized from the upload alone. Fitting the upload to the requested box renders
+    # instead of refusing, at the size that was asked for.
+    backend = _loaded_backend_on_a_16g_card(tmp_path, monkeypatch)
+
+    out = backend.generate(
+        prompt = "a sloth",
+        width = 1024,
+        height = 1024,
+        steps = 4,
+        init_image = _png_b64(2048),
+    )
+    assert len(out["images"]) == 1
+    assert _FakeImg2ImgPipe.last_kwargs["image"].size == (1024, 1024)
 
 
 def test_generate_guard_uses_the_hint_the_load_planned_with(fake_runtime, tmp_path, monkeypatch):
