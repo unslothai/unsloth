@@ -426,6 +426,21 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             result = nvidia.resolve_gpu_uuid_mask(["0", self._UUID_B])
         self.assertIsNone(result)
 
+    def test_rejects_a_python_only_integer_spelling(self):
+        # int("0_0") == 0 in Python (PEP 515 digit-group underscores), but
+        # that's not a decimal GPU identifier CUDA's own parser would accept
+        # -- it must fail closed rather than be silently normalized to "0".
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_B}, 00000000:01:00.0, Disabled",
+                f"1, {self._UUID_A}, 00000000:04:00.0, Disabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["0_0", self._UUID_A])
+        self.assertIsNone(result)
+
     def test_caches_a_resolved_mask_and_does_not_requery(self):
         smi_output = f"0, {self._UUID_A}, 00000000:01:00.0, Disabled"
         tokens = [self._UUID_A]
