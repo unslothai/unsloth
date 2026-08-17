@@ -452,6 +452,12 @@ def case_h3_continuous(page) -> dict:
         "end": end,
         "ms_to_correct_after_stop": first_correct,
         "correct_at_end": end["correct"],
+        # `never_settled_during_gesture` is not a break: suppression during the gesture is the
+        # change. What has to hold is that the gesture ENDING puts the bar back on the message
+        # under the cursor, a full second after the last wheel tick and QUIET_MS is 150. Stated
+        # as a break rather than as its inverse because that is the shape BREAK_KEYS reads, and
+        # it comes off the same `end` sample as `correct_at_end` so the two cannot drift.
+        "settled_wrong_after_stop": not end["correct"],
         "never_settled_during_gesture": all(not d["correct"] for d in during),
     }
 
@@ -684,6 +690,13 @@ def case_h8_nested_scroller(page) -> dict:
         "scrolled": bubbled,
         "viewport_scroll_events_seen": counters["scroll"],
         "hover_after_nested_scroll_shown": hovered,
+        # Nothing was scrolled, or there was no user message left to hover; either way the check
+        # below was never exercised, which is a skip and not a pass.
+        "inconclusive": not bubbled.get("scrolled") or hovered is None,
+        # The break: the docstring's "hover should keep working immediately" as something the
+        # gate reads. It holds on both branches -- if the nested scroll never reaches the
+        # viewport the hook never suppresses at all, and if it does, 300ms is past QUIET_MS.
+        "hover_lost_after_nested_scroll": hovered is not None and hovered != 1,
     }
 
 
@@ -779,10 +792,22 @@ BREAK_KEYS = {
     "h1_stale_pointer": ["phantom_bar"],
     "h1t_touch_scroll": ["phantom_bar"],
     "h2_remount_no_move": ["wrong_or_missing_bar"],
+    "h3_continuous": ["settled_wrong_after_stop"],
     "h4_stream_scroll": ["suppressed_for_whole_stream"],
     "h5_keyboard": ["phantom_bar"],
     "h6_reseed_midscroll": ["stuck_bar_at_rest"],
+    "h8_nested_scroller": ["hover_lost_after_nested_scroll"],
 }
+
+# Cases with no pass or fail to report, and why. `h2_wheel_pointermove` asks an engine question --
+# does a stationary wheel gesture emit `pointermove` on the viewport -- and both answers are
+# information rather than a defect; it is here to explain the other cases' numbers.
+OBSERVATIONAL = {"h2_wheel_pointermove"}
+
+# A case whose break key nobody wrote is a case that can only ever report success, which is the
+# failure mode this whole file exists to avoid. Classify every one of them, deliberately.
+_unclassified = set(CASES) - set(BREAK_KEYS) - OBSERVATIONAL
+assert not _unclassified, f"cases with no break key and not marked observational: {_unclassified}"
 
 
 def failures_in(engine: str, name: str, rows: list) -> list[str]:
