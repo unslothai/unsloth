@@ -936,7 +936,26 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
 
     def _release_and_die(signum, _frame):
         _log(f"received signal {signum}; deleting kernels before exiting")
-        release()
+        try:
+            release()
+        except BaseException as exc:  # noqa: BLE001
+            # A raise here used to propagate into the main thread, where main()'s
+            # `except BaseException` caught it and finish() called release() again.
+            # A transient first failure (the observed one: an OSError from a
+            # subprocess spawn on a loaded runner) therefore ended in main
+            # RETURNING 0, and the cancelled job read as completed. Deleting is
+            # best effort, the exit status is not. Retried once, since the kernel
+            # is billing meanwhile.
+            _log(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
+            try:
+                release()
+            except BaseException as retry_exc:  # noqa: BLE001
+                # Nothing more to try in-process: the slug stays in the registry
+                # for the next launch's orphan sweep, as after a kill -9.
+                _log(
+                    f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
+                    f"The kernels stay in the registry for the next launcher's sweep"
+                )
         # Die of the original signal rather than exiting 0, so the status
         # still reads "killed by signal N". A CI system treats a 0 from a
         # cancelled job as a completed one.

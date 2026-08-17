@@ -210,18 +210,6 @@ jobs:
           bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
           bash .github/scripts/run-studio-permission-browser.sh 18893 chromium chrome
 
-      # The indicator restores an absolute viewport position from localStorage,
-      # so it needs a real layout and a real ResizeObserver to test at all --
-      # a stored position from a wider screen once left the card off screen with
-      # its own drag handle and collapse button unreachable. The four /status
-      # reads are stubbed, so this needs no model and no GPU, which also lets it
-      # replay the AMD / Apple / CPU-only payload shapes this runner never sees.
-      - name: Cross-browser loaded-models indicator
-        run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
-
       # The chat UI test ends by clicking the Shutdown menuitem, which
       # leaves the server dead. The extra UI test (Compare / Recipes /
       # Export / Unsloth / Settings) needs a fresh Unsloth, so we boot a
@@ -453,4 +441,74 @@ jobs:
           # 1 day, matching the repository-wide cap. A larger value here is
           # silently clamped to that cap today, so stating 7 only invites the
           # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1
+
+  ui-indicator:
+    name: Loaded-models indicator (cross-browser)
+    runs-on: ubuntu-latest
+    # Its own job, not a step in ui-smoke, because it was 853s of that job's 30
+    # minute limit -- three browser engines at ~4.7 minutes each -- and it pushed
+    # the five Playwright steps after it past the limit. Those steps did not fail;
+    # they never ran, on any PR, while the job reported a plain red timeout that
+    # said nothing about the PR. That is the second time this workflow has lost
+    # steps that way (the limit already went 25 -> 30 for the same reason), so
+    # this time the work moves off the critical path instead of the limit moving
+    # again.
+    #
+    # No HF cache and no GGUF here: the suite stubs the four /status reads with
+    # page.route, so it needs no model, no GPU and no llama.cpp build. That is
+    # also what lets it replay the AMD / Apple / CPU-only payload shapes this
+    # runner never sees. What it does need is a real browser: the indicator
+    # restores an absolute viewport position from localStorage, and a stored
+    # position from a wider screen once left the card off screen with its own
+    # drag handle and collapse button unreachable, which only a real layout and
+    # a real ResizeObserver can catch.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcurl4-openssl-dev libssl-dev jq
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Install Playwright browsers
+        run: |
+          pip install 'playwright>=1.45'
+          python -m playwright install --with-deps chromium firefox webkit
+
+      - name: Cross-browser loaded-models indicator
+        run: |
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
+          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+
+      - name: Upload Playwright artifacts
+        # Always, so a green run's screenshots stay reviewable: this suite is
+        # about what the card LOOKS like, and it can pass while it looks wrong.
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-ui-indicator-artifacts
+          path: |
+            logs/playwright-indicator-*
+            logs/studio-indicator-*.log
           retention-days: 1
