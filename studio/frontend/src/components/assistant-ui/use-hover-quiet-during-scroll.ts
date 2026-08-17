@@ -55,6 +55,32 @@ import { useEffect } from "react";
  * nothing else in the app loses hover events. CSS `:hover` is an engine-level state rather than
  * an event, so it is not affected at all and the buttons inside the bar keep their hover styling.
  *
+ * THIS IS A CHROMIUM PROBLEM, AND THAT MATTERS FOR WHICH SURFACES IT FIXES
+ *
+ * Whether the engine re-hit-tests hover while the content moves under a stationary cursor is an
+ * engine decision, and the three do not agree. Counting boundary events over the same 20-step
+ * gesture, control against this hook, medians of 3:
+ *
+ *     engine     pointerover per gesture   before                     after
+ *     chromium   20, 20, 20                1562.2ms, 11 frames >33ms  666.8ms, 0
+ *     firefox    3, 1, 1                    850.0ms,  1 frame  >33ms  667.0ms, 0
+ *     webkit     2, 0, 0                    644.0ms,  0 frames        643.0ms, 0
+ *
+ * Chromium re-hit-tests on every scroll step. WebKit essentially does not, so there is no
+ * regression there to fix and the two columns are the same number. Firefox is in between: few
+ * events, but the one it does fire is expensive, worst frame 201ms against 18ms after.
+ *
+ * So this is load-bearing for Chromium surfaces, which includes Unsloth Desktop on WINDOWS via
+ * WebView2, and it is a no-op rather than a fix for Desktop on macOS and Linux. Note that
+ * Playwright's WebKit is a proxy for WKWebView and WebKitGTK rather than the webview Desktop
+ * actually embeds, so "no regression on the proxy" is good evidence and not a guarantee.
+ *
+ * The counter above watches `pointerover`, which is the engine's hit-test churn, while this hook
+ * swallows `mouseenter` / `mouseleave`, which is what assistant-ui listens to. That is why the
+ * chromium count stays at 20 in both columns: the hook does not stop the engine hit-testing, it
+ * stops the result reaching React. A count that dropped would mean this was doing something other
+ * than what it claims.
+ *
  * THE BEHAVIOUR CHANGE, STATED
  *
  * During an active scroll the action bar does not follow the cursor from message to message; it
