@@ -2965,16 +2965,35 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
-    # Read the SAME effective controls generation forwards, so parsing can
-    # never disagree with what the template was actually told to do.
+    # Decide from the SAME effective template kwargs generation renders with,
+    # not the raw request flags: effort-dial templates (gpt-oss) map
+    # enable_thinking=False to a low-but-thinking effort, so the raw boolean
+    # would disable parsing while genuine markup still streams.
     args = _anthropic_reasoning_args(payload)
-    enable_thinking = args["enable_thinking"]
-    if enable_thinking is False:
-        return False
-    if enable_thinking is None:
-        # Unspecified: the template's own default decides whether it thinks.
-        return bool(getattr(llama_backend, "reasoning_default", True))
-    return True
+    resolved = (
+        _reasoning_template_kwargs(
+            llama_backend,
+            args["enable_thinking"],
+            args["reasoning_effort"],
+            args["preserve_thinking"],
+        )
+        or {}
+    )
+    if "enable_thinking" in resolved:
+        return bool(resolved["enable_thinking"])
+    if "reasoning_effort" in resolved:
+        # Effort-dial templates think at every level except "none".
+        return resolved["reasoning_effort"] != "none"
+    # No explicit kwargs: the template's own default decides whether it thinks.
+    return bool(getattr(llama_backend, "reasoning_default", True))
+
+
+def _anthropic_count_template_kwargs(llama_backend, payload):
+    """Resolved reasoning chat_template_kwargs for prompt-token counting."""
+    args = _anthropic_reasoning_args(payload)
+    return _reasoning_template_kwargs(
+        llama_backend, args["enable_thinking"], args["reasoning_effort"], args["preserve_thinking"]
+    )
 
 
 def _reasoning_template_kwargs(llama_backend, enable_thinking, reasoning_effort, preserve_thinking):
@@ -20453,6 +20472,9 @@ async def anthropic_messages(
                     openai_tools = openai_tools,
                     disable_parallel_tool_use = _disable_parallel,
                     parse_think = _think_parsing_expected(llama_backend, payload),
+                    count_template_kwargs = _anthropic_count_template_kwargs(
+                        llama_backend, payload
+                    ),
                 )
             )
         return await _admitted_anthropic(
@@ -20498,6 +20520,9 @@ async def anthropic_messages(
                 llama_backend = llama_backend,
                 openai_messages = openai_messages,
                 parse_think = _think_parsing_expected(llama_backend, payload),
+                count_template_kwargs = _anthropic_count_template_kwargs(
+                    llama_backend, payload
+                ),
             )
         )
     return await _admitted_anthropic(
@@ -20521,6 +20546,7 @@ async def _anthropic_tool_stream(
     openai_tools = None,
     disable_parallel_tool_use = False,
     parse_think = True,
+    count_template_kwargs = None,
 ):
     """Streaming response for the tool-calling path."""
     _sentinel = object()
@@ -20536,7 +20562,12 @@ async def _anthropic_tool_stream(
     input_tokens = 0
     if llama_backend is not None and openai_messages is not None:
         input_tokens = await asyncio.to_thread(
-            llama_backend.count_chat_tokens, openai_messages, None, openai_tools
+            lambda: llama_backend.count_chat_tokens(
+                openai_messages,
+                None,
+                openai_tools,
+                chat_template_kwargs = count_template_kwargs,
+            )
         )
 
     async def _stream():
@@ -20679,6 +20710,7 @@ async def _anthropic_plain_stream(
     llama_backend = None,
     openai_messages = None,
     parse_think = True,
+    count_template_kwargs = None,
 ):
     """Streaming response for the no-tool path."""
     _sentinel = object()
@@ -20687,7 +20719,11 @@ async def _anthropic_plain_stream(
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     input_tokens = 0
     if llama_backend is not None and openai_messages is not None:
-        input_tokens = await asyncio.to_thread(llama_backend.count_chat_tokens, openai_messages)
+        input_tokens = await asyncio.to_thread(
+            lambda: llama_backend.count_chat_tokens(
+                openai_messages, chat_template_kwargs = count_template_kwargs
+            )
+        )
 
     async def _stream():
         # Registered like the tool stream above: this default /v1/messages path decodes on
@@ -21309,9 +21345,18 @@ async def _anthropic_passthrough_stream(
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     # Pass the tools through so tool-schema tokens are counted (otherwise the
-    # streaming input_tokens undercounts vs the non-stream / count_tokens paths).
+    # streaming input_tokens undercounts vs the non-stream / count_tokens paths),
+    # and the same reasoning kwargs generation renders with, so the count
+    # describes the actual prompt on switchable reasoning templates.
     input_tokens = await asyncio.to_thread(
-        llama_backend.count_chat_tokens, openai_messages, None, openai_tools
+        lambda: llama_backend.count_chat_tokens(
+            openai_messages,
+            None,
+            openai_tools,
+            chat_template_kwargs = _reasoning_template_kwargs(
+                llama_backend, enable_thinking, reasoning_effort, preserve_thinking
+            ),
+        )
     )
 
     # cancel_id mirrors the OpenAI passthrough so a per-run cancel POST

@@ -155,6 +155,23 @@ def test_think_parsing_expected_gates_on_capability_and_request():
     assert _think_parsing_expected(_Backend(), _basic_payload()) is True
     assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = True)) is True
 
+    # Effort-dial templates (gpt-oss) map enable_thinking=False to a
+    # low-but-thinking effort; the gate must follow the RESOLVED kwargs and
+    # keep parsing on, disabling only for a genuine "none".
+    class _EffortBackend(_Backend):
+        def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
+            if reasoning_effort == "none":
+                return {"reasoning_effort": "none"}
+            return {"reasoning_effort": "low" if enable_thinking is False else "high"}
+
+    assert (
+        _think_parsing_expected(_EffortBackend(), _basic_payload(enable_thinking = False)) is True
+    )
+    assert (
+        _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none"))
+        is False
+    )
+
 
 def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     # Effort-only requests must drive enable_thinking-style templates the same
