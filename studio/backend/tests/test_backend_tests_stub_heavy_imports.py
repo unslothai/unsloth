@@ -564,11 +564,17 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     # statement, and the end-of-module boundary would let a stub installed BELOW the call
     # count. Those calls take the line the helper is invoked from. Reported on this PR.
     called_at_import = _functions_called_at_import(tree)
+    # The function a call belongs to is the INNERMOST one. ast.walk descends into a
+    # nested def, which attributed a call there to the enclosing module-level function
+    # and handed it that function's import-time boundary, while a nested body cannot run
+    # until something calls it -- by which time a stub installed below is in place. So
+    # this defers nested bodies, and a call inside one falls through to the end-of-module
+    # boundary, which is what deferred means. Reported on this PR.
     in_function = {
         id(node): name
         for name, function in _module_functions(tree).items()
         for statement in function.body
-        for node in ast.walk(statement)
+        for node in _reachable_import_time_nodes(statement)
     }
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
@@ -1139,6 +1145,21 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert _offender_free(else_of_false)
+
+    # An importorskip inside a NESTED def does not run when the outer helper is called,
+    # so it keeps the deferred boundary and a stub installed after the outer call is in
+    # time. Attributing it to the outer function rejected a file that works. Reported on
+    # this PR.
+    nested_def_holds_the_call = (
+        "import pytest, sys\n"
+        "def _outer():\n"
+        "    def _later():\n"
+        "        return pytest.importorskip('core.inference.inference')\n"
+        "    return _later\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(nested_def_holds_the_call)
 
     # A call under a branch the interpreter never takes is not a call. Reporting it
     # failed a file that only type-checks the import, or deliberately disables it.
