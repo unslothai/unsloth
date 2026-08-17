@@ -4221,29 +4221,32 @@ def _resolve_diffusers_pin_req(pin_file: Path) -> Path:
     cache_file = cache_dir / f"diffusers-{url.split('/')[-1]}"
     if not cache_file.is_file():
         try:
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir.mkdir(parents = True, exist_ok = True)
             _note(f"Downloading diffusers archive to cache: {url}", _dim)
-            req_obj = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
-            with urllib.request.urlopen(req_obj, timeout=45) as response, open(cache_file, "wb") as out_file:
+            req_obj = urllib.request.Request(url, headers = {"User-Agent": "Mozilla/5.0"})
+            with (
+                urllib.request.urlopen(req_obj, timeout = 45) as response,
+                open(cache_file, "wb") as out_file,
+            ):
                 out_file.write(response.read())
         except Exception as e:
             if cache_file.is_file():
-                cache_file.unlink(missing_ok=True)
+                cache_file.unlink(missing_ok = True)
             _note(f"Cache download failed ({e}), falling back to direct install", _red)
 
     if cache_file.is_file():
         try:
             local_req_file = cache_dir / "diffusers-pin-local.txt"
             local_req_file.write_text(
-                f"diffusers @ {cache_file.resolve().as_uri()} ; python_version >= \"3.10\"\n"
-                "diffusers==0.36.0 ; python_version < \"3.10\"\n"
+                f'diffusers @ {cache_file.resolve().as_uri()} ; python_version >= "3.10"\n'
+                'diffusers==0.36.0 ; python_version < "3.10"\n'
             )
             return local_req_file
         except Exception as e:
-            _note(f"Failed to write local requirements file ({e}), falling back to direct install", _red)
+            _note(
+                f"Failed to write local requirements file ({e}), falling back to direct install",
+                _red,
+            )
 
     return pin_file
 
