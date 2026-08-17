@@ -453,9 +453,7 @@ def test_the_vision_switch_does_not_take_audio_only_projectors_away(
     import utils.models.gguf_metadata as _meta
 
     backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
-    with patch.object(
-        _meta, "mmproj_capabilities", lambda _p: (has_audio, accepts_image)
-    ):
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (has_audio, accepts_image)):
         cmd = _launch(backend, gguf, disable_vision = True)["cmd"]
 
     assert ("--mmproj" in cmd) is projector_expected, label
@@ -510,9 +508,7 @@ def test_the_platform_and_gpu_matrix_pins_only_where_memory_is_discrete(
         ([(0, 20_000, 24_576), (1, 7_600, 8_192)], "big_card_first"),
     ],
 )
-def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(
-    tmp_path, memory, label
-):
+def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path, memory, label):
     """Enumeration order must not decide placement: the same two cards in either
     order have to reach the same answer, or the pin is reading the device list
     rather than the memory on it."""

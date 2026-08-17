@@ -13892,7 +13892,6 @@ class LlamaCppBackend:
                         _dv_has_audio, _dv_accepts_image = False, True
                         try:
                             from utils.models.gguf_metadata import mmproj_capabilities
-
                             _dv_has_audio, _dv_accepts_image = mmproj_capabilities(
                                 launch_mmproj_path
                             )
