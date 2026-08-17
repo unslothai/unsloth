@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -78,3 +78,11 @@ jobs:
       # Same cost shape as the lint above: filesystem reads, seconds.
       - name: Playwright suites still run somewhere
         run: python3 -m pytest tests/studio/test_playwright_suites_run_in_ci.py -q
+
+      # Here for the same reason, one step further out: this guard reads the concurrency
+      # block of EVERY workflow, so the PR that breaks it is a PR that edits some other
+      # workflow's YAML. No workflow's paths filter contains .github/workflows/**, so a
+      # revert of, say, wheel-smoke.yml back to a shared main group never collected this
+      # test and merged green. Only this job sees such a PR.
+      - name: Main runs still survive a merge burst
+        run: python3 -m pytest tests/studio/test_main_runs_survive_merge_bursts.py -q

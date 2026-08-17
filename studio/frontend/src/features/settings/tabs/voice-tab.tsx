@@ -48,6 +48,7 @@ import { Search01Icon, VolumeHighIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { resetMicrophonePermission } from "../api/microphone-permission";
 import { DictationDictionaryView } from "../components/dictation-dictionary-view";
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
@@ -347,6 +348,9 @@ function useAudioInputDevices() {
       toast.error(t("settings.voice.dictation.micAccessUnsupported"));
       return;
     }
+    // Clear a saved deny first: this button is the only way back from one, and WebView2
+    // would otherwise reject the request without ever prompting (#9001).
+    await resetMicrophonePermission();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -356,7 +360,15 @@ function useAudioInputDevices() {
       }
       await refresh();
     } catch {
-      toast.error(t("settings.voice.dictation.micAccessBlocked"));
+      // A browser keeps its own saved deny and resetMicrophonePermission cannot
+      // touch it, so only the desktop build can promise another prompt.
+      toast.error(
+        t(
+          isTauri
+            ? "settings.voice.dictation.micAccessBlockedDesktop"
+            : "settings.voice.dictation.micAccessBlocked",
+        ),
+      );
     }
   }, [refresh, t]);
 
