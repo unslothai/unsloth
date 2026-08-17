@@ -434,6 +434,13 @@ class AnthropicStreamEmitter:
         # holds back a trailing partial tag until the next delta decides it.
         self._route_mode: str = "text"
         self._tag_buf: str = ""
+        # Genuine reasoning only ever arrives as a single LEADING <think>
+        # block per synthesis turn (the generator folds reasoning_content in
+        # as a prefix). Once that block closed, or once real answer text has
+        # streamed, any later <think> is the model quoting the tag and must
+        # stay literal.
+        self._think_consumed: bool = False
+        self._turn_has_text: bool = False
         self._usage: dict = {}
 
     def start(
@@ -547,6 +554,9 @@ class AnthropicStreamEmitter:
         self._tag_buf = ""
         while data:
             if self._route_mode == "text":
+                if self._think_consumed or self._turn_has_text:
+                    events.extend(self._emit_text_delta(data))
+                    break
                 open_tag = "<think>"
                 i = data.find(open_tag)
                 if i == -1:
@@ -558,6 +568,11 @@ class AnthropicStreamEmitter:
                     break
                 if i:
                     events.extend(self._emit_text_delta(data[:i]))
+                    if self._turn_has_text:
+                        # Non-space text preceded the tag, so this is not the
+                        # leading reasoning block; relay the rest literally.
+                        data = data[i:]
+                        continue
                 data = data[i + len(open_tag) :]
                 self._route_mode = "thinking"
             else:
@@ -574,9 +589,12 @@ class AnthropicStreamEmitter:
                     events.extend(self._emit_thinking_delta(data[:i]))
                 data = data[i + len(close_tag) :]
                 self._route_mode = "text"
+                self._think_consumed = True
         return events
 
     def _emit_text_delta(self, text: str) -> list[str]:
+        if text.strip():
+            self._turn_has_text = True
         events: list[str] = []
         if self._thinking_block_open:
             events.append(self._close_block())
@@ -701,10 +719,13 @@ class AnthropicStreamEmitter:
             )
         )
         # Reset text tracking for the next synthesis turn; the next content
-        # delta opens a fresh text (or thinking) block lazily.
+        # delta opens a fresh text (or thinking) block lazily, and the new
+        # turn may legitimately open with its own leading <think> block.
         self._prev_text = ""
         self._tag_buf = ""
         self._route_mode = "text"
+        self._think_consumed = False
+        self._turn_has_text = False
         return events
 
     def _alloc_block_index(self) -> None:

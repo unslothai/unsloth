@@ -19761,13 +19761,25 @@ async def anthropic_count_tokens(
     )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
 
+    # Render with the same reasoning controls generation will use: on switchable
+    # templates thinking / reasoning_effort / preserve_thinking change the
+    # rendered prompt, so counting the load-time default would under- or
+    # over-count the request the client is about to send.
+    _reasoning_args = _anthropic_reasoning_args(payload)
     try:
         count = await asyncio.to_thread(
-            llama_backend.count_chat_tokens,
-            openai_messages,
-            None,
-            openai_tools,
-            strict = True,
+            lambda: llama_backend.count_chat_tokens(
+                openai_messages,
+                None,
+                openai_tools,
+                strict = True,
+                chat_template_kwargs = _reasoning_template_kwargs(
+                    llama_backend,
+                    _reasoning_args["enable_thinking"],
+                    _reasoning_args["reasoning_effort"],
+                    _reasoning_args["preserve_thinking"],
+                ),
+            )
         )
     except Exception:
         raise HTTPException(
@@ -20805,23 +20817,31 @@ def _anthropic_message_json_response(
 def _split_think_segments(text: str) -> list:
     """Ordered ``("thinking" | "text", segment)`` pairs from ``<think>`` markup.
 
-    The local generator folds reasoning_content into the visible text as
-    ``<think>...</think>``; Anthropic clients expect typed thinking blocks, not
-    literal tags. An unclosed ``<think>`` runs to the end of the string (a
-    length-truncated thought has no closing tag).
+    The local generator folds reasoning_content into the visible text as a
+    single LEADING ``<think>...</think>`` prefix per synthesis turn -- that is
+    the only provenance genuine reasoning ever has. Only that leading block is
+    parsed; any later ``<think>`` is the model quoting the tag (e.g. an XML
+    example) and stays literal text. An unclosed leading ``<think>`` runs to
+    the end of the string (a length-truncated thought has no closing tag).
     """
+    stripped = text.lstrip()
+    if not stripped.startswith("<think>"):
+        return [("text", text)] if text else []
+    lead_ws = text[: len(text) - len(stripped)]
+    rest = stripped[len("<think>") :]
+    close = rest.find("</think>")
     segments: list = []
-    pos, mode = 0, "text"
-    while pos < len(text):
-        tag = "<think>" if mode == "text" else "</think>"
-        i = text.find(tag, pos)
-        if i == -1:
-            segments.append((mode, text[pos:]))
-            break
-        if i > pos:
-            segments.append((mode, text[pos:i]))
-        pos = i + len(tag)
-        mode = "thinking" if mode == "text" else "text"
+    if lead_ws:
+        segments.append(("text", lead_ws))
+    if close == -1:
+        if rest:
+            segments.append(("thinking", rest))
+        return segments
+    thinking, after = rest[:close], rest[close + len("</think>") :]
+    if thinking:
+        segments.append(("thinking", thinking))
+    if after:
+        segments.append(("text", after))
     return segments
 
 

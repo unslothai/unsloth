@@ -195,6 +195,45 @@ def test_replayed_thinking_preserved_only_when_requested():
     assert kept[-1]["content"] == "the answer"
 
 
+def test_anthropic_emitter_only_leading_think_is_reasoning():
+    # Genuine reasoning is only ever a single leading <think> block; a model
+    # quoting the tag mid-answer (an XML example) keeps it as literal text,
+    # even with parsing enabled.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>why</think>Use "})
+    events += emitter.feed(
+        {"type": "content", "text": "<think>why</think>Use <think>like this</think> tags."}
+    )
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == "why"
+    assert _emitter_client_text(events) == "Use <think>like this</think> tags."
+
+
+def test_anthropic_emitter_no_leading_think_keeps_all_tags_literal():
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "Wrap it in <think>"})
+    events += emitter.feed({"type": "content", "text": "Wrap it in <think>...</think> please."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == ""
+    assert _emitter_client_text(events) == "Wrap it in <think>...</think> please."
+
+
+def test_split_think_segments_only_parses_leading_block():
+    from routes.inference import _split_think_segments
+
+    assert _split_think_segments("<think>why</think>Use <think>x</think> tags.") == [
+        ("thinking", "why"),
+        ("text", "Use <think>x</think> tags."),
+    ]
+    assert _split_think_segments("Use <think>x</think> tags.") == [
+        ("text", "Use <think>x</think> tags.")
+    ]
+
+
 def test_anthropic_emitter_holds_back_partial_think_tag():
     # A tag split across deltas must not leak fragments into the wrong block.
     emitter = AnthropicStreamEmitter()
