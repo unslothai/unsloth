@@ -957,10 +957,13 @@ class AnthropicPassthroughEmitter:
                         },
                     )
                 )
-        elif self._reasoning_text_open and (
+        # Reconstructed literal block ends where the answer resumes -- checked
+        # unconditionally (not elif): one chunk can carry the final reasoning
+        # fragment AND same-chunk content/tool output, and the closing tag must
+        # land between them.
+        if self._reasoning_text_open and (
             delta.get("content") or delta.get("tool_calls") or finish_reason
         ):
-            # Reconstructed literal block ends where the answer resumes.
             self._reasoning_text_open = False
             events.extend(self._emit_text_delta("</think>"))
 

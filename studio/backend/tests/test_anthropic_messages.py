@@ -1701,6 +1701,27 @@ class TestReasoningContentReachesTheClient:
         )
         assert text == "<think>like this</think> is the syntax"
 
+    def test_stream_reconstruction_closes_before_same_chunk_content(self):
+        """One chunk can carry the final reasoning fragment AND content; the
+        closing tag must land between them, not after."""
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = False)
+        emitter.start("msg_1", "test-model")
+        out = emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "like this"}}]})
+        out += emitter.feed_chunk(
+            {"choices": [{"delta": {"reasoning_content": " too", "content": "Answer"}}]}
+        )
+        out += emitter.finish()
+
+        text = "".join(
+            json.loads(stripped[len("data: ") :])["delta"].get("text", "")
+            for line in out
+            for stripped in (part.strip() for part in line.split("\n"))
+            if stripped.startswith("data: ") and '"text_delta"' in stripped
+        )
+        assert text == "<think>like this too</think>Answer"
+
     def test_non_streaming_builds_thinking_block(self):
         from models.inference import (
             AnthropicMessagesResponse,
