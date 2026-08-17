@@ -18,7 +18,7 @@ const transport = readFileSync(
 test("local chat opts into the rolling context policy", () => {
   assert.match(adapter, /isGguf === true/);
   assert.match(adapter, /context_overflow:\s*"truncate_oldest"/);
-  assert.match(adapter, /Older turns omitted from model context/);
+  assert.match(adapter, /This conversation was compacted/);
 });
 
 test("the transport preserves standard chunks with context metadata", () => {
@@ -50,4 +50,38 @@ test("tool-loop truncation metadata accumulates across stream events", () => {
     context_length: 1400,
     fits: true,
   });
+});
+
+
+test("compaction counts accumulate and stay absent on a plain rolling window", () => {
+  // A plain rolling-window response must keep exactly the shape it had before the
+  // conversation archive existed, rather than carrying archive keys set to undefined.
+  const plain = mergeContextTruncation(
+    { dropped_messages: 1, fits: true },
+    { dropped_messages: 2, fits: true },
+  );
+  assert.ok(!("archived_messages" in plain));
+  assert.ok(!("recalled_chunks" in plain));
+
+  const archived = mergeContextTruncation(
+    { dropped_messages: 1, fits: true, archived_messages: 2, recalled_chunks: 4 },
+    { dropped_messages: 2, fits: true, archived_messages: 3, recalled_chunks: 1 },
+  );
+  assert.equal(archived.archived_messages, 5);
+  assert.equal(archived.recalled_chunks, 5);
+});
+
+test("the compaction notice renders from persisted metadata, not from a message", () => {
+  const notice = readFileSync(
+    new URL("../src/components/assistant-ui/compaction-notice.tsx", import.meta.url),
+    "utf8",
+  );
+  const thread = readFileSync(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  // Read off metadata.custom so it can never become part of the conversation.
+  assert.match(thread, /custom\?\.contextTruncation/);
+  assert.match(thread, /<CompactionNotice truncation=\{contextTruncation\}/);
+  assert.match(notice, /This conversation got long, so it was compacted/);
 });

@@ -9,6 +9,8 @@ import {
   GeneratedImageOverlayProvider,
   useGeneratedImageOverlay,
 } from "@/components/assistant-ui/generated-image-overlay-context";
+import { CompactionNotice } from "@/components/assistant-ui/compaction-notice";
+import type { ContextTruncation } from "@/features/chat/utils/context-truncation";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
@@ -5796,6 +5798,18 @@ const AssistantMessage: FC = () => {
       ? custom.researchRunId
       : null;
   });
+  // Persisted on the assistant turn that compacted, so the notice survives a reload.
+  const contextTruncation = useAuiState(({ message }) => {
+    const custom = (
+      message.metadata as
+        | { custom?: { contextTruncation?: unknown } }
+        | undefined
+    )?.custom;
+    const value = custom?.contextTruncation;
+    return value && typeof value === "object"
+      ? (value as ContextTruncation)
+      : null;
+  });
   const incognito = useChatRuntimeStore((s) => s.incognito);
 
   // Use global store for editing state to ensure a single source of truth
@@ -5856,6 +5870,9 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+        {contextTruncation && !isEditing && (
+          <CompactionNotice truncation={contextTruncation} />
+        )}
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
             <textarea

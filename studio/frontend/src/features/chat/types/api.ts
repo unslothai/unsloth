@@ -660,5 +660,9 @@ export interface OpenAIChatChunk {
     prompt_tokens_after?: number;
     context_length?: number;
     fits: boolean;
+    // Present when the evicted turns were archived and searched. Counts only, never
+    // message text: this rides an SSE chunk that reaches the client.
+    archived_messages?: number;
+    recalled_chunks?: number;
   };
 }

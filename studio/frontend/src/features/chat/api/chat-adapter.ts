@@ -5471,10 +5471,17 @@ export function createOpenAIStreamAdapter(
                   !rollingContextNoticeThreads.has(resolvedThreadId)
                 ) {
                   rollingContextNoticeThreads.add(resolvedThreadId);
-                  toast.info("Older turns omitted from model context", {
-                    description:
-                      "The full conversation is still visible and saved. " +
-                      "Studio removed complete older turns from this request so the chat can continue.",
+                  // The toast fires once per thread per page load; the persistent record
+                  // is the notice rendered on the assistant turn that compacted, which
+                  // survives a reload and stays attached to the turn it describes.
+                  const archived = contextTruncation?.archived_messages ?? 0;
+                  toast.info("This conversation was compacted", {
+                    description: archived
+                      ? "It got long, so older turns were removed from the model's " +
+                        "context. They are saved and searchable, and relevant parts are " +
+                        "brought back automatically."
+                      : "The full conversation is still visible and saved. " +
+                        "Studio removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
