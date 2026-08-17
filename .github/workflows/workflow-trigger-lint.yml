@@ -64,7 +64,17 @@ jobs:
           python-version: '3.12'
 
       - name: Install PyYAML
-        run: pip install pyyaml
+        run: pip install pyyaml pytest
 
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
+
+      # Runs here rather than in the Repo tests job, for this workflow's own reason:
+      # the regression it catches is a workflow or .github/scripts edit that drops a
+      # Playwright invocation, and studio-backend-ci.yml's paths do not include
+      # .github/workflows/**, .github/scripts/** or .github/actions/**, so such a PR
+      # never collected the guard and stayed green until the post-merge main run.
+      # This workflow carries no paths filter at all, by design, so it sees every PR.
+      # Same cost shape as the lint above: filesystem reads, seconds.
+      - name: Playwright suites still run somewhere
+        run: python3 -m pytest tests/studio/test_playwright_suites_run_in_ci.py -q

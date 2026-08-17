@@ -1018,6 +1018,12 @@ export const hi = {
       modelDisclaimer: "मॉडल अस्वीकरण दिखाएं",
       modelDisclaimerDescription:
         'चैट बॉक्स के नीचे "LLMs can make mistakes" दिखाएं।',
+      projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
+      projectAttachmentsDescription:
+        "किसी प्रोजेक्ट से जुड़ी चैट में संलग्न फ़ाइलों के लिए डिफ़ॉल्ट: उन्हें पूरे प्रोजेक्ट के लिए इंडेक्स करें ताकि उसकी हर चैट उनका उपयोग कर सके. हर चैट इसे अटैच मेनू से बदल सकती है.",
+      rememberParamsPerModel: "हर मॉडल के लिए सेटिंग्स याद रखें",
+      rememberParamsPerModelDescription:
+        "मॉडल बदलने पर उस मॉडल के साथ आपने आखिरी बार जो तापमान, प्रॉम्प्ट और अन्य सेटिंग्स इस्तेमाल की थीं, वे वापस आ जाती हैं। बंद होने पर सभी मॉडलों के लिए एक ही सेट रहता है।",
       thinking: {
         collapseByDefault: "थिंकिंग को डिफ़ॉल्ट रूप से संक्षिप्त रखें",
         collapseByDefaultDescription:

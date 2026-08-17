@@ -1012,6 +1012,12 @@ export const ar = {
       modelDisclaimer: "إظهار إخلاء مسؤولية النموذج",
       modelDisclaimerDescription:
         'إظهار عبارة "LLMs can make mistakes" أسفل مربع المحادثة.',
+      projectAttachments: "مشاركة الملفات عبر المشروع",
+      projectAttachmentsDescription:
+        "الإعداد الافتراضي للملفات المرفقة في محادثة تنتمي إلى مشروع: فهرستها للمشروع بأكمله حتى تتمكن كل محادثة فيه من استخدامها. يمكن لكل محادثة تجاوز ذلك من قائمة الإرفاق.",
+      rememberParamsPerModel: "تذكر الإعدادات لكل نموذج",
+      rememberParamsPerModelDescription:
+        "عند تبديل النموذج تُستعاد درجة الحرارة والموجّه وبقية الإعدادات التي استخدمتها آخر مرة مع ذلك النموذج. عند الإيقاف تبقى مجموعة إعدادات واحدة لكل النماذج.",
       thinking: {
         collapseByDefault: "طيّ التفكير افتراضيًا",
         collapseByDefaultDescription:
