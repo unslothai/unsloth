@@ -2375,6 +2375,21 @@ def _reparent_surviving_forks(conn: sqlite3.Connection, deleted_ids: set[str]) -
         )
 
 
+def lift_chat_thread_tombstone(thread_id: str) -> None:
+    """Forget a deleted thread id so a later import can recreate it.
+
+    Used when Studio has no chats left -- a clear-all, or a wiped database --
+    so Import from Cursor / Claude Code can start from a blank history. A
+    targeted delete while other chats remain is left tombstoned.
+    """
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM chat_thread_tombstones WHERE id = ?", (thread_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _tombstone_chat_threads(conn: sqlite3.Connection, thread_ids: Iterable[str]) -> None:
     deleted_at = int(datetime.now(timezone.utc).timestamp() * 1000)
     conn.executemany(

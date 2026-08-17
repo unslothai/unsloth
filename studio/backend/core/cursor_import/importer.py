@@ -109,12 +109,21 @@ def _import_transcript(
     try:
         studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id = project_id))
     except studio_db.ChatThreadDeletedError:
-        # Deleted in Studio after an earlier import. Recreating it would undo a
-        # deliberate deletion.
-        summary.skipped += 1
-        return False
+        # A targeted delete while other chats remain is the user's to keep.
+        # An empty Studio is a blank slate -- clear-all, or every chat gone --
+        # and Import from Cursor is how the history comes back.
+        if studio_db.list_chat_threads():
+            summary.skipped += 1
+            return False
+        studio_db.lift_chat_thread_tombstone(thread_id)
+        existing = {}
+        studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id = project_id))
 
-    pending = _messages_to_write(transcript, existing)
+    pending = _reseat_pending(
+        _messages_to_write(transcript, existing),
+        thread_id,
+        transcript.messages,
+    )
     if pending:
         studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
     studio_db.record_cursor_import_mark(
@@ -177,11 +186,32 @@ def _messages_to_write(transcript: CursorTranscript, existing_thread: dict) -> l
         # how far it got, and rewriting them would overwrite any edit made
         # since, so the chat keeps what it has and picks up new turns from here.
         return []
-    if transcript.updated_at_ms <= mark["transcriptUpdatedAt"]:
-        return []
-    # A transcript is a single chain, so the first message written already
-    # records the one before it as its parent.
+    # Count, not mtime: a filesystem that does not bump the file's clock when
+    # Cursor appends would otherwise record the new length as imported without
+    # writing the turns, and they would never arrive.
     return transcript.messages[mark["turnsImported"] :]
+
+
+def _reseat_pending(pending: list[dict], thread_id: str, all_messages: list[dict]) -> list[dict]:
+    """Hang new turns off a parent that still exists in Studio.
+
+    The transcript chain points at the message before each turn. If the user
+    deleted that one here, writing the recorded parent would leave the new turn
+    hanging off a missing row, and the chat would load as an orphan.
+    """
+    if not pending:
+        return pending
+    stored = {message["id"] for message in studio_db.list_chat_messages(thread_id)}
+    parent = pending[0].get("parentId")
+    if parent is None or parent in stored:
+        return pending
+    by_id = {message["id"]: message for message in all_messages}
+    while parent and parent not in stored:
+        ancestor = by_id.get(parent)
+        parent = ancestor.get("parentId") if ancestor else None
+    reseated = dict(pending[0])
+    reseated["parentId"] = parent
+    return [reseated, *pending[1:]]
 
 
 def _import_workspace(
@@ -207,7 +237,10 @@ def _import_workspace(
     if not dry_run:
         # An upsert overwrites every column it is given, so the name, the
         # instructions and the archived flag are carried over: the user may have
-        # renamed this project or filed it away since the last import.
+        # renamed this project or filed it away since the last import. The
+        # timestamp stays put until something actually lands here -- a no-op
+        # click must not send a stale imported project back to the top of the
+        # sidebar.
         studio_db.upsert_chat_project(
             {
                 "id": project_id,
@@ -215,23 +248,31 @@ def _import_workspace(
                 "instructions": existing.get("instructions") or "",
                 "archived": bool(existing.get("archived")),
                 "createdAt": existing.get("createdAt") or now_ms,
-                "updatedAt": now_ms,
+                "updatedAt": existing.get("updatedAt") or now_ms,
             }
         )
 
     imported = 0
+    new_before, messages_before = summary.new_chats, summary.messages
     for path in transcripts:
         if _import_transcript(path, project_id = project_id, summary = summary, dry_run = dry_run):
             imported += 1
+    added = summary.new_chats > new_before or summary.messages > messages_before
 
-    if imported:
+    housed = (
+        bool(studio_db.list_chat_threads(project_id = project_id)) if not dry_run else bool(imported)
+    )
+    if housed:
+        if not dry_run and added:
+            studio_db.update_chat_project(project_id, {"updatedAt": now_ms})
         summary.projects += 1
         summary.chats += imported
     elif not dry_run and not existing:
-        # Every conversation here turned out empty, or was deleted in Studio
-        # after an earlier import. The project row was written to hang them off
-        # and now has nothing in it, so it goes rather than sitting in the
-        # sidebar as an empty entry the user never made.
+        # Every conversation here turned out empty, was deleted in Studio, or
+        # was moved to Recents / another project. The row was written to hang
+        # new chats off and now has nothing in it, so it goes rather than
+        # sitting in the sidebar as an empty entry the user never made -- or
+        # already deleted.
         studio_db.delete_chat_project(project_id)
 
 

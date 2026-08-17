@@ -364,6 +364,9 @@ def test_a_renamed_project_keeps_the_name_the_user_gave_it(cursor_home):
 
 
 def test_a_chat_deleted_after_an_import_is_not_brought_back(cursor_home):
+    # A second conversation stays, so this is a targeted delete rather than
+    # an empty Studio, which Import from Cursor treats as a blank slate.
+    write_transcript(cursor_home, "Users-me-app", "session-two", [turn("user", "Keep me")])
     import_cursor_chats()
     thread_id = thread_id_for("session-one")
     studio_db.delete_chat_threads([thread_id])
@@ -371,8 +374,86 @@ def test_a_chat_deleted_after_an_import_is_not_brought_back(cursor_home):
     summary = import_cursor_chats()
 
     assert studio_db.get_chat_thread(thread_id) is None
-    assert summary.chats == 0
+    assert studio_db.get_chat_thread(thread_id_for("session-two")) is not None
     assert summary.skipped == 1
+
+
+def test_clearing_history_lets_cursor_be_imported_again(cursor_home):
+    import_cursor_chats()
+    studio_db.clear_chat_history()
+
+    summary = import_cursor_chats()
+
+    assert summary.new_chats == 1
+    assert studio_db.get_chat_thread(thread_id_for("session-one")) is not None
+
+
+def test_an_appended_turn_hangs_off_the_last_message_the_user_kept(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    kept = studio_db.list_chat_messages(thread_id)[:1]
+    studio_db.sync_chat_messages(thread_id, kept, prune_missing = True)
+    write_transcript(
+        cursor_home,
+        "Users-me-app",
+        "session-one",
+        [
+            turn("user", "<user_query>Fix the header</user_query>"),
+            turn("assistant", "Fixed it."),
+            turn("user", "<user_query>And the footer</user_query>"),
+        ],
+    )
+
+    import_cursor_chats()
+
+    messages = studio_db.list_chat_messages(thread_id)
+    assert [message["id"] for message in messages] == [kept[0]["id"], messages[1]["id"]]
+    assert messages[1]["parentId"] == kept[0]["id"]
+
+
+def test_appended_turns_arrive_even_when_the_file_mtime_does_not_move(cursor_home):
+    import_cursor_chats()
+    # A ledger that already saw a newer clock than the file will have, the
+    # situation on a filesystem that preserves mtime across appends.
+    studio_db.record_cursor_import_mark("session-one", 2**62, 2)
+    write_transcript(
+        cursor_home,
+        "Users-me-app",
+        "session-one",
+        [
+            turn("user", "<user_query>Fix the header</user_query>"),
+            turn("assistant", "Fixed it."),
+            turn("user", "<user_query>And the footer</user_query>"),
+        ],
+    )
+
+    summary = import_cursor_chats()
+
+    assert summary.messages == 1
+    assert len(studio_db.list_chat_messages(thread_id_for("session-one"))) == 3
+
+
+def test_a_no_op_import_does_not_promote_the_project_in_the_sidebar(cursor_home):
+    import_cursor_chats()
+    project_id = project_id_for("Users-me-app")
+    original = studio_db.get_chat_project(project_id)["updatedAt"]
+
+    import_cursor_chats()
+
+    assert studio_db.get_chat_project(project_id)["updatedAt"] == original
+
+
+def test_a_deleted_empty_project_is_not_recreated_for_moved_chats(cursor_home):
+    import_cursor_chats()
+    thread_id = thread_id_for("session-one")
+    project_id = project_id_for("Users-me-app")
+    studio_db.update_chat_thread(thread_id, {"projectId": None})
+    studio_db.delete_chat_project(project_id)
+
+    import_cursor_chats()
+
+    assert studio_db.get_chat_project(project_id) is None
+    assert studio_db.get_chat_thread(thread_id)["projectId"] is None
 
 
 def test_a_session_shared_with_the_no_folder_window_lands_in_the_real_project(cursor_home):
