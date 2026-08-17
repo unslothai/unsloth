@@ -75,21 +75,15 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     )
 
 
-# Every wait below is a guard against a launcher that never dies, not a latency
-# target. These tests each drive a real subprocess that spawns further processes,
-# and the repo suite now runs four of them at once on a four-core runner, where
-# the SIGINT case was observed to need more than 30 seconds of wall clock purely
-# to be scheduled. A wedged launcher still fails this, just later; a starved one
-# no longer reports a defect it does not have.
+# A guard against a launcher that never dies, not a latency target: four of these
+# subprocess tests now run at once on a four-core runner, where the SIGINT case
+# was observed to need over 30 seconds purely to be scheduled.
 _DEATH_BUDGET_SEC = 120
 
-# The stall the launcher sits in while a test signals it. It has to OUTLAST the
-# budget above, which is the whole reason both are named here rather than written
-# at each site. A handler that swallows its signal leaves the process asleep and
-# then resuming: with a stall shorter than the budget it wakes up, runs finish(),
-# deletes the kernels through the ordinary path and exits inside the wait, so the
-# deletion tests pass on a launcher that ignored the signal entirely. Reported on
-# this PR, against a first version that raised the budget past a 60 second stall.
+# How long the launcher stalls while a test signals it. Must OUTLAST the budget
+# above: a handler that swallows its signal leaves the process asleep and then
+# resuming, so a shorter stall lets it wake, run finish(), delete through the
+# ordinary path and exit inside the wait, passing every deletion test.
 _STALL_SEC = 900
 
 
@@ -409,9 +403,8 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     ), f"{signame} left the kernel behind; it would bill to its ceiling"
     # And the registry agrees, so no later sweep chases a kernel that is gone.
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
-    # On the signal path, not on the way out of an ordinary run. Without this the
-    # deletion above is satisfied by finish() doing its usual work, so a handler
-    # that swallowed the signal and let the launcher finish normally would pass.
+    # On the signal path, not on the way out of an ordinary run: finish() satisfies
+    # the deletion above on its own, so a swallowed signal would pass without this.
     assert proc.returncode == -getattr(signal, signame), (
         f"the kernel was deleted, but the launcher exited {proc.returncode} rather than "
         f"dying of {signame}, so nothing here says the signal is what did it"
@@ -437,16 +430,12 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
 def test_the_exit_status_survives_a_release_that_fails(tmp_path):
     """The way the status above was actually observed to come back 0.
 
-    A delete that raises inside the handler used to propagate out of it, into
-    whatever the main thread was doing. main() catches BaseException and reaches
-    release() by RETURNING, so a first delete that failed and a second that
-    worked -- which is what a transient OSError out of a subprocess spawn on a
-    loaded runner looks like -- turned a cancelled run into `exit 0`. Caught on
-    a contended runner, not by inspection, and reproduced by failing the first
-    delete only.
-
-    The kernel is still deleted, by the retry. What this pins is that the exit
-    status does not depend on the delete having worked at all.
+    A delete raising inside the handler propagated into the main thread, where
+    main() catches BaseException and reaches release() by RETURNING. A first
+    delete that failed and a second that worked -- a transient OSError from a
+    subprocess spawn on a loaded runner -- therefore turned a cancelled run into
+    `exit 0`. The retry still deletes the kernel; what this pins is that the exit
+    status does not depend on the delete having worked.
     """
     proc = _runner(
         tmp_path,
@@ -485,11 +474,9 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
 def test_the_stall_outlasts_the_death_budget():
     """The relationship the signal tests rest on, asserted rather than assumed.
 
-    Every test above signals a launcher that is asleep and then waits a bounded
-    time for it to die. If the sleep is the shorter of the two, a launcher that
-    ignored its signal simply wakes up, finishes normally and exits inside the
-    wait, and the tests pass on the behaviour they exist to forbid. Tuning either
-    number without the other is easy and silent, so this fails instead.
+    If the sleep is the shorter of the two, a launcher that ignored its signal
+    wakes up, finishes normally and exits inside the wait, so the tests pass on
+    the behaviour they forbid. Tuning one number without the other is silent.
     """
     assert _STALL_SEC > _DEATH_BUDGET_SEC, (
         f"a launcher that swallows its signal wakes after {_STALL_SEC}s and exits "

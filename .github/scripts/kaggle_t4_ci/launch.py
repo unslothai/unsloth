@@ -939,23 +939,19 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
         try:
             release()
         except BaseException as exc:  # noqa: BLE001
-            # A raise here used to leave the handler entirely: it propagated
-            # into whatever the main thread was doing, main()'s `except
-            # BaseException` caught it, and finish() called release() a second
-            # time. If that second call worked -- which it does when the first
-            # failure was transient, an OSError out of a subprocess spawn on a
-            # loaded runner being the observed one -- main RETURNED 0 and a
-            # cancelled job reported success. Deleting is best effort; the exit
-            # status is not, so the raise is logged and the death below still
-            # happens. One retry, because the failure this catches is transient
-            # by nature and the kernel is billing meanwhile.
+            # A raise here used to propagate into the main thread, where main()'s
+            # `except BaseException` caught it and finish() called release() again.
+            # A transient first failure (the observed one: an OSError from a
+            # subprocess spawn on a loaded runner) therefore ended in main
+            # RETURNING 0, and the cancelled job read as completed. Deleting is
+            # best effort, the exit status is not. Retried once, since the kernel
+            # is billing meanwhile.
             _log(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
             try:
                 release()
             except BaseException as retry_exc:  # noqa: BLE001
-                # Nothing more to try in-process. The slug stays in the
-                # registry, so the orphan sweep at the next launch reclaims it,
-                # which is the same path a kill -9 leaves behind.
+                # Nothing more to try in-process: the slug stays in the registry
+                # for the next launch's orphan sweep, as after a kill -9.
                 _log(
                     f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
                     f"The kernels stay in the registry for the next launcher's sweep"
