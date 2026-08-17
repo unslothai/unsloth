@@ -254,6 +254,6 @@ def test_the_floor_lint_scans_the_tree_rather_than_a_list_of_packages():
         f"rest of its module checked. Dropping the whole file would leave everything else "
         f"in it unchecked forever, which is the package-allowlist mistake one level down."
     )
-    assert len(scanned) > 300, (
-        f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
-    )
+    assert (
+        len(scanned) > 300
+    ), f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
