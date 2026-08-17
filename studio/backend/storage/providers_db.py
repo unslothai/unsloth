@@ -11,6 +11,8 @@ Enabled model selections and discovered catalog IDs are stored server-side so
 remote Studio clients see the same connection state (#7281).
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import sqlite3
@@ -24,6 +26,7 @@ from utils.paths import studio_db_path, ensure_dir
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+_UNSET = object()
 
 
 def _encode_models_json(models: Optional[list[str]]) -> str:
@@ -76,6 +79,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE llm_providers ADD COLUMN available_models_json TEXT NOT NULL DEFAULT '[]'"
         )
+    if "max_output_tokens" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -104,6 +109,7 @@ def create_provider(
     base_url: str,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    max_output_tokens: Optional[int] = None,
 ) -> None:
     """Insert a new provider configuration."""
     now = datetime.now(timezone.utc).isoformat()
@@ -113,10 +119,10 @@ def create_provider(
             """
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
-                models_json, available_models_json,
+                models_json, available_models_json, max_output_tokens,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -125,6 +131,7 @@ def create_provider(
                 base_url,
                 _encode_models_json(models),
                 _encode_models_json(available_models),
+                max_output_tokens,
                 now,
                 now,
             ),
@@ -141,6 +148,7 @@ def update_provider(
     is_enabled: Optional[bool] = None,
     models: Optional[list[str]] = None,
     available_models: Optional[list[str]] = None,
+    max_output_tokens: int | None | object = _UNSET,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
     updates = []
@@ -160,6 +168,9 @@ def update_provider(
     if available_models is not None:
         updates.append("available_models_json = ?")
         params.append(_encode_models_json(available_models))
+    if max_output_tokens is not _UNSET:
+        updates.append("max_output_tokens = ?")
+        params.append(max_output_tokens)
     if not updates:
         return False
     updates.append("updated_at = ?")

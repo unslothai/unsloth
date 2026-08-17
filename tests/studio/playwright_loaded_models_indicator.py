@@ -255,7 +255,7 @@ def boot(
     # The card is deliberately hidden on /login, so an auth slip would make
     # every "no card" check pass for the wrong reason.
     path = page.evaluate("location.pathname")
-    if path.startswith(("/login", "/onboarding", "/change-password")):
+    if path.startswith(("/login", "/change-password")):
         raise AssertionError(f"not authenticated: landed on {path}")
 
 

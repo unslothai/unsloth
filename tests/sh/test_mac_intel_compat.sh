@@ -596,7 +596,7 @@ if [ ! -s "$_GUARD_FILE" ]; then
     echo "  FAIL: could not extract Apple Silicon venv guard from install.sh"
     FAIL=$((FAIL + 1))
 else
-    # Runner: stub uv (via run_install_cmd) + a fake venv python, source the
+    # Runner: stub the guarded uv venv runner + a fake venv python, source the
     # guard, then print "<final_arch> <final_ver> | <recreate_selectors>".
     # The stub maps a uv arm64 selector to the interpreter uv would produce:
     # cpython-3.12-* -> arm64 3.12.7, cpython-3.13-* -> arm64 $REBUILD_313_VERSION.
@@ -615,18 +615,15 @@ make_python() {  # dir machine version
     chmod +x "$1/bin/python"
 }
 RECREATE_LOG=$(mktemp); : > "$RECREATE_LOG"
-run_install_cmd() {
+_run_uv_venv() {
     shift  # drop the human label
-    if [ "$1" = "uv" ] && [ "$2" = "venv" ]; then
-        dir="$3"; sel=""; shift 3
-        while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
-        echo "$sel" >> "$RECREATE_LOG"
-        case "$sel" in
-            *3.12-macos-aarch64*) make_python "$dir" arm64 "3.12.7" ;;
-            *3.13-macos-aarch64*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
-            *)                    make_python "$dir" arm64 "$sel" ;;
-        esac
-    fi
+    dir="$1"; sel=""; shift
+    while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
+    echo "$sel" >> "$RECREATE_LOG"
+    case "$sel" in
+        cpython-3.12-*) make_python "$dir" arm64 3.12.7 ;;
+        cpython-3.13-*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
+    esac
 }
 [ "$INIT_ARCH" != none ] && make_python "$VENV_DIR" "$INIT_ARCH" "$INIT_VER"
 PYTHON_VERSION="3.13"

@@ -86,6 +86,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     continue-on-error: ${{ matrix.experimental }}
+
+    env:
+      # Force the bundled installer through uv's first managed-Python download rather
+      # than reusing runner state outside the ordinary cache.
+      UV_CACHE_DIR: ${{ github.workspace }}/.clean-machine/uv-cache
+      UV_PYTHON_INSTALL_DIR: ${{ github.workspace }}/.clean-machine/uv-python
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +103,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
+
+
+      - name: Prepare fresh uv state
+        run: |
+          rm -rf "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
+          mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
 
       - name: Download the shipped .dmg
         env:
@@ -138,7 +150,10 @@ jobs:
         run: |
           bash .github/scripts/clean-machine-env.sh mask --remove
           set -a; . ./clean-machine.env; set +a
-          bash .github/scripts/clean-machine-assert.sh absent
+          [ -n "$UNSLOTH_TOOL_TRACE" ] || { echo "::error::mask mode set no UNSLOTH_TOOL_TRACE"; exit 1; }
+          bash .github/scripts/clean-machine-install-name-tool.sh \
+            verify-sentinel "$UNSLOTH_TOOL_TRACE" desktop
+          bash .github/scripts/clean-machine-assert.sh absent nodylibtool
 
       - name: Mount and install
         run: |
@@ -206,9 +221,22 @@ jobs:
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
           [ -x "$PY" ] || { echo "::error::bundled installer left no venv at $PY"; exit 1; }
           "$PY" -V
-          # install.rs passes only --tauri, so torch is part of first launch: without this
-          # the venv check passes a bundle whose only failure is the torch install.
-          "$PY" -c "import torch; print('torch', torch.__version__)"
+          # First launch installs the native runtime stack. All representative wheels
+          # must load without uv's developer-only libpython ID patch.
+          "$PY" -c "import numpy, safetensors, tokenizers, torch; print('native wheels loaded', numpy.__version__, torch.__version__)"
+
+          if [ -f ./clean-machine.env ]; then
+            # A successful install alone is insufficient: uv treats install_name_tool
+            # failure as a warning, so a broken guard would still exit zero after opening
+            # Apple's GUI prompt. The sentinel proves the bundled guard won instead.
+            bash .github/scripts/clean-machine-assert.sh absent nodylibtool
+          fi
+          leftovers=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -type d \
+            -name 'unsloth-uv-install-name-tool.*' -print 2>/dev/null || true)
+          [ -z "$leftovers" ] || {
+            echo "::error::bundled installer left temporary uv guard directories: $leftovers"
+            exit 1
+          }
 
       - name: Launch and prove it stays up
         run: |
@@ -291,7 +319,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: desktop-macos-${{ matrix.os }}
-          path: logs/
+          path: |
+            logs/
+            .clean-machine/tool-invocations.log
           retention-days: 7
           if-no-files-found: warn
 
@@ -408,10 +438,13 @@ jobs:
           # The launch step below only proves the process stayed alive: on a fresh home
           # preflight reports not_installed and the app waits for a click on the install
           # screen (use-tauri-backend.ts:252-254, startup-screen.tsx:388-389), so a bundle
-          # with a missing or broken install.sh passed both Linux rows. tauri.conf.json:56-59
+          # with a missing or broken install.sh passed both Linux rows. tauri.linux.conf.json
           # ships it as a bundle resource, so find it there and run it as install.rs does.
           if [ "${{ matrix.kind }}" = "deb" ]; then
-            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1)"
+            # `|| true`: grep exits 1 when it selects nothing, and under the `set -o pipefail`
+            # above plus this step's `bash -e` that aborts the assignment outright, swallowing
+            # the explicit annotation below in favour of a bare exit 1.
+            SH="$(dpkg -L "$(dpkg-deb -f dl/*.deb Package)" | grep -E '/install\.sh$' | head -1 || true)"
           else
             # ls returns a bare filename here, and a command word with no slash resolves
             # through PATH, not the cwd, so this needs the ./ prefix.

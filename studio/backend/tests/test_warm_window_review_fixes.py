@@ -345,10 +345,8 @@ def test_the_model_config_capability_block_runs_off_loop():
 # ------------------------------------------------------------- kill switch
 
 
-def test_the_torch_kill_switch_leaves_mlx_selfheal_running():
-    """The switch is about torch; MLX autorepair has its own opt-out. Gating autorepair on it
-    left an Apple Silicon host with a broken MLX stack chat-only for good, where before it
-    ran in the lifespan no matter what."""
+def test_post_warm_order_keeps_mlx_selfheal_and_linked_folder_startup():
+    """Removing the RAG warm must not drop either remaining lifecycle action."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
         node
@@ -364,18 +362,11 @@ def test_the_torch_kill_switch_leaves_mlx_selfheal_running():
         return -1
 
     mlx_at = _index_of(lambda d: "start_mlx_autorepair_if_needed" in d)
-    gate_at = _index_of(lambda d: "DISABLE_ENV_VAR" in d and "Return" in d)
-    rag_at = _index_of(lambda d: "_warm_rag_embedder" in d)
+    folders_at = _index_of(lambda d: "_start_linked_folder_auto_sync" in d)
 
-    assert mlx_at >= 0 and gate_at >= 0 and rag_at >= 0
-    assert mlx_at < gate_at, (
-        "the kill-switch return precedes MLX autorepair, so setting "
-        "UNSLOTH_STUDIO_DISABLE_TORCH_WARM leaves a broken MLX host chat-only"
-    )
-    assert gate_at < rag_at, (
-        "the RAG warm is no longer gated; it pulls sentence-transformers and "
-        "torch, which is what the kill switch exists to prevent"
-    )
+    assert mlx_at >= 0 and folders_at >= 0
+    assert mlx_at < folders_at
+    assert "_warm_rag_embedder" not in ast.dump(fn)
 
 
 def test_the_torch_kill_switch_leaves_linked_folder_sync_running(monkeypatch):
@@ -478,15 +469,16 @@ def test_threading_import_is_present_for_the_lazy_fetch():
 
 def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
     """Work must not start for an application that has already stopped. The worker is parked
-    in join_background_warm(), so a shutdown before the warm finishes reaches it no other
-    way: it wakes later and loads the embedder, which can spawn a llama-server."""
+    in join_background_warm(), so a shutdown before the warm finishes reaches it no other way."""
     import main as main_mod
 
     ran: list[str] = []
     released = threading.Event()
 
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: released.wait(30))
-    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+    monkeypatch.setattr(
+        main_mod, "_start_linked_folder_auto_sync", lambda generation: ran.append("folders")
+    )
     import utils.mlx_repair as mlx_mod
 
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
@@ -500,10 +492,7 @@ def test_shutdown_stands_the_post_warm_thread_down(monkeypatch):
         released.set()
         worker.join(30)
 
-    assert ran == [], (
-        f"post-warm work ran after shutdown: {ran}. The RAG warm can load an "
-        f"embedder or start a llama-server for a stopped application."
-    )
+    assert ran == [], f"post-warm work ran after shutdown: {ran}"
 
 
 def test_the_post_warm_thread_still_works_without_a_shutdown(monkeypatch):
@@ -514,11 +503,13 @@ def test_the_post_warm_thread_still_works_without_a_shutdown(monkeypatch):
     ran: list[str] = []
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: None)
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
-    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+    monkeypatch.setattr(
+        main_mod, "_start_linked_folder_auto_sync", lambda generation: ran.append("folders")
+    )
 
     assert main_mod._start_post_warm_thread() is True
     main_mod._post_warm_thread.join(30)
-    assert ran == ["mlx", "rag"]
+    assert ran == ["mlx", "folders"]
 
 
 def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
@@ -539,7 +530,9 @@ def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
 
     monkeypatch.setattr(main_mod, "join_background_warm", _join)
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
-    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+    monkeypatch.setattr(
+        main_mod, "_start_linked_folder_auto_sync", lambda generation: ran.append("folders")
+    )
 
     # Lifespan 1 starts a worker, then shuts down while it is still parked.
     assert main_mod._start_post_warm_thread() is True
@@ -558,7 +551,7 @@ def test_a_restart_gets_its_own_worker_while_the_old_one_is_parked(monkeypatch):
     release_new.set()
     new.join(30)
 
-    assert ran == ["mlx", "rag"], f"the restarted lifespan did not get its deferred work: {ran}"
+    assert ran == ["mlx", "folders"], f"the restarted lifespan did not get its deferred work: {ran}"
 
 
 def test_only_the_current_generation_does_the_work(monkeypatch):
@@ -570,7 +563,9 @@ def test_only_the_current_generation_does_the_work(monkeypatch):
     gate = threading.Event()
     monkeypatch.setattr(main_mod, "join_background_warm", lambda *a, **k: gate.wait(30))
     monkeypatch.setattr(mlx_mod, "start_mlx_autorepair_if_needed", lambda: ran.append("mlx"))
-    monkeypatch.setattr(main_mod, "_warm_rag_embedder", lambda: ran.append("rag"))
+    monkeypatch.setattr(
+        main_mod, "_start_linked_folder_auto_sync", lambda generation: ran.append("folders")
+    )
 
     main_mod._start_post_warm_thread()
     first = main_mod._post_warm_thread
@@ -581,7 +576,7 @@ def test_only_the_current_generation_does_the_work(monkeypatch):
     first.join(30)
     second.join(30)
 
-    assert ran == ["mlx", "rag"], f"expected one worker to do the work once, got {ran}"
+    assert ran == ["mlx", "folders"], f"expected one worker to do the work once, got {ran}"
 
 
 def test_shutdown_does_not_wait_for_the_post_warm_thread():
@@ -1049,9 +1044,8 @@ async def _run_shutdown(shutdown_mod, hw_mod) -> None:
 
 # ------------------------------------------- the post-warm worker rechecks
 def test_the_post_warm_worker_rechecks_before_each_action():
-    """One check after the join leaves a window shutdown can land in. The MLX autorepair and
-    the RAG warm each take their own time, and the RAG warm can spawn a llama-server, so a
-    generation read before each action is what keeps a stopped lifespan from starting one."""
+    """One check after the join leaves a shutdown window around each remaining action.
+    A generation read before MLX repair and linked-folder startup keeps a stopped lifespan cold."""
     tree = ast.parse((_BACKEND / "main.py").read_text(encoding = "utf-8"))
     fn = next(
         node
@@ -1067,8 +1061,8 @@ def test_the_post_warm_worker_rechecks_before_each_action():
     ]
     assert len(checks) >= 3, (
         "the post-warm worker checks retirement fewer than once per action; a "
-        "shutdown landing after the join can still start MLX autorepair or a "
-        "llama-server for a lifespan that has stopped"
+        "shutdown landing after the join can still start MLX autorepair or linked-folder "
+        "startup for a lifespan that has stopped"
     )
 
 

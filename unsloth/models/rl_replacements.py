@@ -1980,16 +1980,30 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                     ),
                                     use_cache = False,
                                 ).logits
-                                _pk_sel = chunked_hidden_states_selective_log_softmax(
-                                    _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0),
-                                    lm_head,
-                                    _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0),
-                                    _pk_chunks,
-                                    logit_scale_multiply,
-                                    logit_scale_divide,
-                                    logit_softcapping,
-                                    temperature,
-                                )[0]
+                                _pk_out = _pk_hidden[0, :-1, :][_pk_ctgt].unsqueeze(0)
+                                _pk_ids = _pk_flat[0, 1:][_pk_ctgt].unsqueeze(0)
+                                # Guard: check if model returned hidden states or logits
+                                if _unsloth_grpo_returns_hidden_states(
+                                    unwrapped_model, _pk_out, lm_head
+                                ):
+                                    _pk_sel = chunked_hidden_states_selective_log_softmax(
+                                        _pk_out,
+                                        lm_head,
+                                        _pk_ids,
+                                        _pk_chunks,
+                                        logit_scale_multiply,
+                                        logit_scale_divide,
+                                        logit_softcapping,
+                                        temperature,
+                                    )[0]
+                                else:
+                                    # Model returned logits directly - scaling/softcapping already applied by model forward
+                                    _pk_sel = chunked_selective_log_softmax(
+                                        _pk_out,
+                                        _pk_ids,
+                                        temperature,
+                                        _pk_chunks,
+                                    )[0]
                         # GPT-OSS offload race guard (matches the padded loop)
                         device_synchronize()
                         # scatter each logprob back to its (row, col) so [:, -_pk_W:] matches padded
@@ -2037,16 +2051,29 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                             position_ids = _pk_rpos,
                                             use_cache = False,
                                         ).logits
-                                        _pk_rsel = chunked_hidden_states_selective_log_softmax(
-                                            _pk_rh[:, :-1, :],
-                                            lm_head,
-                                            _pk_real[:, 1:],
-                                            1,
-                                            logit_scale_multiply,
-                                            logit_scale_divide,
-                                            logit_softcapping,
-                                            temperature,
-                                        )[0]
+                                        _pk_rout = _pk_rh[:, :-1, :]
+                                        # Guard: check if model returned hidden states or logits
+                                        if _unsloth_grpo_returns_hidden_states(
+                                            unwrapped_model, _pk_rout, lm_head
+                                        ):
+                                            _pk_rsel = chunked_hidden_states_selective_log_softmax(
+                                                _pk_rout,
+                                                lm_head,
+                                                _pk_real[:, 1:],
+                                                1,
+                                                logit_scale_multiply,
+                                                logit_scale_divide,
+                                                logit_softcapping,
+                                                temperature,
+                                            )[0]
+                                        else:
+                                            # Model returned logits directly - scaling/softcapping already applied by model forward
+                                            _pk_rsel = chunked_selective_log_softmax(
+                                                _pk_rout,
+                                                _pk_real[:, 1:],
+                                                temperature,
+                                                1,
+                                            )[0]
                                         _pk_rcols = _pk_rmask.nonzero(as_tuple = False).squeeze(1)[
                                             1:
                                         ] - (_pk_L - _pk_W)
@@ -2221,16 +2248,28 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                                 :, -(logits_to_keep + max_left_pad + 1) :, :
                             ]
                             logits_chunk = logits_chunk[:, :-1, :]
-                            logprobs_chunk = chunked_hidden_states_selective_log_softmax(
-                                logits_chunk,
-                                lm_head,
-                                completion_input_ids_chunk,
-                                chunks = input_ids_chunk.shape[0] * multiplier,
-                                logit_scale_multiply = logit_scale_multiply,
-                                logit_scale_divide = logit_scale_divide,
-                                logit_softcapping = logit_softcapping,
-                                temperature = temperature,
-                            )
+                            # Guard: check if model returned hidden states or logits
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
+                                logprobs_chunk = chunked_hidden_states_selective_log_softmax(
+                                    logits_chunk,
+                                    lm_head,
+                                    completion_input_ids_chunk,
+                                    chunks = input_ids_chunk.shape[0] * multiplier,
+                                    logit_scale_multiply = logit_scale_multiply,
+                                    logit_scale_divide = logit_scale_divide,
+                                    logit_softcapping = logit_softcapping,
+                                    temperature = temperature,
+                                )
+                            else:
+                                # Model returned logits directly - scaling/softcapping already applied by model forward
+                                logprobs_chunk = chunked_selective_log_softmax(
+                                    logits_chunk,
+                                    completion_input_ids_chunk,
+                                    temperature,
+                                    input_ids_chunk.shape[0] * multiplier,
+                                )
                         else:
                             # Essentially, for VLMs we do not go via the optimized path in models/,
                             # so we don't encounter the Flash Attn left-padding issue.
@@ -2251,7 +2290,9 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             logits_chunk = logits_chunk[:, :-1, :]
                             completion_input_ids_chunk = input_ids_chunk[:, -logits_to_keep:]
                             # Guard: check if model returned hidden states or logits
-                            if logits_chunk.shape[-1] == lm_head.shape[1]:
+                            if _unsloth_grpo_returns_hidden_states(
+                                unwrapped_model, logits_chunk, lm_head
+                            ):
                                 logprobs_chunk = chunked_hidden_states_selective_log_softmax(
                                     logits_chunk,
                                     lm_head,
@@ -2360,6 +2401,167 @@ def _unsloth_get_final_logit_softcapping(model):
     return 0 if softcap is None else softcap
 
 
+def _unsloth_grpo_returns_hidden_states(model, tensor, lm_head):
+    """Does ``tensor`` (a forward's ``.logits``) carry hidden states or real logits?
+
+    ``_get_per_token_logps_and_entropies`` sets ``UNSLOTH_RETURN_HIDDEN_STATES=1``,
+    but only a forward that honours the name hands hidden states back as
+    ``.logits``; any other forward returns a real ``[.., vocab]`` tensor that must
+    not reach the ``lm_head`` matmul.
+
+    Primary test is an explicit signal that the forward honours the flag. Two
+    exist, both set outside this file:
+
+    * ``__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__`` on the generated class,
+      written by ``unsloth_zoo.compiler.create_standalone_class`` exactly when
+      ``apply_fused_lm_head`` gave that forward its own ``RETURN_HIDDEN_STATES``
+      branch.
+    * ``_unsloth_grpo_hidden_states_forward_wrapped``, set by
+      ``_install_grpo_hidden_states_forward_wrapper`` in ``unsloth/models/rl.py``
+      for models the compiler did not rewrite. That wrapper degrades to real
+      logits when the model cannot produce hidden states, and records whether
+      it did so in ``_unsloth_grpo_hidden_states_degraded`` before it returns,
+      so reading the pair after a forward describes the call that just
+      finished. Degradation is per call, not per model: a forward that splats
+      ``**kwargs`` into a sub-module only some inputs reach can reject the
+      request on one batch and honour it on the next.
+
+    The width comparison stays as the fallback, for an ``unsloth_zoo`` old enough
+    that it never writes the marker. It is decisive on its own whenever
+    ``vocab_size != hidden_size``, and the signal is only allowed to overrule it
+    when it is not: a model with ``vocab_size == hidden_size`` produces real
+    logits that are the same width as its hidden states, which is the one case
+    the shape cannot answer.
+    """
+    if tensor.shape[-1] != lm_head.shape[1]:
+        return False  # vocab-wide: real logits, whatever any signal claims
+    if lm_head.shape[0] != lm_head.shape[1]:
+        return True  # hidden-wide and vocab_size != hidden_size: hidden states
+    return _unsloth_grpo_hidden_states_signal(model) is not False
+
+
+def _unsloth_grpo_hidden_states_signal(model):
+    """``True``/``False`` if the forward honours ``UNSLOTH_RETURN_HIDDEN_STATES``.
+
+    ``None`` when neither marker is present, i.e. there is no signal to read.
+    See ``_unsloth_grpo_returns_hidden_states`` for where each marker is set.
+    Walks the wrapper chain because the markers are set on whichever object the
+    trainer saw, which may be the DDP module or the PEFT base model rather than
+    the object handed to the logprob loop.
+    """
+    candidates = []
+    pending = [model]
+    while pending and len(candidates) < 8:
+        candidate = pending.pop(0)
+        if candidate is None or any(candidate is seen for seen in candidates):
+            continue
+        candidates.append(candidate)
+        get_base_model = getattr(candidate, "get_base_model", None)
+        if callable(get_base_model):
+            try:
+                pending.append(get_base_model())
+            except Exception:
+                pass
+        for _attr in ("module", "base_model", "model"):
+            child = getattr(candidate, _attr, None)
+            if child is not None and hasattr(child, "forward"):
+                pending.append(child)
+    for candidate in candidates:
+        if getattr(candidate, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False):
+            return True
+        if getattr(type(candidate), "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", False):
+            return True
+    if any(
+        getattr(candidate, "_unsloth_grpo_hidden_states_forward_wrapped", False)
+        for candidate in candidates
+    ):
+        # the wrapper honours the flag unless it recorded that this call could not
+        if any(
+            hasattr(candidate, "_unsloth_grpo_hidden_states_degraded") for candidate in candidates
+        ):
+            return not any(
+                getattr(candidate, "_unsloth_grpo_hidden_states_degraded", False)
+                for candidate in candidates
+            )
+        # an `unsloth/models/rl.py` predating the per-call attribute only ever set
+        # the warn-once flag; it is the best signal such a wrapper offers
+        return not any(
+            getattr(candidate, "_unsloth_grpo_hidden_states_warning_issued", False)
+            for candidate in candidates
+        )
+    return None
+
+
+_GRPO_HIDDEN_STATES_WIDTH_DISPATCH = re.compile(
+    r"^(?P<indent>[ \t]*)if[ \t]+"
+    r"(?P<tensor>[_A-Za-z][_A-Za-z0-9]*)\.shape\[-1\][ \t]*"
+    r"(?P<operator>==|!=)[ \t]*lm_head\.shape\[1\][ \t]*:$",
+    flags = re.MULTILINE,
+)
+
+# Deliberately loose: any branch header that decides something off an ``lm_head``
+# dimension. Used only to count how many decisions the strict pattern above was
+# supposed to rewrite, so that a zoo which respells *some* of them is rejected
+# rather than half-patched.
+_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE = re.compile(
+    r"^[ \t]*(?:el)?if[ \t]+[^\n]*\blm_head\.shape\[[^\]\n]+\][^\n]*:[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def _patch_grpo_accumulated_loss_hidden_states_dispatch(function):
+    """Give zoo's gradient path the same model-aware dispatch as the no-grad path.
+
+    ``grpo_accumulated_loss`` is embedded into the generated trainer with
+    ``inspect.getsource`` below. Zoo revisions with raw-logits support choose
+    between the two log-softmax helpers by comparing the forward output width
+    with ``lm_head.shape[1]``. That comparison is ambiguous for a square head,
+    so replace every such decision before embedding the function.
+
+    The expression is intentionally limited to a named tensor's last dimension
+    against the lm_head input dimension. If zoo changes that contract entirely,
+    fail at trainer generation instead of silently restoring the wrong dispatch.
+
+    Partial matches have to fail too. A zoo that respells only some of its
+    dispatches would still give this one match, which is enough to satisfy a
+    "did anything match?" check while the respelled sites keep deciding on width
+    alone -- silently wrong gradients again for a square ``lm_head``. So count
+    the branch headers that decide off an ``lm_head`` dimension before and after
+    substituting, and require that none survive.
+    """
+    source = function if isinstance(function, str) else inspect.getsource(function)
+    candidates = len(_GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE.findall(source))
+    replacements = 0
+
+    def replace_width_dispatch(match):
+        nonlocal replacements
+        replacements += 1
+        decision = (
+            "_unsloth_grpo_returns_hidden_states("
+            f"unwrapped_model, {match.group('tensor')}, lm_head)"
+        )
+        if match.group("operator") == "!=":
+            decision = f"not {decision}"
+        return f"{match.group('indent')}if {decision}:"
+
+    source = _GRPO_HIDDEN_STATES_WIDTH_DISPATCH.sub(replace_width_dispatch, source)
+    if replacements == 0:
+        raise RuntimeError(
+            "Unsloth: could not find the GRPO gradient hidden-state dispatches in "
+            "this unsloth_zoo version. Please upgrade unsloth_zoo."
+        )
+    unpatched = _GRPO_HIDDEN_STATES_WIDTH_DISPATCH_CANDIDATE.findall(source)
+    if len(unpatched) != 0:
+        raise RuntimeError(
+            f"Unsloth: patched only {replacements} of {candidates} GRPO gradient "
+            "hidden-state dispatches in this unsloth_zoo version; "
+            f"{len(unpatched)} still decide on width alone "
+            f"({', '.join(line.strip() for line in unpatched)}). "
+            "Please upgrade unsloth_zoo."
+        )
+    return source
+
+
 grpo_compute_loss = RL_REPLACEMENTS["grpo_compute_loss"]
 grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
@@ -2369,12 +2571,16 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_returns_hidden_states))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_hidden_states_signal))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_fix_mm_token_type_ids))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_accumulated_loss))
+RL_PRE_ITEMS["grpo_trainer"].append(
+    _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
+)
 RL_PRE_ITEMS["grpo_trainer"].append(grpo_compute_loss_slow)
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_update_SamplingParams))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_get_inference_mode_context_manager))
@@ -3123,7 +3329,16 @@ def vllm_generation_init_patch():
             guard = (
                 "    if getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
                 "getattr(self, 'unsloth_fast_inference_lora', False):\n"
-                "        # Unsloth fast inference LoRA shares weights with vLLM already.\n"
+                "        # Unsloth fast inference LoRA shares weights with vLLM already,\n"
+                "        # so there is nothing to push. But TRL >= 1.x only wakes the\n"
+                "        # engine from sleep mode inside this method, and generate()\n"
+                "        # delegates that wake-up to it, so still do it here or the next\n"
+                "        # generate runs against a sleeping engine. Unsloth's allocator\n"
+                "        # skips weights, so wake everything rather than a tag subset.\n"
+                "        if getattr(self, '_llm_weights_sleeping', False) and "
+                "getattr(self, 'llm', None) is not None:\n"
+                "            self.llm.wake_up()\n"
+                "            self._llm_weights_sleeping = False\n"
                 "        return\n\n"
             )
             return match.group("def_line") + guard + body
@@ -3135,42 +3350,153 @@ def vllm_generation_init_patch():
             )
         return patched_src
 
-    def patch_generate(src):
-        pattern = re.compile(
-            r"^(?P<indent>[ \t]*)self\.llm\.collective_rpc\(\s*(['\"])reload_weights\2\s*\)\s*$",
-            re.MULTILINE,
+    # `generate` is deliberately NOT source-patched.
+    #
+    # It used to be, with two regexes: one anchored on a
+    # `self.llm.collective_rpc("reload_weights")` line, and one injecting
+    # `lora_request=...` into `self.llm.generate(...)`. Both anchors live inside a TRL
+    # method body, and both have already drifted:
+    #   * TRL >= 1.x deleted the `collective_rpc("reload_weights")` call from `generate`
+    #     entirely and calls `self.sync_weights()` instead
+    #     (https://github.com/vllm-project/vllm/issues/29341). The old anchor matched 0
+    #     times, raised, and - because the lora injection ran *after* it in the same
+    #     function - the adapter stopped being passed to vLLM at all. Since `_init_vllm`
+    #     and `sync_weights` had already been installed by then, weights were no longer
+    #     synced into vLLM either, so GRPO rollouts were silently sampled from the BASE
+    #     model with no error raised.
+    #   * `(self\.llm\.generate\([^\)]+)\)` is not paren-balanced, so it also mis-edits any
+    #     call whose arguments contain nested parentheses or span several lines.
+    #
+    # So intercept on the vLLM engine instead of on TRL's method body. `self.llm` is the
+    # vLLM `LLM` object in colocate mode in every TRL release that has `VLLMGeneration`,
+    # and `LLM.generate` / `LLM.chat` / `LLM.collective_rpc` are public, stable vLLM APIs.
+    # Checked against every vLLM release from 0.11.0 to 0.27.1: all three exist on `LLM` at
+    # each one, `generate` and `chat` both take `lora_request`, `LLM` has no `__slots__` and
+    # no `__setattr__`/`__getattr__` hook (so the instance override below always takes), and
+    # nothing here is decorated. TRL's method body is free to move around;
+    # whatever shape it takes, it has to reach the engine through those calls. The
+    # override is scoped to the dynamic extent of one `VLLMGeneration.generate` call and
+    # is undone in a `finally`, so `model.fast_generate` and any other user of the same
+    # engine are unaffected.
+    _UNSLOTH_GENERATE_WRAPPED = "_unsloth_vllm_generation_lora_wrapped"
+
+    # Mirror the per-device naming in rl.py so two ranks on one node do not race on the
+    # same adapter directory.
+    lora_name = "vllm_gen_lora"
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        lora_name += "_" + os.environ.get("CUDA_VISIBLE_DEVICES", "0").replace(",", "")
+
+    def install_generate_wrapper():
+        original_generate = getattr(vllm_generation.VLLMGeneration, "generate", None)
+        if original_generate is None:
+            logger.info("Unsloth: Could not find VLLMGeneration.generate")
+            return False
+        if getattr(original_generate, _UNSLOTH_GENERATE_WRAPPED, False):
+            return True
+
+        def generate(self, *args, **kwargs):
+            llm = getattr(self, "llm", None)
+            sharing = getattr(llm, "shared_weights", False) or getattr(
+                self, "unsloth_fast_inference_lora", False
+            )
+            if llm is None or not sharing:
+                # Server mode, or a vLLM engine TRL created itself -> upstream behaviour.
+                return original_generate(self, *args, **kwargs)
+
+            load_lora = getattr(self, "_unsloth_load_lora", None)
+            saved = []
+
+            def override(name, make_replacement):
+                bound = getattr(llm, name, None)
+                if bound is None:
+                    return
+                had_own = name in getattr(llm, "__dict__", {})
+                try:
+                    setattr(llm, name, make_replacement(bound))
+                except (AttributeError, TypeError):
+                    return
+                saved.append((name, had_own, bound))
+
+            def caller_already_bound_lora(bound, args, kwargs):
+                """Has the caller's own argument list already filled `lora_request`?
+
+                A keyword `lora_request` that is not None is the caller's choice, so leave
+                it. A keyword `lora_request = None` is not: on a shared-weights engine that
+                means base-model rollouts, which is the bug this whole wrapper exists to
+                fix, so it gets overwritten.
+
+                The positional case is the one that has to be checked rather than assumed.
+                `lora_request` is keyword-only on `LLM.generate` in every vLLM release from
+                0.11.0 to 0.27.1, but on `LLM.chat` it is an ordinary positional-or-keyword
+                parameter, and its index there has already moved once (`tokenization_kwargs`
+                landed in 0.18.0). A caller that passed it positionally has supplied it, and
+                adding a keyword on top would be `TypeError: got multiple values`, not a
+                missing adapter. Bind the real signature instead of counting arguments so a
+                future reshuffle cannot reintroduce that.
+                """
+                if kwargs.get("lora_request", None) is not None:
+                    return True
+                try:
+                    positional = inspect.signature(bound).bind_partial(*args).arguments
+                except (TypeError, ValueError):
+                    # Unintrospectable callable (C extension, odd wrapper): the keyword
+                    # check above is all we have, and injecting is the safe default.
+                    return False
+                return "lora_request" in positional
+
+            def wrap_generation_call(bound):
+                def unsloth_generation_call(*args, **kwargs):
+                    # vLLM needs the adapter handed to it explicitly: the shared engine
+                    # holds the BASE weights, and sync_weights is a no-op when sharing.
+                    if load_lora is not None and not caller_already_bound_lora(bound, args, kwargs):
+                        kwargs["lora_request"] = load_lora(lora_name, load_tensors = True)
+                    return bound(*args, **kwargs)
+
+                return unsloth_generation_call
+
+            def wrap_collective_rpc(bound):
+                def unsloth_collective_rpc(method, *args, **kwargs):
+                    # The engine already shares the live training weights, so
+                    # reload_weights would pull the ORIGINAL checkpoint back off disk.
+                    if method == "reload_weights":
+                        return None
+                    return bound(method, *args, **kwargs)
+
+                return unsloth_collective_rpc
+
+            override("generate", wrap_generation_call)
+            override("chat", wrap_generation_call)
+            override("collective_rpc", wrap_collective_rpc)
+            try:
+                return original_generate(self, *args, **kwargs)
+            finally:
+                for name, had_own, bound in reversed(saved):
+                    try:
+                        if had_own:
+                            setattr(llm, name, bound)
+                        else:
+                            delattr(llm, name)
+                    except AttributeError:
+                        pass
+
+        generate.__name__ = getattr(original_generate, "__name__", "generate")
+        generate.__qualname__ = getattr(
+            original_generate, "__qualname__", "VLLMGeneration.generate"
         )
+        generate.__doc__ = getattr(original_generate, "__doc__", None)
+        # inspect.getsource / inspect.signature unwrap this, so drift detectors and any
+        # other source-reading patch still see TRL's own `generate`.
+        generate.__wrapped__ = original_generate
+        setattr(generate, _UNSLOTH_GENERATE_WRAPPED, True)
+        vllm_generation.VLLMGeneration.generate = generate
+        return True
 
-        def replace_reload_weights(match):
-            indent = match.group("indent")
-            # Chain getattr so server mode (no self.llm) is safe here too.
-            return (
-                f"{indent}if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or "
-                f"getattr(self, 'unsloth_fast_inference_lora', False)):\n"
-                f'{indent}    self.llm.collective_rpc("reload_weights")'
-            )
-
-        patched_src, num_replacements = pattern.subn(replace_reload_weights, src, count = 1)
-        if num_replacements == 0:
-            raise RuntimeError(
-                "Unsloth: Warning - regex did not match, VLLMGeneration.generate patch may have failed"
-            )
-
-        # Inject lora_request when sharing weights (vLLM needs the adapter)
-        lora_generate_pattern = re.compile(
-            r"(self\.llm\.generate\([^\)]+)\)",
-        )
-
-        def inject_lora_request(match):
-            return (
-                f"{match.group(1)}, lora_request="
-                f"self._unsloth_load_lora('vllm_gen_lora', load_tensors=True) "
-                f"if hasattr(self, '_unsloth_load_lora') else None)"
-            )
-
-        patched_src = lora_generate_pattern.sub(inject_lora_request, patched_src)
-        return patched_src
-
+    # Snapshot before patching: a HALF-patched VLLMGeneration is worse than an unpatched
+    # one. `_init_vllm` + `sync_weights` without the generate-side adapter injection means
+    # no weight sync AND no LoRA, i.e. rollouts from the base model with no error. If any
+    # one of the three fails, put all three back.
+    method_names = ("_init_vllm", "sync_weights", "generate")
+    originals = {name: getattr(vllm_generation.VLLMGeneration, name, None) for name in method_names}
     try:
         init_patched = patch_vllm_generation_method(
             "_init_vllm",
@@ -3184,13 +3510,11 @@ def vllm_generation_init_patch():
             "if getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False):",
             "sync_weights",
         )
-        generate_patched = patch_vllm_generation_method(
-            "generate",
-            patch_generate,
-            "if not (getattr(getattr(self, 'llm', None), 'shared_weights', False) or getattr(self, 'unsloth_fast_inference_lora', False)):",
-            "generate",
-        )
+        generate_patched = install_generate_wrapper()
     except RuntimeError as e:
+        for name, original in originals.items():
+            if original is not None:
+                setattr(vllm_generation.VLLMGeneration, name, original)
         logger.warning(str(e))
         return
 

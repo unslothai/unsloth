@@ -108,6 +108,16 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
+* Whether *identifier* is an HF cache snapshot dir, so its public id names the repo rather
+* than the revision inside it. Mirrors ``hf_cache_repo_id`` in core/inference/model_ids.py.
+*/
+export function isHfCacheSnapshotPath(
+  identifier: string | null | undefined,
+): boolean {
+  return identifier != null && hfCacheRepoId(identifier) !== null;
+}
+
+/**
 * The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
 * core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
 * an HF cache snapshot becomes its repo id, any other local GGUF its filename stem.

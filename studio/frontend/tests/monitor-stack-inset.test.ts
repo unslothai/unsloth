@@ -293,6 +293,53 @@ test("a stack too tall for that gap is still lifted over", () => {
   assert.ok(SHORT_H - inset <= SHORT_WELCOME.top, "and clears it fully");
 });
 
+// Two active downloads on the welcome screen of a 1600x891 window. The rail is
+// taller than the 163px band under the composer but its cards scroll, so the
+// height it would PREFER is not worth the corner: dodging for it left the panel
+// mid-window with the corner under it empty.
+const WIDE_W = 1600;
+const WIDE_H = 891;
+const WIDE_WELCOME = {
+  left: 532,
+  top: 524,
+  right: 1520,
+  bottom: 704,
+  coverable: true,
+};
+
+test("a rail that scrolls into the welcome composer's band keeps the corner", () => {
+  const geometry = stackGeometry(WIDE_WELCOME, WIDE_W, WIDE_H, 328, 140);
+  assert.equal(geometry.bottom, 16, "the panel belongs in the corner");
+  assert.ok(geometry.maxHeight >= 140, "and holds the cards at their floor");
+  const stackTop = WIDE_H - geometry.bottom - geometry.maxHeight;
+  assert.ok(stackTop >= WIDE_WELCOME.bottom, "without reaching the composer");
+});
+
+test("a rail whose floor will not fit that band is still lifted over", () => {
+  const geometry = stackGeometry(WIDE_WELCOME, WIDE_W, WIDE_H, 328, 300);
+  assert.ok(geometry.bottom > 16, "300px cannot fit in 163px, so it moves");
+  assert.ok(
+    WIDE_H - geometry.bottom <= WIDE_WELCOME.top,
+    "and clears the composer fully",
+  );
+});
+
+test("the docked composer is dodged however little the rail insists on", () => {
+  const docked = {
+    left: 412,
+    top: 664,
+    right: 1148,
+    bottom: 814,
+    coverable: true,
+  };
+  for (const floor of [1, 40, 120]) {
+    assert.ok(
+      stackBottomInset(docked, CHAT_W, CHAT_H, 260, floor) > 16,
+      `a rail with a ${floor}px floor must still clear Send`,
+    );
+  }
+});
+
 test("a docked composer is dodged whatever the stack measures", () => {
   const docked = { left: 412, top: 664, right: 1148, bottom: 814 };
   for (const height of [40, 80, 120, 260]) {

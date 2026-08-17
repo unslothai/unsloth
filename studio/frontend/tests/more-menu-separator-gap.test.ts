@@ -23,7 +23,9 @@ test("the More flyout's rule sits as far from its rows as the menu's own edge", 
   );
 
   const menu =
-    /onPointerLeave=\{closeMoreSoon\}\s*\n\s*className="([^"]*)"/.exec(source);
+    /<DropdownMenuContent\s+side="right"\s+align="start"\s+sideOffset=\{6\}\s+className="([^"]*)"/.exec(
+      source,
+    );
   assert.ok(menu, "could not find the More flyout's DropdownMenuContent");
   const rule = /<DropdownMenuSeparator className="(mx-1![^"]*)"/.exec(source);
   assert.ok(rule, "could not find the More flyout's separator");

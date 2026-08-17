@@ -196,7 +196,6 @@ def main() -> None:
         )
         context.add_init_script(
             "localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');"
-            "localStorage.setItem('unsloth_onboarding_done', 'true');"
             "localStorage.setItem('unsloth_download_transport', 'http');"
         )
 

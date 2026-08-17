@@ -23,7 +23,6 @@ from hub.schemas.downloads import (
 )
 from hub.schemas.inventory import (
     AddScanFolderRequest,
-    BrowseFoldersResponse,
     CachedGgufResponse,
     CachedModelsResponse,
     DeleteCachedModelResponse,
@@ -32,7 +31,6 @@ from hub.schemas.inventory import (
     HiddenModelsResponse,
     LocalModelListResponse,
     ModelsFolderResponse,
-    RecommendedFoldersResponse,
     OrphanCompanionsResponse,
     RemoveScanFolderResponse,
     ScanFolderInfo,
@@ -43,7 +41,6 @@ from hub.services.models import (
     companion_cleanup,
     deletion,
     downloads,
-    folder_browser,
     gguf_variants,
     local_inventory,
 )
@@ -80,20 +77,6 @@ def remove_scan_folder_endpoint(
     folder_id: int, current_subject: str = Depends(get_current_subject)
 ):
     return local_inventory.remove_scan_folder_response(folder_id)
-
-
-@router.get("/recommended-folders", response_model = RecommendedFoldersResponse)
-def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    return folder_browser.get_recommended_folders_response()
-
-
-@router.get("/browse-folders", response_model = BrowseFoldersResponse)
-def browse_folders(
-    path: Optional[str] = Query(None),
-    show_hidden: bool = Query(False),
-    current_subject: str = Depends(get_current_subject),
-):
-    return folder_browser.browse_folders_response(path, show_hidden)
 
 
 @router.get("/models-folder", response_model = ModelsFolderResponse)
