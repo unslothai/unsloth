@@ -54,12 +54,12 @@ def run_openai() -> list[str]:
     for prompt in PROMPTS:
         history.append({"role": "user", "content": prompt})
         resp = client.chat.completions.create(
-            model       = "default",
-            messages    = history,
+            model = "default",
+            messages = history,
             temperature = 0.0,
-            max_tokens  = MAX_TOKENS,
-            seed        = SEED,
-            extra_body  = {"enable_thinking": False},
+            max_tokens = MAX_TOKENS,
+            seed = SEED,
+            extra_body = {"enable_thinking": False},
         )
         text = resp.choices[0].message.content or ""
         replies.append(text)
@@ -77,8 +77,8 @@ def run_anthropic() -> list[str]:
     #   2. The SDK sends x-api-key by default, but Unsloth's auth layer is HTTPBearer
     #      only, so Authorization has to be set through default_headers instead.
     client = Anthropic(
-        base_url        = BASE,
-        api_key         = "unused",
+        base_url = BASE,
+        api_key = "unused",
         default_headers = {"Authorization": f"Bearer {KEY}"},
     )
     history: list[dict] = []
@@ -86,11 +86,11 @@ def run_anthropic() -> list[str]:
     for prompt in PROMPTS:
         history.append({"role": "user", "content": prompt})
         msg = client.messages.create(
-            model       = "default",
-            max_tokens  = MAX_TOKENS,
-            messages    = history,
+            model = "default",
+            max_tokens = MAX_TOKENS,
+            messages = history,
             temperature = 0.0,
-            extra_body  = {"seed": SEED, "enable_thinking": False},
+            extra_body = {"seed": SEED, "enable_thinking": False},
         )
         text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
         replies.append(text)
@@ -115,9 +115,9 @@ def check(label: str, first: list[str], second: list[str]) -> None:
     # Lower-cased substring checks, so formatting jitter is not a failure.
     joined = " ".join(first).lower()
     assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-    assert "paris" in joined, (
-        f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
-    )
+    assert (
+        "paris" in joined
+    ), f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
     print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
 
 
