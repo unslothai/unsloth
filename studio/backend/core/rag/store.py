@@ -35,6 +35,21 @@ def project_scope(project_id: str) -> str:
     return f"project_{project_id}"
 
 
+CONVERSATION_ARCHIVE_PREFIX = "convarchive_"
+
+
+def conversation_archive_scope(thread_id: str) -> str:
+    """Scope holding the turns a thread's rolling context window has evicted.
+
+    Deliberately NOT ``thread_scope``. That scope is the user's attached documents, and
+    with ``config.THREAD_WHOLE_DOC`` on, ``tool.whole_document_context`` renders every
+    chunk of it into every request -- archiving turns there would re-inject the entire
+    history each turn and defeat the compaction that produced it. Keeping the archive in
+    its own scope also keeps it out of the attachments UI and the citation panel.
+    """
+    return f"{CONVERSATION_ARCHIVE_PREFIX}{thread_id}"
+
+
 def _scopes(scope) -> list[str]:
     """Search helpers accept one scope or several (e.g. project + thread)."""
     return [scope] if isinstance(scope, str) else list(scope)
@@ -197,12 +212,18 @@ def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
 
 
 def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
-    """Every uploaded document across all scopes (KBs, threads, projects)."""
+    """Every uploaded document across all scopes (KBs, threads, projects).
+
+    Archived conversation turns are excluded: they are written by the rolling context
+    window rather than uploaded by anyone, so listing them here would show a chat's own
+    history back to the user as a pile of files they never added.
+    """
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
         "num_chunks, stored_path, created_at, linked_folder_id "
         "FROM documents d WHERE NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
+        "AND d.scope NOT LIKE 'convarchive#_%' ESCAPE '#' "
         "ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]

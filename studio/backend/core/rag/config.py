@@ -24,6 +24,19 @@ RRF_K = int(os.environ.get("RAG_RRF_K", "60"))
 THREAD_WHOLE_DOC = os.environ.get("RAG_THREAD_WHOLE_DOC", "1") == "1"
 WHOLE_DOC_MAX_TOKENS = int(os.environ.get("RAG_WHOLE_DOC_MAX_TOKENS", "6000"))
 
+# Conversation archive: when the rolling context window evicts old turns, keep them in a
+# per-thread searchable scope and pull the relevant ones back on the turn that evicted
+# them. Off restores plain eviction, where an evicted turn is gone for the session.
+# This only does anything once the rolling window actually evicts, which is itself opt-in
+# per request via context_overflow="truncate_oldest".
+CONVERSATION_ARCHIVE = os.environ.get("RAG_CONVERSATION_ARCHIVE", "1") == "1"
+CONVERSATION_ARCHIVE_TOP_K = int(os.environ.get("RAG_CONVERSATION_ARCHIVE_TOP_K", "4"))
+# Room held back during the fit for the turns recalled straight after it. Sized to
+# CONVERSATION_ARCHIVE_TOP_K * CHUNK_TOKENS with slack for the wrapper text.
+CONVERSATION_RECALL_RESERVE_TOKENS = int(
+    os.environ.get("RAG_CONVERSATION_RECALL_RESERVE_TOKENS", "2048")
+)
+
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse
 # + vision work at ingest. 0 disables the cap. Default 200 MB.
