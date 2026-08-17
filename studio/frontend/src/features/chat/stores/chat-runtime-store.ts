@@ -174,9 +174,9 @@ export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
 
 function loadResearchModelTimeoutSeconds(): number {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
-  const value = Number(
-    window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY),
-  );
+  const raw = window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY);
+  if (raw === null) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  const value = Number(raw);
   return Number.isSafeInteger(value) && value >= 0
     ? value
     : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;

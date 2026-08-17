@@ -1478,6 +1478,10 @@ def test_research_budget_limits_allow_unlimited_model_requests():
     payload.budgets["modelTimeoutSeconds"] = 0
     assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
 
+    payload.budgets["modelTimeoutSeconds"] = 10**310
+    with pytest.raises(HTTPException, match = "modelTimeoutSeconds must be between"):
+        _sanitize_config(payload, {"modelId": "local-model"})
+
     payload.budgets["maxSteps"] = 31
     with pytest.raises(HTTPException, match = "maxSteps must be between 1 and 30"):
         _sanitize_config(payload, {"modelId": "local-model"})

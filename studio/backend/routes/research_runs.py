@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import sqlite3
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -47,6 +48,8 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
+# Zero is the unlimited sentinel. Positive values become an httpx float timeout in the worker.
+_MAX_FINITE_MODEL_TIMEOUT_SECONDS = int(sys.float_info.max)
 _DELTA_ONLY_EVENTS = {
     "reasoning.updated",
     "report.updated",
@@ -310,7 +313,7 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
         # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
-        "modelTimeoutSeconds": (0, None),
+        "modelTimeoutSeconds": (0, _MAX_FINITE_MODEL_TIMEOUT_SECONDS),
         "toolTimeoutSeconds": (5, 600),
         # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
