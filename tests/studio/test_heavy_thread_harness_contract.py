@@ -284,8 +284,12 @@ def results_for(harness, reps: list[dict[str, dict]]) -> dict:
                 "by_size": {
                     str(size): {
                         "plan": plan,
-                        "counts": {"messages": 220, "codeBlocks": 20, "highlightedTokens": 35086,
-                                   "actionBars": 110},
+                        "counts": {
+                            "messages": 220,
+                            "codeBlocks": 20,
+                            "highlightedTokens": 35086,
+                            "actionBars": 110,
+                        },
                         "viewport": {"scrollHeight": 90000, "clientHeight": 800, "scrollTop": 0},
                         "stray_api_requests": 0,
                         "console_warnings": 0,
