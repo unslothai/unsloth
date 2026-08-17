@@ -165,8 +165,7 @@ def _timing_helpers(tree: ast.AST) -> set:
     is found on the next pass rather than missed.
     """
     functions = [
-        node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     helpers: set = set()
     while True:
