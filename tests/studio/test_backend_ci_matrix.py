@@ -217,3 +217,42 @@ def test_the_full_matrix_still_runs_on_main():
         "Backend CI no longer runs on push to main, so the interpreter versions dropped "
         "from the pull-request matrix would not be tested anywhere"
     )
+
+
+def test_the_floor_lint_scans_the_tree_rather_than_a_list_of_packages():
+    """The shape of the first version of that lint, which is why this exists.
+
+    It named core, utils and routes and silently missed 116 shipped files: all of hub,
+    plugins, models, storage, auth, picker and state, plus _platform_compat.py, which
+    main.py imports directly. It also named "loggers.py", which is a directory, so that
+    entry matched nothing. A check covering most of a tree reads exactly like one
+    covering all of it, and with the floor leg dropped this is the only thing looking.
+
+    Asserted by counting what the lint would actually hand to vermin against what is on
+    disk, rather than by reading its source for a glob.
+    """
+    import importlib.util
+
+    lint = REPO / "scripts" / "lint_backend_python_floor.py"
+    spec = importlib.util.spec_from_file_location("lint_backend_python_floor", lint)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    backend = REPO / "studio" / "backend"
+    on_disk = {
+        path
+        for path in backend.rglob("*.py")
+        if not any(part in module.EXCLUDE_PARTS for part in path.relative_to(backend).parts)
+    }
+    scanned = {Path(name) for name in module.targets()}
+    missed = {p for p in on_disk if p not in scanned}
+    # Only the recorded exemptions may be absent, and each carries its reason.
+    allowed = {backend / name for name in module.GUARDED}
+    assert missed <= allowed, (
+        f"the floor lint does not scan {sorted(str(p.relative_to(backend)) for p in missed - allowed)}. "
+        f"Those files ship, and a pull request no longer runs them on the oldest "
+        f"interpreter, so nothing else would notice a stdlib symbol from above the floor."
+    )
+    assert len(scanned) > 300, (
+        f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
+    )

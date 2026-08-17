@@ -38,14 +38,34 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-backend-ci.yml"
 
-# Where the backend's own source lives. Tests are excluded deliberately: they are allowed
-# to use whatever the interpreter running them provides, and they are not shipped.
-SOURCES = ("core", "utils", "routes", "loggers.py", "main.py")
-
 BACKEND = REPO / "studio" / "backend"
 
-# Third-party code vendored into the tree, pinned to its own support range.
-EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__")
+# Everything shipped under studio/backend is scanned. The first version of this listed the
+# packages instead, and that is exactly the wrong shape for a floor check: it named core,
+# utils and routes and silently missed 116 files, including all of hub, plugins, models,
+# storage, auth, picker and state, plus _platform_compat.py which main.py imports directly.
+# It also named "loggers.py", which is a directory, so that entry matched nothing at all.
+# A check that covers most of the tree reads exactly like one that covers all of it.
+#
+# So the tree is the input and only these come out:
+#   tests   -- run by whatever interpreter runs them, and not shipped
+#   vendor  -- third party, pinned to its own support range
+EXCLUDE_PARTS = ("tests", "vendor", "node_modules", "__pycache__", ".venv")
+
+# Files where an above-floor symbol is reached deliberately, behind a runtime guard vermin
+# cannot see: it reads names, not control flow, so a try/except AttributeError around an
+# attribute lookup looks identical to an unguarded one.
+#
+# Kept as a named list with reasons rather than by narrowing the scan, because the whole
+# failure of the first version of this lint was a narrower input that looked like coverage.
+# Each entry is printed on every run, and a path that no longer exists fails, so an
+# exemption cannot outlive the code it was written for.
+GUARDED = {
+    "plugins/data-designer-github-repo-seed/src/data_designer_github_repo_seed"
+    "/scraper_impl/state_store.py":
+        "locale.getencoding() is 3.11 and sits in a try/except AttributeError whose "
+        "fallback is locale.getpreferredencoding(False), commented 'Python < 3.11'",
+}
 
 
 def matrix_floor() -> tuple[int, int]:
@@ -66,13 +86,22 @@ def matrix_floor() -> tuple[int, int]:
 
 
 def targets() -> list[str]:
-    found = []
-    for name in SOURCES:
-        path = BACKEND / name
-        if path.exists():
-            found.append(str(path))
+    """Every shipped .py under the backend, found rather than listed."""
+    missing = [name for name in GUARDED if not (BACKEND / name).is_file()]
+    if missing:
+        raise SystemExit(
+            f"GUARDED names files that no longer exist: {missing}. Either the guard moved "
+            f"and the exemption should move with it, or it is gone and the exemption "
+            f"should be too. An exemption for a file nobody can find is a hole."
+        )
+    found = [
+        str(path)
+        for path in sorted(BACKEND.rglob("*.py"))
+        if not any(part in EXCLUDE_PARTS for part in path.relative_to(BACKEND).parts)
+        and str(path.relative_to(BACKEND)) not in GUARDED
+    ]
     if not found:
-        raise SystemExit(f"none of {SOURCES} exist under {BACKEND}; the scan would pass on nothing")
+        raise SystemExit(f"no python files found under {BACKEND}; the scan would pass on nothing")
     return found
 
 
@@ -88,16 +117,21 @@ def main() -> int:
             "vermin is not installed, so the backend floor is unchecked. Install it in "
             "the job that runs this, rather than letting the check quietly pass."
         )
+    files = targets()
+    for name, why in sorted(GUARDED.items()):
+        print(f"[floor] exempt: {name}\n           {why}")
+    print(
+        f"[floor] {len(files)} backend files must run on Python {target}, "
+        f"the oldest leg in the matrix"
+    )
     command = [
         vermin,
         "--no-tips",
         "--no-parse-comments",
         "--violations",
         f"-t={target}",
-        *(f"--exclude-regex=.*/{part}/.*" for part in EXCLUDE_PARTS),
-        *targets(),
+        *files,
     ]
-    print(f"[floor] backend source must run on Python {target} (oldest leg in the matrix)")
     result = subprocess.run(command, capture_output = True, text = True)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
