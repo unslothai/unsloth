@@ -90,6 +90,12 @@ from utils.openai_auto_switch_settings import (
     set_model_override,
     set_openai_auto_switch,
 )
+from utils.keyless_api_access import (
+    DEFAULT_KEYLESS_API_ACCESS_SCOPE,
+    access_exposure,
+    get_keyless_api_access_scope,
+    set_keyless_api_access_scope,
+)
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
@@ -1700,6 +1706,16 @@ def rotate_preview_links(
     return PreviewLinkRotateResponse(rotated = True)
 
 
+class KeylessApiAccessPayload(BaseModel):
+    scope: Literal["off", "inference", "full"]
+
+
+class KeylessApiAccessResponse(BaseModel):
+    scope: Literal["off", "inference", "full"]
+    default_scope: str = DEFAULT_KEYLESS_API_ACCESS_SCOPE
+    exposure: Optional[Literal["colab", "public_url", "network"]] = None
+
+
 class PreviewSharingPayload(BaseModel):
     enabled: bool
 
@@ -1825,6 +1841,47 @@ def update_preview_sharing(
         ) from exc
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+def _keyless_api_access_response(request: Request) -> KeylessApiAccessResponse:
+    return KeylessApiAccessResponse(
+        scope = get_keyless_api_access_scope(),
+        exposure = access_exposure(request.app.state),
+    )
+
+
+@router.get("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def get_keyless_api_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+) -> KeylessApiAccessResponse:
+    return _keyless_api_access_response(request)
+
+
+@router.put("/keyless-api-access", response_model = KeylessApiAccessResponse)
+def update_keyless_api_access(
+    request: Request,
+    payload: KeylessApiAccessPayload,
+    current_subject: str = Depends(get_current_subject),
+) -> KeylessApiAccessResponse:
+    """Choose which routes are served without an API key: none, inference, or all."""
+    try:
+        scope = set_keyless_api_access_scope(payload.scope)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid keyless API access setting."),
+            event = "settings.update_keyless_api_access_failed",
+            log = logger,
+        ) from exc
+    logger.info(
+        "settings.keyless_api_access_updated subject=%s scope=%s exposure=%s",
+        current_subject,
+        scope,
+        access_exposure(request.app.state),
+    )
+    return _keyless_api_access_response(request)
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

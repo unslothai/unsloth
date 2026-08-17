@@ -333,6 +333,8 @@ function buildSnippets(
 }
 
 const KEY_PLACEHOLDER = "sk-unsloth-YOUR_KEY";
+// the openai sdks require some api_key, so name one rather than leave it blank
+const KEYLESS_KEY_PLACEHOLDER = "unsloth-local";
 const USE_TUNNEL_KEY = "unsloth_api_use_tunnel";
 // Slow retry while /v1 has nothing to name: a download or load moves no store state.
 const CATALOG_RETRY_MS = 15000;
@@ -507,7 +509,14 @@ function HighlightedCode({
   );
 }
 
-export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
+export function UsageExamples({
+  apiKey,
+  keyless,
+}: {
+  apiKey?: string | null;
+  /** keyless api access is on, so the snippets can use a placeholder that works */
+  keyless?: boolean;
+}) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
@@ -644,7 +653,8 @@ export function UsageExamples({ apiKey }: { apiKey?: string | null }) {
   }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
 
   const model = useExampleModelName();
-  const key = apiKey || KEY_PLACEHOLDER;
+  // a dummy key is accepted under keyless access, so the snippet runs without creating one
+  const key = apiKey || (keyless ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(

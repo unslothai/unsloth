@@ -17,6 +17,8 @@ import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
 import { MonitorLink } from "../components/monitor-link";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import type { KeylessApiAccessScope } from "../api/keyless-api-access";
+import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { RemoteAccessSection } from "../components/remote-access-section";
@@ -30,6 +32,7 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
+  const [keylessScope, setKeylessScope] = useState<KeylessApiAccessScope>("off");
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -173,11 +176,13 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
+      <KeylessApiAccessSection onScopeChange={setKeylessScope} />
+
       <RemoteAccessSection />
 
       <ModelAutoSwitchSection />
 
-      <UsageExamples apiKey={revealed} />
+      <UsageExamples apiKey={revealed} keyless={keylessScope !== "off"} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

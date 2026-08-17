@@ -2272,8 +2272,16 @@ def _request_api_key_token(request: Any) -> Optional[str]:
 
 
 def _request_has_api_key(request: Any) -> bool:
-    """Whether the request used any API key rather than an interactive session JWT."""
-    return _request_api_key_token(request) is not None
+    """Whether the request used any API key rather than an interactive session JWT.
+
+    A keyless caller counts too: it sends no session either, so the saved-credential
+    rules that hold back an sk-unsloth key must hold it back the same way.
+    """
+    if _request_api_key_token(request) is not None:
+        return True
+    from auth.authentication import admitted_without_session
+
+    return admitted_without_session(request)
 
 
 def _request_is_internal_workflow(request: Any) -> bool:
