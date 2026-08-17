@@ -80,6 +80,13 @@ jobs:
       - name: Backend still runs on the oldest interpreter the matrix claims
         run: python3 scripts/lint_backend_python_floor.py
 
+      # And the test that says the step above must exist. Without this, a pull request
+      # that edits only this workflow and deletes that step passes: Backend CI's paths
+      # cover its own YAML and studio/**, not .github/workflows/**, so the assertion
+      # protecting the step is never collected for the one change it exists to reject.
+      - name: The floor lint is still wired up
+        run: python3 -m pytest tests/studio/test_backend_ci_matrix.py -q
+
       # Runs here rather than in the Repo tests job, for this workflow's own reason:
       # the regression it catches is a workflow or .github/scripts edit that drops a
       # Playwright invocation, and studio-backend-ci.yml's paths do not include

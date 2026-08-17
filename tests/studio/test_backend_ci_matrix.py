@@ -243,12 +243,16 @@ def test_the_floor_lint_scans_the_tree_rather_than_a_list_of_packages():
     }
     scanned = {Path(name) for name in module.targets()}
     missed = {p for p in on_disk if p not in scanned}
-    # Only the recorded exemptions may be absent, and each carries its reason.
-    allowed = {backend / name for name in module.GUARDED}
-    assert missed <= allowed, (
-        f"the floor lint does not scan {sorted(str(p.relative_to(backend)) for p in missed - allowed)}. "
-        f"Those files ship, and a pull request no longer runs them on the oldest "
-        f"interpreter, so nothing else would notice a stdlib symbol from above the floor."
+    assert not missed, (
+        f"the floor lint does not scan "
+        f"{sorted(str(p.relative_to(backend)) for p in missed)}. Those files ship, and a "
+        f"pull request no longer runs them on the oldest interpreter, so nothing else "
+        f"would notice a stdlib symbol from above the floor.\n"
+        f"\n"
+        f"No file-level exemption is allowed here, deliberately. A deliberate above-floor "
+        f"call is suppressed at the SITE with `# novermin` and a reason, which leaves the "
+        f"rest of its module checked. Dropping the whole file would leave everything else "
+        f"in it unchecked forever, which is the package-allowlist mistake one level down."
     )
     assert len(scanned) > 300, (
         f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"

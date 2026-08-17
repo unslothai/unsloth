@@ -52,20 +52,16 @@ BACKEND = REPO / "studio" / "backend"
 #   vendor  -- third party, pinned to its own support range
 EXCLUDE_PARTS = ("tests", "vendor", "node_modules", "__pycache__", ".venv")
 
-# Files where an above-floor symbol is reached deliberately, behind a runtime guard vermin
-# cannot see: it reads names, not control flow, so a try/except AttributeError around an
-# attribute lookup looks identical to an unguarded one.
+# An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin`
+# and a comment saying why, not by dropping its file from the scan. Excluding the file
+# would leave everything else in it permanently unchecked, which is the same mistake as
+# the package allowlist this replaced, one level down.
 #
-# Kept as a named list with reasons rather than by narrowing the scan, because the whole
-# failure of the first version of this lint was a narrower input that looked like coverage.
-# Each entry is printed on every run, and a path that no longer exists fails, so an
-# exemption cannot outlive the code it was written for.
-GUARDED = {
-    "plugins/data-designer-github-repo-seed/src/data_designer_github_repo_seed"
-    "/scraper_impl/state_store.py":
-        "locale.getencoding() is 3.11 and sits in a try/except AttributeError whose "
-        "fallback is locale.getpreferredencoding(False), commented 'Python < 3.11'",
-}
+# The one live case is locale.getencoding() in the data-designer plugin's state_store,
+# inside a try/except AttributeError with a pre-3.11 fallback. vermin reads names rather
+# than control flow, so it cannot see that the guard is already there.
+#
+# Comment parsing is therefore ON, which is what makes the annotation work.
 
 
 def matrix_floor() -> tuple[int, int]:
@@ -87,18 +83,10 @@ def matrix_floor() -> tuple[int, int]:
 
 def targets() -> list[str]:
     """Every shipped .py under the backend, found rather than listed."""
-    missing = [name for name in GUARDED if not (BACKEND / name).is_file()]
-    if missing:
-        raise SystemExit(
-            f"GUARDED names files that no longer exist: {missing}. Either the guard moved "
-            f"and the exemption should move with it, or it is gone and the exemption "
-            f"should be too. An exemption for a file nobody can find is a hole."
-        )
     found = [
         str(path)
         for path in sorted(BACKEND.rglob("*.py"))
         if not any(part in EXCLUDE_PARTS for part in path.relative_to(BACKEND).parts)
-        and str(path.relative_to(BACKEND)) not in GUARDED
     ]
     if not found:
         raise SystemExit(f"no python files found under {BACKEND}; the scan would pass on nothing")
@@ -118,8 +106,6 @@ def main() -> int:
             "the job that runs this, rather than letting the check quietly pass."
         )
     files = targets()
-    for name, why in sorted(GUARDED.items()):
-        print(f"[floor] exempt: {name}\n           {why}")
     print(
         f"[floor] {len(files)} backend files must run on Python {target}, "
         f"the oldest leg in the matrix"
@@ -127,7 +113,6 @@ def main() -> int:
     command = [
         vermin,
         "--no-tips",
-        "--no-parse-comments",
         "--violations",
         f"-t={target}",
         *files,
