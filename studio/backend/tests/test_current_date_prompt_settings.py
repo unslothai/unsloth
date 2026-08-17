@@ -84,6 +84,18 @@ class TestCurrentDatePromptLine:
         already = "The current date is 2026-08-14.\n\nBASE"
         assert inference._apply_current_date_prompt(already) == already
 
+    def test_discussing_the_date_phrase_does_not_suppress_injection(self, monkeypatch):
+        import routes.inference as inference
+
+        monkeypatch.setattr(
+            inference, "current_date_prompt_line", lambda: "The current date is 2026-08-15."
+        )
+        prompt = "The current date is a phrase this prompt discusses, not a date stamp."
+        assert (
+            inference._apply_current_date_prompt(prompt)
+            == f"The current date is 2026-08-15.\n\n{prompt}"
+        )
+
     def test_line_is_empty_when_disabled(self, monkeypatch):
         monkeypatch.setattr(current_date_settings, "get_current_date_prompt_enabled", lambda: False)
         assert current_date_settings.current_date_prompt_line(date(2026, 8, 15)) == ""
@@ -207,6 +219,23 @@ class TestExternalProviderMessages:
             {"role": "user", "content": "hi"},
         ]
         assert self._prepend(messages) is messages
+
+    def test_a_phrase_discussion_inside_a_text_part_does_not_suppress(self):
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "The current date is merely a phrase under discussion.",
+                    },
+                ],
+            },
+            {"role": "user", "content": "hi"},
+        ]
+        out = self._prepend(messages)
+        assert out[0] == {"role": "system", "content": "The current date is 2026-08-15."}
+        assert out[1:] == messages
 
     def test_only_self_hosted_provider_types_are_dated(self):
         from core.inference.providers import provider_is_self_hosted

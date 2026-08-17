@@ -2399,6 +2399,10 @@ from utils.current_date_prompt_settings import (
     current_date_prompt_line,
 )
 
+_CURRENT_DATE_PROMPT_LINE_RE = _re.compile(
+    rf"{_re.escape(CURRENT_DATE_PROMPT_PREFIX)}[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}\."
+)
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -3355,17 +3359,23 @@ def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
 
 
 def _states_a_date(content: Any) -> bool:
-    """Whether system content already names a date, whoever put it there.
+    """Whether system content contains a canonical current-date prompt line.
 
     Durable research stamps its own date at run creation and then posts the prompt back through
     this route, so a second one would contradict the first once the run crosses midnight. Text
-    parts are read as well as plain strings, since a date in one counts just the same.
+    parts are read as well as plain strings. Only a complete ISO-shaped stamp line counts, so
+    unrelated prose that discusses the prefix does not suppress injection.
     """
+    def _text_states_a_date(text: str) -> bool:
+        return any(
+            _CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line) for line in text.splitlines()
+        )
+
     if isinstance(content, str):
-        return CURRENT_DATE_PROMPT_PREFIX in content
+        return _text_states_a_date(content)
     if isinstance(content, list):
         return any(
-            isinstance(part, dict) and CURRENT_DATE_PROMPT_PREFIX in str(part.get("text") or "")
+            isinstance(part, dict) and _text_states_a_date(str(part.get("text") or ""))
             for part in content
         )
     return False
