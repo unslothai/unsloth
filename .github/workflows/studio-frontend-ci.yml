@@ -33,11 +33,11 @@ on:
     branches: [main]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -236,6 +236,12 @@ jobs:
             echo "::error::studio/frontend/dist/ exceeded the 75 MB budget. Drop dead deps (e.g. the unused next dep) or split chunks."
             exit 1
           fi
+
+      # The 75 MB above is the whole artifact, which a lazily loaded page does not
+      # make worse. This is the part the user waits through: the entry chunk plus
+      # everything Vite preloads for it, fetched and executed before first paint.
+      - name: Startup bundle budget
+        run: npm run bundle:check
 
       - name: Biome (non-blocking until accumulated drift is cleared)
         continue-on-error: true

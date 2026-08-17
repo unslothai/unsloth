@@ -25,8 +25,10 @@ import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import {
   type ComponentProps,
+  createContext,
   memo,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -293,6 +295,21 @@ function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
   } satisfies BlockProps;
 }
 
+/**
+ * Whether this message carries a renderable render_html tool part, asked once per message part
+ * instead of once per markdown block.
+ *
+ * The value belongs to the MESSAGE, but the block component is mounted per block, so subscribing
+ * there minted a subscription per block (800 of 10,193 on the 300K-character heavy thread), each
+ * re-scanning `message.parts` on every store update -- and every keystroke is a store update.
+ * One subscription in MarkdownTextImpl plus a context read gives the same blocks the same answer.
+ *
+ * `false` is the right default for a block rendered outside a message part (nothing does today):
+ * no render_html part is visible, which is what the artifact collapse below assumes absent
+ * evidence.
+ */
+const RenderHtmlToolPresenceContext = createContext(false);
+
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlockContent(props: BlockProps) {
@@ -302,8 +319,8 @@ function StreamdownBlockContent(props: BlockProps) {
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
       !state.loadedIsDiffusion,
   );
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
+  const messageHasRenderableRenderHtmlTool = useContext(
+    RenderHtmlToolPresenceContext,
   );
   const hasMermaidFence = props.content.includes("```mermaid");
   const mermaidSource = getMermaidSource(props.content);
@@ -473,6 +490,10 @@ const MarkdownTextImpl = ({ text: textOverride }: { text?: string } = {}) => {
   // message. The cache generation joins the key for the case the Markdown string
   // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
+  // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
   const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
@@ -500,24 +521,28 @@ const MarkdownTextImpl = ({ text: textOverride }: { text?: string } = {}) => {
   }
 
   return (
-    <div data-status={status.type} className="min-w-0 max-w-full">
-      <Streamdown
-        key={`${messageId}:${incrementalCache.renderGeneration}`}
-        mode="streaming"
-        parseIncompleteMarkdown={!incrementalRender}
-        parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
-        isAnimating={isStreaming}
-        animated={STREAMDOWN_IMMEDIATE_UPDATES}
-        plugins={STREAMDOWN_PLUGINS}
-        components={STREAMDOWN_COMPONENTS}
-        urlTransform={safeMarkdownUrl}
-        controls={STREAMDOWN_CONTROLS}
-        shikiTheme={STREAMDOWN_SHIKI_THEME}
-        BlockComponent={StreamdownBlock}
-      >
-        {incrementalRender?.markdown ?? processedText}
-      </Streamdown>
-    </div>
+    <RenderHtmlToolPresenceContext.Provider
+      value={messageHasRenderableRenderHtmlTool}
+    >
+      <div data-status={status.type} className="min-w-0 max-w-full">
+        <Streamdown
+          key={`${messageId}:${incrementalCache.renderGeneration}`}
+          mode="streaming"
+          parseIncompleteMarkdown={!incrementalRender}
+          parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
+          isAnimating={isStreaming}
+          animated={STREAMDOWN_IMMEDIATE_UPDATES}
+          plugins={STREAMDOWN_PLUGINS}
+          components={STREAMDOWN_COMPONENTS}
+          urlTransform={safeMarkdownUrl}
+          controls={STREAMDOWN_CONTROLS}
+          shikiTheme={STREAMDOWN_SHIKI_THEME}
+          BlockComponent={StreamdownBlock}
+        >
+          {incrementalRender?.markdown ?? processedText}
+        </Streamdown>
+      </div>
+    </RenderHtmlToolPresenceContext.Provider>
   );
 };
 
