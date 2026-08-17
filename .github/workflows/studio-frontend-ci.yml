@@ -22,6 +22,9 @@ on:
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
       - 'tests/studio/playwright_heavy_thread.py'
+      - 'tests/studio/probe_dismiss_guard.py'
+      - 'studio/frontend/src/lib/menu-dismiss.ts'
+      - 'studio/frontend/src/lib/menu-dismiss-guard.tsx'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -202,6 +205,15 @@ jobs:
           SMOKE_HEAVY_REPEATS: '1'
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
+
+      # The chat menus are non-modal, so nothing shields the control under a dismissing
+      # click any more and the guard in menu-dismiss.ts is the only thing that does. A quick
+      # press passes with or without it, so the gate is the three variants that do not: a held
+      # press, a press across a busy main thread, and a touch tap. Failure here means one
+      # dismissal deleted a message without confirming.
+      - name: Browser check for non-modal menu dismissal
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
 
       - name: Build
         run: npm run build

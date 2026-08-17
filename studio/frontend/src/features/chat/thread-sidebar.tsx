@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
@@ -218,7 +218,8 @@ export function ThreadSidebar({
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="bottom" align="end" className="w-56" onPointerDownOutside={swallowDismissingClick}>
+              <DropdownMenuContent side="bottom" align="end" className="w-56">
+                <MenuDismissGuard />
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
@@ -285,7 +286,8 @@ export function ThreadSidebar({
                         <span className="sr-only">More options</span>
                       </SidebarMenuAction>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent side="bottom" align="end" className="w-44" onPointerDownOutside={swallowDismissingClick}>
+                    <DropdownMenuContent side="bottom" align="end" className="w-44">
+                      <MenuDismissGuard />
                       <DropdownMenuItem onSelect={() => openRename(item)}>
                         <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
                         Rename

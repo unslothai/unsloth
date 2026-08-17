@@ -58,7 +58,7 @@ import {
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Edit03Icon, LayoutAlignRightIcon } from "@hugeicons/core-free-icons";
@@ -1150,11 +1150,11 @@ export function ChatSettingsPanel({
                 </div>
               </DropdownMenuTrigger>
               <DropdownMenuContent
-                onPointerDownOutside={swallowDismissingClick}
                 align="start"
                 sideOffset={0}
                 className="menu-soft-surface ring-0 border-0 rounded-lg p-1.5"
               >
+                <MenuDismissGuard />
                 {presets.map((p, index) => (
                   <Fragment key={p.name}>
                     <DropdownMenuItem
