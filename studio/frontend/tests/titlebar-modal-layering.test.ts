@@ -16,6 +16,9 @@ const DIALOG_OVERLAY_PATTERN =
   /data-slot="dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
 const ALERT_DIALOG_OVERLAY_PATTERN =
   /data-slot="alert-dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
+const SETTINGS_OVERLAY_PATTERN = /overlayClassName="([^"]*\bz-\[60\][^"]*)"/;
+const SETTINGS_SURFACE_PATTERN =
+  /"([^"]*\bsettings-surface\b[^"]]*\bz-\[60\][^"]*)"/;
 const TOP_FULL_PATTERN = /top-full/;
 const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
 
@@ -70,4 +73,31 @@ test("below-titlebar decoration is not trapped in the titlebar stacking context"
   assert.notEqual(headerEnd, -1);
   const header = titlebar.slice(headerIndex, headerEnd);
   assert.doesNotMatch(header, TOP_FULL_PATTERN);
+});
+
+test("settings stays above ordinary chat surfaces and below window controls", async () => {
+  const [titlebar, dialog, settings] = await Promise.all([
+    source("components/tauri/window-titlebar.tsx"),
+    source("components/ui/dialog.tsx"),
+    source("features/settings/settings-dialog.tsx"),
+  ]);
+
+  const titlebarHeader = titlebar.match(TITLEBAR_PATTERN);
+  const dialogOverlay = dialog.match(DIALOG_OVERLAY_PATTERN);
+  const settingsOverlay = settings.match(SETTINGS_OVERLAY_PATTERN);
+  const settingsSurface = settings.match(SETTINGS_SURFACE_PATTERN);
+
+  assert.ok(titlebarHeader);
+  assert.ok(dialogOverlay);
+  assert.ok(settingsOverlay);
+  assert.ok(settingsSurface);
+
+  const ordinaryModalLayer = zIndex(dialogOverlay[1]);
+  const settingsOverlayLayer = zIndex(settingsOverlay[1]);
+  const settingsSurfaceLayer = zIndex(settingsSurface[1]);
+  const titlebarLayer = zIndex(titlebarHeader[1]);
+
+  assert.equal(settingsOverlayLayer, settingsSurfaceLayer);
+  assert.ok(ordinaryModalLayer < settingsOverlayLayer);
+  assert.ok(settingsSurfaceLayer < titlebarLayer);
 });
