@@ -80,6 +80,7 @@ BACKEND_ISOLATED = [
     ("tests/test_tool_call_parser_strict.py", "compares parse time at two nesting depths"),
     # Found by staging rather than by the scan, and the scan cannot find it: see below.
     ("tests/test_tunnel_safe_long_post.py", "work sleeps 0.2s past a 0.05s keepalive timer"),
+    ("tests/test_scan_loras_off_event_loop.py", "counts heartbeats during a 0.3s sleep"),
 ]
 
 # What the scan above does NOT cover, recorded because the gap is structural rather than a
@@ -90,11 +91,18 @@ BACKEND_ISOLATED = [
 # first, and nothing in the expression is a duration. It failed exactly that way on a
 # staging 3.13 leg that had been green.
 #
+# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how
+# many times a heartbeat coroutine ticked during a 0.3s sleep and requires at least three.
+# Descheduling the worker costs ticks without the scan being wrong, and the assertion
+# compares a COUNT, so again there is no duration to find.
+#
 # Ten backend files pair a sub-second sleep with a small threshold constant. Four times the
 # threshold was not enough margin for the one that failed, so the ratio is not a usable
-# rule, and flagging all ten would serialise a large part of the suite on a guess. So this
-# class is left to staging, which is the only thing that has ever detected one, and named
-# here so the next person does not assume the scan covers it.
+# rule, and flagging all ten would serialise a large part of the suite on a guess.
+#
+# So this class is found by reading rather than by scanning. Both entries here arrived that
+# way, one from a staging failure and one from review, and the note is here so the next
+# person does not assume the scan covers it.
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
 # under four workers on four vCPUs it measures the scheduler as much as the code. Above it
