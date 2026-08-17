@@ -357,12 +357,82 @@ def test_a_chat_moved_out_of_its_project_stays_where_it_was_put(claude_home):
 
 
 def test_a_chat_deleted_here_is_not_resurrected(claude_home):
+    # A second conversation stays, so this is a targeted delete rather than
+    # an empty Studio, which Import from Claude Code treats as a blank slate.
+    write_session(claude_home, "-Users-me-app", "session-two", [user_record("u9", "Keep me", T0)])
     import_claude_chats()
     thread_id = thread_id_for("session-one")
     studio_db.delete_chat_threads([thread_id])
     summary = import_claude_chats()
     assert summary.skipped == 1
     assert studio_db.get_chat_thread(thread_id) is None
+    assert studio_db.get_chat_thread(thread_id_for("session-two")) is not None
+
+
+def test_clearing_history_lets_claude_be_imported_again(claude_home):
+    import_claude_chats()
+    studio_db.clear_chat_history()
+    summary = import_claude_chats()
+    assert summary.new_chats == 1
+    assert studio_db.get_chat_thread(thread_id_for("session-one")) is not None
+
+
+def test_a_late_tool_result_reaches_an_already_imported_call(claude_home):
+    write_session(
+        claude_home,
+        "-Users-me-app",
+        "session-one",
+        [
+            user_record("u1", "read it", T0),
+            assistant_record(
+                "a1",
+                [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "a.txt"}}],
+                T1,
+                parent = "u1",
+            ),
+        ],
+    )
+    import_claude_chats()
+    write_session(
+        claude_home,
+        "-Users-me-app",
+        "session-one",
+        [
+            user_record("u1", "read it", T0),
+            assistant_record(
+                "a1",
+                [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "a.txt"}}],
+                T1,
+                parent = "u1",
+            ),
+            tool_result_record("u2", "toolu_1", "file body", T2, parent = "a1"),
+            assistant_record("a2", [text_block("Done.")], T3, parent = "u2"),
+        ],
+    )
+    import_claude_chats()
+    messages = studio_db.list_chat_messages(thread_id_for("session-one"))
+    call = next(part for part in messages[1]["content"] if part.get("type") == "tool-call")
+    assert call["result"] == "file body"
+    assert messages[-1]["content"][0]["text"] == "Done."
+
+
+def test_a_no_op_import_does_not_promote_the_project_in_the_sidebar(claude_home):
+    import_claude_chats()
+    project_id = project_id_for("-Users-me-app")
+    original = studio_db.get_chat_project(project_id)["updatedAt"]
+    import_claude_chats()
+    assert studio_db.get_chat_project(project_id)["updatedAt"] == original
+
+
+def test_a_deleted_empty_project_is_not_recreated_for_moved_chats(claude_home):
+    import_claude_chats()
+    thread_id = thread_id_for("session-one")
+    project_id = project_id_for("-Users-me-app")
+    studio_db.update_chat_thread(thread_id, {"projectId": None})
+    studio_db.delete_chat_project(project_id)
+    import_claude_chats()
+    assert studio_db.get_chat_project(project_id) is None
+    assert studio_db.get_chat_thread(thread_id)["projectId"] is None
 
 
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(claude_home):
