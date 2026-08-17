@@ -97,7 +97,10 @@ def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
 
     assert _emitter_client_thinking(events) == "The capital of France is Paris."
     assert _emitter_client_text(events) == ""
-    assert any('"type": "thinking"' in e for e in events)
+    thinking_start = next(e for e in events if '"type": "thinking"' in e)
+    # signature is part of the Anthropic thinking-block shape; strict stream
+    # decoders reject the block start without it.
+    assert '"signature": ""' in thinking_start
 
 
 def test_anthropic_emitter_splits_think_from_answer():
@@ -151,6 +154,45 @@ def test_think_parsing_expected_gates_on_capability_and_request():
     assert _think_parsing_expected(_Backend(default = False), _basic_payload()) is False
     assert _think_parsing_expected(_Backend(), _basic_payload()) is True
     assert _think_parsing_expected(_Backend(), _basic_payload(enable_thinking = True)) is True
+
+
+def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
+    # Effort-only requests must drive enable_thinking-style templates the same
+    # way /v1/responses does: "none" is off, a named level is on. Generation
+    # and the parsing gate read these same args, so they cannot disagree.
+    from routes.inference import _anthropic_reasoning_args
+
+    assert _anthropic_reasoning_args(_basic_payload(reasoning_effort = "none"))[
+        "enable_thinking"
+    ] is False
+    assert _anthropic_reasoning_args(_basic_payload(reasoning_effort = "high"))[
+        "enable_thinking"
+    ] is True
+    assert _anthropic_reasoning_args(_basic_payload())["enable_thinking"] is None
+    # An explicit boolean always wins over the effort mapping.
+    assert _anthropic_reasoning_args(
+        _basic_payload(enable_thinking = True, reasoning_effort = "none")
+    )["enable_thinking"] is True
+
+
+def test_replayed_thinking_preserved_only_when_requested():
+    from core.inference.anthropic_compat import anthropic_messages_to_openai
+
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "prior trace", "signature": ""},
+                {"type": "text", "text": "the answer"},
+            ],
+        },
+    ]
+    dropped = anthropic_messages_to_openai(messages)
+    assert "reasoning_content" not in dropped[-1]
+    kept = anthropic_messages_to_openai(messages, preserve_thinking = True)
+    assert kept[-1]["reasoning_content"] == "prior trace"
+    assert kept[-1]["content"] == "the answer"
 
 
 def test_anthropic_emitter_holds_back_partial_think_tag():

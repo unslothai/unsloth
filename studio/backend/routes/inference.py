@@ -2936,9 +2936,17 @@ def _anthropic_reasoning_args(payload) -> dict:
     reasoning fields; without this the request is parsed and silently dropped,
     so the model can never be switched out of its load-time reasoning default.
     """
+    enable_thinking = payload.resolved_enable_thinking()
+    reasoning_effort = payload.reasoning_effort
+    # Mirror the /v1/responses mapping: an effort-only request still drives
+    # enable_thinking-style templates, whose only dial is the boolean --
+    # "none" means off, any named level means on. This keeps generation and
+    # the think-markup parsing gate reading the same effective controls.
+    if enable_thinking is None and reasoning_effort is not None:
+        enable_thinking = reasoning_effort != "none"
     return {
-        "enable_thinking": payload.resolved_enable_thinking(),
-        "reasoning_effort": payload.reasoning_effort,
+        "enable_thinking": enable_thinking,
+        "reasoning_effort": reasoning_effort,
         "preserve_thinking": payload.preserve_thinking,
     }
 
@@ -2957,11 +2965,13 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
-    enable_thinking = payload.resolved_enable_thinking()
-    reasoning_effort = payload.reasoning_effort
-    if enable_thinking is False or reasoning_effort == "none":
+    # Read the SAME effective controls generation forwards, so parsing can
+    # never disagree with what the template was actually told to do.
+    args = _anthropic_reasoning_args(payload)
+    enable_thinking = args["enable_thinking"]
+    if enable_thinking is False:
         return False
-    if enable_thinking is None and reasoning_effort is None:
+    if enable_thinking is None:
         # Unspecified: the template's own default decides whether it thinks.
         return bool(getattr(llama_backend, "reasoning_default", True))
     return True
@@ -19738,6 +19748,7 @@ async def anthropic_count_tokens(
     openai_messages = anthropic_messages_to_openai(
         [m.model_dump() for m in payload.messages],
         payload.system,
+        preserve_thinking = bool(payload.preserve_thinking),
     )
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
@@ -19927,6 +19938,7 @@ async def anthropic_messages(
     openai_messages = anthropic_messages_to_openai(
         [m.model_dump() for m in payload.messages],
         payload.system,
+        preserve_thinking = bool(payload.preserve_thinking),
     )
     # Strip synthetic provider-side builtin tool history (web_search,
     # web_fetch, code_execution, image_generation cards tagged with

@@ -70,13 +70,21 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
 
 
 def anthropic_messages_to_openai(
-    messages: list[dict], system: Optional[Union[str, list]] = None
+    messages: list[dict],
+    system: Optional[Union[str, list]] = None,
+    preserve_thinking: bool = False,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
     User messages with ``image`` blocks are emitted as OpenAI multimodal
     content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
     they flow through llama-server's native vision pathway.
+
+    ``preserve_thinking`` keeps replayed assistant ``thinking`` blocks as
+    ``reasoning_content`` on the converted message, so templates that render
+    historical reasoning (Qwen3.6-style ``preserve_thinking``) actually receive
+    it; otherwise thinking is dropped from the prompt. ``redacted_thinking``
+    carries only ciphertext and is always dropped.
     """
     result: list[dict] = []
 
@@ -103,14 +111,20 @@ def anthropic_messages_to_openai(
             continue
 
         if role == "assistant":
-            # Assistant content: text + tool_use only (no images in Anthropic's model).
+            # Assistant content: text + tool_use (no images in Anthropic's model),
+            # plus replayed thinking when preservation is requested.
             text_parts: list[str] = []
             tool_calls: list[dict] = []
+            thinking_parts: list[str] = []
             for block in content:
                 b = block if isinstance(block, dict) else block.model_dump()
                 btype = b.get("type", "")
                 if btype == "text":
                     text_parts.append(b["text"])
+                elif btype == "thinking" and preserve_thinking:
+                    t = b.get("thinking") or ""
+                    if t:
+                        thinking_parts.append(t)
                 elif btype == "tool_use":
                     tool_calls.append(
                         {
@@ -125,6 +139,8 @@ def anthropic_messages_to_openai(
             msg_dict: dict[str, Any] = {"role": "assistant"}
             if text_parts:
                 msg_dict["content"] = "\n".join(text_parts)
+            if thinking_parts:
+                msg_dict["reasoning_content"] = "\n\n".join(thinking_parts)
             if tool_calls:
                 msg_dict["tool_calls"] = tool_calls
             result.append(msg_dict)
@@ -719,7 +735,10 @@ class AnthropicStreamEmitter:
                 {
                     "type": "content_block_start",
                     "index": self.block_index,
-                    "content_block": {"type": "thinking", "thinking": ""},
+                    # signature is part of the Anthropic thinking-block shape;
+                    # strict stream decoders reject the block without it. Local
+                    # models have no signing key, so it stays empty.
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
                 },
             )
         ]
@@ -1061,7 +1080,8 @@ class AnthropicPassthroughEmitter:
                 {
                     "type": "content_block_start",
                     "index": self.block_index,
-                    "content_block": {"type": "thinking", "thinking": ""},
+                    # Empty signature keeps strict Anthropic decoders happy.
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
                 },
             )
         ]
