@@ -439,9 +439,13 @@ def _certain_nodes(node: ast.AST, flags: frozenset[str] = frozenset()):
             yield from _certain_nodes(child, flags)
         return
     if isinstance(node, ast.Try):
-        for field in ("body", "finalbody"):
-            for child in getattr(node, field):
-                yield from _certain_nodes(child, flags)
+        # Only the `finally`. A try body whose handler swallows the exception is
+        # exactly a block that may stop part way: an optional import fails, the
+        # handler catches it, and the stub call below it never runs while the heavy
+        # import after the try does. Counting the body reported that file stubbed.
+        # `else` and the handlers are conditional by construction. Reported on this PR.
+        for child in node.finalbody:
+            yield from _certain_nodes(child, flags)
         return
     yield from _runtime_nodes(node)
 
@@ -1613,6 +1617,29 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(stub_that_never_runs, heavy), stub_that_never_runs
+
+    # A try body can stop part way. The stub below a failed optional import never
+    # runs, while the heavy import after the try does.
+    swallowed = (
+        "try:\n"
+        "    import optional_thing\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "except ImportError:\n"
+        "    pass\n"
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(swallowed, heavy), swallowed
+    # A `finally` does run, on both paths.
+    in_finally = (
+        "try:\n"
+        "    import optional_thing\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "finally:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert not _is_offender(in_finally, heavy), in_finally
 
     # A stub on a branch the import cannot be on. Line order alone put it above the
     # import while the two exclude each other.
