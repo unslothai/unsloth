@@ -357,9 +357,7 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
         # as stubbed, when Python attempts that import first and collection dies.
         # Reported on this PR, against the version that widened the search into
         # compound statements without narrowing this side to match.
-        nodes = [
-            node for node in _runtime_nodes(statement) if getattr(node, "lineno", 0) < line
-        ]
+        nodes = [node for node in _runtime_nodes(statement) if getattr(node, "lineno", 0) < line]
         if any(
             isinstance(node, ast.Call) and _helper_installs_stub(_callee_name(node), helpers, named)
             for node in nodes
