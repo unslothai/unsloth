@@ -13493,11 +13493,7 @@ class LlamaCppBackend:
                     # projector the resolve step may then suppress costs one small
                     # companion file next to the weights; losing audio costs the
                     # feature. The suppression itself happens at the resolve.
-                    if (
-                        is_vision
-                        and not mmproj_path
-                        and not extra_args_disable_mmproj(extra_args)
-                    ):
+                    if is_vision and not mmproj_path and not extra_args_disable_mmproj(extra_args):
                         mmproj_path = self._download_mmproj(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
