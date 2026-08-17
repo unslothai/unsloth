@@ -997,6 +997,6 @@ def test_clamp_never_raises_a_value_the_zoo_had_lowered():
 
     written = shim.clamp_to_available_ram({}, dict(throttled), module = module)
     assert int(written[_LIMIT]) < int(throttled[_LIMIT]), "the budget still has to shrink"
-    assert written["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] == "4", (
-        "a clamp that raises anything is not a clamp"
-    )
+    assert (
+        written["HF_XET_CLIENT_AC_MAX_DOWNLOAD_CONCURRENCY"] == "4"
+    ), "a clamp that raises anything is not a clamp"

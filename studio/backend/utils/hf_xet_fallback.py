@@ -394,7 +394,9 @@ def clamp_to_available_ram(
             if key not in sized:
                 continue
             before, after = _as_int(sized[key]), _as_int(value)
-            written[key] = sized[key] if before is not None and after is not None and after > before else value
+            written[key] = (
+                sized[key] if before is not None and after is not None and after > before else value
+            )
         env.update(written)
         import logging as _logging
 
