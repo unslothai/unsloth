@@ -58,6 +58,21 @@ def _between(source: str, start: str, end: str) -> str:
     return tail.split(end, 1)[0]
 
 
+def _guard_for(source: str, call: str) -> str:
+    """The `if (...)` condition whose body performs ``call``.
+
+    Searching the whole file for the identity comparison is not enough: the abort
+    and cleanup branches next to the dispatch carry the same expression, so the
+    dispatch guard could regress to `.has(reservationKey)` on its own and a
+    whole-file search would still find a match in its neighbours.
+    """
+    assert call in source, f"missing call: {call}"
+    head = source.split(call, 1)[0]
+    opener = head.rfind("if (")
+    assert opener != -1, f"no `if (` guarding {call}"
+    return head[opener:]
+
+
 def test_scheduler_dispatches_each_ready_chat_without_a_frontend_global_cap():
     pump = _between(
         THREAD,
@@ -183,7 +198,16 @@ def test_composer_only_queues_behind_the_current_chat():
     # Identity, not mere presence: a reservation can be replaced between the
     # start and the callback, and acting on the successor would dispatch the
     # wrong prompt. `.has` only asked whether the key was occupied.
-    assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in THREAD
+    # Read out of the guard that actually dispatches, not out of the file: the
+    # abort and cleanup branches beside it hold the same comparison, so a
+    # whole-file search stays green while the dispatch alone regresses to `.has`.
+    dispatch_guard = _guard_for(THREAD, "startPromptQueue(items, target, waitForCurrentRun);")
+    assert "promptQueueStartPendingRef.current.get(reservationKey) ===" in dispatch_guard
+    assert "promptQueueStartPendingRef.current.has(" not in dispatch_guard
+    # The other two are load-bearing as well. Abort without the identity check
+    # reports the successor's start as this one's failure; cleanup without it
+    # deletes the successor's entry.
+    assert THREAD.count("promptQueueStartPendingRef.current.get(reservationKey) ===") == 3
     assert "promptQueueStartPendingRef.current.delete(reservationKey)" in THREAD
     assert "promptQueueStartPendingRef.current.set(reservationKey, reservation)" in THREAD
     # Captured when the queue starts, not read live when it dispatches: a chat
