@@ -28,12 +28,17 @@ const CORPUS = [
   "a\nb\nc",
   "$5 and \\(x\\)",
   "```ts\nconst a = 1;\n```",
-  "é",            // combining acute
-  "\u{1F600}",          // astral, two code units
+  "é", // combining acute
+  "\u{1F600}", // astral, two code units
   "x\u{1F600}y",
   "\u{1F600}\u{1F600}",
   "aaaaaaaaaa",
   "aaaaaaaaab",
+  // Case, which nothing else here varies: a compare that folded case would
+  // otherwise agree with startsWith on every entry above.
+  "A",
+  "aB",
+  "AAAAAAAAAA",
 ];
 
 test("hasPrefix agrees with startsWith on a fixed corpus", () => {
@@ -92,7 +97,11 @@ test("hasPrefix agrees with startsWith under randomised growth", () => {
             return x;
           })();
     const expected = a.startsWith(b);
-    assert.equal(hasPrefix(a, b), expected, `a=${JSON.stringify(a)} b=${JSON.stringify(b)}`);
+    assert.equal(
+      hasPrefix(a, b),
+      expected,
+      `a=${JSON.stringify(a)} b=${JSON.stringify(b)}`,
+    );
     agreed += 1;
     if (expected) bothTrue += 1;
   }

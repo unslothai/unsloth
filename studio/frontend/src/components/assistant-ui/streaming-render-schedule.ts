@@ -617,11 +617,15 @@ function normalizeLineEndings(text: string): string {
 /**
  * `a` begins with `b`.
  *
- * `String.prototype.startsWith` is the obvious spelling and is far slower here:
- * on a growing reply it scans, while slicing to the prefix length and comparing
- * lets V8 reject on length and then compare natively. Measured over a 60,000
- * character stream, 1,052 comparisons: 79.8 ms against 1.1 ms when the two
- * strings share a parent, and 74.3 ms against 1.6 ms when they do not.
+ * `String.prototype.startsWith` is the obvious spelling and is far slower here,
+ * because it scans where slicing to the prefix length and comparing lets the
+ * engine reject on length and then compare natively.
+ *
+ * The win is in the PREFIX length, not in how the strings are represented. Swept
+ * on V8: at an 8 character prefix `startsWith` is FASTER (0.4x), at 1,024 it is
+ * 105x slower and at 60,000 it is 250x slower, and a cons receiver behaves the
+ * same as a flat one (250x against 254x). So do not reach for this helper for
+ * short prefixes; it earns its place on a reply-length one.
  *
  * Semantically identical: `slice` clamps to the string length, so a `b` longer
  * than `a` yields a short slice that cannot equal it.
