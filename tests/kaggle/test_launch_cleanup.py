@@ -190,9 +190,7 @@ def _stacks(tmp_path: Path | None) -> str:
         return "(not requested: this call site passed no tmp_path)"
     dump = _fault_dump(tmp_path)
     if not dump.is_file():
-        return (
-            "(no dump: the child died before faulthandler could write, or never armed it)"
-        )
+        return "(no dump: the child died before faulthandler could write, or never armed it)"
     return dump.read_text(encoding = "utf-8", errors = "replace").strip() or "(dump empty)"
 
 
