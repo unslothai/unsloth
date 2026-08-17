@@ -446,3 +446,89 @@ def test_archived_tool_turns_keep_what_the_call_actually_did(conn):
     assert "terminal" in rendered
     assert "alembic upgrade head" in rendered
     assert "running the migration now" in rendered
+
+
+def test_an_archived_tool_turn_survives_the_branch_filter(conn):
+    """The two previous fixes together could make tool turns permanently unrecallable.
+
+    render_turn archives a tool turn as "assistant called X: args" and "tool result: ..."
+    while assistant-ui persists the call as a structured tool-call content part, which
+    the transcript flattener used to drop. With every archived line required to appear in
+    that transcript, no archived tool turn could ever match.
+    """
+    from storage import studio_db
+
+    turn = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "terminal",
+                        "arguments": '{"command": "alembic upgrade head"}',
+                    }
+                }
+            ],
+        },
+        {"role": "tool", "content": "migration applied cleanly"},
+    ]
+    studio_db.upsert_chat_thread(
+        {
+            "id": "tool-thread",
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
+    )
+    # Persisted the way the UI stores it: a structured part, not text.
+    studio_db.upsert_chat_message(
+        {
+            "id": "tool-thread-0",
+            "threadId": "tool-thread",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "alembic upgrade head"},
+                    "result": "migration applied cleanly",
+                }
+            ],
+            "createdAt": 2,
+        }
+    )
+    conversation_archive.archive_turns("tool-thread", turn)
+
+    found = conversation_archive.recall("tool-thread", "alembic upgrade head")
+
+    assert found is not None
+    assert "alembic" in found[0]
+
+
+def test_an_edit_past_the_probe_cutoff_still_retires_the_turn(conn):
+    """A prefix probe cannot see a change after its cut-off.
+
+    Rewriting the tail of a long answer left the archived copy matching on its first 160
+    characters, so the stale text stayed eligible for recall.
+    """
+    head = "the deployment steps are as follows and here is the full detail " * 4
+    original = [
+        {"role": "user", "content": "how do I deploy"},
+        {"role": "assistant", "content": head + "finally run OLDSTEP-7777"},
+    ]
+    _archive(original, thread_id = "tail-edit-thread")
+    # Same opening, different ending.
+    _save_thread(
+        "tail-edit-thread",
+        [
+            {"role": "user", "content": "how do I deploy"},
+            {"role": "assistant", "content": head + "finally run NEWSTEP-8888"},
+        ],
+    )
+
+    found = conversation_archive.recall("tail-edit-thread", "OLDSTEP-7777")
+
+    assert found is None or "OLDSTEP-7777" not in found[0]

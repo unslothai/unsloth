@@ -514,3 +514,76 @@ def test_both_retrieval_tools_share_the_per_turn_search_cap():
     # The cap and the counter must both key on the set, not on one tool name.
     assert "decision.tool_name in _RAG_SEARCH_TOOLS" in text
     assert 'decision.tool_name == "search_knowledge_base"' not in text
+
+
+def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monkeypatch):
+    """Defaulting to the CEILING made an ordinary search return eight archived turns.
+
+    Those land in the protected current exchange, which rolling truncation cannot evict,
+    so a single search could fail the next pass on a small window.
+    """
+    seen = {}
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+    ):
+        seen["top_k"] = top_k
+        return ("earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+    tools_mod._search_conversation({"query": "pelicans"}, {"thread_id": THREAD})
+
+    assert seen["top_k"] is None
+
+
+def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, monkeypatch):
+    """The chunk arithmetic is an estimate; the tokenizer is not.
+
+    CHUNK_TOKENS is an embedding-token limit rather than the chat template's cost for the
+    same text, and neither it nor the budget prices the <recalled_conversation> or tool
+    wrappers around the injection, so a nominally-fitting recall can still overshoot.
+    """
+    from core.inference import llama_cpp
+
+    conversation = [{"role": "user", "content": "what was that pelicans limerick"}]
+    monkeypatch.setattr(
+        tools_mod,
+        "build_conversation_recall",
+        lambda *args, **kwargs: {
+            "prefix": "R" * 4000,
+            "messages": [],
+            "events": [],
+            "sources": 2,
+        },
+    )
+    chars = lambda messages: sum(len(m.get("content") or "") for m in messages)
+
+    # Budget far below what the injection actually costs: dropped, and the conversation
+    # comes back untouched rather than over the window.
+    tight = llama_cpp._archive_and_recall(
+        conversation,
+        conversation,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        recall_budget_tokens = 10,
+        count_tokens = chars,
+    )
+    assert tight["recalled"] is False
+    assert tight["conversation"] == conversation
+
+    # Room to spare: the same injection is kept.
+    roomy = llama_cpp._archive_and_recall(
+        conversation,
+        conversation,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+        count_tokens = chars,
+    )
+    assert roomy["recalled"] is True
+    assert chars(roomy["conversation"]) > chars(conversation)

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import json
 import re
 from typing import Optional
 
@@ -57,8 +58,16 @@ _MAX_TOOL_ARGS_CHARS = 1000
 _BRANCH_FILTER_OVERFETCH = 4
 
 
-def _text_of(content) -> str:
-    """Flatten OpenAI message content to plain text, dropping non-text parts."""
+def _text_of(content, *, include_tool_calls: bool = False) -> str:
+    """Flatten OpenAI message content to plain text, dropping non-text parts.
+
+    ``include_tool_calls`` also flattens assistant-ui's persisted ``tool-call`` parts,
+    which carry the call as structured ``toolName``/``args``/``result`` fields rather
+    than text. The branch check needs them: ``render_turn`` archives a tool turn as
+    "assistant called X: args" and "tool result: ...", so a transcript built without
+    them can never contain those lines, and every archived tool turn would be filtered
+    out as though it had been rolled back.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -68,6 +77,11 @@ def _text_of(content) -> str:
                 continue
             if part.get("type") in ("text", "input_text") or "text" in part:
                 parts.append(str(part.get("text") or ""))
+            elif include_tool_calls and part.get("type") == "tool-call":
+                for value in (part.get("toolName"), part.get("args"), part.get("result")):
+                    if value in (None, "", {}, []):
+                        continue
+                    parts.append(value if isinstance(value, str) else json.dumps(value))
         return "\n".join(p for p in parts if p)
     return "" if content is None else str(content)
 
@@ -293,14 +307,28 @@ def _live_transcript(thread_id: str) -> Optional[str]:
         return None
     if not messages:
         return None
-    parts = [_text_of(message.get("content")) for message in messages]
+    parts = [_text_of(message.get("content"), include_tool_calls = True) for message in messages]
     blob = _normalise("\n".join(part for part in parts if part))
     return blob or None
+
+
+_TOOL_RESULT_PROBE_CHARS = 160
+
+
+def _is_tool_line(line: str) -> bool:
+    """A rendered tool-result line, which render_turn may have truncated."""
+    return line.lower().startswith("tool result:")
 
 
 _ROLE_PREFIX = re.compile(
     r"^(?:user|assistant|system|developer|tool result|message):\s*", re.IGNORECASE
 )
+# render_turn labels a tool call "assistant called <name>: <args>". The label is ours,
+# not the stored message's, so it has to come off before the probe like any other role
+# prefix -- otherwise every archived tool line misses and the turn looks rolled back.
+# The name goes with it when arguments follow (the transcript carries both separately);
+# with no arguments the bare name is what remains, and that is what the transcript has.
+_TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
 
 
 def _on_live_branch(text: str, transcript: str) -> bool:
@@ -314,7 +342,15 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     so they are stripped first -- leaving them in made every probe miss and filtered out
     the turns this feature exists to return.
     """
-    probes = [_normalise(_ROLE_PREFIX.sub("", line))[:160] for line in (text or "").splitlines()]
+    probes = []
+    for line in (text or "").splitlines():
+        stripped = _normalise(_TOOL_CALL_PREFIX.sub("", _ROLE_PREFIX.sub("", line)))
+        # The WHOLE line for ordinary turns: a prefix probe cannot see an edit past its
+        # cut-off, so rewriting the tail of a long answer left the stale copy eligible.
+        # Tool results are the exception -- render_turn truncates them with a marker, so
+        # the archived copy is deliberately not the stored one and only a prefix can
+        # match. That truncation is bounded, so the compared prefix is long either way.
+        probes.append(stripped[:_TOOL_RESULT_PROBE_CHARS] if _is_tool_line(line) else stripped)
     probes = [probe for probe in probes if probe]
     if not probes:
         return False

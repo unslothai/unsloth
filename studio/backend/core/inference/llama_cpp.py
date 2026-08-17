@@ -569,6 +569,7 @@ def _archive_and_recall(
     style: str,
     recall_done: bool,
     recall_budget_tokens: int = 0,
+    count_tokens: Optional[Callable[[list[dict]], int]] = None,
 ) -> dict:
     """Keep the turns this fit evicted, then pull the relevant ones back.
 
@@ -623,6 +624,28 @@ def _archive_and_recall(
         else:
             result["conversation"] = list(conversation) + list(recall["messages"])
             result["events"] = list(recall["events"])
+
+        # An EXACT recount, because the chunk arithmetic above is an estimate twice
+        # over: CHUNK_TOKENS is an embedding-token limit rather than the chat template's
+        # cost for the same text, and neither it nor the budget accounts for the
+        # <recalled_conversation> or synthetic tool wrappers around it. Overshooting eats
+        # the reply's reserve first and the window after that, which is the failure this
+        # whole path exists to prevent, so the recall is dropped rather than guessed at.
+        if count_tokens is not None and recall_budget_tokens > 0:
+            try:
+                grew = count_tokens(result["conversation"]) - count_tokens(conversation)
+            except Exception:
+                grew = None
+            if grew is not None and grew > recall_budget_tokens:
+                logger.info(
+                    "conversation_recall.dropped_over_budget grew=%s budget=%s",
+                    grew,
+                    recall_budget_tokens,
+                )
+                result["conversation"] = conversation
+                result["events"] = []
+                result["counts"] = counts
+                return result
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
         result["counts"] = counts
@@ -19915,6 +19938,16 @@ class LlamaCppBackend:
                             prompt_budget(self._effective_context_length, payload["max_tokens"])
                             - int(truncation.get("prompt_tokens_after") or 0),
                         ),
+                        count_tokens = lambda fitted: self.count_chat_tokens(
+                            neutralize_control_markup_in_messages(
+                                fitted, None, self.markup_profile
+                            ),
+                            None,
+                            None,
+                            strict = True,
+                            chat_template_kwargs = _reasoning_kw,
+                            continue_final_message = continue_final_message,
+                        ),
                     )
                     openai_messages = _recalled["conversation"]
                     truncation = {**truncation, **_recalled["counts"]}
@@ -20496,6 +20529,15 @@ class LlamaCppBackend:
                                 0,
                                 prompt_budget(self._effective_context_length, max_tokens)
                                 - int(truncation.get("prompt_tokens_after") or 0),
+                            ),
+                            count_tokens = lambda fitted: self.count_chat_tokens(
+                                neutralize_control_markup_in_messages(
+                                    fitted, _markup_cache, self.markup_profile
+                                ),
+                                None,
+                                safe_tools,
+                                strict = True,
+                                chat_template_kwargs = _reasoning_kw,
                             ),
                         )
                         conversation = _recalled["conversation"]
@@ -21839,6 +21881,15 @@ class LlamaCppBackend:
                             0,
                             prompt_budget(self._effective_context_length, max_tokens)
                             - int(truncation.get("prompt_tokens_after") or 0),
+                        ),
+                        count_tokens = lambda fitted: self.count_chat_tokens(
+                            neutralize_control_markup_in_messages(
+                                fitted, None, self.markup_profile
+                            ),
+                            None,
+                            None,
+                            strict = True,
+                            chat_template_kwargs = _reasoning_kw,
                         ),
                     )
                     conversation = _recalled["conversation"]

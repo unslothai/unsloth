@@ -9640,10 +9640,12 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     # of one result: a ~30k-token tool result that the rolling window cannot evict,
     # because it protects the current user/tool exchange.
     requested = _opt_int((arguments or {}).get("top_k"))
+    # None, not the ceiling: an omitted top_k must fall through to the configured
+    # conversation-recall default. Defaulting to the maximum turned an ordinary search
+    # into eight chunks of archived turns, landing in the protected current exchange
+    # that rolling truncation cannot evict -- enough to fail the next pass on a 4K chat.
     top_k = (
-        _MAX_CONVERSATION_SEARCH_TOP_K
-        if requested is None
-        else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
+        None if requested is None else max(1, min(_MAX_CONVERSATION_SEARCH_TOP_K, int(requested)))
     )
     found = conversation_archive.recall(str(thread_id), str(query), top_k = top_k)
     if not found:
