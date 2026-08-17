@@ -6,7 +6,6 @@ instead of torch/transformers for model loading and generation.
 """
 
 import hashlib
-import importlib
 import json
 import os
 import threading
@@ -87,121 +86,6 @@ def _temporary_mlx_adapter_state(model, use_adapter):
         yield
     finally:
         model.update_modules(adapter_modules)
-
-
-def _vlm_runtime_reused_prefix(model, input_ids, cache_state):
-    """True when this forward is the runtime's reuse of Studio's cut prefix.
-
-    The runtime primes a position map over the whole prompt and then trims the
-    ids to the uncached suffix, so on a reusing forward the primed map is exactly
-    ``observed_prefix`` longer than the ids. A cold prefill passes the full prompt
-    and fails that identity, which is what keeps a cold request unsuppressed.
-
-    The map is cleared when the request begins, so a populated one can only have
-    come from this request's priming; a length left over from an earlier request
-    cannot satisfy the identity by coincidence.
-    """
-    prefix = int(getattr(cache_state, "observed_prefix", 0) or 0)
-    if prefix <= 0 or input_ids is None:
-        return False
-    primed = getattr(getattr(model, "language_model", None), "_position_ids", None)
-    if primed is None:
-        return False
-    try:
-        return int(primed.shape[-1]) == int(input_ids.shape[-1]) + prefix
-    except (AttributeError, IndexError, TypeError, ValueError):
-        return False
-
-
-@contextmanager
-def _temporary_mlx_vlm_rope_suppression(model, cache_state):
-    """Drop suffix-derived multimodal-RoPE state during a reusing request.
-
-    On a cached-prefix continuation the runtime recomputes RoPE state from the
-    uncached suffix — with no image grid, so it yields a zero delta — and merges
-    it over the whole-prompt value it primed, positioning the suffix from the
-    cache offset instead of the multimodal map the prefill used. Studio drops the
-    two feature fields the runtime's own merge already treats as optional, so the
-    primed whole-prompt value governs. Studio never computes RoPE state itself.
-
-    Suppression must apply exactly when the runtime accepted the cached prefix,
-    which is decided on the first forward. Reuse cannot be inferred from
-    ``pixel_values`` alone: a text-only continuation is cache-eligible too and
-    already passes ``None``. It is instead detected arithmetically — when the
-    runtime reuses, it primes a whole-prompt position map and trims ``input_ids``
-    to the uncached suffix, so the primed map is exactly ``observed_prefix``
-    longer than this forward's ids. A cold prefill (priming failed, or the suffix
-    still holds vision) passes the full prompt, so the identity does not hold and
-    the request stays byte-identical to today.
-
-    The override is installed on this model *instance* (not its class) for one
-    request and removed on completion, cancellation, or error, so two backend
-    instances sharing a model class, each under its own generation lock, cannot
-    race on a shared method; any pre-existing instance override is restored
-    exactly rather than deleted.
-    """
-    if cache_state is None or _vlm_mrope_reuse_arch(model) is None:
-        yield
-        return
-    original = model.get_input_embeddings
-    had_own_override = "get_input_embeddings" in vars(model)
-    reuse = {"active": None}
-    # Drop any map left by an earlier request so the identity below can only be
-    # satisfied by this request's priming. A cold prefill recomputes it anyway.
-    language_model = getattr(model, "language_model", None)
-    if hasattr(language_model, "_position_ids"):
-        language_model._position_ids = None
-    position_setter = getattr(model, "_set_position_state", None)
-    original_rope_index = getattr(language_model, "get_rope_index", None)
-    had_own_rope_index = "get_rope_index" in getattr(language_model, "__dict__", {})
-
-    def _suppressing_get_input_embeddings(
-        input_ids = None,
-        pixel_values = None,
-        *args,
-        **kwargs,
-    ):
-        # Decide before delegating: some runtimes clear the primed map inside
-        # this call when no pixel values are present.
-        if reuse["active"] is None:
-            reuse["active"] = _vlm_runtime_reused_prefix(model, input_ids, cache_state)
-        features = original(input_ids, pixel_values, *args, **kwargs)
-        if reuse["active"] and pixel_values is None:
-            features.rope_deltas = None
-            features.position_ids = None
-        return features
-
-    rope_overridden = False
-    embedding_overridden = False
-    try:
-        if callable(position_setter) and callable(original_rope_index):
-
-            def _wrapper_position_state(input_ids, *_args, **_kwargs):
-                position_setter(input_ids)
-                return language_model._position_ids, language_model._rope_deltas
-
-            language_model.get_rope_index = _wrapper_position_state
-            rope_overridden = True
-        model.get_input_embeddings = _suppressing_get_input_embeddings
-        embedding_overridden = True
-        yield
-    finally:
-        try:
-            if embedding_overridden:
-                if had_own_override:
-                    model.get_input_embeddings = original
-                else:
-                    del model.get_input_embeddings
-        finally:
-            if rope_overridden:
-                if had_own_rope_index:
-                    language_model.get_rope_index = original_rope_index
-                else:
-                    del language_model.get_rope_index
-
-
-def _vlm_mrope_reuse_arch(_model):
-    return None
 
 
 def _mlx_vlm_model_config(model):
