@@ -215,7 +215,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -4743,12 +4743,12 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          onPointerDownOutside={swallowDismissingClick}
           side={side}
           align="end"
           avoidCollisions={true}
           className="unsloth-plus-menu unsloth-thinking-menu min-w-0 w-[176px]"
         >
+          <MenuDismissGuard />
           {isEffort ? (
             <>
               {effectiveSupportsReasoningOff && (
@@ -5555,7 +5555,6 @@ const ComposerToolsMenu: FC<{
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        onPointerDownOutside={swallowDismissingClick}
         side={side}
         align="start"
         sideOffset={0}
@@ -5564,6 +5563,7 @@ const ComposerToolsMenu: FC<{
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
+        <MenuDismissGuard />
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
           onSelect={() => pickAttachment()}
@@ -6933,12 +6933,12 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarMorePrimitive.Trigger>
           <ActionBarMorePrimitive.Content
-            onPointerDownOutside={swallowDismissingClick}
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}
             className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-[21px] bg-popover px-[9px] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
           >
+            <MenuDismissGuard />
             <ActionBarMorePrimitive.Item
               disabled={forkDisabled}
               onSelect={() => void forkMessage()}

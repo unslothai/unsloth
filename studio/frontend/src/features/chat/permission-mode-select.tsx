@@ -24,7 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -218,12 +218,12 @@ export function PermissionModeDropdown({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          onPointerDownOutside={swallowDismissingClick}
           side={side}
           align={align}
           className="w-[300px]"
           avoidCollisions={true}
         >
+          <MenuDismissGuard />
           <DropdownMenuLabel>
             How should tool calls be approved?
           </DropdownMenuLabel>
@@ -288,13 +288,13 @@ export function PermissionModeComposerPill({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        onPointerDownOutside={swallowDismissingClick}
         side={side}
         align="start"
         sideOffset={0}
         avoidCollisions={true}
         className="unsloth-plus-menu w-[300px]"
       >
+        <MenuDismissGuard />
         <DropdownMenuLabel>
           How should tool calls be approved?
         </DropdownMenuLabel>

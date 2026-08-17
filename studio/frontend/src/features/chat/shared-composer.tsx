@@ -9,7 +9,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -2165,7 +2165,6 @@ export function SharedComposer({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
-              onPointerDownOutside={swallowDismissingClick}
               side="top"
               align="start"
               sideOffset={0}
@@ -2173,6 +2172,7 @@ export function SharedComposer({
               className="unsloth-plus-menu w-[244px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
+              <MenuDismissGuard />
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
                 <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
                 Add photos &amp; files
@@ -2445,7 +2445,6 @@ export function SharedComposer({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
-                  onPointerDownOutside={swallowDismissingClick}
                   side="top"
                   align="end"
                   className={cn(
@@ -2453,6 +2452,7 @@ export function SharedComposer({
                     narrowEffortMenu ? "min-w-40" : "min-w-44",
                   )}
                 >
+                  <MenuDismissGuard />
                   {isEffort ? (
                     <>
                       {effectiveSupportsReasoningOff && (
