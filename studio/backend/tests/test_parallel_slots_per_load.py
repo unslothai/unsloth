@@ -228,7 +228,7 @@ def test_load_model_commits_requested_from_intent():
     src = inspect.getsource(LlamaCppBackend.load_model)
     commit = src.find("self._requested_n_parallel = max(1, int(intent.n_parallel))")
     healthy = src.find("self._healthy = True\n", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_intent = intent")
+    snapshot = src.find("self._last_load_intent = replace(intent")
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 
@@ -426,6 +426,7 @@ def _guard_required_gb(
     n_parallel: int,
     diffusion,
     caps = None,
+    llama_extra_args = None,
 ) -> float:
     """Run the training guard over a local GGUF and return the size it budgeted."""
     import routes.inference as inf
@@ -473,6 +474,7 @@ def _guard_required_gb(
         request,
         load_in_4bit = False,
         placement = inf._LoadPlacement(None, None, False, inf._classify_diffusion_gguf(config)),
+        llama_extra_args = llama_extra_args,
         n_parallel = n_parallel,
     )
     return seen["required_override_gb"]
@@ -509,6 +511,34 @@ def test_training_guard_sizes_one_slot_when_the_binary_has_no_kv_unified(monkeyp
 def test_training_guard_sizes_every_slot_when_kv_unified_exists(monkeypatch, tmp_path):
     # The clamp is scoped to binaries that cannot serve the slots; a capable one
     # really does allocate the SWA window per slot.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    new = {"found": True, "supports_kv_unified": True}
+    one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)
+    many = _guard_required_gb(monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new)
+    assert many > one
+
+
+def test_training_guard_keeps_the_asked_slots_for_an_explicit_mtp_load(monkeypatch, tmp_path):
+    # MTP launches at the slots asked for, and this estimate under-counts it (no draft KV, no MLA
+    # duplication, no compute reserve), so under-sizing here evicts the training run it protects.
+    gguf = _write_swa_gguf(tmp_path / "chat.gguf")
+    mtp = ["--spec-type", "draft-mtp"]
+    new = {"found": True, "supports_kv_unified": True}
+    one = _guard_required_gb(
+        monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new, llama_extra_args = mtp
+    )
+    many = _guard_required_gb(
+        monkeypatch, gguf, n_parallel = 8, diffusion = False, caps = new, llama_extra_args = mtp
+    )
+    assert many > one
+
+
+def test_training_guard_keeps_slots_when_the_launch_scrubs_the_mtp_env(monkeypatch, tmp_path):
+    # An inherited LLAMA_ARG_SPEC_TYPE=draft-mtp really would launch MTP, since llama.cpp
+    # appends spec types rather than replacing them. But the extras do not own
+    # --spec-type here, so the launch scrubs the env and the server runs the slots asked
+    # for; flattening the budget to one would under-size and let a load past the guard.
+    monkeypatch.setenv("LLAMA_ARG_SPEC_TYPE", "draft-mtp")
     gguf = _write_swa_gguf(tmp_path / "chat.gguf")
     new = {"found": True, "supports_kv_unified": True}
     one = _guard_required_gb(monkeypatch, gguf, n_parallel = 1, diffusion = False, caps = new)

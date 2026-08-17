@@ -13,6 +13,36 @@ pub(crate) struct DesktopUpdateMetadata {
     raw_json: serde_json::Value,
 }
 
+/// Re-arm crash cleanup when the installer never took over.
+///
+/// `on_before_exit` clears kill-on-close assuming the installer is about to
+/// replace this process; a failed or cancelled install leaves the app running
+/// with no reaper for its children.
+#[tauri::command]
+pub(crate) async fn resume_desktop_update_cleanup() -> Result<(), String> {
+    // Both halves of what the pre-exit hook consumed: the exit guard it spent, so a
+    // retry actually reaps the backend again, and kill-on-close itself.
+    crate::reset_termination_cleanup();
+    #[cfg(windows)]
+    {
+        crate::windows_job::resume_after_update_installer().map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether crash cleanup is armed right now, for a UI that has just remounted.
+#[tauri::command]
+pub(crate) async fn desktop_update_cleanup_armed() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        crate::windows_job::kill_on_close_armed().map_err(|error| error.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(true)
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn check_desktop_update(
     webview: tauri::Webview,

@@ -23,6 +23,7 @@ the binary.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import os
@@ -50,10 +51,20 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
+    _capture_stt_hub_cache,
+    _claim_stt_repository,
+    _close_connection_on_cancel,
     _decode_audio_bounded,
+    _downloaded_file_bytes,
+    _fallback_revisions,
+    _HF_COMMIT_SHA,
     _known_whisper_languages,
+    _prepare_stt_cache_for_http,
+    _read_revision_record,
     _TARGET_SAMPLE_RATE,
     _training_active,
+    _write_revision_record,
     normalize_whisper_language,
 )
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
@@ -235,11 +246,25 @@ def slim_runtime_intact(binary: str) -> bool:
             for name in runtime_dirs
         )
     if intact and marker.get("backend") == "rocm":
-        expected_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        # Membership plus required, not equality: hipBLASLt builds no Tensile
+        # kernels for gfx1030 and the rest of RDNA2, so llama's ROCm bundle for
+        # those ships libhipblaslt with no hipblaslt/ catalog, and the installer
+        # wires only the catalogs the bundle has; demanding both read a correct
+        # install as broken (#8364). rocblas stays mandatory (the backend module
+        # links librocblas directly) and a name outside the pair still means
+        # stale wiring. Windows overlays wire no catalogs, so both sets are
+        # empty there and this reduces to the old equality.
+        known_runtime_dirs = set() if sys.platform == "win32" else {"hipblaslt", "rocblas"}
+        required_runtime_dirs = set() if sys.platform == "win32" else {"rocblas"}
+        # Any wiring from version 2 on records linked_runtime_directories, so
+        # pin the floor, not one version, or an installer bump strands installs.
+        wiring_version = marker.get("runtime_wiring_version")
         intact = (
-            marker.get("runtime_wiring_version") == 2
+            isinstance(wiring_version, int)
+            and wiring_version >= 2
             and isinstance(runtime_dirs, list)
-            and set(runtime_dirs) == expected_runtime_dirs
+            and set(runtime_dirs) <= known_runtime_dirs
+            and required_runtime_dirs <= set(runtime_dirs)
         )
     if not intact:
         logger.warning(
@@ -249,11 +274,47 @@ def slim_runtime_intact(binary: str) -> bool:
     return intact
 
 
+# A runtime that starts, answers GET /, and then dies on the first actual inference.
+# Reported on Windows with ROCm on gfx1200, where rocBLAS is missing its TensileLibrary:
+# the marker and the linked libraries are all present, so slim_runtime_intact() is happy
+# and is_available() said yes, which meant _resolve_serving_stt_engine never fell back and
+# every recording 501'd while the UI showed the model as loaded. Only inference can prove
+# this, so it is recorded when inference fails and cleared when one succeeds. Process
+# lifetime by design: a reinstall restarts Studio.
+_runtime_inference_failure: Optional[str] = None
+_runtime_failure_lock = threading.Lock()
+
+
+def note_runtime_inference_failure(reason: str) -> None:
+    global _runtime_inference_failure
+    with _runtime_failure_lock:
+        if _runtime_inference_failure is None:
+            logger.warning(
+                "whisper.cpp runtime failed to serve a transcription (%s); "
+                "treating the engine as unavailable and using Transformers instead",
+                reason,
+            )
+        _runtime_inference_failure = reason
+
+
+def clear_runtime_inference_failure() -> None:
+    global _runtime_inference_failure
+    with _runtime_failure_lock:
+        _runtime_inference_failure = None
+
+
+def runtime_inference_failure() -> Optional[str]:
+    with _runtime_failure_lock:
+        return _runtime_inference_failure
+
+
 def is_available() -> bool:
     binary = find_whisper_server_binary()
     if binary is None:
         return False
     if not slim_runtime_intact(binary):
+        return False
+    if runtime_inference_failure() is not None:
         return False
     try:
         import av  # noqa: F401
@@ -339,17 +400,48 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _cached_model_path(model_id: str) -> Optional[str]:
+def _cached_model_path(
+    model_id: str,
+    *,
+    hub_cache: Optional[Path] = None,
+    revision: Optional[str] = None,
+) -> Optional[str]:
     """Path of a fully downloaded GGML file in the shared HF cache, else None."""
     from huggingface_hub import hf_hub_download
-    try:
-        return hf_hub_download(
-            repo_id = GGML_STT_REPOS[model_id],
-            filename = GGML_STT_MODELS[model_id],
-            local_files_only = True,
-        )
-    except Exception:
-        return None
+
+    from core.inference.stt_sidecar import _active_hf_hub_cache
+
+    repo_id = GGML_STT_REPOS[model_id]
+    root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
+
+    def cached_at(candidate_revision: str) -> Optional[str]:
+        try:
+            return hf_hub_download(
+                repo_id = repo_id,
+                filename = GGML_STT_MODELS[model_id],
+                revision = candidate_revision,
+                local_files_only = True,
+                cache_dir = str(root),
+            )
+        except Exception:
+            return None
+
+    # Explicit revisions keep verification on the downloaded commit.
+    if revision is not None:
+        return cached_at(revision)
+
+    recorded = _read_revision_record(repo_id)
+    if recorded:
+        cached = cached_at(recorded)
+        if cached is not None:
+            return cached
+
+    for candidate in _fallback_revisions(repo_id, hub_cache = root):
+        cached = cached_at(candidate)
+        if cached is not None:
+            _write_revision_record(repo_id, candidate)
+            return cached
+    return None
 
 
 class _GgmlDownloadState:
@@ -358,49 +450,85 @@ class _GgmlDownloadState:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._process: Optional[subprocess.Popen] = None
         self._model_id: Optional[str] = None
         self._error: Optional[str] = None
         self._total_bytes: Optional[int] = None
         self._etag: Optional[str] = None
+        self._revision: Optional[str] = None
+        self._hub_cache: Optional[Path] = None
+        self._cancelled = False
 
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            snapshot = {
                 "downloading": downloading,
                 "model": self._model_id if downloading else None,
                 "error": self._error,
+                "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._incomplete_bytes() if downloading else None,
             }
+            captured = (
+                self._model_id,
+                self._etag,
+                self._total_bytes,
+                self._hub_cache,
+                self._revision,
+            )
+        # Outside the lock: _downloaded_bytes() stats the cache, and a cancel must not queue.
+        snapshot["bytes_done"] = self._downloaded_bytes(*captured) if downloading else None
+        return snapshot
 
-    def _incomplete_bytes(self) -> Optional[int]:
-        """Best-effort progress: size of the in-flight blob in the HF cache.
+    def cancel(self) -> bool:
+        """Stop an in-flight download. False when none was running.
 
-        hf_hub_download writes ``blobs/<etag>.incomplete``; prefer this file's
-        etag, else the largest in-flight blob.
+        The partial blob stays cached, so a restart resumes from it.
+        """
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                return False
+            self._cancelled = True
+            process = self._process
+        if process is not None and process.poll() is None:
+            from core.inference.stt_download_worker import terminate_download
+            terminate_download(process)
+        return True
+
+    def _downloaded_bytes(
+        self,
+        model_id: Optional[str] = None,
+        etag: Optional[str] = None,
+        total: Optional[int] = None,
+        hub_cache: Optional[Path] = None,
+        revision: Optional[str] = None,
+    ) -> Optional[int]:
+        """Count this file across partial, finalized, and snapshot locations.
+
+        status() captures these under the lock and passes them in: reading them
+        here would let a run that starts mid-probe pair its bytes with the total
+        of the run that just ended.
         """
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
-
-            # Caller may hold the non-reentrant self._lock; bare reads are safe.
-            model_id = self._model_id
-            if not model_id:
+            model_id = model_id if model_id is not None else self._model_id
+            etag = etag if etag is not None else self._etag
+            total = total if total is not None else self._total_bytes
+            hub_cache = hub_cache if hub_cache is not None else self._hub_cache
+            revision = revision if revision is not None else self._revision
+            if not model_id or not etag or total is None or hub_cache is None:
                 return None
-            repo_dir = (
-                Path(HF_HUB_CACHE)
-                / f"models--{GGML_STT_REPOS[model_id].replace('/', '--')}"
-                / "blobs"
+            return _downloaded_file_bytes(
+                hub_cache = hub_cache,
+                repo = GGML_STT_REPOS[model_id],
+                filename = GGML_STT_MODELS[model_id],
+                size = total,
+                blob_key = etag,
+                revision = revision,
             )
-            if not repo_dir.is_dir():
-                return None
-            etag = self._etag
-            if etag:
-                target = repo_dir / f"{etag}.incomplete"
-                if target.is_file():
-                    return target.stat().st_size
-            sizes = [p.stat().st_size for p in repo_dir.glob("*.incomplete") if p.is_file()]
-            return max(sizes) if sizes else None
         except Exception:
             return None
 
@@ -410,10 +538,16 @@ class _GgmlDownloadState:
         hf_token: Optional[str] = None,
     ) -> None:
         model_id = resolve_ggml_model_id(model_id)
+        hub_cache = _capture_stt_hub_cache()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 if self._model_id == model_id:
-                    return
+                    # Joining a cancelling run would silently download nothing.
+                    if not self._cancelled:
+                        return
+                    raise SttModelIdError(
+                        f"'{model_id}' is still cancelling; try again in a moment."
+                    )
                 raise SttModelIdError(
                     f"Another GGUF dictation model ('{self._model_id}') is still "
                     "downloading; wait for it to finish."
@@ -422,36 +556,122 @@ class _GgmlDownloadState:
             self._error = None
             self._total_bytes = None
             self._etag = None
-            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
+            self._revision = None
+            self._hub_cache = hub_cache
+            self._cancelled = False
+            self._process = None
+            thread = threading.Thread(
+                target = self._run,
+                args = (model_id, hf_token),
+                daemon = True,
+            )
             self._thread = thread
             thread.start()
 
-    def _run(self, model_id: str, hf_token: Optional[str]) -> None:
+    def _run(
+        self,
+        model_id: str,
+        hf_token: Optional[str],
+        hub_cache: Optional[Path] = None,
+    ) -> None:
+        if hub_cache is None:
+            from core.inference.stt_sidecar import _active_hf_hub_cache
+            hub_cache = self._hub_cache or _active_hf_hub_cache()
         repo_id = GGML_STT_REPOS[model_id]
         filename = GGML_STT_MODELS[model_id]
+        registry = None
+        owner = None
         try:
-            from huggingface_hub import (
-                get_hf_file_metadata,
-                hf_hub_download,
-                hf_hub_url,
-            )
+            from huggingface_hub import get_hf_file_metadata, hf_hub_url
+
             try:
-                # One HEAD request for the total and etag.
                 meta = get_hf_file_metadata(hf_hub_url(repo_id, filename), token = hf_token or None)
-                with self._lock:
-                    self._total_bytes = meta.size
-                    self._etag = meta.etag
-            except Exception:
-                pass
-            hf_hub_download(
-                repo_id = repo_id,
-                filename = filename,
-                token = hf_token or None,
+                total_bytes = int(meta.size or 0)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise RuntimeError("could not resolve GGML download metadata") from exc
+            revision = meta.commit_hash
+            etag = meta.etag
+            if not isinstance(revision, str) or not _HF_COMMIT_SHA.fullmatch(revision):
+                raise RuntimeError("could not resolve an immutable GGML revision")
+            if not isinstance(etag, str) or not etag:
+                raise RuntimeError("could not resolve the GGML blob identity")
+            if total_bytes <= 0:
+                raise RuntimeError("could not resolve the GGML file size")
+            # A cancel during metadata has no child to stop. Without these the
+            # run still reserves the repo and rewrites the cache after the stop.
+            with self._lock:
+                if self._cancelled:
+                    return
+            registry, owner = _claim_stt_repository(repo_id)
+            with self._lock:
+                if self._cancelled:
+                    return
+            _prepare_stt_cache_for_http(repo_id, hub_cache)
+            with self._lock:
+                self._total_bytes = total_bytes
+                self._etag = etag
+                self._revision = revision
+            # Out of process so cancel() can terminate it; a thread blocked in
+            # hf_hub_download could not be interrupted.
+            from core.inference.stt_download_worker import (
+                reap_download,
+                spawn_download,
+                terminate_download,
             )
-        except Exception as exc:
-            logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
+
+            args = [
+                "--repo-id",
+                repo_id,
+                "--revision",
+                revision,
+                "--filename",
+                filename,
+            ]
+            process = spawn_download(
+                args,
+                hf_token = hf_token or None,
+                hub_cache = hub_cache,
+            )
+            with self._lock:
+                if self._cancelled:
+                    # cancel() landed between start() and the spawn.
+                    terminate_download(process)
+                self._process = process
+            # reap_download(), not communicate(): only it drops the adopted PID,
+            # which could otherwise be reused and then signalled by terminate_all.
+            stderr = reap_download(process)
+            with self._lock:
+                if self._process is process:
+                    self._process = None
+                cancelled = self._cancelled
+            if process.returncode == 0 and not cancelled:
+                if (
+                    _cached_model_path(
+                        model_id,
+                        hub_cache = hub_cache,
+                        revision = revision,
+                    )
+                    is None
+                ):
+                    raise RuntimeError("downloaded file is missing from the captured cache")
+                _write_revision_record(repo_id, revision)
+                return
+            with self._lock:
+                if cancelled or process.returncode < 0:
+                    self._cancelled = True
+                    return
+            detail = (stderr or b"").decode("utf-8", "replace").strip()
+            logger.warning("GGUF STT download failed for %s: %s", model_id, detail)
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
+        except Exception as exc:
+            with self._lock:
+                if not self._cancelled:
+                    logger.warning("GGUF STT download failed for %s: %s", model_id, exc)
+                    self._error = f"Download failed for '{model_id}'."
+        finally:
+            if registry is not None and owner is not None:
+                registry.release_repository_owner(repo_id, owner)
 
 
 _download_state = _GgmlDownloadState()
@@ -463,6 +683,10 @@ def start_model_download(model: Optional[str], hf_token: Optional[str] = None) -
 
 def download_status() -> dict:
     return _download_state.status()
+
+
+def cancel_model_download() -> bool:
+    return _download_state.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +719,7 @@ class GgmlSttSidecar:
 
     def __init__(self, keep_alive_seconds: float = STT_KEEP_ALIVE_SECONDS) -> None:
         self._lock = threading.RLock()
+        self._load_state_lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
@@ -510,6 +735,7 @@ class GgmlSttSidecar:
         # lock, so the event is the source of truth and terminating the process
         # is a best-effort fast path.
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._starting_process: Optional[subprocess.Popen] = None
         # Set before the updater waits for _lock, then kept set while it owns
         # the lock and atomically replaces the managed install tree. New loads
@@ -533,7 +759,8 @@ class GgmlSttSidecar:
     def is_loading(self) -> bool:
         # True only while whisper-server is starting (seconds to bind its GPU
         # backend); load() sets and clears the flag around that window.
-        return self._loading
+        with self._load_state_lock:
+            return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -589,9 +816,44 @@ class GgmlSttSidecar:
         if process is not None:
             forget_pid(process.pid)
 
-    def unload(self) -> None:
-        with self._lock:
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_ggml_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        `transcribe` holds ``_lock`` across the whole round trip, so a caller releasing
+        engines it does not own must not block behind one. ``expected_model`` scopes the
+        release to one model, compared under the lock.
+        """
+        if not self._lock.acquire(blocking = wait):
+            return
+        try:
+            if not self._holds_expected_model(expected_model):
+                return
             self._release_locked()
+        finally:
+            self._lock.release()
 
     def _raise_if_update_in_progress(self) -> None:
         if self._update_in_progress:
@@ -624,13 +886,27 @@ class GgmlSttSidecar:
         # so act without the lock: signal abort and terminate the starting
         # process. _wait_for_server observes the event and raises, then load()
         # reaps the process and releases the lock.
-        if not self._loading:
-            return False
-        event = self._load_cancel_event
-        if event is None:
-            return False
-        event.set()
-        process = self._starting_process
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None:
+                return False
+            event.set()
+            process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._load_state_lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -667,18 +943,25 @@ class GgmlSttSidecar:
             )
         return path
 
-    def load(self, model: Optional[str] = None) -> None:
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         """Start (or switch) whisper-server for the requested curated model."""
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_ggml_model_id(model)
         with self._lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
             binary = ensure_engine_available()
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return
             model_path = self._ensure_model_downloaded(model_id)
-            self._release_locked()
             reservation, port = self._reserve_free_port()
             command = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
             marker = _whisper_install_marker(binary)
@@ -697,10 +980,17 @@ class GgmlSttSidecar:
                 model_id,
                 port,
             )
-            cancel_event = threading.Event()
-            self._load_cancel_event = cancel_event
-            self._loading = True
+            cancel_event = (
+                request_cancel_event if request_cancel_event is not None else threading.Event()
+            )
+            with self._load_state_lock:
+                self._load_cancel_event = cancel_event
+                self._load_owner_cancel_event = request_cancel_event
+                self._loading = True
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("GGUF STT model loading was cancelled.")
+                self._release_locked()
                 # Release the reservation as late as possible: whisper-server
                 # binds the port moments after this close.
                 reservation.close()
@@ -716,7 +1006,8 @@ class GgmlSttSidecar:
                     # never orphans a server holding the model.
                     **child_popen_kwargs(),
                 )
-                self._starting_process = process
+                with self._load_state_lock:
+                    self._starting_process = process
                 adopt_pid(process.pid)  # terminate_all backstop for graceful exits
                 try:
                     self._wait_for_server(process, port, cancel_event)
@@ -732,9 +1023,11 @@ class GgmlSttSidecar:
                 self._schedule_idle_unload_locked()
             finally:
                 reservation.close()  # no-op when already released before spawn
-                self._loading = False
-                self._load_cancel_event = None
-                self._starting_process = None
+                with self._load_state_lock:
+                    self._loading = False
+                    self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
+                    self._starting_process = None
 
     @staticmethod
     def _wait_for_server(
@@ -788,6 +1081,7 @@ class GgmlSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes via whisper-server.
 
@@ -798,6 +1092,8 @@ class GgmlSttSidecar:
         ensure_engine_available()
         model_id = resolve_ggml_model_id(model)
         lang = normalize_whisper_language(language)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         known_languages = _known_whisper_languages()
         if lang is not None and known_languages is not None and lang not in known_languages:
             raise SttLanguageError(
@@ -806,12 +1102,23 @@ class GgmlSttSidecar:
         # Reject a missing model before decoding so a long clip does not burn CPU
         # only to 409 (matches the Transformers sidecar's preflight).
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         with self._lock:
             try:
-                self.load(model_id)
-                text = self._post_inference(wav_bytes, lang, fast)
+                if cancel_event is None:
+                    self.load(model_id)
+                else:
+                    self.load(model_id, request_cancel_event = cancel_event)
+                text = self._post_inference(wav_bytes, lang, fast, cancel_event)
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+            except Exception:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise SttTranscriptionCancelledError("Transcription cancelled.")
+                raise
             finally:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
@@ -822,7 +1129,18 @@ class GgmlSttSidecar:
             "model": model_id,
         }
 
-    def _post_inference(self, wav_bytes: bytes, lang: Optional[str], fast: bool) -> str:
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
+    def _post_inference(
+        self,
+        wav_bytes: bytes,
+        lang: Optional[str],
+        fast: bool,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> str:
         boundary = uuid.uuid4().hex
         fields = {
             "temperature": "0.0",
@@ -850,23 +1168,49 @@ class GgmlSttSidecar:
         )
         parts.append(f"--{boundary}--\r\n".encode())
         body = b"".join(parts)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self._port}/inference",
-            data = body,
-            headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        # http.client, not urllib: a cancel needs the socket, and urlopen exposes none.
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", self._port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
         try:
-            with urllib.request.urlopen(req, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as resp:
-                payload = json.load(resp)
-        except SttAudioDecodeError:
+            connection.request(
+                "POST",
+                "/inference",
+                body = body,
+                headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            )
+            with connection.getresponse() as response:
+                if not 200 <= response.status < 300:
+                    raise SttEngineUnavailableError(
+                        f"The local transcription runtime returned HTTP {response.status}."
+                    )
+                payload = json.loads(response.read().decode("utf-8"))
+        except (SttAudioDecodeError, SttEngineUnavailableError):
             raise
         except Exception as exc:
+            # A cancel closes this socket deliberately, so it is not evidence of a broken
+            # runtime and must not disable the engine.
+            if cancel_event is None or not cancel_event.is_set():
+                note_runtime_inference_failure(f"{type(exc).__name__}: {exc}")
             raise SttEngineUnavailableError(
-                "The local transcription runtime did not answer the request."
+                "The local transcription runtime did not answer the request. "
+                "Transcription will use the Transformers engine from now on."
             ) from exc
+        finally:
+            cancel_done.set()
+            connection.close()
         text = payload.get("text")
         if not isinstance(text, str):
             raise SttAudioDecodeError("Could not decode the audio.")
+        # It served a transcription, so whatever failed earlier was transient.
+        clear_runtime_inference_failure()
         # whisper.cpp joins segments with newlines; dictation wants one line.
         return " ".join(part.strip() for part in text.splitlines() if part.strip()).strip()
 

@@ -13,23 +13,31 @@ import {
 import { cn } from "@/lib/utils";
 import { useEffect } from "react";
 
-const OPTIONS: { value: "http" | "xet"; label: string; hint: string }[] = [
-  {
-    value: "http",
-    label: "HTTP",
-    hint: "Resumes from where it stopped if you cancel.",
-  },
-  {
-    value: "xet",
-    label: "Xet",
-    hint: "Usually faster on a fresh download, but starts over if you cancel.",
-  },
-];
+const OPTIONS: { value: "auto" | "http" | "xet"; label: string; hint: string }[] =
+  [
+    {
+      value: "auto",
+      label: "Auto",
+      hint: "Picks the transport for this machine and switches to HTTP if Xet stalls or fails.",
+    },
+    {
+      value: "http",
+      label: "HTTP",
+      hint: "Resumes from where it stopped if you cancel.",
+    },
+    {
+      value: "xet",
+      label: "Xet",
+      hint: "Usually faster on a fresh download, but starts over if you cancel.",
+    },
+  ];
 
 export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
   const { capabilities } = useDownloadTransportCapabilities();
   const xetUnavailable = capabilities?.xet.available === false;
+  const autoResolvesTo = capabilities?.auto_resolves_to ?? "xet";
+  const autoReason = capabilities?.auto_reason;
 
   useEffect(() => {
     if (mode === "xet" && xetUnavailable) {
@@ -45,10 +53,16 @@ export function TransportToggle() {
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
         const disabled = opt.value === "xet" && xetUnavailable;
-        const hint =
-          disabled && capabilities?.xet.reason
-            ? capabilities.xet.reason
-            : opt.hint;
+        let hint = opt.hint;
+        if (disabled && capabilities?.xet.reason) {
+          hint = capabilities.xet.reason;
+        } else if (opt.value === "auto") {
+          // Say what Auto is doing right now and why, so "Auto" is never an opaque choice.
+          const label = autoResolvesTo === "http" ? "HTTP" : "Xet";
+          hint = autoReason
+            ? `${opt.hint} Currently: ${label} (${autoReason}).`
+            : `${opt.hint} Currently: ${label}.`;
+        }
         return (
           <Tooltip key={opt.value}>
             <TooltipTrigger asChild={true}>

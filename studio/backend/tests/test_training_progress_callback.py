@@ -26,9 +26,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU init).
-# Stub whichever are missing just long enough to import it, then restore so this file
-# never pollutes the shared session.
+# core/training/trainer.py imports unsloth and trl at module level (heavy, GPU init). Stub
+# whichever are missing just long enough to import it, then restore.
 _STUBS = {
     "unsloth": ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"),
     "unsloth.chat_templates": ("get_chat_template",),
@@ -64,7 +63,7 @@ if not _TRAINER_PRE_IMPORTED:
         _stub_if_missing(_name, _attrs)
 
 from core.training.trainer import UnslothTrainer  # noqa: E402
-from core.training.training import TrainingBackend  # noqa: E402
+from core.training.training import TrainingBackend, _MLXTrainerAdapter  # noqa: E402
 from core.training.worker import (  # noqa: E402
     _create_embedding_progress_callback,
     _create_trainer_progress_callback,
@@ -73,9 +72,8 @@ from core.training.worker import (  # noqa: E402
 if not _TRAINER_PRE_IMPORTED:
     for _name in _STUBBED:
         sys.modules.pop(_name, None)
-    # Drop the stub-bound module and its parent package (which still holds it as an
-    # attribute) so a later test re-imports it against the real packages; the
-    # UnslothTrainer class held above stays usable.
+    # Drop the stub-bound module and its parent package so a later test re-imports it against the
+    # real packages; the UnslothTrainer class held above stays usable.
     sys.modules.pop("core.training.trainer", None)
     sys.modules.pop("core.training", None)
 
@@ -119,10 +117,8 @@ def _drive(
     return state, control
 
 
-# ---------------------------------------------------------------------------
-# LLM/VLM/audio path: UnslothTrainer._create_progress_callback ->
-# worker._create_trainer_progress_callback
-# ---------------------------------------------------------------------------
+# --- LLM/VLM/audio path: UnslothTrainer._create_progress_callback ->
+# worker._create_trainer_progress_callback ---
 
 
 def _make_owner():
@@ -173,6 +169,36 @@ def test_parent_status_advances_over_the_whole_chain():
     assert backend._progress.status_message == ACTIVE
     assert backend._progress.step == 3
     assert backend._progress.is_training is True
+
+
+def test_training_warning_is_emitted_once_and_survives_later_status_updates():
+    owner = _make_owner()
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
+
+    owner._record_warning("Evaluation fell back to a held-out training split.")
+    owner._record_warning("Evaluation fell back to a held-out training split.")
+    owner._update_progress(status_message = ACTIVE)
+    for event in event_queue.events:
+        backend._handle_event(event)
+
+    warning_events = [event for event in event_queue.events if event["type"] == "warning"]
+    assert [event["message"] for event in warning_events] == [
+        "Evaluation fell back to a held-out training split."
+    ]
+    assert backend._progress.warnings == ["Evaluation fell back to a held-out training split."]
+    assert backend._progress.status_message == ACTIVE
+
+
+def test_mlx_adapter_deduplicates_warning_events():
+    adapter = _MLXTrainerAdapter()
+
+    adapter._handle_event({"type": "warning", "message": "Evaluation was disabled."})
+    adapter._handle_event({"type": "warning", "message": "Evaluation was disabled."})
+    adapter._handle_event({"type": "warning", "message": "  "})
+
+    assert adapter.training_progress.warnings == ["Evaluation was disabled."]
 
 
 @pytest.mark.parametrize(

@@ -186,6 +186,43 @@ async def authenticated_via_api_key(
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
 
 
+def require_ui_session_for_local_commands(via_api_key: bool) -> None:
+    """Refuse an sk-unsloth API key that asks to define a local (stdio) MCP command.
+
+    stdio MCP runs a command on this host as the backend user, outside the
+    python/terminal sandbox, so only a UI session may choose what runs. API keys
+    keep http(s) MCP, and stdio servers the owner already configured.
+    """
+    if via_api_key:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Local (stdio) MCP servers can only be configured from the Unsloth UI, "
+            "not with an API key. Use an http:// or https:// MCP server instead.",
+        )
+
+
+async def allow_ambient_hf_token(via_api_key: bool = Depends(authenticated_via_api_key)) -> bool:
+    """Whether a download this caller starts may fall back to the backend's own HF_TOKEN.
+
+    A UI session already gets the saved token from Settings, so the ambient one grants it
+    nothing new. ``require_ui_session`` refuses an sk-unsloth API key that same token, so it
+    must not reach private repos by naming one in a download instead; it sends its own token
+    in ``X-Unsloth-HF-Token``.
+    """
+    return not via_api_key
+
+
+async def authenticated_via_desktop_jwt(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """True when the caller is the local desktop app, not a browser session or API key.
+
+    Lets routes treat the desktop as an authority of its own: it authenticates
+    with a local secret rather than the account password.
+    """
+    return is_desktop_access_token(credentials.credentials)
+
+
 async def get_current_subject_allow_password_change(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:

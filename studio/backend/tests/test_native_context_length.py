@@ -434,11 +434,24 @@ class TestRouteCompleteness:
             ), f"Non-GGUF LoadResponse should set context_length:\n{block[:200]}"
 
     def test_status_path(self):
-        """InferenceStatusResponse construction with llama_backend has the field."""
+        """InferenceStatusResponse construction with llama_backend has the field.
+
+        The route may splat the helper's result straight in, or bind it first
+        and adjust a field before passing it on. Both carry the runtime fields.
+        """
         blocks = self._find_construction_blocks("InferenceStatusResponse")
         found = False
         for block in blocks:
-            if "llama_backend" in block and "_llama_runtime_fields(llama_backend)" in block:
+            if "llama_backend" not in block:
+                continue
+            if "_llama_runtime_fields(llama_backend)" in block:
+                found = True
+                break
+            if "**_runtime_fields" in block:
+                # Only counts if that dict is the helper's, not any local name.
+                assert (
+                    "_runtime_fields = _llama_runtime_fields(llama_backend)" in self._source
+                ), "**_runtime_fields is not built from _llama_runtime_fields(llama_backend)"
                 found = True
                 break
         assert found, "No InferenceStatusResponse block with llama_backend has runtime fields"

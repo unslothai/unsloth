@@ -489,11 +489,46 @@ def read_gguf_chat_template(path: str) -> Optional[str]:
     return None
 
 
+def read_gguf_architecture(path: str) -> Optional[str]:
+    """``general.architecture``, or ``None`` when absent / unreadable / not a GGUF.
+
+    Reads only the requested key instead of walking the rest of the header."""
+    architecture = _read_gguf_string(path, "general.architecture")
+    if isinstance(architecture, str) and architecture.strip():
+        return architecture.strip()
+    return None
+
+
 def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     """``clip.has_audio_encoder`` from an mmproj GGUF (e.g. Gemma 4's
     gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
     Flags audio-input models independently of tokenizer token names."""
     return _read_gguf_bool(path, "clip.has_audio_encoder")
+
+
+def read_mmproj_vision_capability(path: str) -> Optional[bool]:
+    """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
+    present, ``None`` if absent/unreadable."""
+    return _read_gguf_bool(path, "clip.has_vision_encoder")
+
+
+def mmproj_capabilities(path: str) -> Tuple[bool, bool]:
+    """``(declares_audio_encoder, accepts_image)`` for the projector at *path*.
+
+    A projector serving both modalities declares both (Qwen2.5-Omni), so an audio-only
+    declaration (ultravox, Voxtral, Qwen3-ASR) is evidence of no vision tower. One
+    declaring neither -- an older convert, or a file this reader could not open -- is
+    unknown rather than audio-only and stays image-capable.
+    """
+    vision = read_mmproj_vision_capability(path)
+    audio = read_mmproj_audio_capability(path)
+    return audio is True, (vision is True or audio is not True)
+
+
+def mmproj_accepts_image(path: str) -> bool:
+    """Whether images may be sent to the model this projector serves; see
+    :func:`mmproj_capabilities`."""
+    return mmproj_capabilities(path)[1]
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:

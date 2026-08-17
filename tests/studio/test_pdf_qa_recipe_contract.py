@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 RECIPE_PATH = (
     REPO / "studio/frontend/src/features/data-recipes/learning-recipes/pdf-grounded-qa.json"
 )
-TRAINING_ACTIONS_PATH = REPO / "studio/frontend/src/features/training/hooks/use-training-actions.ts"
+TRAINING_START_PATH = REPO / "studio/frontend/src/features/training/lib/start-fresh-training-run.ts"
 SEED_BUILDER_PATH = (
     REPO / "studio/frontend/src/features/recipe-studio/utils/payload/builders-seed.ts"
 )
@@ -115,9 +115,12 @@ def test_pdf_qa_canvas_edges_cover_expression_dependencies():
 
 
 def test_pdf_qa_fields_match_studio_alpaca_mapping():
-    source = TRAINING_ACTIONS_PATH.read_text(encoding = "utf-8")
+    source = TRAINING_START_PATH.read_text(encoding = "utf-8")
+    manual_mapping = source.split("function hasManualMapping", 1)[1]
+    manual_mapping = manual_mapping.split("\n}\n", 1)[0]
     assert 'alpaca: { user: "instruction", system: "input", assistant: "output" }' in source
-    assert 'if (fmt === "alpaca") return roles.has("instruction") && roles.has("output");' in source
+    assert 'if (config.datasetFormat === "alpaca") {' in manual_mapping
+    assert 'return roles.has("instruction") && roles.has("output");' in manual_mapping
 
 
 def test_pdf_qa_fields_are_detected_as_alpaca():

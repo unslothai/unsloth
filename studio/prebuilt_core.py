@@ -56,6 +56,23 @@ except ImportError:
     FileLock = None
     FileLockTimeout = None
 
+# Fresh spawned interpreter, and this standalone module cannot import backend
+# modules, so the gate is pasted from native_tls.py's inline_gate_source().
+# test_native_tls_entrypoints.py asserts the paste still matches, by AST.
+_TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
+_flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+if _flag in ("1", "true", "yes") or (
+    _flag not in ("0", "false", "no") and sys.platform in ("darwin", "win32")
+):
+    try:
+        if _TRUSTSTORE_VENDOR not in sys.path:
+            sys.path.append(_TRUSTSTORE_VENDOR)
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+del _flag
+
 
 class PrebuiltFallback(RuntimeError):
     pass

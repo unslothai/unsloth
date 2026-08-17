@@ -51,9 +51,12 @@ export function loadedConfigSignature(
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
+    config.mlxKvBits ?? "",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.nParallel ?? "",
+    config.nBatch ?? "",
+    config.nUbatch ?? "",
     config.tensorParallel ? "1" : "0",
     config.chatTemplateOverride == null
       ? ""

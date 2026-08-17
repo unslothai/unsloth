@@ -20,7 +20,16 @@ def _load_device_type(
     monkeypatch,
     torch_module,
     mlx_available = False,
+    allow_cpu = False,
 ):
+    # Always pinned, never inherited. UNSLOTH_ALLOW_CPU short-circuits
+    # get_device_type() to "cuda", so a GPU-less host that exports it silently
+    # rewrites what the hip and xpu cases are testing.
+    if allow_cpu:
+        monkeypatch.setenv("UNSLOTH_ALLOW_CPU", "1")
+    else:
+        monkeypatch.delenv("UNSLOTH_ALLOW_CPU", raising = False)
+
     package_name = "_device_helpers_test"
     package = types.ModuleType(package_name)
     package.__path__ = [str(DEVICE_TYPE_PATH.parent)]
@@ -133,6 +142,30 @@ def test_xpu_cache_and_current_device_dispatch(monkeypatch):
     assert xpu_calls == ["empty_cache"]
     assert device_type.get_current_device() == 3
     assert (name, snippet, max_memory) == ("Intel Arc. ", "Intel Toolkit: 2026.1.", 8.0)
+
+
+def test_cpu_fallback_does_not_override_mlx(monkeypatch):
+    # UNSLOTH_ALLOW_CPU used to be checked first, so an MLX Mac reported "cuda"
+    # and get_device_count() then hit torch, which is never imported there.
+    device_type = _load_device_type(
+        monkeypatch,
+        torch_module = None,
+        mlx_available = True,
+        allow_cpu = True,
+    )
+
+    assert device_type.DEVICE_TYPE == "mlx"
+    assert device_type.DEVICE_COUNT == 1
+
+
+def test_cpu_fallback_still_reports_cuda_off_mlx(monkeypatch):
+    # The GPU hosts' behaviour must be unchanged: no MLX means the CPU fallback wins.
+    torch = _fake_torch(properties = CUDA_PROPERTIES, cuda_available = False)
+
+    device_type = _load_device_type(monkeypatch, torch, allow_cpu = True)
+
+    assert device_type.DEVICE_TYPE == "cuda"
+    assert device_type.DEVICE_COUNT == 1
 
 
 def test_mlx_helpers_do_not_require_torch(monkeypatch):

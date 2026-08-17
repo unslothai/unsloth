@@ -143,6 +143,12 @@ _ALLOWED_TP_DROP_GUARDS = {
     # launch under the CPU-only GPU mask (no visible devices) aborts the server
     # instead of the intended CPU-only load (#6414).
     "gpu_memory_mode == 'manual' and gpu_layers == 0",
+    # Virtualised Metal: offloaded layers return corrupt tokens, so the load is rewritten
+    # to manual/0 and nothing is left to split (no multi-GPU given up, a paravirtual Mac
+    # has one emulated device). Guarded on the hardware alone, since the rewrite applies
+    # to every request here, including one already asking for manual/0 (whose extras can
+    # still carry an --override-tensor the route does not strip).
+    "_paravirtual_cpu_forced",
 }
 
 
@@ -548,7 +554,7 @@ def test_layer_preserve_hint_replayed_on_respawn():
     respawn keeps the downgraded model multi-GPU (Codex review on #6659)."""
     src = inspect.getsource(LlamaCppBackend.load_model)
     assert "preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer" in src
-    assert "self._last_load_intent = intent" in src
+    assert "self._last_load_intent = replace(intent" in src
 
 
 def test_should_record_tensor_split_abort_decision():
