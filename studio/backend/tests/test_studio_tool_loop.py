@@ -730,7 +730,6 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     assert second[-2]["content"] == "I'll search for that now."
 
 
-
 def test_a_stalled_model_is_not_nudged_by_default(executed):
     """Issue #8907: ordinary prose must not trigger a hidden retry by default."""
     transport = FakeTransport(
@@ -757,6 +756,7 @@ def test_a_stalled_model_respects_explicit_nudge_off(executed):
 
     assert executed == []
     assert len(transport.requests) == 1
+
 
 def test_a_finished_answer_is_not_nudged(executed):
     """A real answer must never be re-prompted into calling a tool."""

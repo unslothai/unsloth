@@ -17,7 +17,6 @@ def test_external_tool_loop_accepts_and_gates_nudge_flag():
 
 def test_external_route_forwards_request_nudge_flag():
     from routes import inference as routes_inference
-
     src = inspect.getsource(routes_inference.openai_chat_completions)
     # Local inference already forwards the field; external Studio tools must as well.
     assert src.count("nudge_tool_calls = payload.nudge_tool_calls") >= 2
@@ -25,8 +24,8 @@ def test_external_route_forwards_request_nudge_flag():
 
 def test_frontend_forwards_nudge_setting_to_external_tools():
     studio = Path(__file__).resolve().parents[2]
-    adapter = (
-        studio / "frontend/src/features/chat/api/chat-adapter.ts"
-    ).read_text(encoding="utf-8")
+    adapter = (studio / "frontend/src/features/chat/api/chat-adapter.ts").read_text(
+        encoding = "utf-8"
+    )
     # One local-model request and one external local-tool request.
     assert adapter.count("nudge_tool_calls: runtime.nudgeToolCalls") >= 2
