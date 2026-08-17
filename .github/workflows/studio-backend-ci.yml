@@ -132,7 +132,7 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests \
-            'numpy<3' pytest pytest-asyncio httpx \
+            'numpy<3' pytest pytest-asyncio pytest-xdist httpx \
             soundfile librosa
           # soundfile + librosa: test_audio_dataset_decode importorskips both, so without
           # them the no-torchcodec decode path is silently untested here.
@@ -176,10 +176,67 @@ jobs:
         #   - TestTransformersIntrospection: same
         #   - test_returns_cuda_when_cuda_available / test_calls_cuda_cache_when_cuda:
         #       assume CUDA-capable GPU
+        #
+        # -n 4: 1322.6s -> 343.0s locally on the same 4-worker shape as the runner, with
+        # an IDENTICAL result -- 51 failed / 26190 passed serial against 51 failed /
+        # 26188 passed parallel, and the two failure sets compared equal name for name,
+        # so nothing here depends on the order it runs in. (Those 51 are a local
+        # environment missing peft and a diffusers pin; the point is that the two modes
+        # agree, not the count.) Same shape as repo-cpu-tests below, which has run -n 4
+        # since it measured 806s -> 220s.
+        #
+        # Unit tests, so this is CPU and not memory bound: the job installs --no-torch
+        # style CPU wheels and loads no model, unlike the inference smoke workflows
+        # where four workers on one runner would not fit.
+        #
+        # test_streaming_stripper is ignored here and run serially below, for the reason
+        # repo-cpu-tests already isolates load_freeze: it compares its own measured cost
+        # against a reference implementation timed in the same process, and a worker
+        # descheduled by the other three inflates one side of that ratio. Observed on
+        # staging, where the 3.10 leg reported "early markup cost 1.354s against the
+        # reference's 0.854s" while 3.13 passed the same commit.
+        #
+        # The other two assert ABSOLUTE elapsed time, and tightly: 50ms for a
+        # short-circuit that should not run at all, and 100ms for a regex backtracking
+        # guard. Bounds that small are inside one scheduler quantum, so under four
+        # workers they measure the scheduler as much as the code. Bounds of 0.5s and up
+        # are left in the parallel run; there are 22 files with elapsed-time bounds and
+        # serialising all of them would give back most of what this change buys. The
+        # isolation guard scans for the tight ones, so a new test below the threshold
+        # fails that guard instead of flaking here.
         run: |
-          python -m pytest tests/ -q --tb=short \
+          python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/test_studio_api.py \
+            --ignore=tests/test_streaming_stripper.py \
+            --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
+            --ignore=tests/test_tool_xml_strip.py \
+            --ignore=tests/test_diffusion_checkpoint_resume.py \
+            --ignore=tests/test_tool_output_streaming.py \
+            --ignore=tests/test_web_fetch_extraction.py \
+            --ignore=tests/test_tool_call_parser_strict.py \
+            --ignore=tests/test_tunnel_safe_long_post.py \
+            --ignore=tests/test_scan_loras_off_event_loop.py \
+            --ignore=tests/test_anthropic_messages.py \
+            --ignore=tests/test_profile_stats.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
+
+      - name: Backend tests that cannot share a worker
+        working-directory: studio/backend
+        # Relative timing against a reference measured in the same process. Serial, so the
+        # comparison is between two implementations rather than between two schedulings.
+        run: |
+          python -m pytest -q --tb=short \
+            tests/test_streaming_stripper.py \
+            tests/test_llama_cpp_wait_for_vram_settle.py \
+            tests/test_tool_xml_strip.py \
+            tests/test_diffusion_checkpoint_resume.py \
+            tests/test_tool_output_streaming.py \
+            tests/test_web_fetch_extraction.py \
+            tests/test_tool_call_parser_strict.py \
+            tests/test_tunnel_safe_long_post.py \
+            tests/test_scan_loras_off_event_loop.py \
+            tests/test_anthropic_messages.py \
+            tests/test_profile_stats.py
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by
