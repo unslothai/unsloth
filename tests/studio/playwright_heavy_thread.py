@@ -789,7 +789,15 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
 # The per-repetition values that are proofs rather than timings: what the action did, not how long
 # it took. Nothing here can be aggregated, so every repetition's is carried through summarise()
 # and read by harness_failures().
+#
+# Split by type only because of what summarise() does with each. The non-numeric ones have no
+# median to take, so the table carries the last repetition's. `closedMs` is a number and keeps its
+# median for the table, but it is a proof as well as a timing: null means the thread never
+# unmounted, and REOPEN_JS then finds `messageCount() >= before` already true and returns a
+# near-zero `ms` for a thread that never left. Median drops the null, so aggregating it is exactly
+# how that repetition's non-measurement reaches the headline unchallenged.
 PROOF_KEYS = ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose")
+NUMERIC_PROOF_KEYS = ("closedMs",)
 
 # Portable headline per action, plus the action's own DOM-observable duration. `floored` marks a
 # value clocked across a double rAF, which carries the ~33ms vsync floor.
@@ -829,7 +837,7 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
         merged["per_repetition_proofs"] = [
-            {key: row[key] for key in PROOF_KEYS if key in row} for row in rows
+            {key: row[key] for key in PROOF_KEYS + NUMERIC_PROOF_KEYS if key in row} for row in rows
         ]
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
@@ -1436,11 +1444,18 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             if reopened.get("ran"):
                 if reopened["ms"] is None:
                     failures.append(f"{where} re-opened the thread and it never came back")
-                elif reopened["closedMs"] is None:
-                    failures.append(
-                        f"{where} never saw the thread unmount, so its re-open time is the cost "
-                        "of a thread that never left"
-                    )
+                # Per repetition, and this one is a number, so the median hides it twice over:
+                # median() drops the null outright, and the repetition that produced it still
+                # returned an `ms` -- REOPEN_JS's second loop sees `messageCount() >= before`
+                # immediately when the thread never unmounted -- so `dropped_repetitions`, which
+                # only reads the headline `ms`, has nothing to report either.
+                for n, proof in numbered_proofs(reopened):
+                    if proof.get("closedMs") is None:
+                        failures.append(
+                            f"{where} repetition {n} never saw the thread unmount, so its "
+                            "re-open time is the cost of a thread that never left, and that "
+                            "repetition is in the median"
+                        )
 
         # A modal menu puts the body on the modal layer and a non-modal one does not, and the two
         # cost wildly different amounts. Either is a legitimate tree, but a run that mixes them

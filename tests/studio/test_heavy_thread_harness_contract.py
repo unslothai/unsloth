@@ -163,7 +163,7 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
     # Without this, "re-open" is timing a thread that never left, which is free.
     decision = verdict()
-    assert 'reopened["closedMs"] is None' in decision
+    assert 'proof.get("closedMs") is None' in decision
 
 
 def test_the_verdict_asserts_discrimination() -> None:
@@ -317,6 +317,21 @@ def test_an_earlier_repetition_that_typed_into_nothing_is_caught(harness) -> Non
     reps[0]["keystroke"]["runtimeText"] = ""
     failures = harness.harness_failures(results_for(harness, reps), {})
     assert [f for f in failures if "repetition 1" in f and "composer state" in f], failures
+
+
+def test_an_earlier_repetition_whose_thread_never_unmounted_is_caught(harness) -> None:
+    # `closedMs` is a proof wearing a number's clothes. Null means the thread never unmounted, and
+    # REOPEN_JS's second loop then finds `messageCount() >= before` already true and returns a
+    # near-zero `ms` for a thread that never left. median() drops the null and `dropped_repetitions`
+    # reads only `ms`, so before this the invalid timing sat in the median with nothing to show it.
+    reps = [one_good_repetition() for _ in range(3)]
+    reps[0]["reopen"]["closedMs"] = None
+    reps[0]["reopen"]["ms"] = 0.4
+    failures = harness.harness_failures(results_for(harness, reps), {})
+    assert [f for f in failures if "repetition 1" in f and "never left" in f], failures
+    # The hole it went through: the summary still reports a plausible median for both.
+    summary = harness.summarise(reps)["reopen"]
+    assert summary["closedMs"] is not None and summary["dropped_repetitions"] == 0
 
 
 def test_an_earlier_repetition_on_the_modal_layer_is_caught(harness) -> None:
