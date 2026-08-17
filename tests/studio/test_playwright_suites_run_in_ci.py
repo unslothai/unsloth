@@ -13,6 +13,7 @@ Same shape as test_ci_shell_suite_coverage.py, which guards tests/sh for the sam
 failure: the list of what CI runs drifting behind the directory it runs from.
 """
 
+import re
 from pathlib import Path
 
 import yaml
@@ -32,6 +33,22 @@ NOT_IN_CI = {
     # one 254 MiB GGUF and no network model resolution.
     "playwright_train_pickers.py",
 }
+
+
+def _invoked(name: str, text: str) -> bool:
+    """Whether ``text`` RUNS ``name``, rather than merely mentioning it.
+
+    Substring presence is not coverage. `.github/scripts/kaggle_studio_ci/report.py`
+    names playwright_chat_ui.py inside a result description, and the workflows name
+    drivers in comments and in trigger paths, so deleting every real invocation could
+    leave this guard green on prose. Reported on PR #9060.
+
+    Every driver and helper in this repo is run the same way, as an argument to an
+    interpreter, so that is what is matched: the name at the end of a path token that
+    an interpreter is being handed.
+    """
+    pattern = rf"(?:^|[\s;&|(])(?:python3?|node|bash|sh)\s+(?:-\S+\s+)*[^\s;&|<>'\"]*{re.escape(name)}\b"
+    return re.search(pattern, text, re.M) is not None
 
 
 def _executable_text(path: Path) -> str:
@@ -86,14 +103,15 @@ def _ci_text() -> str:
         added = False
         for path in list(remaining):
             rel = path.relative_to(REPO).as_posix()
-            names = {rel, path.name}
             # A composite action is referenced by its DIRECTORY
             # (`uses: ./.github/actions/install-unsloth-local`), never by the
             # action.yml inside it, so matching only the file path never opens one
             # and a driver it launches reads as an orphan. Reported on PR #9060.
             if path.name in ("action.yml", "action.yaml"):
-                names.add(path.parent.relative_to(REPO).as_posix())
-            if any(name in text for name in names):
+                reached = path.parent.relative_to(REPO).as_posix() in text
+            else:
+                reached = _invoked(path.name, text) or _invoked(rel, text)
+            if reached:
                 parts.append(path.read_text(encoding = "utf-8", errors = "replace"))
                 remaining.remove(path)
                 text = "\n".join(parts)
@@ -106,7 +124,7 @@ def test_every_playwright_driver_is_invoked_by_ci():
     orphans = sorted(
         driver.name
         for driver in DRIVERS
-        if driver.name not in NOT_IN_CI and driver.name not in text
+        if driver.name not in NOT_IN_CI and not _invoked(driver.name, text)
     )
     assert not orphans, (
         f"{len(orphans)} Playwright suite(s) under tests/studio are not named by any workflow "
@@ -121,7 +139,7 @@ def test_the_exemptions_are_still_exempt_and_still_exist():
     missing = sorted(NOT_IN_CI - names)
     assert not missing, f"NOT_IN_CI names files that no longer exist: {missing}"
     text = _ci_text()
-    now_covered = sorted(name for name in NOT_IN_CI if name in text)
+    now_covered = sorted(name for name in NOT_IN_CI if _invoked(name, text))
     assert not now_covered, (
         f"{now_covered} are exempted from CI coverage but CI now names them. Remove them from "
         f"NOT_IN_CI so the check keeps guarding them."
