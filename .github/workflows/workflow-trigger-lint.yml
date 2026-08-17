@@ -86,3 +86,9 @@ jobs:
       # test and merged green. Only this job sees such a PR.
       - name: Main runs still survive a merge burst
         run: python3 -m pytest tests/studio/test_main_runs_survive_merge_bursts.py -q
+
+      # And here for the same reason: this one reads the three OS smoke workflows, so
+      # the change that breaks it edits a workflow and nothing else, which no paths
+      # filter in the repo matches. Filesystem reads, seconds.
+      - name: The OS smoke legs still share one script
+        run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q
