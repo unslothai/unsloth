@@ -15,6 +15,8 @@ failure: the list of what CI runs drifting behind the directory it runs from.
 
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[2]
 DRIVERS = sorted((REPO / "tests" / "studio").glob("playwright_*.py"))
 
@@ -32,16 +34,39 @@ NOT_IN_CI = {
 }
 
 
-def _ci_text() -> str:
-    """Everything CI could name a driver from, reachable from a workflow.
+def _executable_text(path: Path) -> str:
+    """The parts of a workflow that RUN something: step `run` bodies and `uses` refs.
 
-    Reachability is the whole point. Reading every file under .github/scripts
-    unconditionally counts an orphaned helper as coverage: delete the workflow step
-    that calls run-studio-indicator-browser.sh, leave the script in the tree, and
-    the driver it names is still in this text while the suite runs nowhere. That is
-    the regression these tests exist to catch. So the workflows seed the text, and
-    a helper joins only once something already in it names the helper -- repeatedly,
-    since one helper may call another.
+    Reading the whole file counts a driver named in `on.pull_request.paths` as an
+    invocation. studio-frontend-ci.yml names playwright_strip_ansi_smoke.py in both
+    its trigger list and its step, so deleting the step alone would leave the guard
+    green while the suite runs nowhere. Trigger paths say when CI runs, not what it
+    runs. Reported on PR #9060.
+    """
+    document = yaml.safe_load(path.read_text(encoding = "utf-8"))
+    if not isinstance(document, dict):
+        return ""
+    parts: list[str] = []
+    for job in (document.get("jobs") or {}).values():
+        if not isinstance(job, dict):
+            continue
+        parts.append(str(job.get("uses", "")))
+        for step in job.get("steps") or []:
+            if isinstance(step, dict):
+                parts.append(str(step.get("run", "")))
+                parts.append(str(step.get("uses", "")))
+                parts.append(str(step.get("with", "")))
+    return "\n".join(parts)
+
+
+def _ci_text() -> str:
+    """Everything CI could name a driver from, reachable from something that runs.
+
+    Two ways a name can look like coverage without being it, both live in this repo:
+    a driver named only in a workflow's trigger `paths`, and a driver named only by a
+    helper script no workflow calls. So the executable fields of the workflows seed
+    the text, and a helper joins only once something already in it names the helper --
+    repeatedly, since one helper may call another.
     """
     helpers = [
         path
@@ -50,9 +75,9 @@ def _ci_text() -> str:
         if path.is_file()
     ]
     parts = [
-        path.read_text(encoding = "utf-8", errors = "replace")
+        _executable_text(path)
         for path in sorted((REPO / ".github" / "workflows").rglob("*"))
-        if path.is_file()
+        if path.is_file() and path.suffix in (".yml", ".yaml")
     ]
     text = "\n".join(parts)
     remaining = list(helpers)
