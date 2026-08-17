@@ -14,7 +14,9 @@ construct at the root. setup.ps1 carries the same program in a single-quoted her
 where no rewriting happens; it is compiled here too, and the two are held equivalent.
 """
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +38,22 @@ def _sh_probe() -> tuple[str, str]:
     return m.group(1), m.group(2)
 
 
+def _bash() -> str:
+    # A bare 'bash' on a Windows PATH is System32's WSL launcher, which exits 1
+    # when no distribution is installed; the bash that runs shell scripts here is
+    # the one Git ships.
+    if sys.platform != "win32":
+        return "bash"
+    for env in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(env)
+        if root and (cand := Path(root) / "Git" / "bin" / "bash.exe").exists():
+            return str(cand)
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    pytest.skip("no usable bash on this Windows runner")
+
+
 def _shell_expanded(assignment: str, tmp_path: Path) -> str:
     script = tmp_path / "assign.sh"
     out = tmp_path / "probe.py"
@@ -47,7 +65,7 @@ def _shell_expanded(assignment: str, tmp_path: Path) -> str:
         + f'\nprintf "%s" "$_PKG_PROBE_PY" > "{out.as_posix()}"\n',
         encoding = "utf-8",
     )
-    subprocess.run(["bash", str(script)], check = True)
+    subprocess.run([_bash(), str(script)], check = True)
     return out.read_text(encoding = "utf-8")
 
 
