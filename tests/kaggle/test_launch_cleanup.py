@@ -17,6 +17,7 @@ about process death and nothing weaker would show it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -65,7 +66,7 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
         """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(tmp_path / "bin")
     return subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -96,16 +97,42 @@ def _await_ready(proc: subprocess.Popen) -> None:
     raise AssertionError("the runner never reached its READY point")
 
 
+def _child_env(bin_dir: Path) -> dict:
+    """The launcher's environment, with faulthandler armed.
+
+    PYTHONFAULTHANDLER makes SIGABRT dump every thread's stack, which is what
+    `_wait_for_death` asks for before it kills a launcher that overstayed its budget.
+    faulthandler writes with raw fd writes rather than through Python's io stack, so it
+    still reports when the reason for the hang is that io stack itself.
+    """
+    return {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "PYTHONFAULTHANDLER": "1",
+    }
+
+
 def _wait_for_death(proc: subprocess.Popen) -> None:
-    """Wait out the budget, and say what the launcher logged if it never dies.
+    """Wait out the budget, and say where the launcher was if it never dies.
 
     A hang and a wrong exit status are different faults, and the bare TimeoutExpired
     named neither. Killing first is what lets the pipe reach EOF so the tail reads.
+
+    SIGABRT before SIGKILL, because the tail on its own has already proved too coarse:
+    CI produced "(nothing logged after READY)" on this file, which is the same output
+    whether the handler never ran, ran and was refused the pipe, or ran and blocked
+    inside a delete. With faulthandler armed in the child, SIGABRT prints the stack it
+    is actually stuck on down the same pipe, and then ends the process, so the answer
+    costs nothing extra when the hang does not happen.
     """
     try:
         proc.wait(timeout = _DEATH_BUDGET_SEC)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        with contextlib.suppress(Exception):
+            proc.send_signal(signal.SIGABRT)
+            proc.wait(timeout = 10)
+        if proc.poll() is None:
+            proc.kill()
         proc.wait(timeout = 30)
         raise AssertionError(
             f"the launcher was still alive {_DEATH_BUDGET_SEC}s after its signal. "
@@ -696,7 +723,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
     """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(bin_dir)
     proc = subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -760,7 +787,7 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(bin_dir)
     proc = subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
