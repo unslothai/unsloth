@@ -131,16 +131,16 @@ def test_the_worker_manifest_prices_a_local_partial(blobs, state):
     )
     _write(blobs / SHARD_A, 2 * GB)
 
-    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) == 2 * GB
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) == 2 * GB
 
 
 def test_a_row_with_no_manifest_stays_unpriced(blobs, state):
-    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) is None
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) is None
 
 
-def test_the_price_never_exceeds_the_row_total(blobs, state):
-    # The manifest counts a companion the row's own size does not, so an uncapped reading
-    # would advertise more left than the row says it is.
+def test_a_companion_the_row_does_not_count_is_still_priced(blobs, state):
+    # The mmproj comes down with the quant, so it belongs in the transfer even though the
+    # row's own size does not include it.
     _write_manifest(
         [
             ExpectedFile(path = "model-Q4_K_M.gguf", size = 4 * GB, sha256 = SHARD_A),
@@ -148,8 +148,25 @@ def test_the_price_never_exceeds_the_row_total(blobs, state):
         ]
     )
 
-    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None, 4 * GB) == 4 * GB
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) == 5 * GB
 
 
 def test_an_unnamed_variant_is_not_priced(blobs, state):
-    assert variant_remaining_bytes_from_state("Org/Model", "", None, 4 * GB) is None
+    assert variant_remaining_bytes_from_state("Org/Model", "", None) is None
+
+
+def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
+    """A local scan sizes a variant from the shards ON DISK, so an early interruption makes that
+    total smaller than the transfer. Capping by it reported less left than must be fetched."""
+    shard_c = "c" * 64
+    _write_manifest(
+        [
+            ExpectedFile(path = "m-Q4_K_M-00001-of-00003.gguf", size = 2 * GB, sha256 = SHARD_A),
+            ExpectedFile(path = "m-Q4_K_M-00002-of-00003.gguf", size = 2 * GB, sha256 = SHARD_B),
+            ExpectedFile(path = "m-Q4_K_M-00003-of-00003.gguf", size = 2 * GB, sha256 = shard_c),
+        ]
+    )
+    _write(blobs / SHARD_A, 2 * GB)
+
+    # 2 GB on disk, so the local row advertises 2 GB, but 4 GB is still to fetch.
+    assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) == 4 * GB

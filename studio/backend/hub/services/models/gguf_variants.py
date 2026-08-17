@@ -416,14 +416,14 @@ def variant_remaining_bytes_from_state(
     repo_id: str,
     variant: str,
     repo_cache_dir: Optional[Path],
-    total_bytes: int = 0,
 ) -> Optional[int]:
     """:func:`variant_remaining_bytes` for the local and offline listings, which have no hub
     plan. The worker writes a manifest before it fetches anything, so a partial row can still
     be priced from the file list that produced it.
 
-    Capped at the row's own total: a manifest counts companions the row's size may not, and
-    "20 GB left" beside an 18 GB row reads as a bug rather than as a warning.
+    Deliberately not capped by the row's own size. A local listing sizes a variant from the
+    shards ON DISK, so on an early interruption that total is smaller than the transfer, and
+    capping by it reported less left than has to be fetched.
     """
     if not variant:
         return None
@@ -439,13 +439,10 @@ def variant_remaining_bytes_from_state(
         return None
     if manifest is None or not manifest.expected_files:
         return None
-    remaining = variant_remaining_bytes(
+    return variant_remaining_bytes(
         repo_id,
         plan_from_expected_files(variant, manifest.expected_files),
     )
-    if remaining is None:
-        return None
-    return min(remaining, total_bytes) if total_bytes > 0 else remaining
 
 
 def _partial_transport_for_variant(
@@ -1070,7 +1067,7 @@ async def get_gguf_variants_answer(
                             None
                             if _downloaded(v)
                             else variant_remaining_bytes_from_state(
-                                response_repo_id, v.quant, repo_cache_dir, v.size_bytes
+                                response_repo_id, v.quant, repo_cache_dir
                             )
                         ),
                         downloaded = _downloaded(v),
@@ -1101,7 +1098,6 @@ async def get_gguf_variants_answer(
                             response_repo_id,
                             v.quant,
                             repo_cache_dir,
-                            v.download_size_bytes or v.size_bytes,
                         ),
                         downloaded = False,
                         partial = True,
@@ -1138,7 +1134,6 @@ async def get_gguf_variants_answer(
                         repo_id,
                         v.quant,
                         repo_cache_dir,
-                        v.download_size_bytes or v.size_bytes,
                     ),
                     downloaded = False,
                     partial = True,
