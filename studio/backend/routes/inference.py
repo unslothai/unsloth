@@ -5,6 +5,7 @@
 Inference API routes for model loading and text generation.
 """
 
+import math
 import os
 import sys
 import time
@@ -11523,9 +11524,9 @@ def _decode_audio_base64(b64: str) -> "np.ndarray":
 # can expand to a far larger PCM array than the encoded-size cap implies.
 _MAX_AUDIO_RAW_BYTES = STT_AUDIO_RAW_MAX_BYTES
 _MAX_AUDIO_B64_CHARS = STT_AUDIO_B64_MAX_CHARS
-# The composer's 64 MB cap plus base64's 4/3 inflation, so a clip it accepted
-# is not refused here.
-_MAX_VIDEO_B64_CHARS = (64 * 1024 * 1024 * 4) // 3
+# The composer's 64 MB cap as padded base64: 4 chars per 3 bytes, rounded up.
+# Flooring instead refused a file of exactly the size the composer allows.
+_MAX_VIDEO_B64_CHARS = 4 * math.ceil((64 * 1024 * 1024) / 3)
 _MAX_AUDIO_SECONDS = 30 * 60
 _WAV_HEADER_BYTES = 44
 _MIN_TRANSCODE_AUDIO_SAMPLE_RATE = 8000
@@ -13592,6 +13593,14 @@ async def openai_chat_completions(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
+        if payload.video_base64:
+            # Same shape: _build_openai_passthrough_body forwards an explicit
+            # field list, so the clip would be dropped and the model would
+            # answer without it.
+            raise _reject(
+                400,
+                "Video input is not supported together with guided decoding or client-supplied tools yet.",
+            )
 
         # Preserve the vision guard from the non-passthrough path below:
         # text-only tool-capable GGUFs should return a clear 400 here rather
@@ -13685,13 +13694,15 @@ async def openai_chat_completions(
                     "Video provided but the current GGUF model cannot take video input. "
                     "It needs an mmproj with video support, and ffmpeg/ffprobe installed.",
                 )
-            if len(payload.video_base64) > _MAX_VIDEO_B64_CHARS:
-                raise _reject(413, "Video file is too large (max ~64 MB).")
             video_b64 = payload.video_base64
+            # Strip before measuring: the data URI header is not payload, and
+            # counting it would refuse a clip of exactly the allowed size.
             if video_b64.startswith("data:"):
                 video_b64 = video_b64.split(",", 1)[1] if "," in video_b64 else ""
             if not video_b64:
                 raise _reject(400, "Could not read the provided video file.")
+            if len(video_b64) > _MAX_VIDEO_B64_CHARS:
+                raise _reject(413, "Video file is too large (max 64 MB).")
 
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,

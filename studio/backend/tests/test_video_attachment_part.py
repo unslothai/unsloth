@@ -13,6 +13,9 @@ GGUF alone.
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("torch")
@@ -92,3 +95,30 @@ def test_an_unreadable_props_does_not_claim_video():
     backend._query_server_props = lambda: None
     assert backend._query_server_n_ctx() is None
     assert backend._has_video_input is False
+
+
+def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
+    """Flooring the 4/3 inflation refused a file of exactly the allowed size."""
+    import math
+
+    from routes.inference import _MAX_VIDEO_B64_CHARS
+
+    limit_bytes = 64 * 1024 * 1024
+    # Padded base64 is 4 characters per 3 bytes, rounded up.
+    assert len(base64.b64encode(b"x" * 3001)) == 4 * math.ceil(3001 / 3)
+    assert 4 * math.ceil(limit_bytes / 3) <= _MAX_VIDEO_B64_CHARS
+    assert 4 * math.ceil((limit_bytes + 1024) / 3) > _MAX_VIDEO_B64_CHARS
+
+
+def test_video_is_refused_on_the_tool_passthrough_path():
+    """That branch forwards an explicit field list and returns before the
+    injection below, so the clip would be dropped and the model would answer
+    without it. The audio path already refuses; video has to match."""
+    source = (
+        Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+    ).read_text()
+    start = source.index("if using_gguf and _takes_tool_passthrough(payload, llama_backend):")
+    branch = source[start : start + 2500]
+    assert "payload.audio_base64" in branch
+    assert "payload.video_base64" in branch
+    assert "Video input is not supported together with guided decoding" in branch
