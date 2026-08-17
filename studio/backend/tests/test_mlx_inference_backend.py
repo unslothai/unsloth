@@ -1371,6 +1371,11 @@ def test_mlx_vlm_cache_rolls_back_failures_cancellation_and_cleans_up(monkeypatc
     assert all(h.insert((scope, p, None), kv(64)) for h in (bounded, counted) for p in "ab")
     assert len(bounded._entries) == 1 and len(counted._entries) == 1
     assert not tiny.insert((scope, "a", None), kv(20)) and not tiny._entries
+    clone_expanding = type(history)(2, 100)
+    clone_expanding_state = kv(4)
+    clone_expanding_state.cache[0].dequantize_for_apc = lambda: (None, None)
+    assert not clone_expanding.insert((scope, "a", None), clone_expanding_state)
+    assert not clone_expanding._entries
     clone = lambda cache, **_kwargs: copy.deepcopy(cache)
 
     class State:

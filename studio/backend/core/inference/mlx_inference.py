@@ -1069,6 +1069,16 @@ def _vlm_prompt_cache_state_nbytes(state):
     return total
 
 
+def _vlm_prompt_cache_clone_expands(cache):
+    try:
+        return any(
+            callable(getattr(entry, "dequantize_for_apc", None))
+            for entry in _flatten_kv_entries(cache)
+        )
+    except Exception:
+        return True
+
+
 class _MLXVLMPromptCacheHistory:
     """Retain only committed, byte-bounded VLM state snapshots.
 
@@ -1117,6 +1127,9 @@ class _MLXVLMPromptCacheHistory:
         scope, prompt, continued_id = commit
         tokens = list(getattr(state, "token_ids", None) or ())
         cache = getattr(state, "cache", None) or ()
+        if _vlm_prompt_cache_clone_expands(cache):
+            logger.debug("MLX VLM prompt cache: skipping clone-expanding quantized state")
+            return False
         covered = _kv_prefix_coverage(cache)
         if covered is None or covered <= 0 or covered > len(tokens):
             logger.debug("MLX VLM prompt cache: skipping unverifiable prefix coverage")
@@ -1177,10 +1190,7 @@ class _StudioVLMNativeExactManager:
         *,
         extra_hash = 0,
     ):
-        if any(
-            callable(getattr(entry, "dequantize_for_apc", None))
-            for entry in _flatten_kv_entries(prompt_cache)
-        ):
+        if _vlm_prompt_cache_clone_expands(prompt_cache):
             logger.debug("MLX VLM exact cache: skipping clone-expanding quantized state")
             return False
         state = SimpleNamespace(token_ids = token_ids, cache = prompt_cache)
