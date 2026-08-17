@@ -238,7 +238,9 @@ def main() -> int:
                 finally:
                     ctx.close()
                     browser.close()
-        (OUT / f"{LABEL}.json").write_text(json.dumps(results, indent = 2))
+        (OUT / f"{LABEL}.json").write_text(
+            json.dumps(results, indent = 2), encoding = "utf-8"
+        )
     finally:
         if vite is not None:
             stop_process(vite)
