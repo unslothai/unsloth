@@ -565,6 +565,53 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
     assert any("me/k-1" in c for c in _deletions(tmp_path))
 
 
+def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
+    """Raising is not the only way a log line stops the handler; blocking is the other.
+
+    stdout in CI is a pipe. If whatever collects it stops reading, the pipe fills and a
+    write goes to sleep in the kernel instead of failing, so no ``except`` and no
+    ``finally`` runs. The handler announces itself BEFORE calling ``release()``, so the
+    kernels would keep billing until something killed the launcher from outside, which is
+    the one outcome this file exists to prevent. The same backpressure is what makes the
+    reentrancy above likely, so the two arrive together.
+
+    Reproduced exactly: the launcher writes until the pipe is full and this test never
+    reads a byte of it, so the main thread is asleep inside a write, holding the buffer
+    lock, when the signal lands. Both the buffered path and the raw descriptor are then
+    unavailable, and the line has to be dropped rather than waited on.
+    """
+    proc = _runner(
+        tmp_path,
+        _waiting_launcher(tmp_path / "out").replace(
+            "            time.sleep(%d)" % _STALL_SEC,
+            "\n".join(
+                [
+                    "            while True:",
+                    "                sys.stdout.write('x' * 65536)",
+                    "                sys.stdout.flush()",
+                ]
+            ),
+        ),
+    )
+    try:
+        _await_ready(proc)
+        time.sleep(2)  # long enough for the pipe to fill and the write to park
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert any("me/k-1" in c for c in _deletions(tmp_path)), (
+        "a full stdout pipe stopped the handler before release(), so the kernel stayed up "
+        "and billed. The diagnostic must be dropped rather than blocked on."
+    )
+    assert json.loads((tmp_path / "inflight.json").read_text()) == []
+    assert proc.returncode == -signal.SIGTERM, (
+        f"the launcher exited {proc.returncode} rather than dying of SIGTERM after its "
+        f"logging blocked"
+    )
+
+
 def test_an_unhandled_exception_still_deletes(tmp_path):
     """atexit covers the path no signal handler sees.
 

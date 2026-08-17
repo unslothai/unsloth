@@ -55,6 +55,7 @@ import argparse
 import json
 import os
 import re
+import select
 import atexit
 import shutil
 import signal
@@ -219,6 +220,22 @@ def _log(msg: str) -> None:
     print(f"[launch] {msg}", flush = True)
 
 
+_STDOUT_FD = 1
+
+
+def _writable(fd: int) -> bool:
+    """Whether a write to ``fd`` can proceed without blocking, asked without writing.
+
+    A regular file or a terminal always answers yes; a pipe answers no exactly when it
+    has backed up, which is the case worth avoiding. Any error answers no: a closed or
+    unselectable descriptor is not somewhere to risk a stall from a signal handler.
+    """
+    try:
+        return bool(select.select([], [fd], [], 0)[1])
+    except BaseException:  # noqa: BLE001
+        return False
+
+
 def _log_from_signal(msg: str) -> None:
     """``_log`` for use inside a signal handler, where the usual path can raise.
 
@@ -231,12 +248,24 @@ def _log_from_signal(msg: str) -> None:
     So the buffered path is attempted and its failure is not fatal. ``os.write`` goes
     straight to the file descriptor and takes no lock the interrupted frame could
     already hold, which is what makes it usable from here.
+
+    Nothing here may BLOCK either, which raising does not cover. This handler announces
+    itself before calling ``release()``, and stdout in CI is a pipe: if the collector
+    stops draining it, both the buffered flush and the raw write block in the kernel
+    rather than failing, and no ``except`` or ``finally`` runs. The kernels then keep
+    billing until something kills the launcher from outside. That backpressure is also
+    what makes the interrupted-mid-write case above likely in the first place, so the
+    two arrive together. A readiness check first turns the stall into a dropped line:
+    POSIX reports a pipe writable only when at least PIPE_BUF bytes fit, and these lines
+    are far shorter than that.
     """
+    if not _writable(_STDOUT_FD):
+        return
     try:
         _log(msg)
     except BaseException:  # noqa: BLE001 -- a log line may never decide whether we die
         try:
-            os.write(1, f"[launch] {msg}\n".encode("utf-8", "replace"))
+            os.write(_STDOUT_FD, f"[launch] {msg}\n".encode("utf-8", "replace"))
         except BaseException:  # noqa: BLE001
             pass
 
