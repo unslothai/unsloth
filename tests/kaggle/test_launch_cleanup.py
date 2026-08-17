@@ -521,6 +521,50 @@ def test_the_stall_outlasts_the_death_budget():
     )
 
 
+def test_the_handler_survives_its_own_logging_failing(tmp_path):
+    """The reentrancy that a contended runner produced, made deterministic.
+
+    A signal handler runs on the main thread wherever it was, and if that was inside a
+    write to stdout the interpreter refuses the second one: ``RuntimeError: reentrant
+    call inside <_io.BufferedWriter name='<stdout>'>``. Captured on a staging runner,
+    where it escaped the handler before it could re-raise the signal and the launcher
+    exited 1. Nothing about the timing is reproduced here; the failure it causes is,
+    by making the handler's own log call raise.
+    """
+    proc = _runner(
+        tmp_path,
+        _waiting_launcher(tmp_path / "out").replace(
+            "        launch.main()",
+            "\n".join(
+                [
+                    "        _real_log = launch._log",
+                    "        def _reentrant(msg):",
+                    "            if 'received signal' in msg:",
+                    "                raise RuntimeError(",
+                    "                    \"reentrant call inside <_io.BufferedWriter \"",
+                    "                    \"name='<stdout>'>\")",
+                    "            _real_log(msg)",
+                    "        launch._log = _reentrant",
+                    "        launch.main()",
+                ]
+            ),
+        ),
+    )
+    try:
+        _await_ready(proc)
+        proc.send_signal(signal.SIGTERM)
+        _wait_for_death(proc)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == -signal.SIGTERM, (
+        f"a log call that raised inside the handler turned SIGTERM into returncode "
+        f"{proc.returncode}. Launcher said: {_tail(proc)}"
+    )
+    # And the kernel is still deleted: the logging is what failed, not the cleanup.
+    assert any("me/k-1" in c for c in _deletions(tmp_path))
+
+
 def test_an_unhandled_exception_still_deletes(tmp_path):
     """atexit covers the path no signal handler sees.
 

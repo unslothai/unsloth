@@ -219,6 +219,28 @@ def _log(msg: str) -> None:
     print(f"[launch] {msg}", flush = True)
 
 
+def _log_from_signal(msg: str) -> None:
+    """``_log`` for use inside a signal handler, where the usual path can raise.
+
+    A handler runs on the main thread wherever that thread happened to be. If it was
+    inside a write to stdout, the interpreter refuses the second one outright:
+    ``RuntimeError: reentrant call inside <_io.BufferedWriter name='<stdout>'>``. That
+    is not hypothetical here; it was captured on a loaded CI runner, where it escaped
+    the handler and left a cancelled launcher exiting 1 instead of dying of its signal.
+
+    So the buffered path is attempted and its failure is not fatal. ``os.write`` goes
+    straight to the file descriptor and takes no lock the interrupted frame could
+    already hold, which is what makes it usable from here.
+    """
+    try:
+        _log(msg)
+    except BaseException:  # noqa: BLE001 -- a log line may never decide whether we die
+        try:
+            os.write(1, f"[launch] {msg}\n".encode("utf-8", "replace"))
+        except BaseException:  # noqa: BLE001
+            pass
+
+
 def _out(key: str, value: str) -> None:
     path = os.environ.get("GITHUB_OUTPUT")
     if path:
@@ -935,8 +957,11 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
     atexit.register(release)
 
     def _release_and_die(signum, _frame):
-        _log(f"received signal {signum}; deleting kernels before exiting")
+        # Everything before the `finally` is best effort. The death is not: a handler
+        # that returns normally leaves the process exiting on whatever code main()
+        # computes, and a cancelled job then reads as a completed one.
         try:
+            _log_from_signal(f"received signal {signum}; deleting kernels before exiting")
             release()
         except BaseException as exc:  # noqa: BLE001
             # A raise here used to propagate into the main thread, where main()'s
@@ -946,21 +971,25 @@ def _install_release_handlers(release: Callable[[], None]) -> None:
             # RETURNING 0, and the cancelled job read as completed. Deleting is
             # best effort, the exit status is not. Retried once, since the kernel
             # is billing meanwhile.
-            _log(f"release() failed under signal {signum}: {type(exc).__name__}: {exc}")
+            _log_from_signal(
+                f"release() failed under signal {signum}: {type(exc).__name__}: {exc}"
+            )
             try:
                 release()
             except BaseException as retry_exc:  # noqa: BLE001
                 # Nothing more to try in-process: the slug stays in the registry
                 # for the next launch's orphan sweep, as after a kill -9.
-                _log(
+                _log_from_signal(
                     f"release() failed again: {type(retry_exc).__name__}: {retry_exc}. "
                     f"The kernels stay in the registry for the next launcher's sweep"
                 )
-        # Die of the original signal rather than exiting 0, so the status
-        # still reads "killed by signal N". A CI system treats a 0 from a
-        # cancelled job as a completed one.
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
+        finally:
+            # Die of the original signal rather than exiting 0, so the status
+            # still reads "killed by signal N". A CI system treats a 0 from a
+            # cancelled job as a completed one. In a `finally` because anything
+            # above can raise -- including the logging, which is how this was found.
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
 
     for _sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGHUP", None)):
         if _sig is None:
