@@ -1,7 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  buildExternalModelId,
+  parseExternalModelId,
+} from "../external-providers";
+import { encryptProviderApiKey } from "../api/providers-api";
+import {
+  type ExternalProviderConfig,
+  getExternalProviderApiKey,
+  isCustomProviderType,
+  loadExternalProviders,
+  toExternalBackendProviderType,
+} from "../external-providers";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  isGeminiCustomOpenAICompatBase,
+} from "../provider-capabilities";
+import { useExternalProvidersStore } from "../stores/external-providers-store";
 import type { MessageRecord, ThreadRecord } from "../types";
+import type {
+  OpenAIChatChunk,
+  OpenAIChatCompletionsRequest,
+} from "../types/api";
+import { extractDeltaText } from "./parse-assistant-content";
 
 /** Store the whole first line and let the sidebar clip it with CSS, so a wider
  *  one shows more. Matches the rename input's maxLength: UTF-16 units, ellipsis
@@ -180,4 +203,96 @@ export function planLegacyTitleRepairs(
     });
   }
   return repairs;
+}
+
+// The connection routing lives here rather than beside the chat request that also
+// uses it: this is the one chat module both the title hop and the frontend's test
+// runner can load. The provider is JSX; the adapter reaches it through its imports.
+
+/** The fields that route a chat request to a saved connection. The request's `model`
+ *  stays the `external::<providerId>::<modelId>` id the UI holds: the backend never
+ *  parses that id, dispatching on `provider_id` / `provider_type` and sending
+ *  `external_model` upstream as the real model name. */
+export interface ExternalRoutingFields {
+  provider_id: string;
+  provider_type: string;
+  external_model: string;
+  provider_base_url: string | null;
+  encrypted_api_key?: string;
+}
+
+export type ExternalRoutingUnavailableReason =
+  | "connections-disabled"
+  | "connection-missing"
+  | "missing-api-key";
+
+export interface ResolvedExternalConnection {
+  provider: ExternalProviderConfig;
+  modelId: string;
+  /** Browser-held key, or "" when the backend holds one or none is needed. */
+  apiKey: string;
+}
+
+export type ExternalRoutingTarget =
+  | { kind: "local" }
+  | { kind: "unavailable"; reason: ExternalRoutingUnavailableReason }
+  | ({ kind: "external" } & ResolvedExternalConnection);
+
+/** How `checkpoint` reaches a model, for any caller that posts to
+ *  `/v1/chat/completions`. One that answers only some of these decisions sends a
+ *  request the backend serves off the local model instead (#9045). */
+export function resolveExternalRouting(
+  checkpoint: string | null | undefined,
+): ExternalRoutingTarget {
+  const selection = parseExternalModelId(checkpoint);
+  if (selection === null) return { kind: "local" };
+
+  if (!useExternalProvidersStore.getState().connectionsEnabled) {
+    return { kind: "unavailable", reason: "connections-disabled" };
+  }
+
+  const provider = loadExternalProviders().find(
+    (c) => c.id === selection.providerId,
+  );
+  if (!provider) return { kind: "unavailable", reason: "connection-missing" };
+
+  // An installation-saved key wins: the browser copy may be stale, left behind by
+  // an earlier migration.
+  const apiKey = provider.hasApiKey
+    ? ""
+    : getExternalProviderApiKey(provider.id).trim();
+  const keyOptional =
+    Boolean(provider.hasApiKey) ||
+    provider.authKind === "chatgpt_oauth" ||
+    isCustomProviderType(provider.providerType) ||
+    (provider.providerType === "gemini" &&
+      isGeminiCustomOpenAICompatBase(provider.baseUrl));
+  if (!apiKey && !keyOptional)
+    return { kind: "unavailable", reason: "missing-api-key" };
+
+  return { kind: "external", provider, modelId: selection.modelId, apiKey };
+}
+
+/** Separate from the resolve above because the key is encrypted per attempt: a
+ *  request that fails on a rotated public key is rebuilt with
+ *  `forceRefreshPublicKey`, decisions already settled. */
+export async function buildExternalRoutingFields(
+  connection: ResolvedExternalConnection,
+  options: { forceRefreshPublicKey?: boolean } = {},
+): Promise<ExternalRoutingFields> {
+  const { provider, modelId, apiKey } = connection;
+  return {
+    provider_id: provider.id,
+    provider_type: toExternalBackendProviderType(provider.providerType),
+    external_model: modelId,
+    provider_base_url: provider.baseUrl || null,
+    ...(apiKey
+      ? {
+          encrypted_api_key: await encryptProviderApiKey(
+            apiKey,
+            options.forceRefreshPublicKey ?? false,
+          ),
+        }
+      : {}),
+  };
 }

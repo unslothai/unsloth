@@ -1,18 +1,44 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import type {
-  MessageRecord,
-  ThreadRecord,
-} from "../src/features/chat/types.ts";
 import {
+  installLocalStorageFake,
+  registerBundlerResolver,
+} from "./helpers/kit.ts";
+
+// The title hop reaches the providers store and the credential encryptor, whose
+// specifiers the runner cannot resolve on its own.
+registerBundlerResolver();
+const { store } = installLocalStorageFake();
+Object.assign((globalThis.window as { location: object }).location, {
+  href: "http://localhost/",
+});
+
+const {
+  answeringCheckpoint,
+  buildExternalRoutingFields,
+  buildTitleRequest,
   fallbackTitleFromUserText,
   isLegacyClippedTitle,
+  normalizeTitle,
   planLegacyTitleRepairs,
+  resolveExternalRouting,
   selectLegacyRepairPage,
   threadsAwaitingImport,
   threadsMissingMessages,
-} from "../src/features/chat/utils/chat-title.ts";
+  titleCheckpoint,
+  titleFromStream,
+} = await import("../src/features/chat/utils/chat-title.ts");
+const { useExternalProvidersStore } = await import(
+  "../src/features/chat/stores/external-providers-store.ts"
+);
+type MessageRecord = import("../src/features/chat/types.ts").MessageRecord;
+type ThreadRecord = import("../src/features/chat/types.ts").ThreadRecord;
+type Chunk = import("../src/features/chat/types/api.ts").OpenAIChatChunk;
 
 const LONG =
   "Can you plot a Mandelbrot set and explain how the escape time algorithm works";
@@ -295,4 +321,48 @@ test("an emptied chat is decided, one still importing is not", () => {
     "emptied",
     "importing",
   ]);
+});
+
+
+function stageConnection(overrides: Record<string, unknown> = {}): void {
+  const base = {
+    id: "conn-1",
+    providerType: "llama_cpp",
+    name: "c",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    models: ["m"],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  store.set(
+    "unsloth_chat_external_providers",
+    JSON.stringify([{ ...base, ...overrides }]),
+  );
+}
+
+function deltas(text: string, finishReason: string | null = "stop"): Chunk[] {
+  const parts = [...text].map((ch) => ({
+    choices: [{ delta: { content: ch } }],
+  }));
+  return [...parts, { choices: [{ delta: {}, finish_reason: finishReason }] }];
+}
+
+async function* iterate(chunks: Chunk[]): AsyncGenerator<Chunk> {
+  for (const chunk of chunks) {
+    yield chunk;
+  }
+}
+const title = (chunks: Chunk[]) => titleFromStream(iterate(chunks));
+
+// A throwaway 1024-bit RSA public key; only the encrypt path is under test.
+const PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC1n8QOqkDXkFEOC62kiqZcBCN3
+l/DmD+0BGvjg8h1fFJD2Fla1ibcnmKb9Vok+PmR6jm1JX0yu8JHXPw1om01RwQWe
+nehl2VzGfdEdNaRoKhW5oVsnnfmxlWJ/qWuV2rDK8DK/6UK9sC/duMkRWaRGdhyl
+l+8/fuJc9JDRVzx7HwIDAQAB
+-----END PUBLIC KEY-----`;
+
+test.beforeEach(() => {
+  store.clear();
+  useExternalProvidersStore.getState().setConnectionsEnabled(true);
 });
