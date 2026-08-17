@@ -194,14 +194,11 @@ function useProgressiveMountWindow(
     if (threadIsRunning && mountWindow != null) setMountWindow(null);
   }, [threadIsRunning, mountWindow]);
 
-  // The row whose position is held still across a widening commit. Both ends of the measurement
-  // are captured here -- its offset from the top of the scroll container, the container's
-  // scrollTop, and the user-gesture counter -- because which of them the correction uses depends
-  // on whether the engine compensates for content inserted above. anchorCorrection has the
-  // reasoning and the numbers for both branches; the short version is that on an engine with CSS
-  // scroll anchoring the browser has already done the work and only a 3 to 5 pixel residual is
-  // left, while on one without it (every shipping Safari today) nothing has been done and the
-  // full inserted height has to be applied.
+  // The row whose position is held still across a widening commit, and the scroll state it was
+  // held against. Both are captured against the SCROLL CONTAINER rather than the window; see
+  // AnchorSample. The arithmetic that turns the two samples into a scrollTop delta is
+  // anchorCorrection, which is document space and assumes nothing else moved scrollTop -- which is
+  // what disarming native anchoring, below, is for.
   const anchorRef = useRef<{
     element: Element;
     viewportOffset: number;
@@ -210,6 +207,22 @@ function useProgressiveMountWindow(
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
+    // Disarm native scroll anchoring HERE, immediately before the capture it invalidates, rather
+    // than from a layout effect. The correction is document space and only holds while nothing
+    // else moves scrollTop, so the browser has to be out of the loop before the first sample is
+    // taken, not merely soon.
+    //
+    // A layout effect is too early to do it. This component is a DESCENDANT of the viewport
+    // element, so on the commit that mounts them both React runs this subtree's layout effects
+    // before the viewport's own ref callback, `viewportRef.current` is still null, and the style
+    // is silently skipped. Measured on the version that set it from a layout effect: computed
+    // `overflow-anchor` stayed `auto` from the first painted row at +305ms until the FIRST
+    // widening at +803ms, so that widening ran with anchoring live and the document-space
+    // correction applied on top of the browser's own. A reader who scrolled 4000px in that window
+    // was left 776px short, and one whose whole gesture landed inside it was carried back to the
+    // bottom of a 118,004px thread, 24px from it instead of 4000. This callback runs from a
+    // requestAnimationFrame, after a paint, so the ref is populated by definition.
+    if (viewport) viewport.style.setProperty("overflow-anchor", "none");
     const first = viewport?.querySelector("[data-role]") ?? null;
     anchorRef.current =
       viewport && first
@@ -258,28 +271,28 @@ function useProgressiveMountWindow(
     adjustForContentInsertedAbove(shift ?? 0);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
-  // CSS scroll anchoring is turned OFF for as long as the window is open, and turned back on the
-  // moment it closes, so a settled thread is exactly as it was before this change.
+  // Native scroll anchoring goes back on the moment the window closes, and on unmount, so a
+  // settled thread is exactly the thread that shipped before this change. Turning it OFF is done
+  // at capture time instead, for the ordering reason in captureAnchor.
   //
-  // This is the one thing that makes the correction below deterministic. Left on, the browser
-  // moves scrollTop by the inserted height on some frames and not others -- not at all on any
-  // shipping Safari, and suppressed per frame everywhere else after a programmatic scroll, which
-  // is what a scrollbar drag, PageUp and middle-click autoscroll are -- and no measurement taken
-  // inside the frame can tell which kind of frame it is in. Off, scrollTop moves only when the
-  // reader or this code moves it, which is the assumption anchorCorrection is built on.
-  //
-  // A layout effect keyed on the same trigger as the correction, so it is in place before the
-  // first widening rather than a frame after it.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: isWithholding is the trigger
+  // Why it has to be off at all: left on, the browser moves scrollTop by the inserted height on
+  // some frames and not others -- not at all on any shipping Safari, and suppressed per frame
+  // everywhere else after a programmatic scroll, which is what a scrollbar drag, PageUp and
+  // middle-click autoscroll are -- and no measurement taken inside the frame can tell which kind
+  // of frame it is in. Off, scrollTop moves only when the reader or this code moves it, which is
+  // the assumption anchorCorrection is built on.
+  useLayoutEffect(() => {
+    if (mountWindow != null) return;
+    viewportRef.current?.style.removeProperty("overflow-anchor");
+  }, [mountWindow, viewportRef]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: unmount-only cleanup
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport) return;
-    if (mountWindow == null) {
-      viewport.style.removeProperty("overflow-anchor");
-      return;
-    }
-    viewport.style.setProperty("overflow-anchor", "none");
-  }, [mountWindow, viewportRef]);
+    return () => {
+      viewport?.style.removeProperty("overflow-anchor");
+    };
+  }, [viewportRef]);
 
   // Registered only while rows are actually being withheld, so completeProgressiveMounts is free
   // for the settled thread that is the overwhelmingly common case.

@@ -195,6 +195,20 @@ test("the window owns the viewport's scroll-anchoring mode while it is open", ()
   // of drift on a parked reader where the engine did not compensate, and 45,161px on Chromium
   // where it did but was suppressed. So it is turned off while the window is open.
   assert.match(GLUE, /setProperty\("overflow-anchor", "none"\)/);
+  // Set from the rAF that captures the anchor, NOT from a layout effect. This component is a
+  // descendant of the viewport element, so on the commit that mounts them both React runs this
+  // subtree's layout effects before the viewport's ref callback and the ref is still null.
+  // Measured on the layout-effect version: computed overflow-anchor stayed `auto` from the first
+  // painted row at +305ms until the first widening at +803ms, so that widening ran with anchoring
+  // live and the document-space correction applied on top of the browser's own. A reader who
+  // scrolled 4000px in that window was left 776px short of where they parked, and one whose whole
+  // gesture landed inside it was carried back to 24px from the bottom of a 118,004px thread.
+  const capture = section(
+    GLUE,
+    "const captureAnchor = useCallback(",
+    "}, [viewportRef]);",
+  );
+  assert.match(capture, /setProperty\("overflow-anchor", "none"\)/);
   // And turned back on when the window closes, or a settled thread is not the thread that
   // shipped before this change.
   assert.match(GLUE, /removeProperty\("overflow-anchor"\)/);
