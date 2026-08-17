@@ -1024,7 +1024,14 @@ def _load_intent(gguf, **kwargs):
     return GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", **kwargs)
 
 
-def _host_totals(monkeypatch, backend, *, vram_total_mib, ram_total_mib, vram_free_mib = None):
+def _host_totals(
+    monkeypatch,
+    backend,
+    *,
+    vram_total_mib,
+    ram_total_mib,
+    vram_free_mib = None,
+):
     """Pin what the preflight reads: the physical ceilings, and a free VRAM figure low
     enough to stand for a card the resident model has not given back yet."""
     free = vram_total_mib if vram_free_mib is None else vram_free_mib
@@ -1048,9 +1055,7 @@ def test_the_route_precheck_refuses_before_the_gpu_handoff(tmp_path, monkeypatch
     assert verdict is not None and "does not fit in GPU memory" in verdict
 
 
-def test_the_route_precheck_credits_capacity_the_handoff_is_about_to_reclaim(
-    tmp_path, monkeypatch
-):
+def test_the_route_precheck_credits_capacity_the_handoff_is_about_to_reclaim(tmp_path, monkeypatch):
     """The resident llama-server, Unsloth model and media pipeline hold VRAM, and through a
     host KV cache, CPU-offloaded weights and locked mappings they hold RAM too. The route and
     load_model reclaim all of it after this runs, so pricing against either free reading
