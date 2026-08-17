@@ -498,11 +498,8 @@ def get_trainer(family: str) -> Callable[..., str]:
 # Per-family training defaults surfaced by the Train UI: starting points, not hard limits. Families absent here fall back to the DiffusionLoraConfig defaults.
 FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
     "sdxl": {"lora_rank": 16, "learning_rate": 1e-4, "resolution": 1024},
-    # Warmup defaults: a short LR ramp keeps the first adapter updates from overshooting on the big
-    # flow-matching DiTs. The ramp only exists under a warmup-capable schedule -- the default
-    # "constant" scheduler makes get_scheduler ignore num_warmup_steps entirely -- so a family that
-    # advertises lr_warmup_steps MUST also advertise the scheduler that realizes it, or the ramp is a
-    # silent no-op for any client that builds its request from these defaults.
+    # Plain "constant" ignores lr_warmup_steps, so warmup defaults must use a
+    # warmup-capable scheduler.
     "flux.1": {
         "lora_rank": 16,
         "learning_rate": 1e-4,
@@ -1062,13 +1059,8 @@ class DiffusionLoraConfig:
                 f"lr_scheduler must be one of {', '.join(sorted(_LR_SCHEDULERS))}; "
                 f"got {self.lr_scheduler!r}"
             )
-        # The warmup request is validated but never rewritten. diffusers' get_scheduler builds a
-        # plain "constant" LambdaLR that never reads num_warmup_steps, so the fix for that pair is
-        # the defaults table above advertising "constant_with_warmup" next to its warmup steps.
-        # Promoting "constant" here instead would change what identity_for_config records, and
-        # every bundle written before the promotion stores "constant": replaying its own config
-        # would normalise to "constant_with_warmup" and resume preflight would reject the run it
-        # came from as a changed learning-rate schedule.
+        # Do not rewrite the scheduler here: it is part of checkpoint identity, so doing so would
+        # make legacy runs with ("constant", warmup > 0) impossible to resume.
         try:
             lr_warmup_steps = int(self.lr_warmup_steps or 0)
         except (TypeError, ValueError) as exc:

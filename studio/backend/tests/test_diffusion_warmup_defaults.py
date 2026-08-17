@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only unit tests for the (lr_scheduler, lr_warmup_steps) coupling.
-
-A family that advertises lr_warmup_steps must also advertise a scheduler that
-realizes it: diffusers' "constant" schedule never reads num_warmup_steps, so
-the pair ("constant", warmup > 0) is a silent no-op. Covers the defaults-table
-invariant, that normalized() validates the warmup value without rewriting the
-requested schedule, and that no-warmup behaviour is unchanged."""
+"""Tests for diffusion learning-rate warmup defaults and resume compatibility."""
 
 from __future__ import annotations
 
@@ -19,8 +13,7 @@ from core.training.diffusion_train_common import (
     train_defaults,
 )
 
-# Derived from the table, not listed by hand: a family added with lr_warmup_steps and no
-# scheduler must fail this, which a hand-written list would silently skip.
+# Derive this list so every family with positive warmup is covered.
 WARMUP_FAMILIES = [
     family
     for family, defaults in FAMILY_TRAIN_DEFAULTS.items()
@@ -71,10 +64,7 @@ def test_normalized_leaves_the_requested_scheduler_alone():
 
 
 def test_a_constant_schedule_with_warmup_still_resumes_its_own_bundle():
-    """lr_scheduler is a checkpoint identity field, so rewriting the requested pair inside
-    normalized() would strand every bundle written before the rewrite: its manifest records
-    "constant" while replaying that same config would now normalise to something else, and
-    resume preflight rejects the difference as a changed learning-rate schedule."""
+    """Scheduler normalization must preserve legacy checkpoint identity."""
     from core.training.diffusion_checkpoint import CheckpointIdentity, identity_for_config
 
     cfg = _cfg("sdxl", lr_scheduler = "constant", lr_warmup_steps = 20).normalized()
