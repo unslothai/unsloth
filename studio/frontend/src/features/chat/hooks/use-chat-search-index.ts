@@ -8,6 +8,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "../utils/chat-history-storage";
+import { attachmentsPastedText } from "../utils/pasted-text.ts";
 
 export interface ChatSearchItem {
   type: "single" | "compare";
@@ -83,11 +84,13 @@ function searchableText(value: unknown, depth = 0): string {
 }
 
 // Pull searchable text from a message: plain text, reasoning/thinking, tool
-// calls (name + args + result) and cited sources (title + url).
+// calls (name + args + result), cited sources (title + url) and pasted bodies.
 function extractText(message: MessageRecord): string {
   const content = message.content;
-  if (!Array.isArray(content)) return "";
+  const pasted = attachmentsPastedText(message.attachments);
+  if (!Array.isArray(content)) return pasted;
   const parts: string[] = [];
+  if (pasted) parts.push(pasted);
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
     const p = part as Record<string, unknown>;

@@ -244,6 +244,12 @@ def _iter_ggufs(dir_path: Path) -> list[Path]:
 
 
 def _variant_matches(relative_path: str, needle: str) -> bool:
+    from hub.utils.gguf import gguf_variant_key
+
+    # The variant's own key first: in a repo holding several checkpoints at one quant
+    # the bare label names every one of them, so it cannot pick between them.
+    if gguf_variant_key(relative_path).lower() == needle:
+        return True
     quant = _extract_quant_label(relative_path).lower()
     if quant == needle:
         return True
@@ -276,13 +282,22 @@ def _find_gguf_in_dir(dir_path: Path, gguf_variant: Optional[str]) -> Optional[P
         return None
     needle = (gguf_variant or "").strip().lower()
     if needle:
-        for path in ggufs:
+        from hub.utils.gguf import gguf_variant_key
+
+        def _relative(path: Path) -> str:
             try:
-                relative = path.relative_to(dir_path).as_posix()
+                return path.relative_to(dir_path).as_posix()
             except ValueError:
-                relative = path.name
-            if _variant_matches(relative, needle):
-                return path
+                return path.name
+
+        # Files this variant owns outright before ones its label merely also names.
+        for owned in (True, False):
+            for path in ggufs:
+                relative = _relative(path)
+                if owned != (gguf_variant_key(relative).lower() == needle):
+                    continue
+                if _variant_matches(relative, needle):
+                    return path
         return None
     candidates = [path for path in ggufs if not _is_nonfirst_gguf_split(path)] or ggufs
     try:

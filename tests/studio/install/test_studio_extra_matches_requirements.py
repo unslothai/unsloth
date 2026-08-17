@@ -57,6 +57,18 @@ def test_studio_extra_exists():
     )
 
 
+def test_huggingface_extra_contains_no_diffusers_vcs_reference():
+    from packaging.requirements import Requirement
+
+    entries = _load_pyproject()["project"]["optional-dependencies"]["huggingfacenotorch"]
+    diffusers = [Requirement(entry) for entry in entries if Requirement(entry).name == "diffusers"]
+    assert diffusers
+    assert all(requirement.url is None for requirement in diffusers), (
+        "PyPI rejects VCS direct references in uploaded Requires-Dist metadata; "
+        "keep temporary Diffusers commit pins in Studio installer requirement files."
+    )
+
+
 def test_studio_extra_matches_requirements_file():
     extras = _load_pyproject()["project"]["optional-dependencies"]
     extra = sorted(_normalise(entry) for entry in extras["studio"])
@@ -72,6 +84,50 @@ def test_studio_extra_matches_requirements_file():
     assert not surplus, (
         f"The `studio` extra lists {surplus} but studio.txt does not. "
         "Remove them, or add them to studio.txt if install.sh needs them too."
+    )
+
+
+def _specs(entries: list[str]) -> set[tuple[str, str, str]]:
+    """(name, specifier, marker) per entry, quote style and ordering normalised."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    out = set()
+    for entry in entries:
+        requirement = Requirement(entry)
+        specifier = ",".join(sorted(str(s) for s in requirement.specifier))
+        out.add(
+            (
+                canonicalize_name(requirement.name),
+                specifier,
+                str(requirement.marker) if requirement.marker else "",
+            )
+        )
+    return out
+
+
+def test_studio_extra_matches_requirement_versions():
+    """Names matching is not enough: the versions and markers have to match too.
+
+    Comparing normalised names alone let the extra keep bare requirements while
+    studio.txt carried exact pins, so `pip install "unsloth[studio]"` resolved a
+    different stack than the managed installer produced (pandas 3.x against the
+    installer's 2.3.3, which is a copy-on-write and str-dtype migration apart).
+    """
+    extras = _load_pyproject()["project"]["optional-dependencies"]
+    extra = _specs(extras["studio"])
+    required = _specs(_requirement_lines(STUDIO_TXT))
+
+    missing = sorted(required - extra)
+    surplus = sorted(extra - required)
+    assert not missing, (
+        f"studio.txt specifies {missing} but the `studio` extra does not. "
+        '`pip install "unsloth[studio]"` would resolve a different stack than '
+        "install.sh builds. Mirror the specifier and marker, not just the name."
+    )
+    assert not surplus, (
+        f"The `studio` extra specifies {surplus} but studio.txt does not. "
+        "Mirror studio.txt exactly, or update studio.txt if the installer needs it."
     )
 
 

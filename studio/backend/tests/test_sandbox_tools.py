@@ -294,18 +294,108 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "MPLBACKEND",
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
+            "TEMP",  # Windows only; native programs honour these, not TMPDIR
+            "TMP",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        assert env["MPLBACKEND"] == "Agg"
         # PYTHONPATH is whitelist-built, never inherited: only the sandbox
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
+
+    def _trusted_git_bash(
+        self,
+        monkeypatch,
+        tmp_path,
+        *,
+        usr_bin = True,
+    ):
+        """Lay out a Program Files Git install and point the resolvers at it."""
+        import core.inference.tools as tools_mod
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        prog = tmp_path / "Program Files"
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(prog)])
+        bin_dir = prog / "Git" / "bin"
+        bin_dir.mkdir(parents = True)
+        if usr_bin:
+            (prog / "Git" / "usr" / "bin").mkdir(parents = True)
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: str(bin_dir / "bash.exe"))
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        return prog, bin_dir
+
+    def test_bash_userland_dirs_precede_system32(self, monkeypatch, tmp_path):
+        # `bash -c` is non-login, so Git's usr\bin never joins PATH (ls/cat/grep
+        # missing) and must sort ahead of System32's DOS twins (FIND.EXE).
+        from core.inference.tools import _build_safe_env
+
+        prog, bin_dir = self._trusted_git_bash(monkeypatch, tmp_path)
+        usr_bin = prog / "Git" / "usr" / "bin"
+        env = _build_safe_env(str(tmp_path))
+        parts = env["PATH"].split(os.pathsep)
+        assert os.path.realpath(str(bin_dir)) in parts
+        assert os.path.realpath(str(usr_bin)) in parts
+        system32 = [p for p in parts if p.lower().endswith("system32")]
+        assert system32, parts
+        assert parts.index(os.path.realpath(str(usr_bin))) < parts.index(system32[0])
+        # Still behind the interpreter dir, so a Git python.exe cannot shadow it.
+        assert parts.index(os.path.realpath(str(bin_dir))) > 0
+
+    def test_untrusted_bash_contributes_no_userland(self, monkeypatch, tmp_path):
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env, _windows_bash_userland_dirs
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
+        shim = tmp_path / "scoop" / "shims"
+        shim.mkdir(parents = True)
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: str(shim / "bash.exe"))
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        assert _windows_bash_userland_dirs() == []
+        assert str(shim) not in _build_safe_env(str(tmp_path))["PATH"].split(os.pathsep)
+
+    def test_no_bash_leaves_path_unchanged(self, monkeypatch, tmp_path):
+        # Fails closed: the cmd fallback host keeps exactly today's PATH.
+        import core.inference.tools as tools_mod
+        from core.inference.tools import _build_safe_env, _windows_bash_userland_dirs
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [])
+        monkeypatch.setattr(tools_mod, "_windows_bash", lambda: None)
+        monkeypatch.setattr(tools_mod.shutil, "which", lambda name: None)
+        assert _windows_bash_userland_dirs() == []
+        before = _build_safe_env(str(tmp_path))["PATH"]
+        monkeypatch.setattr(tools_mod, "_windows_bash_userland_dirs", lambda: [])
+        assert _build_safe_env(str(tmp_path))["PATH"] == before
+
+    def test_temp_and_tmp_point_at_the_workdir_on_windows(self, monkeypatch, tmp_path):
+        # Windows reads TEMP/TMP, not TMPDIR; without them a child writes
+        # outside the sandbox workdir.
+        from core.inference.tools import _build_safe_env
+
+        self._trusted_git_bash(monkeypatch, tmp_path)
+        env = _build_safe_env(str(tmp_path))
+        assert env["TEMP"] == str(tmp_path)
+        assert env["TMP"] == str(tmp_path)
+
+    def test_temp_and_tmp_absent_on_posix(self, monkeypatch, tmp_path):
+        from core.inference.tools import _build_safe_env
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        env = _build_safe_env(str(tmp_path))
+        assert "TEMP" not in env
+        assert "TMP" not in env
+        assert env["TMPDIR"] == str(tmp_path)
 
     def test_host_git_dir_appended_after_curated(self, monkeypatch, tmp_path):
         # #7317: Windows Git lives under Program Files, not System32. Sandbox
@@ -492,10 +582,19 @@ class TestSandboxEnvIsolation:
         """When the known-folder API is unavailable, no roots are trusted: env
         vars (even %SystemDrive%) are caller-overrideable, so we never derive a
         trusted root from them."""
+        import ctypes
+
         import core.inference.tools as tools_mod
 
-        # ctypes fails on this Linux host, so the API path raises and we fail
-        # closed. Any attacker override of these env vars must be irrelevant.
+        # Make the API unavailable explicitly: relying on ctypes.windll being
+        # absent only holds off Windows, where the API exists and this asserted
+        # nothing.
+        class _NoKnownFolderApi:
+            def __getattr__(self, name):
+                raise OSError("known-folder API unavailable")
+
+        monkeypatch.setattr(ctypes, "windll", _NoKnownFolderApi(), raising = False)
+        # Any attacker override of these env vars must be irrelevant.
         monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
         monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
         monkeypatch.setenv("SystemDrive", "D:")
@@ -1521,6 +1620,237 @@ class TestHfUploadSandboxLocalPaths:
             "  operations=[CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
             ")",
             expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_positional_path_absolute_blocked(self):
+        # CommitOperationAdd(path_in_repo, path_or_fileobj) -- the read path can
+        # arrive positionally, so every positional arg has to be checked.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationAdd('x', '/etc/passwd')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_positional_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  'r', [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_tuple_absolute_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=(CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x'),),\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_from_variable_blocked(self):
+        # The ops list is opaque to the static checker, so it cannot be allowed.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "ops = [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')]\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=ops)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_element_from_variable_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "op = CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=[op])",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operations_via_kwargs_splat_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "kw = {'operations': [CommitOperationAdd(\n"
+            "  path_or_fileobj='/etc/passwd', path_in_repo='x')]}\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', **kw)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_operation_tuple_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=(CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin'),),\n"
+            ")"
+        )
+
+    def test_create_commit_operation_positional_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  'r', [CommitOperationAdd('m.bin', 'outputs/m.bin')],\n"
+            ")"
+        )
+
+    def test_create_commit_operation_open_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(\n"
+            "    path_in_repo='m.bin', path_or_fileobj=open('m.bin', 'rb'))],\n"
+            ")"
+        )
+
+    def test_create_commit_delete_operation_blocked(self):
+        # A delete reads no local file, but the exemption would have to trust a
+        # constructor name the sandboxed code can rebind, so every operation is
+        # held to the path rule. This matches the behaviour before the gate.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationDelete\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationDelete(path_in_repo='old.bin')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_positional_args_splat_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "args = ['r', [CommitOperationAdd('x', '/etc/passwd')]]\n"
+            "huggingface_hub.HfApi().create_commit(*args)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_operation_computed_path_in_repo_blocked(self):
+        # The read path is safe, but path_in_repo is computed and its value is
+        # sent to the Hub, so the file contents leak through the repo path.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(\n"
+            "    path_or_fileobj='safe.bin',\n"
+            "    path_in_repo=open('/etc/machine-id').read().strip())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_shadowed_no_read_constructor_blocked(self):
+        # A local def can rebind CommitOperationDelete to return an Add.
+        _blocked(
+            "import huggingface_hub\n"
+            "def CommitOperationDelete(path_in_repo):\n"
+            "    return huggingface_hub.CommitOperationAdd('x', '/etc/hostname')\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r', operations=[CommitOperationDelete(path_in_repo='old')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_no_operations_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "huggingface_hub.HfApi().create_commit(repo_id='r', operations=[])"
+        )
+
+    def test_preupload_lfs_files_absolute_blocked(self):
+        # preupload_lfs_files ships the bytes to the LFS store by itself, so it
+        # exfiltrates without a create_commit ever running.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.preupload_lfs_files(\n"
+            "  repo_id='r',\n"
+            "  additions=[CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_preupload_lfs_files_from_variable_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "adds = [CommitOperationAdd(path_or_fileobj='/etc/passwd', path_in_repo='x')]\n"
+            "huggingface_hub.preupload_lfs_files(repo_id='r', additions=adds)",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_create_commit_trailing_kwargs_splat_blocked(self):
+        # The splat can follow operations=, so the whole keyword list is scanned
+        # before the operation argument is resolved.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "kw = {'token': 'attacker'}\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin')],\n"
+            "  **kw,\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_delete_operation_computed_argument_blocked(self):
+        # The constructor reads no file, but evaluating its argument does, and the
+        # value is sent to the Hub.
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationDelete\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationDelete(\n"
+            "    path_in_repo=open('/etc/hostname').read().strip())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_copy_operation_computed_argument_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationCopy\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationCopy(\n"
+            "    src_path_in_repo='a', path_in_repo=open('/etc/hostname').read())],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_copy_operation_blocked(self):
+        _blocked(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationCopy\n"
+            "huggingface_hub.HfApi().create_commit(\n"
+            "  repo_id='r',\n"
+            "  operations=[CommitOperationCopy(src_path_in_repo='a', path_in_repo='b')],\n"
+            ")",
+            expect_phrase = "HF upload path must be a sandbox-local relative-path literal",
+        )
+
+    def test_preupload_lfs_files_relative_allowed(self):
+        _ok(
+            "import huggingface_hub\n"
+            "from huggingface_hub import CommitOperationAdd\n"
+            "huggingface_hub.preupload_lfs_files(\n"
+            "  repo_id='r',\n"
+            "  additions=[CommitOperationAdd(path_or_fileobj='m.bin', path_in_repo='m.bin')],\n"
+            ")"
         )
 
 

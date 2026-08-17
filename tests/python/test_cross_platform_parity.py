@@ -68,6 +68,53 @@ class TestInstallShHasGpuDetection:
         ), "install.sh should assign TORCH_INDEX_URL from get_torch_index_url()"
 
 
+class TestPreTuringCapParity:
+    """Every wheel-selection site caps cu128/cu130 on a pre-Turing host (issue #7765).
+
+    PyTorch 2.11 builds those families for sm_75 and newer, so a Maxwell/Pascal/Volta
+    box needs cu126 -- both for torch itself and for the CUDA 12 runtime that gets it
+    a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
+    """
+
+    # (file, call spelling, selection function that must invoke it, its end marker). The
+    # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
+    _SITES = (
+        (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
+        (
+            INSTALL_PS1,
+            "Get-CudaFamilyCappedForPreTuring $",
+            "function Get-TorchIndexUrl",
+            "\n    }",
+        ),
+        (SETUP_PS1, "Get-CudaFamilyCappedForPreTuring $", "function Get-PytorchCudaTag", "\n}"),
+        (
+            STACK_PY,
+            "_cap_cuda_family_for_pre_turing(",
+            "def _detect_cuda_torch_index_url",
+            "\ndef ",
+        ),
+    )
+
+    def test_cu126_span_agrees_across_the_python_modules(self):
+        # Neither module imports the other (the installer runs before dependencies
+        # exist), so assert the shared span here rather than let it drift silently.
+        span = "_CU126_SM_RANGE = (50, 90)"
+        for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
+            assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
+
+    @pytest.mark.parametrize("path,call,start,end", _SITES)
+    def test_selection_function_applies_the_cap(self, path, call, start, end):
+        text = path.read_text(encoding = "utf-8")
+        assert start in text, f"{path.name} no longer defines {start!r}"
+        body = text.split(start, 1)[1].split(end, 1)[0]
+        assert call in body, f"{path.name}'s selection function never applies {call!r}"
+
+
+# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
+# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
+_CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
+
+
 class TestCudaMappingParity:
     """CUDA version thresholds must match between install.sh and install.ps1."""
 
@@ -84,7 +131,7 @@ class TestCudaMappingParity:
             if in_func and line.startswith("}"):
                 break
             if in_func and ("_major" in line or "_minor" in line):
-                m = re.search(r"/(cu\d+|cpu)", line)
+                m = re.search(_CUDA_LEAF_RE, line)
                 if m:
                     results.append(m.group(1))
         return results
@@ -106,7 +153,7 @@ class TestCudaMappingParity:
                     break
                 # Only match the if-chain lines that compare $major/$minor
                 if "$major" in line or "$minor" in line:
-                    m = re.search(r"/(cu\d+|cpu)", line)
+                    m = re.search(_CUDA_LEAF_RE, line)
                     if m:
                         results.append(m.group(1))
         return results
@@ -641,6 +688,56 @@ class TestPinnedIndexClearsUvEnvParity:
             "finally"
         ), "pip fallback must run before the scrub is restored"
 
+    def test_windows_installers_probe_uv_before_replacing_an_incumbent(self):
+        """A host can have a working older uv while AppLocker, WDAC or endpoint
+        protection refuses the one we just downloaded. Both PowerShell installers must
+        run the extracted uv.exe where it landed BEFORE anything at the destination is
+        touched, and must restore the incumbent if the published copy will not run."""
+        for path, probe in (
+            (INSTALL_PS1, "Get-UvExecutableVerdict"),
+            (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
+        ):
+            text = path.read_text(encoding = "utf-8")
+            assert f"function {probe}" in text, f"{path.name} must define {probe}"
+            # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
+            # binary is exactly how an unattended install hangs.
+            assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
+            probe_at = text.index(f"({probe} -Path $stagedUv)")
+            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
+            # verdict, and treating that as a broken binary turned three clean-machine CI legs
+            # into hard install failures: Start-Process -NoNewWindow with redirected streams
+            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
+            # the binary answering non-zero may block the install.
+            body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
+            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
+            # code is cached, which is how arm64 and the Windows containers reported "exited ."
+            # and had a working uv read as broken.
+            assert (
+                "try { $proc.WaitForExit() } catch {}" in body
+            ), f"{path.name} must settle the exit code before reading it"
+            assert (
+                '$null -eq $code -or "$code" -eq ""' in body
+            ), f"{path.name} must treat a missing exit code as inconclusive"
+            assert (
+                body.count('return "unknown"') == 3
+            ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
+            assert (
+                'return "failed"' in body and 'return "ok"' in body
+            ), f"{path.name}'s probe must report a real answer as well"
+            assert (
+                f'({probe} -Path $stagedUv) -eq "failed"' in text
+            ), f"{path.name} must gate only on a failed verdict"
+            copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
+            assert probe_at < copy_at, (
+                f"{path.name} must probe the extracted uv.exe before copying over the "
+                "destination"
+            )
+            # The publish is not a transaction: a locked or ACL-denied destination fails the
+            # install rather than being skipped, which is what the caller's fallback is for.
+            assert (
+                "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
+            ), f"{path.name} must copy each executable under -ErrorAction Stop"
+
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
         (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
@@ -800,13 +897,14 @@ class TestInstallOutputRedactionParity:
     def test_helper_wired_into_failure_print(self):
         # install.sh dumps the captured log through the redactor on failure.
         assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
-        # Both ps1 installers redact the captured $output before Write-Host on non-zero exit.
+        # Both ps1 installers redact the captured $output before printing it on a
+        # non-zero exit. Write-StudioLine is the UTF-8 stdout sink both now use.
         assert (
-            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in INSTALL_PS1.read_text(encoding = "utf-8")
         )
         assert (
-            "Write-Host (Redact-InstallOutput $output) -ForegroundColor Red"
+            "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in SETUP_PS1.read_text(encoding = "utf-8")
         )
         # Python redacts the captured stdout before printing.

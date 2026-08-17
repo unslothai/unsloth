@@ -28,7 +28,6 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
-  resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
 } from "../session";
@@ -291,7 +290,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
 
       if (!isLoginMode) {
-        resetOnboardingDone();
         setRequiresPasswordChange(false);
         setMustChangePassword(false);
       } else {

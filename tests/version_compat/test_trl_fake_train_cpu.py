@@ -68,24 +68,6 @@ def _eager_compile(
     return lambda fn: fn
 
 
-torch.compile = _eager_compile
-
-# Belt-and-suspenders: if any @torch.compile still routes through dynamo, let it
-# fall back to eager instead of crashing, and stop its stream-capture probe from
-# reaching torch.accelerator -> real CUDA on a GPU-less box.
-try:
-    import torch._dynamo  # noqa: E402
-    torch._dynamo.config.suppress_errors = True
-except Exception:
-    pass
-if hasattr(torch, "accelerator"):
-    torch.accelerator.is_available = lambda *a, **k: False
-
-
-# Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()` to
-# CPU. The aggressive spoof deliberately keeps real allocators, but a fake CPU
-# train needs cuda-targeted ops (e.g. inductor's init_gpu_context does
-# `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
 def _is_cuda_dev(d):
     try:
         return d is not None and torch.device(d).type == "cuda"
@@ -93,64 +75,103 @@ def _is_cuda_dev(d):
         return False
 
 
-for _name in (
-    "empty",
-    "zeros",
-    "ones",
-    "full",
-    "tensor",
-    "arange",
-    "randn",
-    "rand",
-    "randint",
-    "empty_like",
-    "zeros_like",
-    "ones_like",
-):
-    _orig = getattr(torch, _name, None)
-    if _orig is None:
-        continue
+def _fake_cpu_gpu(mp):
+    """Make this process behave like a GPU-less box, undoably.
 
-    def _redir(
-        *args,
-        _orig = _orig,
-        **kwargs,
+    Everything here is a mutation of a global that outlives the module, so it
+    goes through the caller's MonkeyPatch: applied for the duration of this
+    module's tests and reverted afterwards. Applied at import time instead, a
+    GPU test collected from anywhere else in the same session silently gets CPU
+    tensors out of `device = "cuda"` and can pass without testing anything.
+    """
+    mp.setattr(torch, "compile", _eager_compile)
+
+    # Belt-and-suspenders: if any @torch.compile still routes through dynamo,
+    # let it fall back to eager instead of crashing, and stop its stream-capture
+    # probe from reaching torch.accelerator -> real CUDA on a GPU-less box.
+    try:
+        # Aliased: a bare `import torch._dynamo` would rebind `torch` as a local.
+        import torch._dynamo as _dynamo
+        mp.setattr(_dynamo.config, "suppress_errors", True)
+    except Exception:
+        pass
+    # torch.accelerator only exists from torch 2.6 onwards.
+    if hasattr(torch, "accelerator"):
+        mp.setattr(torch.accelerator, "is_available", lambda *a, **k: False)
+
+    # Redirect any `device="cuda"` tensor allocation / `.to("cuda")` / `.cuda()`
+    # to CPU. The aggressive spoof deliberately keeps real allocators, but a fake
+    # CPU train needs cuda-targeted ops (e.g. inductor's init_gpu_context does
+    # `torch.empty(1, device="cuda")`) to land on CPU instead of erroring.
+    for _name in (
+        "empty",
+        "zeros",
+        "ones",
+        "full",
+        "tensor",
+        "arange",
+        "randn",
+        "rand",
+        "randint",
+        "empty_like",
+        "zeros_like",
+        "ones_like",
     ):
+        _orig = getattr(torch, _name, None)
+        if _orig is None:
+            continue
+
+        def _redir(
+            *args,
+            _orig = _orig,
+            **kwargs,
+        ):
+            if _is_cuda_dev(kwargs.get("device")):
+                kwargs["device"] = "cpu"
+            return _orig(*args, **kwargs)
+
+        mp.setattr(torch, _name, _redir)
+
+    _orig_to = torch.Tensor.to
+
+    def _to_cpu(self, *args, **kwargs):
+        args = tuple("cpu" if _is_cuda_dev(a) else a for a in args)
         if _is_cuda_dev(kwargs.get("device")):
             kwargs["device"] = "cpu"
-        return _orig(*args, **kwargs)
+        return _orig_to(self, *args, **kwargs)
 
-    setattr(torch, _name, _redir)
+    mp.setattr(torch.Tensor, "to", _to_cpu)
+    mp.setattr(torch.Tensor, "cuda", lambda self, *a, **k: self)
 
-_orig_to = torch.Tensor.to
+    # Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
+    # Adam's _cuda_graph_capture_health_check() probes stream capture.
+    mp.setattr(torch.cuda, "is_current_stream_capturing", lambda *a, **k: False, raising = False)
+    try:
+        import torch.cuda.graphs as _cg
+        mp.setattr(_cg, "_cuda_isCurrentStreamCapturing", lambda *a, **k: False, raising = False)
+    except Exception:
+        pass
+
+    # A broken libmlx.so in the shared site-packages crashes transformers' Mac-only
+    # is_mlx_array probe on Linux; disable it.
+    try:
+        import transformers.utils.generic as _g
+        mp.setattr(_g, "_is_mlx_available", False, raising = False)
+    except Exception:
+        pass
 
 
-def _to_cpu(self, *args, **kwargs):
-    args = tuple("cpu" if _is_cuda_dev(a) else a for a in args)
-    if _is_cuda_dev(kwargs.get("device")):
-        kwargs["device"] = "cpu"
-    return _orig_to(self, *args, **kwargs)
+@pytest.fixture(scope = "module", autouse = True)
+def _cpu_only_torch():
+    """Hold the GPU-less spoof for this module only.
 
-
-torch.Tensor.to = _to_cpu
-torch.Tensor.cuda = lambda self, *a, **k: self
-
-# Extra CUDA stubs the aggressive spoof lacks, needed to walk a real train():
-# Adam's _cuda_graph_capture_health_check() probes stream capture.
-torch.cuda.is_current_stream_capturing = lambda *a, **k: False
-try:
-    import torch.cuda.graphs as _cg  # noqa: E402
-    _cg._cuda_isCurrentStreamCapturing = lambda *a, **k: False
-except Exception:
-    pass
-
-# A broken libmlx.so in the shared site-packages crashes transformers' Mac-only
-# is_mlx_array probe on Linux; disable it.
-try:
-    import transformers.utils.generic as _g  # noqa: E402
-    _g._is_mlx_available = False
-except Exception:
-    pass
+    Module scoped so it is in place before the per-test `_require_stack` imports
+    unsloth and before any trainer is generated, which is the whole reason the
+    patches used to sit at import time.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        _fake_cpu_gpu(mp)
+        yield mp
 
 
 # Dense (non-MoE) tiny model on purpose: MoE models route through Unsloth's
@@ -212,7 +233,7 @@ def _load_plain():
 
 
 @pytest.fixture(autouse = True)
-def _require_stack():
+def _require_stack(_cpu_only_torch):
     global torch  # the `import torch._dynamo` below would otherwise shadow it as local
     if importlib.util.find_spec("unsloth") is None or importlib.util.find_spec("trl") is None:
         pytest.skip("unsloth or trl not installed")
@@ -225,10 +246,11 @@ def _require_stack():
     # device, crashing on device props (`gcnArchName`). Re-apply the eager
     # passthrough and flip dynamo's call-time kill switch so every @torch.compile
     # runs eager regardless of when it was decorated. CPU eager is what we want.
-    torch.compile = _eager_compile
+    # Through the module's MonkeyPatch, so both are undone with the rest of it.
+    _cpu_only_torch.setattr(torch, "compile", _eager_compile)
     try:
         import torch._dynamo  # noqa: E402
-        torch._dynamo.config.disable = True
+        _cpu_only_torch.setattr(torch._dynamo.config, "disable", True)
     except Exception:
         pass
 

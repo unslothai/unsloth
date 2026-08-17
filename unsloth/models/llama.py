@@ -35,11 +35,13 @@ from .loader_utils import (
 )
 from ..utils.packing import (
     get_packed_info_from_kwargs,
+    mask_packed_boundary_labels,
     mask_packed_sequence_boundaries,
 )
 from ..utils.attention_dispatch import (
     AttentionConfig,
     AttentionContext,
+    HAS_XFORMERS,
     run_attention,
     SDPA,
     select_attention_backend,
@@ -127,7 +129,11 @@ except:
     from huggingface_hub.utils._token import get_token
 from triton import __version__ as triton_version
 
-HAS_XFORMERS = xformers is not None
+# Not `xformers is not None`: attention_dispatch probes the install and turns HAS_XFORMERS
+# off when the library imports but has no kernel that runs here. Recomputing it from the
+# import alone left the model code on the xFormers path the dispatcher had already left --
+# and Mistral answers "xFormers" by skipping the 4D sliding-window mask, so every sequence
+# longer than config.sliding_window attended to the whole causal history on SDPA instead.
 BlockDiagonalCausalMask = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFORMERS else None
 
 
@@ -1469,6 +1475,15 @@ def CausalLM_fast_forward(fast_forward_inference):
 
                 if self.config.model_type == "falcon_h1":
                     hidden_states = hidden_states * self.config.lm_head_multiplier
+
+                # Packed-boundary guard on raw labels (the fused kernel shifts internally).
+                # This branch RETURNS, so mask_packed_sequence_boundaries() below is dead on
+                # packed training paths: it needs UNSLOTH_RETURN_LOGITS=1, which itself forces
+                # packing off (unsloth/trainer.py). Out-of-place, no-op without packed_seq_lengths.
+                labels = mask_packed_boundary_labels(
+                    labels,
+                    kwargs.get("packed_seq_lengths"),
+                )
 
                 ### DISABLED since T4 breaks
                 # OutOfResources: out of resource: shared memory, Required: 98304, Hardware limit: 65536. Reducing block sizes or `num_stages` may help.

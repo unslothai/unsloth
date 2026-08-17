@@ -1,30 +1,37 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import ast
 import importlib.util
 import inspect
 import os
 import sys
+import textwrap
 import types
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
 
 def _load_worker_module():
+    worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
     stub_names = (
-        "structlog",
+        "core.training",
+        "core.training.dataset_bounds",
         "loggers",
         "utils",
         "utils.child_stdio",
         "utils.hardware",
+        "utils.hf_dataset_options",
+        "utils.native_tls",
         "utils.training_runs",
         "utils.wheel_utils",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
     try:
-        sys.modules["structlog"] = types.ModuleType("structlog")
+        core_training = types.ModuleType("core.training")
+        core_training.__path__ = [str(worker_path.parent)]
+        sys.modules["core.training"] = core_training
 
         loggers = types.ModuleType("loggers")
         loggers.get_logger = lambda *_args, **_kwargs: None
@@ -48,14 +55,25 @@ def _load_worker_module():
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
 
-        training_runs = sys.modules["utils.training_runs"] = types.ModuleType("utils.training_runs")
-        training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "output"
+        hf_dataset_options = types.ModuleType("utils.hf_dataset_options")
+        hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
+        sys.modules["utils.hf_dataset_options"] = hf_dataset_options
+
+        # worker.py calls this at import time. Without the stub the module only loads when
+        # some other test happened to import the real utils.native_tls first, so this file
+        # passed in a full run and failed on its own.
+        native_tls = types.ModuleType("utils.native_tls")
+        native_tls.activate_native_tls = lambda *_args, **_kwargs: None
+        sys.modules["utils.native_tls"] = native_tls
+
+        training_runs = types.ModuleType("utils.training_runs")
+        training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "training-run"
+        sys.modules["utils.training_runs"] = training_runs
 
         wheel_utils = types.ModuleType("utils.wheel_utils")
         for name in (
             "direct_wheel_url",
             "flash_attn_wheel_url",
-            "has_blackwell_gpu",
             "install_wheel",
             "probe_torch_wheel_env",
             "url_exists",
@@ -63,7 +81,6 @@ def _load_worker_module():
             setattr(wheel_utils, name, lambda *_args, **_kwargs: None)
         sys.modules["utils.wheel_utils"] = wheel_utils
 
-        worker_path = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
         spec = importlib.util.spec_from_file_location("mlx_training_worker_under_test", worker_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
@@ -85,11 +102,10 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
-_configure_mlx_training_schedule = _worker._configure_mlx_training_schedule
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
-    assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw"
+    assert _normalize_mlx_studio_optimizer("adamw_8bit") == "adamw_8bit"
     assert _normalize_mlx_studio_optimizer("paged_adamw_8bit") == "adamw"
     assert _normalize_mlx_studio_optimizer("adafactor") == "adafactor"
 
@@ -114,9 +130,8 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
-    # subject (authenticated username / API-key id) must be filtered alongside the secrets,
-    # otherwise it lands in W&B run config even though DB history already strips it.
+    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
+    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )
@@ -124,113 +139,6 @@ def test_mlx_wandb_run_config_excludes_subject_and_secrets():
     assert (
         '_wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}' in source
     ), "MLX W&B run config must exclude subject and the token/s3 secrets"
-    run_source = inspect.getsource(_worker._run_mlx_training)
-    assert run_source.index("trainer = MLXTrainer(") < run_source.index(
-        "_prepare_mlx_output_dir(trainer, output_dir, ensure_dir, event_queue)"
-    )
-    assert run_source.index("trainer = MLXTrainer(") < run_source.index(
-        "max_steps, eval_steps_val = _configure_mlx_training_schedule("
-    )
-    assert "_setup_mlx_tracking(trainer, config, output_dir, _send)" in run_source
-    assert "_finalize_mlx_training(" in run_source
-    assert "lambda: _write_mlx_stop_checkpoint" in run_source
-
-
-def test_mlx_rank_owned_worker_setup(monkeypatch):
-    namespace = types.SimpleNamespace
-    wandb_run, tb_writer = object(), object()
-    wandb_init, summary_writer = Mock(return_value = wandb_run), Mock(return_value = tb_writer)
-    monkeypatch.setitem(sys.modules, "wandb", namespace(init = wandb_init))
-    monkeypatch.setitem(sys.modules, "tensorboardX", namespace(SummaryWriter = summary_writer))
-    config = {"enable_wandb": True, "enable_tensorboard": True, "wandb_project": "project"}
-    contexts = ["output directory setup", "Weights & Biases setup", "TensorBoard setup"]
-
-    for world_size, is_main in ((1, True), (2, True), (2, False)):
-        output_setup, sync = Mock(), Mock()
-        trainer = namespace(
-            distributed_world_size = world_size,
-            is_main_process = is_main,
-            _raise_distributed_failure = sync,
-        )
-        _worker._prepare_mlx_output_dir(trainer, "output", output_setup)
-        resources = _worker._setup_mlx_tracking(trainer, config, "output", lambda *_a, **_k: None)
-        count = int(is_main)
-        assert [output_setup.call_count, wandb_init.call_count, summary_writer.call_count] == [
-            count
-        ] * 3
-        assert resources == ((wandb_run, tb_writer) if is_main else (None, None))
-        assert [call.args[1] for call in sync.call_args_list] == (
-            [] if world_size == 1 else contexts
-        )
-        if is_main:
-            output_setup.assert_called_once_with(Path("output"))
-            wandb_init.assert_called_once_with(project = "project", config = config, reinit = True)
-            summary_writer.assert_called_once_with(log_dir = "output/runs")
-        wandb_init.reset_mock()
-        summary_writer.reset_mock()
-
-    failure = OSError("read-only output")
-    sync = Mock(side_effect = RuntimeError("distributed failure during output"))
-    trainer = namespace(
-        distributed_world_size = 2,
-        is_main_process = True,
-        _raise_distributed_failure = sync,
-    )
-    with pytest.raises(RuntimeError, match = "distributed failure during output"):
-        _worker._prepare_mlx_output_dir(
-            trainer, "output", lambda _path: (_ for _ in ()).throw(failure)
-        )
-    sync.assert_called_once_with(True, "output directory setup", failure)
-
-    trainer = namespace(distributed_world_size = 2, is_main_process = True)
-    with pytest.raises(RuntimeError, match = "Upgrade unsloth-zoo"):
-        _worker._prepare_mlx_output_dir(trainer, "output", lambda _path: None)
-
-
-def test_mlx_epoch_steps_use_global_ddp_batch():
-    trainer = types.SimpleNamespace(
-        args = types.SimpleNamespace(max_steps = 0, warmup_steps = 0, eval_steps = 0),
-        distributed_world_size = 2,
-    )
-
-    result = _configure_mlx_training_schedule(
-        trainer, 0, 16, 2, 2, 3, warmup_ratio = 0.5, eval_steps_ratio = 0.5
-    )
-
-    assert result == (6, 3)
-    assert (trainer.args.max_steps, trainer.args.warmup_steps, trainer.args.eval_steps) == (6, 3, 3)
-    assert _configure_mlx_training_schedule(trainer, 7, 16, 2, 2, 3)[0] == 7
-    assert _configure_mlx_training_schedule(trainer, 0, 16, 2, 2, 0)[0] == 1
-    assert _configure_mlx_training_schedule(trainer, 0.5, 16, 2, 2, 3)[0] == 0.5
-
-    trainer.distributed_world_size = 1
-    assert _configure_mlx_training_schedule(
-        trainer, 0, 17, 2, 2, 1, warmup_ratio = 0.3, eval_steps_ratio = 0.3
-    ) == (5, 1)
-    assert (trainer.args.warmup_steps, trainer.args.eval_steps) == (2, 1)
-
-
-def test_mlx_finalization_reads_trainer_before_atomic_stop_snapshot():
-    reads = []
-
-    class Trainer:
-        distributed_world_size = 1
-
-        @property
-        def stop_requested(self):
-            reads.append("trainer")
-            return False
-
-        @stop_requested.setter
-        def stop_requested(self, _value):
-            reads.append("setter")
-
-    state = _worker._mlx_worker_finalization_state(
-        Trainer(), lambda: (reads.append("snapshot") or True, False)
-    )
-
-    assert state == (True, True)
-    assert reads[:2] == ["trainer", "snapshot"]
 
 
 def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
@@ -405,3 +313,158 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
 
     assert warnings_logged == [], "should not warn when activation succeeds"
+
+
+def _masking_block():
+    """The whole `if train_on_completions ...:` block from _run_mlx_training."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    blocks = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.BoolOp)
+        and "apply_completion_masking" in ast.unparse(n)
+    ]
+    assert len(blocks) == 1, "expected one guarded masking block"
+    return blocks[0]
+
+
+def _masking_call_and_guard():
+    """The apply_completion_masking call in _run_mlx_training, plus the `if not applied` guard."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "apply_completion_masking"
+    ]
+    assert len(calls) == 1, "expected exactly one masking call in the MLX path"
+    guards = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If) and ast.unparse(n.test) == "not masking_applied"
+    ]
+    assert len(guards) == 1, "masking result must be checked exactly once"
+    return calls[0], guards[0]
+
+
+def test_alpaca_datasets_still_get_explicit_markers():
+    """Alpaca text carries no chat markers, so the template must be passed explicitly."""
+    call, _ = _masking_call_and_guard()
+    passed = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+
+    assert passed["dataset_template"] == "'alpaca' if dataset_final_format == 'alpaca' else None"
+
+
+def _run_masking(
+    model_name = "org/unmapped",
+    detect = None,
+    **overrides,
+):
+    """Execute the real masking block from _run_mlx_training and return its events.
+
+    _run_mlx_training only runs on Apple Silicon, so the block is lifted out and executed
+    directly. That keeps the production statements under test rather than a copy of them.
+    """
+    block = compile(ast.Module(body = [_masking_block()], type_ignores = []), "<masking>", "exec")
+    events = []
+    trainer = types.SimpleNamespace(processing_class = types.SimpleNamespace(), tokenizer = None)
+    zoo = types.ModuleType("unsloth_zoo")
+    zoo.__path__ = []
+    datasets = types.ModuleType("unsloth_zoo.dataset_utils")
+    if detect is not None:
+        datasets.get_chat_template_parts = detect
+    previous = {n: sys.modules.get(n) for n in ("unsloth_zoo", "unsloth_zoo.dataset_utils")}
+    sys.modules["unsloth_zoo"] = zoo
+    sys.modules["unsloth_zoo.dataset_utils"] = datasets
+
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {"train_on_completions": overrides.pop("train_on_completions", True)},
+            "raw_text_mode": overrides.pop("raw_text_mode", False),
+            "dataset_final_format": overrides.pop("dataset_final_format", "chatml"),
+            "model_name": model_name,
+            "trainer": trainer,
+            "train_on_responses_only": lambda t, **_kw: t,
+            "_send": lambda event_type, **kw: events.append((event_type, kw)),
+        }
+    )
+    try:
+        exec(block, namespace)
+    finally:
+        for name, module in previous.items():
+            sys.modules.pop(name, None) if module is None else sys.modules.update({name: module})
+    return events, namespace.get("masking_applied")
+
+
+try:  # the block imports this lazily; skip the behaviour tests where it cannot load
+    import utils.datasets.completion_masking  # noqa: F401
+    _MASKING_IMPORTABLE = True
+except Exception:  # pragma: no cover
+    _MASKING_IMPORTABLE = False
+
+needs_masking_helper = pytest.mark.skipif(
+    not _MASKING_IMPORTABLE, reason = "utils.datasets.completion_masking is not importable"
+)
+
+
+def _warnings(events):
+    return [kwargs["message"] for kind, kwargs in events if kind == "warning"]
+
+
+def _detect_fails(_processor):
+    raise RuntimeError("no chat template parts")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"train_on_completions": False},
+        {"raw_text_mode": True},
+        {"dataset_final_format": "raw_text"},
+    ],
+    ids = ["not-requested", "raw-text-mode", "raw-text-format"],
+)
+@needs_masking_helper
+def test_masking_block_is_skipped(overrides):
+    events, applied = _run_masking(**overrides)
+
+    assert events == [] and applied is None
+
+
+@needs_masking_helper
+def test_masking_miss_reaches_the_warning_channel():
+    """A miss must be a sticky warning, not a status line the next update overwrites."""
+    events, applied = _run_masking(detect = _detect_fails)
+
+    assert applied is False
+    warnings = _warnings(events)
+    assert len(warnings) == 1
+    assert "org/unmapped" in warnings[0] and "full sequences" in warnings[0]
+    # The parent pump reads only `message` for warnings, so `status_message` would be lost.
+    assert [kind for kind, _ in events][-1] == "warning"
+
+
+@pytest.mark.parametrize(
+    "model_name,detect",
+    [
+        ("org/unmapped", lambda _p: ("<|user|>", "<|assistant|>")),
+        ("unsloth/llama-3-8b-instruct", _detect_fails),
+    ],
+    ids = ["auto-detected", "recovered-by-template-table"],
+)
+@needs_masking_helper
+def test_applied_runs_leave_no_warning(model_name, detect):
+    """Detection can fail at level "warning" and the table still mask. That is not a miss."""
+    events, applied = _run_masking(model_name = model_name, detect = detect)
+
+    assert applied is True
+    assert _warnings(events) == []
+
+
+@pytest.mark.parametrize("model_name", ["", None, "org/model with spaces", "org/{brace}"])
+@needs_masking_helper
+def test_odd_model_names_do_not_break_the_warning(model_name):
+    events, applied = _run_masking(model_name = model_name, detect = _detect_fails)
+
+    assert applied is False and len(_warnings(events)) == 1

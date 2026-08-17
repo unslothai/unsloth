@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { usePlatformStore } from "@/config/env";
 import { getAuthToken } from "@/features/auth";
 import { removeTrainingUnloadGuard } from "@/features/training";
-import { useHardwareInfo } from "@/hooks/use-hardware-info";
-import { useT } from "@/i18n";
+import { type HardwareInfo, useHardwareInfo } from "@/hooks/use-hardware-info";
+import { type TranslationKey, useT } from "@/i18n";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   ArrowUpRight01Icon,
@@ -73,11 +73,31 @@ async function fetchInstallSource(): Promise<UpdateInstallSource> {
   }
 }
 
+// Every accelerator runtime the backend reported, not just the first: a dual CUDA+XPU build in
+// XPU mode reports both, so returning CUDA alone hid the XPU row. Module scope on purpose --
+// inlining this pushes AboutTab past the cognitive-complexity ceiling.
+type RuntimeRow = { labelKey: TranslationKey; version: string };
+
+function acceleratorRuntimes(hw: HardwareInfo): RuntimeRow[] {
+  const rows: RuntimeRow[] = [];
+  if (hw.cuda) {
+    rows.push({ labelKey: "settings.about.cuda", version: hw.cuda });
+  }
+  if (hw.rocm) {
+    rows.push({ labelKey: "settings.about.rocm", version: hw.rocm });
+  }
+  if (hw.xpu) {
+    rows.push({ labelKey: "settings.about.xpu", version: hw.xpu });
+  }
+  return rows;
+}
+
 export function AboutTab() {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const defaultShell = deviceType === "windows" ? "windows" : "unix";
   const hw = useHardwareInfo();
+  const runtimes = acceleratorRuntimes(hw);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -155,7 +175,7 @@ export function AboutTab() {
         </SettingsSection>
       </div>
 
-      {hw.gpus.length > 0 || hw.cuda || hw.rocm ? (
+      {hw.gpus.length > 0 || runtimes.length > 0 ? (
         <SettingsSection title={t("settings.about.hardware")}>
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
@@ -176,17 +196,13 @@ export function AboutTab() {
               </code>
             </SettingsRow>
           ))}
-          {hw.cuda || hw.rocm ? (
-            <SettingsRow
-              label={
-                hw.cuda ? t("settings.about.cuda") : t("settings.about.rocm")
-              }
-            >
+          {runtimes.map((rt) => (
+            <SettingsRow key={rt.labelKey} label={t(rt.labelKey)}>
               <code className="font-mono text-xs text-muted-foreground">
-                {hw.cuda ?? hw.rocm}
+                {rt.version}
               </code>
             </SettingsRow>
-          ) : null}
+          ))}
         </SettingsSection>
       ) : null}
 

@@ -311,6 +311,59 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
+def _offload_embedding_unsupported_platform():
+    # Offloaded embeddings do not work on Windows or WSL.
+    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+        return "WSL"
+    if os.name == "nt":
+        return "Windows"
+    return None
+
+
+def _embedding_dispatch_device(input_embeddings):
+    # accelerate's hook wraps forward and re-sends the ids to the device it recorded, after
+    # our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
+    hook = getattr(input_embeddings, "_hf_hook", None)
+    return None if hook is None else getattr(hook, "execution_device", None)
+
+
+def _resolve_offload_embedding(model, offload_embedding):
+    """Report `offload_embedding` as True only when the offload will really run.
+
+    It is a VRAM optimisation, not a correctness switch, so turn it off where it
+    cannot help instead of failing the load. It also gates
+    `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
+    happens, so every "no offload" case has to answer False.
+    """
+    if not offload_embedding:
+        return False
+    platform_name = _offload_embedding_unsupported_platform()
+    if platform_name is not None:
+        print(f"Unsloth: Not offloading embeddings; offloading is unsupported on {platform_name}.")
+        return False
+    try:
+        in_embed = model.get_input_embeddings()
+        out_embed = (
+            model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+        )
+    except Exception:
+        # Cannot inspect it, so leave the caller's request alone.
+        return offload_embedding
+    if _embeddings_are_tied(in_embed, out_embed):
+        print(
+            "Unsloth: Not offloading embeddings; this model ties embed_tokens "
+            "to lm_head, so offloading saves no VRAM."
+        )
+        return False
+    if _embedding_dispatch_device(in_embed) is not None:
+        print(
+            "Unsloth: Not offloading embeddings; this model is dispatched across devices, "
+            "which overrides the offload."
+        )
+        return False
+    return True
+
+
 VLLM_SUPPORTED_VLM = [
     "qwen2_5_vl",
     "gemma3",
@@ -549,12 +602,24 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast
-    if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+    # Mixed precision autocast. Stamped by from_pretrained: UNSLOTH_FORCE_FLOAT32 is
+    # process wide, so a later load would otherwise decide this model's rollouts.
+    forced_float32 = getattr(self, "_unsloth_forced_float32", None)
+    if forced_float32 is None:
+        forced_float32 = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    if forced_float32:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
+        # CUDA autocast does not validate its dtype the way the CPU/XPU/MPS paths do,
+        # so autocast(dtype = torch.float32) enters ENABLED rather than turning into a
+        # no-op, and the compiled graph then returns inf/NaN logits. A float32 model has
+        # nothing to autocast to; disable instead of asking for a dtype that is not one.
+        autocaster = torch.autocast(
+            device_type = DEVICE_TYPE_TORCH,
+            dtype = dtype,
+            enabled = dtype in (torch.float16, torch.bfloat16),
+        )
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
@@ -997,6 +1062,9 @@ class FastBaseModel:
         # The base + tokenizer prefetch runs AFTER the load-mode validation below, so an invalid
         # load_in_* combination fails without first downloading a snapshot.
 
+        # Whether float32 was asked for rather than arrived at by upcasting. Only an
+        # explicit request may suppress the V100/T4 float16 autocast (see #4082).
+        user_float32 = _requested_float32(dtype)
         if dtype is None:
             dtype = torch.float16 if not SUPPORTS_BFLOAT16 else torch.bfloat16
         elif os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
@@ -1182,6 +1250,8 @@ class FastBaseModel:
                         "use `float32_mixed_precision = False` during FastLanguageModel.from_pretrained"
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
+            elif dtype == torch.float32:
+                print("Unsloth: Using float32 full finetuning.")
             else:
                 print(
                     "Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32."
@@ -1304,6 +1374,13 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
+                # Must precede _attach_bnb_multidevice_hooks: it returns early
+                # while offload_embedding is True.
+                offload_embedding = _resolve_offload_embedding(
+                    model,
+                    offload_embedding,
+                )
+
                 # Attach dispatch hooks for bnb multi-device loads.
                 _attach_bnb_multidevice_hooks(
                     model,
@@ -1327,37 +1404,24 @@ class FastBaseModel:
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
                 if offload_embedding:
-                    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-                        # WSL doesn't work with offloaded embeddings
-                        pass
-                    elif os.name == "nt":
-                        # Windows doesn't work with offloaded embeddings
-                        pass
-                    else:
-                        embed_tokens = model.get_input_embeddings()
-                        out_embed = (
-                            model.get_output_embeddings()
-                            if hasattr(model, "get_output_embeddings")
-                            else None
-                        )
-                        if _embeddings_are_tied(embed_tokens, out_embed):
-                            raise NotImplementedError(
-                                "offload_embedding = True is not supported for models with tied word "
-                                "embeddings (embed_tokens shares its weight with lm_head). Offloading "
-                                "would strand the output projection on CPU and saves no VRAM. Set "
-                                "offload_embedding = False for this model."
-                            )
-                        nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                        ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                        print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                        embed_tokens.to("cpu")
+                    # Unsupported platforms and tied embeddings were screened out above.
+                    embed_tokens = model.get_input_embeddings()
+                    out_embed = (
+                        model.get_output_embeddings()
+                        if hasattr(model, "get_output_embeddings")
+                        else None
+                    )
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
+                    embed_tokens.to("cpu")
 
-                        # Device-safe embedding offload.
-                        _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                        # Must free GPU memory otherwise will not free!
-                        clean_gpu_cache()
-                        gc.collect()
+                    # Device-safe embedding offload.
+                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    # Must free GPU memory otherwise will not free!
+                    clean_gpu_cache()
+                    gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,
@@ -1779,7 +1843,9 @@ class FastBaseModel:
         # Saving restores sentencepiece assets from the repo name alone, which carries no
         # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
-        return model, tokenizer
+        model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
+        return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
     def get_peft_model(

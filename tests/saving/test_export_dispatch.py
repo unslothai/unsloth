@@ -9,6 +9,7 @@ regressions that pure AST checks cannot (e.g. wrong scheme/suffix/outtype passed
 from __future__ import annotations
 
 import inspect
+import os
 
 import pytest
 
@@ -21,6 +22,16 @@ class _FakeModel:
     config = type(
         "cfg", (), {"_name_or_path": "fake/model", "architectures": ["LlamaForCausalLM"]}
     )()
+
+
+class _FakeTokenizer:
+    chat_template = None
+
+    def __init__(self):
+        self.saved_to = []
+
+    def save_pretrained(self, path):
+        self.saved_to.append(path)
 
 
 # -- merged_*  ->  compressed-tensors dispatch ---------------------------------------------
@@ -126,6 +137,57 @@ def test_gguf_lora_push_to_hub_is_rejected(tmp_path):
             save_method = "lora",
             push_to_hub = True,
         )
+
+
+@pytest.mark.parametrize("trailing_separator", [False, True])
+def test_non_peft_gguf_uses_checkpoint_as_input_not_output(
+    monkeypatch, tmp_path, trailing_separator
+):
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    requested = tmp_path / "export" / "model"
+    requested.parent.mkdir()
+    model = _FakeModel()
+    model.config = type(
+        "cfg",
+        (),
+        {
+            "_name_or_path": str(checkpoint),
+            "architectures": ["LlamaForCausalLM"],
+            "model_type": "llama",
+        },
+    )()
+    tokenizer = _FakeTokenizer()
+    seen = {}
+
+    monkeypatch.setattr(save_mod, "_is_vlm", lambda _model: False)
+    monkeypatch.setattr(save_mod, "_is_gpt_oss", lambda _model: False)
+    monkeypatch.setattr(save_mod, "fix_tokenizer_bos_token", lambda _tokenizer: (False, None))
+    monkeypatch.setattr(save_mod, "_resolve_imatrix_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(save_mod, "dtype_from_config", lambda _config: save_mod.torch.float16)
+    monkeypatch.setattr(save_mod, "create_ollama_modelfile", lambda *_args, **_kwargs: None)
+
+    def _save_to_gguf(**kwargs):
+        seen.update(kwargs)
+        output = tmp_path / "export" / "model_gguf" / "model.Q8_0.gguf"
+        output.parent.mkdir()
+        output.write_bytes(b"GGUF")
+        return [str(output)], True, False
+
+    monkeypatch.setattr(save_mod, "save_to_gguf", _save_to_gguf)
+
+    requested_arg = f"{requested}{os.sep}" if trailing_separator else str(requested)
+    result = save_mod.unsloth_save_pretrained_gguf(
+        model,
+        requested_arg,
+        tokenizer = tokenizer,
+        quantization_method = "q8_0",
+    )
+
+    assert seen["model_directory"] == str(checkpoint)
+    assert seen["gguf_directory"] == f"{requested}_gguf"
+    assert result["gguf_directory"] == f"{requested}_gguf"
+    assert tokenizer.saved_to == [str(checkpoint)]
 
 
 # The above rejection points users at push_to_hub_gguf(save_method='lora'), so that path

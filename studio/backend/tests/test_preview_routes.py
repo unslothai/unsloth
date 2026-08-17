@@ -118,6 +118,7 @@ def test_page_renders_with_csp(client):
     assert "base-uri 'none'" in csp
     # Token rides in the query string; keep it out of the Referer header.
     assert r.headers.get("referrer-policy") == "no-referrer"
+    assert "messages: msgs,\n              stream: true," in r.text
 
 
 def test_page_escapes_title(tmp_path, monkeypatch, captured):
