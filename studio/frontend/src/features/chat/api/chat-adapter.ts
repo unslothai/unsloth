@@ -4689,6 +4689,12 @@ export function createOpenAIStreamAdapter(
       // What the cap is measured against: only grows, unlike cumulativeText,
       // and counts tool-argument deltas, which never reach it.
       let streamedChars = 0;
+      // Whether this run appended reply text of its own. A continuation is
+      // SEEDED with the previous run's partial, and that partial is the middle
+      // of a reply someone is still writing rather than the end of a finished
+      // one, so a run that adds nothing to it must not have its tail trimmed.
+      // Read by the trailing-fragment strip after the stream.
+      let producedReplyText = false;
       const continuationPartial = continuation?.partial ?? "";
       // Local backends (and a self-hosted vLLM / llama-server, which get the flags)
       // resume at the exact token boundary, so their output is already the rest of the
@@ -6344,7 +6350,7 @@ export function createOpenAIStreamAdapter(
               if (!delta && !reasoning) {
                 continue;
               }
-              // So the strip below can be told from a chunk that added nothing.
+              // So a chunk that added nothing can be told from one that did.
               const textLenBeforeChunk = cumulativeText.length;
               if (waitingFirstChunk) {
                 waitingFirstChunk = false;
@@ -6369,24 +6375,11 @@ export function createOpenAIStreamAdapter(
                 appendCumulative(delta);
               }
               streamedChars += reasoning.length + delta.length;
-              // Strip a trailing ${...} template-literal fragment from
-              // external streams (mistral magistral occasionally emits one).
-              // The watch answers from the deltas whether a fragment could be
-              // sitting at the end, so the scan itself, which has to touch the
-              // buffer and therefore flatten the whole reply, runs only on an
-              // arrival that ends in one. It never says no when the scan would
-              // cut, so nothing that used to be stripped survives.
-              if (isExternalRequest && placeholderWatch.isCandidate()) {
-                const stripped =
-                  stripTrailingTemplatePlaceholder(cumulativeText);
-                if (stripped.length !== cumulativeText.length) {
-                  cumulativeText = stripped;
-                  // A suffix went away, so both trackers have to be told; the
-                  // parse notices by itself, from the length.
-                  thinkTags.retract(cumulativeText);
-                  placeholderWatch.retract(cumulativeText);
-                }
-              }
+              producedReplyText = true;
+              // The trailing ${...} strip used to run here, once per arrival.
+              // It now runs once, on the finished reply, below the loop. See
+              // the comment there. Nothing on this path reads the buffer any
+              // more, so no arrival can flatten it.
               const textEndsInsideThink = thinkTags.endsInsideThink();
               const assistantContent = liveAssistantContent();
 
@@ -6464,6 +6457,46 @@ export function createOpenAIStreamAdapter(
               continue;
             }
             throw streamError;
+          }
+        }
+        // Strip a trailing ${...} template-literal fragment from external
+        // streams (mistral magistral occasionally emits one at the end of an
+        // otherwise complete answer).
+        //
+        // Once, on the finished reply. "Ends with ${...}" is a property of the
+        // completed answer, and running the strip on every arrival tested it
+        // against every prefix of that answer instead: the one arrival whose
+        // buffer happened to end at `...${name}` was cut, and reassigning the
+        // result made the cut permanent, so "return `Hi, ${name}!`" arrived as
+        // "return `Hi,!`". Any reply containing a template literal lost text.
+        // See #9098.
+        //
+        // Only where the stream ran to completion. An abort leaves more text
+        // still to come, so its tail is a prefix again and stripping it would
+        // be the same bug; that path keeps the buffer whole and this runs on
+        // the resumed reply instead. `producedReplyText` is the same case one
+        // step in: a continuation that finishes without a text or reasoning
+        // delta, having emitted only a tool call, leaves the buffer holding
+        // nothing but the seeded partial, and a partial is a prefix too.
+        //
+        // The watch still gates the scan, and now saves the whole reply from
+        // being flattened rather than one arrival's worth: a reply that does
+        // not end in a brace is rejected without the buffer being read at all.
+        // Before the <think> close below, so a fragment at the end of an
+        // unterminated reasoning block is still the end of the reply when it
+        // is tested.
+        if (
+          isExternalRequest &&
+          producedReplyText &&
+          placeholderWatch.isCandidate()
+        ) {
+          const stripped = stripTrailingTemplatePlaceholder(cumulativeText);
+          if (stripped.length !== cumulativeText.length) {
+            cumulativeText = stripped;
+            // A suffix went away, so both trackers have to be told; the parse
+            // notices by itself, from the length.
+            thinkTags.retract(cumulativeText);
+            placeholderWatch.retract(cumulativeText);
           }
         }
         // If the stream ended while we were still inside a
