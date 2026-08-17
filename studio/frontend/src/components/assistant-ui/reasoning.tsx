@@ -19,8 +19,9 @@ import {
   useChatPreferencesStore,
 } from "@/features/chat";
 import {
+  advanceReasoningWindow,
+  freshReasoningWindow,
   linkDefinitionsBefore,
-  nextReasoningWindowStart,
 } from "@/features/chat/utils/reasoning-window";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
@@ -334,7 +335,7 @@ function ReasoningBody() {
   const isRunning = status.type === "running";
 
   const hostRef = useRef<HTMLDivElement>(null);
-  const startRef = useRef(0);
+  const windowRef = useRef(freshReasoningWindow());
   // Once set, the whole body is mounted for the rest of this round.
   const restoredRef = useRef(false);
   // Whether the reader is still following the end. The pane starts pinned to its own bottom.
@@ -355,7 +356,7 @@ function ReasoningBody() {
   const messageIdRef = useRef(messageId);
   if (messageIdRef.current !== messageId) {
     messageIdRef.current = messageId;
-    startRef.current = 0;
+    windowRef.current = freshReasoningWindow();
     atBottomRef.current = true;
     restoredRef.current = false;
     // Cancel any correction still in flight. It resolves the scroller afresh every frame, so a
@@ -374,11 +375,11 @@ function ReasoningBody() {
   if (wasRunning !== isRunning) {
     setWasRunning(isRunning);
     if (isRunning && !wasRunning) {
-      startRef.current = 0;
+      windowRef.current = freshReasoningWindow();
       atBottomRef.current = true;
       restoredRef.current = false;
       setHoldingThroughCollapse(false);
-    } else if (!isRunning && startRef.current > 0 && !restoredRef.current) {
+    } else if (!isRunning && windowRef.current.start > 0 && !restoredRef.current) {
       setHoldingThroughCollapse(true);
     }
   }
@@ -453,7 +454,9 @@ function ReasoningBody() {
       const distanceFromBottom =
         element.scrollHeight - element.scrollTop - element.clientHeight;
       atBottomRef.current = distanceFromBottom <= AT_BOTTOM_PX;
-      if (restoredRef.current || startRef.current <= 0 || atBottomRef.current) return;
+      if (restoredRef.current || windowRef.current.start <= 0 || atBottomRef.current) {
+        return;
+      }
       // Scrolled back with a window engaged. Give them everything and stop windowing for this
       // round. Nothing here can run twice: `restoredRef` is checked first and set before the
       // correction starts, so the hold's own scroll writes cannot re-enter this.
@@ -479,12 +482,12 @@ function ReasoningBody() {
   // reader who is not at the bottom need not move scrollTop and so need not fire a scroll event
   // at all. The pane starts pinned, so this begins true and the ordinary case is unaffected.
   if (isRunning && !restoredRef.current && atBottomRef.current) {
-    startRef.current = nextReasoningWindowStart(text, startRef.current);
+    windowRef.current = advanceReasoningWindow(text, windowRef.current);
   }
   const windowed =
     (isRunning || holdingThroughCollapse) &&
     !restoredRef.current &&
-    startRef.current > 0;
+    windowRef.current.start > 0;
 
   // Keyed on the window start, so moving the window or giving it back REMOUNTS the renderer.
   //
@@ -497,7 +500,7 @@ function ReasoningBody() {
   // after the restore, showing text from elsewhere in the reasoning at a position the model
   // never wrote it. Remounting is the only seam that reaches it, because neither the block key
   // nor the memo is reachable through the props Streamdown exposes.
-  const renderKey = windowed ? startRef.current : -1;
+  const renderKey = windowed ? windowRef.current.start : -1;
 
   return (
     <div ref={hostRef} className="contents">
@@ -505,7 +508,8 @@ function ReasoningBody() {
         key={renderKey}
         text={
           windowed
-            ? linkDefinitionsBefore(text, startRef.current) + text.slice(startRef.current)
+            ? linkDefinitionsBefore(text, windowRef.current.start) +
+              text.slice(windowRef.current.start)
             : undefined
         }
       />

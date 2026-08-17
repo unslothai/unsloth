@@ -80,13 +80,13 @@ export const REASONING_WINDOW_SLACK = 0.5;
  */
 const CONTAINER_PREFIX = / {0,3}(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]))[ \t]*/y;
 
-function stripContainers(line: string): string {
+function stripContainers(line: string): { body: string; prefix: number } {
   let index = 0;
   for (;;) {
     CONTAINER_PREFIX.lastIndex = index;
     const match = CONTAINER_PREFIX.exec(line);
-    if (!match || match[0].length === 0) return line.slice(index);
-    index += match[0].length;
+    if (!match || match[0].length === 0) return { body: line.slice(index), prefix: index };
+  index += match[0].length;
   }
 }
 
@@ -99,8 +99,10 @@ function stripContainers(line: string): string {
  * marker line itself, and a ~~~ fence used because the code contains backticks -- and a missed
  * fence is not a missed optimisation, it is a slice into the middle of a code block.
  */
-function fenceMarker(rawLine: string): { char: string; length: number; info: string } | null {
-  const line = stripContainers(rawLine);
+function fenceMarker(
+  rawLine: string,
+): { char: string; length: number; info: string; prefix: number } | null {
+  const { body: line, prefix } = stripContainers(rawLine);
   let index = 0;
   while (index < 3 && line[index] === " ") index += 1;
   const char = line[index];
@@ -108,7 +110,7 @@ function fenceMarker(rawLine: string): { char: string; length: number; info: str
   let length = 0;
   while (line[index + length] === char) length += 1;
   if (length < 3) return null;
-  return { char, length, info: line.slice(index + length) };
+  return { char, length, info: line.slice(index + length), prefix };
 }
 
 /**
@@ -122,14 +124,34 @@ function fenceMarker(rawLine: string): { char: string; length: number; info: str
  */
 const INLINE_CODE = /(`+)(?:[^`]|(?!\1)`)*\1/g;
 
-/** How many `$$` markers a line carries outside inline code, which is what flips parity. */
-function displayMathMarkers(line: string): number {
+/**
+ * The display-math markers a line carries outside inline code.
+ *
+ * Two syntaxes, because `preprocessLaTeX` in lib/latex.ts accepts both: `$$` which TOGGLES, and
+ * `\\[` ... `\\]` which opens and closes. The bracket form matters here for the same reason the
+ * dollar form does, with one extra turn of the screw: `preprocessLaTeX` runs AFTER this slice, so
+ * a suffix beginning inside a bracket equation reaches it as an orphan `\\]` and renders as broken
+ * math with the surrounding text pulled into it. An escaped `\\\\[` is a literal bracket and is
+ * skipped, matching the `(?<!\\\\)` in that file's own pattern.
+ */
+function displayMathMarkers(line: string): { toggles: number; opens: number; closes: number } {
   const bare = line.replace(INLINE_CODE, "");
-  let count = 0;
+  let toggles = 0;
   for (let index = bare.indexOf("$$"); index !== -1; index = bare.indexOf("$$", index + 2)) {
-    count += 1;
+    toggles += 1;
   }
-  return count;
+  let opens = 0;
+  let closes = 0;
+  for (let index = bare.indexOf("\\"); index !== -1; index = bare.indexOf("\\", index + 1)) {
+    const next = bare[index + 1];
+    if (next === "\\") {
+      index += 1;
+      continue;
+    }
+    if (next === "[") opens += 1;
+    else if (next === "]") closes += 1;
+  }
+  return { toggles, opens, closes };
 }
 
 /** Whether a line is a link-reference definition, `[label]: destination`. */
@@ -144,8 +166,9 @@ const LINK_DEFINITION = /^ {0,3}\[[^\]]+\]:/;
  * display-math parity for the same reason; this is the same rule applied to the window.
  */
 type ScanState = {
-  fence: { char: string; length: number } | null;
+  fence: { char: string; length: number; prefix: number } | null;
   mathOpen: boolean;
+  bracketMath: boolean;
 };
 
 function advance(state: ScanState, line: string): void {
@@ -155,23 +178,34 @@ function advance(state: ScanState, line: string): void {
       // A backtick fence's info string may not contain a backtick, which is what keeps inline
       // ``` in prose from opening one.
       if (!(marker.char === "`" && marker.info.includes("`"))) {
-        state.fence = { char: marker.char, length: marker.length };
+        state.fence = { char: marker.char, length: marker.length, prefix: marker.prefix };
       }
-    } else if (
+      return;
+    }
+    if (
       marker.char === state.fence.char &&
       marker.length >= state.fence.length &&
-      marker.info.trim() === ""
+      marker.info.trim() === "" &&
+      // Container syntax is INACTIVE inside a fence, so a literal `> ```` line in a top-level
+      // code block is code, not a closer. Only a line no deeper in containers than the OPENER
+      // can close it.
+      marker.prefix <= state.fence.prefix
     ) {
       state.fence = null;
     }
     return;
   }
-  if (state.fence === null && displayMathMarkers(line) % 2 === 1) {
-    state.mathOpen = !state.mathOpen;
-  }
+  if (state.fence !== null) return;
+  const math = displayMathMarkers(line);
+  if (math.toggles % 2 === 1) state.mathOpen = !state.mathOpen;
+  if (math.opens > math.closes) state.bracketMath = true;
+  else if (math.closes > math.opens) state.bracketMath = false;
 }
 
-const neutral = (state: ScanState): boolean => state.fence === null && !state.mathOpen;
+const neutral = (state: ScanState): boolean =>
+  state.fence === null && !state.mathOpen && !state.bracketMath;
+
+const freshState = (): ScanState => ({ fence: null, mathOpen: false, bracketMath: false });
 
 /**
  * Whether an offset is outside every construct a slice must not land inside.
@@ -180,7 +214,7 @@ const neutral = (state: ScanState): boolean => state.fence === null && !state.ma
  * single pass below rather than calling this per candidate.
  */
 export function isOutsideFence(text: string, offset: number): boolean {
-  const state: ScanState = { fence: null, mathOpen: false };
+  const state = freshState();
   let lineStart = 0;
   while (lineStart < offset) {
     let lineEnd = text.indexOf("\n", lineStart);
@@ -225,7 +259,7 @@ function startsTopLevelBlock(text: string, offset: number): boolean {
  */
 export function alignWindowStart(text: string, target: number): number {
   if (target <= 0) return 0;
-  const state: ScanState = { fence: null, mathOpen: false };
+  const state = freshState();
   let lineStart = 0;
   const length = text.length;
   while (lineStart < length) {
@@ -264,17 +298,56 @@ export function linkDefinitionsBefore(text: string, start: number): string {
   // Carrying the same scan state, because `[label]: value` inside a fence is code that happens to
   // look like a definition, and hoisting it out of its block would put text on screen that the
   // model wrote as an example.
-  const state: ScanState = { fence: null, mathOpen: false };
+  const state = freshState();
   let lineStart = 0;
   while (lineStart < start) {
     let lineEnd = text.indexOf("\n", lineStart);
     if (lineEnd === -1 || lineEnd > start) lineEnd = start;
     const line = text.slice(lineStart, lineEnd);
-    if (neutral(state) && LINK_DEFINITION.test(line)) definitions.push(line);
+    // Matched after the container prefix is removed, because `> [spec]: url` inside a quote is
+    // still a document-wide definition, and carried WITHOUT the prefix so it cannot drag a stray
+    // blockquote into the suffix.
+    const bare = neutral(state) ? stripContainers(line).body : "";
+    if (bare && LINK_DEFINITION.test(bare)) definitions.push(bare);
     advance(state, line);
     lineStart = lineEnd + 1;
   }
   return definitions.length === 0 ? "" : `${definitions.join("\n")}\n\n`;
+}
+
+/**
+ * How far the text must grow before an alignment that found nothing is attempted again.
+ *
+ * A failed alignment means there is no safe boundary at or after the target, and the target only
+ * moves forward, so nothing already scanned can become safe: only newly arrived text can. Retrying
+ * on the very next 24-character chunk therefore rescans the whole body to reach the same answer.
+ * Measured on a 130,000-character stream that is one unterminated fence, where no boundary is ever
+ * safe: 4,667 chunks past the threshold, 1,692ms of scanning in total. That is 0.363ms against a
+ * 73ms chunk interval, so it drops no frame by itself, but it is pure overhead on the one path
+ * where the window delivers nothing at all, and 2,000 characters of backoff removes about 98% of
+ * it while delaying the window by at most a sixth of its own size.
+ */
+export const REASONING_WINDOW_RETRY_CHARS = 2_000;
+
+/** Where the window starts, and the text length at which it is worth looking again. */
+export type ReasoningWindowState = { start: number; retryAt: number };
+
+export const freshReasoningWindow = (): ReasoningWindowState => ({ start: 0, retryAt: 0 });
+
+/**
+ * The window state after `text`, skipping the scan when it provably cannot find anything new.
+ *
+ * The rule itself stays in `nextReasoningWindowStart`, which is pure and is what the tests hold;
+ * this only decides whether it is worth asking.
+ */
+export function advanceReasoningWindow(
+  text: string,
+  state: ReasoningWindowState,
+): ReasoningWindowState {
+  if (text.length < state.retryAt) return state;
+  const start = nextReasoningWindowStart(text, state.start);
+  if (start > state.start) return { start, retryAt: 0 };
+  return { start, retryAt: text.length + REASONING_WINDOW_RETRY_CHARS };
 }
 
 export function nextReasoningWindowStart(

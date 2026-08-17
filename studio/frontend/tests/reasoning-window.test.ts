@@ -6,7 +6,10 @@ import test from "node:test";
 
 import {
   REASONING_WINDOW_CHARS,
+  REASONING_WINDOW_RETRY_CHARS,
+  advanceReasoningWindow,
   alignWindowStart,
+  freshReasoningWindow,
   isOutsideFence,
   linkDefinitionsBefore,
   nextReasoningWindowStart,
@@ -287,4 +290,89 @@ test("a top-level boundary is still accepted", () => {
   const start = alignWindowStart(text, 100);
   assert.ok(start > 0);
   assert.ok(text.slice(start).startsWith("alpha"));
+});
+
+// ── round three: what the scanner still mistook ─────────────────────
+
+test("container syntax is inactive inside a fence, so `> ```` does not close one", () => {
+  const text = "```\nquoting a doc:\n> ```\n\nstill code\n```\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("still code")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside a fence that quotes a fence", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}\`\`\`\nquoting a doc:\n> \`\`\`\n\nstill code\n\`\`\`\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("quoting"));
+  assert.ok(!text.slice(start).startsWith("still code"), text.slice(start, start + 20));
+});
+
+test("a fence really inside a quote is still closed by its own closer", () => {
+  const text = "> ```py\n> x = 1\n> ```\n\ntail";
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("bracket display math is not a safe place to cut", () => {
+  // lib/latex.ts turns \[ ... \] into a block exactly as it does $$, and it runs AFTER this
+  // slice, so a suffix starting inside one reaches it as an orphan \].
+  const text = "intro\n\n\\[\na &= 1\n\nb &= 2\n\\]\n\ntail";
+  assert.equal(isOutsideFence(text, text.indexOf("b &= 2")), false);
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("the window start never lands inside bracket display math", () => {
+  const pad = "Prose that fills space.\n\n".repeat(30);
+  const text = `${pad}\\[\na &= 1\n\nb &= 2\n\\]\n\ntail`;
+  const start = alignWindowStart(text, text.indexOf("a &= 1"));
+  assert.ok(!text.slice(start).startsWith("b &= 2"), text.slice(start, start + 20));
+});
+
+test("an escaped backslash-bracket is a literal, not an equation", () => {
+  const text = "an array literal \\\\[1, 2\\\\] in prose\n\ntail\n";
+  assert.equal(isOutsideFence(text, text.length), true);
+});
+
+test("a link definition inside a block quote is still carried, without its quote marker", () => {
+  const text = "> [spec]: https://example.com/spec\n\n" + "filler\n\n".repeat(50) + "see [spec]\n";
+  const start = alignWindowStart(text, 100);
+  assert.ok(start > 0);
+  const carried = linkDefinitionsBefore(text, start);
+  assert.ok(carried.includes("[spec]: https://example.com/spec"), carried);
+  assert.ok(!carried.includes(">"), carried);
+});
+
+test("an alignment that found nothing is not retried on the very next chunk", () => {
+  // No boundary is ever safe inside an unterminated fence, and the target only moves forward, so
+  // nothing already scanned can become safe. Retrying per chunk rescans the whole body for the
+  // same answer: measured 1,692ms over a 130,000 character stream.
+  const body = `\`\`\`python\n${"x = 1\n\n".repeat(4000)}`;
+  let state = freshReasoningWindow();
+  let scans = 0;
+  for (let end = 24; end <= body.length; end += 24) {
+    const before = state;
+    state = advanceReasoningWindow(body.slice(0, end), state);
+    if (state !== before || state.retryAt !== before.retryAt) scans += 1;
+  }
+  assert.equal(state.start, 0);
+  // One scan per REASONING_WINDOW_RETRY_CHARS of growth, not one per 24-character chunk.
+  assert.ok(
+    scans < body.length / REASONING_WINDOW_RETRY_CHARS + 5,
+    `${scans} scans over ${body.length} chars`,
+  );
+});
+
+test("backing off never delays the window by more than the retry step", () => {
+  const body = "alpha\n\n".repeat(6000);
+  let state = freshReasoningWindow();
+  let engagedAt = -1;
+  for (let end = 24; end <= body.length; end += 24) {
+    state = advanceReasoningWindow(body.slice(0, end), state);
+    if (state.start > 0 && engagedAt < 0) engagedAt = end;
+  }
+  assert.ok(engagedAt > 0, "the window never engaged at all");
+  const withoutBackoff = REASONING_WINDOW_CHARS * (1 + 0.5);
+  assert.ok(
+    engagedAt <= withoutBackoff + REASONING_WINDOW_RETRY_CHARS + 24,
+    `engaged at ${engagedAt}`,
+  );
 });

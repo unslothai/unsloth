@@ -645,8 +645,8 @@ def print_run(cell: dict) -> None:
     instrumented = any(r.get("instr") for r in rows)
     head = (
         f"{'t(s)':>6} {'busy%':>6} {'fps':>7} {'p50fr':>6} {'p95fr':>7} {'maxLag':>8} "
-        f"{'arr/s':>6} {'sent':>8} {'chars':>8} {'spans':>8} {'elements':>9} "
-        f"{'heapMB':>7} {'smpl(ms)':>9}"
+        f"{'arr/s':>6} {'sent':>8} {'chars':>8} {'spans':>8} {'paneEl':>8} "
+        f"{'allEl':>9} {'outside':>8} {'heapMB':>7} {'smpl(ms)':>9}"
     )
     if instrumented:
         head += f" {'shReads':>9} {'shMs':>8} {'paneRd':>8} {'paneMs':>8} {'moCB':>7}"
@@ -662,6 +662,7 @@ def print_run(cell: dict) -> None:
             f"{r['reasoning_chars']:8,d} {r['reasoning_spans']:8,d} "
             f"{r.get('reasoning_elements', -1):8,d} "
             f"{r['elements']:9,d} {r.get('outside_reasoning', -1):8,d} "
+            f"{(r['heap_mb'] if r.get('heap_mb') is not None else -1):7,d} "
             f"{r['sample_ms']:9.2f}"
         )
         i = r.get("instr")
