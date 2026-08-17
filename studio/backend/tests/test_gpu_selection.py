@@ -335,6 +335,24 @@ class TestResolveGpuUuidMask(_GpuCacheResetMixin, unittest.TestCase):
             # UUID_B is unaffected and still resolves on its own.
             self.assertEqual(nvidia.resolve_gpu_uuid_mask([self._UUID_B]), [1])
 
+    def test_prefix_ambiguous_with_a_mig_enabled_root_stays_unresolved(self):
+        # A normal GPU and a MIG-enabled root share the "GPU-d18a14b7" prefix.
+        # Excluding the MIG root before checking ambiguity would make this
+        # prefix look like it has exactly one candidate (the normal GPU) and
+        # resolve it -- it must instead be treated as ambiguous, the same as
+        # any prefix shared by two non-MIG cards.
+        mig_uuid = "GPU-d18a14b7-aaaa-bbbb-cccc-000000000000"
+        smi_output = "\n".join(
+            [
+                f"0, {self._UUID_A}, 00000000:01:00.0, Disabled",
+                f"1, {mig_uuid}, 00000000:04:00.0, Enabled",
+            ]
+        )
+        with patch("utils.hardware.nvidia.subprocess.run") as mock_run:
+            mock_run.return_value = SimpleNamespace(returncode = 0, stdout = smi_output)
+            result = nvidia.resolve_gpu_uuid_mask(["GPU-d18a14b7"])
+        self.assertIsNone(result)
+
     def test_resolves_a_mixed_numeric_and_uuid_mask(self):
         smi_output = "\n".join(
             [

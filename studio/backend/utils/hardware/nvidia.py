@@ -63,7 +63,7 @@ _uuid_mask_resolution_cache: dict[tuple[str, ...], tuple[Optional[list[int]], fl
 _GPU_UUID_PREFIX = "GPU-"
 
 
-def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
+def _query_uuid_to_ordinal() -> Optional[dict[str, tuple[int, bool]]]:
     try:
         result = subprocess.run(
             [
@@ -125,23 +125,22 @@ def _query_uuid_to_ordinal() -> Optional[dict[str, int]]:
             )
             return None
 
-    uuid_to_ordinal: dict[str, int] = {}
+    # (index, is_mig_enabled) per UUID, for every row -- including MIG-enabled
+    # roots. A MIG-enabled root is never itself a valid resolution (CUDA
+    # exposes its MIG instances instead of the whole card), but it must still
+    # be visible during *ambiguity* checking below: excluding it here first
+    # would let a prefix shared with a MIG root look falsely unambiguous.
+    uuid_info: dict[str, tuple[int, bool]] = {}
     for idx, uuid, _bus_id, mig_mode in rows:
-        # A MIG-enabled root GPU's UUID isn't a normal selectable compute
-        # device -- CUDA exposes its MIG instances instead of the whole card.
-        # Leave it out of the map so it fails resolution the same way an
-        # actual MIG instance UUID already does, rather than resolving to an
-        # index that silently selects a partitioned view of the card.
-        if mig_mode == "Enabled":
-            continue
-        uuid_to_ordinal[uuid] = idx
-    return uuid_to_ordinal
+        uuid_info[uuid] = (idx, mig_mode == "Enabled")
+    return uuid_info
 
 
-def _resolve_uuid_token(token: str, uuid_to_ordinal: dict[str, int]) -> Optional[int]:
-    exact = uuid_to_ordinal.get(token)
+def _resolve_uuid_token(token: str, uuid_info: dict[str, tuple[int, bool]]) -> Optional[int]:
+    exact = uuid_info.get(token)
     if exact is not None:
-        return exact
+        idx, is_mig_enabled = exact
+        return None if is_mig_enabled else idx
     # NVIDIA accepts an unambiguous UUID prefix (e.g. "GPU-abcdef12") as a
     # device identifier. Require the token to actually look like a GPU UUID
     # before attempting a prefix match -- otherwise a malformed token like
@@ -149,13 +148,13 @@ def _resolve_uuid_token(token: str, uuid_to_ordinal: dict[str, int]) -> Optional
     # on a single-GPU host and get treated as a valid, intentional selector.
     if not (token.startswith(_GPU_UUID_PREFIX) and len(token) > len(_GPU_UUID_PREFIX)):
         return None
-    # A prefix shared by more than one card can't be trusted either way.
-    prefix_matches = [
-        ordinal for uuid, ordinal in uuid_to_ordinal.items() if uuid.startswith(token)
-    ]
-    if len(prefix_matches) == 1:
-        return prefix_matches[0]
-    return None
+    # Checked against every root UUID, MIG-enabled or not -- a prefix shared
+    # by more than one card, MIG or otherwise, can't be trusted either way.
+    prefix_matches = [uuid for uuid in uuid_info if uuid.startswith(token)]
+    if len(prefix_matches) != 1:
+        return None
+    idx, is_mig_enabled = uuid_info[prefix_matches[0]]
+    return None if is_mig_enabled else idx
 
 
 def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
@@ -190,8 +189,8 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
         if time.monotonic() - cached_at < ttl:
             return value
 
-    uuid_to_ordinal = _query_uuid_to_ordinal()
-    if uuid_to_ordinal is None:
+    uuid_info = _query_uuid_to_ordinal()
+    if uuid_info is None:
         _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
         return None
 
@@ -202,7 +201,7 @@ def resolve_gpu_uuid_mask(tokens: list[str]) -> Optional[list[int]]:
             continue
         except ValueError:
             pass
-        idx = _resolve_uuid_token(token, uuid_to_ordinal)
+        idx = _resolve_uuid_token(token, uuid_info)
         if idx is None:
             _uuid_mask_resolution_cache[cache_key] = (None, time.monotonic())
             return None
