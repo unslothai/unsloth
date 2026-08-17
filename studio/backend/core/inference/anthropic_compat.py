@@ -843,7 +843,13 @@ class AnthropicPassthroughEmitter:
     response back to Anthropic format without executing anything.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, reasoning_as_thinking: bool = True) -> None:
+        # When thinking is effectively off, llama-server's format parser can
+        # still shunt a literal <think> example the model was asked to produce
+        # into reasoning_content; reconstruct it as visible text instead of a
+        # typed thinking block.
+        self._reasoning_as_thinking = reasoning_as_thinking
+        self._reasoning_text_open = False
         self.block_index: int = -1
         self._current_block_type: Optional[str] = None  # "text" | "tool_use" | None
         self._tool_call_states: dict = {}  # delta index -> {block_index, id, name}
@@ -928,20 +934,31 @@ class AnthropicPassthroughEmitter:
         # trace, so the model appears not to think at all.
         reasoning = delta.get("reasoning_content")
         if reasoning:
-            if self._current_block_type != "thinking":
-                if self._current_block_type is not None:
-                    events.append(self._close_current_block())
-                events.extend(self._open_thinking_block())
-            events.append(
-                build_anthropic_sse_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": self.block_index,
-                        "delta": {"type": "thinking_delta", "thinking": reasoning},
-                    },
+            if not self._reasoning_as_thinking:
+                prefix = "" if self._reasoning_text_open else "<think>"
+                self._reasoning_text_open = True
+                events.extend(self._emit_text_delta(prefix + reasoning))
+            else:
+                if self._current_block_type != "thinking":
+                    if self._current_block_type is not None:
+                        events.append(self._close_current_block())
+                    events.extend(self._open_thinking_block())
+                events.append(
+                    build_anthropic_sse_event(
+                        "content_block_delta",
+                        {
+                            "type": "content_block_delta",
+                            "index": self.block_index,
+                            "delta": {"type": "thinking_delta", "thinking": reasoning},
+                        },
+                    )
                 )
-            )
+        elif self._reasoning_text_open and (
+            delta.get("content") or delta.get("tool_calls") or finish_reason
+        ):
+            # Reconstructed literal block ends where the answer resumes.
+            self._reasoning_text_open = False
+            events.extend(self._emit_text_delta("</think>"))
 
         # ── Structured tool calls take precedence over healing ──
         # Grammar mode worked: flush anything the healer held (it preceded the
@@ -1032,6 +1049,9 @@ class AnthropicPassthroughEmitter:
 
     def finish(self) -> list[str]:
         events: list[str] = []
+        if self._reasoning_text_open:
+            self._reasoning_text_open = False
+            events.extend(self._emit_text_delta("</think>"))
         if self._healer is not None:
             # Last-chance heal of any held residue (e.g. an unclosed tool block).
             for kind, value in self._healer.finalize():

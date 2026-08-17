@@ -1678,6 +1678,28 @@ class TestReasoningContentReachesTheClient:
         blob = "".join(emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "only"}}]}))
         assert "thinking_delta" in blob and "only" in blob
 
+    def test_stream_reasoning_reconstructed_as_text_when_thinking_off(self):
+        """Thinking effectively off: llama-server may still shunt a literal
+        <think> example into reasoning_content; the client asked for those
+        bytes, so they come back as text with the tags restored."""
+        from core.inference.anthropic_compat import AnthropicPassthroughEmitter
+
+        emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = False)
+        emitter.start("msg_1", "test-model")
+        out = emitter.feed_chunk({"choices": [{"delta": {"reasoning_content": "like this"}}]})
+        out += emitter.feed_chunk({"choices": [{"delta": {"content": " is the syntax"}}]})
+        out += emitter.finish()
+        blob = "".join(out)
+
+        assert "thinking_delta" not in blob
+        text = "".join(
+            json.loads(stripped[len("data: ") :])["delta"].get("text", "")
+            for line in out
+            for stripped in (part.strip() for part in line.split("\n"))
+            if stripped.startswith("data: ") and '"text_delta"' in stripped
+        )
+        assert text == "<think>like this</think> is the syntax"
+
     def test_non_streaming_builds_thinking_block(self):
         from models.inference import (
             AnthropicMessagesResponse,

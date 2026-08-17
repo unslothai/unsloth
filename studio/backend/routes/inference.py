@@ -20338,6 +20338,7 @@ async def anthropic_messages(
                     cancel_id = payload.cancel_id,
                     disable_parallel_tool_use = _disable_parallel,
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
+                    parse_think = _think_parsing_expected(llama_backend, payload),
                     **_anthropic_reasoning_args(payload),
                 )
             )
@@ -20362,6 +20363,7 @@ async def anthropic_messages(
                 nudge_tool_calls = payload.nudge_tool_calls,
                 request = request,
                 cancel_event = cancel_event,
+                parse_think = _think_parsing_expected(llama_backend, payload),
                 **_anthropic_reasoning_args(payload),
             )
         )
@@ -21363,6 +21365,7 @@ async def _anthropic_passthrough_stream(
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
+    parse_think = True,
 ):
     """Streaming client-side pass-through: forward tools to llama-server and
     translate its stream to Anthropic SSE without executing anything."""
@@ -21424,7 +21427,7 @@ async def _anthropic_passthrough_stream(
         # registered until restart, 409-ing every swap. Ahead of the first yield, so
         # the opening lines are covered as well.
         _tracker.__enter__()
-        emitter = AnthropicPassthroughEmitter()
+        emitter = AnthropicPassthroughEmitter(reasoning_as_thinking = parse_think)
         # Promote text-form tool calls (declared client tools only) into tool_use blocks;
         # verbatim when healing is off or no tools. tool_choice is already OpenAI-shaped.
         # Sanitized catalog, not the caller's: a tool dropped for unsafe markup never reached
@@ -21616,6 +21619,7 @@ async def _anthropic_passthrough_non_streaming(
     enable_thinking = None,
     reasoning_effort = None,
     preserve_thinking = None,
+    parse_think = True,
 ):
     """Non-streaming client-side pass-through.
 
@@ -21747,7 +21751,14 @@ async def _anthropic_passthrough_non_streaming(
         # never thought.
         reasoning = message.get("reasoning_content") or ""
         if reasoning.strip():
-            content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
+            if parse_think:
+                content_blocks.append(AnthropicResponseThinkingBlock(thinking = reasoning))
+            else:
+                # Thinking effectively off: the parser shunted a literal
+                # example into reasoning_content; reconstruct it as text.
+                content_blocks.append(
+                    AnthropicResponseTextBlock(text = f"<think>{reasoning}</think>")
+                )
         if healed_events:
             emitted_tool_uses = 0
             for kind, value in healed_events:
