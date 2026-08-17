@@ -100,7 +100,9 @@ def test_an_empty_reply_is_a_failure_in_either_run(script):
         script.check("second", clean, ["", "b", "paris", "paris"])
     # The exact pair the stripped comparison is blind to.
     with pytest.raises(AssertionError, match = "empty turn"):
-        script.check("whitespace vs nothing", ["\n", "b", "paris", "paris"], ["", "b", "paris", "paris"])
+        script.check(
+            "whitespace vs nothing", ["\n", "b", "paris", "paris"], ["", "b", "paris", "paris"]
+        )
 
 
 def test_history_grounding_is_still_checked(script):
