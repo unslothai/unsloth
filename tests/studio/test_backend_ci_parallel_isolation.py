@@ -63,6 +63,20 @@ def _over_the_repo_root(command: str) -> bool:
     return REPO_ROOT_MARKER in command
 
 
+# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and
+# running it again serially is two edits held together by nothing, and dropping the second
+# is silent: the job stays green while the tests stop running.
+BACKEND_ISOLATED = [
+    ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
+]
+
+BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
+
+
+def _over_the_backend(command: str) -> bool:
+    return BACKEND_MARKER in command
+
+
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
 def test_an_isolated_path_is_ignored_by_every_parallel_pytest_run(path, reason):
     for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8")):
@@ -127,4 +141,39 @@ def test_the_backend_matrix_still_runs_in_parallel():
     assert " -n " in f" {backend[0]} ", (
         f"the backend matrix leg is running serially again, which costs about 17 minutes "
         f"per leg on every pull request and every push to main: {backend[0]}"
+    )
+
+
+@pytest.mark.parametrize("path, reason", BACKEND_ISOLATED, ids = [p for p, _ in BACKEND_ISOLATED])
+def test_a_backend_isolated_path_is_ignored_by_the_parallel_run(path, reason):
+    """Relative timing cannot survive four workers on four vCPUs.
+
+    Observed on staging: the 3.10 leg reported "early markup cost 1.354s against the
+    reference's 0.854s" while 3.13 passed the same commit. One side of the ratio was
+    descheduled, not slower.
+    """
+    parallel = [
+        command
+        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        if " -n " in f" {command} " and _over_the_backend(command)
+    ]
+    assert parallel, "the backend parallel run is gone or was renamed past this scan"
+    assert f"--ignore={path}" in parallel[0], (
+        f"{path} ({reason}) is back in the backend parallel run, where its measurements "
+        f"compare a descheduled worker against an undescheduled one: {parallel[0]}"
+    )
+
+
+@pytest.mark.parametrize("path, reason", BACKEND_ISOLATED, ids = [p for p, _ in BACKEND_ISOLATED])
+def test_a_backend_isolated_path_still_runs_serially(path, reason):
+    """Ignoring it is half the change; without this it runs nowhere and the job is green."""
+    serial = [
+        command
+        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        if " -n " not in f" {command} "
+        and re.search(rf"(?<![\w/]){re.escape(path)}(?![\w/])", command)
+    ]
+    assert serial, (
+        f"{path} is ignored from the backend parallel run ({reason}) and no serial step "
+        f"runs it, so it runs nowhere in {WORKFLOW.name} while the job stays green."
     )

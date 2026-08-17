@@ -188,10 +188,25 @@ jobs:
         # Unit tests, so this is CPU and not memory bound: the job installs --no-torch
         # style CPU wheels and loads no model, unlike the inference smoke workflows
         # where four workers on one runner would not fit.
+        #
+        # test_streaming_stripper is ignored here and run serially below, for the reason
+        # repo-cpu-tests already isolates load_freeze: it compares its own measured cost
+        # against a reference implementation timed in the same process, and a worker
+        # descheduled by the other three inflates one side of that ratio. Observed on
+        # staging, where the 3.10 leg reported "early markup cost 1.354s against the
+        # reference's 0.854s" while 3.13 passed the same commit.
         run: |
           python -m pytest tests/ -q --tb=short -n 4 \
             --ignore=tests/test_studio_api.py \
+            --ignore=tests/test_streaming_stripper.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
+
+      - name: Backend tests that cannot share a worker
+        working-directory: studio/backend
+        # Relative timing against a reference measured in the same process. Serial, so the
+        # comparison is between two implementations rather than between two schedulings.
+        run: |
+          python -m pytest tests/test_streaming_stripper.py -q --tb=short
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by
