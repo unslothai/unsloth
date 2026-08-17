@@ -129,7 +129,6 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
         # read-only and still does not load Zoo.
         try:
             from utils.hf_xet_fallback import free_ram_pressure_reason
-
             pressure = free_ram_pressure_reason()
         except Exception:
             pressure = None
