@@ -54,7 +54,7 @@ def test_the_suite_actually_sets_it_before_the_app_runs():
         f"{SUITE.name} no longer installs an init script, so the override cannot be in "
         f"place before the hook mounts and reads it"
     )
-    seed = suite[suite.index("seed_js = ("):suite.index("if PLAYWRIGHT_BROWSER")]
+    seed = suite[suite.index("seed_js = (") : suite.index("if PLAYWRIGHT_BROWSER")]
     assert "E2E_DELAY_GLOBAL" in seed, (
         f"the override moved out of seed_js in {SUITE.name}. seed_js is what is handed to "
         f"add_init_script; anywhere else runs after the app has already armed the timer."
@@ -74,7 +74,7 @@ def test_production_keeps_the_five_second_delay():
         "must not shorten the real one: that delay exists to keep the request off the "
         "critical path while the app is starting."
     )
-    assert "typeof window === \"undefined\"" in hook, (
+    assert 'typeof window === "undefined"' in hook, (
         "the override no longer guards against a server-side render, where there is no "
         "window to read it from"
     )
