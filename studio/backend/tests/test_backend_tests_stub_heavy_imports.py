@@ -466,7 +466,7 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
     functions = _module_functions(tree)
     first: dict[str, int] = {}
     for statement in tree.body:
-        for node in _import_time_nodes(statement):
+        for node in _reachable_import_time_nodes(statement):
             if isinstance(node, ast.Call):
                 name = _callee_name(node)
                 if name in functions and node.lineno < first.get(name, node.lineno + 1):
@@ -492,6 +492,23 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
                         first[callee] = line
                         changed = True
     return first
+
+
+def _reachable_nodes(node: ast.AST):
+    """``node`` and every descendant on a path the interpreter can take.
+
+    Unlike ``_reachable_import_time_nodes`` this does NOT stop at a ``def``: a call in
+    a function body runs when the test runs. What it does share is the pruning, so a
+    call under ``if False:`` or ``if TYPE_CHECKING:`` is not reported at all, wherever
+    it is written.
+    """
+    if isinstance(node, ast.If) and _constant_test(node) is not None:
+        for child in node.body if _constant_test(node) else node.orelse:
+            yield from _reachable_nodes(child)
+        return
+    yield node
+    for child in ast.iter_child_nodes(node):
+        yield from _reachable_nodes(child)
 
 
 def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
@@ -533,7 +550,14 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
       stub and call the file safe while it still breaks collection.
     """
     bare_names = _importorskip_bare_names(tree)
-    module_scope = {id(node) for statement in tree.body for node in _import_time_nodes(statement)}
+    # Reachability-aware on both counts. A call under `if False:` or `if TYPE_CHECKING:`
+    # never runs, so it is neither an import-time call nor a call at all, and reporting
+    # it failed a file that type-checks or deliberately disables an import. Reported on
+    # this PR.
+    module_scope = {
+        id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
+    }
+    reachable = {id(node) for node in _reachable_nodes(tree)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
     # A call inside a def is deferred only if nothing runs that def during import. Where
     # the module body calls it, the body runs at collection like any other import-time
@@ -548,7 +572,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     }
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or id(node) not in reachable:
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
@@ -1115,6 +1139,36 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert _offender_free(else_of_false)
+
+    # A call under a branch the interpreter never takes is not a call. Reporting it
+    # failed a file that only type-checks the import, or deliberately disables it.
+    # Reported on this PR.
+    type_checking_call = (
+        "import pytest\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert calls(type_checking_call) == []
+    assert safe(type_checking_call)
+    disabled_call = (
+        "import pytest\n"
+        "if False:\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert calls(disabled_call) == []
+    assert safe(disabled_call)
+    # And a helper invoked only from such a branch is not called at import time either,
+    # so a stub below it is still in time for the lazy call that does run.
+    helper_called_only_when_disabled = (
+        "import pytest, sys\n"
+        "def _probe():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "if False:\n"
+        "    _probe()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(helper_called_only_when_disabled)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
