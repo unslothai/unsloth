@@ -655,6 +655,50 @@ def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, mo
     assert seen["branch_messages"] == branch
 
 
+def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch):
+    """Dropping the lot is the wrong answer when three of four chunks would fit.
+
+    A full top-K of long archived turns lands just over the reserve once the wrappers
+    are priced, which is the common case on exactly the long conversations this feature
+    exists for, so an all-or-nothing check disables the forced retrieval there.
+    """
+    from core.inference import llama_cpp
+
+    conversation = [{"role": "user", "content": "what was that pelicans limerick"}]
+    asked = []
+
+    def build(
+        _conversation,
+        _thread_id,
+        *,
+        style,
+        top_k,
+        branch_messages = None,
+    ):
+        asked.append(top_k)
+        # 1400 characters per requested chunk, so only the smallest k fits the budget.
+        return {"prefix": "R" * (1400 * top_k), "messages": [], "events": [], "sources": top_k}
+
+    monkeypatch.setattr(tools_mod, "build_conversation_recall", build)
+    chars = lambda messages: sum(len(m.get("content") or "") for m in messages)
+
+    out = llama_cpp._archive_and_recall(
+        conversation,
+        conversation,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        # Room for four chunks by the estimate, but only one once actually counted.
+        recall_budget_tokens = 2500,
+        count_tokens = chars,
+    )
+
+    assert asked == [4, 2, 1]
+    assert out["recalled"] is True
+    assert out["counts"]["recalled_chunks"] == 1
+    assert chars(out["conversation"]) > chars(conversation)
+
+
 def test_recall_is_dropped_when_the_real_prompt_exceeds_the_budget(archived, monkeypatch):
     """The chunk arithmetic is an estimate; the tokenizer is not.
 

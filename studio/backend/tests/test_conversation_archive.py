@@ -362,6 +362,43 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     assert survived is not None and "KEEPME-1111" in survived[0]
 
 
+def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
+    """render_turn caps a tool result and marks the cut with a truncation marker.
+
+    That result is ONE appended string containing many newlines, so only its first line
+    carries the "tool result:" label. Every continuation line took the full-string path,
+    including the last one, which is the only line the marker is on, and nothing in a
+    real transcript ends in that marker: every archived tool turn over the cap was
+    rejected as rolled back.
+    """
+    body = "opening line TOOLWALL-6060\n" + ("filler output line\n" * 400) + "trailing line"
+    group = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"cmd": "cat log"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": body},
+    ]
+    text = conversation_archive.render_turn(group)
+    assert text.endswith("...")
+    assert len(text.splitlines()) > 100
+
+    transcript = conversation_archive.branch_transcript(group)
+
+    assert conversation_archive._on_live_branch(text, transcript) is True
+    # And an edit to the part that WAS archived still retires the copy.
+    edited = conversation_archive.branch_transcript(
+        [
+            group[0],
+            {**group[1], "content": body.replace("opening line", "rewritten line")},
+        ]
+    )
+    assert conversation_archive._on_live_branch(text, edited) is False
+
+
 def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
     """One over-fetch is not enough when the abandoned branch is long.
 

@@ -633,53 +633,67 @@ def _archive_and_recall(
             result["counts"] = counts
             return result
 
-        recall = build_conversation_recall(
-            conversation,
-            thread_id,
-            style = style,
-            top_k = top_k,
-            branch_messages = branch_messages,
-        )
-        if not recall:
-            result["counts"] = counts
-            return result
+        # An EXACT recount decides whether a recall is affordable, because the chunk
+        # arithmetic above is an estimate twice over: CHUNK_TOKENS is an embedding-token
+        # limit rather than the chat template's cost for the same text, and neither it
+        # nor the budget accounts for the <recalled_conversation> or synthetic tool
+        # wrappers around it. Overshooting eats the reply's reserve first and the window
+        # after that, which is the failure this whole path exists to prevent.
+        #
+        # So when the recount says no, ask for FEWER turns rather than giving up. With
+        # the shipped defaults a full top-K of long turns lands just over the reserve
+        # once wrapped, and dropping the lot there would disable the one retrieval this
+        # feature forces, on exactly the long conversations it exists for. Halving is
+        # bounded (4 -> 2 -> 1), and each attempt costs one small per-thread query.
+        attempts = []
+        attempt_k = top_k
+        while True:
+            attempts.append(attempt_k)
+            if attempt_k <= 1:
+                break
+            attempt_k = max(1, attempt_k // 2)
 
-        if style == "inline":
-            prefix = recall.get("prefix") or ""
-            updated = list(conversation)
-            for index in range(len(updated) - 1, -1, -1):
-                if updated[index].get("role") == "user":
-                    updated[index] = _prefix_user_text(updated[index], prefix)
-                    break
-            else:
+        for index, k in enumerate(attempts):
+            recall = build_conversation_recall(
+                conversation,
+                thread_id,
+                style = style,
+                top_k = k,
+                branch_messages = branch_messages,
+            )
+            if not recall:
                 result["counts"] = counts
                 return result
-            result["conversation"] = updated
-        else:
-            result["conversation"] = list(conversation) + list(recall["messages"])
-            result["events"] = list(recall["events"])
 
-        # An EXACT recount, because the chunk arithmetic above is an estimate twice
-        # over: CHUNK_TOKENS is an embedding-token limit rather than the chat template's
-        # cost for the same text, and neither it nor the budget accounts for the
-        # <recalled_conversation> or synthetic tool wrappers around it. Overshooting eats
-        # the reply's reserve first and the window after that, which is the failure this
-        # whole path exists to prevent, so the recall is dropped rather than guessed at.
-        if count_tokens is not None and recall_budget_tokens > 0:
-            try:
-                grew = count_tokens(result["conversation"]) - count_tokens(conversation)
-            except Exception:
-                grew = None
+            candidate = _inject_recall(conversation, recall, style)
+            if candidate is None:
+                result["counts"] = counts
+                return result
+
+            grew = None
+            if count_tokens is not None and recall_budget_tokens > 0:
+                try:
+                    grew = count_tokens(candidate["conversation"]) - count_tokens(conversation)
+                except Exception:
+                    grew = None
             if grew is not None and grew > recall_budget_tokens:
                 logger.info(
-                    "conversation_recall.dropped_over_budget grew=%s budget=%s",
+                    "conversation_recall.over_budget grew=%s budget=%s top_k=%s",
                     grew,
                     recall_budget_tokens,
+                    k,
                 )
-                result["conversation"] = conversation
-                result["events"] = []
+                if index + 1 < len(attempts):
+                    continue
+                logger.info(
+                    "conversation_recall.dropped_over_budget budget=%s", recall_budget_tokens
+                )
                 result["counts"] = counts
                 return result
+
+            result["conversation"] = candidate["conversation"]
+            result["events"] = candidate["events"]
+            break
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
         result["counts"] = counts
@@ -687,6 +701,24 @@ def _archive_and_recall(
     except Exception as exc:
         logger.warning("Could not archive or recall compacted turns: %s", exc)
     return result
+
+
+def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Optional[dict]:
+    """The conversation with ``recall`` added, or None if there was nowhere to put it."""
+    if style == "inline":
+        prefix = recall.get("prefix") or ""
+        updated = list(conversation)
+        for index in range(len(updated) - 1, -1, -1):
+            if updated[index].get("role") == "user":
+                updated[index] = _prefix_user_text(updated[index], prefix)
+                break
+        else:
+            return None
+        return {"conversation": updated, "events": []}
+    return {
+        "conversation": list(conversation) + list(recall["messages"]),
+        "events": list(recall["events"]),
+    }
 
 
 # A transport error can arrive before the child is reapable; a request path cannot

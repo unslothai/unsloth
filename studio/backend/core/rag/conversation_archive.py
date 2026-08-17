@@ -47,6 +47,10 @@ _SKIP_ROLES = frozenset({"system", "developer"})
 # retrieved text back into the index it came from.
 _INJECTED_CALL_PREFIXES = ("rag_auto_", "conv_recall_")
 
+# What render_turn appends where it cut something short. Named because the branch
+# check has to recognise it: a probe carrying this marker can only ever be a PREFIX of
+# the live text, never equal to it.
+_TRUNCATION_MARKER = " ..."
 _MAX_TOOL_RESULT_CHARS = 4000
 # Tool arguments are usually short (a path, a command, a query). The cap is only
 # there so a pathological blob cannot dominate the archived turn.
@@ -128,7 +132,7 @@ def render_turn(group: list[dict]) -> str:
                 name = str(function.get("name") or "tool")
                 arguments = str(function.get("arguments") or "").strip()
                 if len(arguments) > _MAX_TOOL_ARGS_CHARS:
-                    arguments = arguments[:_MAX_TOOL_ARGS_CHARS] + " ..."
+                    arguments = arguments[:_MAX_TOOL_ARGS_CHARS] + _TRUNCATION_MARKER
                 lines.append(
                     f"assistant called {name}: {arguments}"
                     if arguments
@@ -143,7 +147,7 @@ def render_turn(group: list[dict]) -> str:
             # A tool result can be enormous and is the least useful thing to quote back
             # verbatim; keep enough to be searchable without bloating the index.
             if len(text) > _MAX_TOOL_RESULT_CHARS:
-                text = text[:_MAX_TOOL_RESULT_CHARS] + " ..."
+                text = text[:_MAX_TOOL_RESULT_CHARS] + _TRUNCATION_MARKER
             lines.append(f"tool result: {text}")
         else:
             lines.append(f"{role or 'message'}: {text}")
@@ -377,14 +381,6 @@ def content_on_branch(content, transcript: Optional[str]) -> bool:
     return not text or text in transcript
 
 
-_TOOL_RESULT_PROBE_CHARS = 160
-
-
-def _is_tool_line(line: str) -> bool:
-    """A rendered tool-result line, which render_turn may have truncated."""
-    return line.lower().startswith("tool result:")
-
-
 _ROLE_PREFIX = re.compile(
     r"^(?:user|assistant|system|developer|tool result|message):\s*", re.IGNORECASE
 )
@@ -410,12 +406,19 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     probes = []
     for line in (text or "").splitlines():
         stripped = _normalise(_TOOL_CALL_PREFIX.sub("", _ROLE_PREFIX.sub("", line)))
-        # The WHOLE line for ordinary turns: a prefix probe cannot see an edit past its
-        # cut-off, so rewriting the tail of a long answer left the stale copy eligible.
-        # Tool results are the exception -- render_turn truncates them with a marker, so
-        # the archived copy is deliberately not the stored one and only a prefix can
-        # match. That truncation is bounded, so the compared prefix is long either way.
-        probes.append(stripped[:_TOOL_RESULT_PROBE_CHARS] if _is_tool_line(line) else stripped)
+        # The WHOLE line, except where render_turn cut something short. A prefix probe
+        # cannot see an edit past its cut-off, so rewriting the tail of a long answer
+        # would leave the stale copy eligible.
+        #
+        # Keying off the marker rather than off a "tool result:" label matters: a long
+        # tool result is ONE appended string containing many newlines, so only its first
+        # line carries that label. Every continuation line took the full-string path,
+        # including the last one, which is the only line the marker is actually on -- and
+        # since nothing in a real transcript ends in that marker, every archived tool
+        # turn over the cap was rejected as rolled back. Reproduced on a 400-line result.
+        if stripped.endswith(_TRUNCATION_MARKER.strip()):
+            stripped = stripped[: -len(_TRUNCATION_MARKER.strip())].strip()
+        probes.append(stripped)
     probes = [probe for probe in probes if probe]
     if not probes:
         return False
