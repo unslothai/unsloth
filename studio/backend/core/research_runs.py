@@ -1267,9 +1267,16 @@ class ResearchSupervisor:
             )
             if model_timeout > 0:
                 first_output_budget = min(first_output_budget, model_timeout)
-            # Unlimited only removes the total wall-clock deadline. HTTPX still needs a finite
-            # connect/header deadline, before the stream's first-output guard can take over.
-            timeout = httpx.Timeout(model_timeout or first_output_budget)
+            # Unlimited only removes the total wall-clock deadline. Keep connection and response
+            # headers bounded, but never let HTTPX's body-read timeout undercut the idle guard.
+            timeout = (
+                httpx.Timeout(model_timeout)
+                if model_timeout
+                else httpx.Timeout(
+                    first_output_budget,
+                    read = max(first_output_budget, _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS),
+                )
+            )
             loop = asyncio.get_running_loop()
 
             def semantic_deadline() -> tuple[float, type[BaseException]] | None:

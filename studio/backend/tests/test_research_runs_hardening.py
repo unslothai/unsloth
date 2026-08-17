@@ -802,15 +802,19 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
     )
 
 
-def test_unlimited_stream_keeps_a_finite_httpx_header_timeout(monkeypatch):
+def test_unlimited_stream_keeps_header_and_idle_timeouts(monkeypatch):
     timeouts: list[httpx.Timeout] = []
     _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
     supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 10
 
-    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert asyncio.run(
+        supervisor._stream_completion(run, [{"role": "user"}], report_progress = False)
+    ) == ("report", "", "stop", None)
     assert len(timeouts) == 1
-    assert timeouts[0].connect == research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-    assert timeouts[0].read == research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+    assert timeouts[0].connect == 10
+    assert timeouts[0].read == research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
 
 
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
