@@ -167,7 +167,9 @@ def _run_capturing_bytes(
     # had written it and before its pwsh child opened it. pwsh is installed on
     # ubuntu-latest, so these do not skip there and would race for real.
     tmp = (
-        REPO_ROOT / "tests" / "python"
+        REPO_ROOT
+        / "tests"
+        / "python"
         / f"_{stem}_probe_{int(use_command_shape)}_{uuid.uuid4().hex}.ps1"
     )
     tmp.write_text(script, encoding = "utf-8")
