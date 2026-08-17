@@ -34,6 +34,7 @@ import {
 } from "react";
 
 import {
+  type AnchorSample,
   type MountWindow,
   anchorCorrection,
   initialWindow,
@@ -104,6 +105,19 @@ export async function completeProgressiveMounts(): Promise<void> {
 /** True while any thread is still widening. Exposed for tests and diagnostics. */
 export function hasPendingProgressiveMounts(): boolean {
   return activeCompleters.size > 0;
+}
+
+/**
+ * The anchor row's position, measured against its scroll container rather than against the window,
+ * so that the container moving does not read as content inserted above it. See AnchorSample.
+ */
+function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
+  return {
+    viewportOffset:
+      element.getBoundingClientRect().top -
+      viewport.getBoundingClientRect().top,
+    scrollTop: viewport.scrollTop,
+  };
 }
 
 function useProgressiveMountWindow(
@@ -197,11 +211,7 @@ function useProgressiveMountWindow(
     const first = viewport?.querySelector("[data-role]") ?? null;
     anchorRef.current =
       viewport && first
-        ? {
-            element: first,
-            viewportOffset: first.getBoundingClientRect().top,
-            scrollTop: viewport.scrollTop,
-          }
+        ? { element: first, ...sampleAnchor(viewport, first) }
         : null;
   }, [viewportRef]);
 
@@ -234,10 +244,10 @@ function useProgressiveMountWindow(
     if (!captured || !viewport || !captured.element.isConnected) return;
     // Which space this is measured in, and whether a frame the reader scrolled through can be
     // dropped, both depend on whether the engine already moved scrollTop. See anchorCorrection.
-    const shift = anchorCorrection(captured, {
-      viewportOffset: captured.element.getBoundingClientRect().top,
-      scrollTop: viewport.scrollTop,
-    });
+    const shift = anchorCorrection(
+      captured,
+      sampleAnchor(viewport, captured.element),
+    );
     // Called on EVERY widening commit, including the ones with nothing to apply: a zero
     // correction still has to resync the hook's scroll bookkeeping past the offset native scroll
     // anchoring moved, or the scroll event that anchoring fires arrives as a downward scroll the
@@ -294,17 +304,27 @@ function useProgressiveMountWindow(
   // just asked for: measured, it resolved with 16 of 220 rows still in the document on 4 of 5
   // WebKit runs and 2 of 5 Firefox runs, and held on Chromium only because the widening commit
   // happened to block the frame loop.
-  useEffect(() => {
-    if (mountWindow != null || completionWaiters.current.length === 0) return;
+  const flushCompletionWaiters = useCallback(() => {
     const waiters = completionWaiters.current;
     completionWaiters.current = [];
+    for (const resolve of waiters) resolve();
+  }, []);
+
+  useEffect(() => {
+    if (mountWindow != null || completionWaiters.current.length === 0) return;
+    // The ref is not emptied until the frame actually fires, so a cancelled frame leaves the
+    // waiters to be settled by the next commit or by the unmount below rather than dropping them.
     const frame = requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        for (const resolve of waiters) resolve();
-      }),
+      requestAnimationFrame(flushCompletionWaiters),
     );
     return () => cancelAnimationFrame(frame);
-  }, [mountWindow]);
+  }, [mountWindow, flushCompletionWaiters]);
+
+  // A thread that goes away settles anything still waiting on it. Without this, a DOM capture that
+  // raced a thread switch or a navigation waited forever: the layout effect's cleanup removes the
+  // completer from activeCompleters but the promise it already handed out was only ever resolved
+  // by the effect above, which does not run again on an unmounted component.
+  useEffect(() => flushCompletionWaiters, [flushCompletionWaiters]);
 
   return mountWindow;
 }

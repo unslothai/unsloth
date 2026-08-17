@@ -17,6 +17,10 @@ correct build holds it still; a broken one shows it walking.
 Not a gate. Prints and exits 0 on any measurement; exits non-zero only when the fixture did not
 land, which would mean the numbers describe nothing.
 
+It needs #9016's heavy-thread harness, which is not merged, so on this branch it exits with a
+message naming the three files it is missing rather than running. That is the same dependency
+every measurement in this PR has.
+
     SMOKE_PORT=5480 python tests/studio/probe_progressive_anchor.py
 """
 
@@ -30,7 +34,21 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
+try:
+    from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
+except ModuleNotFoundError as exc:  # pragma: no cover - the message IS the behaviour
+    # This probe drives #9016's fixture page, and #9016 is not merged, so on this branch
+    # `playwright_heavy_thread.py`, `smoke-heavy-thread.html` and `smoke-heavy-thread-main.tsx`
+    # are all absent and this import is where that becomes visible. Say so instead of raising a
+    # bare ModuleNotFoundError, and do not vendor a copy of the harness to paper over it: two
+    # copies of a measurement harness is how the two copies stop agreeing, and the numbers this
+    # probe produces are only comparable to #9016's while there is exactly one of it.
+    raise SystemExit(
+        "probe_progressive_anchor needs #9016's heavy-thread harness, which is not on this "
+        "branch yet: tests/studio/playwright_heavy_thread.py plus "
+        "studio/frontend/smoke-heavy-thread.{html,tsx}. Check out that branch, or copy those "
+        "three files in, and run this again."
+    ) from exc
 from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,

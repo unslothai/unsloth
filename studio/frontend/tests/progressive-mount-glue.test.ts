@@ -134,27 +134,42 @@ test("the widening step is deferred and transition-wrapped", () => {
   assert.match(GLUE, /cancelAnimationFrame\(frame\)/);
 });
 
-test("the shift is measured in viewport space, as a residual", () => {
-  // This one has a bug behind it rather than a theory. Chromium implements CSS scroll anchoring
-  // and this viewport does not opt out, so on a widening commit the browser has usually ALREADY
-  // moved scrollTop by the inserted height. A document-space delta reports the full insertion
-  // regardless, so applying it doubles the browser's own correction: measured, on a reader parked
-  // 4000px above the bottom of a 300K thread, it walked scrollTop 22,897 -> 117,104 across seven
-  // widenings and dumped them at the bottom. Viewport space measures the residual, which was
-  // single-digit pixels on the same run.
+test("the anchor is measured against its scroll container, not against the window", () => {
+  // getBoundingClientRect().top is measured against the WINDOW, so it also moves when the scroll
+  // container moves, and this container moves for reasons that have nothing to do with the
+  // thread: the composer grows a line, the mobile browser chrome slides away, a parent relayouts.
+  // Any of those landing between the capture and the widening commit would read as content
+  // inserted above and be corrected away, moving a detached reader for no reason.
   assert.match(
     GLUE,
-    /viewportOffset: first\.getBoundingClientRect\(\)\.top,/,
-    "the anchor must be captured in viewport space",
+    /element\.getBoundingClientRect\(\)\.top -\s*viewport\.getBoundingClientRect\(\)\.top/,
+    "the container's own top must be subtracted at both ends",
   );
-  // Both ends of the measurement are captured, because which of them is used depends on the
-  // engine. The arithmetic itself lives in anchorCorrection and is tested there rather than here.
+  // Both ends go through the same function, so they cannot drift apart.
+  assert.match(GLUE, /function sampleAnchor\(/);
+  assert.match(GLUE, /sampleAnchor\(viewport, first\)/);
+  assert.match(GLUE, /sampleAnchor\(viewport, captured\.element\)/);
   assert.match(GLUE, /scrollTop: viewport\.scrollTop,/);
   assert.match(
     GLUE,
     /anchorCorrection\(/,
     "the correction must go through the tested pure function",
   );
+});
+
+test("a completion waiter is settled when its thread goes away", () => {
+  // completeProgressiveMounts awaits a promise this component resolves. Without an unmount path
+  // the layout effect's cleanup removed the completer from the set but left that promise pending
+  // forever, so a DOM capture that raced a thread switch hung rather than completing.
+  assert.match(GLUE, /useEffect\(\(\) => flushCompletionWaiters, \[flushCompletionWaiters\]\)/);
+  // And a cancelled frame must not drop them either, so the ref is emptied by the flush rather
+  // than by the effect that schedules it.
+  const scheduler = section(
+    GLUE,
+    "if (mountWindow != null || completionWaiters.current.length === 0) return;",
+    "useEffect(() => flushCompletionWaiters",
+  );
+  assert.doesNotMatch(scheduler, /completionWaiters\.current = \[\];/);
 });
 
 test("the window owns the viewport's scroll-anchoring mode while it is open", () => {

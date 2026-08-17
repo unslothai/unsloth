@@ -113,7 +113,17 @@ export function admits(current: MountWindow, index: number): boolean {
 
 /** One end of a widening, as the correction below needs to see it. */
 export type AnchorSample = {
-  /** The anchor row's offset from the top of the scroll container. */
+  /**
+   * The anchor row's offset from the top of the SCROLL CONTAINER, not from the top of the window.
+   *
+   * The difference is not academic in this app. `getBoundingClientRect().top` is measured against
+   * the window, so it also moves when the scroll container itself moves, and this container moves
+   * for reasons that have nothing to do with the thread: the composer grows a line, the mobile
+   * browser chrome slides away, a parent relayouts, the window is resized. Any of those landing
+   * between the capture and the widening commit would be read as content inserted above and
+   * corrected away, moving a detached reader for no reason. Subtracting the container's own top at
+   * both ends removes it.
+   */
   viewportOffset: number;
   /** The scroll container's scrollTop at the same instant. */
   scrollTop: number;
