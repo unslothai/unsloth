@@ -218,6 +218,48 @@ def test_structured_call_executes_and_continues(executed):
     assert follow_up[-1]["content"] == "RESULT<web_search>"
 
 
+def test_a_conversation_search_here_gets_the_active_branch(executed):
+    """The provider loops share the local paths' tool catalogue.
+
+    So search_conversation is advertised here too once a thread has an archive, and it
+    needs the branch for the same reason: the stored rows are the whole message DAG, and
+    Retry keeps the response it replaced.
+    """
+    branch = [
+        {"role": "user", "content": "what was the code"},
+        {"role": "assistant", "content": "let me look"},
+        {"role": "user", "content": "please"},
+    ]
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_c",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "It was 5150."}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+
+    _run(transport, tools = [_tool("search_conversation")], messages = branch)
+
+    assert [call["name"] for call in executed] == ["search_conversation"]
+    assert executed[0]["conversation_branch"] == branch
+
+
 def test_streamed_tool_name_fragments_are_not_concatenated(executed):
     """llama-server re-sends the whole name as it grows: web -> web_search."""
     transport = FakeTransport(

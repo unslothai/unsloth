@@ -71,6 +71,7 @@ from core.inference.tool_loop_controller import (
 )
 from core.inference.tool_stream_exec import (
     TOOL_HEARTBEAT_INTERVAL_S,
+    accepts_kwarg,
     accepts_output_callback,
     stream_tool_execution,
 )
@@ -718,6 +719,8 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Studio tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # Kept before the loop appends anything: this is the branch the request is on.
+    request_branch = list(run.messages)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -1209,6 +1212,12 @@ async def stream_with_studio_tools(
                     "rag_scope": rag_scope,
                     "disable_sandbox": bypass_permissions,
                 }
+                # The provider loops take their catalogue from the same selector as the
+                # local ones, so search_conversation is advertised here too once a thread
+                # has an archive, and it needs the same branch: the stored rows are the
+                # whole message DAG, and Retry leaves the replaced response in them.
+                if accepts_kwarg(execute_tool, "conversation_branch"):
+                    kwargs["conversation_branch"] = request_branch
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 return execute_tool(call.tool_name, call.arguments, **kwargs)

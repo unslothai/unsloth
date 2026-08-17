@@ -20203,6 +20203,12 @@ class LlamaCppBackend:
                     promote_reasoning_only = promote_reasoning_only,
                     perf_callback = perf_callback,
                     context_overflow = retry_context_overflow,
+                    # The retry refits for the replacement window, so it can evict more
+                    # of the conversation than the first attempt did. Without the thread
+                    # those extra turns are archived nowhere, nothing is recalled in
+                    # their place, and the fit holds back no reserve and re-applies no
+                    # boundary -- on the one path that deliberately compacts again.
+                    thread_id = thread_id,
                     _allow_respawn_retry = False,
                 )
                 return

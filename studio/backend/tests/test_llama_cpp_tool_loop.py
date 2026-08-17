@@ -3868,6 +3868,62 @@ def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
     assert counted[0] != messages
 
 
+def test_the_respawn_retry_keeps_the_thread(monkeypatch):
+    """The retry refits for the replacement window, so it can evict more.
+
+    Without the thread those extra turns are archived nowhere and nothing is recalled in
+    their place, and the fit holds back no reserve and re-applies no boundary, on the one
+    path that deliberately compacts a second time.
+    """
+    import httpx
+    from core.inference import llama_cpp
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 2000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 1000
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    seen: list = []
+    monkeypatch.setattr(
+        llama_cpp,
+        "_conversation_recall_reserve",
+        lambda thread_id: seen.append(thread_id) or 0,
+    )
+
+    list(
+        backend.generate_chat_completion(
+            messages = [
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "final"},
+            ],
+            context_overflow = "truncate_oldest",
+            thread_id = "t-respawn",
+        )
+    )
+
+    # Both fits, the original and the one the retry runs, know which thread they are on.
+    assert len(seen) == 2
+    assert seen == ["t-respawn", "t-respawn"]
+
+
 def test_rolling_respawn_retry_refits_when_the_effective_context_changes(monkeypatch):
     """A smaller replacement window can evict more without repeating the first eviction."""
     import httpx
