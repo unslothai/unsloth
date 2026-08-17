@@ -449,14 +449,19 @@ def _module_functions(tree: ast.Module) -> dict[str, ast.AST]:
 
 
 def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
-    """Module-level ``def`` name -> the first line the module body calls it from.
+    """Module-level ``def`` name -> the earliest line import time can reach it from.
 
     A ``def`` is only deferred while nothing runs it. A helper the module body calls
     executes during collection, so an ``importorskip`` inside it runs then too, and
     giving it the end-of-module boundary let a stub installed BELOW the call site read
-    as being in place. Followed one level deep, which is the shape that occurs; a
-    helper reached only through another helper keeps the deferred boundary rather than
-    being guessed at.
+    as being in place.
+
+    Followed transitively, to a fixed point. An earlier version stopped after one level
+    and called that conservative; it is not. Stopping hands the inner helper the
+    end-of-module boundary, which is the LENIENT answer -- a stub installed anywhere in
+    the file then counts as in time, while collection has already run the inner import
+    and failed. So a helper reached only through another helper inherits the outer call
+    site's line, which is when it actually runs. Reported on this PR.
     """
     functions = _module_functions(tree)
     first: dict[str, int] = {}
@@ -464,8 +469,21 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
         for node in _import_time_nodes(statement):
             if isinstance(node, ast.Call):
                 name = _callee_name(node)
-                if name in functions and name not in first:
+                if name in functions and node.lineno < first.get(name, node.lineno + 1):
                     first[name] = node.lineno
+    changed = True
+    while changed:
+        changed = False
+        for caller, line in list(first.items()):
+            for node in ast.walk(functions[caller]):
+                if not isinstance(node, ast.Call):
+                    continue
+                callee = _callee_name(node)
+                # The inner helper runs when the OUTER one is called, so it inherits
+                # that line rather than its own, which is only where it is written.
+                if callee in functions and line < first.get(callee, line + 1):
+                    first[callee] = line
+                    changed = True
     return first
 
 
@@ -975,6 +993,33 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(helper_called_at_import) == [("core.inference.inference", 4)]
     assert not safe(helper_called_at_import)
+
+    # And through a second helper: the module calls the outer one, the inner one holds
+    # the importorskip, and the stub arrives after. Stopping at one level handed the
+    # inner call the end-of-module boundary and read the later stub as in time, while
+    # collection has already run the inner import. Reported on this PR.
+    nested_helper_at_import = (
+        "import pytest, sys\n"
+        "def _inner():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "def _outer():\n"
+        "    return _inner()\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(nested_helper_at_import) == [("core.inference.inference", 6)]
+    assert not safe(nested_helper_at_import)
+
+    # A chain nothing calls at import time still keeps the deferred boundary.
+    nested_helper_never_called = (
+        "import pytest, sys\n"
+        "def _inner():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "def _outer():\n"
+        "    return _inner()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(nested_helper_never_called)
 
     # The same helper NOT called at import time keeps the deferred boundary.
     helper_never_called = (
