@@ -3704,3 +3704,40 @@ def test_an_authorized_reparent_of_a_research_row_is_not_overwritten(research_ho
     assert studio_db.get_chat_message("thread-1", "ancestor") is None
     assert studio_db.get_chat_message("thread-1", "user-1")["parentId"] == "keeper"
     assert _thread_imports_cleanly()
+
+
+def test_report_is_recovered_whatever_the_heading_says():
+    """The synthesis prompt mandates "clear Markdown headings" and explicitly asks for more
+    than an executive summary, so keying recovery on the English word "Summary" contradicts
+    the instruction the model was given. A report headed in another language, or with any
+    other section name, was lost with "returned an empty report" while its text sat in the
+    captured reasoning."""
+    from core import research_runs as worker
+
+    body = "Der Markt wuchs 2026 deutlich, getragen von Nachfrage aus Europa. " * 12
+    for heading in (
+        "## Zusammenfassung",
+        "# Überblick",
+        "## Overview",
+        "### Findings",
+        "**Ergebnisse**",
+    ):
+        report = f"{heading}\n\n{body}"
+        reasoning = "Let me organise the answer.\n" + report
+        assert worker._recover_report_from_reasoning(reasoning) == report.strip(), heading
+
+
+def test_recovery_still_refuses_reasoning_that_is_not_a_report():
+    """The structural guard is the heading, not its wording: prose the model thought out
+    loud must never be published as a report, however long it runs."""
+    from core import research_runs as worker
+
+    assert worker._recover_report_from_reasoning("Internal analysis. " * 200) == ""
+    assert worker._recover_report_from_reasoning("Too short") == ""
+    # A heading with nothing substantial behind it is a plan, not a report.
+    assert (
+        worker._recover_report_from_reasoning(
+            ("Long preamble. " * 50) + "\n## Zusammenfassung\nUnvollständig."
+        )
+        == ""
+    )

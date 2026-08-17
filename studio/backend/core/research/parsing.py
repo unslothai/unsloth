@@ -262,14 +262,26 @@ def _parse_and_validate_plan(response: str, reasoning: str, max_steps: int) -> d
     raise ValueError("Planner did not return a JSON object")
 
 
+# A heading on its own line -- any level, or a standalone bold line -- is where the model
+# stopped narrating and started writing. The synthesis prompt mandates "clear Markdown
+# headings" and explicitly asks for more than an executive summary, so the heading is the
+# structural signal and its WORDING is not: keying on the English word "Summary" discarded
+# every report headed anything else, in any other language, while its text sat in the
+# reasoning the run had already captured.
+#
+# The heading requirement is what keeps thinking-out-loud from being published as a report:
+# unheaded prose recovers nothing however long it runs. A model that also headed its
+# reasoning can still carry that preamble into the recovered text -- worth it, because the
+# alternative is losing a finished report to "returned an empty report".
+_REPORT_HEADING_RE = re.compile(r"(?m)^(?:#{1,6}[ \t]+\S|\*\*[^*\n]+\*\*[ \t]*$)")
+# Below this a heading is a plan or an interrupted attempt, not a report.
+_MIN_RECOVERED_REPORT_CHARS = 500
+
+
 def _recover_report_from_reasoning(reasoning: str) -> str:
     text = reasoning.strip()
-    marker = re.search(
-        r"(?m)^(?:#{1,2}\s+(?:Executive\s+)?Summary\b|\*\*(?:Executive\s+)?Summary\*\*)",
-        text,
-        flags = re.IGNORECASE,
-    )
+    marker = _REPORT_HEADING_RE.search(text)
     if marker is None:
         return ""
     report = text[marker.start() :].strip()
-    return report if len(report) >= 500 else ""
+    return report if len(report) >= _MIN_RECOVERED_REPORT_CHARS else ""

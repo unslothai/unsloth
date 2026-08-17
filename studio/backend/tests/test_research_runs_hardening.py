@@ -1867,3 +1867,75 @@ def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(mo
     assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
     # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
     assert sum(delays) == 30.0
+
+
+def _accept_worker_events(monkeypatch) -> None:
+    """Reasoning deltas are flushed to the run's event log regardless of report_progress,
+    and a flush that writes nothing raises LeaseLost. Accept the writes so a stream longer
+    than one flush window can be exercised."""
+    counter = iter(range(1, 10_000))
+    monkeypatch.setattr(
+        research_runs.db,
+        "append_worker_event",
+        lambda *_a, **_k: next(counter),
+        raising = False,
+    )
+
+
+def _reasoning_only_stream_body(reasoning: str) -> str:
+    """What a thinking model whose template never closes the reasoning channel sends:
+    every delta arrives as reasoning_content and `content` is never populated."""
+    chunks = [
+        json.dumps({"choices": [{"delta": {"reasoning_content": piece}}]})
+        for piece in (reasoning[i : i + 40] for i in range(0, len(reasoning), 40))
+    ]
+    chunks.append(json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}]}))
+    return "".join(f"data: {c}\n\n" for c in chunks) + "data: [DONE]\n\n"
+
+
+def test_a_reasoning_only_stream_leaves_the_report_empty(monkeypatch):
+    """Reproduces the observed failure through the real streaming code: fourteen successful
+    web_search calls, then "Local model returned an empty report". `content` never arrives,
+    so `report` stays empty while the finished text lands in `reasoning`."""
+    report_text = "## Zusammenfassung\n\n" + ("Der Markt wuchs 2026 deutlich. " * 20)
+    _install_fake_client(
+        monkeypatch,
+        [
+            _response(
+                200,
+                body = _reasoning_only_stream_body("Ich ordne die Antwort.\n" + report_text),
+            )
+        ],
+    )
+    _accept_worker_events(monkeypatch)
+    supervisor = _make_supervisor(check_active = _noop_check_active)
+
+    report, reasoning, finish_reason, _usage = _run_stream(supervisor)
+
+    assert report == "", "the report field is what the run checks, and it is empty"
+    assert report_text in reasoning, "the finished report is sitting in the reasoning"
+    assert finish_reason == "stop", "the model completed; it did not time out or get cut off"
+
+
+def test_that_stream_now_yields_its_report_instead_of_failing(monkeypatch):
+    """The payoff: the same stream the run used to discard now recovers, because the rescue
+    keys on the heading rather than on the English word "Summary"."""
+    report_text = "## Zusammenfassung\n\n" + ("Der Markt wuchs 2026 deutlich. " * 20)
+    _install_fake_client(
+        monkeypatch,
+        [
+            _response(
+                200,
+                body = _reasoning_only_stream_body("Ich ordne die Antwort.\n" + report_text),
+            )
+        ],
+    )
+    _accept_worker_events(monkeypatch)
+    supervisor = _make_supervisor(check_active = _noop_check_active)
+    _report, reasoning, _finish, _usage = _run_stream(supervisor)
+
+    recovered = research_runs._recover_report_from_reasoning(reasoning)
+
+    assert recovered.startswith("## Zusammenfassung")
+    assert "Der Markt wuchs 2026 deutlich." in recovered
+    assert "Ich ordne die Antwort." not in recovered, "the narration before the report is dropped"
