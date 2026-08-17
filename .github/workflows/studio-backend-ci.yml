@@ -57,15 +57,20 @@ jobs:
   pytest:
     name: (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
-    # 30 guards against a hang; it is not a performance budget. The comment this replaces
-    # claimed 14.1 to 15.0 minutes, but this step now measures 22.5 to 27.8 minutes across the
-    # matrix, so the 3.11 leg is running 2.25 minutes under a limit that would cancel it.
-    # Running it on all four cores would fix that, and is worth ~79 runner-minutes a push, but
-    # this suite is not order-independent enough yet. Measured under `-n 4` on a 4-vCPU runner
-    # it fails tests serial does not, in more than one way and not the same way twice. The
-    # repo job below IS order-independent and does run parallel; this one waits until those
-    # dependencies are found and fixed individually.
-    timeout-minutes: 30
+    # 45 guards against a hang; it is not a performance budget. The comment this replaces
+    # claimed 14.1 to 15.0 minutes against a limit of 30, but this step now measures 22.5 to
+    # 29.2 minutes across the matrix, and it has been cancelling at the limit: across the six
+    # open PRs on this branch's stack, five had one leg cancelled at 30m9s while its siblings
+    # passed at 25 to 29 minutes. Which leg loses is luck, so every PR carries a red check
+    # that says nothing about the PR.
+    # Running it on all four cores would fix the duration properly and is worth ~79
+    # runner-minutes a push, but this suite is not order-independent enough yet. Measured
+    # under `-n 4` on a 4-vCPU runner it fails tests serial does not, in more than one way and
+    # not the same way twice. The repo job below IS order-independent and does run parallel;
+    # this one waits until those dependencies are found and fixed individually. Raising the
+    # limit costs nothing until a job actually needs it, and a cancelled leg costs the whole
+    # 30 minutes anyway.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
