@@ -74,7 +74,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.11', '3.12', '3.13']
+        # Both ends on a pull request, all four on main.
+        #
+        # Measured on one runner over the same tree: the four legs collect the same
+        # 26,320 tests and differ by exactly ONE of them, the >= 3.12 gate on
+        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 report
+        # 26193 passed / 127 skipped, 3.12 and 3.13 report 26194 / 126. That one
+        # distinction is preserved here, since 3.10 and 3.13 sit either side of the
+        # gate.
+        #
+        # The four legs cost 97 runner-minutes per push (1663 + 1249 + 1419 + 1506
+        # seconds) against a queue that has been observed 195 deep. A version break
+        # that only shows on 3.11 or 3.12 is now caught by the push-to-main run
+        # rather than before the merge, which is the trade being made: two of the
+        # four interior legs, for half the cost on every PR.
+        python: >-
+          ${{ github.event_name == 'pull_request'
+              && fromJSON('["3.10", "3.13"]')
+              || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
