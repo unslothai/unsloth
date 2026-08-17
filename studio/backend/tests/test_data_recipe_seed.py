@@ -260,9 +260,7 @@ def test_an_oversized_native_drop_is_refused_before_it_is_read(monkeypatch, tmp_
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            seed_route.upload_unstructured_file(
-                None, "block", native_path_lease = "signed-lease"
-            )
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
         )
     assert excinfo.value.status_code == 413
     assert reads == [], "the file was opened before the size check"
@@ -287,8 +285,6 @@ def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(
-            seed_route.upload_unstructured_file(
-                None, "block", native_path_lease = "signed-lease"
-            )
+            seed_route.upload_unstructured_file(None, "block", native_path_lease = "signed-lease")
         )
     assert excinfo.value.status_code == 413
