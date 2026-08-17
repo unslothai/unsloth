@@ -132,11 +132,12 @@ export function mapBackendModelConfigToTrainingPatch(
   } else {
     // Ten shipped model_defaults express warmup as a ratio and set no
     // warmup_steps, default.yaml among them, so reading only warmup_steps left
-    // every one of them on the generic UI default. Derive the steps the same way
-    // studio/backend/core/training/worker.py does when it falls back.
+    // every one of them on the generic UI default. Materialize with ceil, the
+    // way TrainingArguments.get_warmup_steps does, so a small ratio such as an
+    // imported 0.03 over 10 steps asks for warmup and gets it instead of zero.
     const warmupRatio = toNumber(training?.warmup_ratio);
     if (warmupRatio !== undefined && maxSteps !== undefined && maxSteps > 0) {
-      patch.warmupSteps = Math.round(warmupRatio * maxSteps);
+      patch.warmupSteps = Math.ceil(warmupRatio * maxSteps);
     }
   }
 

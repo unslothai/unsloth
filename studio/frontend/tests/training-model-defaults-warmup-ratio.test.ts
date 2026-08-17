@@ -56,6 +56,20 @@ test("an explicit warmup_steps still wins over a ratio", () => {
   assert.equal(patch.warmupSteps, 7);
 });
 
+test("a ratio too small to reach one step still gets one", () => {
+  // Rounding would write 0 here, and mappers.ts submits warmupSteps as a
+  // concrete warmup_steps, so a config that asked for warmup would train with
+  // none. An explicit 0 is a different statement and is left at 0.
+  for (const [training, expected] of [
+    [{ warmup_ratio: 0.03, max_steps: 10 }, 1],
+    [{ warmup_ratio: 0.01, max_steps: 30 }, 1],
+    [{ warmup_ratio: 0, max_steps: 30 }, 0],
+  ] as const) {
+    const patch = mapBackendModelConfigToTrainingPatch({ training });
+    assert.equal(patch.warmupSteps, expected, JSON.stringify(training));
+  }
+});
+
 test("a ratio with no usable max_steps leaves warmup alone", () => {
   for (const training of [
     { warmup_ratio: 0.1 },
