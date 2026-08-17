@@ -367,11 +367,16 @@ def _installs_stub(
 
 
 def _stub_helpers(tree: ast.Module) -> dict[str, ast.AST]:
-    """Module-level ``def``s by name, so a call to one can be read through to its body."""
+    """Module-level ``def``s by name, so a call to one can be read through to its body.
+
+    Synchronous ones only. Calling an ``async def`` builds a coroutine and runs none of
+    its body, so reading through such a call credited the module with stubs that were
+    never installed. Reported on this PR.
+    """
     return {
         statement.name: statement
         for statement in tree.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(statement, ast.FunctionDef)
     }
 
 
@@ -416,7 +421,7 @@ def _can_exit_early(node: ast.AST, flags: dict[str, bool] | None = None) -> bool
     """
     flags = flags or {}
     if isinstance(node, ast.If) and _constant_test(node) is None:
-        if _true_when_imported(node.test, flags) is True:
+        if _true_when_imported(node.test, flags, allow_variable_key = True) is True:
             return any(_can_exit_early(child, flags) for child in node.orelse)
         return any(_can_exit_early(child, flags) for child in [*node.body, *node.orelse])
     if isinstance(node, ast.Try) and _probes_availability(node):
@@ -495,7 +500,12 @@ def _end_line(node: ast.AST) -> int:
     return getattr(node, "end_lineno", None) or node.lineno
 
 
-def _true_when_imported(node: ast.AST, flags: dict[str, bool]) -> bool | None:
+def _true_when_imported(
+    node: ast.AST,
+    flags: dict[str, bool],
+    *,
+    allow_variable_key: bool = False,
+) -> bool | None:
     """Whether this expression is true when the module is ALREADY in ``sys.modules``.
 
     None when it does not ask that question at all. The polarity is the point:
@@ -508,17 +518,40 @@ def _true_when_imported(node: ast.AST, flags: dict[str, bool]) -> bool | None:
     accepted that too until this told the two apart. Reported on this PR.
     """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        inner = _true_when_imported(node.operand, flags)
+        inner = _true_when_imported(node.operand, flags, allow_variable_key = allow_variable_key)
         return None if inner is None else not inner
     if isinstance(node, ast.Name):
         return flags.get(node.id)
     if isinstance(node, ast.Compare) and len(node.ops) == 1:
         if any(_is_sys_modules(comparator) for comparator in node.comparators):
+            if not _key_decides_the_import(node.left, allow_variable_key):
+                return None
             if isinstance(node.ops[0], ast.In):
                 return True
             if isinstance(node.ops[0], ast.NotIn):
                 return False
     return None
+
+
+def _key_decides_the_import(node: ast.AST, allow_variable: bool) -> bool:
+    """Whether this ``sys.modules`` key is the module whose absence breaks the import.
+
+    ``if "pytest" not in sys.modules:`` says nothing about ``unsloth``, and treating it
+    as the availability guard made an unrelated cached package decide whether the stubs
+    below it counted. Reported on this PR. What counts is the required stub itself, or a
+    heavy backend module, since caching either is what makes the import safe.
+
+    A non-constant key is the ``name`` parameter of a stub helper deciding about its own
+    argument, which is the idiom ``_stub_if_missing`` opens with. That is only accepted
+    where the question is about a helper's early exit, never at module scope.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (
+            node.value == _REQUIRED_STUB
+            or node.value.startswith(f"{_REQUIRED_STUB}.")
+            or node.value in _heavy_backend_modules()
+        )
+    return allow_variable
 
 
 def _sys_modules_flags(tree: ast.Module) -> dict[str, bool]:
@@ -2066,6 +2099,50 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(while_else, heavy), while_else
+
+    # The membership test has to name the module that decides the import. An unrelated
+    # cached package says nothing about unsloth, and the branch is skipped when it is
+    # present.
+    unrelated_key = (
+        "import sys\n"
+        'if "pytest" not in sys.modules:\n'
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(unrelated_key, heavy), unrelated_key
+    # The required stub itself counts, as well as the import target.
+    for key in ('"unsloth"', '"core.training.trainer"'):
+        source = (
+            "import sys\n"
+            f"if {key} not in sys.modules:\n"
+            '    _stub_if_missing("unsloth", ())\n'
+            "from core.training import trainer as t\n"
+        )
+        assert not _is_offender(source, heavy), source
+
+    # A key this file cannot read is not the guard either. Only a stub helper deciding
+    # about its own argument gets that latitude, and never at module scope.
+    variable_key = (
+        "import sys\n"
+        '_KEY = "pytest"\n'
+        "if _KEY not in sys.modules:\n"
+        '    _stub_if_missing("unsloth", ())\n'
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(variable_key, heavy), variable_key
+
+    # Calling an async def builds a coroutine and runs none of its body.
+    unawaited = (
+        "import sys\n"
+        "async def _setup():\n"
+        '    sys.modules["unsloth"] = object()\n'
+        "_setup()\n"
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(unawaited, heavy), unawaited
+    # The same helper written synchronously does install them.
+    awaited_equivalent = unawaited.replace("async def _setup", "def _setup")
+    assert not _is_offender(awaited_equivalent, heavy), awaited_equivalent
 
     # An except clause is matched by what it CATCHES, not by what its name contains.
     for not_guarded in (
