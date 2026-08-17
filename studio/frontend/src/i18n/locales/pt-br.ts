@@ -1026,6 +1026,9 @@ export const ptBR = {
       modelDisclaimer: "Mostrar aviso do modelo",
       modelDisclaimerDescription:
         'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
+      rememberParamsPerModel: "Lembrar as configurações por modelo",
+      rememberParamsPerModelDescription:
+        "Ao trocar de modelo, a temperatura, o prompt e as demais configurações usadas por último com aquele modelo são restauradas. Desativado, um único conjunto de configurações vale para todos os modelos.",
       thinking: {
         collapseByDefault: "Recolher o raciocínio por padrão",
         collapseByDefaultDescription:

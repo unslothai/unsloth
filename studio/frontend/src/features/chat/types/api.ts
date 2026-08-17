@@ -383,6 +383,22 @@ export interface InferenceStatusResponse {
    */
   spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
+  /** Only for a binary stand-down: whether a different llama-server is installed now. */
+  spec_fallback_binary_changed?: boolean | null;
+  /** The capability probe has started answering since a launch it degraded. */
+  spec_probe_retry_pending?: boolean | null;
+  /** A DFlash sidecar fetch failed retryably, which records no fallback reason. */
+  spec_dflash_retry_pending?: boolean | null;
+  /** The DSpark drafter is absent for good, not transiently unfetchable. */
+  spec_dspark_sidecar_absent?: boolean | null;
+  /** The architecture gate normalized a tensor-parallel request to layer mode. */
+  tensor_parallel_dropped_by_arch_gate?: boolean | null;
+  /** A virtualised Metal device: every GGUF request is rewritten to the CPU pin. */
+  gpu_placement_paravirtual?: boolean | null;
+  /** The post-launch audio probe did not finish; only a load retries it. */
+  audio_probe_pending?: boolean | null;
+  /** A diffusion launch right now would honour --ngl. */
+  diffusion_split_supported?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

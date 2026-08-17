@@ -471,6 +471,24 @@ def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
+def test_settings_merge_keeps_each_model_s_remembered_params(tmp_path, monkeypatch):
+    """Per-model memory patches one model at a time, so the merge has to keep the
+    others. Without this, tuning a second model would wipe the first one's settings
+    and the switch back would land on whatever the last edit happened to be."""
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"qwen": {"temperature": 0.2, "topP": 0.8}}}
+    )
+    studio_db.upsert_chat_settings_merge(
+        {"inferenceParamsByModel": {"llama": {"temperature": 0.9}}}
+    )
+    # A second edit to the first model merges into its own entry.
+    studio_db.upsert_chat_settings_merge({"inferenceParamsByModel": {"qwen": {"temperature": 0.4}}})
+
+    by_model = studio_db.list_chat_settings()["inferenceParamsByModel"]
+    assert by_model == {"qwen": {"temperature": 0.4, "topP": 0.8}, "llama": {"temperature": 0.9}}
+
+
 def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})

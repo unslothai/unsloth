@@ -1010,6 +1010,9 @@ export const ko = {
       modelDisclaimer: "모델 고지 표시",
       modelDisclaimerDescription:
         '채팅 상자 아래에 "LLMs can make mistakes" 문구를 표시합니다.',
+      rememberParamsPerModel: "모델별로 설정 기억",
+      rememberParamsPerModelDescription:
+        "모델을 전환하면 해당 모델에서 마지막으로 사용한 온도, 프롬프트 등의 설정이 복원됩니다. 끄면 모든 모델이 하나의 설정을 공유합니다.",
       thinking: {
         collapseByDefault: "기본적으로 사고 과정 접기",
         collapseByDefaultDescription:
