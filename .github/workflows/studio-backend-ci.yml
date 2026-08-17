@@ -210,6 +210,7 @@ jobs:
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
             --ignore=tests/test_tool_xml_strip.py \
+            --ignore=tests/test_diffusion_checkpoint_resume.py \
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
@@ -220,7 +221,8 @@ jobs:
           python -m pytest -q --tb=short \
             tests/test_streaming_stripper.py \
             tests/test_llama_cpp_wait_for_vram_settle.py \
-            tests/test_tool_xml_strip.py
+            tests/test_tool_xml_strip.py \
+            tests/test_diffusion_checkpoint_resume.py
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by

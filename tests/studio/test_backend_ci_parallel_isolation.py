@@ -71,6 +71,7 @@ BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
     ("tests/test_tool_xml_strip.py", "asserts a regex benchmark under 0.1s"),
+    ("tests/test_diffusion_checkpoint_resume.py", "compares one duration against another"),
 ]
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
@@ -78,34 +79,90 @@ BACKEND_ISOLATED = [
 # there is enough headroom to survive being descheduled. Twenty-two backend files assert
 # some elapsed bound and serialising all of them would give back most of what -n 4 buys,
 # so the line is drawn where the measurement stops being about the code.
+BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
+
+
+def _over_the_backend(command: str) -> bool:
+    return BACKEND_MARKER in command
+
+
 TIGHT_BOUND_S = 0.1
 
 BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "tests"
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 
 
-def _tight_elapsed_bounds(path: Path) -> list[str]:
-    """Asserts of the form ``elapsed < <= TIGHT_BOUND_S``, where ``elapsed`` came from a clock.
+def _reads_a_clock(node: ast.AST) -> bool:
+    return any(
+        isinstance(inner, ast.Call) and getattr(inner.func, "attr", "") in _CLOCKS
+        for inner in ast.walk(node)
+    )
 
-    Read with ast rather than a regex, so the name has to actually be assigned from a
-    difference of two clock readings. Grepping for `< 0.05` would match a tolerance on a
-    float, and grepping for `elapsed` would match a variable that holds anything.
+
+def _timing_helpers(tree: ast.AST) -> set:
+    """Functions that RETURN a clock difference, at any nesting depth.
+
+    test_diffusion_checkpoint_resume defines `_elapsed(path)` inside the test and compares
+    two of its results. Without this, a call to it looks like any other call and the
+    benchmark reads as untimed.
+    """
+    helpers = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Return) and inner.value is not None and _reads_a_clock(inner.value):
+                helpers.add(node.name)
+                break
+    return helpers
+
+
+def _timed_names(tree: ast.AST) -> set:
+    """Names assigned from a clock difference."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.BinOp):
+            if isinstance(node.value.op, ast.Sub) and _reads_a_clock(node.value):
+                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _is_timed(node: ast.AST, names: set, helpers: set) -> bool:
+    """Whether this expression is a duration, however it was spelled.
+
+    Three forms, all of which appear in this suite:
+      elapsed < 0.05                          a name assigned from a difference
+      time.monotonic() - started < 0.2        the difference written inline
+      _elapsed(big) < 8 * _elapsed(small)     a helper that returns a difference
+    """
+    if isinstance(node, ast.Name) and node.id in names:
+        return True
+    if _reads_a_clock(node):
+        return True
+    return any(
+        isinstance(inner, ast.Call) and getattr(inner.func, "id", None) in helpers
+        for inner in ast.walk(node)
+    )
+
+
+def _fragile_timing_asserts(path: Path) -> list:
+    """Assertions whose outcome depends on how the process was scheduled.
+
+    Two kinds, and the second has no threshold to be under:
+      * ABSOLUTE, at or below TIGHT_BOUND_S. A bound that small is inside one scheduler
+        quantum, so four workers on four vCPUs measure the scheduler as much as the code.
+      * RELATIVE, comparing one duration against another. Descheduling one side and not
+        the other breaks it at ANY magnitude, which is what took test_streaming_stripper
+        out of the parallel run.
+
+    Read with ast, not a regex: grepping `< 0.05` matches a float tolerance, and grepping
+    `elapsed` matches whatever a variable happens to be called.
     """
     try:
         tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
     except SyntaxError:
         return []
-    timed = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.BinOp):
-            if not isinstance(node.value.op, ast.Sub):
-                continue
-            reads_clock = any(
-                isinstance(inner, ast.Call) and getattr(inner.func, "attr", "") in _CLOCKS
-                for inner in ast.walk(node.value)
-            )
-            if reads_clock:
-                timed.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    names, helpers = _timed_names(tree), _timing_helpers(tree)
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assert):
@@ -113,21 +170,18 @@ def _tight_elapsed_bounds(path: Path) -> list[str]:
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
                 continue
-            if not (isinstance(cmp_node.left, ast.Name) and cmp_node.left.id in timed):
+            left = cmp_node.left
+            if not _is_timed(left, names, helpers):
                 continue
-            for op, bound in zip(cmp_node.ops, cmp_node.comparators):
+            for op, right in zip(cmp_node.ops, cmp_node.comparators):
                 if not isinstance(op, (ast.Lt, ast.LtE)):
                     continue
-                if isinstance(bound, ast.Constant) and isinstance(bound.value, (int, float)):
-                    if bound.value <= TIGHT_BOUND_S:
-                        found.append(f"{path.name}:{node.lineno} {cmp_node.left.id} < {bound.value}")
+                if _is_timed(right, names, helpers):
+                    found.append(f"{path.name}:{node.lineno} one duration against another")
+                elif isinstance(right, ast.Constant) and isinstance(right.value, (int, float)):
+                    if right.value <= TIGHT_BOUND_S:
+                        found.append(f"{path.name}:{node.lineno} duration < {right.value}")
     return found
-
-BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
-
-
-def _over_the_backend(command: str) -> bool:
-    return BACKEND_MARKER in command
 
 
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
@@ -242,7 +296,7 @@ def test_every_tight_elapsed_bound_is_isolated():
     isolated = {path for path, _ in BACKEND_ISOLATED}
     stray = {}
     for path in sorted(BACKEND_TESTS.glob("*.py")):
-        bounds = _tight_elapsed_bounds(path)
+        bounds = _fragile_timing_asserts(path)
         if bounds and f"tests/{path.name}" not in isolated:
             stray[path.name] = bounds
     assert not stray, (
@@ -254,12 +308,36 @@ def test_every_tight_elapsed_bound_is_isolated():
     )
 
 
-def test_the_tight_bound_scan_finds_the_known_ones():
-    """A scan that matched nothing would pass the test above on an empty set."""
+def test_the_scan_finds_all_three_shapes():
+    """A scan that matched nothing would pass the test above on an empty set.
+
+    One of each form the suite actually uses, because each needed its own handling and
+    the first version of this scan only understood the first:
+      elapsed < 0.05                        a name assigned from a difference
+      time.monotonic() - started < 0.2      the difference written inline
+      _elapsed(big) < 8 * _elapsed(small)   a helper that returns a difference
+    """
     found = {
-        path.name: _tight_elapsed_bounds(path)
+        path.name: _fragile_timing_asserts(path)
         for path in sorted(BACKEND_TESTS.glob("*.py"))
-        if _tight_elapsed_bounds(path)
+        if _fragile_timing_asserts(path)
     }
-    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found
-    assert "test_tool_xml_strip.py" in found, found
+    assert "test_llama_cpp_wait_for_vram_settle.py" in found, found      # named
+    assert "test_tool_xml_strip.py" in found, found                      # named
+    assert "test_diffusion_checkpoint_resume.py" in found, found         # helper, relative
+
+    # The inline form, which the suite currently uses only at 0.2s, above the threshold.
+    # Recognised rather than isolated, so tightening that bound would trip the guard.
+    inline = ast.parse(
+        "import time\n"
+        "def t():\n"
+        "    started = 0\n"
+        "    assert time.monotonic() - started < 0.05\n"
+    )
+    names, helpers = _timed_names(inline), _timing_helpers(inline)
+    node = [n for n in ast.walk(inline) if isinstance(n, ast.Assert)][0]
+    compare = node.test
+    assert _is_timed(compare.left, names, helpers), (
+        "an inline clock difference is not recognised as a duration, so a test written "
+        "that way could assert a 20ms bound and run under -n 4 unnoticed"
+    )
