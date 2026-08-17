@@ -20686,7 +20686,11 @@ class LlamaCppBackend:
                 in_thinking = False
                 _prov_entry = None
             elif reasoning_accum:
-                if reasoning_provenance is not None and not cumulative_display:
+                if (
+                    reasoning_provenance is not None
+                    and not cumulative_display
+                    and not _suppress_visible_output
+                ):
                     reasoning_provenance["wrapped"] = reasoning_provenance.get("wrapped", 0) + 1
                     reasoning_provenance.setdefault("wraps", []).append(
                         {"len": len(reasoning_accum)}
@@ -21131,9 +21135,14 @@ class LlamaCppBackend:
                                     reasoning_accum += reasoning
                                     if detect_state != _S_DRAINING:
                                         if not in_thinking:
+                                            # Suppressed (forced-retry) iterations
+                                            # yield no content events, so recording
+                                            # their wraps would desync the ledger
+                                            # from the emitted stream.
                                             if (
                                                 reasoning_provenance is not None
                                                 and not cumulative_display
+                                                and not _suppress_visible_output
                                             ):
                                                 reasoning_provenance["wrapped"] = (
                                                     reasoning_provenance.get("wrapped", 0) + 1
