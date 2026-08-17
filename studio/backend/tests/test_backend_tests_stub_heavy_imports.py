@@ -309,23 +309,23 @@ def _import_time_nodes(node: ast.AST):
         yield from _import_time_nodes(child)
 
 
-def _never_runs(node: ast.AST) -> bool:
-    """Whether this ``if`` test is a constant the interpreter will not take.
+def _constant_test(node: ast.If) -> bool | None:
+    """Which branch of this ``if`` the interpreter always takes, or None if it depends.
 
-    ``if TYPE_CHECKING:`` and ``if False:`` are the two that matter: an import under
-    either never executes, so it cannot be what left the target in ``sys.modules``.
-    Nothing else is guessed -- a test this cannot evaluate is assumed to run.
+    ``if TYPE_CHECKING:`` and ``if False:`` are the two that matter most: an import
+    under either never executes, so it cannot be what left the target in
+    ``sys.modules``. ``if True:`` matters the same way from the other side, since its
+    ``else:`` never executes. Nothing else is guessed -- a test this cannot evaluate
+    returns None and both branches are walked.
     """
-    if not isinstance(node, ast.If):
-        return False
     test = node.test
     if isinstance(test, ast.Constant):
-        return not test.value
-    if isinstance(test, ast.Name):
-        return test.id == "TYPE_CHECKING"
-    if isinstance(test, ast.Attribute):
-        return test.attr == "TYPE_CHECKING"
-    return False
+        return bool(test.value)
+    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+        return False
+    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
+        return False
+    return None
 
 
 def _reachable_import_time_nodes(node: ast.AST):
@@ -339,8 +339,12 @@ def _reachable_import_time_nodes(node: ast.AST):
     ``_runtime_nodes`` walked into ``if TYPE_CHECKING:`` and ``if False:``, where an
     import never runs, and reported a file safe that still raises.
     """
-    if _never_runs(node):
-        for child in node.orelse:
+    if isinstance(node, ast.If) and _constant_test(node) is not None:
+        # Only the branch the interpreter takes. Pruning the body of `if False:` but
+        # descending into the `else:` of `if True:` left the second half of the same
+        # hole open: an import there never runs either. Reported on this PR.
+        taken = node.body if _constant_test(node) else node.orelse
+        for child in taken:
             yield from _reachable_import_time_nodes(child)
         return
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
@@ -465,6 +469,32 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
     return first
 
 
+def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
+    """Bare names bound to ``pytest.importorskip``, including aliases.
+
+    ``from pytest import importorskip as ios`` then ``ios(...)`` is a valid call, and
+    matching the callee against the literal string missed it, so an unstubbed module
+    written that way walked past the guard. Reported on this PR. The attribute form is
+    still matched on the attribute name, so ``pytest.importorskip`` needs no binding.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pytest":
+            for alias in node.names:
+                if alias.name == "importorskip":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Assign):
+            value = node.value
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == "importorskip"
+            ):
+                names.update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+    return frozenset(names)
+
+
 def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[str, int]]:
     """``(target, line the stub must be installed before)`` per heavy ``importorskip``.
 
@@ -482,6 +512,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
       call's own line. Scanning to the end of the module here would see that later
       stub and call the file safe while it still breaks collection.
     """
+    bare_names = _importorskip_bare_names(tree)
     module_scope = {id(node) for statement in tree.body for node in _import_time_nodes(statement)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
     # A call inside a def is deferred only if nothing runs that def during import. Where
@@ -501,12 +532,12 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
-            called = func.attr
+            if func.attr != "importorskip":
+                continue
         elif isinstance(func, ast.Name):
-            called = func.id
+            if func.id not in bare_names:
+                continue
         else:
-            continue
-        if called != "importorskip":
             continue
         if _skips_on_plain_import_error(node):
             continue
@@ -953,6 +984,61 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "_stub_if_missing('unsloth', ())\n"
     )
     assert safe(helper_never_called)
+
+    # `from pytest import importorskip as ios` is a valid call the raw-name match could
+    # not see, so an unstubbed module written that way walked past the guard. Reported here.
+    aliased = (
+        "from pytest import importorskip as ios\n"
+        "def test_x():\n"
+        "    inf = ios('core.inference.inference')\n"
+    )
+    assert calls(aliased) == [("core.inference.inference", 3)]
+    assert not safe(aliased)
+    # A name bound to the attribute form counts too.
+    rebound = (
+        "import pytest\n"
+        "_ios = pytest.importorskip\n"
+        "def test_x():\n"
+        "    inf = _ios('core.inference.inference')\n"
+    )
+    assert calls(rebound) and not safe(rebound)
+    # A bare call to something that is NOT pytest's importorskip is not one.
+    unrelated_bare = (
+        "from mymod import importorskip\n"
+        "def test_x():\n"
+        "    inf = importorskip('core.inference.inference')\n"
+    )
+    assert calls(unrelated_bare) == []
+
+    # The other half of the unreachable-branch hole: an import in the `else:` of a
+    # constant-true test never runs either. Reported here.
+    else_of_true = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "if True:\n"
+        "    pass\n"
+        "else:\n"
+        "    import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert not _offender_free(else_of_true)
+    # And the branch a constant-false test DOES take still counts.
+    else_of_false = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "if False:\n"
+        "    pass\n"
+        "else:\n"
+        "    import core.inference.inference\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(else_of_false)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
