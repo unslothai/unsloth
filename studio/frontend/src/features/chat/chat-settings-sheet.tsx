@@ -1091,20 +1091,40 @@ export function ChatSettingsPanel({
               first={!hasModelContent && !modelConfig}
             >
               <div className="flex flex-col gap-3 pt-1">
-                {/* Modal below the mobile breakpoint, where this whole panel is a Sheet. This
-                trigger is `asChild` over a div that CONTAINS an input, so with no modal shield
-                the release-click of the opening press lands on that input, focus leaves the
-                portalled content, and a non-modal Radix layer dismisses on focus-outside.
-                Measured on chromium at 420x900 with the pointer never moving: the menu mounted
-                at t=33 ms and was gone by t=208 ms, so it could not be opened at all. Staying
-                modal there costs nothing, because the Sheet has already parked
-                pointer-events:none on the body and there is no second invalidation to save.
+                {/* This one menu stays MODAL. It is the only one of the twelve that does, and it is
+                not a perf judgement, it is that non-modal breaks it outright.
 
-                Note the MenuDismissGuard below is still mounted in the mobile case. Radix mounts
-                content whenever the menu is open, modal or not, so the guard arms alongside the
-                shield rather than instead of it. Both swallow the same dismissing click, which
-                is harmless: dismissal still costs exactly one click, as it always has. */}
-                <DropdownMenu modal={isMobile}>
+                Its trigger is `asChild` over a plain div inside an InputGroup, and
+                InputGroupAddon's onClick focuses the sibling input for anything that is not a
+                button (components/ui/input-group.tsx). A div is not a button, so the
+                release-click of the opening press moves focus to that input, focus leaves the
+                portalled content, and a non-modal layer dismisses itself on focus-outside. The
+                menu opens on pointerdown and closes on the same gesture's click, so it cannot be
+                opened at all.
+
+                Measured on chromium, both viewports, so this is not a mobile-only case as an
+                earlier version of this comment had it. At 420x900, traced with a MutationObserver
+                and the pointer never moving: mounted t=33 ms, gone by t=208 ms. At 1440x900 on a
+                production build, the event trace reads pointerdown -> open -> pointerup -> click
+                -> focusout of the content -> focusin on the input -> closed. Sampling the whole
+                225x36 trigger box with elementFromPoint finds no point that behaves otherwise:
+                every point is either the input, whose own onPointerDown stopPropagation means the
+                menu never opens, or the addon, which opens it and then closes it.
+
+                Staying modal also removes the one reachable case of a dismissing press committing
+                a value on pointerdown. This menu is as wide as the settings column and grows
+                36-38 px per saved preset, so at eight presets its bottom edge sits 1 px above the
+                Temperature slider track, and Radix Slider commits on pointerdown. With the shield
+                back, that press lands on the shield as it always did.
+
+                The cost is one menu's worth of style invalidation, on a panel that is not the hot
+                path this PR is about. A menu that cannot be opened is not a trade worth making.
+
+                The MenuDismissGuard below stays mounted: Radix mounts content whenever the menu
+                is open, modal or not, so it arms alongside the shield rather than instead of it.
+                Harmless, since both swallow the same click and dismissal still costs exactly one,
+                and it keeps the protection in place if this is ever flipped back. */}
+                <DropdownMenu modal={true}>
                   <DropdownMenuTrigger asChild={true}>
                     <div
                       className="w-full min-w-0 cursor-pointer outline-none focus-visible:outline-none"
