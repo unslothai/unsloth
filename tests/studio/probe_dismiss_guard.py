@@ -1,36 +1,56 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Does `swallowDismissingClick` actually stop the click that dismisses a non-modal menu?
+"""Does the non-modal menu dismissal guard stop exactly the right click, and only that one?
 
-`probe_menu_behaviour.py` asks the destructive question once, with `page.mouse.click`,
-which is a press and a release in the same tick. That is the easy case and the guard
-passes it. This probe asks the same question three more ways, because the guard is a
-`once`-armed document capture listener that a 300 ms timer disarms:
+`probe_menu_behaviour.py` asks the destructive question once, with `page.mouse.click`, a press
+and a release in the same tick. That is the easy case and every version of the guard passes it.
+These are the cases that separate them. Each was checked against a DELIBERATELY BROKEN tree
+before its green was trusted; where a case does not discriminate, that is said here rather than
+left to be assumed.
 
-  quick    press and release immediately. The control case: the guard should hold.
-  held     press, wait longer than the 300 ms window, release. The timer has already
-           removed the listener by the time the browser synthesises `click`, so the
-           click lands on whatever is underneath. Underneath is the unconfirmed
-           "Delete message" button, two buttons from the trigger.
-  busy     press, block the main thread past 300 ms, release. Same outcome from a
-           normal-length press, which is the version a user cannot avoid.
-  touch    tap. Radix defers `onPointerDownOutside` to the resulting `click` when
-           `pointerType === "touch"` (react-dismissable-layer 1.1.11, usePointerDownOutside),
-           and it listens on `ownerDocument` in the BUBBLE phase. React 19 delegates to
-           the root container, which is inside document, so the control's own onClick has
-           already run by the time the guard is armed. The guard cannot swallow the click
-           it was armed by.
+The guard must swallow too little nowhere:
 
-Every measurement is "did the assistant message count go down", i.e. did the message get
-deleted. Clicks go through `page.mouse` / `page.touchscreen`, real hit tests that honour
-pointer-events; `locator.click()` throws on interception and `element.click()` skips hit
+  quick          press and release in one tick. Control case.
+  held           press, wait past any fixed deadline, release. A guard armed from Radix's
+                 `onPointerDownOutside` and disarmed by a 300 ms timer is gone by the time the
+                 browser synthesises `click`. Discriminates: chromium, webkit, firefox.
+  busy           press, block the main thread, release. The same outcome from a normal-length
+                 press, which is what a heavy thread produces on its own. Flaky as a detector:
+                 it reproduced on one chromium run and not the next, so `held` is the reliable
+                 one and this is kept only as a second look.
+  touch          tap. `usePointerDownOutside` in react-dismissable-layer 1.1.11 defers to the
+                 resulting `click` when `pointerType === "touch"`, on `ownerDocument`, bubble
+                 phase, and React 19 delegates to the root container inside document, so the
+                 control's `onClick` has already run. Discriminates: chromium, webkit.
+
+and too much nowhere:
+
+  select         a click INSIDE the menu must still reach its item.
+  second_click   dismiss on neutral ground, then click again. Exactly one click is the menu's.
+  rightclick_    a right click raises `contextmenu` and no `click`, so a guard with no upper
+    then_click   bound stays armed and eats the user's next real click. Discriminates.
+  dragoff_       press, drag out, release. Does NOT discriminate today: a click still fires at
+    then_click   the common ancestor, so this passes with and without the bound. Kept as a
+                 cheap watch on a different shape, not offered as evidence.
+  touch_neutral  a tap on a spot that CANNOT take focus, with the menu open. The capture-phase
+                 swallow denies Radix its deferred touch dismissal, and when the tapped element
+                 is focusable `useFocusOutside` closes the menu anyway, which is exactly how an
+                 earlier version of the guard looked correct while leaving the menu open on
+                 plain background. The neutral spot is grid-searched for a genuinely
+                 non-focusable element and the probe FAILS rather than falling back if none
+                 exists, because a probe that cannot tell you it missed is worse than none.
+
+Every verdict is a DOM fact: did the assistant message count go down, did the menu close, did
+the watched click land. Clicks go through `page.mouse` / `page.touchscreen`, real hit tests that
+honour pointer-events. `locator.click()` throws on interception and `element.click()` skips hit
 testing, and each would lie in a different direction.
 
-Run against the PR head AND against the merge base. On the merge base these menus are
-modal, the body carries pointer-events:none, and no variant can reach Delete at all.
+Run against the PR head AND the merge base. On the merge base these menus are modal, the body
+carries `pointer-events: none`, and no variant reaches the control at all.
 
 Usage:  python tests/studio/probe_dismiss_guard.py --label head --engine chromium
+Exits non-zero on any failure, so it is a gate rather than a report.
 Writes logs/pw/dismiss_guard_<label>_<engine>.json
 """
 
@@ -118,17 +138,30 @@ WATCH_ITEM_JS = """
 # viewport, so a rect-derived point lands somewhere else entirely and the probe reports zero
 # clicks on every tree, fixed or broken, which is a false alarm rather than a measurement.
 WATCH_NEUTRAL_JS = """
-() => {
+(wantUnfocusable) => {
   const v = window.__heavyThread.viewport();
   if (!v) return null;
   const r = v.getBoundingClientRect();
-  const x = Math.round(r.x + r.width * 0.25);
-  const y = Math.round(r.y + r.height * 0.75);
-  const el = document.elementFromPoint(x, y);
-  if (!el) return null;
-  window.__dismissProbe = { neutralClicks: 0 };
-  el.addEventListener("click", () => { window.__dismissProbe.neutralClicks += 1; });
-  return { x, y, tag: el.tagName };
+  const FOCUSABLE = 'button,a[href],input,textarea,select,[tabindex],[contenteditable]';
+  // Grid-search rather than pick one point. The obvious choice lands on a BUTTON often enough
+  // that a run can silently test the focusable case while claiming to test the other one, and
+  // a probe that cannot tell you it missed is worse than no probe. If no qualifying point
+  // exists in the viewport, say so instead of falling back to whatever was there.
+  for (let fy = 0.9; fy > 0.05; fy -= 0.05) {
+    for (let fx = 0.1; fx < 0.95; fx += 0.05) {
+      const x = Math.round(r.x + r.width * fx);
+      const y = Math.round(r.y + r.height * fy);
+      const el = document.elementFromPoint(x, y);
+      if (!el) continue;
+      if (el.closest('[role="menu"],[data-radix-popper-content-wrapper]')) continue;
+      const focusable = Boolean(el.closest(FOCUSABLE));
+      if (wantUnfocusable && focusable) continue;
+      window.__dismissProbe = { neutralClicks: 0 };
+      el.addEventListener("click", () => { window.__dismissProbe.neutralClicks += 1; });
+      return { x, y, tag: el.tagName, focusable };
+    }
+  }
+  return null;
 }
 """
 
@@ -191,12 +224,56 @@ async def one_case(page, case: str) -> dict:
                 await page.evaluate("() => window.__dismissProbe.itemClicks") == 0
             ),
         }
+    elif case == "touch_neutral":
+        # A touch tap on a spot that CANNOT take focus. Radix defers its touch dismissal to the
+        # resulting click, and this guard swallows that click in the capture phase, so the
+        # deferred handler never runs. When the tapped element is focusable, `useFocusOutside`
+        # dismisses instead and the menu closes anyway. Plain thread background is not focusable,
+        # so this is the case where nothing else can cover for it.
+        spot = await page.evaluate(WATCH_NEUTRAL_JS, case == "touch_neutral")
+        if not spot:
+            return {"case": case, "error": "no qualifying neutral spot in the viewport"}
+        await page.touchscreen.tap(spot["x"], spot["y"])
+        await page.wait_for_timeout(1200)
+        after = await page.evaluate(FACTS_JS)
+        return {
+            "case": case,
+            "tappedTag": spot.get("tag"),
+            "menuClosed": not after["menuOpen"],
+            "deleted": after["assistantMessages"] < before["assistantMessages"],
+        }
+    elif case in ("rightclick_then_click", "dragoff_then_click"):
+        # Two ways a dismissing gesture produces NO click at all: a right click raises
+        # contextmenu instead, and a press that leaves the window is released elsewhere. Either
+        # one leaves a guard with no upper bound armed indefinitely, so the user's next real
+        # click is eaten with nothing to associate it with.
+        spot = await page.evaluate(WATCH_NEUTRAL_JS, case == "touch_neutral")
+        if not spot:
+            return {"case": case, "error": "no qualifying neutral spot in the viewport"}
+        if case == "rightclick_then_click":
+            await page.mouse.click(spot["x"], spot["y"], button = "right")
+        else:
+            await page.mouse.move(spot["x"], spot["y"])
+            await page.mouse.down()
+            await page.mouse.move(4, 4)
+            await page.mouse.up()
+        await page.wait_for_timeout(900)
+        # Well after the grace window, so this click is unrelated to the dismissal by any
+        # reading. It must land.
+        await page.mouse.click(spot["x"], spot["y"])
+        await page.wait_for_timeout(600)
+        clicks = await page.evaluate("() => window.__dismissProbe.neutralClicks")
+        return {
+            "case": case,
+            "neutralClicks": clicks,
+            "swallowedLaterClick": clicks < 1,
+        }
     elif case == "second_click":
         # Dismiss on neutral ground, then click a real control. Only the FIRST click is the
         # menu's to eat; a guard that stays armed would eat this one too.
-        spot = await page.evaluate(WATCH_NEUTRAL_JS)
+        spot = await page.evaluate(WATCH_NEUTRAL_JS, case == "touch_neutral")
         if not spot:
-            return {"case": case, "error": "no neutral spot in the viewport"}
+            return {"case": case, "error": "no qualifying neutral spot in the viewport"}
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(200)
         await page.mouse.click(spot["x"], spot["y"])
@@ -235,7 +312,7 @@ async def run(engine: str, cases: list[str]) -> dict:
             # armed by one case must not be inherited by the next.
             context = await browser.new_context(
                 viewport = {"width": 1280, "height": 900},
-                has_touch = case == "touch",
+                has_touch = case.startswith("touch"),
             )
             page = await context.new_page()
             await page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
@@ -259,7 +336,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", default = "run")
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
-    ap.add_argument("--cases", default = "quick,held,busy,touch,select,second_click")
+    ap.add_argument("--cases", default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral")
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
 
@@ -286,11 +363,18 @@ def main() -> int:
     # catch, and a case that could not run is a failure too, or a broken fixture would report
     # a clean sheet.
     deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
+    # A guard that swallows the dismissing click so thoroughly that Radix never sees it would
+    # leave the menu OPEN, which is its own bug and one this probe used to record and ignore.
+    stuck = [
+        c["case"] for c in result["cases"]
+        if "menuClosed" in c and not c["menuClosed"]
+    ]
     broken = [c["case"] for c in result["cases"] if c.get("error")]
     over = [
         c["case"]
         for c in result["cases"]
         if c.get("swallowedSelection") or c.get("swallowedSecondClick")
+        or c.get("swallowedLaterClick")
     ]
     if over:
         print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}", flush = True)
@@ -302,7 +386,9 @@ def main() -> int:
         )
     if broken:
         print(f"[probe] FAIL: cases did not run: {broken}", flush = True)
-    if deleted or broken:
+    if stuck:
+        print(f"[probe] FAIL: the menu did not close on {stuck}", flush = True)
+    if deleted or broken or stuck:
         return 1
     print("[probe] PASS: no dismissal variant reached the control underneath", flush = True)
     return 0

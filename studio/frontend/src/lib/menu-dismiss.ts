@@ -47,7 +47,18 @@ import { useEffect } from "react";
  *
  * So the guard watches `pointerdown` itself, on `document`, in the CAPTURE phase, which is
  * ahead of React's delegation and ahead of Radix's own listener for both pointer types. It is
- * disarmed by the click it was armed for, or by the next gesture, never by a deadline.
+ * disarmed by the click it was armed for, or by the next gesture, never by a deadline anchored
+ * at the press.
+ *
+ * THE UPPER BOUND, AND WHY IT IS ANCHORED AT RELEASE
+ *
+ * Plenty of dismissing gestures never become a click at all. Measured on chromium: a right click
+ * outside an open menu raises `contextmenu` instead, so with no upper bound the swallower
+ * survived and ate the user's next real left click 900 ms later. That is a worse bug than the
+ * one this replaced, because a bounded window that occasionally misses is at least attributable,
+ * while an unbounded one swallows a click with nothing to associate it with. So the window opens
+ * at `pointerup` rather than at `pointerdown`: a press held for a minute is still covered, and a
+ * gesture that produces no click is still bounded.
  *
  * WHY THE ARM STATE OUTLIVES THE COMPONENT
  *
@@ -69,30 +80,66 @@ const MENU_SURFACE =
  * and two menus open at once cannot leave a second listener armed behind the first.
  */
 let armed = false;
+let graceTimer: number | undefined;
+/**
+ * Whether the armed gesture came from a finger. Radix dismisses on the `pointerdown` itself for
+ * a mouse, but for touch it defers to the resulting `click`, which the swallow below denies it.
+ */
+let armedByTouch = false;
+
+/** How long after the pointer is RELEASED a click may still arrive. */
+const CLICK_GRACE_MS = 500;
 
 const disarm = (): void => {
+  if (graceTimer !== undefined) {
+    window.clearTimeout(graceTimer);
+    graceTimer = undefined;
+  }
   if (!armed) return;
   armed = false;
   document.removeEventListener("click", swallowClick, true);
+  document.removeEventListener("pointerup", startGrace, true);
   document.removeEventListener("pointercancel", disarm, true);
   document.removeEventListener("keydown", disarm, true);
+  window.removeEventListener("blur", disarm);
 };
 
+function startGrace(): void {
+  if (graceTimer !== undefined) window.clearTimeout(graceTimer);
+  graceTimer = window.setTimeout(disarm, CLICK_GRACE_MS);
+}
+
 function swallowClick(event: Event): void {
+  const touch = armedByTouch;
   disarm();
   event.stopPropagation();
   event.preventDefault();
+  if (!touch) return;
+  // On touch, Radix's dismissal is a `once` CLICK listener on `document` in the bubble phase,
+  // and the `stopPropagation` above is what it would otherwise have been woken by. Measured:
+  // without this, a tap on non-focusable thread background leaves the menu open on chromium and
+  // webkit. A tap on a focusable control happened to still close it, via `useFocusOutside`,
+  // which is why the first version of this looked fine.
+  //
+  // Radix's deferred handler takes no arguments and ignores the click entirely -- it only
+  // re-raises the pointerdown it already captured -- so a bare click dispatched at `document`
+  // is enough to release it. `bubbles: false` keeps it to listeners on `document` itself, and
+  // `disarm()` above has already removed ours, so this cannot re-enter.
+  document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
-const arm = (): void => {
+const arm = (touch: boolean): void => {
   if (armed) return;
   armed = true;
+  armedByTouch = touch;
   // Capture, so this runs before React's root-container delegation reaches any control.
   document.addEventListener("click", swallowClick, true);
-  // A gesture that never becomes a click -- a pointercancel, or a keyboard interaction that
-  // synthesises one later -- must not leave the swallower waiting for an unrelated click.
+  // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
+  // one: bound it at release, and drop it outright on a cancel, a key, or losing the window.
+  document.addEventListener("pointerup", startGrace, true);
   document.addEventListener("pointercancel", disarm, true);
   document.addEventListener("keydown", disarm, true);
+  window.addEventListener("blur", disarm);
 };
 
 /**
@@ -108,7 +155,7 @@ export function useDismissingClickGuard(): void {
       const target = event.target;
       if (!(target instanceof Element)) return;
       if (target.closest(MENU_SURFACE)) return;
-      arm();
+      arm(event.pointerType === "touch");
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
