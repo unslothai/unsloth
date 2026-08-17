@@ -27,6 +27,12 @@ with no window in it. That is the point: every number here is reported for BOTH 
 baseline column is what says whether a restore is expensive in absolute terms or only relative to a
 windowed pane.
 
+No workflow runs this, on purpose: it is a probe, it asserts only that it measured what it
+claims, and its budgets belong to whoever reads the numbers. Note that
+tests/studio/test_playwright_suites_run_in_ci.py globs `playwright_*.py` only, so a `probe_*.py`
+is outside its reach either way -- this is the first one in the tree, so if probes should be
+covered too, that gate needs widening rather than this file renaming.
+
 Run:
     python tests/studio/probe_reasoning_window.py
     SMOKE_RP_ENGINES=firefox PROBE_CHARS=130000 python tests/studio/probe_reasoning_window.py
