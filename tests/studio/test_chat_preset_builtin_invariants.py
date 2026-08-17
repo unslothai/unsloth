@@ -56,16 +56,10 @@ def _ensure_harness():
 def _run(script: str):
     _require_node()
     _ensure_harness()
-    # Unique per call. Every _run used to write the same TEMP/run.mts and then execute
-    # `node run.mts` from TEMP, so two of this file's tests on different pytest-xdist
-    # workers could interleave the write and the exec and one would run the other's
-    # script. Under `-n 4` that failed 5 to 6 of these 9 tests on every run of the file.
-    #
-    # A unique NAME rather than a per-call directory (which is what
-    # tests/studio/_node_harness.py does): the scripts reach the frontend sources by a
-    # relative path counted from TEMP, so adding a directory level breaks every import
-    # with ERR_MODULE_NOT_FOUND. register.mjs and loader.mjs stay shared because their
-    # contents are fixed, so a concurrent rewrite writes identical bytes.
+    # Unique per call: a shared run.mts let two xdist workers interleave write and exec,
+    # so one ran the other's script (5-6 of these 9 failed on every -n 4 run).
+    # A unique name, not a per-call dir like _node_harness.py uses: these scripts reach
+    # the sources by a path relative to TEMP, so an extra level breaks every import.
     script_path = TEMP / f"run_{uuid.uuid4().hex}.mts"
     script_path.write_text(script, encoding = "utf-8")
     env = dict(os.environ, NODE_NO_WARNINGS = "1")
