@@ -7,6 +7,8 @@
 
 import {
   MARKDOWN_LAYOUT_EVENT,
+
+  PlainStreamingMarkdownContext,
   MarkdownText,
 } from "@/components/assistant-ui/markdown-text";
 import {
@@ -40,6 +42,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -200,54 +203,104 @@ function ReasoningText({
   const shouldAutoScrollRef = useRef(true);
   const detachedFromBottomRef = useRef(false);
   const lastScrollTopRef = useRef(0);
+  const userScrollIntentRef = useRef(false);
+  const pointerScrollIntentRef = useRef(false);
 
-  useEffect(() => {
-    if (!(streaming && scrollRef.current)) {
+  useLayoutEffect(() => {
+    if (!streaming) {
+      shouldAutoScrollRef.current = true;
+      detachedFromBottomRef.current = false;
+      userScrollIntentRef.current = false;
+      pointerScrollIntentRef.current = false;
       return;
     }
     const el = scrollRef.current;
+    if (!el) return;
+
     const updateAutoScroll = () => {
       const currentScrollTop = el.scrollTop;
-      if (currentScrollTop < lastScrollTopRef.current) {
+      const hasUserScrollIntent =
+        userScrollIntentRef.current || pointerScrollIntentRef.current;
+      const movedAwayFromBottom = currentScrollTop < lastScrollTopRef.current;
+      const movedTowardBottom = currentScrollTop > lastScrollTopRef.current;
+
+      if (hasUserScrollIntent && movedAwayFromBottom) {
         detachedFromBottomRef.current = true;
       }
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      const distanceFromBottom =
+        el.scrollHeight - currentScrollTop - el.clientHeight;
       if (
         detachedFromBottomRef.current &&
+        hasUserScrollIntent && movedTowardBottom &&
         distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
       ) {
         detachedFromBottomRef.current = false;
       }
       shouldAutoScrollRef.current = !detachedFromBottomRef.current;
       lastScrollTopRef.current = currentScrollTop;
-    };
-    const handleWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) {
-        detachedFromBottomRef.current = true;
-        shouldAutoScrollRef.current = false;
+      if (!pointerScrollIntentRef.current) {
+        // Consume wheel/key intent with the scroll event it caused. WebKit can
+        // later clamp scrollTop when virtual rows resize; that is not consent
+        // to snap a reader back to the live edge.
+        userScrollIntentRef.current = false;
       }
     };
-    let scrollRaf: number | null = null;
-    const schedulePinnedScroll = () => {
-      if (!shouldAutoScrollRef.current || scrollRaf !== null) return;
-      scrollRaf = requestAnimationFrame(() => {
-        scrollRaf = null;
-        if (shouldAutoScrollRef.current) {
-          el.scrollTop = el.scrollHeight;
-        }
-      });
+    const detachFromBottom = () => {
+      userScrollIntentRef.current = true;
+      detachedFromBottomRef.current = true;
+      shouldAutoScrollRef.current = false;
     };
+    const handleWheel = (event: WheelEvent) => {
+      if (event.deltaY === 0) return;
+      userScrollIntentRef.current = true;
+      if (event.deltaY < 0) detachFromBottom();
+    };
+    const handlePointerDown = () => {
+      pointerScrollIntentRef.current = true;
+      userScrollIntentRef.current = true;
+    };
+    const handlePointerUp = () => {
+      pointerScrollIntentRef.current = false;
+      userScrollIntentRef.current = false;
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (["ArrowUp", "PageUp", "Home"].includes(event.key)) {
+        detachFromBottom();
+      } else if (["ArrowDown", "PageDown", "End", " "].includes(event.key)) {
+        userScrollIntentRef.current = true;
+      }
+    };
+    const pinToBottom = () => {
+      if (!shouldAutoScrollRef.current) return;
+      // Layout events are dispatched from child layout effects. Pinning here,
+      // rather than one animation frame later, avoids painting an old scroll
+      // position for one frame and then producing the visible up/down flash.
+      el.scrollTop = el.scrollHeight;
+      lastScrollTopRef.current = el.scrollTop;
+    };
+
     el.addEventListener("scroll", updateAutoScroll);
     el.addEventListener("wheel", handleWheel, { passive: true });
-    el.addEventListener(MARKDOWN_LAYOUT_EVENT, schedulePinnedScroll);
+    el.addEventListener("pointerdown", handlePointerDown, { passive: true });
+    el.addEventListener("pointerup", handlePointerUp, { passive: true });
+    el.addEventListener("pointercancel", handlePointerUp, { passive: true });
+    el.addEventListener("touchstart", handlePointerDown, { passive: true });
+    el.addEventListener("touchend", handlePointerUp, { passive: true });
+    el.addEventListener("keydown", handleKeyDown);
+    el.addEventListener(MARKDOWN_LAYOUT_EVENT, pinToBottom);
     lastScrollTopRef.current = el.scrollTop;
-    detachedFromBottomRef.current = false;
     updateAutoScroll();
+    pinToBottom();
     return () => {
-      if (scrollRaf !== null) cancelAnimationFrame(scrollRaf);
-      el.removeEventListener(MARKDOWN_LAYOUT_EVENT, schedulePinnedScroll);
+      el.removeEventListener(MARKDOWN_LAYOUT_EVENT, pinToBottom);
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
+      el.removeEventListener("pointerdown", handlePointerDown);
+      el.removeEventListener("pointerup", handlePointerUp);
+      el.removeEventListener("pointercancel", handlePointerUp);
+      el.removeEventListener("touchstart", handlePointerDown);
+      el.removeEventListener("touchend", handlePointerUp);
+      el.removeEventListener("keydown", handleKeyDown);
     };
   }, [streaming]);
 
@@ -256,9 +309,8 @@ function ReasoningText({
       ref={scrollRef}
       data-slot="reasoning-text"
       className={cn(
-        "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed",
-        streaming ? "max-h-64" : "",
-        "transform-gpu transition-[transform,opacity]",
+        "aui-reasoning-text relative z-0 max-h-64 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed [overflow-anchor:none]",
+        "transition-[transform,opacity]",
         "group-data-[state=open]/collapsible-content:animate-in",
         "group-data-[state=closed]/collapsible-content:animate-out",
         "group-data-[state=open]/collapsible-content:fade-in-0",
@@ -276,7 +328,11 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+const ReasoningImpl: ReasoningMessagePartComponent = () => (
+  <PlainStreamingMarkdownContext.Provider value>
+    <MarkdownText />
+  </PlainStreamingMarkdownContext.Provider>
+);
 
 const COPY_RESET_MS = 2000;
 

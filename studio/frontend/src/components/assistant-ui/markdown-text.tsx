@@ -30,10 +30,14 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   type ComponentProps,
   type CSSProperties,
+
+  createContext,
   isValidElement,
   memo,
   type ReactNode,
   useCallback,
+
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -65,6 +69,12 @@ const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 const STREAMDOWN_PLUGINS = { code, math, mermaid } satisfies NonNullable<
+  StreamdownProps["plugins"]
+>;
+
+// Syntax highlighting is finalized once generation stops. Even completed fences
+// can be remounted repeatedly while the virtualized live edge is moving.
+const STREAMDOWN_STREAMING_PLUGINS = { math, mermaid } satisfies NonNullable<
   StreamdownProps["plugins"]
 >;
 const STREAMDOWN_CONTROLS = {
@@ -108,6 +118,10 @@ const STREAMDOWN_COMPONENTS = {
     </a>
   ),
 };
+
+const ActiveStreamingBlockContext = createContext(false);
+
+export const PlainStreamingMarkdownContext = createContext(false);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -305,10 +319,50 @@ function useAnimationFreeBlockProps(props: BlockProps): BlockProps {
   } satisfies BlockProps;
 }
 
+// Active fences intentionally remain plain: one text node is substantially
+// cheaper and more stable than a Shiki token tree that changes ten times/second.
+function StreamingPlainCodeBlock({
+  language,
+  source,
+}: {
+  language: string | null;
+  source: string;
+}) {
+  const label = language?.trim() || "text";
+  return (
+    <div
+      className="my-4 flex w-full flex-col gap-2 rounded-xl border border-border bg-sidebar p-2"
+      data-incomplete="true"
+      data-language={label}
+      data-streamdown="code-block"
+      data-streaming-code="true"
+    >
+      <div
+        className="flex h-8 items-center text-xs text-muted-foreground"
+        data-language={label}
+        data-streamdown="code-block-header"
+      >
+        <span className="ml-1 font-mono lowercase">{label}</span>
+      </div>
+      <div
+        className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm"
+        data-language={label}
+        data-streamdown="code-block-body"
+      >
+        <pre className="m-0 min-w-max bg-transparent p-0 font-mono text-sm leading-5">
+          <code>{source || "\n"}</code>
+        </pre>
+      </div>
+    </div>
+  );
+}
+
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlockContent(props: BlockProps) {
   const blockProps = useAnimationFreeBlockProps(props);
+
+  const activeStreamingBlock = useContext(ActiveStreamingBlockContext);
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
@@ -356,6 +410,18 @@ function StreamdownBlockContent(props: BlockProps) {
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
         Loading canvas preview...
       </div>
+    );
+  }
+
+  // Re-tokenizing and reconciling a growing Shiki tree is the dominant WebKit
+  // cost for long generations. Keep the active fence as one native text node;
+  // the completed fence is highlighted (and virtualized when large) once.
+  if ((props.isIncomplete || activeStreamingBlock) && codeFence) {
+    return (
+      <StreamingPlainCodeBlock
+        language={codeFence.language}
+        source={codeFence.source}
+      />
     );
   }
 
@@ -407,9 +473,13 @@ function StreamdownBlockContent(props: BlockProps) {
 const StreamdownBlock = memo(StreamdownBlockContent);
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
-// Coalesce only token events that arrive before the browser's next paint, as
-// textgen does. There is no time or length throttle. Incremental block parsing
-// bounds the work performed per paint, and completion returns immediately.
+// Limit expensive Markdown work to ten paint-aligned commits per second. The
+// transport can deliver hundreds of token events per second; rendering every
+// animation frame leaves WebKit no idle time for scrolling or input once the
+// active block becomes substantial. Completion and non-prefix replacements
+// still bypass the held snapshot in the return path below.
+const STREAM_RENDER_INTERVAL_MS = 100;
+
 function useCoalescedStreamingText(
   text: string,
   isStreaming: boolean,
@@ -418,13 +488,29 @@ function useCoalescedStreamingText(
   const [displayed, setDisplayed] = useState({ messageId, text });
   const pendingRef = useRef({ messageId, text });
   const rafRef = useRef<number | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRenderAtRef = useRef(0);
   const activeMessageIdRef = useRef(messageId);
 
   const cancelScheduledRender = useCallback(() => {
+    if (timeoutRef.current !== null) {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
+  }, []);
+
+  const schedulePaint = useCallback(() => {
+    timeoutRef.current = null;
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      lastRenderAtRef.current = performance.now();
+      setDisplayed(pendingRef.current);
+    });
   }, []);
 
   useEffect(() => {
@@ -432,31 +518,25 @@ function useCoalescedStreamingText(
     if (activeMessageIdRef.current !== messageId) {
       cancelScheduledRender();
       activeMessageIdRef.current = messageId;
+      lastRenderAtRef.current = 0;
     }
     if (!isStreaming) {
       cancelScheduledRender();
       return;
     }
+    if (timeoutRef.current !== null || rafRef.current !== null) return;
 
-    if (rafRef.current !== null) {
-      return;
-    }
+    const elapsed = performance.now() - lastRenderAtRef.current;
+    const delay = Math.max(0, STREAM_RENDER_INTERVAL_MS - elapsed);
+    if (delay === 0) schedulePaint();
+    else timeoutRef.current = setTimeout(schedulePaint, delay);
+  }, [cancelScheduledRender, isStreaming, messageId, schedulePaint, text]);
 
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null;
-      setDisplayed(pendingRef.current);
-    });
-  }, [cancelScheduledRender, messageId, text, isStreaming]);
-
-  useEffect(() => {
-    return cancelScheduledRender;
-  }, [cancelScheduledRender]);
+  useEffect(() => cancelScheduledRender, [cancelScheduledRender]);
 
   // Holding the last painted text is only correct while the reply is being
   // appended to. A running message can also be replaced, as the audio path does
   // when it swaps its placeholder for the player, and that must show at once.
-  // The length check rejects most of those before the prefix scan runs; the
-  // scan itself costs about 59 ms across a 175,000 character stream.
   if (
     isStreaming &&
     displayed.messageId === messageId &&
@@ -684,8 +764,7 @@ function VirtualizedCodeLines({ result }: { result: HighlightResult }) {
             style={{
               left: 0,
               position: "absolute",
-              top: 0,
-              transform: `translateY(${virtualLine.start - scrollMargin}px)`,
+              top: virtualLine.start - scrollMargin,
             }}
           >
             <HighlightedCodeLine
@@ -717,7 +796,6 @@ function VirtualizedCodeBlock({
       data-incomplete={isIncomplete || undefined}
       data-language={language}
       data-streamdown="code-block"
-      style={{ contentVisibility: "auto", containIntrinsicSize: "auto 200px" }}
     >
       <div
         className="flex h-8 items-center text-xs text-muted-foreground"
@@ -862,21 +940,27 @@ function VirtualizedMarkdown({
             style={{
               left: 0,
               position: "absolute",
-              top: 0,
-
+              top: virtualBlock.start - scrollMargin,
               paddingBottom: isLast ? 0 : "1rem",
-              transform: `translateY(${virtualBlock.start - scrollMargin}px)`,
               width: "100%",
             }}
           >
+            <ActiveStreamingBlockContext.Provider
+              value={isStreaming}
+            >
+
             <Streamdown
               mode="streaming"
               parseIncompleteMarkdown={isStreaming && isLast}
               isAnimating={isStreaming && isLast}
               animated={STREAMDOWN_IMMEDIATE_UPDATES}
-              plugins={STREAMDOWN_PLUGINS}
+              plugins={
+                isStreaming
+                  ? STREAMDOWN_STREAMING_PLUGINS
+                  : STREAMDOWN_PLUGINS
+              }
               components={
-                shouldVirtualizeCode(block)
+                !isStreaming && shouldVirtualizeCode(block)
                   ? VIRTUALIZED_CODE_COMPONENTS
                   : STREAMDOWN_COMPONENTS
               }
@@ -887,9 +971,51 @@ function VirtualizedMarkdown({
             >
               {block.content}
             </Streamdown>
+
+            </ActiveStreamingBlockContext.Provider>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+const PLAIN_STREAM_CHUNK_SIZE = 4096;
+const PlainStreamingChunk = memo(function PlainStreamingChunk({
+  text,
+}: {
+  text: string;
+}) {
+  return <span>{text}</span>;
+});
+
+function PlainStreamingText({ text, status }: { text: string; status: string }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const chunks = useMemo(() => {
+    const next: string[] = [];
+    for (let offset = 0; offset < text.length; offset += PLAIN_STREAM_CHUNK_SIZE) {
+      next.push(text.slice(offset, offset + PLAIN_STREAM_CHUNK_SIZE));
+    }
+    return next;
+  }, [text]);
+
+  useLayoutEffect(() => {
+    rootRef.current?.dispatchEvent(
+      new CustomEvent(MARKDOWN_LAYOUT_EVENT, { bubbles: true }),
+    );
+  }, [text]);
+
+  return (
+    <div
+      ref={rootRef}
+      data-status={status}
+      data-streaming-plain-text="true"
+      className="min-w-0 max-w-full whitespace-pre-wrap break-words"
+    >
+      {chunks.map((chunk, index) => (
+        <PlainStreamingChunk key={index} text={chunk} />
+      ))}
     </div>
   );
 }
@@ -905,10 +1031,16 @@ const MarkdownTextImpl = () => {
   // cannot express, an edit that drops retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);
   const isStreaming = status.type === "running";
+
+  const preferPlainStreaming = useContext(PlainStreamingMarkdownContext);
+  const plainStreaming = isStreaming && preferPlainStreaming;
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
-    () => stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
-    [displayText, isStreaming],
+    () =>
+      plainStreaming
+        ? ""
+        : stabilizeStreamingMarkdown(preprocessLaTeX(displayText), isStreaming),
+    [displayText, isStreaming, plainStreaming],
   );
   const incrementalCacheRef = useRef({
     messageId,
@@ -921,14 +1053,16 @@ const MarkdownTextImpl = () => {
     };
   }
   const incrementalCache = incrementalCacheRef.current.cache;
-  const incrementalRender = isStreaming
+  const incrementalRender = isStreaming && !plainStreaming
     ? incrementalCache.update(processedText)
     : null;
-  const blocks = incrementalRender?.blocks ??
-    parseMarkdownIntoBlocks(processedText).map((content, index) => ({
-      id: index + 1,
-      content,
-    }));
+  const blocks = plainStreaming
+    ? []
+    : incrementalRender?.blocks ??
+      parseMarkdownIntoBlocks(processedText).map((content, index) => ({
+        id: index + 1,
+        content,
+      }));
   const shouldVirtualize =
     blocks.length >= VIRTUALIZE_AFTER_BLOCKS || blocks.some(shouldVirtualizeCode);
 
@@ -941,6 +1075,10 @@ const MarkdownTextImpl = () => {
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
     return <AudioPlayer src={audioMatch[1]} />;
+  }
+
+  if (plainStreaming) {
+    return <PlainStreamingText text={displayText} status={status.type} />;
   }
 
   return (
@@ -956,6 +1094,8 @@ const MarkdownTextImpl = () => {
           messageId={messageId}
         />
       ) : (
+        <ActiveStreamingBlockContext.Provider value={isStreaming}>
+
         <Streamdown
           key={`${messageId}:${incrementalCache.renderGeneration}`}
           mode="streaming"
@@ -963,7 +1103,9 @@ const MarkdownTextImpl = () => {
           parseMarkdownIntoBlocksFn={incrementalRender?.parseMarkdownIntoBlocks}
           isAnimating={isStreaming}
           animated={STREAMDOWN_IMMEDIATE_UPDATES}
-          plugins={STREAMDOWN_PLUGINS}
+          plugins={
+            isStreaming ? STREAMDOWN_STREAMING_PLUGINS : STREAMDOWN_PLUGINS
+          }
           components={STREAMDOWN_COMPONENTS}
           urlTransform={safeMarkdownUrl}
           controls={STREAMDOWN_CONTROLS}
@@ -972,6 +1114,8 @@ const MarkdownTextImpl = () => {
         >
           {incrementalRender?.markdown ?? processedText}
         </Streamdown>
+
+        </ActiveStreamingBlockContext.Provider>
       )}
     </div>
   );

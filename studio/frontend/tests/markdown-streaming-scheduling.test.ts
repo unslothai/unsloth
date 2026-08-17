@@ -19,6 +19,12 @@ const source = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 
+const REASONING_PATH = new URL(
+  "../src/components/assistant-ui/reasoning.tsx",
+  import.meta.url,
+);
+const reasoningSource = readFileSync(REASONING_PATH, "utf8");
+
 function findImmediateUpdateConfig(): ts.ObjectLiteralExpression | null {
   let config: ts.ObjectLiteralExpression | null = null;
   const visit = (node: ts.Node): void => {
@@ -106,19 +112,34 @@ test("token updates keep Streamdown's expensive configuration props stable", () 
   assert.ok(streamdown, "chat <Streamdown> is missing");
 
   for (const [attribute, constant] of [
-    ["plugins", "STREAMDOWN_PLUGINS"],
+    ["plugins", "isStreaming ? STREAMDOWN_STREAMING_PLUGINS : STREAMDOWN_PLUGINS"],
     ["controls", "STREAMDOWN_CONTROLS"],
     ["shikiTheme", "STREAMDOWN_SHIKI_THEME"],
   ]) {
     assert.equal(
-      jsxAttribute(streamdown, attribute)?.initializer?.getText(source),
-      `{${constant}}`,
+      jsxAttribute(streamdown, attribute)
+        ?.initializer?.getText(source)
+        .replace(/\s+/g, ""),
+      `{${constant}}`.replace(/\s+/g, ""),
       `${attribute} must retain object identity while raw tokens arrive`,
     );
   }
 });
 
-test("stream updates are paint-coalesced without a time or length throttle", () => {
+
+test("syntax highlighting is deferred until the stream completes", () => {
+  const markdownSource = source.getText();
+  assert.ok(
+    markdownSource.includes(
+      "const STREAMDOWN_STREAMING_PLUGINS = { math, mermaid }",
+    ),
+  );
+  assert.ok(
+    markdownSource.includes("!isStreaming && shouldVirtualizeCode(block)"),
+  );
+});
+
+test("stream updates are paint-aligned and rate-limited", () => {
   const markdownSource = source.getText();
   const hookStart = markdownSource.indexOf(
     "function useCoalescedStreamingText",
@@ -128,12 +149,32 @@ test("stream updates are paint-coalesced without a time or length throttle", () 
   const hook = markdownSource.slice(hookStart, hookEnd);
 
   assert.ok(hook.includes("requestAnimationFrame"));
-  assert.ok(!hook.includes("setTimeout"));
+  assert.ok(hook.includes("setTimeout"));
+  assert.ok(hook.includes("STREAM_RENDER_INTERVAL_MS"));
 
   // A running message can be replaced rather than appended to, as the audio
   // path does when it swaps its placeholder for the player, so holding the last
   // painted text has to be gated on the new text extending it.
   assert.ok(hook.includes("text.startsWith(displayed.text)"));
+});
+
+test("virtual rows avoid nested transformed layers and browser culling", () => {
+  const markdownSource = source.getText();
+  const codeStart = markdownSource.indexOf("function VirtualizedCodeLines");
+  const markdownStart = markdownSource.indexOf("function VirtualizedMarkdown");
+  const implementationEnd = markdownSource.indexOf(
+    "const MarkdownTextImpl",
+    markdownStart,
+  );
+  assert.ok(
+    codeStart >= 0 && markdownStart > codeStart && implementationEnd > markdownStart,
+  );
+  const virtualized = markdownSource.slice(codeStart, implementationEnd);
+
+  assert.ok(virtualized.includes("top: virtualLine.start - scrollMargin"));
+  assert.ok(virtualized.includes("top: virtualBlock.start - scrollMargin"));
+  assert.ok(!virtualized.includes("transform: `translateY"));
+  assert.ok(!virtualized.includes('contentVisibility: "auto"'));
 });
 
 test("streaming reparses only the active Markdown tail", () => {
@@ -162,4 +203,54 @@ test("dropping retained blocks moves Streamdown's render identity", () => {
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
     "{`${messageId}:${incrementalCache.renderGeneration}`}",
   );
+});
+
+
+test("an active code fence stays plain until the closing fence arrives", () => {
+  const markdownSource = source.getText();
+  const blockStart = markdownSource.indexOf("function StreamdownBlockContent");
+  const blockEnd = markdownSource.indexOf("const StreamdownBlock = memo", blockStart);
+  assert.ok(blockStart >= 0 && blockEnd > blockStart);
+  const block = markdownSource.slice(blockStart, blockEnd);
+
+  const plainBranch = block.indexOf(
+    "(props.isIncomplete || activeStreamingBlock) && codeFence",
+  );
+  const completedBranch = block.indexOf("if (codeFence)");
+  assert.ok(plainBranch >= 0, "the live tail needs a plain streaming branch");
+  assert.ok(
+    completedBranch > plainBranch,
+    "the plain branch must run before syntax-highlighted code rendering",
+  );
+  assert.ok(block.includes("<StreamingPlainCodeBlock"));
+  assert.ok(markdownSource.includes('data-streaming-code="true"'));
+
+  assert.ok(markdownSource.includes("ActiveStreamingBlockContext.Provider"));
+  assert.ok(!markdownSource.includes("value={isStreaming && isLast}"));
+  assert.ok(markdownSource.includes("value={isStreaming}"));
+});
+
+test("reasoning streams stable plain-text chunks and formats Markdown on completion", () => {
+  const markdownSource = source.getText();
+  assert.ok(markdownSource.includes("data-streaming-plain-text"));
+  assert.ok(markdownSource.includes("PLAIN_STREAM_CHUNK_SIZE"));
+  assert.ok(markdownSource.includes("const blocks = plainStreaming"));
+  assert.ok(reasoningSource.includes("PlainStreamingMarkdownContext.Provider"));
+});
+
+
+test("reasoning scroll pinning happens before paint and only user input can reattach", () => {
+  const textStart = reasoningSource.indexOf("function ReasoningText");
+  const textEnd = reasoningSource.indexOf("const ReasoningImpl", textStart);
+  assert.ok(textStart >= 0 && textEnd > textStart);
+  const implementation = reasoningSource.slice(textStart, textEnd);
+
+  assert.ok(implementation.includes("pointerScrollIntentRef"));
+  assert.ok(implementation.includes("hasUserScrollIntent && movedTowardBottom"));
+  assert.ok(implementation.includes("!pointerScrollIntentRef.current"));
+  assert.ok(!implementation.includes("requestAnimationFrame"));
+  assert.ok(implementation.includes("[overflow-anchor:none]"));
+
+  assert.ok(implementation.includes("max-h-64 overflow-y-auto"));
+  assert.ok(!implementation.includes('streaming ? "max-h-64'));
 });
