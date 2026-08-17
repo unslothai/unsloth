@@ -1044,6 +1044,9 @@ export const fr = {
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
+      rememberParamsPerModel: "Mémoriser les réglages par modèle",
+      rememberParamsPerModelDescription:
+        "Changer de modèle restaure la température, le prompt et les autres réglages utilisés en dernier avec ce modèle. Désactivé, un seul jeu de réglages s'applique à tous les modèles.",
       thinking: {
         collapseByDefault: "Replier la réflexion par défaut",
         collapseByDefaultDescription:
