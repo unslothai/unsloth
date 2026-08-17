@@ -6557,16 +6557,29 @@ export function createOpenAIStreamAdapter(
             // sends the user to start a new chat, which fails identically.
             const budget =
               irreducible?.prompt_target ?? irreducible?.context_length ?? 0;
-            const messageIsTheProblem =
+            const oneTurnIsTheProblem =
               irreducible != null && (irreducible.latest_turn_tokens ?? 0) > budget;
+            // Whose turn it is decides the advice. A tool loop refits with the tool
+            // result appended, so the turn that does not fit is often output the user
+            // never wrote and cannot edit, while their own question may be one line.
+            // "Shorten this message" then names the wrong thing and has no remedy.
+            const userCanShortenIt =
+              (irreducible?.latest_turn_role ?? "user") === "user";
+            const tooLong =
+              `${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
+              `against the ${budget.toLocaleString()} tokens this ` +
+              `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
+              "The earlier turns were already removed and it still does not fit, so " +
+              "shortening the conversation will not help. ";
             toast.error("Context limit reached", {
-              description: messageIsTheProblem
-                ? `This message is ${irreducible?.latest_turn_tokens?.toLocaleString()} tokens on its own, ` +
-                  `against the ${budget.toLocaleString()} tokens this ` +
-                  `${irreducible?.context_length?.toLocaleString()}-token window leaves for the prompt. ` +
-                  "The earlier turns were already removed and it still does not fit, so " +
-                  'shortening the conversation will not help. Shorten this message, or raise "Context Length" ' +
-                  "in the chat Settings panel (⚙ in the top-right)."
+              description: oneTurnIsTheProblem
+                ? userCanShortenIt
+                  ? `This message is ${tooLong}` +
+                    'Shorten this message, or raise "Context Length" ' +
+                    "in the chat Settings panel (⚙ in the top-right)."
+                  : `The last tool result is ${tooLong}` +
+                    'Raise "Context Length" in the chat Settings panel (⚙ in the top-right), ' +
+                    "or ask for less output from that tool."
                 : // llama-server runs with --no-context-shift, returning a hard
                   // error instead of silently dropping old KV-cache turns. Point
                   // the user at the control that raises the ceiling.

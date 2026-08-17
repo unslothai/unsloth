@@ -259,6 +259,23 @@ test("a fits:false diagnosis is not a compaction", () => {
   assert.match(source, /dropped_messages \?\? 0\) > 0/);
 });
 
+test("the advice depends on WHOSE turn does not fit", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  // A tool loop refits with the tool result appended, so the turn that does not fit is
+  // often output the user never wrote and cannot edit. "Shorten this message" then names
+  // the wrong thing and offers no remedy at all.
+  assert.match(source, /latest_turn_role/);
+  assert.match(source, /const userCanShortenIt =/);
+  assert.match(source, /The last tool result is/);
+  // The user-authored case keeps its advice, and an older server that sends no role
+  // still gets it (the default is "user").
+  assert.match(source, /latest_turn_role \?\? "user"/);
+  assert.match(source, /Shorten this message/);
+});
+
 test("the too-long check uses the prompt budget, not the raw window", () => {
   const source = readFileSync(
     new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),

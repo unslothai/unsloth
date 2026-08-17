@@ -670,6 +670,9 @@ export interface OpenAIChatChunk {
     // whether "shorten the conversation" is useful advice or a dead end.
     irreducible_tokens?: number;
     latest_turn_tokens?: number;
+    // Whose message that is. A tool loop refits with the tool result appended, so the
+    // last message is often a tool result rather than anything the user typed.
+    latest_turn_role?: string;
     // The prompt's share of the window, i.e. context_length minus the reply
     // reserve. It is what a single turn actually has to fit inside, and the
     // client must not re-derive it: the reserve formula lives in the fit.

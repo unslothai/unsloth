@@ -56,6 +56,13 @@ _MAX_TOOL_ARGS_CHARS = 1000
 # branch can occupy the whole result and starve live matches sitting just below,
 # so recall returns nothing while the answer is in the archive.
 _BRANCH_FILTER_OVERFETCH = 4
+# One over-fetch is not always enough: rewinding or retrying a long continuation that
+# had already been compacted leaves an abandoned branch big enough to fill any fixed
+# candidate window, and every one of those is rejected while live matches sitting just
+# below the cut-off are never looked at. So widen and re-ask instead of giving up.
+# Bounded because this is a chat request, not a crawl: the widening stops as soon as
+# enough live hits are in hand, when the archive stops yielding new candidates, or here.
+_BRANCH_FILTER_MAX_CANDIDATES = 256
 
 
 def _text_of(content, *, include_tool_calls: bool = False) -> str:
@@ -420,6 +427,30 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     return all(probe in transcript for probe in probes)
 
 
+def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
+    """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest."""
+    hits = retrieval.retrieve_hybrid(conn, scope, query, k = fetch, model_name = model, mode = "lexical")
+    if len(hits) < fetch:
+        try:
+            seen = {hit.chunk_id for hit in hits}
+            for hit in retrieval.retrieve_hybrid(
+                conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
+            ):
+                if hit.chunk_id not in seen:
+                    hits.append(hit)
+                    seen.add(hit.chunk_id)
+                if len(hits) >= fetch:
+                    break
+        except Exception:
+            # Dense retrieval raises rather than degrading when no embedder can start.
+            # The lexical hits above already stand on their own, so this is a top-up
+            # that is allowed to fail.
+            logger.warning(
+                "conversation_archive.dense_unavailable thread_id=%s", thread_id, exc_info = True
+            )
+    return hits
+
+
 def recall(
     thread_id: str,
     query: str,
@@ -453,59 +484,47 @@ def recall(
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
-    # Ask for more than we intend to keep, because the live-branch filter below can
-    # reject any of them and there is no second fetch.
-    fetch = limit * _BRANCH_FILTER_OVERFETCH
     conn = None
     try:
         conn = rag_db.get_connection()
         model = config.effective_embedding_model()
-        hits = retrieval.retrieve_hybrid(
-            conn, scope, query, k = fetch, model_name = model, mode = "lexical"
-        )
-        if len(hits) < fetch:
-            try:
-                seen = {hit.chunk_id for hit in hits}
-                for hit in retrieval.retrieve_hybrid(
-                    conn, scope, query, k = fetch, model_name = model, mode = "hybrid"
-                ):
-                    if hit.chunk_id not in seen:
-                        hits.append(hit)
-                        seen.add(hit.chunk_id)
-                    if len(hits) >= fetch:
-                        break
-            except Exception:
-                # Dense retrieval raises rather than degrading when no embedder can start.
-                # The lexical hits above already stand on their own, so this is a top-up
-                # that is allowed to fail.
-                logger.warning(
-                    "conversation_archive.dense_unavailable thread_id=%s",
-                    thread_id,
-                    exc_info = True,
-                )
-        if not hits:
-            return None
-        rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
         # The request's own branch first: the stored rows are the whole DAG, siblings
         # included. Falling back to them is still better than not filtering at all, for
         # a caller that has no branch to offer.
         transcript = branch_transcript(branch_messages) or _live_transcript(thread_id)
-        if transcript:
-            kept = [
+        fetch = limit * _BRANCH_FILTER_OVERFETCH
+        rows: dict = {}
+        hits: list = []
+        while True:
+            candidates = _candidates(conn, scope, query, model, fetch, thread_id)
+            if not candidates:
+                return None
+            rows = store.chunks_by_id(conn, [hit.chunk_id for hit in candidates])
+            if not transcript:
+                hits = candidates[:limit]
+                break
+            hits = [
                 hit
-                for hit in hits
+                for hit in candidates
                 if hit.chunk_id in rows and _on_live_branch(rows[hit.chunk_id]["text"], transcript)
-            ][:limit]
-            if len(kept) != len(hits):
+            ]
+            if len(hits) != len(candidates):
                 logger.info(
                     "conversation_archive.branch_filtered thread_id=%s kept=%d of %d",
                     thread_id,
-                    len(kept),
                     len(hits),
+                    len(candidates),
                 )
-            hits = kept
-        else:
-            hits = hits[:limit]
+            # Enough live hits, or nothing more to widen into: an abandoned branch can
+            # outrank the live one, but it cannot outrank it forever.
+            if (
+                len(hits) >= limit
+                or len(candidates) < fetch
+                or fetch >= _BRANCH_FILTER_MAX_CANDIDATES
+            ):
+                hits = hits[:limit]
+                break
+            fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
         if not hits:
             return None
         text, sources = tool._format(rows, hits)

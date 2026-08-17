@@ -362,6 +362,44 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     assert survived is not None and "KEEPME-1111" in survived[0]
 
 
+def test_recall_widens_past_a_wall_of_abandoned_branch_hits(conn):
+    """One over-fetch is not enough when the abandoned branch is long.
+
+    Rewinding or retrying a continuation that had already been compacted leaves enough
+    stale turns to fill any fixed candidate window. Filtering after a single fetch then
+    rejects the whole page while the live match sitting just below it is never looked at,
+    so recall reports nothing although the answer is in the archive.
+    """
+    # The live answer mentions the marker once, in a turn that is mostly other words.
+    live = _turn(
+        "where is the marker",
+        "the marker is WIDEN-5150 and the rest of this answer is about unrelated matters "
+        "such as scheduling, packaging, release notes and the weather in three cities",
+    )
+    # The abandoned branch repeats it, so every one of these outranks the live turn
+    # lexically and fills any fixed candidate window ahead of it.
+    abandoned = [
+        _turn(
+            f"where is the marker attempt {index}",
+            f"WIDEN-5150 WIDEN-5150 WIDEN-5150 attempt {index} discarded",
+        )
+        for index in range(40)
+    ]
+
+    _save_thread("wall-thread", live, append = True)
+    conversation_archive.archive_turns("wall-thread", live)
+    for turn in abandoned:
+        # Stored as siblings: Retry keeps them, so they are on the thread but not the branch.
+        _save_thread("wall-thread", turn, append = True)
+        conversation_archive.archive_turns("wall-thread", turn)
+
+    found = conversation_archive.recall("wall-thread", "WIDEN-5150", branch_messages = live)
+
+    assert found is not None
+    assert "the marker is WIDEN-5150" in found[0]
+    assert "discarded" not in found[0]
+
+
 def test_the_branch_transcript_carries_request_shaped_tool_calls(conn):
     """A tool turn's arguments live in `tool_calls`, not in content, on the wire.
 

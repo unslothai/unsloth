@@ -478,6 +478,41 @@ def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
     assert info["prompt_tokens_after"] == info["prompt_tokens_before"]
 
 
+def test_an_irreducible_fit_says_WHOSE_turn_does_not_fit():
+    """A tool loop refits with the tool result appended.
+
+    The turn that will not fit is then output the user never wrote and cannot edit, so
+    "shorten this message" names the wrong thing and offers no remedy. The role is what
+    lets the client tell the two apart.
+    """
+    user_turn = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "what does this file contain"},
+        {"role": "assistant", "content": "reading it"},
+        {"role": "tool", "tool_call_id": "c1", "content": "output" * 200},
+    ]
+    _, info = fit_rolling_context(
+        user_turn,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    assert info["fits"] is False
+    assert info["latest_turn_role"] == "tool"
+
+    # And an ordinary overflowing user message still says so.
+    _, info = fit_rolling_context(
+        [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "latest" * 200},
+        ],
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    assert info["latest_turn_role"] == "user"
+
+
 def test_an_irreducible_fit_says_whether_the_message_or_the_history_is_at_fault():
     """The two numbers that make the error actionable.
 

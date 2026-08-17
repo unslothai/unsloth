@@ -311,6 +311,11 @@ def fit_rolling_context(
             # or the single message is the problem.
             "irreducible_tokens": current_tokens,
             "latest_turn_tokens": count_tokens(messages[-1:]) if messages else 0,
+            # ...and WHOSE message that is. A tool loop refits with the tool result
+            # appended, so the last message is often a tool result rather than anything
+            # the user wrote: telling them to shorten it names something they did not
+            # write and cannot edit, while their own question may be one line.
+            "latest_turn_role": str(messages[-1].get("role") or "") if messages else "",
             "context_length": context_length,
             "prompt_target": prompt_target,
         }
