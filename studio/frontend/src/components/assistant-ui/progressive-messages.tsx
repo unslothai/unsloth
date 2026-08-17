@@ -184,6 +184,16 @@ function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
  * `<pre>` Streamdown replaces when Shiki finishes highlighting it, and a replaced node takes its
  * baseline with it. A `[data-role]` row is not replaced in place by anything, so it survives to
  * carry the measurement across.
+ *
+ * Being an ANCESTOR, the row does not move when the replacement changes height inside it, so that
+ * one height change is not corrected. That is deliberate and it is the better of the two available
+ * errors. An anchor BELOW the replaced block would see it, but it would also see the block growing
+ * DOWNWARD, past the fold, which does not move anything the reader is looking at, and correcting
+ * that would introduce an error in the common case to remove one in a rarer case. Measuring what
+ * the reader actually sees when the block AT the fold is itself replaced needs a caret point at
+ * the fold, and the note on pickAnchorRow says why that is not worth it here. The residual either
+ * way is one code block's height change, for a detached reader, during the few hundred
+ * milliseconds a window is open.
  */
 function holdAnchor(viewport: HTMLElement, element: Element): HeldAnchor {
   const row = element.closest("[data-role]");
