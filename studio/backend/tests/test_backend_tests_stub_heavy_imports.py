@@ -464,9 +464,7 @@ def _drops_stubs(tree: ast.Module, line: int) -> bool:
             and _is_sys_modules(node.func.value)
             for node in nodes
         )
-        if pops_sys_modules and (
-            _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
-        ):
+        if pops_sys_modules and (_names_required_stub(nodes) or _reads_a_named_stub(nodes, named)):
             return True
         named |= _bound_names(statement)
     return False
