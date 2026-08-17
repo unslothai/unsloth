@@ -4388,9 +4388,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_kv_quant_note = None,
         chat_template_override_reason = None,
         # Older/custom backend doubles predate this additive runtime field.
-        preserve_thinking_default = bool(
-            getattr(llama_backend, "preserve_thinking_default", False)
-        ),
+        preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
         requested_parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.requested_parallel_slots
@@ -8401,9 +8399,7 @@ async def _load_model_impl(
                     reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
-                    preserve_thinking_default = _sf_flags.get(
-                        "preserve_thinking_default", False
-                    ),
+                    preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
                     supports_tools = _sf_flags["supports_tools"],
                     context_length = _positive_int_or_none(_model_info.get("context_length")),
                     chat_template = _chat_template,

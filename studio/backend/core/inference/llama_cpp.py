@@ -1165,9 +1165,7 @@ def detect_reasoning_flags(
         # Qwen3.8 deliberately changed the family default from the off behavior
         # used by Qwen3.6 and Gemma 4. Keep the product override family-scoped:
         # other templates that happen to expose the same kwarg stay off.
-        flags["preserve_thinking_default"] = bool(
-            _QWEN38_MODEL_RE.search(model_identifier or "")
-        )
+        flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         logger.info(f"{prefix}model supports preserve_thinking")
 
     if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
