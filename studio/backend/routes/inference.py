@@ -11447,7 +11447,12 @@ async def stt_unload(
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines, model)
+    # expected_model by keyword: _stt_lifecycle returns the orchestrator's
+    # unload_stt_model when a backend is resident and stt_registry.unload when one
+    # is not, and only the former takes it positionally. Registry-side it sits
+    # behind a `*`, so passing it positionally raised TypeError, which is the
+    # state a fresh process is in before anything has loaded.
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines, expected_model = model)
     if failed:
         raise HTTPException(
             status_code = 500,

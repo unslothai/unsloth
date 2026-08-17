@@ -133,6 +133,12 @@ export function ChatTab() {
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const autoTitle = useChatRuntimeStore((state) => state.autoTitle);
   const setAutoTitle = useChatRuntimeStore((state) => state.setAutoTitle);
+  const projectAttachmentTarget = useChatRuntimeStore(
+    (state) => state.projectAttachmentTarget,
+  );
+  const setProjectAttachmentTarget = useChatRuntimeStore(
+    (state) => state.setProjectAttachmentTarget,
+  );
   const rememberParamsPerModel = useChatRuntimeStore(
     (state) => state.rememberParamsPerModel,
   );
@@ -308,6 +314,17 @@ export function ChatTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.projectAttachments")}
+          description={t("settings.chat.projectAttachmentsDescription")}
+        >
+          <Switch
+            checked={projectAttachmentTarget === "project"}
+            onCheckedChange={(checked) =>
+              setProjectAttachmentTarget(checked ? "project" : "thread")
+            }
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.rememberParamsPerModel")}
