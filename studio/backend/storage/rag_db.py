@@ -255,6 +255,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_folder_id TEXT")
     if "linked_relative_path" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN linked_relative_path TEXT")
+    # How many messages an archived conversation turn was rendered from. NULL for
+    # everything else, and for archives written before this existed, which fall back to
+    # counting the role labels in the rendered text.
+    if "archive_messages" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN archive_messages INTEGER")
     # After the ALTER that adds the column on an older database. Partial, so it holds only
     # folder-owned rows and is empty with nothing linked, which keeps the lexical fast-path
     # gate an index probe rather than a scan of documents.

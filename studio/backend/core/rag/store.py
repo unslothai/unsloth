@@ -145,13 +145,14 @@ def create_document(
     embedding_model: str | None = None,
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
+    archive_messages: int | None = None,
     commit: bool = True,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
-        "linked_relative_path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "linked_relative_path, archive_messages) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
@@ -166,6 +167,7 @@ def create_document(
             embedding_model,
             linked_folder_id,
             linked_relative_path,
+            archive_messages,
         ),
     )
     if commit:

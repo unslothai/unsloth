@@ -527,6 +527,64 @@ def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
     )
 
 
+def test_a_pasted_transcript_cannot_widen_a_turns_run(conn):
+    """Counting role labels counts lines the USER wrote, not just the renderer's.
+
+    A pasted chat log carries lines that look exactly like the ones `render_turn` writes,
+    and every one of them widened the run by a message -- enough for the message after an
+    edited turn to supply the passage the edit removed. The turn's real size is recorded
+    when it is archived.
+    """
+    rows = [
+        {"text": "user: look at this log\nassistant: Here is what it says:\nuser: hello there"},
+        {"text": "The fix is to restart the worker."},
+    ]
+    edited = conversation_archive.branch_message_texts(
+        [
+            {"role": "user", "content": "look at this log"},
+            {"role": "assistant", "content": "Here is what it says:\nuser: hello there"},
+            {"role": "user", "content": "The fix is to restart the worker."},
+        ]
+    )
+    intact = conversation_archive.branch_message_texts(
+        [
+            {"role": "user", "content": "look at this log"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Here is what it says:\nuser: hello there\nThe fix is to restart the worker."
+                ),
+            },
+        ]
+    )
+
+    # Two messages, whatever the rendered text looks like.
+    assert conversation_archive._document_matches_one_run(rows, edited, 2) is False
+    assert conversation_archive._document_matches_one_run(rows, intact, 2) is True
+
+
+def test_an_archived_turn_records_how_many_messages_it_came_from(conn):
+    """The count has to reach the database, or the bound falls back on every recall."""
+    from core.rag import store
+
+    thread_id = "sized-archive"
+    _save_thread(thread_id, [{"role": "user", "content": "hi"}])
+    written = conversation_archive.archive_turns(
+        thread_id,
+        [
+            {"role": "user", "content": "what is the deploy code"},
+            {"role": "assistant", "content": "the deploy code is 5150"},
+        ],
+    )
+    assert written == 1
+
+    row = conn.execute(
+        "SELECT archive_messages FROM documents WHERE scope = ?",
+        (store.conversation_archive_scope(thread_id),),
+    ).fetchone()
+    assert row["archive_messages"] == 2
+
+
 def test_one_turn_archived_twice_at_once_is_stored_once(conn, monkeypatch):
     """Two generations compacting the same thread both clear the hash check.
 

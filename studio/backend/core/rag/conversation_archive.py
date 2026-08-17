@@ -358,6 +358,11 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 sha256 = digest,
                 status = "completed",
                 embedding_model = identity,
+                # The turn's real size, so the branch check can bound its run by the
+                # messages this document came from. Counting role labels in the rendered
+                # text is only an approximation of that: a pasted transcript writes lines
+                # that look exactly like the renderer's own.
+                archive_messages = len(group),
                 commit = False,
             )
             try:
@@ -629,16 +634,26 @@ def _document_on_live_branch(conn, document_id: str, transcript: list[str], cach
             "SELECT text FROM chunks WHERE document_id = ? ORDER BY chunk_index ASC",
             (document_id,),
         ).fetchall()
+        # NULL for archives written before the column existed, which fall back to
+        # counting labels.
+        row = conn.execute(
+            "SELECT archive_messages FROM documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        message_count = row["archive_messages"] if row else None
     except Exception:
         # Never fail a recall on the strictness pass: fall back to what the candidate
         # chunk itself said, which is the previous behaviour.
         cache[document_id] = True
         return True
-    cache[document_id] = _document_matches_one_run(rows, transcript)
+    cache[document_id] = _document_matches_one_run(rows, transcript, message_count)
     return cache[document_id]
 
 
-def _document_matches_one_run(rows, transcript: Optional[list[str]]) -> bool:
+def _document_matches_one_run(
+    rows,
+    transcript: Optional[list[str]],
+    message_count: Optional[int] = None,
+) -> bool:
     """Every chunk of the turn, found within ONE run of adjacent messages.
 
     Chunk by chunk independently is not enough. The chunks are consecutive slices of a
@@ -657,7 +672,16 @@ def _document_matches_one_run(rows, transcript: Optional[list[str]]) -> bool:
         return False
     # The messages the turn was rendered from, not the lines it produced. Bounding by
     # lines let the tail of a long answer be satisfied by a message far outside the turn.
-    window = _rendered_message_count(rows) or sum(len(probes) for probes in probe_lists)
+    #
+    # Recorded at archive time where it is known. The label count is the fallback for
+    # documents written before that, and it is only an approximation: a pasted transcript
+    # contains lines that look exactly like the ones the renderer writes, and each one
+    # widens the run by a message.
+    window = (
+        int(message_count)
+        if message_count
+        else (_rendered_message_count(rows) or sum(len(probes) for probes in probe_lists))
+    )
 
     def _one_run_from(start: int) -> bool:
         last = min(len(transcript), start + window)
