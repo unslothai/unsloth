@@ -3366,10 +3366,9 @@ def _states_a_date(content: Any) -> bool:
     parts are read as well as plain strings. Only a complete ISO-shaped stamp line counts, so
     unrelated prose that discusses the prefix does not suppress injection.
     """
+
     def _text_states_a_date(text: str) -> bool:
-        return any(
-            _CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line) for line in text.splitlines()
-        )
+        return any(_CURRENT_DATE_PROMPT_LINE_RE.fullmatch(line) for line in text.splitlines())
 
     if isinstance(content, str):
         return _text_states_a_date(content)
