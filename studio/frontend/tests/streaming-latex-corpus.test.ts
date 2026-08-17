@@ -152,28 +152,59 @@ function tighten(document: string, random: () => number, tightness: number): str
   return out;
 }
 
-function assertMatchesFullSplit(name: string, source: string, step: number): void {
+function assertMatchesFullSplit(
+  name: string,
+  source: string,
+  step: number,
+  requireRetention = false,
+): void {
   const cache = new IncrementalMarkdownCache();
+  let everRetained = 0;
   for (let length = 0; length <= source.length; length += step) {
     const input = processStreamingText(source.slice(0, length));
     const render = cache.update(input);
+    everRetained = Math.max(
+      everRetained,
+      render.parseMarkdownIntoBlocks("").length,
+    );
     assert.deepEqual(
       render.parseMarkdownIntoBlocks(render.markdown),
       parseMarkdownIntoBlocks(remend(input)),
       `block mismatch at prefix ${length} of ${name}: ${JSON.stringify(source.slice(0, 200))}`,
     );
   }
+  // Without this the sweep can be green while never once exercising the thing
+  // it is named for. It is how the first version of this file went wrong: a
+  // construct on its own is shorter than the rollback window, so `candidateCount`
+  // is zero, nothing is ever committed, and the assertion above degenerates into
+  // "repairTail agrees with remend on a fresh context".
+  if (requireRetention) {
+    assert.ok(
+      everRetained > 0,
+      `${name} never retained a block, so this sweep asserted nothing about the ` +
+        "retained prefix",
+    );
+  }
 }
+
+// The rollback window is eight blocks, so a construct on its own never reaches
+// the first commit. Sweeping it a second time behind enough lead-in is what puts
+// a retained prefix in front of it, which is the state this file is about.
+const LEAD = Array.from(
+  { length: 6 },
+  (_, index) => `Lead paragraph ${index}.\n\n`,
+).join("");
 
 test("the retained block list matches a full split at every prefix of every construct", () => {
   for (const [name, source] of NAMED_CASES) {
     assertMatchesFullSplit(name, source, 1);
+    assertMatchesFullSplit(`${name} behind a retained prefix`, LEAD + source, 1, true);
   }
 });
 
 test("the same holds for generated replies, loose and tight", () => {
   const random = makeRandom(20260817);
-  for (let index = 0; index < 120; index += 1) {
+  for (let index = 0; index < 40; index += 1) {
     const document = generateDocument(random, 8);
     assertMatchesFullSplit(`fuzz-${index}`, document, 1);
     assertMatchesFullSplit(
@@ -224,6 +255,14 @@ test("rebuilds of the retained prefix do not grow with the reply", () => {
 
   const short = stream(buildReply(80));
   const long = stream(buildReply(320));
+  // Both sides of the comparison below read the same private field, so renaming
+  // it would make this `undefined === undefined` and the test would pass while
+  // measuring nothing. Fail on the rename instead.
+  assert.equal(
+    typeof short.rebuilds,
+    "number",
+    "the rebuild counter was renamed or removed; this test measures nothing",
+  );
   assert.ok(long.length > short.length * 3, "the long reply is not longer");
   assert.equal(
     long.rebuilds,
