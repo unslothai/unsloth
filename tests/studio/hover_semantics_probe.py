@@ -812,17 +812,35 @@ assert not _unclassified, f"cases with no break key and not marked observational
 
 def failures_in(engine: str, name: str, rows: list) -> list[str]:
     out: list[str] = []
+    unrun: list[str] = []
     for i, row in enumerate(rows):
-        if row.get("inconclusive"):
+        if row.get("skipped") or row.get("inconclusive"):
+            unrun.append(f"rep{i}: {row.get('skipped') or 'inconclusive'}")
             continue
         # A case that threw carries no break key, so without this it scored as a pass and the
         # gate went green precisely when the probe stopped working.
         if row.get("failed"):
             out.append(f"{engine} {name} rep{i}: case raised -- {row['failed'][:300]}")
+            unrun.append(f"rep{i}: raised")
             continue
         for key in BREAK_KEYS.get(name, []):
             if row.get(key):
                 out.append(f"{engine} {name} rep{i}: {key} -- {json.dumps(row)[:300]}")
+    # A gated case where NO repetition reached its assertion asserted nothing at all, and a run
+    # that asserted nothing must not exit 0. The scenario is not hypothetical in kind: every case
+    # that needs a user message in view returns `{"skipped": ...}` when there is none, so a
+    # fixture or rendering regression that empties the thread would otherwise take the whole
+    # strict gate green with it.
+    #
+    # Deliberately "no repetition reached it" and not "any repetition was skipped". Several cases
+    # carry an `inconclusive` flag for a page that would not scroll or drag on that attempt, which
+    # is per-attempt environment noise by design; at PROBE_REPS=2 the stricter reading turns one
+    # unlucky attempt into a red build, while this one still catches the case going dark.
+    if BREAK_KEYS.get(name) and len(unrun) == len(rows):
+        out.append(
+            f"{engine} {name}: none of its {len(rows)} repetitions reached the assertion "
+            f"({'; '.join(unrun)}); the case measured nothing"
+        )
     return out
 
 
