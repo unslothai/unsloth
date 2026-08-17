@@ -216,7 +216,7 @@ export function UnstructuredDropZone({
       ),
     accept: ACCEPTED_EXTENSIONS.join(","),
     disabled,
-    disabledReason: "This block is busy — try the drop again in a moment.",
+    disabledReason: "This block is busy. Try the drop again in a moment.",
   });
 
   const handleClick = useCallback(() => {
@@ -237,11 +237,14 @@ export function UnstructuredDropZone({
   return (
     <div className="space-y-2">
       <div
-        className={`nodrag flex cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
+        // Stays hit-testable while disabled: pointer-events-none hides it from
+        // elementFromPoint, so a native drop misses this target and falls
+        // through to the window instead of saying the block is busy.
+        className={`nodrag flex flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
             ? "border-ring-strong bg-primary/5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
-        } ${disabled ? "pointer-events-none opacity-50" : ""}`}
+        } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
         ref={dropRef}
         {...dragHandlers}
         onClick={handleClick}

@@ -118,3 +118,22 @@ test("a refusing view loads no model either", async () => {
     /function isActionableKind[\s\S]*?dropped\.kind !== "none" && dropped\.kind !== "unsupported"/,
   );
 });
+
+// A registered target is found by hit testing document.elementFromPoint, which
+// skips pointer-events-none. Disabling a zone that way un-registers it in
+// practice: nativeDropTargetAt misses it, so the drop falls through to the
+// window handler instead of reaching the zone's own disabled message.
+test("a native drop zone stays hit-testable while disabled", async () => {
+  const files = await sourceFiles(SRC);
+  const hidden: string[] = [];
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    if (!source.includes("useNativeFileDrop(")) continue;
+    // Only where it gates on the same flag the hook was told to refuse on.
+    if (!/disabled\s*[,:]/.test(source)) continue;
+    if (/\$\{\s*disabled\s*\?[^}]*pointer-events-none/.test(source)) {
+      hidden.push(path.relative(new URL(".", SRC).pathname, file.pathname));
+    }
+  }
+  assert.deepEqual(hidden, []);
+});

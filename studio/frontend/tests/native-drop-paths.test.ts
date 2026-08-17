@@ -12,6 +12,7 @@ import {
 import { classifyDropPaths, CHAT_AUDIO_DROP_ACCEPT, CHAT_IMAGE_DROP_ACCEPT, CHAT_VIDEO_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { AUDIO_ACCEPT } from "../src/lib/audio-utils.ts";
+import { MAX_REFERENCE_BYTES } from "../src/features/video/reference-budget.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -462,4 +463,24 @@ test("every audio MIME Rust stamps is one the audio adapter claims", () => {
   for (const mime of stamped) {
     assert.ok(claimed.has(mime), `the audio adapter does not claim ${mime}`);
   }
+});
+
+// The native reader's video cap bounds the FILE; the reference picker's cap
+// bounds the data URL it builds from it. Set to the base64 figure, Rust reads
+// and encodes 96 MiB (128 MiB over the bridge) for a clip the picker rejects.
+test("the native video cap is the raw limit the reference picker enforces", () => {
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_intents.rs", import.meta.url),
+    "utf8",
+  );
+  const rustCap = Number(
+    rustSource
+      .match(/const MAX_NATIVE_VIDEO_BYTES: u64 = ([0-9_]+);/)?.[1]
+      .replaceAll("_", ""),
+  );
+
+  assert.ok(Number.isFinite(rustCap), "MAX_NATIVE_VIDEO_BYTES not found");
+  assert.equal(rustCap, MAX_REFERENCE_BYTES.video);
+  // The thing that made this wrong: the two differ by a third.
+  assert.ok(rustCap < 96 * 1024 * 1024);
 });

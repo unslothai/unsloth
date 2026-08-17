@@ -604,9 +604,11 @@ const MAX_NATIVE_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 // Images stop lower: the composer throws over 20 MB without a toast and the
 // drain swallows it, so a larger read loses them silently.
 const MAX_NATIVE_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
-// Covers the largest client-side video limit (a reference clip, 72 MB raw
-// under its 96 MiB base64 cap). Each caller still enforces its own tighter one.
-const MAX_NATIVE_VIDEO_BYTES: u64 = 96 * 1024 * 1024;
+// The largest client-side video limit: a reference clip, whose 96 MiB cap
+// bounds the data URL, not the file. Mirrors rawLimitFor in reference-budget.ts
+// so we don't read and encode 96 MiB the caller is about to reject. Each caller
+// still enforces its own tighter limit.
+const MAX_NATIVE_VIDEO_BYTES: u64 = 75_497_280;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
