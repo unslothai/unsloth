@@ -9,8 +9,10 @@
 //! toggle either. Resetting to DEFAULT erases the saved answer and nothing more, so the next
 //! getUserMedia prompts exactly as the first one did.
 //!
-//! Only Windows has this trap. WKWebView defers to the system permission, which macOS
-//! exposes in System Settings, and webkit2gtk asks per session, so both are no-ops here.
+//! Only Windows saves the answer. WKWebView defers to the system permission, which macOS
+//! exposes in System Settings, and webkit2gtk stores no answer at all: an unhandled
+//! user-media request is denied outright, and a handled one is decided per request. So
+//! there is nothing to reset on either, and both are no-ops here.
 
 use std::sync::mpsc;
 use std::time::Duration;
