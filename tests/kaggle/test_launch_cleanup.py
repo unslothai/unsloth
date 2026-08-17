@@ -96,6 +96,43 @@ def _await_ready(proc: subprocess.Popen) -> None:
     raise AssertionError("the runner never reached its READY point")
 
 
+def _wait_for_death(proc: subprocess.Popen) -> None:
+    """Wait out the budget, and say what the launcher logged if it never dies.
+
+    The timeout is the other half of the diagnostic: a launcher that hangs and one
+    that exits with the wrong status are different faults, and the bare
+    TimeoutExpired named neither the handler nor anything it logged. Killing first
+    is what lets the pipe reach EOF so the tail can be read at all.
+    """
+    try:
+        proc.wait(timeout = _DEATH_BUDGET_SEC)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout = 30)
+        raise AssertionError(
+            f"the launcher was still alive {_DEATH_BUDGET_SEC}s after its signal. "
+            f"Launcher said: {_tail(proc)}"
+        ) from None
+
+
+def _tail(proc: subprocess.Popen) -> str:
+    """Whatever the launcher logged after READY, for a failure message.
+
+    A signal test that fails says only what the exit status was, and throws away the
+    one line that decides where to look: `_install_release_handlers` logs "received
+    signal N" the moment its handler runs, so its presence separates "the signal never
+    reached the handler" from "the handler ran and the process still exited 0". CI has
+    produced the second symptom on a runner where it does not reproduce locally, and
+    the output that would have said which was discarded.
+
+    Read only after the process has exited, so it cannot block: the pipe is at EOF.
+    """
+    try:
+        return (proc.stdout.read() or "").strip() or "(nothing logged after READY)"
+    except Exception as exc:  # noqa: BLE001 -- a diagnostic must not mask the failure
+        return f"(could not read the launcher's output: {type(exc).__name__}: {exc})"
+
+
 def _deletions(tmp_path: Path) -> list[str]:
     record = tmp_path / "kaggle_calls.txt"
     if not record.is_file():
@@ -394,20 +431,22 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     try:
         _await_ready(proc)
         proc.send_signal(getattr(signal, signame))
-        proc.wait(timeout = _DEATH_BUDGET_SEC)
+        _wait_for_death(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
+    logged = _tail(proc)
     assert any(
         "me/k-1" in c for c in _deletions(tmp_path)
-    ), f"{signame} left the kernel behind; it would bill to its ceiling"
+    ), f"{signame} left the kernel behind; it would bill to its ceiling. Launcher said: {logged}"
     # And the registry agrees, so no later sweep chases a kernel that is gone.
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
     # On the signal path, not on the way out of an ordinary run: finish() satisfies
     # the deletion above on its own, so a swallowed signal would pass without this.
     assert proc.returncode == -getattr(signal, signame), (
         f"the kernel was deleted, but the launcher exited {proc.returncode} rather than "
-        f"dying of {signame}, so nothing here says the signal is what did it"
+        f"dying of {signame}, so nothing here says the signal is what did it. "
+        f"Launcher said: {logged}"
     )
 
 
@@ -418,13 +457,14 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout = _DEATH_BUDGET_SEC)
+        _wait_for_death(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
-    assert (
-        proc.returncode == -signal.SIGTERM
-    ), f"expected death by SIGTERM, got returncode {proc.returncode}"
+    assert proc.returncode == -signal.SIGTERM, (
+        f"expected death by SIGTERM, got returncode {proc.returncode}. "
+        f"Launcher said: {_tail(proc)}"
+    )
 
 
 def test_the_exit_status_survives_a_release_that_fails(tmp_path):
@@ -459,13 +499,13 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout = _DEATH_BUDGET_SEC)
+        _wait_for_death(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
     assert proc.returncode == -signal.SIGTERM, (
         f"a release() that raised turned SIGTERM into returncode {proc.returncode}; "
-        f"a cancelled job would read as a completed one"
+        f"a cancelled job would read as a completed one. Launcher said: {_tail(proc)}"
     )
     # And the retry still did the budget control the handler exists for.
     assert any("me/k-1" in c for c in _deletions(tmp_path))
@@ -506,7 +546,7 @@ def test_an_unhandled_exception_still_deletes(tmp_path):
         raise RuntimeError("boom")
     """,
     )
-    proc.wait(timeout = _DEATH_BUDGET_SEC)
+    _wait_for_death(proc)
     assert any("me/k-1" in c for c in _deletions(tmp_path))
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
 
@@ -526,7 +566,7 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(signal.SIGKILL)
-        proc.wait(timeout = _DEATH_BUDGET_SEC)
+        _wait_for_death(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -656,7 +696,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        proc.wait(timeout = _DEATH_BUDGET_SEC)
+        _wait_for_death(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
