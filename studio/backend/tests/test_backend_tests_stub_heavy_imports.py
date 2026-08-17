@@ -151,11 +151,11 @@ def _reraises(handler: ast.ExceptHandler) -> bool:
     exempting the try body then hid the import entirely. Any ``raise`` the handler can
     reach disqualifies it, since the path that raises is the one that kills the job.
     ``pytest.skip(..., allow_module_level = True)`` is a CALL rather than a ``raise``,
-    so the module-level skip these files use stays exempt. Reported on this PR.
+    so the module-level skip these files use stays exempt.
 
     A ``raise`` inside a ``def`` or ``lambda`` the handler merely DEFINES does not run
     when the exception is handled, so the traversal stops at those bodies. Counting one
-    reported a properly guarded file as an offender. Reported on this PR.
+    reported a properly guarded file as an offender.
     """
     return any(isinstance(node, ast.Raise) for node in _reachable_import_time_nodes(handler))
 
@@ -166,7 +166,7 @@ def _absorbs_import_error(node: ast.Try) -> bool:
     Only the FIRST handler that would catch it is asked. Python dispatches to the first
     match, so ``except Exception: raise`` followed by ``except ImportError: pass`` still
     propagates, and asking whether ANY handler absorbs found the second one and exempted
-    a try that does not guard the import. Reported on this PR.
+    a try that does not guard the import.
     """
     for handler in node.handlers:
         if handler.type is None or _catches_import_error(handler.type):
@@ -186,7 +186,7 @@ def _guarded_by_import_error(tree: ast.Module) -> set[int]:
     ``except MyImportError:`` and ``except ExceptionGroup:`` both contain one of the
     names and catch neither a plain ``ImportError`` nor anything above it, so a
     substring test exempted a ``try`` that does not in fact guard the import, and the
-    collection it kills is the one this guard exists to report. Reported on this PR.
+    collection it kills is the one this guard exists to report.
     """
     guarded: set[int] = set()
     for node in ast.walk(tree):
@@ -210,7 +210,7 @@ def _first_heavy_import_line(tree: ast.Module, heavy: frozenset[str]) -> int | N
     Reachability-aware, so ``if TYPE_CHECKING:`` and ``if False:`` are not read as
     import-time dependencies: an import there never executes, and reporting it would
     make a file with a legitimate type-only import fail this guard until someone added
-    a stub it does not need. Reported on this PR, against the first version of this
+    a stub it does not need. Against the first version of this
     function, which used the plain import-time traversal.
 
     A ``try`` that catches ``ImportError`` is exempt, since that is a deliberate guard
@@ -226,7 +226,7 @@ def _heavy_import_lines(tree: ast.Module, heavy: frozenset[str]) -> list[int]:
     Separate branches can both import one, and only one of them needs to be stubbed for
     the first to look fine: a file that stubs before the import in the ``if`` and forgets
     the one in the ``else`` dies at collection whenever the else runs, while reducing the
-    module to a single line reported it safe. Reported on this PR.
+    module to a single line reported it safe.
     """
     guarded = _guarded_by_import_error(tree)
     lines: list[int] = []
@@ -343,7 +343,7 @@ def _installs_stub(
     Decided by what a helper DOES wherever the module defines it. Accepting any callee
     whose name contains "stub" counted ``_remove_stub("unsloth")`` and
     ``_validate_stub("unsloth")`` as installations, and the import after them still
-    found nothing. Reported on this PR.
+    found nothing.
 
     The name stays as the fallback for a call this module cannot resolve, which is the
     helper imported from a shared module. A name defined nowhere would raise NameError
@@ -371,7 +371,7 @@ def _stub_helpers(tree: ast.Module) -> dict[str, ast.AST]:
 
     Synchronous ones only. Calling an ``async def`` builds a coroutine and runs none of
     its body, so reading through such a call credited the module with stubs that were
-    never installed. Reported on this PR.
+    never installed.
     """
     return {
         statement.name: statement
@@ -412,7 +412,7 @@ def _can_exit_early(node: ast.AST, flags: dict[str, bool] | None = None) -> bool
 
     Nothing under an exit the helper can take is guaranteed: ``def setup(): if
     disabled: return`` followed by the stub call means the disabled path reaches the
-    import unstubbed, and scanning past it read the call as made. Reported on this PR.
+    import unstubbed, and scanning past it read the call as made.
 
     Two exits are benign, and both are in the tree already. A ``return`` under "the
     module is already in sys.modules", and one under the importable probe above: on
@@ -476,7 +476,7 @@ def _helper_installs_stub(
     Only the part of the helper that has run by then counts, which is what
     ``_helper_nodes_entered`` decides. Reading the whole body accepted a stub installed
     after the ``yield`` of a context manager, and that code runs on the way OUT of the
-    block, after the import inside it has already been attempted. Reported on this PR.
+    block, after the import inside it has already been attempted.
     """
     helper = helpers.get(name)
     if helper is None or name in seen:
@@ -515,7 +515,7 @@ def _true_when_imported(
     not an omission, because the import resolves out of ``sys.modules`` there and
     never reaches the real dependency. Written the other way up, the stubs would be
     installed only when they are not needed and skipped when they are, and the guard
-    accepted that too until this told the two apart. Reported on this PR.
+    accepted that too until this told the two apart.
     """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
         inner = _true_when_imported(node.operand, flags, allow_variable_key = allow_variable_key)
@@ -538,7 +538,7 @@ def _key_decides_the_import(node: ast.AST, allow_variable: bool) -> bool:
 
     ``if "pytest" not in sys.modules:`` says nothing about ``unsloth``, and treating it
     as the availability guard made an unrelated cached package decide whether the stubs
-    below it counted. Reported on this PR. What counts is the required stub itself, or a
+    below it counted. What counts is the required stub itself, or a
     heavy backend module, since caching either is what makes the import safe.
 
     A non-constant key is the ``name`` parameter of a stub helper deciding about its own
@@ -590,14 +590,13 @@ def _certain_nodes(node: ast.AST, flags: dict[str, bool] | None = None):
         return
     if isinstance(node, ast.While):
         # Not even the `else`: it is skipped when the loop leaves through `break`.
-        # Reported on this PR.
         return
     if isinstance(node, ast.Try):
         # Only the `finally`. A try body whose handler swallows the exception is
         # exactly a block that may stop part way: an optional import fails, the
         # handler catches it, and the stub call below it never runs while the heavy
         # import after the try does. Counting the body reported that file stubbed.
-        # `else` and the handlers are conditional by construction. Reported on this PR.
+        # `else` and the handlers are conditional by construction.
         for child in node.finalbody:
             yield from _certain_nodes(child, flags)
         return
@@ -619,7 +618,7 @@ def _running_before(
             import core.inference.inference
 
     puts the stub above the import while the two can never both run, and the guard
-    called that file stubbed. Reported on this PR. What is walked instead is the
+    called that file stubbed. What is walked instead is the
     import's own chain: at each level, only the block that CONTAINS the line is
     descended into, and only the statements above the line inside it. Everything
     there did run, because the import running means its branch was taken.
@@ -760,7 +759,7 @@ def _constant_test(node: ast.If) -> bool | None:
 def _reachable_import_time_nodes(node: ast.AST):
     """``_import_time_nodes``, minus the branches that provably do not run.
 
-    Two corrections, both reported on this PR. Import time rather than runtime,
+    Two corrections. Import time rather than runtime,
     because a class body, a decorator, a default and an annotation all execute while
     the module is being imported, so an eager import written in one of them DOES cache
     the target -- ``_runtime_nodes`` stopped at every def and class and reported no
@@ -771,7 +770,7 @@ def _reachable_import_time_nodes(node: ast.AST):
     if isinstance(node, ast.If) and _constant_test(node) is not None:
         # Only the branch the interpreter takes. Pruning the body of `if False:` but
         # descending into the `else:` of `if True:` left the second half of the same
-        # hole open: an import there never runs either. Reported on this PR.
+        # hole open: an import there never runs either.
         taken = node.body if _constant_test(node) else node.orelse
         for child in taken:
             yield from _reachable_import_time_nodes(child)
@@ -806,7 +805,7 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
     which on the dependency-light matrix fails and leaves nothing cached -- and
     Python removes the half-initialised module on the way out, so the later call
     still reaches the real dependency. Counting that probe reported such a file
-    safe. Reported on this PR.
+    safe.
     """
     for statement in tree.body:
         if statement.lineno >= line:
@@ -834,7 +833,7 @@ def _importorskip_target(node: ast.Call) -> ast.AST | None:
     ``importorskip(modname, minversion=None, reason=None, *, exc_type=None)``, so
     ``pytest.importorskip(modname = "core.inference.inference")`` is a valid call
     with an empty ``node.args``. Matching only the positional form let a file
-    written that way walk past this guard. Reported on this PR.
+    written that way walk past this guard.
     """
     if node.args:
         return node.args[0]
@@ -855,7 +854,6 @@ def _skips_on_plain_import_error(node: ast.Call) -> bool:
     of skipping. A call that passes ``ImportError`` explicitly has opted into the
     broad behaviour and is safe unstubbed, so flagging it would be a false report.
     ``ModuleNotFoundError`` passed explicitly is the default and stays flagged.
-    Reported on this PR.
     """
     for keyword in node.keywords:
         if keyword.arg != "exc_type":
@@ -877,8 +875,7 @@ def _module_functions(tree: ast.Module) -> dict[str, list[ast.AST]]:
     module body calls, defining and calling an inner helper, runs that inner body
     during collection. Leaving nested defs out of this map handed such a call the
     end-of-module boundary, the lenient answer, so a stub installed after the outer
-    call read as being in time while the inner import had already run. Reported on
-    this PR.
+    call read as being in time while the inner import had already run.
     """
     functions: dict[str, list[ast.AST]] = {}
 
@@ -909,7 +906,7 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
     end-of-module boundary, which is the LENIENT answer -- a stub installed anywhere in
     the file then counts as in time, while collection has already run the inner import
     and failed. So a helper reached only through another helper inherits the outer call
-    site's line, which is when it actually runs. Reported on this PR.
+    site's line, which is when it actually runs.
     """
     functions = _module_functions(tree)
     first: dict[str, int] = {}
@@ -926,13 +923,13 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
             # Only the calls that actually run when the outer helper runs. ast.walk
             # would also visit one under `if False:` and one inside a nested def that
             # nothing calls, and handing those the outer boundary fails a file Python
-            # never executes that way. Reported on this PR. Same reachability rule as
+            # never executes that way. Same reachability rule as
             # the module body uses, so the two cannot answer differently.
             # Every definition of the name, not just the first. Two enclosing
             # functions can each define a helper called the same thing, and keeping
             # only one dropped the other from the call graph: its importorskip then
             # took the end-of-module boundary and a stub installed after the enclosing
-            # call read as being in time. Reported on this PR. Which of them a call
+            # call read as being in time. Which of them a call
             # names cannot be told apart here, so all of them take the boundary, which
             # is the strict answer.
             for definition in functions[caller]:
@@ -953,7 +950,7 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
                     # helper had never run. Checked AFTER the statement, since
                     # `return _inner()` runs its own expression. A CONDITIONAL exit is
                     # not enough to stop: the path that skips it still reaches the
-                    # calls below. Reported on this PR.
+                    # calls below.
                     if isinstance(statement, (ast.Return, ast.Raise)):
                         break
     return first
@@ -987,7 +984,7 @@ def _reachable_body(body: list[ast.stmt]):
 
     Anything written after a bare ``return`` or ``raise`` is dead: Python cannot execute
     it, so an ``importorskip`` there is not an offence, and reporting one failed CI on a
-    file that never runs the import. Reported on this PR.
+    file that never runs the import.
     """
     for statement in body:
         yield from _reachable_nodes(statement)
@@ -1000,7 +997,7 @@ def _importorskip_bare_names(tree: ast.Module) -> frozenset[str]:
 
     ``from pytest import importorskip as ios`` then ``ios(...)`` is a valid call, and
     matching the callee against the literal string missed it, so an unstubbed module
-    written that way walked past the guard. Reported on this PR. The attribute form is
+    written that way walked past the guard. The attribute form is
     still matched on the attribute name, so ``pytest.importorskip`` needs no binding.
     """
     names: set[str] = set()
@@ -1036,8 +1033,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     bare_names = _importorskip_bare_names(tree)
     # Reachability-aware on both counts. A call under `if False:` or `if TYPE_CHECKING:`
     # never runs, so it is neither an import-time call nor a call at all, and reporting
-    # it failed a file that type-checks or deliberately disables an import. Reported on
-    # this PR.
+    # it failed a file that type-checks or deliberately disables an import.
     module_scope = {
         id(node) for statement in tree.body for node in _reachable_import_time_nodes(statement)
     }
@@ -1046,14 +1042,14 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     # A call inside a def is deferred only if nothing runs that def during import. Where
     # the module body calls it, the body runs at collection like any other import-time
     # statement, and the end-of-module boundary would let a stub installed BELOW the call
-    # count. Those calls take the line the helper is invoked from. Reported on this PR.
+    # count. Those calls take the line the helper is invoked from.
     called_at_import = _functions_called_at_import(tree)
     # The function a call belongs to is the INNERMOST one. ast.walk descends into a
     # nested def, which attributed a call there to the enclosing module-level function
     # and handed it that function's import-time boundary, while a nested body cannot run
     # until something calls it -- by which time a stub installed below is in place. So
     # this defers nested bodies, and a call inside one falls through to the end-of-module
-    # boundary, which is what deferred means. Reported on this PR.
+    # boundary, which is what deferred means.
     in_function = {
         id(node): name
         for name, definitions in _module_functions(tree).items()
@@ -1101,7 +1097,7 @@ def _stub_record_names(tree: ast.Module) -> frozenset[str]:
 
     An earlier version instead accumulated EVERY module-level assignment target,
     which made an unrelated cleanup list read as the stub record and got properly
-    stubbed files reported as offenders. Reported on this PR.
+    stubbed files reported as offenders.
     """
     helpers = {
         _callee_name(node)
@@ -1145,7 +1141,7 @@ def _drops_stubs(tree: ast.Module, line: int) -> bool:
     reads, which is how the real files spell it (``for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)``). Before that, an unrelated
     ``sys.modules.pop("routes.foo", None)`` in a properly stubbed file read as a
-    drop and got the file reported as an offender. Reported on this PR.
+    drop and got the file reported as an offender.
     """
     recorded = _stub_record_names(tree)
     for statement in tree.body:
@@ -1418,7 +1414,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     # The same trap at IMPORT time, which the drop check used to skip entirely: stub,
     # pop, then call at module scope. The stub is installed above the call, so the
     # install check is satisfied, but it is gone again by the time the call runs and
-    # collection dies. Reported on this PR.
+    # collection dies.
     drop_then_import_time_call = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
@@ -1509,7 +1505,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
 
     # But an UNRELATED module-level list is not the stub record, even when it is
     # popped from sys.modules. Accumulating every assignment target made this read
-    # as a stub drop and reported a properly stubbed file. Reported on this PR.
+    # as a stub drop and reported a properly stubbed file.
     unrelated_cleanup_list = (
         "import pytest, sys\n"
         "_STUBBED = []\n"
@@ -1599,7 +1595,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     # And through a second helper: the module calls the outer one, the inner one holds
     # the importorskip, and the stub arrives after. Stopping at one level handed the
     # inner call the end-of-module boundary and read the later stub as in time, while
-    # collection has already run the inner import. Reported on this PR.
+    # collection has already run the inner import.
     nested_helper_at_import = (
         "import pytest, sys\n"
         "def _inner():\n"
@@ -1614,8 +1610,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
 
     # A call the outer helper never makes does not propagate: neither one under a
     # constant-false test, nor one inside a nested def that nothing invokes. Handing
-    # those the outer boundary failed a file Python never executes that way. Reported
-    # on this PR.
+    # those the outer boundary failed a file Python never executes that way.
     unreachable_inner_call = (
         "import pytest, sys\n"
         "def _inner():\n"
@@ -1718,8 +1713,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
 
     # An importorskip inside a NESTED def does not run when the outer helper is called,
     # so it keeps the deferred boundary and a stub installed after the outer call is in
-    # time. Attributing it to the outer function rejected a file that works. Reported on
-    # this PR.
+    # time. Attributing it to the outer function rejected a file that works.
     nested_def_holds_the_call = (
         "import pytest, sys\n"
         "def _outer():\n"
@@ -1733,7 +1727,6 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
 
     # A call under a branch the interpreter never takes is not a call. Reporting it
     # failed a file that only type-checks the import, or deliberately disables it.
-    # Reported on this PR.
     type_checking_call = (
         "import pytest\n"
         "from typing import TYPE_CHECKING\n"
