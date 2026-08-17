@@ -313,6 +313,58 @@ def test_interface_enumeration_skips_adapters_that_are_down(monkeypatch):
     assert lan_access._interface_addresses() == ["10.0.0.7"]
 
 
+def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
+    import types
+
+    fake = types.SimpleNamespace(
+        net_if_stats = lambda: {
+            name: types.SimpleNamespace(isup = True)
+            for name in (
+                "Wi-Fi",
+                "vEthernet (Default Switch)",
+                "vEthernet (WSL (Hyper-V firewall))",
+                "vEthernet (External LAN)",
+            )
+        },
+        net_if_addrs = lambda: {
+            "Wi-Fi": [
+                types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.20")
+            ],
+            "vEthernet (Default Switch)": [
+                types.SimpleNamespace(family = socket.AF_INET, address = "172.31.32.1")
+            ],
+            "vEthernet (WSL (Hyper-V firewall))": [
+                types.SimpleNamespace(family = socket.AF_INET, address = "172.25.32.1")
+            ],
+            # An external Hyper-V switch can replace the physical adapter and is
+            # reachable from the LAN, so do not reject every vEthernet interface.
+            "vEthernet (External LAN)": [
+                types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.21")
+            ],
+        },
+    )
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+    assert lan_access._interface_addresses() == ["192.168.1.20", "192.168.1.21"]
+
+
+def test_wsl_nat_address_is_not_advertised(monkeypatch):
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "nat")
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    assert lan_access.detect_lan_addresses() == []
+
+
+def test_wsl_unknown_networking_mode_fails_closed(monkeypatch):
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["172.25.35.232"])
+    assert lan_access.detect_lan_addresses() == []
+
+
+def test_wsl_mirrored_networking_keeps_reachable_addresses(monkeypatch):
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "mirrored")
+    monkeypatch.setattr(lan_access, "_interface_addresses", lambda: ["192.168.1.20"])
+    assert lan_access.detect_lan_addresses() == ["192.168.1.20"]
+
+
 # ── live listener ──
 
 

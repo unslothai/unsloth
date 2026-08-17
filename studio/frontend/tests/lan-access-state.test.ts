@@ -149,6 +149,23 @@ test("stop-disconnects normalizes trailing slashes on both sides", () => {
   assert.equal(lanAccessStopDisconnectsOrigin([`${LAN}///`], `${LAN}/`), true);
 });
 
+test("stop-disconnects normalizes default HTTP and HTTPS ports", () => {
+  assert.equal(
+    lanAccessStopDisconnectsOrigin(
+      ["http://192.168.1.24:80"],
+      "http://192.168.1.24",
+    ),
+    true,
+  );
+  assert.equal(
+    lanAccessStopDisconnectsOrigin(
+      ["https://192.168.1.24:443"],
+      "https://192.168.1.24",
+    ),
+    true,
+  );
+});
+
 test("stop-disconnects is false for a loopback browser or another address", () => {
   assert.equal(
     lanAccessStopDisconnectsOrigin([LAN], "http://127.0.0.1:8888"),
@@ -157,6 +174,7 @@ test("stop-disconnects is false for a loopback browser or another address", () =
   assert.equal(lanAccessStopDisconnectsOrigin([LAN], SECOND), false);
   assert.equal(lanAccessStopDisconnectsOrigin([], LAN), false);
   assert.equal(lanAccessStopDisconnectsOrigin([], ""), false);
+  assert.equal(lanAccessStopDisconnectsOrigin(["not a URL"], LAN), false);
 });
 
 test("stop-disconnects does not treat a different port as the same origin", () => {

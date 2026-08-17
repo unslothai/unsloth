@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import platform
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -70,6 +72,13 @@ def detect_lan_addresses() -> list[str]:
     -- a cloud VM binding its own public IP is the same operation as a laptop
     binding its Wi-Fi address, and the caller decides whether that is wanted.
     """
+    # WSL's NAT-side address belongs to a private Hyper-V network, not the
+    # physical LAN. A second device cannot open it directly. Mirrored mode is
+    # different: WSL participates in the host's network and its addresses can be
+    # reached subject to the host firewall.
+    if _wsl_networking_mode() not in (None, "mirrored"):
+        return []
+
     addresses: list[str] = []
 
     def _add(candidate: str) -> None:
@@ -105,6 +114,40 @@ def detect_lan_addresses() -> list[str]:
     return addresses
 
 
+def _wsl_networking_mode() -> Optional[str]:
+    """The active WSL networking mode, or ``None`` outside WSL.
+
+    An older WSL without ``wslinfo`` is treated as unknown and therefore not
+    advertised. Older releases use NAT, so failing closed avoids handing a phone
+    an address that only the Windows host can route to.
+    """
+    if sys.platform != "linux" or "microsoft" not in platform.release().casefold():
+        return None
+    try:
+        result = subprocess.run(
+            ["wslinfo", "--networking-mode"],
+            capture_output = True,
+            check = False,
+            text = True,
+            timeout = 1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    mode = result.stdout.strip().casefold()
+    return mode or "unknown"
+
+
+def _is_host_only_interface(name: str) -> bool:
+    """True for Windows Hyper-V switches that do not face the physical LAN."""
+    normalized = name.strip().casefold()
+    if not normalized.startswith("vethernet ("):
+        return False
+    return any(
+        marker in normalized
+        for marker in ("default switch", "wsl", "hyper-v firewall", "host-only")
+    )
+
+
 def _interface_addresses() -> list[str]:
     """IPv4 addresses on every interface that is up.
 
@@ -126,6 +169,8 @@ def _interface_addresses() -> list[str]:
         stats = psutil.net_if_stats()
         addresses = []
         for name, entries in psutil.net_if_addrs().items():
+            if _is_host_only_interface(name):
+                continue
             interface = stats.get(name)
             if interface is not None and not interface.isup:
                 continue

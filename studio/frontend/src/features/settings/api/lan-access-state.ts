@@ -3,7 +3,6 @@
 
 export type LanAccessState = "off" | "online" | "error";
 export type LanAccessOwner = "launch" | "settings" | null;
-const TRAILING_SLASHES_RE = /\/+$/;
 
 export type LanAccessStatus = {
   state: LanAccessState;
@@ -69,8 +68,19 @@ export function lanAccessStopDisconnectsOrigin(
   urls: string[],
   browserOrigin: string,
 ): boolean {
-  const origin = browserOrigin.replace(TRAILING_SLASHES_RE, "");
-  return urls.some((url) => url.replace(TRAILING_SLASHES_RE, "") === origin);
+  let origin: string;
+  try {
+    origin = new URL(browserOrigin).origin;
+  } catch {
+    return false;
+  }
+  return urls.some((url) => {
+    try {
+      return new URL(url).origin === origin;
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function lanAccessBlockMessage(
