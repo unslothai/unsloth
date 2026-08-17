@@ -248,9 +248,9 @@ function useProgressiveMountWindow(
   // through the useState initialiser above instead. Measured across in-app switches: zero
   // arm records from this branch, a fresh instance at every switch, and the viewport DOM node
   // recreated each time. It is kept rather than deleted because it is what makes the component
-  // correct on its own terms -- remove that ancestor key and this is the only thing standing
-  // between a thread switch and the previous thread's window gating the next one -- and it is
-  // exercised by the unkeyed control in tests/studio/probe_pm_edge.py rather than left untested.
+  // correct on its own terms: remove that ancestor key and this is the only thing standing between
+  // a thread switch and the previous thread's window gating the next one. Nothing in the tree
+  // covers it, for the same reason nothing in the app reaches it, so treat it as unexercised.
   const [previousKey, setPreviousKey] = useState(resetKey);
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);

@@ -300,8 +300,8 @@ test("a thread that shrank under a live window drops the restriction, it does no
   // is inside startTransition. Measured on the version that clamped: dropping a 220-message
   // thread to 10 while the window sat at start=204 painted an empty column for 2 to 8 frames on
   // chromium, webkit and firefox. This is a source assertion because the failure is a React
-  // commit rather than a value; the gate that can actually see it is
-  // tests/studio/probe_pm_edge.py.
+  // commit rather than a value: seeing it at all needs a real engine driving a live thread, so
+  // there is no in-tree gate on the behaviour, only on the shape of the code that produces it.
   assert.match(
     GLUE,
     /mountWindow == null \|\| mountWindow\.start >= count/,
