@@ -1777,22 +1777,37 @@ class TestOpenAICompatibilityHelpers:
         assert chat_messages == [{"role": "user", "content": "hi"}]
         assert image_b64 is None
 
-    def test_mlx_vlm_image_marker_stays_on_its_original_turn_with_null_history(self):
-        def image_message(url):
-            part = SimpleNamespace(type = "image_url", image_url = SimpleNamespace(url = url))
-            return SimpleNamespace(role = "user", content = [part])
+    def test_mlx_vlm_image_marker_stays_on_its_original_turn_with_sparse_history(self):
+        def image_message(url, text):
+            return {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": url}},
+                    {"type": "text", "text": text},
+                ],
+            }
 
-        messages = [
-            SimpleNamespace(role = "assistant", content = None),
-            image_message("https://invalid.test/image.png"),
-            image_message("data:image/png;base64,aW1hZ2U="),
-            SimpleNamespace(role = "user", content = "latest"),
-        ]
-        chat_messages = [{"content": "remote"}, {"content": "describe"}, {"content": "latest"}]
-        _restore_first_vlm_image_marker(messages, chat_messages, "aW1hZ2U=")
-        assert chat_messages[0]["content"] == "remote"
-        assert chat_messages[1]["content"][0] == {"type": "image"}
-        assert chat_messages[2]["content"] == "latest"
+        payload = ChatCompletionRequest(
+            messages = [
+                {"role": "assistant", "content": None},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "thinking",
+                },
+                image_message("https://invalid.test/image.png", "remote"),
+                image_message("data:image/png;base64,aW1hZ2U=", "describe"),
+                {"role": "user", "content": "latest"},
+            ]
+        )
+        _, chat_messages, image_b64 = _extract_content_parts(payload.messages)
+        _restore_first_vlm_image_marker(payload.messages, chat_messages, image_b64)
+
+        assert chat_messages[0]["reasoning_content"] == "thinking"
+        assert chat_messages[1]["content"] == "remote"
+        assert chat_messages[2]["content"][0] == {"type": "image"}
+        assert chat_messages[2]["content"][1] == {"type": "text", "text": "describe"}
+        assert chat_messages[3]["content"] == "latest"
 
 
 # =====================================================================

@@ -11836,6 +11836,13 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
+def _message_is_retained_for_local_chat(message) -> bool:
+    content = message.content
+    return isinstance(content, (str, list)) or (
+        message.role == "assistant" and bool(getattr(message, "reasoning_content", None))
+    )
+
+
 def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
@@ -11861,6 +11868,9 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             elif isinstance(msg.content, list):
                 # Unlikely but handle: join text parts
                 system_parts.append("\n".join(p.text for p in msg.content if p.type == "text"))
+            continue
+
+        if not _message_is_retained_for_local_chat(msg):
             continue
 
         # ── User / assistant messages ─────────────────────────
@@ -11903,9 +11913,9 @@ def _restore_first_vlm_image_marker(source_messages, chat_messages, image_base64
     for source_message in source_messages:
         if source_message.role in ("system", "developer"):
             continue
-        parts = source_message.content
-        if not isinstance(parts, (str, list)):
+        if not _message_is_retained_for_local_chat(source_message):
             continue
+        parts = source_message.content
         chat_index += 1
         if not isinstance(parts, list):
             continue
