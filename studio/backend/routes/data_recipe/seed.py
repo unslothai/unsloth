@@ -433,6 +433,20 @@ def _get_block_total_size(block_dir: Path) -> int:
     return total
 
 
+def _require_within_budget(size_bytes: int, budget: int) -> None:
+    """413 on the tighter of the per-file cap and what the block has left."""
+    if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            413,
+            f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
+        )
+    if size_bytes > budget:
+        raise HTTPException(
+            413,
+            f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
+        )
+
+
 def _require_unstructured_ext(filename: str) -> str:
     """Reject an unsupported type before any bytes are read."""
     ext = Path(filename).suffix.lower()
@@ -444,12 +458,17 @@ def _require_unstructured_ext(filename: str) -> str:
     return ext
 
 
-def _read_native_drop(lease: str) -> tuple[str, bytes]:
+def _read_native_drop(lease: str, budget: int) -> tuple[str, bytes]:
     """Read a desktop drop; returns (filename, content).
 
     The webview never names a path directly: Rust signs what the OS handed it,
     and this re-verifies and re-stats that grant before reading a byte. Same
     contract as the RAG route's ``_save_native_path_upload``.
+
+    ``budget`` is what is still allowed for this block. The path is a local file
+    of any size, so it is refused on its stat rather than after a multi-gigabyte
+    read, and the read itself stops one byte past the budget in case the file
+    grew between the two.
     """
     from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
 
@@ -464,10 +483,20 @@ def _read_native_drop(lease: str) -> tuple[str, bytes]:
     except NativePathLeaseError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    _require_unstructured_ext(grant.canonical_path.name)
     try:
-        return grant.canonical_path.name, grant.canonical_path.read_bytes()
+        size_bytes = grant.canonical_path.stat().st_size
     except OSError as exc:
         raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(size_bytes, budget)
+
+    try:
+        with grant.canonical_path.open("rb") as source:
+            content = source.read(budget + 1)
+    except OSError as exc:
+        raise HTTPException(400, "Dropped file could not be read.") from exc
+    _require_within_budget(len(content), budget)
+    return grant.canonical_path.name, content
 
 
 @router.post("/seed/upload-unstructured-file")
@@ -478,42 +507,34 @@ async def upload_unstructured_file(
 ) -> UnstructuredFileUploadResponse:
     _validate_safe_id(block_id, "block_id")
 
+    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    # Reads 0 for a block with no directory yet, so this does not create one for
+    # an upload that is about to be refused.
+    budget = UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES - _get_block_total_size(block_dir)
+
     # Desktop drops arrive as a signed path, not multipart bytes: Tauri hands
     # the webview a path, never a File (#9036). isinstance, not a truth test:
     # called outside FastAPI, an unfilled param is still a truthy Form marker.
     lease = native_path_lease if isinstance(native_path_lease, str) else None
     if lease:
-        # verify_native_path_lease already refused an unlisted suffix.
-        original_filename, content = _read_native_drop(lease)
-        ext = _require_unstructured_ext(original_filename)
+        original_filename, content = _read_native_drop(lease, budget)
     elif file is not None and hasattr(file, "read"):
         original_filename = file.filename or "upload"
         # Before the read, as it was: a rejected 500 MB upload must not be
         # pulled into memory first.
-        ext = _require_unstructured_ext(original_filename)
+        _require_unstructured_ext(original_filename)
         content = await file.read()
     else:
         raise HTTPException(400, "No file was provided.")
 
+    ext = Path(original_filename).suffix.lower()
     size_bytes = len(content)
 
     if size_bytes == 0:
         raise HTTPException(400, "Empty file not allowed")
 
-    if size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES:
-        raise HTTPException(
-            413,
-            f"File too large ({size_bytes} bytes). Maximum is {UNSTRUCTURED_RECIPE_UPLOAD_MAX_LABEL}.",
-        )
-
-    block_dir = UNSTRUCTURED_UPLOAD_ROOT / block_id
+    _require_within_budget(size_bytes, budget)
     ensure_dir(block_dir)
-    current_total = _get_block_total_size(block_dir)
-    if current_total + size_bytes > UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_BYTES:
-        raise HTTPException(
-            413,
-            f"Total upload limit ({UNSTRUCTURED_RECIPE_UPLOAD_TOTAL_MAX_LABEL}) exceeded",
-        )
 
     file_id = uuid4().hex
     raw_path = block_dir / f"{file_id}{ext}"
