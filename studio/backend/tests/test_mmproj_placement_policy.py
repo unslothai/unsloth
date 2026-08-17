@@ -518,3 +518,47 @@ def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(tmp_path
 
     assert "--mmproj" in cmd, label
     assert ("--no-mmproj-offload" in cmd) is False, label
+
+
+def test_a_remembered_mmproj_auto_does_not_survive_the_vision_switch(tmp_path):
+    """--mmproj-auto asks llama-server to find the adjacent projector on its own, so
+    suppressing Studio's --mmproj and the env vars is not enough: vision would come
+    back on a load that reports it off and never charged the projector's VRAM.
+    llama.cpp is last-wins on the pair, so the disable form has to follow the extras."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(
+        backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
+    )["cmd"]
+
+    assert "--no-mmproj-auto" in cmd
+    assert cmd.index("--no-mmproj-auto") > cmd.index("--mmproj-auto")
+
+
+def test_an_audio_only_projector_is_not_taken_away_by_the_auto_override(tmp_path):
+    """The override exists to stop a projector coming back. An audio-only one is kept
+    on purpose, so --no-mmproj-auto must not follow it out the door."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        cmd = _launch(
+            backend, gguf, disable_vision = True, extra_args = ["--mmproj-auto"]
+        )["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-auto" not in cmd
+
+
+def test_an_audio_only_projector_does_not_blame_the_switch_for_images(tmp_path):
+    """vision_disabled_by_user drives the composer's "you turned it off" message, so
+    on a model with no image encoder it would promise a capability that turning the
+    switch back on cannot deliver."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(_meta, "mmproj_capabilities", lambda _p: (True, False)):
+        _launch(backend, gguf, disable_vision = True)
+
+    assert backend._disable_vision is True
+    assert backend._vision_disabled_by_user is False

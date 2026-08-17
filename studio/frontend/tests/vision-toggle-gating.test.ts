@@ -178,3 +178,27 @@ test("every other refusal is untouched by the new branch", () => {
     null,
   );
 });
+
+// The rollback replays the previous load's settings after a failed switch. It must
+// send the RAW switch, not the narrowed image-gating field: that one is false for a
+// model that cannot do images, so a non-vision GGUF carrying the switch would come
+// back with vision on while the control restored to off. Source-level for the same
+// reason as the reseed above: the replay sits inside one large object literal.
+test("the rollback replays the raw vision setting, not the narrowed one", () => {
+  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const replay = runtime.slice(
+    runtime.indexOf("tensor_parallel: stateBeforeUnload.loadedTensorParallel"),
+  );
+  const line = replay.slice(
+    replay.indexOf("disable_vision:"),
+    replay.indexOf("gpu_memory_mode:"),
+  );
+  assert.ok(
+    line.includes("stateBeforeUnload.disableVision"),
+    `rollback must replay the raw setting, got: ${line.trim()}`,
+  );
+  assert.ok(
+    !line.includes("loadedVisionDisabledByUser"),
+    "rollback must not replay the narrowed image-gating field",
+  );
+});

@@ -16440,6 +16440,15 @@ class LlamaCppBackend:
                     cmd.extend(_pv_draft_cpu_pin)
                 if _pv_mmproj_cpu_pin:
                     cmd.extend(_pv_mmproj_cpu_pin)
+                # Also last, and for the same last-wins reason: suppressing Studio's own
+                # --mmproj and scrubbing the env vars still leaves a remembered
+                # --mmproj-auto in the extras above, and that flag asks llama-server to
+                # rediscover the adjacent projector by itself. Vision would come back on
+                # a load that reports it off and whose fit budget never charged the
+                # projector's VRAM. Only when the projector was suppressed: an audio-only
+                # one is kept on purpose, and --no-mmproj-auto would take it away.
+                if disable_vision and not launch_mmproj_path:
+                    cmd.append("--no-mmproj-auto")
                 # Also last: _zero_offload_keeps_gpu_visible reads the finished cmd, so
                 # the override must be in it before the env block below judges this a
                 # zero-VRAM server.
@@ -17152,7 +17161,13 @@ class LlamaCppBackend:
                 # The intent flag is the model's own capability, so a text-only GGUF
                 # carrying a stale toggle falls through to the generic "cannot accept
                 # images" instead of pointing at a switch that would not help.
-                self._vision_disabled_by_user = bool(is_vision and disable_vision)
+                # An audio-only projector is the same case wearing a mmproj: it is kept
+                # loaded on purpose above and has no image encoder, so claiming the
+                # switch is what withholds images would promise a capability turning it
+                # back on cannot deliver.
+                self._vision_disabled_by_user = bool(
+                    is_vision and disable_vision and self._mmproj_accepts_image
+                )
                 self._model_identifier = model_identifier
 
                 # Store the effective (possibly capped) context separately; do

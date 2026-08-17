@@ -1878,9 +1878,12 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
-                  // Restore the vision placement the previous model was running.
-                  disable_vision:
-                    stateBeforeUnload.loadedVisionDisabledByUser ?? false,
+                  // Restore the vision placement the previous model was running. The RAW
+                  // setting, not loadedVisionDisabledByUser: that one is narrowed to
+                  // models that can do images, so a non-vision GGUF carrying the switch
+                  // would roll back with vision on while the control restored to off,
+                  // leaving the backend and the UI disagreeing until the next full reload.
+                  disable_vision: stateBeforeUnload.disableVision,
                   // Restore the previous model's GPU Memory placement, not backend defaults.
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? GPU_LAYERS_AUTO,
