@@ -242,6 +242,25 @@ async def one_case(page, case: str) -> dict:
             "menuClosed": not after["menuOpen"],
             "deleted": after["assistantMessages"] < before["assistantMessages"],
         }
+    elif case == "touch_trigger":
+        # Tap the trigger itself to close. The trigger is OUTSIDE the content, so the guard arms
+        # for it and swallows its click; if that were the only thing closing the menu, a touch
+        # user would be unable to cancel one of these menus without picking an item.
+        trigger = await page.evaluate(
+            "() => { const t = window.__heavyThread.actionButton('More');"
+            "if (!t) return null; const r = t.getBoundingClientRect();"
+            "return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }"
+        )
+        if not trigger:
+            return {"case": case, "error": "no More trigger"}
+        await page.touchscreen.tap(trigger["x"], trigger["y"])
+        await page.wait_for_timeout(1200)
+        after = await page.evaluate(FACTS_JS)
+        return {
+            "case": case,
+            "menuClosed": not after["menuOpen"],
+            "deleted": after["assistantMessages"] < before["assistantMessages"],
+        }
     elif case in ("rightclick_then_click", "dragoff_then_click"):
         # Two ways a dismissing gesture produces NO click at all: a right click raises
         # contextmenu instead, and a press that leaves the window is released elsewhere. Either
@@ -340,7 +359,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral",
+        default = "quick,held,busy,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
