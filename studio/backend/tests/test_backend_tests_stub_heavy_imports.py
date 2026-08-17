@@ -452,11 +452,7 @@ def _stub_record_names(tree: ast.Module) -> frozenset[str]:
         for node in _runtime_nodes(statement)
         if isinstance(node, ast.Call) and _names_required_stub(list(ast.walk(node)))
     }
-    bound = {
-        name
-        for statement in tree.body
-        for name in _bound_names(statement)
-    }
+    bound = {name for statement in tree.body for name in _bound_names(statement)}
     recorded: set[str] = set()
     for statement in tree.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -761,9 +757,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     drop_through_a_list = (
         "import pytest, sys\n"
-        "_STUBBED = []\n"
-        + _HELPER
-        + "_stub_if_missing('unsloth', ())\n"
+        "_STUBBED = []\n" + _HELPER + "_stub_if_missing('unsloth', ())\n"
         "for _n in reversed(_STUBBED):\n"
         "    sys.modules.pop(_n, None)\n"
         "def test_x():\n"
@@ -777,9 +771,7 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     unrelated_cleanup_list = (
         "import pytest, sys\n"
         "_STUBBED = []\n"
-        "_JUNK = ['routes.foo']\n"
-        + _HELPER
-        + "_stub_if_missing('unsloth', ())\n"
+        "_JUNK = ['routes.foo']\n" + _HELPER + "_stub_if_missing('unsloth', ())\n"
         "for _n in _JUNK:\n"
         "    sys.modules.pop(_n, None)\n"
         "def test_x():\n"
