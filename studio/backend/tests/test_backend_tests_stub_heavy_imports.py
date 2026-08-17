@@ -143,6 +143,19 @@ def _catches_import_error(node: ast.AST) -> bool:
     return False
 
 
+def _reraises(handler: ast.ExceptHandler) -> bool:
+    """Whether this handler can leave the exception propagating.
+
+    Naming ``ImportError`` is not the same as absorbing it: ``except ImportError:
+    raise`` and a handler that raises a replacement both take collection down, and
+    exempting the try body then hid the import entirely. Any ``raise`` the handler can
+    reach disqualifies it, since the path that raises is the one that kills the job.
+    ``pytest.skip(..., allow_module_level = True)`` is a CALL rather than a ``raise``,
+    so the module-level skip these files use stays exempt. Reported on this PR.
+    """
+    return any(isinstance(node, ast.Raise) for node in _reachable_nodes(handler))
+
+
 def _guarded_by_import_error(tree: ast.Module) -> set[int]:
     """Ids of nodes inside a ``try`` whose handler catches ``ImportError``.
 
@@ -162,7 +175,8 @@ def _guarded_by_import_error(tree: ast.Module) -> set[int]:
         if not isinstance(node, ast.Try):
             continue
         catches = any(
-            handler.type is None or _catches_import_error(handler.type) for handler in node.handlers
+            (handler.type is None or _catches_import_error(handler.type)) and not _reraises(handler)
+            for handler in node.handlers
         )
         if catches:
             for statement in node.body:
@@ -292,12 +306,37 @@ def _writes_sys_modules(nodes: list[ast.AST]) -> bool:
     return False
 
 
-def _installs_stub(nodes: list[ast.AST]) -> bool:
-    """Whether the nodes call a stub helper or write ``sys.modules`` themselves."""
-    calls_stub = any(
-        isinstance(node, ast.Call) and "stub" in _callee_name(node).lower() for node in nodes
-    )
-    return calls_stub or _writes_sys_modules(nodes)
+def _installs_stub(
+    nodes: list[ast.AST],
+    helpers: dict[str, ast.AST] | None = None,
+    seen: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether the nodes write ``sys.modules`` or call something that does.
+
+    Decided by what a helper DOES wherever the module defines it. Accepting any callee
+    whose name contains "stub" counted ``_remove_stub("unsloth")`` and
+    ``_validate_stub("unsloth")`` as installations, and the import after them still
+    found nothing. Reported on this PR.
+
+    The name stays as the fallback for a call this module cannot resolve, which is the
+    helper imported from a shared module. A name defined nowhere would raise NameError
+    at import, so it cannot be a file that reaches collection at all.
+    """
+    if _writes_sys_modules(nodes):
+        return True
+    helpers = helpers or {}
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        name = _callee_name(node)
+        if name in helpers:
+            if name not in seen and _installs_stub(
+                list(_helper_nodes_entered(helpers[name])), helpers, seen | {name}
+            ):
+                return True
+        elif "stub" in name.lower():
+            return True
+    return False
 
 
 def _stub_helpers(tree: ast.Module) -> dict[str, ast.AST]:
@@ -319,6 +358,49 @@ def _own_yields(node: ast.AST):
         yield from _own_yields(child)
 
 
+def _probes_availability(node: ast.Try) -> bool:
+    """Whether this ``try`` is an "is the real package importable" probe.
+
+    ``_stub_if_missing`` opens with ``try: importlib.import_module(name); return``
+    under an absorbing handler. The ``return`` there is the path where the real
+    package IS available, so the stub below it being skipped is correct rather than
+    a gap; the path that reaches the install is the one where the import raised.
+    """
+    if any(_reraises(handler) for handler in node.handlers):
+        return False
+    return any(
+        isinstance(child, ast.Call) and _callee_name(child) in ("import_module", "__import__")
+        for statement in node.body
+        for child in ast.walk(statement)
+    )
+
+
+def _can_exit_early(node: ast.AST, flags: dict[str, bool] | None = None) -> bool:
+    """Whether this statement can leave the helper before the code below it runs.
+
+    Nothing under an exit the helper can take is guaranteed: ``def setup(): if
+    disabled: return`` followed by the stub call means the disabled path reaches the
+    import unstubbed, and scanning past it read the call as made. Reported on this PR.
+
+    Two exits are benign, and both are in the tree already. A ``return`` under "the
+    module is already in sys.modules", and one under the importable probe above: on
+    each of those paths the module is AVAILABLE, so skipping the stub is the point of
+    the branch rather than a hole in it. Anything else counts.
+    """
+    flags = flags or {}
+    if isinstance(node, ast.If) and _constant_test(node) is None:
+        if _true_when_imported(node.test, flags) is True:
+            return any(_can_exit_early(child, flags) for child in node.orelse)
+        return any(_can_exit_early(child, flags) for child in [*node.body, *node.orelse])
+    if isinstance(node, ast.Try) and _probes_availability(node):
+        return False
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+        return False
+    if isinstance(node, (ast.Return, ast.Raise)):
+        return True
+    return any(_can_exit_early(child, flags) for child in ast.iter_child_nodes(node))
+
+
 def _helper_nodes_entered(helper: ast.AST):
     """The part of ``helper`` that has run once the block it guards is entered.
 
@@ -335,6 +417,8 @@ def _helper_nodes_entered(helper: ast.AST):
         for node in _certain_nodes(statement):
             if stop is None or getattr(node, "lineno", 0) < stop:
                 yield node
+        if _can_exit_early(statement):
+            return
 
 
 def _helper_installs_stub(
@@ -368,7 +452,7 @@ def _helper_installs_stub(
     nodes = list(_helper_nodes_entered(helper))
     if not (_names_required_stub(nodes) or _reads_a_named_stub(nodes, named)):
         return False
-    if _installs_stub(nodes):
+    if _installs_stub(nodes, helpers, seen | {name}):
         return True
     return any(
         _helper_installs_stub(_callee_name(node), helpers, named, seen | {name})
@@ -539,7 +623,7 @@ def _stubs_before(tree: ast.Module, line: int | None) -> bool:
         names_it = _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
         if not names_it:
             continue
-        if _installs_stub(nodes):
+        if _installs_stub(nodes, helpers):
             return True
         named |= _bound_names(statement)
     return False
@@ -1765,6 +1849,55 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "from core.training import trainer as t\n"
     )
     assert _is_offender(wrong_way_up, heavy), wrong_way_up
+
+    # Naming ImportError is not absorbing it.
+    for reraised in (
+        "try:\n    from core.training import trainer as t\nexcept ImportError:\n    raise\n",
+        "try:\n    from core.training import trainer as t\n"
+        "except ImportError as exc:\n    raise RuntimeError('no trainer') from exc\n",
+    ):
+        assert _is_offender(reraised, heavy), reraised
+    # A module-level skip is a call, not a raise, so it stays exempt.
+    skipped = (
+        "import pytest\n"
+        "try:\n    from core.training import trainer as t\n"
+        "except ImportError:\n    pytest.skip('no trainer', allow_module_level = True)\n"
+    )
+    assert not _is_offender(skipped, heavy), skipped
+
+    # A helper that can return before installing has not installed anything.
+    early_return = (
+        "import sys\n"
+        "def _setup():\n"
+        "    if disabled:\n        return\n"
+        '    sys.modules["unsloth"] = object()\n'
+        "_setup()\n"
+        "from core.training import trainer as t\n"
+    )
+    assert _is_offender(early_return, heavy), early_return
+    # ...but returning because the module is already there is the point of the branch.
+    available_return = (
+        "import sys\n"
+        "def _setup():\n"
+        '    if "unsloth" in sys.modules:\n        return\n'
+        '    sys.modules["unsloth"] = object()\n'
+        "_setup()\n"
+        "from core.training import trainer as t\n"
+    )
+    assert not _is_offender(available_return, heavy), available_return
+
+    # A call named "stub" is not an installation. Both of these leave unsloth absent.
+    for not_installing in (
+        "import sys\n"
+        "def _remove_stub(name):\n    sys.modules.pop(name, None)\n"
+        '_remove_stub("unsloth")\n'
+        "from core.training import trainer as t\n",
+        "import sys\n"
+        "def _validate_stub(name):\n    assert name\n"
+        '_validate_stub("unsloth")\n'
+        "from core.training import trainer as t\n",
+    ):
+        assert _is_offender(not_installing, heavy), not_installing
 
     # A while-else is skipped when the loop leaves through break.
     while_else = (
