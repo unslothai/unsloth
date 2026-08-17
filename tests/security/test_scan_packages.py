@@ -2024,16 +2024,21 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     class _StalledPool:
         def __enter__(self):
             return self
+
         def __exit__(self, *exc):
             return False
+
         def imap(self, *a, **k):
             return _StalledResults()
 
     monkeypatch.setattr(
-        sp.multiprocessing, "get_context", lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})()
+        sp.multiprocessing,
+        "get_context",
+        lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})(),
     )
     monkeypatch.setattr(
-        sys, "argv",
+        sys,
+        "argv",
         ["scan_packages.py", "--no-baseline", "--jobs", "4", "pkg0", "pkg1"],
     )
 
