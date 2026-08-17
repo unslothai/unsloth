@@ -3277,6 +3277,11 @@ def main() -> int:
     tmpdir = tempfile.mkdtemp(prefix = "pth_scan_")
     atexit.register(lambda d = tmpdir: shutil.rmtree(d, ignore_errors = True))
     download_errors: list[str] = []
+    # Scan-side failures, kept beside the download ones so both reach the SCAN
+    # INCOMPLETE block below. A stall has to exit 2 like any other partial scan:
+    # exit 1 is reserved for "non-baselined CRITICAL or HIGH findings detected",
+    # so exiting 1 on a dead worker reports an infrastructure failure as a threat.
+    scan_errors: list[str] = []
     try:
         downloaded, download_errors = download_packages(
             specs,
@@ -3309,10 +3314,17 @@ def main() -> int:
                         # A worker died (OOM or segfault on a hostile archive).
                         # Without this the iterator blocks forever and the job
                         # only ends at the workflow timeout, with no reason given.
-                        raise SystemExit(
+                        #
+                        # Recorded rather than raised: `raise SystemExit(<str>)`
+                        # prints the string and exits 1, and 1 already means
+                        # "CRITICAL or HIGH findings detected". Routing it here
+                        # gets the SCAN INCOMPLETE report and exit 2, which is
+                        # what a partial scan is supposed to return.
+                        scan_errors.append(
                             f"scan stalled after {i}/{len(tasks)} archive(s) with no "
                             f"result for 900s; a pool worker most likely died"
-                        ) from None
+                        )
+                        break
                     if captured:
                         sys.stderr.write(captured)
                     all_findings.extend(findings)
@@ -3369,15 +3381,15 @@ def main() -> int:
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
     # Also keeps us from writing a baseline from an incomplete scan.
-    if download_errors:
+    incomplete_errors = download_errors + scan_errors
+    if incomplete_errors:
         print(
             f"\n  {'=' * 72}\n"
-            f"  SCAN INCOMPLETE: {len(download_errors)} pip download "
-            f"failure(s):\n"
+            f"  SCAN INCOMPLETE: {len(incomplete_errors)} failure(s):\n"
             f"  {'=' * 72}",
             file = sys.stderr,
         )
-        for err in download_errors:
+        for err in incomplete_errors:
             print(f"  [ERROR] {err}", file = sys.stderr)
         print(
             "  Refusing to report 'all clean' on a partial scan; exiting 2.",

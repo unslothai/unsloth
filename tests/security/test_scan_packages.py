@@ -1993,3 +1993,53 @@ def test_scanning_in_parallel_finds_exactly_what_scanning_in_series_finds(
     # Guard against either half being trivially empty.
     assert "CRITICAL" in out_serial
     assert "[WARN]" in err_serial
+
+
+def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
+    """A dead worker is an incomplete scan, and incomplete scans exit 2.
+
+    Exit 1 already means "non-baselined CRITICAL or HIGH findings detected", so a
+    stall that exits 1 reports an infrastructure failure as a detected threat, and
+    skips the SCAN INCOMPLETE report that tells the operator coverage was lost.
+
+    The first version of the pool raised `SystemExit(<message>)`, which does exactly
+    that: CPython prints a non-integer SystemExit value and exits 1.
+    """
+    import shutil
+
+    stage = tmp_path / "archives"
+    stage.mkdir()
+    copies = []
+    for i, name in enumerate(("malicious_wheel.whl", "clean_wheel.whl")):
+        dest = stage / f"pkg{i}-{name}"
+        shutil.copy(FIXTURES / name, dest)
+        copies.append((f"pkg{i}", str(dest)))
+
+    monkeypatch.setattr(sp, "download_packages", lambda *a, **k: (copies, []))
+
+    class _StalledResults:
+        def next(self, timeout = None):
+            raise sp.multiprocessing.TimeoutError()
+
+    class _StalledPool:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def imap(self, *a, **k):
+            return _StalledResults()
+
+    monkeypatch.setattr(
+        sp.multiprocessing, "get_context", lambda _method: type("C", (), {"Pool": lambda _s, processes = None: _StalledPool()})()
+    )
+    monkeypatch.setattr(
+        sys, "argv",
+        ["scan_packages.py", "--no-baseline", "--jobs", "4", "pkg0", "pkg1"],
+    )
+
+    rc = sp.main()
+    captured = capsys.readouterr()
+
+    assert rc == 2, f"a stalled scan must exit 2 (incomplete), got {rc}"
+    assert "SCAN INCOMPLETE" in captured.err
+    assert "scan stalled" in captured.err
