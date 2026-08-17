@@ -601,10 +601,24 @@ export function useRagDocuments(
     [scope, uploadOne, sigBlocksReupload],
   );
 
+  /** Resolves true when the document is gone from the server, false when the
+   * delete failed and the row has been put back. A caller removing several in a
+   * row needs the outcome: a batch that ignored it would clear its selection and
+   * leave rows on screen that 404 on the next action. */
   const remove = useCallback(
-    async (documentId: string) => {
-      const prev = documents;
-      setDocuments((rows) => rows.filter((row) => row.id !== documentId));
+    async (documentId: string): Promise<boolean> => {
+      // Stand down list requests already in flight, as the scope change does. One
+      // issued before this delete still carries the document, and letting it land
+      // afterwards would put the deleted row back on screen.
+      refreshSeq.current += 1;
+      // Restore by re-inserting this one row rather than reinstating a whole
+      // snapshot: during a batch an earlier snapshot still holds the rows previous
+      // iterations deleted, and replaying it would resurrect them.
+      let restore: TrackedDocument | undefined;
+      setDocuments((rows) => {
+        restore = rows.find((row) => row.id === documentId);
+        return rows.filter((row) => row.id !== documentId);
+      });
       // Forget the dedup signature so re-uploading re-indexes.
       const prevSig = sigByDocId.current.get(documentId);
       sigByDocId.current.delete(documentId);
@@ -621,19 +635,25 @@ export function useRagDocuments(
           documentId,
           scope?.type === "project" ? scope.projectId : undefined,
         );
+        return true;
       } catch (err) {
-        setDocuments(prev);
+        setDocuments((rows) =>
+          !restore || rows.some((row) => row.id === documentId)
+            ? rows
+            : [...rows, restore],
+        );
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),
         });
+        return false;
       } finally {
         if (removingProjectId) {
           noteProjectWork(removingProjectId, -1);
         }
       }
     },
-    [documents, scope],
+    [scope],
   );
 
   return {
