@@ -887,10 +887,13 @@ def test_stream_completion_keeps_content_when_model_omits_boundary(monkeypatch):
 
 
 def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
+    public_chunks = ["# Result\n" + ("a" * 300), "b" * 300, "c" * 300]
     stream = _delta_stream_body(
         [
             ("content", "Private analysis that must not become report progress.\n"),
-            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n# Result\nPublic report"),
+            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n" + public_chunks[0]),
+            ("reasoning_content", public_chunks[1]),
+            ("content", public_chunks[2]),
         ]
     )
     _install_fake_client(monkeypatch, [_response(200, body = stream)])
@@ -917,8 +920,11 @@ def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
         )
     )
 
-    assert report == "# Result\nPublic report"
-    assert progress_writes == [(report, report)]
+    assert report == "".join(public_chunks)
+    assert len(progress_writes) == 2
+    assert progress_writes[0][0] != report
+    assert progress_writes[-1][0] == report
+    assert "".join(delta for _full, delta in progress_writes).strip() == report
 
 
 def test_empty_marked_stream_cannot_fall_back_to_private_summary(monkeypatch):

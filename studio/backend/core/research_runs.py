@@ -115,11 +115,6 @@ _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
 
 
-def _after_output_boundary(text: str, boundary: str) -> str | None:
-    marker = text.rfind(boundary)
-    return None if marker < 0 else text[marker + len(boundary) :].strip()
-
-
 def _auto_scrape_default() -> int:
     """Server default for ``budgets["maxAutoScrape"]``: 0 (off) unless
     ``UNSLOTH_RESEARCH_AUTO_SCRAPE`` enables it (``1``/``true`` -> ``_AUTO_SCRAPE_TOP_K``, or an
@@ -1189,8 +1184,10 @@ class ResearchSupervisor:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         report = ""
+        raw_report = ""
         reasoning = ""
-        ordered_output = ""
+        boundary_buffer = ""
+        boundary_seen = False
         pending_report = ""
         pending_reasoning = ""
         pending_reasoning_offset = 0
@@ -1200,6 +1197,27 @@ class ResearchSupervisor:
         semantic_output_at: float | None = None
         first_output_deadline: float | None = None
         emitted_labels = 0
+
+        def consume_boundary_output(piece: str) -> None:
+            nonlocal boundary_buffer, boundary_seen, pending_report, report
+            if output_boundary is None:
+                return
+            if boundary_seen:
+                report += piece
+                pending_report += piece
+                return
+            boundary_buffer += piece
+            marker = boundary_buffer.find(output_boundary)
+            if marker >= 0:
+                boundary_seen = True
+                trailing = boundary_buffer[marker + len(output_boundary) :].lstrip()
+                boundary_buffer = ""
+                report += trailing
+                pending_report += trailing
+                return
+            # Retain only enough private output to recognize a marker split across deltas.
+            overlap = len(output_boundary) - 1
+            boundary_buffer = boundary_buffer[-overlap:] if overlap > 0 else ""
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1394,20 +1412,20 @@ class ResearchSupervisor:
                             continue
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
-                            if output_boundary is not None:
-                                ordered_output += thought
+                            consume_boundary_output(thought)
                             semantic_output_at = loop.time()
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
                             reasoning += thought
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
-                            if output_boundary is not None:
-                                ordered_output += text
                             semantic_output_at = loop.time()
-                            report += text
                             if output_boundary is None:
+                                report += text
                                 pending_report += text
+                            else:
+                                raw_report += text
+                                consume_boundary_output(text)
                             # only a closing quote completes a title; per-token rescans cost ~170ms.
                             if preview_labels and '"' in text:
                                 emitted_labels = await self._emit_preview_labels(
@@ -1448,12 +1466,13 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             if output_boundary is not None:
-                bounded_report = _after_output_boundary(ordered_output, output_boundary)
-                if bounded_report is not None:
+                if boundary_seen:
                     # Preserve marker-only as an internal signal so the caller does not recover
                     # and publish an earlier Summary section from private reasoning.
-                    report = bounded_report or output_boundary
-                if report_progress and report != output_boundary:
+                    report = report.strip() or output_boundary
+                else:
+                    report = raw_report
+                if report_progress and not boundary_seen and report:
                     pending_report = report
                     await flush_progress()
             return report, reasoning, finish_reason, usage
