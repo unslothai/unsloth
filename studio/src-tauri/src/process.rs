@@ -47,6 +47,9 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
     if std::env::var_os("APPIMAGE").is_some() {
         apply_scrubbed_appimage_library_path(cmd);
 
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
+        }
         for name in APPIMAGE_GUI_ONLY_VARS {
             cmd.env_remove(name);
         }
@@ -60,7 +63,7 @@ pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
 // fail to load against Ubuntu 22.04 copies. Bundled tools stay reachable as a
 // fallback because the AppDir PATH entries are demoted rather than dropped.
 #[cfg(target_os = "linux")]
-const APPIMAGE_GUI_ONLY_VARS: [&str; 12] = [
+const APPIMAGE_GUI_ONLY_VARS: &[&str] = &[
     "GIO_MODULE_DIR",
     "GIO_EXTRA_MODULES",
     "GTK_PATH",
@@ -71,6 +74,12 @@ const APPIMAGE_GUI_ONLY_VARS: [&str; 12] = [
     "GSETTINGS_SCHEMA_DIR",
     "GST_PLUGIN_SYSTEM_PATH",
     "GST_PLUGIN_SYSTEM_PATH_1_0",
+    "GST_PLUGIN_PATH",
+    "GST_PLUGIN_PATH_1_0",
+    "GST_PLUGIN_SCANNER",
+    "GST_PLUGIN_SCANNER_1_0",
+    "GST_PTP_HELPER_1_0",
+    "GST_REGISTRY_REUSE_PLUGIN_SCANNER",
     "QT_PLUGIN_PATH",
     "PERLLIB",
 ];
@@ -153,6 +162,9 @@ pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command)
                 cmd.env_remove("LD_LIBRARY_PATH");
             }
         }
+        if let Some(path) = appdir_entries_demoted("PATH") {
+            cmd.env("PATH", path);
+        }
         for name in APPIMAGE_GUI_ONLY_VARS {
             cmd.env_remove(name);
         }
@@ -188,12 +200,14 @@ mod appimage_environment_tests {
         let old_appimage = std::env::var_os("APPIMAGE");
         let old_appdir = std::env::var_os("APPDIR");
         let old_library_path = std::env::var_os("LD_LIBRARY_PATH");
+        let old_path = std::env::var_os("PATH");
         std::env::set_var("APPIMAGE", "/tmp/Unsloth.AppImage");
         std::env::set_var("APPDIR", "/tmp/.mount_Unsloth");
         std::env::set_var(
             "LD_LIBRARY_PATH",
             "/tmp/.mount_Unsloth/usr/lib:/opt/cuda/lib64:/private/runtime",
         );
+        std::env::set_var("PATH", "/tmp/.mount_Unsloth/usr/bin:/usr/bin:/bin");
         let mut cmd = Command::new("/usr/bin/env");
         cmd.env("PYTHONHOME", "/activated/python")
             .env("PYTHONPATH", "/activated/modules");
@@ -204,6 +218,9 @@ mod appimage_environment_tests {
         let output = cmd.output().expect("run isolated child");
         let env = String::from_utf8(output.stdout).unwrap();
         assert!(env.contains("LD_LIBRARY_PATH=/opt/cuda/lib64:/private/runtime"));
+        // The bundled xdg-utils must not shadow the host copies for a child
+        // that reaches the desktop, but they stay available as a fallback.
+        assert!(env.contains("PATH=/usr/bin:/bin:/tmp/.mount_Unsloth/usr/bin"));
         assert!(!env.contains(appimage_isolated_path().to_string_lossy().as_ref()));
         assert!(!env.contains("PYTHONHOME="));
         assert!(!env.contains("PYTHONPATH="));
@@ -217,6 +234,7 @@ mod appimage_environment_tests {
             ("APPIMAGE", old_appimage),
             ("APPDIR", old_appdir),
             ("LD_LIBRARY_PATH", old_library_path),
+            ("PATH", old_path),
         ] {
             match old_value {
                 Some(value) => std::env::set_var(key, value),
@@ -1591,8 +1609,9 @@ fn is_inside_windows_dir(path: &std::path::Path, windirs: &[std::path::PathBuf])
 /// so a late-mounting profile recovers, and never falls back to a temp dir.
 pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
     let windirs = windows_roots();
+    let appdir = std::env::var_os("APPDIR").map(std::path::PathBuf::from);
     if let Ok(cwd) = std::env::current_dir() {
-        if !is_unusable_cwd(&cwd, &windirs) {
+        if !is_unusable_cwd(&cwd, &windirs, appdir.as_deref()) {
             return Ok(cwd);
         }
     }
@@ -1602,7 +1621,19 @@ pub(crate) fn managed_cli_working_dir() -> Result<std::path::PathBuf, String> {
 /// The directories the CLI guard refuses to run from, and only those. The rest of
 /// the Windows tree still disqualifies a *home*, but a child already running from
 /// C:\Windows\Temp keeps doing so: the guard allowed that before this change.
-fn is_unusable_cwd(path: &std::path::Path, windirs: &[std::path::PathBuf]) -> bool {
+///
+/// The AppImage AppRun runs the app from `$APPDIR/usr`, because the bundled
+/// WebKitGTK resolves its helper processes relative to that directory. That
+/// mount is read-only and is unmounted when the app exits, so a managed child
+/// must not inherit it as a working directory.
+fn is_unusable_cwd(
+    path: &std::path::Path,
+    windirs: &[std::path::PathBuf],
+    appdir: Option<&std::path::Path>,
+) -> bool {
+    if appdir.is_some_and(|appdir| path.starts_with(appdir)) {
+        return true;
+    }
     windirs.iter().any(|windir| {
         ["System32", "SysWOW64"]
             .iter()
@@ -4987,6 +5018,29 @@ mod managed_cli_working_dir_tests {
     }
 
     #[test]
+    fn a_mounted_appimage_is_never_a_managed_child_working_directory() {
+        let appdir = PathBuf::from("/tmp/.mount_Unsloth1a2b3c");
+        for unusable in ["/tmp/.mount_Unsloth1a2b3c", "/tmp/.mount_Unsloth1a2b3c/usr"] {
+            assert!(
+                is_unusable_cwd(std::path::Path::new(unusable), &[], Some(&appdir)),
+                "{unusable} must be replaced"
+            );
+        }
+        for usable in ["/home/me/projects", "/tmp/.mount_Other/usr"] {
+            assert!(
+                !is_unusable_cwd(std::path::Path::new(usable), &[], Some(&appdir)),
+                "{usable} must be kept"
+            );
+        }
+        // A native package sets no APPDIR, so nothing changes for it.
+        assert!(!is_unusable_cwd(
+            std::path::Path::new("/tmp/.mount_Unsloth1a2b3c/usr"),
+            &[],
+            None
+        ));
+    }
+
+    #[test]
     fn only_the_folders_the_cli_refuses_count_as_unusable() {
         let windirs = [PathBuf::from("C:\\Windows")];
         for unusable in [
@@ -4996,7 +5050,7 @@ mod managed_cli_working_dir_tests {
             "\\\\?\\C:\\Windows\\System32",
         ] {
             assert!(
-                is_unusable_cwd(std::path::Path::new(unusable), &windirs),
+                is_unusable_cwd(std::path::Path::new(unusable), &windirs, None),
                 "{unusable} must be replaced"
             );
         }
@@ -5009,7 +5063,7 @@ mod managed_cli_working_dir_tests {
             "C:\\Users\\me\\projects",
         ] {
             assert!(
-                !is_unusable_cwd(std::path::Path::new(usable), &windirs),
+                !is_unusable_cwd(std::path::Path::new(usable), &windirs, None),
                 "{usable} must be kept"
             );
         }

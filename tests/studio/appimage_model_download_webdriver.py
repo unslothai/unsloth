@@ -115,12 +115,21 @@ def _write_backend_fixture(home: Path, request_log: Path) -> None:
     server.write_text(
         textwrap.dedent(
             f"""\
+            import ctypes
             import hashlib
             import json
             import os
+            import signal
             import sys
             from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
             from urllib.parse import parse_qs, urlparse
+
+            # The app spawns this fixture, so it must die with the app. An
+            # orphan keeps the port bound and the next launch attaches to it
+            # instead of starting its own backend.
+            ctypes.CDLL("libc.so.6").prctl(1, signal.SIGTERM)
+            if os.getppid() == 1:
+                raise SystemExit(0)
 
             REPO_ID = {REPO_ID!r}
             FILENAME = {FILENAME!r}
