@@ -62,9 +62,8 @@ EXCLUDE_PARTS = ("tests", "vendor", "node_modules", "__pycache__", ".venv")
 # exemption cannot outlive the code it was written for.
 GUARDED = {
     "plugins/data-designer-github-repo-seed/src/data_designer_github_repo_seed"
-    "/scraper_impl/state_store.py":
-        "locale.getencoding() is 3.11 and sits in a try/except AttributeError whose "
-        "fallback is locale.getpreferredencoding(False), commented 'Python < 3.11'",
+    "/scraper_impl/state_store.py": "locale.getencoding() is 3.11 and sits in a try/except AttributeError whose "
+    "fallback is locale.getpreferredencoding(False), commented 'Python < 3.11'",
 }
 
 

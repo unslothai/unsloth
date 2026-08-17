@@ -250,6 +250,6 @@ def test_the_floor_lint_scans_the_tree_rather_than_a_list_of_packages():
         f"Those files ship, and a pull request no longer runs them on the oldest "
         f"interpreter, so nothing else would notice a stdlib symbol from above the floor."
     )
-    assert len(scanned) > 300, (
-        f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
-    )
+    assert (
+        len(scanned) > 300
+    ), f"the floor lint only found {len(scanned)} files; the scan is not reaching the tree"
