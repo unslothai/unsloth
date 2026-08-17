@@ -186,11 +186,6 @@ export function useDismissingClickGuard(): void {
       // the user's NEXT left click: measured on all three engines, the click after a right-click
       // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
       // forever, but not arming at all is the actual answer.
-      // Only the primary button ever synthesises the click this exists to eat. A right or
-      // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
-      // the user's NEXT left click: measured on all three engines, the click after a right-click
-      // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
-      // forever, but not arming at all is the actual answer.
       if (event.button !== 0) return;
       const target = event.target;
       if (!(target instanceof Element)) return;
