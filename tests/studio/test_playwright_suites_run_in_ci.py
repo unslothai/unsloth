@@ -159,9 +159,7 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
     job = document["jobs"]["ui-indicator"]
-    runs = "\n".join(
-        str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict)
-    )
+    runs = "\n".join(str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict))
     missing = [
         engine
         for engine in ("chromium", "firefox", "webkit")
