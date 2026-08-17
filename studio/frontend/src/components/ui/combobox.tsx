@@ -23,6 +23,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 const ComboboxOpenContext = createContext(false);
 type ComboboxRootProps = ComboboxPrimitive.Root.Props<string, false>;
@@ -157,7 +158,7 @@ function ComboboxContent({
   }): React.ReactElement {
   const dialogContainer = useDialogPortalContainer();
   return (
-    <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
+    <ComboboxPrimitive.Portal container={container ?? dialogContainer ?? getPortalHost()}>
       <ComboboxPrimitive.Positioner
         side={side}
         sideOffset={sideOffset}

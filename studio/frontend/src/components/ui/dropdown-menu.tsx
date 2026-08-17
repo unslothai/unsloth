@@ -9,6 +9,7 @@ import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 function DropdownMenu({
   ...props
@@ -20,7 +21,11 @@ function DropdownMenuPortal({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Portal>) {
   return (
-    <DropdownMenuPrimitive.Portal data-slot="dropdown-menu-portal" {...props} />
+    <DropdownMenuPrimitive.Portal
+      data-slot="dropdown-menu-portal"
+      container={getPortalHost()}
+      {...props}
+    />
   );
 }
 
@@ -43,7 +48,7 @@ function DropdownMenuContent({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   return (
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={getPortalHost()}>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
@@ -307,7 +312,7 @@ function DropdownMenuSubContent({
     // Portaled like DropdownMenuContent: rendered inline, the fixed popper
     // wrapper is a descendant of the parent menu's scroll container, so any
     // transform there turns on overflow clipping and hides the submenu.
-    <DropdownMenuPrimitive.Portal>
+    <DropdownMenuPrimitive.Portal container={getPortalHost()}>
       <DropdownMenuPrimitive.SubContent
         ref={composedRef}
         data-slot="dropdown-menu-sub-content"

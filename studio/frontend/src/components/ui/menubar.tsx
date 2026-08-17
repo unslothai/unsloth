@@ -10,6 +10,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 function Menubar({
   className,
@@ -42,7 +43,13 @@ function MenubarGroup({
 function MenubarPortal({
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Portal>) {
-  return <MenubarPrimitive.Portal data-slot="menubar-portal" {...props} />;
+  return (
+    <MenubarPrimitive.Portal
+      data-slot="menubar-portal"
+      container={getPortalHost()}
+      {...props}
+    />
+  );
 }
 
 function MenubarRadioGroup({

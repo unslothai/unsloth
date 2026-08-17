@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 const DialogPortalContainerContext = createContext<HTMLElement | null>(null);
 
@@ -33,7 +34,13 @@ function DialogTrigger({
 function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+  return (
+    <DialogPrimitive.Portal
+      data-slot="dialog-portal"
+      container={getPortalHost()}
+      {...props}
+    />
+  );
 }
 
 function DialogClose({

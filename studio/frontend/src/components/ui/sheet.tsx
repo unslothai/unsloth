@@ -10,6 +10,7 @@ import { DialogPortalContainerContext } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 // Windows/Linux custom titlebar paints over the viewport at z-70, so a fixed
 // sheet must start below it. DesktopChromeVarsEffect mirrors the height onto
@@ -51,7 +52,13 @@ function SheetCloseButton({ className }: { className?: string }) {
 function SheetPortal({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
-  return <SheetPrimitive.Portal data-slot="sheet-portal" {...props} />;
+  return (
+    <SheetPrimitive.Portal
+      data-slot="sheet-portal"
+      container={getPortalHost()}
+      {...props}
+    />
+  );
 }
 
 function SheetOverlay({

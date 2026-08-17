@@ -6,6 +6,7 @@ import type * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { getPortalHost } from "@/lib/portal-host";
 
 function AlertDialog({
   ...props
@@ -25,7 +26,11 @@ function AlertDialogPortal({
   ...props
 }: React.ComponentProps<typeof AlertDialogPrimitive.Portal>) {
   return (
-    <AlertDialogPrimitive.Portal data-slot="alert-dialog-portal" {...props} />
+    <AlertDialogPrimitive.Portal
+      data-slot="alert-dialog-portal"
+      container={getPortalHost()}
+      {...props}
+    />
   );
 }
 

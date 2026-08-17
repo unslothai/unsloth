@@ -10,6 +10,7 @@ import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 function ContextMenu({
   ...props
@@ -42,7 +43,11 @@ function ContextMenuPortal({
   ...props
 }: React.ComponentProps<typeof ContextMenuPrimitive.Portal>) {
   return (
-    <ContextMenuPrimitive.Portal data-slot="context-menu-portal" {...props} />
+    <ContextMenuPrimitive.Portal
+      data-slot="context-menu-portal"
+      container={getPortalHost()}
+      {...props}
+    />
   );
 }
 
@@ -70,7 +75,7 @@ function ContextMenuContent({
   side?: "top" | "right" | "bottom" | "left";
 }) {
   return (
-    <ContextMenuPrimitive.Portal>
+    <ContextMenuPrimitive.Portal container={getPortalHost()}>
       <ContextMenuPrimitive.Content
         data-slot="context-menu-content"
         className={cn(

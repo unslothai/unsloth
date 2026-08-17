@@ -210,6 +210,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { swallowDismissingClick } from "@/lib/menu-dismiss";
+import { getPortalHost } from "@/lib/portal-host";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -6877,6 +6878,13 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarMorePrimitive.Trigger>
           <ActionBarMorePrimitive.Content
+            // This menu is assistant-ui's, not components/ui/dropdown-menu.tsx's, so routing
+            // Studio's own Radix wrappers at the shared portal host does NOT cover it. Measured:
+            // with the wrappers alone the menu still reported popperParentIsBody true and
+            // `document.body` still went from 1 listener type to 85. `portalProps` is spread
+            // straight onto assistant-ui's `DropdownMenuPrimitive.Portal`, which is the only
+            // handle on its container.
+            portalProps={{ container: getPortalHost() }}
             onPointerDownOutside={swallowDismissingClick}
             side="bottom"
             align="start"

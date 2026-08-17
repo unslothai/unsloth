@@ -8,6 +8,7 @@ import type * as React from "react";
 
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { getPortalHost } from "@/lib/portal-host";
 
 function Popover({
   ...props
@@ -35,7 +36,7 @@ function PopoverContent({
   const dialogContainer = useDialogPortalContainer();
   return (
     <PopoverPrimitive.Portal
-      container={container ?? dialogContainer ?? undefined}
+      container={container ?? dialogContainer ?? getPortalHost()}
     >
       <PopoverPrimitive.Content
         data-slot="popover-content"

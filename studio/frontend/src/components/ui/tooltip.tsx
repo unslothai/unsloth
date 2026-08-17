@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
 import { cn } from "@/lib/utils";
+import { getPortalHost } from "@/lib/portal-host";
 
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
@@ -308,7 +309,7 @@ function TooltipContent({
     [ref, variant],
   );
   return (
-    <TooltipPrimitive.Portal>
+    <TooltipPrimitive.Portal container={getPortalHost()}>
       <TooltipPrimitive.Content
         ref={contentRef}
         data-slot="tooltip-content"

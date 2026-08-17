@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { getPortalHost } from "@/lib/portal-host";
 
 const SelectOpenContext = createContext(false);
 
@@ -121,7 +122,7 @@ function SelectContent({
 }) {
   const dialogContainer = useDialogPortalContainer();
   return (
-    <SelectPrimitive.Portal container={container ?? dialogContainer ?? undefined}>
+    <SelectPrimitive.Portal container={container ?? dialogContainer ?? getPortalHost()}>
       <SelectPrimitive.Content
         data-slot="select-content"
         data-align-trigger={position === "item-aligned"}
