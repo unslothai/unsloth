@@ -604,6 +604,35 @@ type CommitPoint = {
   context: RetainedContext;
 };
 
+// CommonMark counts a line feed, a lone carriage return, and a carriage return
+// followed by a line feed as the same line ending, and reference parsers
+// normalise to LF before parsing, so this cannot change what is rendered. The
+// scan runs per frame and costs nothing next to the repair and lex it protects
+// (0.4 us on an 88,000 character reply); the replace only runs for a reply that
+// actually carries a carriage return.
+function normalizeLineEndings(text: string): string {
+  return text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
+}
+
+/**
+ * `a` begins with `b`.
+ *
+ * `String.prototype.startsWith` is the obvious spelling and is far slower here,
+ * because it scans where slicing to the prefix length and comparing lets the
+ * engine reject on length and then compare natively.
+ *
+ * The win is in the PREFIX length, not in how the strings are represented. Swept
+ * on V8: at an 8 character prefix `startsWith` is FASTER (0.4x), at 1,024 it is
+ * 105x slower and at 60,000 it is 250x slower, and a cons receiver behaves the
+ * same as a flat one (250x against 254x). So do not reach for this helper for
+ * short prefixes; it earns its place on a reply-length one.
+ *
+ * Semantically identical: `slice` clamps to the string length, so a `b` longer
+ * than `a` yields a short slice that cannot equal it.
+ */
+export const hasPrefix = (a: string, b: string): boolean =>
+  a.length >= b.length && a.slice(0, b.length) === b;
+
 function sharedPrefixLength(left: string, right: string): number {
   const limit = Math.min(left.length, right.length);
   let index = 0;
@@ -764,7 +793,7 @@ export class IncrementalMarkdownCache {
     // one native comparison plus a scan of the tail (about to be re-lexed
     // anyway) rather than a scan of the whole reply.
     const committedPrefix = this.source.slice(0, this.committedLength);
-    const shared = markdown.startsWith(committedPrefix)
+    const shared = hasPrefix(markdown, committedPrefix)
       ? this.committedLength +
         sharedPrefixLength(markdown.slice(this.committedLength), this.tail)
       : sharedPrefixLength(markdown, committedPrefix);
@@ -818,7 +847,7 @@ export class IncrementalMarkdownCache {
   }
 
   private updateTail(markdown: string): void {
-    if (markdown.startsWith(this.source)) {
+    if (hasPrefix(markdown, this.source)) {
       this.tail += markdown.slice(this.source.length);
     } else if (!this.rewindToRewrite(markdown)) {
       if (this.committedBlocks.length > 0) {
@@ -830,7 +859,15 @@ export class IncrementalMarkdownCache {
     this.source = markdown;
   }
 
-  update(markdown: string): IncrementalMarkdownRender {
+  update(rawMarkdown: string): IncrementalMarkdownRender {
+    // Every boundary this class finds is a byte offset into the text it was
+    // handed, but the blocks it compares against come back from Streamdown with
+    // their line endings already normalised. On a CRLF reply the two disagree
+    // one block in, `findCommitBoundary` sees `"para"` where the source holds
+    // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
+    // re-lexes on every frame. Normalise first so both sides speak LF.
+    const markdown = normalizeLineEndings(rawMarkdown);
+
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
     // work would be the whole reply again once the document path is in use.
@@ -841,7 +878,7 @@ export class IncrementalMarkdownCache {
       };
     }
 
-    if (this.fullDocumentMode && markdown.startsWith(this.source)) {
+    if (this.fullDocumentMode && hasPrefix(markdown, this.source)) {
       this.source = markdown;
       return this.renderFullDocument(markdown);
     }
