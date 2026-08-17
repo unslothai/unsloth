@@ -91,10 +91,7 @@ def test_the_floor_is_linted_on_every_pull_request():
         f"{trigger_lint.name} no longer runs {lint.name}, so nothing checks the floor "
         f"before a merge"
     )
-    installs = [
-        line for line in text.splitlines()
-        if "pip install" in line and "vermin" in line
-    ]
+    installs = [line for line in text.splitlines() if "pip install" in line and "vermin" in line]
     assert installs, (
         f"{trigger_lint.name} does not pip install vermin, so {lint.name} exits with its "
         f"'not installed' message rather than checking anything. Asserted against the "
