@@ -310,7 +310,7 @@ def _import_time_nodes(node: ast.AST):
 
 
 def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
-    """Whether the module imports ``target`` itself, at module scope, before ``line``.
+    """Whether the module imports ``target`` under live stubs, at module scope, before ``line``.
 
     A file may install the stubs, import the heavy module under them, then drop the
     stubs -- which is the shape this PR's fix uses and the shape the sibling files
@@ -320,10 +320,22 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
 
     Bounded by ``line`` for the same reason ``_stubs_before`` is: an eager import
     BELOW an import-time ``importorskip`` has not run when that call is evaluated.
+
+    Bounded BELOW by the stub install as well, because what makes the eager import
+    leave the target in ``sys.modules`` is the stubs being live for it. An import
+    attempted before them is the ``try: import X except ImportError: pass`` probe,
+    which on the dependency-light matrix fails and leaves nothing cached -- and
+    Python removes the half-initialised module on the way out, so the later call
+    still reaches the real dependency. Counting that probe reported such a file
+    safe. Reported on this PR.
     """
     for statement in tree.body:
         if statement.lineno >= line:
             break
+        # Asked through _stubs_before rather than restated here, so "are the stubs
+        # live" has one answer in this file and cannot drift between the two callers.
+        if not _stubs_before(tree, statement.lineno):
+            continue
         for node in _runtime_nodes(statement):
             if isinstance(node, ast.Import):
                 if any(alias.name == target for alias in node.names):
@@ -334,6 +346,46 @@ def _eagerly_imports(tree: ast.Module, target: str, line: int) -> bool:
                     f"{module}.{alias.name}" == target for alias in node.names
                 ):
                     return True
+    return False
+
+
+def _importorskip_target(node: ast.Call) -> ast.AST | None:
+    """The module name argument, positional or as the ``modname`` keyword.
+
+    ``importorskip(modname, minversion=None, reason=None, *, exc_type=None)``, so
+    ``pytest.importorskip(modname = "core.inference.inference")`` is a valid call
+    with an empty ``node.args``. Matching only the positional form let a file
+    written that way walk past this guard. Reported on this PR.
+    """
+    if node.args:
+        return node.args[0]
+    for keyword in node.keywords:
+        if keyword.arg == "modname":
+            return keyword.value
+    return None
+
+
+def _skips_on_plain_import_error(node: ast.Call) -> bool:
+    """Whether the call asked pytest to treat a plain ``ImportError`` as a skip.
+
+    ``exc_type`` arrived in pytest 8.2 and is documented as "the exception that
+    should be captured in order to skip modules. Must be ImportError or a
+    subclass", defaulting to ``ModuleNotFoundError``. That default is the whole
+    reason this guard exists: an unstubbed heavy module raises a plain
+    ``ImportError``, which the default does not catch, so the call raises instead
+    of skipping. A call that passes ``ImportError`` explicitly has opted into the
+    broad behaviour and is safe unstubbed, so flagging it would be a false report.
+    ``ModuleNotFoundError`` passed explicitly is the default and stays flagged.
+    Reported on this PR.
+    """
+    for keyword in node.keywords:
+        if keyword.arg != "exc_type":
+            continue
+        value = keyword.value
+        if isinstance(value, ast.Name):
+            return value.id == "ImportError"
+        if isinstance(value, ast.Attribute):
+            return value.attr == "ImportError"
     return False
 
 
@@ -358,7 +410,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
         func = node.func
         if isinstance(func, ast.Attribute):
@@ -369,7 +421,9 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
             continue
         if called != "importorskip":
             continue
-        target = node.args[0]
+        if _skips_on_plain_import_error(node):
+            continue
+        target = _importorskip_target(node)
         if (
             isinstance(target, ast.Constant)
             and isinstance(target.value, str)
@@ -389,19 +443,32 @@ def _drops_stubs(tree: ast.Module, line: int) -> bool:
 
     Bounded by ``line`` because a pop below an import-time call has not happened yet
     when that call runs, and a pop above one has.
+
+    It has to be OUR stubs. The receiver is checked to be ``sys.modules``, not any
+    object with a ``.modules``, and the statement has to name the required stub the
+    same way an install does -- as the string, or through a module-level list it
+    reads, which is how the real files spell it (``for _name in reversed(_STUBBED):
+    sys.modules.pop(_name, None)``). Before that, an unrelated
+    ``sys.modules.pop("routes.foo", None)`` in a properly stubbed file read as a
+    drop and got the file reported as an offender. Reported on this PR.
     """
+    named: frozenset[str] = frozenset()
     for statement in tree.body:
         if statement.lineno >= line:
             break
-        for node in _runtime_nodes(statement):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "pop"
-                and isinstance(node.func.value, ast.Attribute)
-                and node.func.value.attr == "modules"
-            ):
-                return True
+        nodes = list(_runtime_nodes(statement))
+        pops_sys_modules = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "pop"
+            and _is_sys_modules(node.func.value)
+            for node in nodes
+        )
+        if pops_sys_modules and (
+            _names_required_stub(nodes) or _reads_a_named_stub(nodes, named)
+        ):
+            return True
+        named |= _bound_names(statement)
     return False
 
 
@@ -606,6 +673,86 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "inf = pytest.importorskip('core.inference.inference')\n"
     )
     assert _offender_free(eager_then_drop_then_call)
+
+    # A try/except probe BEFORE the stubs is not an eager import: on the matrix it
+    # fails, and Python drops the half-initialised module, so the later call still
+    # reaches the real dependency. Counting it read this file as safe. Reported here.
+    failed_probe_then_drop = (
+        "import pytest, sys\n"
+        "try:\n"
+        "    import core.inference.inference\n"
+        "except ImportError:\n"
+        "    pass\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "for _n in ('unsloth',):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert not _offender_free(failed_probe_then_drop)
+
+    # Unrelated module-cache cleanup in a properly stubbed file is not a stub drop,
+    # and neither is a pop on something that merely has a `.modules`. Both used to
+    # report the file as an offender. Reported here.
+    unrelated_pop = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "sys.modules.pop('routes.foo', None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(unrelated_pop)
+    foreign_modules = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "importlib.modules.pop('unsloth', None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert _offender_free(foreign_modules)
+    # The real files pop through a module-level list, so that still reads as a drop.
+    drop_through_a_list = (
+        "import pytest, sys\n"
+        "_STUBBED = []\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "for _n in reversed(_STUBBED):\n"
+        "    sys.modules.pop(_n, None)\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert not _offender_free(drop_through_a_list)
+
+    # importorskip(modname = ...) is the documented signature, so matching only the
+    # positional form let a file written that way past the guard. Reported here.
+    keyword_target = (
+        "import pytest\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip(modname = 'core.inference.inference')\n"
+    )
+    assert calls(keyword_target) == [("core.inference.inference", 3)]  # end-of-module
+    assert not safe(keyword_target)
+
+    # exc_type=ImportError is pytest's own opt-in to skipping on a plain ImportError,
+    # which is the exact failure this guard is about, so such a call is safe unstubbed
+    # and flagging it was a false report. Reported here.
+    explicit_import_error = (
+        "import pytest\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip(\n"
+        "        'core.inference.inference', exc_type = ImportError\n"
+        "    )\n"
+    )
+    assert calls(explicit_import_error) == []
+    assert safe(explicit_import_error)
+    # ModuleNotFoundError is the default, so spelling it out changes nothing.
+    explicit_default = (
+        "import pytest\n"
+        "def test_x():\n"
+        "    inf = pytest.importorskip(\n"
+        "        'core.inference.inference', exc_type = ModuleNotFoundError\n"
+        "    )\n"
+    )
+    assert calls(explicit_default) and not safe(explicit_default)
 
     # importorskip of something harmless is not an offence.
     assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
