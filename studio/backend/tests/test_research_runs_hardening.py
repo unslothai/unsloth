@@ -1744,6 +1744,14 @@ def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch)
         asyncio.run(run())
 
 
+def test_wall_clock_timeout_can_be_disabled():
+    async def run():
+        async with research_runs._wall_clock_timeout(None):
+            await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+
+
 def test_wall_clock_timeout_does_not_swallow_shutdown_cancellation(monkeypatch):
     # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
     # which is the very case these tests cover.

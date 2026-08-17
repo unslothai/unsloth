@@ -189,6 +189,12 @@ export function DeepResearchWebsiteAccessDialog({
   const setPolicy = useChatRuntimeStore(
     (state) => state.setResearchWebsitePolicy,
   );
+  const modelTimeoutSeconds = useChatRuntimeStore(
+    (state) => state.researchModelTimeoutSeconds,
+  );
+  const setModelTimeoutSeconds = useChatRuntimeStore(
+    (state) => state.setResearchModelTimeoutSeconds,
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -196,6 +202,8 @@ export function DeepResearchWebsiteAccessDialog({
         <DeepResearchWebsiteAccessContent
           policy={policy}
           setPolicy={setPolicy}
+          modelTimeoutSeconds={modelTimeoutSeconds}
+          setModelTimeoutSeconds={setModelTimeoutSeconds}
           onClose={() => onOpenChange(false)}
         />
       ) : null}
@@ -206,24 +214,63 @@ export function DeepResearchWebsiteAccessDialog({
 function DeepResearchWebsiteAccessContent({
   policy,
   setPolicy,
+  modelTimeoutSeconds,
+  setModelTimeoutSeconds,
   onClose,
 }: {
   policy: ResearchWebsitePolicy;
   setPolicy: (policy: ResearchWebsitePolicy) => void;
+  modelTimeoutSeconds: number;
+  setModelTimeoutSeconds: (seconds: number) => void;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
+  const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
+  const [timeoutMinutes, setTimeoutMinutes] = useState(
+    String(Math.max(1, Math.ceil(modelTimeoutSeconds / 60))),
+  );
 
   return (
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>Website access</DialogTitle>
+        <DialogTitle>Deep research</DialogTitle>
         <DialogDescription>
-          Control which websites the next Deep Research run can search and read.
-          Limits are enforced by the server and shared with the research model.
+          Control website access and run time for the next Deep Research run.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-6">
+        <div className="space-y-2">
+          <div>
+            <div className="text-sm font-medium">Total time</div>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              {unlimited
+                ? "No total time limit. Slow models can continue while they keep producing output."
+                : "Maximum time for each model request. Output stall safeguards stay active."}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="number"
+              min="1"
+              step="1"
+              value={timeoutMinutes}
+              disabled={unlimited}
+              onChange={(event) => setTimeoutMinutes(event.target.value)}
+              aria-label="Deep Research total time in minutes"
+              className="w-28"
+            />
+            <span className="self-center text-sm text-muted-foreground">
+              minutes
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setUnlimited((value) => !value)}
+            >
+              {unlimited ? "Use a limit" : "No limit"}
+            </Button>
+          </div>
+        </div>
         <DomainList
           label="Allow only"
           description="When set, research can access only these domains and their subdomains."
@@ -244,6 +291,14 @@ function DeepResearchWebsiteAccessContent({
         <Button
           onClick={() => {
             setPolicy(draft);
+            const minutes = Number(timeoutMinutes);
+            setModelTimeoutSeconds(
+              unlimited
+                ? 0
+                : Number.isSafeInteger(minutes) && minutes >= 1
+                  ? minutes * 60
+                  : 900,
+            );
             onClose();
           }}
         >

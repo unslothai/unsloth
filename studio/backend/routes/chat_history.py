@@ -428,6 +428,8 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    # Seconds per Deep Research model request; zero leaves the total wall-clock deadline off.
+    researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0)
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None

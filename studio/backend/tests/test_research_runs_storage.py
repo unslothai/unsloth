@@ -1457,7 +1457,7 @@ def test_research_budget_defaults_support_long_runs():
     )
 
 
-def test_research_budget_ceilings_allow_depth_but_remain_bounded():
+def test_research_budget_limits_allow_unlimited_model_requests():
     from fastapi import HTTPException
     from routes.research_runs import CreateResearchRun, _sanitize_config
 
@@ -1468,11 +1468,14 @@ def test_research_budget_ceilings_allow_depth_but_remain_bounded():
         budgets = {
             "maxSteps": 30,
             "maxSources": 100,
-            "modelTimeoutSeconds": 3600,
+            "modelTimeoutSeconds": 7200,
             "toolTimeoutSeconds": 600,
             "firstOutputTimeoutSeconds": 3600,
         },
     )
+    assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
+
+    payload.budgets["modelTimeoutSeconds"] = 0
     assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
 
     payload.budgets["maxSteps"] = 31

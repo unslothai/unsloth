@@ -507,8 +507,11 @@ def _fit_decision_inputs(
 
 
 @asynccontextmanager
-async def _wall_clock_timeout(seconds: float) -> AsyncIterator[None]:
+async def _wall_clock_timeout(seconds: float | None) -> AsyncIterator[None]:
     """Use asyncio.timeout when available, with the same behavior on Python 3.9/3.10."""
+    if seconds is None:
+        yield
+        return
     timeout = getattr(asyncio, "timeout", None)
     if timeout is not None:
         async with timeout(seconds):
@@ -989,7 +992,9 @@ class ResearchSupervisor:
         loop = asyncio.get_running_loop()
         # Share the model budget across the allowed waits: spending all of it on one lets the
         # enclosing wall clock fire first, burying the real refusal under a timeout.
-        budget = float(run["config"]["budgets"]["modelTimeoutSeconds"]) / (_MAX_MODEL_WAITS + 1)
+        model_timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
+        # Unlimited generation still bounds model-loading retries at the shipped default.
+        budget = (model_timeout or 900.0) / (_MAX_MODEL_WAITS + 1)
         if max_seconds is not None:
             budget = min(budget, max_seconds)
         deadline = loop.time() + budget
@@ -1012,7 +1017,8 @@ class ResearchSupervisor:
         step = _retry_after_seconds(response) or _MODEL_SWITCH_RETRY_SECONDS
         # Same budget share as _wait_for_local_model: one wait must leave room for the others and
         # for the refusal, or the enclosing wall clock fires first and reports a timeout instead.
-        budget = float(run["config"]["budgets"]["modelTimeoutSeconds"]) / (_MAX_MODEL_WAITS + 1)
+        model_timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
+        budget = (model_timeout or 900.0) / (_MAX_MODEL_WAITS + 1)
         remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, budget)
         logger.info("research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining)
         while remaining > 0:
@@ -1253,16 +1259,15 @@ class ResearchSupervisor:
         try:
             await self._note_phase(run["id"], "phase.started", phase, call_id, step_position)
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
-            # Configurable, capped by the run's wall clock; legacy runs use the default.
-            first_output_budget = min(
-                float(
-                    config["budgets"].get(
-                        "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                    )
-                ),
-                model_timeout,
+            # Configurable, capped by a finite run wall clock; legacy runs use the default.
+            first_output_budget = float(
+                config["budgets"].get(
+                    "firstOutputTimeoutSeconds", _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                )
             )
-            timeout = httpx.Timeout(model_timeout)
+            if model_timeout > 0:
+                first_output_budget = min(first_output_budget, model_timeout)
+            timeout = httpx.Timeout(model_timeout or None)
             loop = asyncio.get_running_loop()
 
             def semantic_deadline() -> tuple[float, type[BaseException]] | None:
@@ -1276,7 +1281,7 @@ class ResearchSupervisor:
                 )
 
             async with (
-                _wall_clock_timeout(model_timeout),
+                _wall_clock_timeout(model_timeout or None),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
             ):
                 response: httpx.Response | None = None

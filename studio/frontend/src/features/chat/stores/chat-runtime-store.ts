@@ -86,6 +86,8 @@ export const CHAT_DEEP_RESEARCH_ENABLED_KEY =
   "unsloth_chat_deep_research_enabled";
 export const CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY =
   "unsloth_chat_deep_research_website_policy";
+export const CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY =
+  "unsloth_chat_deep_research_model_timeout";
 export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
 export const CHAT_SHOW_CANVAS_MENU_ITEM_KEY =
   "unsloth_chat_show_canvas_menu_item";
@@ -168,6 +170,17 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
 };
+export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
+
+function loadResearchModelTimeoutSeconds(): number {
+  if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+  const value = Number(
+    window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY),
+  );
+  return Number.isSafeInteger(value) && value >= 0
+    ? value
+    : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+}
 
 function loadResearchWebsitePolicy(): ResearchWebsitePolicy {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_WEBSITE_POLICY;
@@ -591,6 +604,10 @@ const MIRRORED_SETTINGS = {
   researchWebsitePolicy: {
     storageKey: CHAT_DEEP_RESEARCH_WEBSITE_POLICY_KEY,
     ...JSON_SETTING,
+  },
+  researchModelTimeoutSeconds: {
+    storageKey: CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY,
+    ...NUMBER_SETTING,
   },
   artifactsEnabled: {
     storageKey: CHAT_ARTIFACTS_ENABLED_KEY,
@@ -2201,6 +2218,7 @@ type ChatRuntimeStore = {
   imageToolsEnabled: boolean;
   deepResearchEnabled: boolean;
   researchWebsitePolicy: ResearchWebsitePolicy;
+  researchModelTimeoutSeconds: number;
   artifactsEnabled: boolean;
   // Whether the Canvas toggle is offered in the composer + menu (hidden by default).
   showCanvasMenuItem: boolean;
@@ -2524,6 +2542,7 @@ type ChatRuntimeStore = {
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
   setResearchWebsitePolicy: (policy: ResearchWebsitePolicy) => void;
+  setResearchModelTimeoutSeconds: (seconds: number) => void;
   setArtifactsEnabled: (
     enabled: boolean,
     options?: { persist?: boolean },
@@ -2643,6 +2662,7 @@ type ScalarSettingKey =
   | "webFetchToolsEnabled"
   | "deepResearchEnabled"
   | "researchWebsitePolicy"
+  | "researchModelTimeoutSeconds"
   | "artifactsEnabled"
   | "showCanvasMenuItem"
   | "mcpEnabledForChat"
@@ -2691,6 +2711,7 @@ const SCALAR_SETTING_KEYS = [
   "webFetchToolsEnabled",
   "deepResearchEnabled",
   "researchWebsitePolicy",
+  "researchModelTimeoutSeconds",
   "artifactsEnabled",
   "showCanvasMenuItem",
   "mcpEnabledForChat",
@@ -3337,6 +3358,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
   deepResearchEnabled: loadBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false),
   researchWebsitePolicy: loadResearchWebsitePolicy(),
+  researchModelTimeoutSeconds: loadResearchModelTimeoutSeconds(),
   artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
   showCanvasMenuItem: loadShowCanvasMenuItem(),
   collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
@@ -4260,6 +4282,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveResearchWebsitePolicy(researchWebsitePolicy);
       return {
         researchWebsitePolicy,
+        queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
+      };
+    }),
+  setResearchModelTimeoutSeconds: (researchModelTimeoutSeconds) =>
+    set((state) => {
+      const seconds =
+        Number.isSafeInteger(researchModelTimeoutSeconds) &&
+        researchModelTimeoutSeconds >= 0
+          ? researchModelTimeoutSeconds
+          : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+      persistSetting(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, String(seconds));
+      return {
+        researchModelTimeoutSeconds: seconds,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),

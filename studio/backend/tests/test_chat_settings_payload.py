@@ -41,6 +41,7 @@ def test_mirrored_settings_round_trip():
                 "allowedDomains": ["unsloth.ai"],
                 "blockedDomains": [],
             },
+            "researchModelTimeoutSeconds": 0,
             "speculativeType": "ngram",
             "gpuMemoryMode": "manual",
             "fitOnDeviceOnly": True,
@@ -56,10 +57,11 @@ def test_mirrored_settings_round_trip():
         "ragTopK": 12,
         "ragAutoInject": "on",
         "ragAutoInjectMinScore": 0.42,
-        "researchWebsitePolicy": {
-            "allowedDomains": ["unsloth.ai"],
-            "blockedDomains": [],
-        },
+            "researchWebsitePolicy": {
+                "allowedDomains": ["unsloth.ai"],
+                "blockedDomains": [],
+            },
+            "researchModelTimeoutSeconds": 0,
         "speculativeType": "ngram",
         "gpuMemoryMode": "manual",
         "fitOnDeviceOnly": True,

@@ -42,6 +42,11 @@ const MIRRORED_ENUM_VALUES = {
 const MIRRORED_NUMBER_BOUNDS = {
   ragTopK: { min: 1, max: 50, integer: true },
   ragAutoInjectMinScore: { min: 0, max: 1, integer: false },
+  researchModelTimeoutSeconds: {
+    min: 0,
+    max: Number.MAX_SAFE_INTEGER,
+    integer: true,
+  },
 } as const satisfies Partial<
   Record<
     keyof PersistedChatSettings,

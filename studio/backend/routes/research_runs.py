@@ -309,15 +309,17 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
     limits = {
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
-        "modelTimeoutSeconds": (10, 3600),
+        # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
+        "modelTimeoutSeconds": (0, None),
         "toolTimeoutSeconds": (5, 600),
         # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
-        if not minimum <= budgets[key] <= maximum:
+        if budgets[key] < minimum or (maximum is not None and budgets[key] > maximum):
+            range_label = f"at least {minimum}" if maximum is None else f"between {minimum} and {maximum}"
             raise HTTPException(
-                status_code = 400, detail = f"{key} must be between {minimum} and {maximum}"
+                status_code = 400, detail = f"{key} must be {range_label}"
             )
     # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
     # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
