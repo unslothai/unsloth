@@ -1887,17 +1887,25 @@ for x in importlib.metadata.distributions(path=_paths):
         record = False
     if _norm(name) == _norm(sys.argv[1]):
         cands.append((x, record))
-    for r in csv.reader((record or '').splitlines()):
-        rel = r[0] if r else ''
-        if not rel or rel.endswith('/'):
-            continue
-        if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
-            continue
-        f = PurePosixPath(rel.replace(chr(92), '/'))
-        if f.is_absolute() or '..' in f.parts:
-            continue
-        key = os.path.normcase(str(x.locate_file(f)))
-        owners.setdefault(key, set()).add((_norm(name), _xver))
+    try:
+        for r in csv.reader((record or '').splitlines()):
+            rel = r[0] if r else ''
+            if not rel or rel.endswith('/'):
+                continue
+            if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                continue
+            f = PurePosixPath(rel.replace(chr(92), '/'))
+            if f.is_absolute() or '..' in f.parts:
+                continue
+            key = os.path.normcase(str(x.locate_file(f)))
+            owners.setdefault(key, set()).add((_norm(name), _xver))
+    except csv.Error:
+        # A field past csv.field_size_limit is a partial write with no delimiter
+        # in sight. It must not end the scan for every other distribution:
+        # ownership from this inventory is unusable and skipped, and when it is
+        # the target's own RECORD the same parse fails again in _verdict, where
+        # it reads as damage.
+        pass
 def _pep440_key(v):
     # A port of packaging.version's own comparison key, used only when packaging
     # itself cannot import. Hand-rolled stage ranking kept springing leaks
@@ -2058,25 +2066,30 @@ def _verdict(d, d_record):
     selfrec = False
     _badrow = False
     if not _edit:
-        for r in csv.reader((d_record or '').splitlines()):
-            if r:
-                # accumulated, not overwritten: a short row anywhere is a truncated
-                # write, and a later well-formed row must not erase the evidence
-                _badrow = _badrow or len(r) != 3
-            rel = r[0] if r else ''
-            if not rel or rel.endswith('/'):
-                continue
-            if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
-                selfrec = True
-            if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
-                continue
-            f = PurePosixPath(rel.replace(chr(92), '/'))
-            if f.is_absolute() or '..' in f.parts:
-                continue
-            if len(f.parts) > 1 and f.parts[0] in _shared:
-                continue
-            rows.append((f, (r[2] if len(r) > 2 else '').strip(),
-                         os.path.normcase(str(d.locate_file(f)))))
+        try:
+            for r in csv.reader((d_record or '').splitlines()):
+                if r:
+                    # accumulated, not overwritten: a short row anywhere is a truncated
+                    # write, and a later well-formed row must not erase the evidence
+                    _badrow = _badrow or len(r) != 3
+                rel = r[0] if r else ''
+                if not rel or rel.endswith('/'):
+                    continue
+                if rel.replace(chr(92), '/').endswith('.dist-info/RECORD'):
+                    selfrec = True
+                if '.dist-info/' in rel or '.egg-info/' in rel or rel.endswith('.pyc'):
+                    continue
+                f = PurePosixPath(rel.replace(chr(92), '/'))
+                if f.is_absolute() or '..' in f.parts:
+                    continue
+                if len(f.parts) > 1 and f.parts[0] in _shared:
+                    continue
+                rows.append((f, (r[2] if len(r) > 2 else '').strip(),
+                             os.path.normcase(str(d.locate_file(f)))))
+        except csv.Error:
+            # a field past csv.field_size_limit is a malformed row by another
+            # name: keep the evidence, and whatever parsed before it
+            _badrow = True
     # a truncated RECORD can keep its self-entry when the writer ordered entries
     # lexicographically (dist-info sorts before the payload), so the final parsed
     # row must also carry RECORD's three fields: a mid-line cut leaves a short row,
