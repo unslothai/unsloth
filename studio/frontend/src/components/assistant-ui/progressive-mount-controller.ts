@@ -185,6 +185,18 @@ export function anchorCorrection(
   // What the browser was forced to absorb. With anchoring off it moves scrollTop for exactly one
   // reason: the offset the reader was at stopped existing because the document got shorter above
   // them. That part of the correction has already happened, so only the remainder is applied.
+  //
+  // This estimates the clamp from the captured scrollTop, so it is exact only for a reader who did
+  // not scroll during the frame, and the bound is worth stating because it cannot be closed here.
+  // A reader who scrolls in the same frame the shrink lands changes how much the browser actually
+  // had to absorb, and the two orderings -- clamp first then the gesture, gesture first then the
+  // clamp -- produce the SAME pair of samples while wanting different answers. Nothing measurable
+  // inside the frame separates them, so gating on "scrollTop did not end at maxScrollTop" only
+  // moves the error from one ordering to the other. This picks clamp-first and is wrong by at most
+  // `captured.scrollTop - now.maxScrollTop`, the height of the shrink the reader was hanging over,
+  // and never by the size of their gesture. It needs a DETACHED reader parked inside that overhang
+  // of the bottom, content above them shrinking, and a scroll in that one frame, while a window is
+  // open. Everything else, including any insertion, has this term at zero.
   const clamped = Math.max(0, captured.scrollTop - now.maxScrollTop);
   const shift =
     now.viewportOffset +
