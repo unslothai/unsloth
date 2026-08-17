@@ -13877,11 +13877,48 @@ class LlamaCppBackend:
                 gpus: list[tuple[int, int]] = []
                 # Keep fit-budget and launch-flag mmproj resolution in sync.
                 launch_mmproj_path = None
-                if not disable_vision and not extra_args_disable_mmproj(extra_args):
+                if not extra_args_disable_mmproj(extra_args):
                     launch_mmproj_path = self._resolve_launch_mmproj_path(
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     )
+                    # The switch turns VISION off, and a projector is not always a
+                    # vision tower: ultravox, Voxtral and Qwen3-ASR declare an audio
+                    # encoder and no vision at all, so suppressing one takes the
+                    # model's audio input away and gives no image VRAM back. Nothing
+                    # there for the switch to turn off, so keep it. Resolution is a
+                    # disk and family check with no download, so asking first is free.
+                    if disable_vision and launch_mmproj_path:
+                        _dv_has_audio, _dv_accepts_image = False, True
+                        try:
+                            from utils.models.gguf_metadata import mmproj_capabilities
+
+                            _dv_has_audio, _dv_accepts_image = mmproj_capabilities(
+                                launch_mmproj_path
+                            )
+                        except Exception as e:
+                            # Unknown reads image-capable upstream, so honor the switch
+                            # rather than quietly keep a projector the user turned off.
+                            logger.debug(f"mmproj capability read failed: {e}")
+                        if _dv_accepts_image:
+                            if _dv_has_audio:
+                                # One projector serves both modalities (Qwen2.5-Omni)
+                                # and llama.cpp cannot load half of it, so audio input
+                                # goes with vision. Say so: the switch only named images.
+                                logger.warning(
+                                    "Vision is off for this load, so this model's audio "
+                                    "input goes too: its projector serves both and "
+                                    "llama.cpp cannot load one modality without the "
+                                    "other. Turn Vision back on to send audio."
+                                )
+                            launch_mmproj_path = None
+                        else:
+                            logger.info(
+                                "Vision is off for this load, but this model's projector "
+                                "is audio-only (no vision tower), so it stays loaded: "
+                                "dropping it would remove audio input and free no image "
+                                "VRAM."
+                            )
                 # A virtualised Metal device corrupts the vision encoder too, and
                 # --no-mmproj-offload is the only way to keep it off there (clip.cpp
                 # never reads --gpu-layers). Without that flag the choice is a projector

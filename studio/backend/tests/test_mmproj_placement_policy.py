@@ -433,3 +433,94 @@ def test_the_training_guard_forwards_the_switch_to_its_estimator(tmp_path):
             pass
 
     assert seen.get("disable_vision") is True
+
+
+@pytest.mark.parametrize(
+    "has_audio,accepts_image,projector_expected,label",
+    [
+        (True, False, True, "audio_only_keeps_the_projector"),
+        (True, True, False, "omni_honors_the_switch"),
+        (False, True, False, "vision_only_honors_the_switch"),
+    ],
+)
+def test_the_vision_switch_does_not_take_audio_only_projectors_away(
+    tmp_path, has_audio, accepts_image, projector_expected, label
+):
+    """A projector is not always a vision tower. ultravox, Voxtral and Qwen3-ASR
+    declare an audio encoder and no vision, so suppressing one would remove the
+    model's audio input and free no image VRAM: the switch has nothing to turn
+    off there and must leave it alone. A projector serving both modalities is
+    still suppressed, because llama.cpp cannot load one modality without the
+    other, and the switch is the user asking for the VRAM back."""
+    import utils.models.gguf_metadata as _meta
+
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+    with patch.object(
+        _meta, "mmproj_capabilities", lambda _p: (has_audio, accepts_image)
+    ):
+        cmd = _launch(backend, gguf, disable_vision = True)["cmd"]
+
+    assert ("--mmproj" in cmd) is projector_expected, label
+
+
+# The pin reads no platform flag. It sees the GPU probe's output, the Metal
+# budget, the paravirtual capability answer, tensor_parallel and the memory
+# mode, and nothing else, so an OS reaches it only through what its probe
+# reports. These are the probe signatures the supported pairs produce: what
+# varies between a Windows and a WSL RTX 4090 is nothing the decision reads.
+# Free VRAM is 7600 MiB against a footprint that needs more, i.e. the case that
+# pins on a discrete card, so any cell reporting "no pin" is doing so because
+# its memory is shared, not because it had room.
+_TOPOLOGIES = [
+    ([(0, 7_600, 8_192)], True, "linux_nvidia_discrete"),
+    ([(0, 7_600, 8_192)], True, "windows_nvidia_discrete"),
+    ([(0, 7_600, 8_192)], True, "wsl_nvidia_discrete"),
+    ([(0, 7_600, 8_192)], True, "linux_amd_discrete_rocm"),
+    ([(0, 7_600, 8_192)], True, "windows_amd_discrete_vulkan"),
+    ([(0, 7_600, 0)], False, "linux_amd_apu"),
+    ([(0, 7_600, 0)], False, "windows_amd_igpu"),
+    ([(0, 7_600, 0)], False, "wsl_amd_igpu"),
+    ([(0, 7_600, 0)], False, "linux_intel_igpu"),
+    ([], False, "mac_apple_silicon_unified"),
+    ([], False, "linux_cpu_only"),
+    ([], False, "windows_cpu_only"),
+    ([], False, "wsl_cpu_only"),
+    ([], False, "mac_cpu_only"),
+]
+
+
+@pytest.mark.parametrize("memory,expect_pin,label", _TOPOLOGIES)
+def test_the_platform_and_gpu_matrix_pins_only_where_memory_is_discrete(
+    tmp_path, memory, expect_pin, label
+):
+    """Moving the encoder out of a shared pool frees nothing, so only a card with
+    its own memory may be charged for the projector. An APU, an iGPU and a
+    virtualised Metal device all report free SYSTEM RAM as free VRAM."""
+    backend, gguf = _backend(tmp_path, memory = memory)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert ("--no-mmproj-offload" in cmd) is expect_pin, label
+    # Vision survives either way: the pin moves the projector, it never drops it.
+    assert "--mmproj" in cmd, label
+
+
+@pytest.mark.parametrize(
+    "memory,label",
+    [
+        ([(0, 7_600, 8_192), (1, 20_000, 24_576)], "big_card_second"),
+        ([(0, 20_000, 24_576), (1, 7_600, 8_192)], "big_card_first"),
+    ],
+)
+def test_a_heterogeneous_pair_is_ranked_before_the_projector_is_charged(
+    tmp_path, memory, label
+):
+    """Enumeration order must not decide placement: the same two cards in either
+    order have to reach the same answer, or the pin is reading the device list
+    rather than the memory on it."""
+    backend, gguf = _backend(tmp_path, memory = memory)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd, label
+    assert ("--no-mmproj-offload" in cmd) is False, label
