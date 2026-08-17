@@ -484,6 +484,8 @@ def run_safetensors_tool_loop(
     continue_final_message: bool = False,
     markup = None,
     renderable_tools = None,
+    context_length: Optional[int] = None,
+    max_tokens: Optional[int] = None,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -1307,6 +1309,24 @@ def run_safetensors_tool_loop(
                     )
                     if _accepts_kwarg(execute_tool, "conversation_branch"):
                         kwargs["conversation_branch"] = request_branch
+                    # And the room the model has left, as the GGUF loop does. A thread
+                    # compacted under a GGUF model keeps its archive when the user
+                    # switches models, so this loop offers search_conversation too; with
+                    # no budget the clamp in the tool is skipped and a model-chosen
+                    # top_k of 8 appends roughly 4K tokens to an already full prompt.
+                    if context_length and _accepts_kwarg(
+                        execute_tool, "conversation_budget_tokens"
+                    ):
+                        from core.inference.context_window import (
+                            estimate_messages_tokens,
+                            prompt_budget,
+                        )
+                        kwargs["conversation_budget_tokens"] = max(
+                            0,
+                            prompt_budget(int(context_length), max_tokens)
+                            - estimate_messages_tokens(conversation)
+                            - estimate_messages_tokens(tools or []),
+                        )
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     return execute_tool(_decision.tool_name, _decision.arguments, **kwargs)

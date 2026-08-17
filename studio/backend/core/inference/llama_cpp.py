@@ -562,6 +562,21 @@ def _sticky_compaction_boundary(
         # much deeper branch. Where the text cannot tell them apart, take the SMALLEST
         # boundary offered: too small costs one more compaction later, too large evicts
         # live history that this branch still has.
+        # The branch check is a substring test, because an archived turn is compared
+        # against fragments of itself. Here both sides are whole messages, and substring
+        # lets an abandoned short reply ("Done") ride in on any live message that merely
+        # contains it ("Not done yet") -- and then, having no live twin, decide the
+        # boundary on its own. Where any candidate matches a live message exactly, only
+        # the exact ones are considered.
+        _live = set(_branch or ())
+        _exact = [
+            message
+            for message in candidates
+            if _archive_message_text(message.get("content")) in _live
+        ]
+        if _exact:
+            candidates = _exact
+
         newest = _archive_message_text(candidates[0].get("content"))
         boundaries = []
         for message in candidates:
@@ -20351,6 +20366,14 @@ class LlamaCppBackend:
         # boundary-sized block of still-live history, and the truncation events sum, so
         # the inflated total is persisted and the next request starts from it.
         _sticky_boundary_applied = False
+        # exact templated prompt tokens minus what the estimator says about the same
+        # messages, measured once by the preflight. The estimator knows nothing about the
+        # tool catalogue or the template's own framing, and with a large catalogue (MCP
+        # schemas especially) that is thousands of tokens of the prompt it cannot see --
+        # enough for a conversation search to be told there is room for chunks the
+        # request cannot hold. Carrying the difference makes the estimate exact at the
+        # point it was measured and only approximate for what the loop appends after.
+        _prompt_token_offset: Optional[int] = None
         # The branch this request is on, kept aside before anything is evicted from or
         # injected into `conversation`. The archive is keyed by thread, and a thread's
         # stored rows are the whole message DAG -- Retry and regenerate keep the replaced
@@ -20640,6 +20663,13 @@ class LlamaCppBackend:
                     # Set whatever the fit decided: the boundary has now been accounted
                     # for in this request, whether or not it changed anything.
                     _sticky_boundary_applied = True
+                    if truncation and truncation.get("fits"):
+                        # Before the recall injection, so the two sides describe the same
+                        # messages: this count came from the fit, which priced them with
+                        # the tool catalogue and the template.
+                        _prompt_token_offset = int(
+                            truncation.get("prompt_tokens_after") or 0
+                        ) - estimate_messages_tokens(conversation)
                     if truncation and truncation["fits"]:
                         _recalled = _archive_and_recall(
                             conversation,
@@ -21845,10 +21875,20 @@ class LlamaCppBackend:
                             if self._effective_context_length and accepts_kwarg(
                                 execute_tool, "conversation_budget_tokens"
                             ):
+                                # Priced against the catalogue too. Estimating the
+                                # messages alone leaves the tools array out of the
+                                # prompt, and a big catalogue is enough of it that the
+                                # request can already be near its budget while this still
+                                # reports room for several 500-token chunks.
+                                _spent = estimate_messages_tokens(conversation) + (
+                                    _prompt_token_offset
+                                    if _prompt_token_offset is not None
+                                    else estimate_messages_tokens(safe_tools or [])
+                                )
                                 kwargs["conversation_budget_tokens"] = max(
                                     0,
                                     prompt_budget(self._effective_context_length, max_tokens)
-                                    - estimate_messages_tokens(conversation),
+                                    - _spent,
                                 )
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback

@@ -89,3 +89,52 @@ def test_conversation_searches_share_the_per_turn_cap():
     _run(RAG_MAX_SEARCHES_PER_TURN + 2, execute_tool)
 
     assert len(executed) == RAG_MAX_SEARCHES_PER_TURN
+
+
+def test_the_loop_budgets_its_search_against_this_models_context():
+    """Without it the clamp in the tool is skipped and top_k 8 lands unbudgeted.
+
+    That is roughly 4K tokens appended to an already populated prompt, into the current
+    tool exchange, which the rolling window protects and cannot evict.
+    """
+    from core.inference.context_window import estimate_messages_tokens, prompt_budget
+
+    seen = {}
+    tools = [{"type": "function", "function": {"name": "search_conversation"}}]
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    list(
+        run_safetensors_tool_loop(
+            single_turn = _searching_model(1),
+            messages = list(MESSAGES),
+            tools = tools,
+            execute_tool = execute_tool,
+            cancel_event = threading.Event(),
+            max_tool_iterations = 2,
+            thread_id = "t-sf",
+            context_length = 4096,
+            max_tokens = 512,
+        )
+    )
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # Everything already in the prompt is charged: the messages and the catalogue.
+    assert budget <= prompt_budget(4096, 512) - estimate_messages_tokens(tools)
+    assert budget < prompt_budget(4096, 512) - estimate_messages_tokens(MESSAGES)
+
+
+def test_the_loop_omits_the_budget_when_the_context_is_unknown():
+    """An absent budget must not become a budget of zero, which would refuse every search."""
+    seen = {}
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    _run(1, execute_tool)
+
+    assert "conversation_budget_tokens" not in seen

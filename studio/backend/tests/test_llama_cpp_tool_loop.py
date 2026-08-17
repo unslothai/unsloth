@@ -5607,3 +5607,78 @@ def test_parallel_disabled_suppresses_provisional_for_reused_index(monkeypatch):
         if e.get("tool_call_id") == "call_term"
         and e.get("type") in {"tool_start", "tool_args", "tool_end"}
     ]
+
+
+def test_conversation_search_budget_counts_the_tool_catalogue(monkeypatch):
+    """The estimator sees the messages only; the tools array is prompt too.
+
+    A large catalogue (MCP schemas especially) can be thousands of tokens, so a budget
+    that ignores it reports room for chunks the request cannot hold -- and the resulting
+    tool exchange is protected from eviction, so the next iteration cannot recover it.
+    """
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_s",
+                                "function": {
+                                    "name": "search_conversation",
+                                    "arguments": '{"query":"the code"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _finish("tool_calls"),
+                _done(),
+            ],
+            [_sse({"content": "It was 5150."}), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+    backend._effective_context_length = 4096
+    # What llama-server would really return: the messages, plus a catalogue that on its
+    # own fills most of the window. The estimator counts the messages and nothing else.
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_a, **_k: 2800
+        + sum(len(str(message.get("content", ""))) for message in candidate) // 10,
+    )
+
+    seen = {}
+
+    def execute_tool(name, arguments, **kwargs):
+        seen.update(kwargs)
+        return "an earlier turn"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 2000},
+                {"role": "assistant", "content": "a" * 2000},
+                {"role": "user", "content": "u" * 2000},
+                {"role": "assistant", "content": "a" * 2000},
+                {"role": "user", "content": "what was the code"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_conversation"}}],
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    from core.inference.context_window import prompt_budget
+
+    budget = seen.get("conversation_budget_tokens")
+    assert budget is not None
+    # 2,800 of the 3,584-token budget is catalogue and framing the estimator cannot see,
+    # so what is left is hundreds of tokens, not the thousands it would have claimed.
+    assert 0 <= budget < 1000

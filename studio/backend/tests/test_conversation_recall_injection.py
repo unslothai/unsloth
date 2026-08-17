@@ -416,6 +416,73 @@ def test_sticky_boundary_still_prefers_the_newest_distinguishable_reply(monkeypa
     assert llama_cpp._sticky_compaction_boundary("t1", branch) == 30
 
 
+def test_sticky_boundary_prefers_a_reply_that_matches_the_branch_exactly(monkeypatch):
+    """The branch check is a substring test, and short replies ride in on longer ones.
+
+    "Done" is contained in the live "Not done yet, still running.", so an abandoned
+    sibling looked active; having no live twin it then decided the boundary alone, and
+    its much deeper count evicted history the branch still had.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {"role": "user", "content": "did it work"},
+            {
+                "role": "assistant",
+                "content": "Not done yet, still running.",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 4}}
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "Done",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
+                },
+            },
+        ],
+    )
+    branch = [
+        {"role": "user", "content": "did it work"},
+        {"role": "assistant", "content": "Not done yet, still running."},
+        {"role": "user", "content": "keep going"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 4
+
+
+def test_sticky_boundary_still_reads_a_reply_no_branch_message_matches_exactly(monkeypatch):
+    """The exact preference must not become a requirement.
+
+    A stored row is not always byte-identical to what the client re-sends (blocks the
+    request omits, for one), and demanding equality would silently switch the boundary
+    off for every such thread.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "the answer",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 9}}
+                },
+            },
+        ],
+    )
+    branch = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "the answer, with a block the request drops"},
+    ]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 9
+
+
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
     from core.inference import llama_cpp
