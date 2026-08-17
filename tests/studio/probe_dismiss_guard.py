@@ -23,6 +23,10 @@ The guard must swallow too little nowhere:
                  resulting `click` when `pointerType === "touch"`, on `ownerDocument`, bubble
                  phase, and React 19 delegates to the root container inside document, so the
                  control's `onClick` has already run. Discriminates: chromium, webkit.
+  held_enter     press, press Enter while still holding, release. The press focuses the button,
+                 so Enter activates it and the browser fires a keyboard-generated click with the
+                 pointer still down. A guard that spends itself on that has nothing left for the
+                 click the release synthesises. Discriminates: chromium.
 
 and too much nowhere:
 
@@ -219,6 +223,17 @@ async def one_case(page, case: str) -> dict:
         await page.wait_for_timeout(120)
         await page.mouse.up()
         await page.keyboard.up("Shift")
+    elif case == "held_enter":
+        # Press and hold, then press Enter. A press on a button focuses it on Linux and Windows,
+        # so Enter activates the focused control and the browser fires a KEYBOARD-generated click
+        # while the pointer is still down. A guard that treats any click as the one it was armed
+        # for disarms on that, and the click the RELEASE synthesises then lands on Delete.
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.wait_for_timeout(120)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(120)
+        await page.mouse.up()
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case == "select":
@@ -370,7 +385,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

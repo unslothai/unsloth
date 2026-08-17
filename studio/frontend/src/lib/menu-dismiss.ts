@@ -131,6 +131,17 @@ function startGrace(): void {
 }
 
 function swallowClick(event: Event): void {
+  // A KEYBOARD-generated click carries no click count, and one that arrives while the guarded
+  // pointer is still down is not the click this guard was armed for. Pressing a control focuses
+  // it, so Enter or Space mid-gesture activates it, and treating that as the awaited click
+  // leaves nothing armed for the one the RELEASE still synthesises. Measured on chromium: press
+  // and hold the unconfirmed "Delete message" button with the menu open, press Enter, release,
+  // and the message is gone. Swallow it and stay armed.
+  if (pointerIsDown && (event as MouseEvent).detail === 0) {
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
   const touch = armedByTouch;
   disarm();
   event.stopPropagation();
