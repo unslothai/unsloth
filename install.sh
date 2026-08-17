@@ -3127,7 +3127,7 @@ _has_intel_xpu_gpu() {
         return 1
     fi
     if command -v sycl-ls >/dev/null 2>&1; then
-        if sycl-ls 2>/dev/null | grep -qi "gpu"; then
+        if _run_bounded sycl-ls 2>/dev/null | grep -qi "gpu"; then
             return 0
         fi
     fi
@@ -3136,11 +3136,17 @@ _has_intel_xpu_gpu() {
     fi
     if [ -d /sys/bus/pci/devices ]; then
         for _pci_dev in /sys/bus/pci/devices/*; do
-            [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] || continue
+            [ -r "$_pci_dev/vendor" ] && [ -r "$_pci_dev/class" ] && [ -r "$_pci_dev/device" ] || continue
             read -r _v < "$_pci_dev/vendor" 2>/dev/null || continue
             read -r _c < "$_pci_dev/class" 2>/dev/null || continue
             if [ "$_v" = "0x8086" ] && [ "${_c#0x03}" != "$_c" ]; then
-                return 0
+                read -r _d < "$_pci_dev/device" 2>/dev/null || continue
+                _d=$(printf '%s' "$_d" | tr '[:upper:]' '[:lower:]')
+                case "$_d" in
+                    0x56*|0x0bd*|0x7d*|0xe2*)
+                        return 0
+                        ;;
+                esac
             fi
         done
     fi
