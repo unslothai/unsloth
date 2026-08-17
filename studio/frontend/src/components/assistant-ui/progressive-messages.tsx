@@ -35,6 +35,7 @@ import {
 
 import {
   type MountWindow,
+  anchorCorrection,
   initialWindow,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
@@ -68,13 +69,91 @@ const activeCompleters = new Set<() => Promise<void>>();
  * how much of it was rendered.
  */
 export async function completeProgressiveMounts(): Promise<void> {
-  if (activeCompleters.size === 0) return;
-  await Promise.all([...activeCompleters].map((complete) => complete()));
+  // Re-checked across frames rather than read once, because the completers are registered from a
+  // layout effect and a caller in the same task as the thread opening finds the set still empty.
+  // Measured on the version that read it once: the call returned in 0.1ms and the document held
+  // 16 of 220 rows two frames later, on all three engines, which is exactly the silent truncation
+  // this function exists to prevent.
+  for (let pass = 0; pass < 8; pass += 1) {
+    if (activeCompleters.size > 0) {
+      await Promise.all([...activeCompleters].map((complete) => complete()));
+    }
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    if (activeCompleters.size === 0) return;
+  }
 }
 
 /** True while any thread is still widening. Exposed for tests and diagnostics. */
 export function hasPendingProgressiveMounts(): boolean {
   return activeCompleters.size > 0;
+}
+
+/**
+ * Whether this engine moves scrollTop by itself when content is inserted above the scroll
+ * position, i.e. whether it implements CSS scroll anchoring. Cached: it is a property of the
+ * build, it cannot change while the page is open, and the probe forces two layouts.
+ *
+ * Feature-probed rather than read off `CSS.supports("overflow-anchor", "none")`, because parsing
+ * the property and acting on it are different things and WebKit shipped the two apart: bug 171099
+ * notes the feature-status page listed `overflow-anchor` as supported while it was not
+ * implemented. The question here is only ever "did scrollTop move", so ask that.
+ */
+let engineCompensates: boolean | null = null;
+
+function engineCompensatesInsertionsAbove(): boolean {
+  if (engineCompensates !== null) return engineCompensates;
+  // Default to the compensating branch on anything unexpected: that is the behaviour every engine
+  // this ships against today has, and it is the one that is measured.
+  engineCompensates = true;
+  if (typeof document === "undefined") return true;
+  const probe = document.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText =
+    "position:fixed;top:0;left:0;width:50px;height:50px;overflow:auto;" +
+    "visibility:hidden;pointer-events:none;contain:strict";
+  const fill = (count: number): DocumentFragment => {
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < count; index += 1) {
+      const row = document.createElement("div");
+      row.style.height = "100px";
+      fragment.appendChild(row);
+    }
+    return fragment;
+  };
+  try {
+    probe.appendChild(fill(10));
+    document.body.appendChild(probe);
+    probe.scrollTop = 300;
+    // Scroll anchoring picks its anchor at the end of a layout, so the scrolled state has to be
+    // laid out before the insertion, not in the same batch as it.
+    void probe.scrollHeight;
+    const before = probe.scrollTop;
+    probe.insertBefore(fill(5), probe.firstChild);
+    void probe.scrollHeight;
+    engineCompensates = probe.scrollTop - before >= 400;
+  } catch {
+    engineCompensates = true;
+  } finally {
+    probe.remove();
+  }
+  return engineCompensates;
+}
+
+/**
+ * Whether THIS viewport is compensated, which is the engine question plus one CSS opt-out. A
+ * viewport that sets `overflow-anchor: none` is in the same position as an engine without scroll
+ * anchoring, and the correction has to do the same amount of work in both cases.
+ */
+function viewportCompensatesInsertionsAbove(viewport: HTMLElement): boolean {
+  if (getComputedStyle(viewport).overflowAnchor === "none") return false;
+  return engineCompensatesInsertionsAbove();
+}
+
+/** Test seam: forget the cached probe result. */
+export function resetScrollAnchoringProbeForTests(): void {
+  engineCompensates = null;
 }
 
 function useProgressiveMountWindow(
@@ -100,10 +179,45 @@ function useProgressiveMountWindow(
 
   // Re-arm per thread, adjusting state during render as React documents, so the previous
   // thread's window can never gate the new one for a frame.
+  //
+  // This branch does not run in the app today, and saying so is better than letting it read as a
+  // live safeguard. `<GeneratedImageOverlayProvider key={runtimeThreadId}>` in thread.tsx wraps
+  // this subtree, so a thread switch destroys and rebuilds this component and the window re-arms
+  // through the useState initialiser above instead. Measured across in-app switches: zero
+  // arm records from this branch, a fresh instance at every switch, and the viewport DOM node
+  // recreated each time. It is kept rather than deleted because it is what makes the component
+  // correct on its own terms -- remove that ancestor key and this is the only thing standing
+  // between a thread switch and the previous thread's window gating the next one -- and it is
+  // exercised by the unkeyed control in tests/studio/probe_pm_edge.py rather than left untested.
   const [previousKey, setPreviousKey] = useState(resetKey);
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);
     setMountWindow(initialWindow(count, isRunningNow()));
+  }
+
+  // The commit that puts the FIRST rows into an empty tree.
+  //
+  // Mounting is not when the app learns how long the thread is. `threadListItem.id` flips as soon
+  // as switchToThread resolves, and that is what remounts this subtree, but the messages only
+  // arrive when the history adapter's load settles -- a Dexie read plus two HTTP calls later. So
+  // on a cold open the `useState` above runs at `count === 0`, declines because 0 is below
+  // MIN_PROGRESSIVE_MESSAGES, and without this the whole thread then lands in one unbounded
+  // commit: exactly the stall this file exists to remove. Measured in the app, opening a
+  // 220-message thread: mount at count 0, count 220 about 160ms later, same resetKey, and with
+  // no second look the first paint carried all 220 rows.
+  //
+  // Gated on the PREVIOUS count being zero rather than on crossing MIN_PROGRESSIVE_MESSAGES, and
+  // that is the whole safety argument. A tree that has never rendered a row has nothing on screen
+  // and no scroll position to lose, so arming here cannot move anything a reader was looking at.
+  // A threshold-crossing rule could not promise that: appending a 40th message to a 39-message
+  // thread crosses it too, and would window a conversation the reader is in the middle of.
+  const [previousCount, setPreviousCount] = useState(count);
+  if (previousCount !== count) {
+    setPreviousCount(count);
+    // Same call as the mount path, so a run in flight suppresses the window here too.
+    if (previousCount === 0 && count > 0) {
+      setMountWindow(initialWindow(count, isRunningNow()));
+    }
   }
 
   // A run that starts mid-widening drops the window immediately. Streaming writes to the same
@@ -115,27 +229,18 @@ function useProgressiveMountWindow(
     if (threadIsRunning && mountWindow != null) setMountWindow(null);
   }, [threadIsRunning, mountWindow]);
 
-  // The row whose position is held still across a widening commit, captured in VIEWPORT space
-  // (its offset from the top of the scroll container).
-  //
-  // Viewport space, not document space, and this is the whole correctness argument. Chromium
-  // implements CSS scroll anchoring, this viewport does not set `overflow-anchor: none`, and
-  // inserting rows above the scroll position is exactly what scroll anchoring exists to
-  // compensate. So by the time this is read the browser has usually ALREADY moved scrollTop by
-  // the inserted height. What has to be corrected is only the residual the browser did not
-  // absorb, and viewport space is what measures a residual: it is zero precisely when the anchor
-  // is still where the reader left it.
-  //
-  // Document space measures the wrong thing here. Rows inserted above move an element down the
-  // document by their height whether or not the viewport was compensated, so a document-space
-  // delta reports the full insertion even when nothing needs doing, and applying it on top of
-  // the browser's own compensation doubles it. Measured, on a reader parked 4000px above the
-  // bottom of a 300K thread: the document-space version walked scrollTop 22,897 -> 117,104
-  // across seven widenings and dumped them at the bottom of the thread, distance 4000px -> 0px.
-  // With this version the distance holds.
+  // The row whose position is held still across a widening commit. Both ends of the measurement
+  // are captured here -- its offset from the top of the scroll container, the container's
+  // scrollTop, and the user-gesture counter -- because which of them the correction uses depends
+  // on whether the engine compensates for content inserted above. anchorCorrection has the
+  // reasoning and the numbers for both branches; the short version is that on an engine with CSS
+  // scroll anchoring the browser has already done the work and only a 3 to 5 pixel residual is
+  // left, while on one without it (every shipping Safari today) nothing has been done and the
+  // full inserted height has to be applied.
   const anchorRef = useRef<{
     element: Element;
     viewportOffset: number;
+    scrollTop: number;
     gestureSeq: number;
   } | null>(null);
 
@@ -147,6 +252,7 @@ function useProgressiveMountWindow(
         ? {
             element: first,
             viewportOffset: first.getBoundingClientRect().top,
+            scrollTop: viewport.scrollTop,
             gestureSeq: getUserGestureSeq(),
           }
         : null;
@@ -179,18 +285,19 @@ function useProgressiveMountWindow(
     anchorRef.current = null;
     const viewport = viewportRef.current;
     if (!captured || !viewport || !captured.element.isConnected) return;
-    // The reader scrolled between the capture and this commit. In viewport space their gesture is
-    // indistinguishable from a layout shift, so correcting here would cancel their own scroll:
-    // measured, a 4000px wheel during a widening was undone within the frame and the reader was
-    // put back at the bottom of the thread. Skip this one. The residual a widening actually
-    // leaves is single-digit pixels, so a skipped frame is invisible, and the next widening
-    // corrects normally.
-    if (getUserGestureSeq() !== captured.gestureSeq) return;
-    const shift =
-      captured.element.getBoundingClientRect().top - captured.viewportOffset;
-    // The hook decides whether this is acted on; see adjustForContentInsertedAbove. Rounding
-    // down to whole pixels keeps a subpixel reflow from issuing a scroll write every frame.
-    if (Math.abs(shift) >= 1) adjustForContentInsertedAbove(shift);
+    // Which space this is measured in, and whether a frame the reader scrolled through can be
+    // dropped, both depend on whether the engine already moved scrollTop. See anchorCorrection.
+    const shift = anchorCorrection(
+      captured,
+      {
+        viewportOffset: captured.element.getBoundingClientRect().top,
+        scrollTop: viewport.scrollTop,
+        gestureSeq: getUserGestureSeq(),
+      },
+      viewportCompensatesInsertionsAbove(viewport),
+    );
+    // The hook decides whether this is acted on; see adjustForContentInsertedAbove.
+    if (shift !== null) adjustForContentInsertedAbove(shift);
   }, [
     mountWindow,
     adjustForContentInsertedAbove,
@@ -200,19 +307,40 @@ function useProgressiveMountWindow(
 
   // Registered only while rows are actually being withheld, so completeProgressiveMounts is free
   // for the settled thread that is the overwhelmingly common case.
+  //
+  // A layout effect, not an effect: it runs one phase earlier, which narrows (it cannot close)
+  // the window in which a caller sees an empty completer set while rows are already withheld.
   const isWithholding = mountWindow != null;
-  useEffect(() => {
+  const completionWaiters = useRef<Array<() => void>>([]);
+  useLayoutEffect(() => {
     if (!isWithholding) return;
     const complete = () =>
       new Promise<void>((resolve) => {
+        completionWaiters.current.push(resolve);
         setMountWindow(null);
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
     activeCompleters.add(complete);
     return () => {
       activeCompleters.delete(complete);
     };
   }, [isWithholding]);
+
+  // Resolve on the commit that actually dropped the window, then after a paint. The previous
+  // version resolved on a bare two-frame timer started at the call, which raced the commit it had
+  // just asked for: measured, it resolved with 16 of 220 rows still in the document on 4 of 5
+  // WebKit runs and 2 of 5 Firefox runs, and held on Chromium only because the widening commit
+  // happened to block the frame loop.
+  useEffect(() => {
+    if (mountWindow != null || completionWaiters.current.length === 0) return;
+    const waiters = completionWaiters.current;
+    completionWaiters.current = [];
+    const frame = requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        for (const resolve of waiters) resolve();
+      }),
+    );
+    return () => cancelAnimationFrame(frame);
+  }, [mountWindow]);
 
   return mountWindow;
 }
@@ -237,10 +365,17 @@ export const ProgressiveMessages: FC<{
 
     return useMemo(() => {
       if (count === 0) return null;
+      // `start >= count` means the thread shrank underneath a live window -- a bulk delete, or a
+      // switch to a shorter thread -- and clamping `start` to `count` would make this loop emit
+      // NOTHING. Measured on the PR before this line: dropping a 220-message thread to 10 while
+      // the window sat at start=204 painted an empty column for 2 to 8 frames (37 to 146ms) on
+      // all three engines, with 10 messages sitting in the store. `widen` heals it a frame later,
+      // but the widen is inside startTransition, so the blank persists. Drop the restriction in
+      // the same commit instead: the window can no longer withhold anything meaningful anyway.
       const first =
-        mountWindow == null
+        mountWindow == null || mountWindow.start >= count
           ? 0
-          : Math.min(Math.max(mountWindow.start, 0), count);
+          : Math.max(mountWindow.start, 0);
       const rows: ReactElement[] = [];
       for (let index = first; index < count; index += 1) {
         rows.push(

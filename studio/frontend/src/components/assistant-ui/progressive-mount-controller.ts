@@ -111,6 +111,57 @@ export function admits(current: MountWindow, index: number): boolean {
   return current == null || index >= current.start;
 }
 
+/** One end of a widening, as the correction below needs to see it. */
+export type AnchorSample = {
+  /** The anchor row's offset from the top of the scroll container. */
+  viewportOffset: number;
+  /** The scroll container's scrollTop at the same instant. */
+  scrollTop: number;
+  /** useIntentAwareAutoScroll's user-gesture counter at the same instant. */
+  gestureSeq: number;
+};
+
+/**
+ * How far to move scrollTop so a widening commit leaves the reader looking at the same content,
+ * or null for "do nothing". Pure, so it can be tested as arithmetic rather than as a substring.
+ *
+ * `viewportCompensates` is the whole reason this has two branches, and it is a property of the
+ * ENGINE, not of this code.
+ *
+ * When it is true the browser implements CSS scroll anchoring and has ALREADY moved scrollTop by
+ * the inserted height before this runs, so all that is left is the residual it did not absorb.
+ * Viewport space is what measures a residual: it is zero precisely when the anchor is still where
+ * the reader left it. Measured on Chromium 151, Firefox 153 and WebKit 26.5 at 150K characters,
+ * that residual is 3 to 5 pixels per widening. Because it is that small, a frame the reader
+ * scrolled through can simply be dropped: their gesture is indistinguishable from a layout shift
+ * in viewport space, and skipping one frame costs single-digit pixels.
+ *
+ * When it is false NOTHING has compensated, the "residual" is the entire inserted height, and
+ * dropping a frame is not affordable. Measured on the same fixture with `overflow-anchor: none`
+ * forced on the viewport, which is exactly what every shipping Safari and every iOS browser is
+ * today (WebKit implemented scroll anchoring in 307475@main, Feb 2026, shipping in Safari 27):
+ * one dropped frame walked a parked reader 19,259px, and dropping every frame walked them
+ * 45,873px. So this branch measures in DOCUMENT space, which subtracts the reader's own scroll
+ * arithmetically instead of dodging it, and never skips. That is the shape LibreChat#14901 uses,
+ * and it is correct here for the same reason it is correct there: with no native compensation,
+ * scrollTop moves only when the reader or this code moves it.
+ */
+export function anchorCorrection(
+  captured: AnchorSample,
+  now: AnchorSample,
+  viewportCompensates: boolean,
+): number | null {
+  const shift = viewportCompensates
+    ? now.viewportOffset - captured.viewportOffset
+    : now.viewportOffset +
+      now.scrollTop -
+      (captured.viewportOffset + captured.scrollTop);
+  if (viewportCompensates && now.gestureSeq !== captured.gestureSeq)
+    return null;
+  // Rounding down to whole pixels keeps a subpixel reflow from issuing a scroll write every frame.
+  return Math.abs(shift) >= 1 ? shift : null;
+}
+
 /**
  * How many widening frames a thread of `count` messages takes to converge, which is what the
  * tests assert against so the constants above cannot drift into a thread that never finishes.

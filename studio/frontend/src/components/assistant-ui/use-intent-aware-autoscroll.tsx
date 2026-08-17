@@ -655,6 +655,9 @@ export function useIntentAwareAutoScroll(): {
         detachImplRef.current = () => {
           /* no viewport mounted */
         };
+        adjustImplRef.current = () => {
+          /* no viewport mounted */
+        };
       };
     },
     [setIsAtBottom],

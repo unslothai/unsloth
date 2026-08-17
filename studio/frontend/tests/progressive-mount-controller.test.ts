@@ -18,6 +18,7 @@ import {
   MIN_PROGRESSIVE_MESSAGES,
   type MountWindow,
   admits,
+  anchorCorrection,
   initialWindow,
   isCovered,
   stepsToCover,
@@ -128,4 +129,87 @@ test("widen on a null window is a no-op", () => {
 test("isCovered is true exactly when nothing is being withheld", () => {
   assert.equal(isCovered({ start: 0 }), true);
   assert.equal(isCovered({ start: 1 }), false);
+});
+
+test("the constants stay inside the range they were measured over", () => {
+  // Bounds, not equalities: the point is that a future edit cannot quietly turn the first commit
+  // into one row or the floor into every thread and still be green. INITIAL_MESSAGES must cover
+  // more than one viewport of the #9016 fixture (under two messages), and the floor must stay
+  // above a thread length where the re-open is already at its 438ms floor.
+  assert.ok(
+    INITIAL_MESSAGES >= 8 && INITIAL_MESSAGES <= 64,
+    `INITIAL_MESSAGES ${INITIAL_MESSAGES} is outside the measured range`,
+  );
+  assert.ok(
+    CHUNK_MESSAGES >= 8 && CHUNK_MESSAGES <= 128,
+    `CHUNK_MESSAGES ${CHUNK_MESSAGES} is outside the measured range`,
+  );
+  assert.ok(
+    MIN_PROGRESSIVE_MESSAGES >= INITIAL_MESSAGES * 2,
+    "the floor must leave room for at least one widening, or the window is pointless",
+  );
+});
+
+// anchorCorrection. The scroll correction used to live entirely inside the .tsx, where nothing
+// could test it, and the one bug it has already had -- measuring in document space against an
+// engine that had already compensated -- was found by a browser probe rather than by a test.
+// This is the arithmetic, extracted, so both branches are checked here.
+
+const sample = (viewportOffset: number, scrollTop: number, gestureSeq = 0) => ({
+  viewportOffset,
+  scrollTop,
+  gestureSeq,
+});
+
+test("on a compensating engine the correction is the viewport-space residual", () => {
+  // The browser moved scrollTop by the full 12000px insertion and left 4px on the table.
+  assert.equal(
+    anchorCorrection(sample(-500, 20000), sample(-496, 32000), true),
+    4,
+  );
+  // Nothing left over is nothing to do.
+  assert.equal(anchorCorrection(sample(-500, 20000), sample(-500, 32000), true), null);
+});
+
+test("on a compensating engine a frame the reader scrolled through is skipped", () => {
+  // 3996px of the reader's own wheel, which in viewport space is indistinguishable from a shift.
+  // Skipping costs the single-digit residual and nothing else.
+  assert.equal(
+    anchorCorrection(sample(-500, 20000, 7), sample(3496, 20000, 8), true),
+    null,
+  );
+});
+
+test("on an engine that does not compensate the correction is the whole insertion", () => {
+  // scrollTop did not move, so the anchor moved down the screen by everything inserted above it.
+  assert.equal(
+    anchorCorrection(sample(-500, 20000), sample(11500, 20000), false),
+    12000,
+  );
+});
+
+test("on an engine that does not compensate the reader's own scroll is subtracted, not skipped", () => {
+  // This is the case that made the difference measurable: 12000px inserted above in the same
+  // frame the reader scrolled down 3000px. Document space nets those to the 12000px that has to
+  // be applied. Skipping instead, which is what the compensating branch does, would have left the
+  // reader 12000px out -- measured at 19,259px on the real fixture with `overflow-anchor: none`.
+  assert.equal(
+    anchorCorrection(sample(-500, 20000, 7), sample(8500, 23000, 8), false),
+    12000,
+  );
+  // And a frame with only the reader's own scroll in it is still a no-op.
+  assert.equal(
+    anchorCorrection(sample(-500, 20000, 7), sample(-3500, 23000, 8), false),
+    null,
+  );
+});
+
+test("sub-pixel movement is never acted on, in either branch", () => {
+  for (const compensates of [true, false]) {
+    assert.equal(
+      anchorCorrection(sample(-500.0, 20000), sample(-499.4, 20000), compensates),
+      null,
+      `sub-pixel movement should be ignored (compensates=${compensates})`,
+    );
+  }
 });
