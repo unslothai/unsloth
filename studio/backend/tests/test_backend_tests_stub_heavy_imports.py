@@ -304,9 +304,7 @@ def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[s
       call's own line. Scanning to the end of the module here would see that later
       stub and call the file safe while it still breaks collection.
     """
-    module_scope = {
-        id(node) for statement in tree.body for node in _runtime_nodes(statement)
-    }
+    module_scope = {id(node) for statement in tree.body for node in _runtime_nodes(statement)}
     end = max((statement.lineno for statement in tree.body), default = 0) + 1
     calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
