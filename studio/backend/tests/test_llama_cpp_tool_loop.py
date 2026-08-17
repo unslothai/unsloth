@@ -5754,5 +5754,9 @@ def test_a_long_tool_run_reports_a_boundary_in_the_requests_own_terms(monkeypatc
     assert len(notices) > 1, "the fixture must refit more than once"
     # Summed, this passes the number of evictable messages the branch ever had.
     assert sum(notice["dropped_messages"] for notice in notices) > len(branch)
-    # The boundary does not: it is where the branch was cut, however many refits it took.
-    assert {notice["boundary_messages"] for notice in notices} == {4}
+    # The boundary does not: it says where the branch was cut, so it never passes what the
+    # branch had to give (4; the system prompt and the latest turn are neither evictable
+    # nor counted) and it only ever moves forward.
+    boundaries = [notice["boundary_messages"] for notice in notices]
+    assert max(boundaries) == 4
+    assert boundaries == sorted(boundaries)

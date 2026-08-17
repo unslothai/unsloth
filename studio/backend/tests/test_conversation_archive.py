@@ -1251,3 +1251,41 @@ def test_an_answer_edited_by_prepending_to_it_retires_the_archived_copy(conn):
 
     assert conversation_archive._document_matches_one_run(rows, _live("Correction: no"), 2) is False
     assert conversation_archive._document_matches_one_run(rows, _live("No"), 2) is True
+
+
+def test_a_tool_exchange_archived_mid_request_is_recallable(conn):
+    """What the branch filter costs when the branch is the client's messages alone.
+
+    The exchange was created by this request, evicted by a later refit, and archived. The
+    client never sent it, so filtering against those messages calls it an abandoned branch
+    and refuses it, and the model loses a tool result it still needs to answer.
+    """
+    thread_id = "toolrun-thread"
+    request_branch = [{"role": "user", "content": "find the deploy code in the repo"}]
+    _save_thread(thread_id, request_branch, append = True)
+
+    tool_exchange = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "grep", "arguments": '{"q": "deploy"}'}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "config/deploy.yml: token ZQX-5150"},
+    ]
+    assert conversation_archive.archive_turns(thread_id, tool_exchange) == 1
+
+    assert (
+        conversation_archive.recall(thread_id, "ZQX-5150", top_k = 4, branch_messages = request_branch)
+        is None
+    )
+    assert (
+        conversation_archive.recall(
+            thread_id,
+            "ZQX-5150",
+            top_k = 4,
+            branch_messages = request_branch + tool_exchange,
+        )
+        is not None
+    )

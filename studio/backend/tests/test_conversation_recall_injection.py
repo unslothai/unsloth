@@ -1231,3 +1231,25 @@ def test_a_conversation_search_charges_token_dense_text_properly(archived, monke
     # one chunk does not fit a 1,000-token budget.
     assert asked == [2, 1]
     assert "no room" in answer.lower()
+
+
+def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
+    """A long agent run can evict, and archive, its own earlier tool exchange.
+
+    Filtered against the messages the client sent, that document looks like an abandoned
+    branch and is refused, so the model cannot get back a tool result it still needs.
+    """
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "core/inference/llama_cpp.py"
+    text = " ".join(source.read_text().split())
+
+    # The branch handed to both the forced recall and a model-initiated search is the
+    # accumulated one, never the request's own messages.
+    assert "branch_messages = _extend_live_branch(" in text
+    assert 'kwargs["conversation_branch"] = _extend_live_branch(' in text
+    assert "branch_messages = _request_branch" not in text
+    assert 'kwargs["conversation_branch"] = _request_branch' not in text
+    # And the boundary is still measured against the client's messages, which is what it
+    # will be re-applied to.
+    assert "_branch_boundary(conversation, _request_branch)" in text

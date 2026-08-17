@@ -204,6 +204,7 @@ def fit_rolling_context(
     protected_message_ids: Optional[set[int]] = None,
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
+    keeps_boundary: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
@@ -255,7 +256,14 @@ def fit_rolling_context(
     if current_tokens > prompt_target:
         # Summed, not max()'d: the reserve is spent immediately on recalled passages, so
         # counting it as headroom would hand back room that is already taken.
-        headroom = int(prompt_target * _COMPACTION_HEADROOM_RATIO)
+        #
+        # And only for a caller that can put the boundary back next request. The headroom
+        # buys quiet turns between compactions by cutting deeper than needed, which is a
+        # bargain only if the deeper cut is remembered. An incognito chat, an API request
+        # with no persisted thread, or a request whose turns are not saved gets neither
+        # the boundary nor a recall of what went, so there it is simply 25% less history
+        # than plain eviction would have kept.
+        headroom = int(prompt_target * _COMPACTION_HEADROOM_RATIO) if keeps_boundary else 0
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
     while current_tokens > trim_target:

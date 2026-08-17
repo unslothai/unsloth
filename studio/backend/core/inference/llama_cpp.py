@@ -491,6 +491,22 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         return 0
 
 
+def _keeps_compaction_boundary(thread_id: Optional[str]) -> bool:
+    """Whether this request's boundary will be there to restore next time.
+
+    The boundary rides on the assistant turn's saved metadata, so a thread with no saved
+    messages (incognito, or an API caller that persists nothing) never gets one back. The
+    fit uses this to decide whether cutting deeper than needed buys anything.
+    """
+    if not thread_id:
+        return False
+    try:
+        from storage import studio_db
+        return bool(studio_db.chat_thread_has_messages(str(thread_id)))
+    except Exception:
+        return False
+
+
 def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optional[list[str]]:
     """The active branch, one normalised string per message, or None if there is nothing."""
     if not branch_messages:
@@ -20071,6 +20087,7 @@ class LlamaCppBackend:
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
+                    keeps_boundary = _keeps_compaction_boundary(thread_id),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -20399,6 +20416,21 @@ class LlamaCppBackend:
         # are the whole DAG (Retry keeps the replaced response as a sibling), so recall
         # has to be told which branch is live, and the client's messages are the answer.
         _request_branch: list[dict] = list(messages)
+        # ...and everything this request adds to it. A long agent run can evict its own
+        # earlier tool exchange, which is archived; filtered against the messages the
+        # client sent, that document looks like an abandoned branch and is refused, so the
+        # model cannot get back a tool result it still needs to answer. Accumulated rather
+        # than read off `conversation`, which has already lost what earlier fits evicted.
+        _live_branch: list[dict] = list(messages)
+        _live_branch_ids: set[int] = {id(message) for message in messages}
+
+        def _extend_live_branch(current: list[dict]) -> list[dict]:
+            for message in current:
+                if id(message) not in _live_branch_ids:
+                    _live_branch_ids.add(id(message))
+                    _live_branch.append(message)
+            return _live_branch
+
         for message in reversed(conversation):
             if message.get("role") == "user":
                 _rolling_anchor_ids.add(id(message))
@@ -20672,6 +20704,7 @@ class LlamaCppBackend:
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
                         protected_message_ids = _rolling_anchor_ids,
+                        keeps_boundary = _keeps_compaction_boundary(thread_id),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
                             0
@@ -20691,7 +20724,7 @@ class LlamaCppBackend:
                         _recalled = _archive_and_recall(
                             conversation,
                             _before_fit,
-                            branch_messages = _request_branch,
+                            branch_messages = _extend_live_branch(_before_fit),
                             thread_id = thread_id,
                             # Tool style forges an assistant tool_call plus a tool result
                             # for search_conversation, safe only when the request
@@ -20818,6 +20851,7 @@ class LlamaCppBackend:
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
                         protected_message_ids = _rolling_anchor_ids,
+                        keeps_boundary = _keeps_compaction_boundary(thread_id),
                     )
                     if truncation and truncation["fits"]:
                         # Archive only: this refit runs against a smaller replacement
@@ -20831,7 +20865,7 @@ class LlamaCppBackend:
                                 thread_id = thread_id,
                                 style = "inline",
                                 recall_done = True,
-                                branch_messages = _request_branch,
+                                branch_messages = _extend_live_branch(conversation),
                             )["counts"]
                         )
                     payload["messages"] = neutralize_control_markup_in_messages(
@@ -21886,7 +21920,7 @@ class LlamaCppBackend:
                             # model-initiated search cannot reach a sibling response the
                             # forced recall correctly refused.
                             if accepts_kwarg(execute_tool, "conversation_branch"):
-                                kwargs["conversation_branch"] = _request_branch
+                                kwargs["conversation_branch"] = _extend_live_branch(conversation)
                             # And the room actually left: the model picks its own top_k and
                             # the result lands in the current tool exchange, which rolling
                             # truncation protects, so a top_k the window cannot hold ends
@@ -22089,6 +22123,7 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     protected_message_ids = _rolling_anchor_ids,
+                    keeps_boundary = _keeps_compaction_boundary(thread_id),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
@@ -22101,7 +22136,7 @@ class LlamaCppBackend:
                     _recalled = _archive_and_recall(
                         conversation,
                         _before_final_fit,
-                        branch_messages = _request_branch,
+                        branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
                         # Inline, not tool: this final-answer request is counted and sent
                         # with no tools array, so a forged tool role has no catalogue to
@@ -22201,6 +22236,7 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     protected_message_ids = _rolling_anchor_ids,
+                    keeps_boundary = _keeps_compaction_boundary(thread_id),
                 )
                 if truncation and truncation["fits"]:
                     # Archive only, for the same reason as the iteration refit above.
@@ -22211,7 +22247,7 @@ class LlamaCppBackend:
                             thread_id = thread_id,
                             style = "inline",
                             recall_done = True,
-                            branch_messages = _request_branch,
+                            branch_messages = _extend_live_branch(conversation),
                         )["counts"]
                     )
                 stream_payload["messages"] = neutralize_control_markup_in_messages(

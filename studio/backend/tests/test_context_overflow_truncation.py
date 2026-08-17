@@ -980,3 +980,35 @@ def test_sticky_boundary_never_causes_eviction_on_a_thread_that_fits():
 
     assert fitted is messages
     assert info is None
+
+
+def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
+    """Cutting deeper than needed buys quiet turns only if the cut is remembered.
+
+    An incognito chat, an API request with no persisted thread, or a request whose turns
+    are not saved gets neither the boundary back nor a recall of what went, so there the
+    headroom is simply less history than plain eviction would have kept, on every
+    overflow, and turning the archive off did not restore the old behaviour.
+    """
+    messages = []
+    for index in range(20):
+        messages.append({"role": "user", "content": f"q{index} " + "u" * 80})
+        messages.append({"role": "assistant", "content": f"a{index} " + "a" * 80})
+    messages.append({"role": "user", "content": "latest"})
+
+    def _fit(keeps_boundary):
+        return fit_rolling_context(
+            list(messages),
+            context_length = 2000,
+            max_tokens = 200,
+            count_tokens = _length_counter,
+            keeps_boundary = keeps_boundary,
+        )
+
+    plain, plain_info = _fit(False)
+    sticky, sticky_info = _fit(True)
+
+    assert plain_info["fits"] and sticky_info["fits"]
+    # The one that can restore its boundary is the one that pays for headroom.
+    assert sticky_info["dropped_messages"] > plain_info["dropped_messages"]
+    assert len(plain) > len(sticky)
