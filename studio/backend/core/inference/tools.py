@@ -4530,7 +4530,9 @@ def _render_html_reaches_network(arguments: dict) -> bool:
 # Tools that are read-only regardless of their arguments, so auto mode never has
 # to pause them and their safety needs no argument scan. render_html is handled
 # separately above because a networked canvas does need approval.
-_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base"})
+# search_conversation only ever reads this chat's own past turns, so it never needs an
+# approval prompt. Leaving it out would make auto mode prompt on every single call.
+_ALWAYS_SAFE_TOOLS = frozenset({"web_search", "search_knowledge_base", "search_conversation"})
 
 
 def is_always_safe_tool(name: str) -> bool:
@@ -9241,12 +9243,40 @@ SEARCH_KNOWLEDGE_BASE_TOOL = {
     },
 }
 
+SEARCH_CONVERSATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_conversation",
+        "description": (
+            "Search earlier turns of THIS conversation that were removed from your "
+            "context when it grew too long. Use it whenever the user refers to something "
+            "discussed earlier that you cannot see, instead of saying you have no record "
+            "of it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language search query.",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Max earlier turns to return.",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+}
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
+    SEARCH_CONVERSATION_TOOL,
 ]
 
 
@@ -9443,6 +9473,16 @@ def execute_tool(
             effective_timeout,
             cancel_event,
         )
+    if name == "search_conversation":
+        # Scoped by thread id alone: the archive is this chat's own evicted turns, so it
+        # works whether or not the request carries a document rag_scope.
+        return _search_knowledge_base_with_budget(
+            arguments,
+            {"thread_id": thread_id},
+            effective_timeout,
+            cancel_event,
+            search_fn = _search_conversation,
+        )
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -9572,12 +9612,49 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
     return text
 
 
+def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
+    """Search this thread's archived turns. ``rag_scope`` carries only the thread id here;
+    the model supplies ``query``/``top_k``."""
+    scope = rag_scope or {}
+    thread_id = scope.get("thread_id")
+    query = (arguments or {}).get("query", "")
+    if not query or not str(query).strip():
+        return "Error: query is empty."
+    if not thread_id:
+        return "There is no earlier conversation to search."
+    try:
+        from core.rag import conversation_archive
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Conversation archive unavailable: %s", exc)
+        return "Searching earlier conversation is unavailable on this server."
+    if not conversation_archive.enabled():
+        return "Searching earlier conversation is unavailable on this server."
+
+    found = conversation_archive.recall(
+        str(thread_id), str(query), top_k = _opt_int((arguments or {}).get("top_k"))
+    )
+    if not found:
+        return "No earlier turns of this conversation matched that query."
+    text, sources = found
+    if sources:
+        import json as _json
+        return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    return text
+
+
 def _search_knowledge_base_with_budget(
     arguments: dict,
     rag_scope: dict | None,
     timeout: int | None,
     cancel_event = None,
+    search_fn = None,
 ) -> str:
+    """Admission-controlled RAG search.
+
+    ``search_fn`` swaps in a different search over the same capacity-of-one slot, so
+    conversation-archive lookups queue behind document lookups instead of racing them
+    for the embedder."""
+    search_fn = search_fn or _search_knowledge_base
     if cancel_event is not None and cancel_event.is_set():
         return "Error: knowledge base search cancelled."
     deadline = time.monotonic() + timeout if timeout is not None else None
@@ -9611,7 +9688,7 @@ def _search_knowledge_base_with_budget(
 
     if timeout is None and cancel_event is None:
         try:
-            return _search_knowledge_base(arguments, rag_scope)
+            return search_fn(arguments, rag_scope)
         finally:
             release_slot()
 
@@ -9619,7 +9696,7 @@ def _search_knowledge_base_with_budget(
 
     def search() -> None:
         try:
-            result.put((True, _search_knowledge_base(arguments, rag_scope)))
+            result.put((True, search_fn(arguments, rag_scope)))
         except BaseException as exc:
             result.put((False, exc))
         finally:

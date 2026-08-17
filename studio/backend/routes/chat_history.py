@@ -675,7 +675,24 @@ async def delete_threads(
     # In a worker: right after an upgrade this also runs the legacy move, and a
     # cross-filesystem copy on the event loop stops every other request.
     removed, kept = await _remove_sandboxes(payload.ids, payload.delete_files)
+    # The rolling context window writes archived turns keyed by thread id. Nothing else
+    # references them once the thread is gone, so drop them rather than leaking a scope
+    # per deleted chat.
+    await run_in_threadpool(_remove_conversation_archives, payload.ids)
     return {"status": "deleted", "sandboxes_removed": removed, "sandboxes_kept": kept}
+
+
+def _remove_conversation_archives(thread_ids) -> None:
+    """Drop each deleted thread's archived turns. Never raises."""
+    try:
+        from core.rag import conversation_archive
+    except Exception:
+        return
+    for thread_id in thread_ids or []:
+        try:
+            conversation_archive.delete_for_thread(str(thread_id))
+        except Exception:
+            logger.warning("Could not remove the conversation archive for %s", thread_id)
 
 
 async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[str]]":

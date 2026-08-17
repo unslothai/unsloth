@@ -3342,6 +3342,17 @@ _RAG_GROUNDING_NUDGE = (
 )
 
 
+def _thread_has_conversation_archive(thread_id) -> bool:
+    """Whether the rolling window has archived anything for this thread yet."""
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+        return conversation_archive.has_archive(str(thread_id))
+    except Exception:
+        return False
+
+
 async def _select_request_tools(
     payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
 ) -> list[dict]:
@@ -3371,6 +3382,12 @@ async def _select_request_tools(
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    # Same rule for the conversation archive: offer it only once this thread has actually
+    # had turns evicted, so an ordinary short chat never sees the extra schema. On the very
+    # first compaction the tool is still absent (the archive is written mid-request), but
+    # the forced recall covers that turn and the tool appears from the next one.
+    if not _thread_has_conversation_archive(payload.thread_id):
+        tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3379,6 +3396,28 @@ async def _select_request_tools(
     if mcp_allowed:
         tools = tools + await get_enabled_mcp_tools()
     return tools
+
+
+_COMPACTED_SESSION_NUDGE = (
+    "This conversation is long, so older turns have been removed from your context. "
+    "The relevant ones are retrieved and shown to you automatically when that happens. "
+    "If the user refers to something you cannot see, call search_conversation before "
+    "answering. Never tell the user you have no record of an earlier turn, and never "
+    "assume the conversation began where your visible context begins."
+)
+
+
+def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
+    """Append the compacted-session nudge when the conversation-archive tool is active.
+
+    Gated on the tool rather than on separate state, so it appears exactly when there is
+    an archive to search and stays a no-op for every chat that never compacted."""
+    tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
+    if "search_conversation" not in tool_names:
+        return nudge
+    if not nudge:
+        return _COMPACTED_SESSION_NUDGE
+    return nudge + " " + _COMPACTED_SESSION_NUDGE
 
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
@@ -13815,6 +13854,7 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
+            _nudge = _apply_compaction_nudge(_nudge, tools_to_use)
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -15375,6 +15415,7 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:

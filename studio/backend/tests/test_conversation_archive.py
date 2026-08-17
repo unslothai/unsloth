@@ -121,7 +121,15 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
 
     real_hybrid = retrieval.retrieve_hybrid
 
-    def only_lexical_works(conn_, scope, query, *, k = None, model_name = None, mode = "hybrid"):
+    def only_lexical_works(
+        conn_,
+        scope,
+        query,
+        *,
+        k = None,
+        model_name = None,
+        mode = "hybrid",
+    ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")
         return real_hybrid(conn_, scope, query, k = k, model_name = model_name, mode = mode)

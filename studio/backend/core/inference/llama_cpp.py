@@ -556,6 +556,8 @@ def _archive_and_recall(
     except Exception as exc:
         logger.warning("Could not archive or recall compacted turns: %s", exc)
     return result
+
+
 # A transport error can arrive before the child is reapable; a request path cannot
 # afford the 5s the background MTP reload spends on the same race.
 _RESPAWN_REAP_GRACE_S = 1.0

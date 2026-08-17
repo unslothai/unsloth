@@ -145,9 +145,7 @@ def search_knowledge_base_with_sources(
     rendered ``<chunk>`` block's ``id``."""
     if not query or not query.strip():
         return "Error: query is empty.", []
-    scope = _resolve_scope(
-        scope_kb_id, scope_thread_id, scope_project_id, scope_conversation_id
-    )
+    scope = _resolve_scope(scope_kb_id, scope_thread_id, scope_project_id, scope_conversation_id)
     if scope is None:
         return "No documents are attached to this chat.", []
 

@@ -186,3 +186,51 @@ def test_build_rag_autoinject_still_emits_its_original_shape(monkeypatch):
     assert built["messages"][0]["tool_calls"][0]["function"]["name"] == "search_knowledge_base"
     assert built["messages"][0]["tool_calls"][0]["id"].startswith("rag_auto_")
     assert built["messages"][1]["content"] == "passage text"
+
+
+def test_search_conversation_is_always_safe():
+    """Read-only, so auto mode must not prompt on every call."""
+    assert tools_mod.is_always_safe_tool("search_conversation") is True
+
+
+def test_search_conversation_tool_is_registered():
+    names = {tool["function"]["name"] for tool in tools_mod.ALL_TOOLS}
+
+    assert "search_conversation" in names
+
+
+def test_execute_tool_without_a_thread_returns_a_message_not_a_traceback():
+    result = tools_mod.execute_tool(
+        "search_conversation", {"query": "anything"}, thread_id = None, timeout = None
+    )
+
+    assert isinstance(result, str)
+    assert "no earlier conversation" in result.lower()
+
+
+def test_execute_tool_rejects_an_empty_query(archived):
+    result = tools_mod.execute_tool(
+        "search_conversation", {"query": "  "}, thread_id = THREAD, timeout = None
+    )
+
+    assert result == "Error: query is empty."
+
+
+def test_execute_tool_finds_an_archived_turn(archived):
+    result = tools_mod.execute_tool(
+        "search_conversation", {"query": "pelicans"}, thread_id = THREAD, timeout = None
+    )
+
+    assert "pelicans" in result
+
+
+def test_compaction_nudge_only_fires_when_the_tool_is_present():
+    import routes.inference as routes_mod
+
+    without = routes_mod._apply_compaction_nudge("base.", [])
+    with_tool = routes_mod._apply_compaction_nudge(
+        "base.", [{"function": {"name": "search_conversation"}}]
+    )
+
+    assert without == "base."
+    assert "search_conversation" in with_tool
