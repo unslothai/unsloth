@@ -152,8 +152,26 @@ def _reraises(handler: ast.ExceptHandler) -> bool:
     reach disqualifies it, since the path that raises is the one that kills the job.
     ``pytest.skip(..., allow_module_level = True)`` is a CALL rather than a ``raise``,
     so the module-level skip these files use stays exempt. Reported on this PR.
+
+    A ``raise`` inside a ``def`` or ``lambda`` the handler merely DEFINES does not run
+    when the exception is handled, so the traversal stops at those bodies. Counting one
+    reported a properly guarded file as an offender. Reported on this PR.
     """
-    return any(isinstance(node, ast.Raise) for node in _reachable_nodes(handler))
+    return any(isinstance(node, ast.Raise) for node in _reachable_import_time_nodes(handler))
+
+
+def _absorbs_import_error(node: ast.Try) -> bool:
+    """Whether an ``ImportError`` from this ``try`` body is handled without escaping.
+
+    Only the FIRST handler that would catch it is asked. Python dispatches to the first
+    match, so ``except Exception: raise`` followed by ``except ImportError: pass`` still
+    propagates, and asking whether ANY handler absorbs found the second one and exempted
+    a try that does not guard the import. Reported on this PR.
+    """
+    for handler in node.handlers:
+        if handler.type is None or _catches_import_error(handler.type):
+            return not _reraises(handler)
+    return False
 
 
 def _guarded_by_import_error(tree: ast.Module) -> set[int]:
@@ -174,11 +192,7 @@ def _guarded_by_import_error(tree: ast.Module) -> set[int]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try):
             continue
-        catches = any(
-            (handler.type is None or _catches_import_error(handler.type)) and not _reraises(handler)
-            for handler in node.handlers
-        )
-        if catches:
+        if _absorbs_import_error(node):
             for statement in node.body:
                 guarded.update(id(child) for child in ast.walk(statement))
     return guarded
@@ -866,6 +880,12 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
             # never executes that way. Reported on this PR. Same reachability rule as
             # the module body uses, so the two cannot answer differently.
             for statement in functions[caller].body:
+                # Nothing after an unconditional exit runs, so a call below one is not
+                # reached at import and must not inherit this boundary: doing so
+                # rejected a stub installed below the outer call while the inner helper
+                # had never run. A CONDITIONAL exit is not enough to stop, since the
+                # path that does not take it still reaches the calls below. Reported on
+                # this PR.
                 for node in _reachable_import_time_nodes(statement):
                     if not isinstance(node, ast.Call):
                         continue
@@ -876,6 +896,15 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
                     if callee in functions and line < first.get(callee, line + 1):
                         first[callee] = line
                         changed = True
+                # Nothing after an unconditional exit runs, so a call below one is not
+                # reached at import and must not inherit this boundary: doing so
+                # rejected a stub installed below the outer call while the inner helper
+                # had never run. Checked AFTER the statement, since `return _inner()`
+                # runs its own expression. A CONDITIONAL exit is not enough to stop:
+                # the path that does not take it still reaches the calls below.
+                # Reported on this PR.
+                if isinstance(statement, (ast.Return, ast.Raise)):
+                    break
     return first
 
 
@@ -1212,6 +1241,20 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
         "_outer()\n"
     )
     assert safe(nested_stub_in_time)
+
+    # A call below an unconditional exit is not reached at import, so the helper it
+    # names keeps the deferred boundary and a stub anywhere in the body is in time.
+    after_return = (
+        "import pytest, sys\n"
+        "def _outer():\n"
+        "    return None\n"
+        "    return _inner()\n"
+        "def _inner():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(after_return), after_return
 
     # A nested def nothing calls at import is still deferred: it runs at test time,
     # by which point a stub anywhere in the module body is in place.
@@ -1857,6 +1900,31 @@ def test_the_guard_would_catch_an_unstubbed_module():
         "except ImportError as exc:\n    raise RuntimeError('no trainer') from exc\n",
     ):
         assert _is_offender(reraised, heavy), reraised
+    # Python dispatches to the FIRST matching handler, so a broad one that re-raises
+    # decides it even when an absorbing ImportError handler follows.
+    broad_first = (
+        "try:\n    from core.training import trainer as t\n"
+        "except Exception:\n    raise\n"
+        "except ImportError:\n    t = None\n"
+    )
+    assert _is_offender(broad_first, heavy), broad_first
+    # The same two the other way round: the absorbing one runs.
+    absorbing_first = (
+        "try:\n    from core.training import trainer as t\n"
+        "except ImportError:\n    t = None\n"
+        "except Exception:\n    raise\n"
+    )
+    assert not _is_offender(absorbing_first, heavy), absorbing_first
+    # A handler that only DEFINES something containing a raise absorbs the import: the
+    # nested body does not run while the exception is being handled.
+    defines_a_raiser = (
+        "try:\n    from core.training import trainer as t\n"
+        "except ImportError:\n"
+        "    def _later():\n        raise RuntimeError('no trainer')\n"
+        "    t = _later\n"
+    )
+    assert not _is_offender(defines_a_raiser, heavy), defines_a_raiser
+
     # A module-level skip is a call, not a raise, so it stays exempt.
     skipped = (
         "import pytest\n"
