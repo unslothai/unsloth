@@ -23,21 +23,16 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
-def truncate_oldest_messages(
-    messages: list[dict],
-    keep_ratio: float,
-    *,
-    protected_message_ids: Optional[set[int]] = None,
-) -> tuple[list[dict], int]:
-    """Drop complete oldest turns while preserving system messages and the latest turn.
+def group_turns(messages: list[dict]) -> list[list[dict]]:
+    """Split messages into the turn groups the rolling window evicts as single units.
 
     Normal user/assistant turns stay together. Each assistant tool call starts a
     separate group containing its tool results, so long agent runs can evict old
     exchanges without orphaning results or losing the task that initiated them.
-    """
-    if not messages or keep_ratio >= 1.0:
-        return messages, 0
 
+    Exposed so callers that need to do something with the evicted turns operate on the
+    same unit the evictor does, rather than on loose messages.
+    """
     groups: list[list[dict]] = []
     for message in messages:
         starts_tool_exchange = message.get("role") == "assistant" and bool(
@@ -54,6 +49,31 @@ def truncate_oldest_messages(
             groups.append([message])
         else:
             groups[-1].append(message)
+    return groups
+
+
+def evicted_messages(before: list[dict], after: list[dict]) -> list[dict]:
+    """Messages present in ``before`` and absent from ``after``, in their original order.
+
+    Identity, not equality: the truncation helpers reuse the very same dict objects in
+    their output, and a conversation can legitimately contain two byte-identical turns
+    ("continue" twice), which an equality diff would collapse.
+    """
+    kept = {id(message) for message in after}
+    return [message for message in before if id(message) not in kept]
+
+
+def truncate_oldest_messages(
+    messages: list[dict],
+    keep_ratio: float,
+    *,
+    protected_message_ids: Optional[set[int]] = None,
+) -> tuple[list[dict], int]:
+    """Drop complete oldest turns while preserving system messages and the latest turn."""
+    if not messages or keep_ratio >= 1.0:
+        return messages, 0
+
+    groups = group_turns(messages)
 
     if len(groups) <= 1:
         return messages, 0
@@ -144,6 +164,7 @@ def fit_rolling_context(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
+    reserve_tokens: int = 0,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
@@ -151,6 +172,13 @@ def fit_rolling_context(
     inexpensive estimator only chooses candidate turns; exact recounts verify the
     result. The current turn is never clipped, so an irreducibly large request still
     reaches llama-server's normal context-length error.
+
+    ``reserve_tokens`` leaves room for something the caller intends to add back after
+    fitting (recalled earlier turns). It deliberately does NOT participate in the
+    decision of whether to trim at all: a conversation that already fits is returned
+    untouched even when the reserve would not fit alongside it. Charging the reserve up
+    front would make chats start evicting turns that comfortably fit today, which is a
+    silent regression in the common case for the benefit of the rare one.
     """
     if context_length <= 1:
         return messages, None
@@ -163,8 +191,13 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    while current_tokens > prompt_target:
-        keep_ratio = min(0.95, prompt_target / max(1, current_tokens))
+    # Only once trimming is unavoidable does the reserve tighten the goal.
+    trim_target = prompt_target
+    if initial_tokens > prompt_target and reserve_tokens > 0:
+        trim_target = max(1, prompt_target - reserve_tokens)
+
+    while current_tokens > trim_target:
+        keep_ratio = min(0.95, trim_target / max(1, current_tokens))
         candidate, dropped = truncate_oldest_messages(
             fitted,
             keep_ratio,

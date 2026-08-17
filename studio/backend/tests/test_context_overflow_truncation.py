@@ -37,7 +37,12 @@ from routes.inference import (
     _truncate_middle_messages,
     _truncate_oldest_messages,
 )
-from core.inference.context_window import fit_rolling_context, messages_have_media
+from core.inference.context_window import (
+    evicted_messages,
+    fit_rolling_context,
+    group_turns,
+    messages_have_media,
+)
 from models.inference import ChatCompletion
 import routes.inference as routes_mod
 
@@ -309,6 +314,126 @@ def test_rolling_fit_never_clips_an_irreducible_latest_turn():
     assert fitted is messages
     assert fitted == messages
     assert info is None
+
+
+def _length_counter(candidate):
+    return sum(len(str(message.get("content", ""))) for message in candidate)
+
+
+def test_evicted_messages_returns_dropped_turns_in_original_order():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "one" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "two" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    gone = evicted_messages(messages, fitted)
+
+    assert info is not None
+    assert len(gone) == info["dropped_messages"]
+    assert gone == [messages[1], messages[2]]
+
+
+def test_evicted_messages_uses_identity_not_equality():
+    """Two byte-identical turns must not collapse into one.
+
+    An equality diff would report BOTH copies as evicted when only the older one was,
+    and anything downstream would then act on a turn the model can still see.
+    """
+    first = {"role": "user", "content": "same question"}
+    second = {"role": "user", "content": "same question"}
+    before = [first, {"role": "assistant", "content": "reply"}, second]
+    after = [second]
+
+    gone = evicted_messages(before, after)
+
+    assert len(gone) == 2
+    assert gone[0] is first
+    assert all(message is not second for message in gone)
+
+
+def test_group_turns_matches_the_unit_truncation_drops():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "ask"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "result"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    groups = group_turns(messages)
+
+    assert [[message["role"] for message in group] for group in groups] == [
+        ["system"],
+        ["user"],
+        ["assistant", "tool", "assistant"],
+        ["user"],
+    ]
+
+
+def test_reserve_tokens_does_not_trim_a_prompt_that_already_fits():
+    """The reserve must never be what causes eviction.
+
+    A conversation comfortably inside the window has to come back untouched even when
+    the reserve would not fit alongside it, or enabling recall would silently start
+    evicting turns from chats that are nowhere near the limit.
+    """
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "short"},
+        {"role": "assistant", "content": "short answer"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        reserve_tokens = 380,
+    )
+
+    assert fitted is messages
+    assert info is None
+
+
+def test_reserve_tokens_trims_further_once_trimming_is_needed():
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "one" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "two" * 40},
+        {"role": "assistant", "content": "answer" * 40},
+        {"role": "user", "content": "latest"},
+    ]
+
+    _, plain = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+    _, reserved = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        reserve_tokens = 200,
+    )
+
+    assert plain is not None and reserved is not None
+    assert reserved["dropped_messages"] > plain["dropped_messages"]
+    assert reserved["prompt_tokens_after"] < plain["prompt_tokens_after"]
 
 
 def test_rolling_fit_keeps_original_when_protected_messages_still_do_not_fit():
