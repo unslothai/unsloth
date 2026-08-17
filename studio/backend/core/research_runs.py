@@ -1207,17 +1207,16 @@ class ResearchSupervisor:
                 pending_report += piece
                 return
             boundary_buffer += piece
-            marker = boundary_buffer.find(output_boundary)
-            if marker >= 0:
+            while "\n" in boundary_buffer:
+                line, boundary_buffer = boundary_buffer.split("\n", 1)
+                if line.removesuffix("\r").strip(" \t") != output_boundary:
+                    continue
                 boundary_seen = True
-                trailing = boundary_buffer[marker + len(output_boundary) :].lstrip()
+                trailing = boundary_buffer.lstrip()
                 boundary_buffer = ""
                 report += trailing
                 pending_report += trailing
                 return
-            # Retain only enough private output to recognize a marker split across deltas.
-            overlap = len(output_boundary) - 1
-            boundary_buffer = boundary_buffer[-overlap:] if overlap > 0 else ""
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1464,6 +1463,13 @@ class ResearchSupervisor:
                                 run["id"],
                                 exc_info = True,
                             )
+            if (
+                output_boundary is not None
+                and not boundary_seen
+                and boundary_buffer.removesuffix("\r").strip(" \t") == output_boundary
+            ):
+                boundary_seen = True
+                boundary_buffer = ""
             await flush_progress()
             if output_boundary is not None:
                 if boundary_seen:

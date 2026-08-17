@@ -842,6 +842,21 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
             ],
             id = "marker-split-across-channels",
         ),
+        pytest.param(
+            [
+                (
+                    "reasoning_content",
+                    "I must output "
+                    + research_runs._REPORT_BOUNDARY_MARKER
+                    + " before the answer.\nMore private reasoning.\n",
+                ),
+                (
+                    "reasoning_content",
+                    research_runs._REPORT_BOUNDARY_MARKER + "\n# Answer\nPublic report",
+                ),
+            ],
+            id = "inline-marker-before-standalone-marker",
+        ),
     ),
 )
 def test_stream_completion_recovers_marked_report_in_arrival_order(monkeypatch, deltas):
@@ -865,6 +880,8 @@ def test_stream_completion_recovers_marked_report_in_arrival_order(monkeypatch, 
 
     assert "Private analysis" not in report
     assert "organize the answer" not in report
+    assert "must output" not in report
+    assert "private reasoning" not in report
     assert research_runs._REPORT_BOUNDARY_MARKER not in report
     assert report.lower().endswith("report") or report.endswith("Bericht")
     assert finish_reason == "stop"
@@ -890,7 +907,12 @@ def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
     public_chunks = ["# Result\n" + ("a" * 300), "b" * 300, "c" * 300]
     stream = _delta_stream_body(
         [
-            ("content", "Private analysis that must not become report progress.\n"),
+            (
+                "content",
+                "Private analysis mentions "
+                + research_runs._REPORT_BOUNDARY_MARKER
+                + " inline and must not become report progress.\n",
+            ),
             ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n" + public_chunks[0]),
             ("reasoning_content", public_chunks[1]),
             ("content", public_chunks[2]),
@@ -931,7 +953,7 @@ def test_empty_marked_stream_cannot_fall_back_to_private_summary(monkeypatch):
     private_summary = "## Summary\n" + ("Private chain of thought. " * 30)
     stream = _delta_stream_body(
         [
-            ("reasoning_content", private_summary),
+            ("reasoning_content", private_summary + "\n"),
             ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n"),
         ]
     )
