@@ -159,10 +159,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     setPreviewDoc(null);
   }, [projectId]);
 
-  // Refresh after a save: the edit is ingested as a replacement document, so the
-  // panel is holding a stale id until it refetches.
+  // Refresh after a save, and tell everyone else, as the upload and delete paths
+  // do. An edit is ingested as a *replacement*, so the document id changes: an
+  // instance still holding the retired one -- the composer's bar, another tab --
+  // shows a chip that 404s the moment it is opened or removed.
   const handleSourceSaved = useCallback(() => {
-    invalidateProjectSources(projectId);
+    announceProjectSourcesUpdated(projectId);
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 

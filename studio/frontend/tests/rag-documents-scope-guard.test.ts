@@ -129,3 +129,19 @@ test("both continuations report to the project they were started for", () => {
     "the announce must run before the continuation gives up",
   );
 });
+
+test("a saved edit is broadcast, not just refreshed locally", () => {
+  // Saving ingests a *replacement*, so the document id changes. The upload and
+  // delete paths announce; if the save only refreshed this instance, the
+  // composer's bar or another tab would keep showing the retired id and 404 on
+  // the next open or remove. Only meaningful once the preview modal exists.
+  if (!panelSource.includes("handleSourceSaved")) return;
+  const saved = panelSource.slice(
+    panelSource.indexOf("const handleSourceSaved"),
+  );
+  assert.match(
+    saved.slice(0, saved.indexOf("}, [")),
+    /announceProjectSourcesUpdated\(projectId\)/,
+    "a completed save must broadcast, as the upload and delete paths do",
+  );
+});
