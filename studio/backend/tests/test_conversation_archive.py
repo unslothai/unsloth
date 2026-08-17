@@ -362,6 +362,50 @@ def test_recall_filters_to_the_ACTIVE_branch_not_the_whole_stored_thread(conn):
     assert survived is not None and "KEEPME-1111" in survived[0]
 
 
+def test_the_reply_that_FOLLOWS_a_forced_recall_is_still_archived(conn):
+    """group_turns keeps a tool call, its result and the reply after it in one group.
+
+    Rejecting that whole group because our own injection is in it threw away the model's
+    actual answer: the question was archived from its own group and the answer was not,
+    so a later search could find what was asked and never what was said -- and this
+    happens on compaction turns specifically, which is where the feature is used.
+    """
+    evicted = [
+        {"role": "user", "content": "what was the passphrase"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "conv_recall_1",
+                    "function": {"name": "search_conversation", "arguments": '{"query": "pass"}'},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "conv_recall_1", "content": "<chunk>RETRIEVED</chunk>"},
+        {"role": "assistant", "content": "The passphrase you set earlier was SWORDFISH-42."},
+    ]
+    _save_thread("recall-turn-thread", evicted, append = True)
+
+    assert conversation_archive.archive_turns("recall-turn-thread", evicted) == 2
+
+    found = conversation_archive.recall(
+        "recall-turn-thread", "SWORDFISH-42", branch_messages = evicted
+    )
+    assert found is not None
+    assert "SWORDFISH-42" in found[0]
+    # The retrieved passage itself is still kept out, or the archive feeds on itself.
+    assert "RETRIEVED" not in found[0]
+    assert (
+        conversation_archive.recall("recall-turn-thread", "RETRIEVED", branch_messages = evicted)
+        is None
+        or "RETRIEVED"
+        not in conversation_archive.recall(
+            "recall-turn-thread", "RETRIEVED", branch_messages = evicted
+        )[0]
+    )
+
+
 def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
     """An archive is only written while vec0 loads, but it can stop loading afterwards.
 

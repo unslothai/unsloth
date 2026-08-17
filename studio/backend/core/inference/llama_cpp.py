@@ -20692,6 +20692,7 @@ class LlamaCppBackend:
 
             def _refit_iteration_after_respawn() -> None:
                 nonlocal conversation
+                _before_respawn_fit = conversation
                 if (
                     _preflight_context_length is None
                     or not self._effective_context_length
@@ -20723,6 +20724,22 @@ class LlamaCppBackend:
                         ),
                         protected_message_ids = _rolling_anchor_ids,
                     )
+                    if truncation and truncation["fits"]:
+                        # Archive only, deliberately: this refit runs against a smaller
+                        # replacement window with no reserve held back for a recall, so
+                        # injecting one here is what would push the retry back over the
+                        # window. Losing the turns is the part that cannot be undone --
+                        # the next request can still recall them.
+                        truncation.update(
+                            _archive_and_recall(
+                                conversation,
+                                _before_respawn_fit,
+                                thread_id = thread_id,
+                                style = "inline",
+                                recall_done = True,
+                                branch_messages = _request_branch,
+                            )["counts"]
+                        )
                     payload["messages"] = neutralize_control_markup_in_messages(
                         conversation, _markup_cache, self.markup_profile
                     )
@@ -22037,6 +22054,7 @@ class LlamaCppBackend:
 
         def _refit_final_after_respawn() -> None:
             nonlocal conversation
+            _before_respawn_fit = conversation
             if (
                 _final_preflight_context_length is None
                 or not self._effective_context_length
@@ -22063,6 +22081,18 @@ class LlamaCppBackend:
                     ),
                     protected_message_ids = _rolling_anchor_ids,
                 )
+                if truncation and truncation["fits"]:
+                    # Archive only, for the same reason as the iteration refit above.
+                    truncation.update(
+                        _archive_and_recall(
+                            conversation,
+                            _before_respawn_fit,
+                            thread_id = thread_id,
+                            style = "inline",
+                            recall_done = True,
+                            branch_messages = _request_branch,
+                        )["counts"]
+                    )
                 stream_payload["messages"] = neutralize_control_markup_in_messages(
                     conversation, None, self.markup_profile
                 )

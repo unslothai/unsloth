@@ -3868,6 +3868,64 @@ def test_rolling_preflight_counts_the_sanitized_payload(monkeypatch):
     assert counted[0] != messages
 
 
+def test_a_respawn_refit_archives_what_it_evicts(monkeypatch):
+    """The respawn refits run against a smaller replacement window.
+
+    They evict more of the conversation, and without archiving there those turns are
+    gone for good: unlike the ordinary preflight, nothing else sees them.
+    """
+    import httpx
+    from core.inference import llama_cpp
+
+    archived: list = []
+
+    def fake_archive(conversation, before, **kwargs):
+        archived.append(llama_cpp.evicted_messages(before, conversation))
+        return {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
+
+    monkeypatch.setattr(llama_cpp, "_archive_and_recall", fake_archive)
+
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [httpx.ConnectError("server is down"), [_sse({"content": "OK"}), _done()]],
+        payloads,
+    )
+    backend._effective_context_length = 2000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda candidate, *_args, **_kwargs: sum(
+            len(str(message.get("content", ""))) for message in candidate
+        ),
+    )
+
+    def fake_respawn():
+        backend._effective_context_length = 1000
+        return True
+
+    monkeypatch.setattr(backend, "_respawn_if_dead", fake_respawn)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "u" * 400},
+                {"role": "assistant", "content": "a" * 400},
+                {"role": "user", "content": "final"},
+            ],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            context_overflow = "truncate_oldest",
+            thread_id = "t-respawn-archive",
+        )
+    )
+
+    # More than one archiving pass, and the respawn's own evictions are among them.
+    assert len(archived) >= 2
+    assert any(batch for batch in archived[1:])
+
+
 def test_the_respawn_retry_keeps_the_thread(monkeypatch):
     """The retry refits for the replacement window, so it can evict more.
 

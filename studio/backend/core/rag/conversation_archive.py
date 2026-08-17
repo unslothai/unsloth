@@ -208,10 +208,19 @@ def render_turn(group: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
-def _archivable(group: list[dict]) -> bool:
+def _archivable(group: list[dict]) -> list[dict]:
+    """The part of an evicted turn worth archiving, or an empty list.
+
+    Our own injections come out, the rest stays. Rejecting the whole group instead threw
+    away real answers: group_turns keeps an assistant tool call, its result and the reply
+    that follows in ONE group, so a forced recall or a RAG auto-inject on that turn took
+    the model's actual answer down with it. The question was archived (its own group) and
+    the answer was not, so a later search could find what was asked and never what was
+    said -- on compaction turns specifically, which are the ones this feature is for.
+    """
     if any(str(message.get("role") or "") in _SKIP_ROLES for message in group):
-        return False
-    return not any(_is_injected(message) for message in group)
+        return []
+    return [message for message in group if not _is_injected(message)]
 
 
 def enabled() -> bool:
@@ -279,7 +288,11 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
     # scope because the inference layer imports this module.
     from core.inference.context_window import group_turns
 
-    groups = [group for group in group_turns(evicted) if _archivable(group)]
+    groups = [
+        archivable
+        for archivable in (_archivable(group) for group in group_turns(evicted))
+        if archivable
+    ]
     if not groups:
         return 0
 
