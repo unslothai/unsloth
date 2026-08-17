@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 import tarfile
-import threading
+import threading as _real_threading
 import time
 import types
 from pathlib import Path
@@ -370,8 +370,20 @@ def test_runtime_callback_covers_process_start_through_stop(monkeypatch):
         def start(self):
             pass
 
+    # Scope the fake Thread to cloudflare_tunnel. `setattr(ct.threading, "Thread", ...)`
+    # replaced threading.Thread for the whole process, so utils.process_lifetime's child
+    # spawner -- which start()s a helper thread and then waits up to 5s for it to signal
+    # readiness -- got a Thread whose start() does nothing and burned its full 5s backstop
+    # before falling back to an inline spawn. Rebinding the module reference on `ct`
+    # leaves the fake exactly where this test wants it.
+    class _ThreadingShim:
+        Thread = _NoReaderThread
+
+        def __getattr__(self, name):
+            return getattr(_real_threading, name)
+
     monkeypatch.setattr(ct.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(ct.threading, "Thread", _NoReaderThread)
+    monkeypatch.setattr(ct, "threading", _ThreadingShim())
     monkeypatch.setattr(ct, "ensure_cloudflared", lambda: starts_admitted.append(True))
     try:
         tunnel = ct.CloudflareTunnel(8080, "/bin/cloudflared")
@@ -1737,7 +1749,7 @@ def test_the_readiness_probe_answers_from_the_status_cloudflared_sends():
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target = server.serve_forever, daemon = True).start()
+    _real_threading.Thread(target = server.serve_forever, daemon = True).start()
     address = f"127.0.0.1:{server.server_port}"
     try:
         assert ct._connector_reports_ready(address, 5.0) is False
@@ -2402,14 +2414,21 @@ def test_an_interrupt_before_the_wait_still_ends_the_login_child(cf, monkeypatch
     if landing == "adopting the pid":
         monkeypatch.setattr(process_lifetime, "adopt_pid", interrupt)
     else:
-        real_thread = threading.Thread
 
         def only_the_login_reader(*args, **kwargs):
             if kwargs.get("name") == "cloudflared-login":
                 interrupt()
-            return real_thread(*args, **kwargs)
+            return _real_threading.Thread(*args, **kwargs)
 
-        monkeypatch.setattr(ct.threading, "Thread", only_the_login_reader)
+        # Scoped to cloudflare_tunnel for the reason recorded above: patching
+        # threading.Thread itself reaches every other thread the backend starts.
+        class _ThreadingShim:
+            Thread = staticmethod(only_the_login_reader)
+
+            def __getattr__(self, name):
+                return getattr(_real_threading, name)
+
+        monkeypatch.setattr(ct, "threading", _ThreadingShim())
     with pytest.raises(KeyboardInterrupt):
         _provision()
     assert cf.child is not None and cf.child.returncode == -15
