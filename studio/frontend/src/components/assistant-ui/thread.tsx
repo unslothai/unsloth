@@ -5810,11 +5810,18 @@ const AssistantMessage: FC = () => {
       ? (value as ContextTruncation)
       : null;
   });
-  // Once a thread outgrows the window it compacts on EVERY subsequent turn, so a notice
-  // per compacted turn is a notice on every reply for the rest of the conversation. The
-  // user needs telling once, on the turn where it started; after that it is chrome. This
-  // returns a boolean rather than the message so the selector stays identity-stable.
-  const isFirstCompaction = useAuiState(({ thread }) => {
+  // Once a thread outgrows the window, EVERY subsequent request runs the fit, because the
+  // whole saved transcript is re-sent each time. So "this turn compacted" is true of every
+  // reply from then on and is useless as a trigger: it puts a notice on every message.
+  //
+  // What the user actually wants to know is when MORE of the conversation fell out of the
+  // model's view. That is the eviction boundary moving, which shows up as dropped_messages
+  // rising above the last turn that reported it. Between two such moves the model sees the
+  // same history it saw before, so there is nothing new to say. Paired with the compaction
+  // headroom on the server, which stops the boundary creeping every turn, this gives one
+  // notice per real compaction and silence in between.
+  const showsNotice = useAuiState(({ thread }) => {
+    let previousDropped = 0;
     for (const message of thread.messages) {
       if (message.role !== "assistant") continue;
       const value = (
@@ -5822,8 +5829,12 @@ const AssistantMessage: FC = () => {
           | { custom?: { contextTruncation?: unknown } }
           | undefined
       )?.custom?.contextTruncation as ContextTruncation | undefined;
-      if (value && value.fits && value.dropped_messages) {
-        return message.id === messageId;
+      const dropped = value?.fits ? (value.dropped_messages ?? 0) : 0;
+      if (dropped > previousDropped) {
+        if (message.id === messageId) return true;
+        previousDropped = dropped;
+      } else if (message.id === messageId) {
+        return false;
       }
     }
     return false;
@@ -5888,7 +5899,7 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
-        {contextTruncation && isFirstCompaction && !isEditing && (
+        {contextTruncation && showsNotice && !isEditing && (
           <CompactionNotice truncation={contextTruncation} />
         )}
         {isEditing ? (

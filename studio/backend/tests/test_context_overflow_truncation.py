@@ -37,6 +37,7 @@ from routes.inference import (
     _truncate_middle_messages,
     _truncate_oldest_messages,
 )
+from core.inference import context_window
 from core.inference.context_window import (
     evicted_messages,
     fit_rolling_context,
@@ -269,7 +270,19 @@ def test_rolling_truncation_can_drop_assistant_after_instruction(instruction_rol
     assert new == [instruction, latest]
 
 
-def test_rolling_fit_recounts_until_the_real_template_fits():
+@pytest.fixture
+def no_compaction_headroom(monkeypatch):
+    """Pin the compaction headroom to zero.
+
+    For tests whose subject is the MINIMUM eviction needed to fit, the headroom is
+    noise: it deliberately drops more than strictly necessary, so an exact expected
+    count would be asserting the headroom's value rather than the fit's behaviour.
+    Tests about the headroom itself set it explicitly instead.
+    """
+    monkeypatch.setattr(context_window, "_COMPACTION_HEADROOM_RATIO", 0.0)
+
+
+def test_rolling_fit_recounts_until_the_real_template_fits(no_compaction_headroom):
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "one" * 40},
@@ -320,7 +333,7 @@ def _length_counter(candidate):
     return sum(len(str(message.get("content", ""))) for message in candidate)
 
 
-def test_evicted_messages_returns_dropped_turns_in_original_order():
+def test_evicted_messages_returns_dropped_turns_in_original_order(no_compaction_headroom):
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "one" * 40},
@@ -407,7 +420,7 @@ def test_reserve_tokens_does_not_trim_a_prompt_that_already_fits():
     assert info is None
 
 
-def test_reserve_tokens_trims_further_once_trimming_is_needed():
+def test_reserve_tokens_trims_further_once_trimming_is_needed(no_compaction_headroom):
     messages = [
         {"role": "system", "content": "system"},
         {"role": "user", "content": "one" * 40},
@@ -715,3 +728,150 @@ def test_reasoning_clip_alone_prevents_middle_eviction():
     assert body["max_tokens"] == max(
         1024, int(8192 * (1.0 - routes_mod._OVERFLOW_PROMPT_TARGET_FRACTION))
     )
+
+
+def test_compaction_headroom_does_not_trim_a_prompt_that_already_fits():
+    """Same rule as the reserve: headroom must never be what causes eviction.
+
+    The headroom exists to make a compaction take a chunk out in one go. Charging it
+    up front would make chats that comfortably fit today start evicting turns, which
+    is a regression in the common case for the benefit of the compacted one.
+    """
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "short"},
+        {"role": "assistant", "content": "short answer"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 500,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+
+    assert fitted is messages
+    assert info is None
+
+
+def test_compaction_leaves_headroom_below_the_budget():
+    """A compaction lands clear of the budget, not flush against it.
+
+    Trimming to the brim is what makes the eviction boundary creep forward on every
+    turn: the client re-sends the whole transcript, so a prompt fitted exactly is over
+    again as soon as the next turn is appended. This is the regression test for that.
+    """
+    messages = [{"role": "system", "content": "system"}]
+    for index in range(12):
+        messages.append({"role": "user", "content": f"question {index} " * 20})
+        messages.append({"role": "assistant", "content": f"answer {index} " * 20})
+    messages.append({"role": "user", "content": "latest"})
+
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 800,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+    )
+
+    assert info is not None
+    prompt_target = 800 - min(100, 800 // 4)
+    assert info["prompt_tokens_after"] <= prompt_target
+    # The point of the change: comfortably under, not just under.
+    assert info["prompt_tokens_after"] < prompt_target * 0.9
+
+
+def _long_thread(turns: int = 40):
+    """A thread several times its window, in turns big enough to be evicted as units."""
+    messages = [{"role": "system", "content": "system"}]
+    for index in range(turns):
+        messages.append({"role": "user", "content": f"question {index} " * 200})
+        messages.append({"role": "assistant", "content": f"answer {index} " * 200})
+    return messages
+
+
+def _fit_with_appended(
+    base,
+    appended,
+    sticky = 0,
+):
+    messages = list(base)
+    for index in range(appended):
+        messages.append({"role": "user", "content": f"follow up {index} " * 20})
+        messages.append({"role": "assistant", "content": f"reply {index} " * 20})
+    messages.append({"role": "user", "content": "latest"})
+    _, info = fit_rolling_context(
+        messages,
+        context_length = 8000,
+        max_tokens = 512,
+        count_tokens = _length_counter,
+        sticky_dropped = sticky,
+    )
+    return info
+
+
+def test_sticky_boundary_holds_still_while_short_turns_are_appended():
+    """After a compaction, ordinary turns do not push the boundary again.
+
+    This is the property the notice depends on, and the reason the boundary has to be
+    read back rather than recomputed: the client re-sends the whole saved transcript
+    every request, so a fit that recomputes "keep the newest N tokens" slides forward a
+    turn or two at a time and every single reply reports a fresh compaction.
+    """
+    base = _long_thread()
+    first = _fit_with_appended(base, 0)
+    assert first is not None and first["dropped_messages"] > 0
+
+    boundary = first["dropped_messages"]
+    # Not "forever": the appended turns do consume the headroom, and the next test is
+    # the one that pins down that it eventually moves. A handful of turns is the claim
+    # here, against a baseline that moved on nearly every one.
+    for appended in range(1, 6):
+        info = _fit_with_appended(base, appended, sticky = boundary)
+        assert info is not None
+        assert (
+            info["dropped_messages"] == boundary
+        ), f"the boundary moved after {appended} appended turns"
+
+
+def test_sticky_boundary_moves_again_once_the_headroom_is_used_up():
+    """It holds still, but it does not hold forever: enough new turns re-compact."""
+    base = _long_thread()
+    boundary = _fit_with_appended(base, 0)["dropped_messages"]
+
+    moved = None
+    for appended in range(1, 60):
+        info = _fit_with_appended(base, appended, sticky = boundary)
+        if info["dropped_messages"] > boundary:
+            moved = appended
+            break
+
+    assert moved is not None, "the boundary never moved, so the window would overflow"
+    assert moved > 4, f"the boundary moved again after only {moved} turns"
+
+
+def test_sticky_boundary_never_causes_eviction_on_a_thread_that_fits():
+    """A stale boundary from a longer branch must not evict a conversation that fits.
+
+    Rolling back to an early message leaves the saved boundary describing a branch that
+    no longer exists. The fit is allowed to reapply it, but must never report a
+    compaction on a prompt that is comfortably inside the window.
+    """
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "short"},
+        {"role": "assistant", "content": "short answer"},
+        {"role": "user", "content": "latest"},
+    ]
+
+    fitted, info = fit_rolling_context(
+        messages,
+        context_length = 4000,
+        max_tokens = 100,
+        count_tokens = _length_counter,
+        sticky_dropped = 40,
+    )
+
+    assert fitted is messages
+    assert info is None

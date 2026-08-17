@@ -16,10 +16,11 @@ import type { ContextTruncation } from "@/features/chat/utils/context-truncation
  * toast that vanishes after eight seconds leaves the user with no way to find out why the
  * model suddenly seemed to forget the start of a long chat.
  *
- * Rendered ONCE per thread, gated by the caller. A thread that has outgrown its window
- * compacts on every turn from then on, so one notice per compacted turn is a notice on
- * every reply forever. The wording therefore describes the state the conversation is now
- * in rather than this single reply, with the counts from the turn it began on.
+ * Rendered once per COMPACTION, gated by the caller, not once per compacted turn. A
+ * thread that has outgrown its window runs the fit on every request from then on, so a
+ * notice per compacted turn is a notice on every reply forever. The caller shows this
+ * only when the eviction boundary actually moved, which with the server's compaction
+ * headroom happens in occasional steps rather than on every turn.
  */
 export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
   truncation,
@@ -48,8 +49,7 @@ export const CompactionNotice: FC<{ truncation: ContextTruncation }> = ({
           This conversation got long, so it was compacted.
         </span>{" "}
         <span>
-          From this reply onward, older messages are dropped from the model&apos;s context
-          to make room. {detail}
+          Older messages were dropped from the model&apos;s context to make room. {detail}
         </span>
         <span>
           {" "}

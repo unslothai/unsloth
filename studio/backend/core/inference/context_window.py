@@ -6,10 +6,29 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from typing import Any, Optional
 
 _OMITTED_TOOL_EXCHANGE = "[Earlier tool exchange omitted from the rolling context window.]"
+
+# How far BELOW the prompt budget a compaction trims, as a fraction of that budget.
+#
+# Trimming to exactly the budget looks efficient and behaves badly. The client re-sends
+# the whole saved transcript on every request, so the fit runs from scratch each time,
+# and a prompt trimmed to the brim is over it again as soon as the next turn is
+# appended. The eviction boundary then creeps forward on nearly every turn, which costs
+# twice: llama-server's prefix cache is invalidated each time the head moves, so the
+# whole prompt is reprocessed, and there is no such thing as a discrete "compaction
+# event" to tell the user about -- every reply has compacted a little more.
+#
+# Taking a chunk out in one go instead buys a stretch of turns whose eviction boundary
+# does not move at all: same head, so the prefix cache holds, and one thing to report
+# rather than a running commentary. The cost is the headroom itself, which is context
+# that could have held conversation, so it is deliberately a minority of the budget.
+_COMPACTION_HEADROOM_RATIO = max(
+    0.0, min(0.9, float(os.environ.get("ROLLING_COMPACTION_HEADROOM_RATIO", "0.25")))
+)
 
 
 def estimate_message_tokens(message: dict) -> int:
@@ -68,9 +87,15 @@ def truncate_oldest_messages(
     keep_ratio: float,
     *,
     protected_message_ids: Optional[set[int]] = None,
+    min_dropped: int = 0,
 ) -> tuple[list[dict], int]:
-    """Drop complete oldest turns while preserving system messages and the latest turn."""
-    if not messages or keep_ratio >= 1.0:
+    """Drop complete oldest turns while preserving system messages and the latest turn.
+
+    ``min_dropped`` keeps evicting past the point where the prompt fits, until at least
+    that many messages are gone. It is how a thread re-applies the boundary it already
+    compacted to, rather than recomputing one that slides forward a little every turn.
+    """
+    if not messages or (keep_ratio >= 1.0 and min_dropped <= 0):
         return messages, 0
 
     groups = group_turns(messages)
@@ -122,7 +147,7 @@ def truncate_oldest_messages(
 
     dropped_groups: set[int] = set()
     for unit in eviction_units:
-        if current_estimate <= target_estimate:
+        if current_estimate <= target_estimate and dropped >= min_dropped:
             break
         dropped_groups.update(unit)
         for group_index in unit:
@@ -165,6 +190,7 @@ def fit_rolling_context(
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
     reserve_tokens: int = 0,
+    sticky_dropped: int = 0,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat into its real context by dropping oldest complete turns.
 
@@ -179,6 +205,18 @@ def fit_rolling_context(
     untouched even when the reserve would not fit alongside it. Charging the reserve up
     front would make chats start evicting turns that comfortably fit today, which is a
     silent regression in the common case for the benefit of the rare one.
+
+    ``sticky_dropped`` is the boundary this thread last compacted to, in messages. The
+    fit re-applies it before deciding anything, and only moves it when what is left still
+    does not fit. Without it the fit is stateless: the client re-sends the whole saved
+    transcript every request, so "keep the newest N tokens" slides forward a turn or two
+    at a time and every single reply has compacted a little more than the last. With it,
+    plus ``_COMPACTION_HEADROOM_RATIO`` of slack taken out when the boundary does move,
+    compaction becomes an occasional event with quiet turns in between, which is both what
+    a user can be told about and what lets llama-server's prefix cache survive a turn.
+
+    Acceptance is still checked against the untightened ``prompt_target``: falling short
+    of the headroom is not a failure to fit.
     """
     if context_length <= 1:
         return messages, None
@@ -191,10 +229,38 @@ def fit_rolling_context(
     current_tokens = initial_tokens
     dropped_total = 0
 
-    # Only once trimming is unavoidable does the reserve tighten the goal.
+    # Phase one: put the boundary back where this thread already had it. Cheap, and it
+    # is what makes a compacted thread stop compacting further on every turn.
+    #
+    # Gated on the prompt not already fitting, exactly as the reserve and the headroom
+    # are. A saved boundary describes the branch it was measured on, and rolling back to
+    # an early message leaves one that is far too aggressive for the conversation now in
+    # front of us; applying it anyway would evict most of a chat that comfortably fits
+    # and report a compaction that did not need to happen.
+    if sticky_dropped > 0 and initial_tokens > prompt_target:
+        candidate, dropped = truncate_oldest_messages(
+            fitted,
+            1.0,
+            protected_message_ids = protected_message_ids,
+            min_dropped = sticky_dropped,
+        )
+        if dropped:
+            fitted = candidate
+            dropped_total = dropped
+            current_tokens = count_tokens(fitted)
+
+    # Phase two, only if what is left still does not fit: move the boundary, and take a
+    # chunk out rather than skimming to the brim, so it can stay put for a while.
+    #
+    # The reserve and the headroom deliberately play no part in the decision to trim at
+    # all, so a conversation that fits today is never evicted to satisfy either.
     trim_target = prompt_target
-    if initial_tokens > prompt_target and reserve_tokens > 0:
-        trim_target = max(1, prompt_target - reserve_tokens)
+    if current_tokens > prompt_target:
+        # Summed, not max()'d: the reserve is spent immediately on recalled passages,
+        # so counting it as headroom would hand back room that is already taken and
+        # the next turn would compact again.
+        headroom = int(prompt_target * _COMPACTION_HEADROOM_RATIO)
+        trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
     while current_tokens > trim_target:
         keep_ratio = min(0.95, trim_target / max(1, current_tokens))

@@ -86,19 +86,52 @@ test("the compaction notice renders from persisted metadata, not from a message"
   assert.match(notice, /This conversation got long, so it was compacted/);
 });
 
-test("the compaction notice is gated to the FIRST compacted turn", () => {
+test("the compaction notice is gated on the eviction boundary MOVING", () => {
   const thread = readFileSync(
     new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
     "utf8",
   );
-  // A thread that has outgrown its window compacts on every turn from then on, so an
-  // ungated notice is a notice on every reply for the rest of the conversation.
-  assert.match(thread, /const isFirstCompaction = useAuiState/);
-  assert.match(
-    thread,
-    /contextTruncation && isFirstCompaction && !isEditing/,
-  );
-  // The gate walks the thread and stops at the first compacted assistant turn, rather
-  // than assuming the compacted ones are contiguous or that this message is the last.
+  // Every request after the window fills runs the fit, so "this turn compacted" puts a
+  // notice on every reply. The trigger is dropped_messages rising above the last turn
+  // that reported it, which is more of the conversation actually leaving the context.
+  assert.match(thread, /const showsNotice = useAuiState/);
+  assert.match(thread, /contextTruncation && showsNotice && !isEditing/);
+  assert.match(thread, /dropped > previousDropped/);
+  // Walked in order, rather than compared against the immediately preceding message:
+  // turns between two moves report the same count and must not reset the baseline.
   assert.match(thread, /for \(const message of thread\.messages\)/);
+});
+
+// The gate is a pure function of the thread's persisted truncation counts, so it can be
+// evaluated directly on the sequences the server actually produces.
+const noticeTurns = (dropped: (number | null)[]): number[] => {
+  const shown: number[] = [];
+  let previousDropped = 0;
+  dropped.forEach((value, index) => {
+    const d = value ?? 0;
+    if (d > previousDropped) {
+      shown.push(index);
+      previousDropped = d;
+    }
+  });
+  return shown;
+};
+
+test("one notice per compaction, and silence on the turns in between", () => {
+  // A compaction, a stretch of turns whose boundary does not move, then another.
+  assert.deepStrictEqual(
+    noticeTurns([0, 0, 52, 52, 52, 52, 52, 62, 62, 62, 74]),
+    [2, 7, 10],
+  );
+  // The uncompacted case stays silent throughout.
+  assert.deepStrictEqual(noticeTurns([0, 0, 0]), []);
+  // A single compaction that never moves again is reported exactly once.
+  assert.deepStrictEqual(noticeTurns([36, 36, 36]), [0]);
+});
+
+test("a boundary that goes BACKWARDS does not re-announce", () => {
+  // Rolling back to an earlier message leaves a shorter branch, which needs less
+  // evicting. Less of the conversation is missing than before, so there is nothing to
+  // tell the user, and the baseline must not be dragged down into re-announcing it.
+  assert.deepStrictEqual(noticeTurns([52, 20, 20, 20]), [0]);
 });

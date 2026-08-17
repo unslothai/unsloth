@@ -234,3 +234,113 @@ def test_compaction_nudge_only_fires_when_the_tool_is_present():
 
     assert without == "base."
     assert "search_conversation" in with_tool
+
+
+# ---------------------------------------------------------------------------
+# The sticky compaction boundary
+# ---------------------------------------------------------------------------
+
+
+def _fake_studio_db(monkeypatch, messages):
+    """Stand in for storage.studio_db.list_chat_messages."""
+    import sys
+    import types
+
+    module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
+    package = types.ModuleType("storage")
+    package.studio_db = module
+    monkeypatch.setitem(sys.modules, "storage", package)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+
+def test_sticky_boundary_reads_the_newest_assistant_truncation(monkeypatch):
+    from core.inference import llama_cpp
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {"role": "user", "content": "q"},
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 12}}
+                },
+            },
+            {"role": "user", "content": "q2"},
+            {
+                "role": "assistant",
+                "content": "a2",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 18}}
+                },
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 18
+
+
+def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
+    """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {"contextTruncation": {"fits": True, "dropped_messages": 7}},
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 7
+
+
+def test_sticky_boundary_is_zero_without_a_thread_or_history(monkeypatch):
+    from core.inference import llama_cpp
+
+    assert llama_cpp._sticky_compaction_boundary(None) == 0
+    assert llama_cpp._sticky_compaction_boundary("") == 0
+    _fake_studio_db(monkeypatch, [])
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
+def test_sticky_boundary_ignores_a_fit_that_did_not_fit(monkeypatch):
+    """`fits: false` means the fit gave up, so it describes no boundary to restore."""
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {
+                "role": "assistant",
+                "content": "a",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": False, "dropped_messages": 40}}
+                },
+            },
+        ],
+    )
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0
+
+
+def test_sticky_boundary_never_raises_on_a_storage_failure(monkeypatch):
+    """A boundary is an optimisation; losing it must never cost the user a turn."""
+    import sys
+    import types
+
+    from core.inference import llama_cpp
+
+    def explode(thread_id):
+        raise RuntimeError("database is locked")
+
+    module = types.SimpleNamespace(list_chat_messages = explode)
+    package = types.ModuleType("storage")
+    package.studio_db = module
+    monkeypatch.setitem(sys.modules, "storage", package)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0

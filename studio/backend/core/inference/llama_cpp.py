@@ -480,6 +480,45 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         return 0
 
 
+def _sticky_compaction_boundary(thread_id: Optional[str]) -> int:
+    """How many leading messages this thread last compacted away, or 0.
+
+    The fit is otherwise stateless: the client re-sends the whole saved transcript on
+    every request, so "keep the newest N tokens" slides forward a turn or two at a time
+    and every reply compacts a little more than the last. That is bad for the user, who
+    can never be told anything more useful than "still compacting", and bad for
+    llama-server, whose prefix cache is thrown away each time the head of the prompt
+    moves. Reading the boundary back turns compaction into an occasional event.
+
+    The source is the thread's own newest assistant turn, which already persists this
+    number for the UI, so nothing new is stored and it survives a restart. Never raises:
+    a thread with no history, an API client that persists nothing, or a storage error
+    all mean "no boundary", which is exactly the old stateless behaviour.
+    """
+    if not thread_id:
+        return 0
+    try:
+        from storage import studio_db
+        for message in reversed(studio_db.list_chat_messages(thread_id) or []):
+            if message.get("role") != "assistant":
+                continue
+            metadata = message.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                return 0
+            truncation = metadata.get("contextTruncation") or (metadata.get("custom") or {}).get(
+                "contextTruncation"
+            )
+            if not isinstance(truncation, dict):
+                return 0
+            # Only a fit that SUCCEEDED describes a boundary worth restoring.
+            if not truncation.get("fits"):
+                return 0
+            return max(0, int(truncation.get("dropped_messages") or 0))
+    except Exception:
+        return 0
+    return 0
+
+
 def _prefix_user_text(message: dict, prefix: str) -> dict:
     """Copy of ``message`` with ``prefix`` in front of its text. Never mutates."""
     content = message.get("content")
@@ -19825,6 +19864,7 @@ class LlamaCppBackend:
                         should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                     ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
+                    sticky_dropped = _sticky_compaction_boundary(thread_id),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -20377,6 +20417,7 @@ class LlamaCppBackend:
                         ),
                         protected_message_ids = _rolling_anchor_ids,
                         reserve_tokens = _conversation_recall_reserve(thread_id),
+                        sticky_dropped = _sticky_compaction_boundary(thread_id),
                     )
                     if truncation and truncation["fits"]:
                         _recalled = _archive_and_recall(
@@ -21705,6 +21746,7 @@ class LlamaCppBackend:
                     ),
                     protected_message_ids = _rolling_anchor_ids,
                     reserve_tokens = _conversation_recall_reserve(thread_id),
+                    sticky_dropped = _sticky_compaction_boundary(thread_id),
                 )
                 if truncation and truncation["fits"]:
                     _recalled = _archive_and_recall(
