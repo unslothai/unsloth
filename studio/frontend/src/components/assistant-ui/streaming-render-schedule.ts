@@ -614,6 +614,25 @@ function normalizeLineEndings(text: string): string {
   return text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
 }
 
+/**
+ * `a` begins with `b`.
+ *
+ * `String.prototype.startsWith` is the obvious spelling and is far slower here,
+ * because it scans where slicing to the prefix length and comparing lets the
+ * engine reject on length and then compare natively.
+ *
+ * The win is in the PREFIX length, not in how the strings are represented. Swept
+ * on V8: at an 8 character prefix `startsWith` is FASTER (0.4x), at 1,024 it is
+ * 105x slower and at 60,000 it is 250x slower, and a cons receiver behaves the
+ * same as a flat one (250x against 254x). So do not reach for this helper for
+ * short prefixes; it earns its place on a reply-length one.
+ *
+ * Semantically identical: `slice` clamps to the string length, so a `b` longer
+ * than `a` yields a short slice that cannot equal it.
+ */
+export const hasPrefix = (a: string, b: string): boolean =>
+  a.length >= b.length && a.slice(0, b.length) === b;
+
 function sharedPrefixLength(left: string, right: string): number {
   const limit = Math.min(left.length, right.length);
   let index = 0;
@@ -774,7 +793,7 @@ export class IncrementalMarkdownCache {
     // one native comparison plus a scan of the tail (about to be re-lexed
     // anyway) rather than a scan of the whole reply.
     const committedPrefix = this.source.slice(0, this.committedLength);
-    const shared = markdown.startsWith(committedPrefix)
+    const shared = hasPrefix(markdown, committedPrefix)
       ? this.committedLength +
         sharedPrefixLength(markdown.slice(this.committedLength), this.tail)
       : sharedPrefixLength(markdown, committedPrefix);
@@ -828,7 +847,7 @@ export class IncrementalMarkdownCache {
   }
 
   private updateTail(markdown: string): void {
-    if (markdown.startsWith(this.source)) {
+    if (hasPrefix(markdown, this.source)) {
       this.tail += markdown.slice(this.source.length);
     } else if (!this.rewindToRewrite(markdown)) {
       if (this.committedBlocks.length > 0) {
@@ -859,7 +878,7 @@ export class IncrementalMarkdownCache {
       };
     }
 
-    if (this.fullDocumentMode && markdown.startsWith(this.source)) {
+    if (this.fullDocumentMode && hasPrefix(markdown, this.source)) {
       this.source = markdown;
       return this.renderFullDocument(markdown);
     }
