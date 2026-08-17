@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import {
   NewReleasesIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
-import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import type { ModelFormatFilter } from "../types";
 
 export type ChannelId =
@@ -26,6 +26,8 @@ export interface ChannelPreset {
   idSuffix?: string;
   format: ModelFormatFilter;
   sort: HfSortKey;
+  // Keep only formats Unsloth can fine-tune (drops fp8, nvfp4, w4a16, etc.).
+  finetunableOnly?: boolean;
 }
 
 export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
@@ -35,6 +37,7 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     icon: SparklesIcon,
     hint: "Most trending models published by Unsloth.",
     owner: "unsloth",
+    tags: ["gguf"],
     format: "gguf",
     sort: "trendingScore",
   },
@@ -45,18 +48,19 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     hint: "Freshly released models from the Unsloth channel.",
     owner: "unsloth",
     format: "all",
-    sort: "lastModified",
+    // Newest by creation date so the feed shows freshly released models, not
+    // ones merely re-touched (lastModified).
+    sort: "createdAt",
   },
   {
     id: "unsloth-safetensors",
     label: "Fine-tune ready",
     icon: SlidersHorizontalIcon,
-    hint: "Latest Unsloth bnb-4bit checkpoints ready to fine-tune.",
+    hint: "Checkpoints ready to fine-tune.",
     owner: "unsloth",
-    query: "bnb-4bit",
-    idSuffix: "-bnb-4bit",
     format: "checkpoint",
     sort: "lastModified",
+    finetunableOnly: true,
   },
 ];
 
@@ -64,3 +68,23 @@ export function findChannel(id: ChannelId | null): ChannelPreset | null {
   if (!id) return null;
   return CHANNEL_PRESETS.find((preset) => preset.id === id) ?? null;
 }
+
+export type HubSection = "trending" | "latest" | "finetune";
+
+export const SECTION_TO_CHANNEL: Record<HubSection, ChannelId> = {
+  trending: "unsloth-trending",
+  latest: "unsloth-latest",
+  finetune: "unsloth-safetensors",
+};
+
+export const CHANNEL_TO_SECTION: Record<ChannelId, HubSection> = {
+  "unsloth-trending": "trending",
+  "unsloth-latest": "latest",
+  "unsloth-safetensors": "finetune",
+};
+
+export const HUB_SECTION_TITLE: Record<HubSection, string> = {
+  trending: "Trending Now",
+  latest: "Latest Unsloth Models",
+  finetune: "Fine-tune Ready",
+};

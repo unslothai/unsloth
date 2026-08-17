@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for _nvcc_meets_llama_minimum() from studio/setup.sh.
 # llama.cpp needs CUDA toolkit >= 12.4 (#4437); setup.ps1 aborts via #4517,
 # the Linux side was silent until this fix.

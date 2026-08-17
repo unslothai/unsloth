@@ -10,11 +10,10 @@ RL_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
-    src = open(RL_PATH).read()
+    src = open(RL_PATH, encoding = "utf-8").read()
     tree = ast.parse(src)
     ns = {"re": re}
-    # Materialise sibling module-level assignments (e.g. _PAD_FALLBACK) so
-    # any rewriter that references them at exec-time can resolve them.
+    # Materialise sibling module-level _-prefixed assignments the rewriter may reference.
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:

@@ -4,17 +4,16 @@
 "use client";
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+
+import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  CheckIcon,
-  CopyIcon,
-  FileTextIcon,
-  TerminalIcon,
-} from "lucide-react";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { CopyIcon, FileTextIcon, TerminalIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Spinner } from "@/components/ui/spinner";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ToolFallbackContent,
@@ -93,7 +92,7 @@ function CopyBtn({ text }: { text: string }) {
       aria-label="Copy to clipboard"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
@@ -101,6 +100,32 @@ function CopyBtn({ text }: { text: string }) {
     </button>
   );
 }
+export function CodeExecutionResultOutput({ result }: { result: unknown }) {
+  const resultText = useMemo(
+    () => (result == null ? "" : stringifyToolResult(result)),
+    [result],
+  );
+  const displayedResult = useMemo(
+    () => truncateResult(resultText),
+    [resultText],
+  );
+
+  if (!resultText) {
+    return null;
+  }
+  return (
+    <div>
+      <div className="flex justify-end">
+        <CopyBtn text={resultText} />
+      </div>
+      <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
+        {displayedResult}
+      </pre>
+    </div>
+  );
+}
+
+
 
 const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -157,20 +182,6 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
     }
   }, [isRunning, hasText]);
 
-  const resultText = useMemo(
-    () =>
-      typeof result === "string"
-        ? result
-        : result != null
-          ? JSON.stringify(result, null, 2)
-          : "",
-    [result],
-  );
-  const displayedResult = useMemo(
-    () => truncateResult(resultText),
-    [resultText],
-  );
-
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger
@@ -181,19 +192,12 @@ const CodeExecutionToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <ToolCallSpinner className="size-3.5" />
+            <Spinner className="size-3.5" />
             <span>{runningLabel}</span>
           </div>
-        ) : resultText ? (
-          <div>
-            <div className="flex justify-end">
-              <CopyBtn text={resultText} />
-            </div>
-            <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-xs">
-              {displayedResult}
-            </pre>
-          </div>
-        ) : null}
+        ) : (
+          <CodeExecutionResultOutput result={result} />
+        )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

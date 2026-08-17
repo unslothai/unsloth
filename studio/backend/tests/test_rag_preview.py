@@ -165,6 +165,25 @@ def test_locator_handles_midword_anchor_and_locates_line():
     assert r["width"] > 0 and r["height"] > 0
 
 
+def test_locator_anchors_through_markdown_table_pipes():
+    # Markdown table cells are pipe-joined with no spaces; the locator splits on pipes
+    # so a table-row chunk still anchors to the raw PDF word stream.
+    import pymupdf
+
+    from core.rag.locators import LocatorMatch, _regions_for_match
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 200), "Quarter Revenue Growth Q1 sales strong here", fontsize = 12)
+    # What the Markdown parser stores for the row (cells joined by pipes, no spaces).
+    page_text = "|Quarter|Revenue|Growth|Q1|sales|strong|here|"
+    match = LocatorMatch(page_index = 0, page_number = 1, start = 0, end = len(page_text))
+    rects = _regions_for_match(doc, page_text, match)
+    doc.close()
+
+    assert rects, "a Markdown table row should still anchor to the page words"
+
+
 def test_sign_verify_roundtrip(rag_home):
     from routes import rag as rag_routes
 

@@ -1,9 +1,4 @@
-"""
-OCR Model Evaluation Module
-
-This module provides functionality to evaluate OCR models on datasets with
-word error rate (WER) and character error rate (CER) metrics.
-"""
+"""Evaluate OCR models on datasets with WER and CER metrics."""
 
 import os
 import torch
@@ -17,10 +12,7 @@ import traceback
 
 
 class OCRModelEvaluator:
-    """
-    A comprehensive OCR model evaluator that supports multiple models and provides
-    detailed analysis with WER and CER metrics.
-    """
+    """OCR model evaluator over multiple models with WER/CER analysis."""
 
     def __init__(self):
         """Initialize the OCR evaluator."""
@@ -37,9 +29,7 @@ class OCRModelEvaluator:
         min_p: float = 0.1,
         verbose: bool = True,
     ) -> Tuple[Optional[float], Optional[float]]:
-        """
-        Evaluate a model on an OCR dataset.
-        """
+        """Evaluate a model on an OCR dataset."""
         os.makedirs(output_dir, exist_ok = True)
 
         results = []
@@ -184,7 +174,7 @@ class OCRModelEvaluator:
                 use_cache = True,
             )
 
-        # Keep only the generated part, not the input
+        # Keep only the generated tokens, not the input
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]

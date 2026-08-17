@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CloudUploadIcon,
   Cancel01Icon,
-  Loading03Icon,
   CheckmarkCircle02Icon,
   Alert02Icon,
 } from "@hugeicons/core-free-icons";
+import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 import {
@@ -54,11 +54,17 @@ export function UnstructuredDropZone({
 }: UnstructuredDropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const filesRef = useRef(files);
+  const blockIdRef = useRef(blockId);
+  const mountedRef = useRef(true);
   const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     filesRef.current = files;
-  }, [files]);
+    blockIdRef.current = blockId;
+  }, [files, blockId]);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
 
   const totalSize = files.reduce((sum, f) => sum + f.size, 0);
 
@@ -134,15 +140,32 @@ export function UnstructuredDropZone({
       if (entry.status === "uploading" && entry.abortController) {
         entry.abortController.abort();
       }
-      if (
+      const needsServerRemove =
         entry.id &&
         entry.status === "ok" &&
-        !deletedIdsRef.current.has(entry.id)
-      ) {
-        deletedIdsRef.current.add(entry.id);
-        void removeUnstructuredFile(blockId, entry.id).catch(() => {});
-      }
+        !deletedIdsRef.current.has(entry.id);
       onFilesChange((prev) => prev.filter((_, i) => i !== index));
+      if (!needsServerRemove) return;
+      deletedIdsRef.current.add(entry.id);
+      removeUnstructuredFile(blockId, entry.id).catch(() => {
+        // Skip if the drop zone unmounted or its block changed: the id no
+        // longer belongs here and restoring would leak it into another block.
+        if (!mountedRef.current || blockIdRef.current !== blockId) return;
+        // Still exists server-side (counts toward quota); restore it at its
+        // original position.
+        deletedIdsRef.current.delete(entry.id);
+        onFilesChange((prev) => {
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, {
+            id: entry.id,
+            name: entry.name,
+            size: entry.size,
+            status: "ok",
+            error: "Remove failed — try again",
+          });
+          return next;
+        });
+      });
     },
     [blockId, onFilesChange],
   );
@@ -188,7 +211,7 @@ export function UnstructuredDropZone({
       <div
         className={`nodrag flex cursor-pointer flex-col items-center justify-center rounded-md border-2 border-dashed px-4 py-6 text-center transition-colors ${
           isDragOver
-            ? "border-primary bg-primary/5"
+            ? "border-ring-strong bg-primary/5"
             : "border-muted-foreground/25 hover:border-muted-foreground/50"
         } ${disabled ? "pointer-events-none opacity-50" : ""}`}
         onDrop={handleDrop}
@@ -226,10 +249,7 @@ export function UnstructuredDropZone({
               className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
             >
               {entry.status === "uploading" && (
-                <HugeiconsIcon
-                  icon={Loading03Icon}
-                  className="text-muted-foreground size-4 animate-spin"
-                />
+                <Spinner className="text-muted-foreground size-4" />
               )}
               {entry.status === "ok" && (
                 <HugeiconsIcon

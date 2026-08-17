@@ -9,6 +9,12 @@ import {
   type PropsWithChildren,
 } from "react";
 import { useAuiState } from "@assistant-ui/react";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  toolOutputKey,
+  useToolPaneScope,
+  useUnresolvedToolPaneScope,
+} from "@/features/chat";
 import { ChevronDownIcon } from "lucide-react";
 import { Wrench01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -20,7 +26,7 @@ import {
 } from "@/components/ui/collapsible";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { Spinner } from "@/components/ui/spinner";
 
 const ANIMATION_DURATION = 200;
 
@@ -123,7 +129,7 @@ function ToolGroupTrigger({
       {...props}
     >
       {active ? (
-        <ToolCallSpinner className="aui-tool-group-trigger-loader" />
+        <Spinner className="aui-tool-group-trigger-loader" />
       ) : (
         <HugeiconsIcon
           icon={Wrench01Icon}
@@ -209,22 +215,72 @@ const ToolGroupImpl: FC<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 > = ({ children, startIndex, endIndex }) => {
   const toolCount = endIndex - startIndex + 1;
-  const containsArtifactTool = useAuiState(({ message }) =>
+  const containsUngroupedTool = useAuiState(({ message }) =>
     message.parts
       .slice(startIndex, endIndex + 1)
       .some(
-        (part) => part.type === "tool-call" && part.toolName === "render_html",
+        (part) =>
+          part.type === "tool-call" &&
+          (part.toolName === "render_html" || part.toolName === "python"),
       ),
   );
+  // A blocking allow/deny prompt must never be hidden inside a collapsed
+  // group, so force the group open while any of its calls awaits confirmation.
+  const toolConfirmations = useChatRuntimeStore((s) => s.toolConfirmations);
+  const hasPendingConfirmation = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) =>
+          part.type === "tool-call" &&
+          Object.prototype.hasOwnProperty.call(
+            toolConfirmations,
+            part.toolCallId,
+          ),
+      ),
+  );
+  const messageRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  // Force the group open when any call is receiving tool_output events.
+  const toolLiveOutput = useChatRuntimeStore((s) => s.toolLiveOutput);
+  const paneScope = useToolPaneScope();
+  const unresolvedScope = useUnresolvedToolPaneScope();
+  const hasLiveOutput = useAuiState(({ message }) =>
+    message.parts
+      .slice(startIndex, endIndex + 1)
+      .some(
+        (part) =>
+          part.type === "tool-call" &&
+          // Either scope: a first turn writes under the unresolved one for its whole
+          // life, even after the autosave assigns the id (see useToolOutputFor).
+          (Object.prototype.hasOwnProperty.call(
+            toolLiveOutput,
+            toolOutputKey(paneScope, part.toolCallId),
+          ) ||
+            Object.prototype.hasOwnProperty.call(
+              toolLiveOutput,
+              toolOutputKey(unresolvedScope, part.toolCallId),
+            )),
+      ),
+  );
+  // Keep the group open once a confirmation or live output forced it (so an
+  // allow/deny doesn't snap it shut between calls); reverts once the turn ends.
+  const forcedOpenRef = useRef(false);
+  if (hasPendingConfirmation || hasLiveOutput) forcedOpenRef.current = true;
+  const forceOpen =
+    hasPendingConfirmation ||
+    (hasLiveOutput && messageRunning) ||
+    (forcedOpenRef.current && messageRunning);
 
-  // Render single tool calls and artifacts directly so cards never hide in a
-  // collapsed group.
-  if (toolCount <= 1 || containsArtifactTool) {
+  // Render single calls, canvases, and Python scripts directly so their
+  // persistent content never hides in a collapsed group.
+  if (toolCount <= 1 || containsUngroupedTool) {
     return <>{children}</>;
   }
 
   return (
-    <ToolGroupRoot>
+    <ToolGroupRoot open={forceOpen ? true : undefined}>
       <ToolGroupTrigger count={toolCount} />
       <ToolGroupContent>{children}</ToolGroupContent>
     </ToolGroupRoot>

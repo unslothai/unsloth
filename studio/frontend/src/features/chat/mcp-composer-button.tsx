@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { McpServerIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { XIcon } from "lucide-react";
 import { type FC, useCallback, useEffect, useState } from "react";
@@ -59,6 +60,11 @@ type McpPreset = {
 // Keyless remote MCP presets (rate-limited free tiers, no API key).
 // Hugging Face runs anonymously; add a token via "Manage MCP servers".
 const MCP_PRESETS: readonly McpPreset[] = [
+  {
+    id: "unsloth-docs",
+    displayName: "Unsloth Docs",
+    url: "https://unsloth.ai/docs/~gitbook/mcp",
+  },
   {
     id: "context7",
     displayName: "Context7",
@@ -246,17 +252,24 @@ export function McpComposerButton({
             <button
               type="button"
               className="composer-pill-btn"
+              data-pill-label="MCP"
               data-active={active ? "true" : "false"}
               aria-label="MCP servers"
             >
               {/* Icon doubles as an off switch: hover swaps to an X; clicking
-                  it turns MCP off without opening the menu. */}
+                  it turns MCP off without opening the menu. In compact
+                  icon-only mode the glyph is the whole button, so clicks fall
+                  through to the trigger and open the menu instead. */}
               <span
                 role="button"
                 aria-label="Turn off MCP"
                 tabIndex={-1}
-                onPointerDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                  e.stopPropagation();
+                }}
                 onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
                   e.stopPropagation();
                   setMcpEnabledForChat(false);
                 }}

@@ -345,22 +345,22 @@ class TestResponsesReasoning:
     def test_malformed_reasoning_is_ignored_not_fatal(self):
         """Never 400 on a shape we don't recognise -- that regressed real
         Claude Code traffic once already."""
-        for bad in ("high", {"effort": 3}, {}, {"summary": "auto"}):
+        for bad in ("high", {"effort": 3}, {}, {"summary": "auto"}, {"effort": "auto"}):
             req = self._chat_req(bad)
             assert req.enable_thinking is None
 
     def test_reasoning_output_item_shape(self):
         from models.inference import (
             ResponsesOutputReasoning,
-            ResponsesReasoningSummaryPart,
+            ResponsesOutputReasoningContent,
         )
 
         item = ResponsesOutputReasoning(
-            summary = [ResponsesReasoningSummaryPart(text = "because 2+2")]
+            content = [ResponsesOutputReasoningContent(text = "because 2+2")]
         ).model_dump()
         assert item["type"] == "reasoning"
         assert item["id"].startswith("rs_")
-        assert item["summary"] == [{"type": "summary_text", "text": "because 2+2"}]
+        assert item["content"] == [{"type": "reasoning_text", "text": "because 2+2"}]
 
 
 if __name__ == "__main__":

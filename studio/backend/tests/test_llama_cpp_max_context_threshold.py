@@ -72,9 +72,17 @@ _httpx_stub.Client = type(
         "__exit__": lambda self, *a: None,
     },
 )
-sys.modules.setdefault("httpx", _httpx_stub)
+# Only when the real library is absent. sys.modules holds what has been IMPORTED, not
+# what is installed, so setdefault does not defer to a real httpx that nothing in this
+# process has touched yet: the stub wins and shadows it for the whole session. This stub
+# has no Response, and starlette.testclient reads httpx.Response at import, so every
+# module collected afterwards that reaches fastapi.testclient or routes.inference dies.
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
 
 
 # Helpers
@@ -140,7 +148,7 @@ def _compute_max_available_ctx(
         )
         kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
         total_mib = (model_size + kv) / (1024 * 1024)
-        if total_mib <= pool_mib * 0.90:
+        if total_mib <= pool_mib * _CTX_FIT_VRAM_FRACTION:
             best_cap = max(best_cap, capped)
     if best_cap > 0:
         max_available_ctx = best_cap

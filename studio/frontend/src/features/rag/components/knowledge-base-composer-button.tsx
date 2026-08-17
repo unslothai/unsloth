@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { XIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { FileDatabaseIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { FileDatabaseIcon } from "@hugeicons/core-free-icons";
 import { type FC, useCallback, useEffect, useState } from "react";
 
 import {
@@ -100,17 +101,24 @@ export function KnowledgeBaseComposerButton({
           <button
             type="button"
             className="composer-pill-btn"
+            data-pill-label="RAG"
             data-active={ragDisabled ? "false" : "true"}
             aria-label="Retrieval source"
           >
             {/* Icon doubles as an off switch: hover swaps to an X; clicking it
-                turns RAG off without opening the menu. */}
+                turns RAG off without opening the menu. In compact icon-only
+                mode the glyph is the whole button, so clicks fall through to
+                the trigger and open the menu instead. */}
             <span
               role="button"
               aria-label="Turn off retrieval"
               tabIndex={-1}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
+                e.stopPropagation();
+              }}
               onClick={(e) => {
+                if (e.currentTarget.closest('[data-pill-compact="true"]')) return;
                 e.stopPropagation();
                 setRagEnabled(false);
               }}

@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastVisionModel, is_bf16_supported
 from unsloth.trainer import UnslothVisionDataCollator
 
@@ -128,7 +141,7 @@ try:
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 4,
             gradient_checkpointing = True,
-            gradient_checkpointing_kwargs = {"use_reentrant": False},  # use reentrant checkpointing
+            gradient_checkpointing_kwargs = {"use_reentrant": False},
             max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
             warmup_ratio = 0.03,
             # num_train_epochs = 2, # Set this instead of max_steps for full training runs

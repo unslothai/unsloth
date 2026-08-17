@@ -13,7 +13,10 @@ canonicaliser and the legacy `-m` / `-hfr` / `-f` shim.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -49,6 +52,46 @@ def test_parallel_option_is_registered():
         flags.add(d)
     for required in ("--parallel", "--n-parallel", "-np"):
         assert required in flags, f"flag {required!r} missing from --parallel option"
+
+
+def test_context_length_alias_is_registered():
+    """`--context-length` is an operator-facing alias for --max-seq-length."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["max_seq_length"].default
+    flags = set(getattr(opt, "param_decls", None) or [])
+    assert "--max-seq-length" in flags
+    assert "--context-length" in flags
+
+
+def test_gpu_memory_mode_option_is_registered_with_auto_default():
+    """The GPU placement policy is a first-class model option."""
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    opt = sig.parameters["gpu_memory_mode"].default
+    flags = set(getattr(opt, "param_decls", None) or [])
+    assert flags == {"--gpu-memory-mode"}
+    assert getattr(opt, "default", None) == "auto"
+    assert getattr(opt, "rich_help_panel", None) == "Model"
+
+
+def test_speculative_options_are_registered():
+    studio_mod = _load_run_command()
+    import inspect
+
+    sig = inspect.signature(studio_mod.run)
+    spec_type = sig.parameters["speculative_type"].default
+    draft_n = sig.parameters["spec_draft_n_max"].default
+    assert set(getattr(spec_type, "param_decls", None) or []) == {"--speculative-type"}
+    assert getattr(spec_type, "default", "missing") is None
+    assert set(getattr(draft_n, "param_decls", None) or []) == {"--spec-draft-n-max"}
+    assert getattr(draft_n, "default", "missing") is None
+    assert getattr(draft_n, "min", None) == 1
+    assert getattr(draft_n, "max", None) == 16
 
 
 def test_parallel_default_is_four():
@@ -136,8 +179,9 @@ def _install_reexec_capture(monkeypatch, *, platform):
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
 
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    fake_python = fake_venv / "bin" / "python"
-    fake_bin = fake_venv / "bin" / "unsloth"
+    host_is_windows = sys.platform == "win32"
+    fake_python = fake_venv / ("Scripts/python.exe" if host_is_windows else "bin/python")
+    fake_bin = fake_python.parent / ("unsloth.exe" if host_is_windows else "unsloth")
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
 
     real_is_file = Path.is_file
@@ -157,14 +201,31 @@ def _install_reexec_capture(monkeypatch, *, platform):
     )
 
     monkeypatch.setattr(sys, "platform", platform)
+    # Emulate Windows re-exec without calling Win32 APIs on non-Windows hosts.
+    monkeypatch.setattr(
+        studio_mod,
+        "_studio_runtime_launch_guard",
+        lambda **_kwargs: contextlib.nullcontext(True),
+    )
+
+    def capture(kind, argv):
+        captured.append(
+            {
+                "kind": kind,
+                "argv": list(argv),
+                "start_api_key_marker": studio_mod.os.environ.get(
+                    studio_mod._START_API_KEY_MARKER_ENV
+                ),
+            }
+        )
 
     def fake_execvp(file, argv):
-        captured.append({"kind": "execvp", "argv": list(argv)})
+        capture("execvp", argv)
         raise _ExecCaptured(argv)
 
     class _FakePopen:
         def __init__(self, argv, *a, **kw):
-            captured.append({"kind": "popen", "argv": list(argv)})
+            capture("popen", argv)
             self._argv = argv
 
         def wait(self):
@@ -224,6 +285,102 @@ def test_reexec_forwards_parallel_all_aliases(monkeypatch, flag, value):
 
 
 @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+def test_reexec_hands_off_start_api_key_marker_out_of_band(monkeypatch, platform):
+    """A new child receives the marker while an old child sees no unknown flag."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--start-api-key-marker"],
+        platform = platform,
+    )
+    assert len(captured) == 1, result.output
+    assert "--start-api-key-marker" not in captured[0]["argv"]
+    assert captured[0]["start_api_key_marker"] == "1"
+
+
+def test_reexeced_child_consumes_start_api_key_marker_env(monkeypatch):
+    """A supported child consumes the handoff before starting descendants."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv(studio_mod._START_API_KEY_MARKER_ENV, "1")
+
+    inherited = studio_mod._consume_start_api_key_marker_env()
+
+    assert inherited is True
+    assert studio_mod._START_API_KEY_MARKER_ENV not in studio_mod.os.environ
+
+
+def test_run_default_sets_tool_call_env(monkeypatch):
+    """Plain `unsloth run` enables healing and nudging via the inherited env
+    (written before the re-exec so the child server picks them up at import)."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "0"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
+
+
+def test_run_disable_flags_set_tool_call_env(monkeypatch):
+    """`--disable-tool-call-healing --disable-tool-call-nudging` flips both env vars."""
+    studio_mod = _load_run_command()
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    monkeypatch.delenv("UNSLOTH_TOOL_CALL_NUDGE", raising = False)
+    _invoke_run(
+        monkeypatch,
+        _BASE + ["--disable-tool-call-healing", "--disable-tool-call-nudging"],
+    )
+    assert studio_mod.os.environ["UNSLOTH_DISABLE_TOOL_CALL_HEALING"] == "1"
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == "0"
+
+
+@pytest.mark.parametrize("inherited", ["0", "false", "False", "no", ""])
+def test_run_omitted_flag_respects_inherited_env(monkeypatch, inherited):
+    """When the flag is omitted, a value the parent set (e.g. `unsloth start`) wins
+    instead of being reset to the default."""
+    studio_mod = _load_run_command()
+    monkeypatch.setenv("UNSLOTH_TOOL_CALL_NUDGE", inherited)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TOOL_CALL_HEALING", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert studio_mod.os.environ["UNSLOTH_TOOL_CALL_NUDGE"] == inherited
+
+
+_SAMPLING_ENV_SUFFIXES = (
+    "TEMPERATURE",
+    "TOP_P",
+    "TOP_K",
+    "MIN_P",
+    "REPETITION_PENALTY",
+    "PRESENCE_PENALTY",
+)
+
+
+def test_run_sampling_flags_set_env(monkeypatch):
+    """`--temperature`/`--top-k` write UNSLOTH_SAMPLING_* (a hard override the backend applies);
+    an omitted sampling flag leaves its env unset so the per-model recommendation stays."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE + ["--temperature", "0.3", "--top-k", "40"])
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TEMPERATURE"] == "0.3"
+    assert studio_mod.os.environ["UNSLOTH_SAMPLING_TOP_K"] == "40"
+    assert "UNSLOTH_SAMPLING_TOP_P" not in studio_mod.os.environ
+
+
+def test_run_no_sampling_flags_leaves_env_unset(monkeypatch):
+    """Plain `unsloth run` writes no UNSLOTH_SAMPLING_*; the server keeps the recommendation."""
+    studio_mod = _load_run_command()
+    for _v in _SAMPLING_ENV_SUFFIXES:
+        monkeypatch.delenv(f"UNSLOTH_SAMPLING_{_v}", raising = False)
+    _invoke_run(monkeypatch, _BASE)
+    assert not any(k.startswith("UNSLOTH_SAMPLING_") for k in studio_mod.os.environ)
+
+
+def test_run_rejects_out_of_range_sampling_flag(monkeypatch):
+    """typer enforces the documented ranges before a value can reach the server."""
+    result, _captured = _invoke_run(monkeypatch, _BASE + ["--temperature", "9"])
+    assert result.exit_code != 0
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
 def test_reexec_argv_is_consistent_across_platforms(monkeypatch, platform):
     """Linux/Darwin (execvp) and Windows (Popen) must build the same argv."""
     result, captured = _invoke_run(monkeypatch, _BASE + ["--parallel", "12"], platform = platform)
@@ -249,17 +406,231 @@ def test_reexec_np_is_first_class_alias(monkeypatch):
     assert _value_after(argv, "--port") == "8888", argv
 
 
+def test_reexec_forwards_context_length_alias(monkeypatch):
+    """Alias should normalize to the existing child --max-seq-length flag."""
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--context-length", "8192"])
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--max-seq-length") == "8192", argv
+    assert "--context-length" not in argv, argv
+
+
+def test_reexec_forwards_manual_gpu_memory_mode(monkeypatch):
+    """An explicit manual policy must survive the Studio venv re-exec."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--gpu-memory-mode", "manual"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--gpu-memory-mode") == "manual", argv
+
+
+def test_reexec_omits_default_gpu_memory_mode(monkeypatch):
+    """The default stays compatible with older Studio venv launchers."""
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    assert "--gpu-memory-mode" not in captured[0]["argv"]
+
+
+def test_reexec_forwards_speculative_options(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--speculative-type", "dspark", "--spec-draft-n-max", "3"],
+    )
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert _value_after(argv, "--speculative-type") == "dspark", argv
+    assert _value_after(argv, "--spec-draft-n-max") == "3", argv
+
+
+def test_reexec_forwards_dflash_speculative_type(monkeypatch):
+    """SpeculativeType is what Typer validates the option against, so a mode missing
+    from the literal is rejected before any loading code runs."""
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--speculative-type", "dflash"],
+    )
+    assert len(captured) == 1, result.output
+    assert _value_after(captured[0]["argv"], "--speculative-type") == "dflash"
+
+
+def test_reexec_omits_unset_speculative_options(monkeypatch):
+    result, captured = _invoke_run(monkeypatch, _BASE)
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert "--speculative-type" not in argv
+    assert "--spec-draft-n-max" not in argv
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--speculative-type", "invalid"],
+        ["--spec-draft-n-max", "0"],
+        ["--spec-draft-n-max", "17"],
+    ],
+)
+def test_run_rejects_invalid_speculative_options(monkeypatch, args):
+    result, captured = _invoke_run(monkeypatch, _BASE + args)
+    assert result.exit_code != 0
+    assert captured == []
+
+
+def test_run_rejects_invalid_gpu_memory_mode(monkeypatch):
+    result, captured = _invoke_run(
+        monkeypatch,
+        _BASE + ["--gpu-memory-mode", "invalid"],
+    )
+    assert result.exit_code != 0
+    assert captured == []
+
+
+@pytest.mark.parametrize(
+    "mode,expected",
+    [
+        ("auto", {"model_path": "owner/model-GGUF", "max_seq_length": 0, "load_in_4bit": True}),
+        (
+            "manual",
+            {
+                "model_path": "owner/model-GGUF",
+                "max_seq_length": 0,
+                "load_in_4bit": True,
+                "gpu_memory_mode": "manual",
+                "gpu_layers": -1,
+            },
+        ),
+    ],
+)
+def test_load_model_http_payload_for_gpu_memory_mode(monkeypatch, mode, expected):
+    """Manual plus untouched layer and context settings matches the UI payload."""
+    studio_mod = _load_run_command()
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return BytesIO(b'{"model": "owner/model-GGUF"}')
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    result = studio_mod._load_model_via_http(
+        port = 8888,
+        api_key = "sk-test",
+        model = "owner/model-GGUF",
+        gguf_variant = None,
+        max_seq_length = 0,
+        load_in_4bit = True,
+        gpu_memory_mode = mode,
+    )
+
+    assert result == {"model": "owner/model-GGUF"}
+    assert json.loads(captured["request"].data) == expected
+    assert captured["request"].get_header("Authorization") == "Bearer sk-test"
+
+
+def test_load_model_http_payload_for_dspark(monkeypatch):
+    studio_mod = _load_run_command()
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["request"] = request
+        return BytesIO(b'{"model": "owner/model-GGUF"}')
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    studio_mod._load_model_via_http(
+        port = 8888,
+        api_key = "sk-test",
+        model = "owner/model-GGUF",
+        gguf_variant = None,
+        max_seq_length = 8192,
+        load_in_4bit = True,
+        speculative_type = "dspark",
+        spec_draft_n_max = 3,
+    )
+
+    payload = json.loads(captured["request"].data)
+    assert payload["speculative_type"] == "dspark"
+    assert payload["spec_draft_n_max"] == 3
+
+
+def test_load_model_http_fails_on_a_deferred_error(monkeypatch):
+    """A slow load commits its 200 and pads the body (routes/inference.py
+    _tunnel_safe_json), so a late failure arrives in-band; it must still surface as the
+    RuntimeError `run` reports, not as a successful load."""
+    studio_mod = _load_run_command()
+
+    def urlopen(request, timeout):
+        # Keepalive pad, then the deferred failure: what the wire really carries.
+        return BytesIO(
+            b"  "
+            + json.dumps(
+                {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+            ).encode()
+        )
+
+    monkeypatch.setattr(studio_mod.urllib.request, "urlopen", urlopen)
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "HTTP 507" in str(excinfo.value)
+    assert "CUDA out of memory" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("body", [b"", b"   ", b'  {"status": "loa', b"{}"])
+def test_load_model_http_rejects_a_truncated_padded_body(monkeypatch, body):
+    """A 200 the load never finished under must fail like any other load failure."""
+    studio_mod = _load_run_command()
+
+    monkeypatch.setattr(
+        studio_mod.urllib.request, "urlopen", lambda request, timeout: BytesIO(body)
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        studio_mod._load_model_via_http(
+            port = 8888,
+            api_key = "sk-test",
+            model = "owner/model-GGUF",
+            gguf_variant = None,
+            max_seq_length = 0,
+            load_in_4bit = True,
+        )
+    assert "did not report completion" in str(excinfo.value)
+
+
 def test_reexec_mixed_parallel_with_passthrough(monkeypatch):
     """--parallel + llama-server pass-through flags must all reach the child."""
     result, captured = _invoke_run(
         monkeypatch,
-        _BASE + ["--parallel", "8", "--top-k", "20", "--temp", "0.7"],
+        # --top-k is now a first-class sampling flag (routed via UNSLOTH_SAMPLING_*), so use
+        # --seed / --temp here, which remain genuine llama-server pass-through flags.
+        _BASE + ["--parallel", "8", "--seed", "42", "--temp", "0.7"],
     )
     assert len(captured) == 1
     argv = captured[0]["argv"]
     assert _value_after(argv, "--parallel") == "8", argv
-    assert _value_after(argv, "--top-k") == "20", argv
+    assert _value_after(argv, "--seed") == "42", argv
     assert _value_after(argv, "--temp") == "0.7", argv
+
+
+def test_context_length_banner_line_formats_ints():
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": 4096}) == (
+        "  Context length: 4096 tokens"
+    )
+    assert studio_mod._format_context_length_line({"context_length": "8192"}) == (
+        "  Context length: 8192 tokens"
+    )
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, ""])
+def test_context_length_banner_line_omits_unknown_values(value):
+    studio_mod = _load_run_command()
+    assert studio_mod._format_context_length_line({"context_length": value}) is None
 
 
 @pytest.mark.parametrize(
@@ -324,6 +695,29 @@ def test_studio_default_rejects_parallel_when_subcommand_invoked():
     ), f"error message must show the corrected invocation; got: {combined}"
 
 
+def test_studio_default_rejects_api_only_when_subcommand_invoked():
+    """`unsloth studio --api-only run ...` would silently serve the UI (the
+    parent's --api-only never reaches run). The callback rejects with exit 2
+    and points at the subcommand flag."""
+    studio_mod = _load_run_command()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["studio", "--api-only", "run", "--model", "X"])
+    assert result.exit_code == 2, (
+        f"expected exit 2 when --api-only is on studio group with a "
+        f"subcommand invoked; got {result.exit_code}; output={result.output!r}"
+    )
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--api-only" in combined, combined
+    assert (
+        "run --api-only" in combined
+    ), f"error message must show the corrected invocation; got: {combined}"
+
+
 def test_studio_default_default_parallel_with_subcommand_does_not_error():
     """Omitting --parallel on the group must still let subcommands
     run; the group's default 1 is benign."""
@@ -353,14 +747,14 @@ def test_studio_default_exposes_parallel_option():
     assert "--parallel" in decls
     assert "--n-parallel" in decls
     assert (
-        getattr(opt, "default", None) == 1
-    ), "studio_default --parallel must default to 1 (pre-PR); `run` is 4"
+        getattr(opt, "default", None) == studio_mod._PARALLEL_DEFAULT_PLAIN
+    ), "studio_default --parallel must use _PARALLEL_DEFAULT_PLAIN"
     assert getattr(opt, "min", None) == 1
     assert getattr(opt, "max", None) == 64
 
 
 @pytest.mark.parametrize("value", [1, 4, 8, 64])
-def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
+def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value, stub_tool_policy_state):
     """In-venv path must forward --parallel to
     run_server(llama_parallel_slots=N), not the old hardcoded 4."""
     studio_mod = _load_run_command()
@@ -389,6 +783,10 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    # run() loads the backend via _load_run_module() (by file path), which
+    # ignores a sys.modules mock with no matching __file__; inject it as the
+    # cached run module so the stubbed run_server is used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
 
     import typer as _typer
 
@@ -404,3 +802,97 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     assert (
         captured.get("llama_parallel_slots") == value
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
+
+
+# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
+
+
+def test_api_only_option_is_registered():
+    studio_mod = _load_run_command()
+    import inspect
+
+    opt = inspect.signature(studio_mod.run).parameters["api_only"].default
+    assert "--api-only" in set(getattr(opt, "param_decls", []) or [])
+    assert getattr(opt, "default", None) is False  # opt-in; plain run keeps the UI
+
+
+@pytest.mark.parametrize(
+    "extra,present",
+    [
+        (["--api-only"], True),
+        ([], False),
+    ],
+)
+def test_reexec_forwards_api_only(monkeypatch, extra, present):
+    """`--api-only` (and only when typed) must reach the re-exec'd child."""
+    result, captured = _invoke_run(monkeypatch, _BASE + extra)
+    assert len(captured) == 1, result.output
+    argv = captured[0]["argv"]
+    assert ("--api-only" in argv) is present, argv
+
+
+def test_secure_api_only_is_refused_before_any_reexec(monkeypatch, tmp_path):
+    """`--secure --api-only` used to re-exec; the pre-exposure gate now refuses
+    it, because api-only has no login page and the bootstrap deadline does not
+    apply, so the seeded password could never be changed."""
+    studio_mod = _load_run_command()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    result, captured = _invoke_run(monkeypatch, _BASE + ["--secure", "--api-only"])
+
+    assert captured == [], captured
+    assert result.exit_code != 0
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "default admin password was never changed" in combined.lower()
+
+
+@pytest.mark.parametrize("extra,expected", [(["--api-only"], True), ([], False)])
+def test_in_venv_path_passes_api_only_to_run_server(
+    monkeypatch, extra, expected, stub_tool_policy_state
+):
+    """In-venv path must forward --api-only to run_server(api_only=...)."""
+    studio_mod = _load_run_command()
+
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    captured: dict = {}
+
+    def fake_run_server(**kwargs):
+        captured.update(kwargs)
+        raise _RunServerCaptured(kwargs)
+
+    fake_backend_run = sys.modules.setdefault(
+        "studio.backend.run", _types_module("studio.backend.run")
+    )
+    fake_backend_run.run_server = fake_run_server
+    fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {
+            "allow_extra_args": True,
+            "ignore_unknown_options": True,
+        },
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + extra, catch_exceptions = True)
+
+    assert (
+        captured.get("api_only") is expected
+    ), f"run_server got api_only={captured.get('api_only')!r}, expected {expected}"
+    # Headless serving must suppress the Tauri-only TAURI_PORT line.
+    assert (
+        captured.get("emit_tauri_port") is False
+    ), f"run_server got emit_tauri_port={captured.get('emit_tauri_port')!r}, expected False"

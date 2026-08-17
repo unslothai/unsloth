@@ -3,7 +3,11 @@
 
 import { useMemo } from "react";
 import { detectCapabilities, detectLicense } from "../lib/model-capabilities";
-import { buildSummary, localSourceLabel, toHfModelResult } from "../lib/view-models";
+import {
+  buildSummary,
+  localSourceLabel,
+  toHfModelResult,
+} from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -44,7 +48,12 @@ function localResource(
       ? "cached"
       : "local";
   const id =
-    row.source === "hf_cache" && repoId && !row.partial ? repoId : row.loadId;
+    row.source === "hf_cache" &&
+    row.activeCache !== false &&
+    repoId &&
+    !row.partial
+      ? repoId
+      : row.loadId;
   return {
     repoId,
     localPath: row.path,
@@ -121,6 +130,11 @@ export function useSelectedModelView({
               : selectedDiscoverRow.result.isGguf
                 ? "gguf"
                 : null,
+          baseModel: selectedDiscoverRow.result.baseModel ?? null,
+          baseModelSource: selectedDiscoverRow.result.baseModel
+            ? "huggingface"
+            : null,
+          baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
           isDownloaded: !selectedLocalRow.partial,
           isPartial: selectedLocalRow.partial ?? false,
           partialTransport: selectedLocalRow.partialTransport ?? null,
@@ -129,11 +143,15 @@ export function useSelectedModelView({
           license: detectLicense(selectedDiscoverRow.result.tags),
           pipelineTag: selectedDiscoverRow.result.pipelineTag,
           libraryName: selectedDiscoverRow.result.libraryName,
+          gated: selectedDiscoverRow.result.gated,
+          private: selectedDiscoverRow.result.private,
           downloads: selectedDiscoverRow.result.downloads,
+          downloadsAllTime: selectedDiscoverRow.result.downloadsAllTime,
           likes: selectedDiscoverRow.result.likes,
           totalParams: selectedDiscoverRow.result.totalParams,
           estimatedSizeBytes: selectedDiscoverRow.result.estimatedSizeBytes,
           updatedAt: selectedDiscoverRow.result.updatedAt,
+          createdAt: selectedDiscoverRow.result.createdAt,
           localUpdatedAt: selectedLocalRow.updatedAt,
           tags: selectedDiscoverRow.result.tags,
           quantMethod: selectedDiscoverRow.result.quantMethod,
@@ -146,13 +164,14 @@ export function useSelectedModelView({
         ? cachedResource(selectedCachedRow)
         : selectedLocalRow?.source === "hf_cache"
           ? localResource(selectedLocalRow, selectedDiscoverRow.result.id)
-        : remoteResource(selectedDiscoverRow);
+          : remoteResource(selectedDiscoverRow);
       const isResolvedPartial = resource.cacheState === "partial";
       const isResolvedOnDevice =
         resource.cacheState === "cached" || resource.cacheState === "local";
       const resolvedModelFormat =
         selectedCachedRow?.modelFormat ??
-        (selectedLocalRow?.modelFormat && selectedLocalRow.modelFormat !== "unknown"
+        (selectedLocalRow?.modelFormat &&
+        selectedLocalRow.modelFormat !== "unknown"
           ? selectedLocalRow.modelFormat
           : selectedDiscoverRow.result.isGguf
             ? "gguf"
@@ -182,6 +201,11 @@ export function useSelectedModelView({
           selectedLocalRow?.capabilities.requiresVariant ??
           selectedDiscoverRow.result.isGguf,
         modelFormat: resolvedModelFormat,
+        baseModel: selectedDiscoverRow.result.baseModel ?? null,
+        baseModelSource: selectedDiscoverRow.result.baseModel
+          ? "huggingface"
+          : null,
+        baseModelHubId: selectedDiscoverRow.result.baseModel ?? null,
         isDownloaded: isResolvedOnDevice,
         isPartial: isResolvedPartial,
         partialTransport:
@@ -193,13 +217,21 @@ export function useSelectedModelView({
         capabilities: selectedDiscoverRow.capabilities,
         license: detectLicense(selectedDiscoverRow.result.tags),
         pipelineTag: selectedDiscoverRow.result.pipelineTag,
+        // From the matched on-device row, like every field above: its inventory task is the
+        // only record of the modality when the Hub metadata has no pipeline tag or only the
+        // generic text-generation one.
+        task: selectedCachedRow?.task ?? selectedLocalRow?.task ?? null,
         libraryName: selectedDiscoverRow.result.libraryName,
+        gated: selectedDiscoverRow.result.gated,
+        private: selectedDiscoverRow.result.private,
         downloads: selectedDiscoverRow.result.downloads,
+        downloadsAllTime: selectedDiscoverRow.result.downloadsAllTime,
         likes: selectedDiscoverRow.result.likes,
         totalParams: selectedDiscoverRow.result.totalParams,
         estimatedSizeBytes: selectedDiscoverRow.result.estimatedSizeBytes,
         cachedBytes: selectedCachedRow?.bytes,
         updatedAt: selectedDiscoverRow.result.updatedAt,
+        createdAt: selectedDiscoverRow.result.createdAt,
         tags: selectedDiscoverRow.result.tags,
         quantMethod: selectedDiscoverRow.result.quantMethod,
       };
@@ -214,11 +246,18 @@ export function useSelectedModelView({
           : "Cached checkpoint repository ready for local inference.";
       const mergedTags = selectedHfResult?.tags ?? selectedCachedRow.tags;
       const mergedPipelineTag =
-        selectedHfResult?.pipelineTag ?? selectedCachedRow.pipelineTag ?? undefined;
+        selectedHfResult?.pipelineTag ??
+        selectedCachedRow.pipelineTag ??
+        undefined;
       const mergedLibraryName =
-        selectedHfResult?.libraryName ?? selectedCachedRow.libraryName ?? undefined;
+        selectedHfResult?.libraryName ??
+        selectedCachedRow.libraryName ??
+        undefined;
       const mergedQuantMethod =
-        selectedHfResult?.quantMethod ?? selectedCachedRow.quantMethod ?? undefined;
+        selectedHfResult?.quantMethod ??
+        selectedCachedRow.quantMethod ??
+        undefined;
+      const mergedBaseModel = selectedHfResult?.baseModel ?? null;
       return {
         id: selectedCachedRow.repoId,
         kind: "cache",
@@ -236,6 +275,9 @@ export function useSelectedModelView({
         isGguf: selectedCachedRow.isGguf,
         requiresVariant: selectedCachedRow.capabilities.requiresVariant,
         modelFormat: selectedCachedRow.modelFormat,
+        baseModel: mergedBaseModel,
+        baseModelSource: mergedBaseModel ? "huggingface" : null,
+        baseModelHubId: mergedBaseModel,
         isDownloaded: !selectedCachedRow.partial,
         isPartial: selectedCachedRow.partial ?? false,
         partialTransport: selectedCachedRow.partialTransport ?? null,
@@ -249,13 +291,18 @@ export function useSelectedModelView({
         ),
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
+        task: selectedCachedRow.task ?? null,
         libraryName: mergedLibraryName,
+        gated: selectedHfResult?.gated,
+        private: selectedHfResult?.private,
         downloads: selectedHfResult?.downloads,
+        downloadsAllTime: selectedHfResult?.downloadsAllTime,
         likes: selectedHfResult?.likes,
         totalParams: selectedHfResult?.totalParams,
         estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
         cachedBytes: selectedCachedRow.bytes,
         updatedAt: selectedHfResult?.updatedAt,
+        createdAt: selectedHfResult?.createdAt,
         tags: mergedTags,
         quantMethod: mergedQuantMethod,
       };
@@ -283,9 +330,10 @@ export function useSelectedModelView({
         selectedHfResult?.quantMethod ??
         selectedLocalRow.quantMethod ??
         undefined;
-      const baseModelSummary = selectedLocalRow.baseModel && selectedHfResult
-        ? buildSummary(selectedHfResult)
-        : null;
+      const baseModelSummary =
+        selectedLocalRow.baseModel && selectedHfResult
+          ? buildSummary(selectedHfResult)
+          : null;
       const localHubMetadata = localHubRepoId ? selectedHfResult : null;
 
       if (isPartialHubCache && selectedLocalRow.repoId) {
@@ -320,12 +368,17 @@ export function useSelectedModelView({
           ),
           license: detectLicense(mergedTags),
           pipelineTag: mergedPipelineTag,
+          task: selectedLocalRow.task ?? null,
           libraryName: mergedLibraryName,
+          gated: selectedHfResult?.gated,
+          private: selectedHfResult?.private,
           downloads: selectedHfResult?.downloads,
+          downloadsAllTime: selectedHfResult?.downloadsAllTime,
           likes: selectedHfResult?.likes,
           totalParams: selectedHfResult?.totalParams,
           estimatedSizeBytes: selectedHfResult?.estimatedSizeBytes,
           updatedAt: selectedHfResult?.updatedAt,
+          createdAt: selectedHfResult?.createdAt,
           localUpdatedAt: selectedLocalRow.updatedAt,
           tags: mergedTags,
           quantMethod: mergedQuantMethod,
@@ -368,12 +421,17 @@ export function useSelectedModelView({
         ),
         license: detectLicense(mergedTags),
         pipelineTag: mergedPipelineTag,
+        task: selectedLocalRow.task ?? null,
         libraryName: mergedLibraryName,
+        gated: localHubMetadata?.gated,
+        private: localHubMetadata?.private,
         downloads: localHubMetadata?.downloads,
+        downloadsAllTime: localHubMetadata?.downloadsAllTime,
         likes: localHubMetadata?.likes,
         totalParams: localHubMetadata?.totalParams,
         estimatedSizeBytes: localHubMetadata?.estimatedSizeBytes,
         updatedAt: localHubMetadata?.updatedAt,
+        createdAt: localHubMetadata?.createdAt,
         localUpdatedAt: selectedLocalRow.updatedAt,
         tags: mergedTags,
         quantMethod: mergedQuantMethod,

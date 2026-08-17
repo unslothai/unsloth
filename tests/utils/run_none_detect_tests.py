@@ -1,16 +1,4 @@
-"""
-run_none_detect_tests.py
-
-Runs dataset_none_detect.py against:
-  1. Synthetic datasets (chatml, sharegpt, alpaca) with deliberately injected Nones
-  2. peteromallet/dataclaw-peteromallet (HuggingFace)
-  3. peteromallet/my-personal-codex-data (HuggingFace)
-
-Writes a detailed log to tests/logs/none_detect_results.log
-
-Usage (from repo root, with venv active):
-    python tests/utils/run_none_detect_tests.py
-"""
+"""Run dataset_none_detect.py against synthetic + two HF datasets; log to tests/logs/none_detect_results.log."""
 
 from __future__ import annotations
 
@@ -21,8 +9,7 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 
-# Import dataset_none_detect as a top-level module, bypassing
-# utils/datasets/__init__.py which pulls in torch, fastapi, and other heavy deps.
+# Import dataset_none_detect directly, bypassing utils/datasets/__init__.py (heavy deps).
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "studio" / "backend" / "utils" / "datasets"))
 
@@ -86,7 +73,7 @@ def assert_bad_rows(stats: dict, expected_min: int, label: str):
 
 
 def assert_exact_recall(stats: dict, expected_bad: set, label: str):
-    """Every injected bad row index must appear in bad_row_indices — no misses."""
+    """Every injected bad row index must appear in bad_row_indices."""
     actual_bad = set(stats.get("bad_row_indices", []))
     missed = expected_bad - actual_bad
     all_caught = len(missed) == 0
@@ -106,8 +93,7 @@ def assert_exact_recall(stats: dict, expected_bad: set, label: str):
 
 # 1. Synthetic datasets
 
-# Minimal mock so find_none_chatml can be called with hand-crafted rows that
-# pyarrow can't represent (e.g. messages=None, messages="not a list").
+# Minimal mock for hand-crafted rows pyarrow can't represent (e.g. messages=None / "not a list").
 
 
 class _MockDataset:
@@ -124,12 +110,12 @@ class _MockDataset:
         return iter(self._rows)
 
     def __getitem__(self, idx):
-        """Support dataset[i] (int) and dataset[i][col] patterns used by _probe_conversation."""
+        """Support dataset[i] and dataset[i][col] patterns used by _probe_conversation."""
         return self._rows[idx]
 
 
 def test_p1_fix():
-    """Verify that find_none_chatml records rows where messages is None or non-list."""
+    """find_none_chatml records rows where messages is None or non-list."""
     section("P1 Fix Verification — non-list conversation column values")
 
     sys.path.insert(0, str(REPO_ROOT / "tests" / "utils"))
@@ -158,12 +144,10 @@ def test_p1_fix():
 
 
 def test_probe_p1_fix():
-    """Verify that scan_dataset(fmt='auto') on a fully-corrupt messages column
-    routes through _probe_conversation's all_corrupt=True path and returns
-    findings rather than raising ValueError."""
+    """scan_dataset(fmt='auto') on an all-corrupt messages column returns findings, not ValueError."""
     section("P1 Fix Verification — probe skip on all-corrupt column (auto-detect path)")
 
-    # All 5 rows have messages=None — no dict turn will ever be found in the probe.
+    # All rows have messages=None, so the probe finds no dict turn.
     all_corrupt_rows = [{"messages": None}] * 5
     mock_ds = _MockDataset(all_corrupt_rows, ["messages"])
 
@@ -183,10 +167,7 @@ def test_probe_p1_fix():
 
 
 def test_probe_string_corrupt():
-    """Verify that a plain-string 'messages' column is NOT classified as chatml.
-    The all_corrupt+has_list_or_none guard (P2 fix) must prevent plain-string
-    columns from triggering the chatml path — scan_dataset should raise
-    ValueError('unknown format') rather than misclassifying as chatml."""
+    """P2 fix: a plain-string 'messages' column must NOT be classified as chatml (raises ValueError)."""
     section("P2 Fix Verification — plain-string messages not classified as chatml")
 
     string_rows = [{"messages": "this is a string, not a list"}] * 5
@@ -196,7 +177,6 @@ def test_probe_string_corrupt():
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
-        # Plain strings must NOT be classified as chatml.
         not_chatml = fmt != "chatml"
         status = "PASS" if not_chatml else "FAIL"
         print(
@@ -205,8 +185,7 @@ def test_probe_string_corrupt():
         )
         return stats
     except ValueError as exc:
-        # ValueError (unknown format) is the CORRECT outcome — plain strings
-        # are not a conversation column and should not match any format.
+        # ValueError (unknown format) is the correct outcome for a non-conversation column.
         print(
             f"  [PASS] String-corrupt probe: scan_dataset raised ValueError (not chatml, as expected): {exc}"
         )
@@ -214,8 +193,7 @@ def test_probe_string_corrupt():
 
 
 def test_explicit_fmt_corrupt():
-    """Verify that scan_dataset(fmt='chatml') on an all-corrupt column returns
-    findings instead of raising ValueError (explicit format + all_corrupt path)."""
+    """scan_dataset(fmt='chatml') on an all-corrupt column returns findings, not ValueError."""
     section("P1 Fix Verification — explicit fmt='chatml' on all-corrupt column")
 
     all_corrupt_rows = [{"messages": None}] * 4 + [{"messages": "not a list"}] * 3
@@ -237,8 +215,7 @@ def test_explicit_fmt_corrupt():
 
 
 def test_p2_probe_skips_corrupt_prefers_valid():
-    """P2 fix: probe must continue past a corrupt 'messages' column and find
-    a valid 'conversations' column rather than returning all_corrupt immediately."""
+    """P2 fix: probe continues past a corrupt 'messages' column to a valid 'conversations' column."""
     section("P2 Fix Verification — probe continues past corrupt first column to valid second")
 
     # messages column is all-None; conversations is a valid ShareGPT column.
@@ -267,7 +244,7 @@ def test_p2_probe_skips_corrupt_prefers_valid():
         fmt = stats.get("format", "?")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
-        # Should have detected 'conversations' (sharegpt), not 'messages'.
+        # Must detect 'conversations' (sharegpt), not 'messages'.
         correct_col = col == "conversations"
         correct_fmt = fmt == "sharegpt"
         correct_bad = bad == 2
@@ -284,8 +261,7 @@ def test_p2_probe_skips_corrupt_prefers_valid():
 
 
 def test_p2_explicit_fmt_col_priority():
-    """P2 fix: explicit fmt='sharegpt' must let find_none_sharegpt choose its own
-    column (conversations) rather than being forced onto the probe's column (messages)."""
+    """P2 fix: explicit fmt='sharegpt' lets find_none_sharegpt pick its own column (conversations)."""
     section("P2 Fix Verification — explicit fmt='sharegpt' respects per-scanner column priority")
 
     # messages has valid role/content turns (chatml-ish); conversations has bad sharegpt turns.
@@ -307,7 +283,7 @@ def test_p2_explicit_fmt_col_priority():
     stats = scan_dataset(mock_ds, fmt = "sharegpt")
     col = stats.get("column", "?")
     bad = len(stats.get("bad_row_indices", []))
-    # fmt='sharegpt' should scan 'conversations', find 5 bad rows.
+    # fmt='sharegpt' scans 'conversations' -> 5 bad rows.
     correct_col = col == "conversations"
     correct_bad = bad == 5
     status = "PASS" if (correct_col and correct_bad) else "FAIL"
@@ -320,8 +296,7 @@ def test_p2_explicit_fmt_col_priority():
 
 
 def test_p2_gptoss_col_priority():
-    """P2 fix: fmt='gptoss' must scan 'messages' only, not fall through to
-    a clean 'conversations' column when messages is corrupt."""
+    """P2 fix: fmt='gptoss' scans 'messages' only, not a clean 'conversations' fallback."""
     section("P2 Fix Verification — fmt='gptoss' scans messages only, not conversations")
 
     # messages is all-None (corrupt); conversations is clean sharegpt.
@@ -356,10 +331,7 @@ def test_p2_gptoss_col_priority():
 
 
 def test_new_p1_explicit_sharegpt_both_all_corrupt():
-    """NEW P1 (commit eb7fea3b7e): when fmt='sharegpt' and both 'messages' and
-    'conversations' are all-corrupt in the first 100 rows, scan_dataset must scan
-    'conversations' (the sharegpt column), NOT 'messages' (the generic probe's
-    first candidate)."""
+    """NEW P1 (commit eb7fea3b7e): fmt='sharegpt' with both columns all-corrupt scans 'conversations', not 'messages'."""
     section(
         "NEW P1 — explicit fmt='sharegpt' scans 'conversations' even when both columns all-corrupt"
     )
@@ -373,7 +345,7 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
         stats = scan_dataset(mock_ds, fmt = "sharegpt")
         col = stats.get("column", "?")
         bad = len(stats.get("bad_row_indices", []))
-        # MUST scan 'conversations', not 'messages'.
+        # Must scan 'conversations', not 'messages'.
         correct_col = col == "conversations"
         correct_bad = bad == 5
         status = "PASS" if (correct_col and correct_bad) else "FAIL"
@@ -389,12 +361,10 @@ def test_new_p1_explicit_sharegpt_both_all_corrupt():
 
 
 def test_new_p2_plain_string_messages_not_chatml():
-    """NEW P2 (commit eb7fea3b7e): a dataset where 'messages' contains plain
-    strings (not lists) must NOT be auto-classified as chatml.  The all_corrupt
-    path in FORMAT_REGISTRY chatml match previously triggered here too."""
+    """NEW P2 (commit eb7fea3b7e): plain-string 'messages' must NOT be auto-classified as chatml."""
     section("NEW P2 — plain-string 'messages' column must NOT be classified as chatml")
 
-    # messages is a plain text column, not a conversation column at all.
+    # messages is a plain text column, not a conversation column.
     rows = [{"messages": "hello world"}] * 5
     mock_ds = _MockDataset(rows, ["messages"])
 
@@ -402,7 +372,6 @@ def test_new_p2_plain_string_messages_not_chatml():
     try:
         stats = scan_dataset(mock_ds, fmt = "auto")
         fmt = stats.get("format", "?")
-        # Classifying as chatml is wrong; 'unknown' or another non-chatml result expected.
         not_chatml = fmt != "chatml"
         status = "PASS" if not_chatml else "FAIL"
         print(
@@ -411,7 +380,7 @@ def test_new_p2_plain_string_messages_not_chatml():
         )
         return stats
     except ValueError as exc:
-        # ValueError is also acceptable — the column isn't a valid conversation format.
+        # ValueError is also acceptable: not a valid conversation format.
         print(
             f"  [PASS] New-P2 plain-string messages: scan_dataset raised ValueError (not chatml): {exc}"
         )
@@ -463,13 +432,9 @@ def test_synthetic():
 
 
 def _brute_force_bad_rows(ds, fmt: str) -> set:
-    """Pure-Python ground-truth scanner — zero shared code with dataset_none_detect.
+    """Pure-Python ground-truth scanner (no shared code with dataset_none_detect) for independent proof.
 
-    Iterates every row and flags it bad if any field/turn contains None, empty,
-    or whitespace-only content.  Returns the set of bad row indices.
-
-    Intentionally re-implements the same logic from scratch so that agreement
-    between this and scan_dataset() constitutes independent proof of correctness.
+    Flags a row bad if any field/turn is None, empty, or whitespace-only; returns bad row indices.
     """
 
     def _blank(val) -> bool:
@@ -506,20 +471,15 @@ def _brute_force_bad_rows(ds, fmt: str) -> set:
 
 
 def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
-    """Independent ground-truth check: verify scan_dataset() found every bad row
-    that brute-force row-by-row iteration also finds.
-
-    brute_force_bad ⊆ module_bad  →  no misses (the key assertion)
-    module_bad ⊆ brute_force_bad  →  no false positives (informational)
-    """
+    """Independent check: scan_dataset() must find every bad row brute-force finds (no misses)."""
     fmt = stats.get("format", "unknown")
     module_bad = set(stats.get("bad_row_indices", []))
 
     print(f"  Running brute-force independent scan (fmt={fmt!r}, {len(ds)} rows)...")
     brute_bad = _brute_force_bad_rows(ds, fmt)
 
-    missed = brute_bad - module_bad  # rows brute-force found but module missed
-    extra = module_bad - brute_bad  # rows module flagged that brute-force didn't
+    missed = brute_bad - module_bad  # brute-force found, module missed
+    extra = module_bad - brute_bad  # module flagged, brute-force didn't
 
     no_misses = len(missed) == 0
     snippet = ""
@@ -534,8 +494,7 @@ def _assert_hf_no_misses(ds, stats: dict, label: str) -> bool:
         f"missed: {len(missed)}{snippet}"
     )
     if extra:
-        # Module may legitimately flag more rows than brute-force (e.g. extra
-        # structural checks) — informational only, not a failure.
+        # Module may legitimately flag more rows (extra structural checks); informational only.
         print(
             f"  [INFO] {label} — module flagged {len(extra)} rows not in brute-force "
             f"(may reflect additional structural checks, not false positives)"
@@ -571,8 +530,7 @@ def test_dataclaw():
 def test_codex_data():
     section("3. HuggingFace — peteromallet/my-personal-codex-data")
     try:
-        # load_dataset fails on this repo because ujson chokes on the large
-        # JSONL batch.  Download the raw file and parse it ourselves instead.
+        # load_dataset fails here (ujson chokes on the large JSONL batch); download + parse raw instead.
         from huggingface_hub import hf_hub_download
         from datasets import Dataset
 

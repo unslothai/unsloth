@@ -24,7 +24,7 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint";
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
@@ -85,13 +85,20 @@ export interface SelectedModelView {
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;
+  /** The backend's inferred pipeline task for an on-device row. A cached GGUF repo carries
+   *  this and NOT `pipelineTag`, so deciding a GGUF row's modality needs both. */
+  task?: string | null;
   libraryName?: string;
+  gated?: false | "auto" | "manual";
+  private?: boolean;
   downloads?: number;
+  downloadsAllTime?: number;
   likes?: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
   cachedBytes?: number;
   updatedAt?: string;
+  createdAt?: string;
   localUpdatedAt?: number | null;
   tags?: string[];
   quantMethod?: string;

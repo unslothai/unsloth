@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Static analysis: installer scripts and README must not hard-code 0.0.0.0
 # in any user-visible default launch command. The dynamic-port launcher
 # templates and post-install hints should rely on the new loopback default.
@@ -48,12 +50,14 @@ assert_not_contains \
     "$_launcher" "studio -H 0.0.0.0"
 
 echo ""
+# Anchored on content, not a line count: both installers outgrew their tail windows.
 echo "=== install.sh end-of-install block ==="
 
-_end=$(tail -50 "$INSTALL_SH")
+_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_SH")
+# "read" alone also matches "readable" and "_can_read_tty", so pin the full prompt.
 assert_contains \
     "install.sh: interactive block prompts user (read)" \
-    "$_end" "read"
+    "$_end" "read -r _reply"
 assert_not_contains \
     "install.sh: no 'studio -H 0.0.0.0' in end-of-install commands" \
     "$_end" "studio -H 0.0.0.0"
@@ -61,7 +65,7 @@ assert_not_contains \
 echo ""
 echo "=== install.ps1 end-of-install block ==="
 
-_ps1_end=$(tail -25 "$INSTALL_PS1")
+_ps1_end=$(awk '/In interactive terminals/{found=1} found{print}' "$INSTALL_PS1")
 assert_contains \
     "install.ps1: interactive block prompts user (Read-Host)" \
     "$_ps1_end" "Read-Host"
@@ -72,7 +76,11 @@ assert_not_contains \
 echo ""
 echo "=== studio/setup.sh launch hint ==="
 
-_setup_tail=$(tail -30 "$SETUP_SH")
+_setup_tail=$(awk '/"launch"/{found=1} found{print}' "$SETUP_SH")
+# Canary: an empty window would let the negative assertion below pass vacuously.
+assert_contains \
+    "studio/setup.sh: extraction found the launch hint" \
+    "$_setup_tail" "unsloth studio -p 8888"
 assert_not_contains \
     "studio/setup.sh: launch hint has no '-H 0.0.0.0'" \
     "$_setup_tail" "studio -H 0.0.0.0"
@@ -81,8 +89,9 @@ echo ""
 echo "=== README.md Launch section ==="
 
 # The primary Launch example must not include -H 0.0.0.0; the LAN/cloud
-# note appears as an opt-in line outside the code block.
-_readme_launch=$(awk '/^#### Launch$/{found=1} found{print} /^#### Update$/{found=0}' "$README")
+# note is an opt-in line outside it. Stop at the next heading of any level:
+# '#### Update' was later deleted, silently extending the section to the file end.
+_readme_launch=$(awk '/^#### Launch$/{found=1; print; next} found && /^#{1,6} /{exit} found{print}' "$README")
 assert_contains \
     "README: Launch section exists" \
     "$_readme_launch" "unsloth studio"

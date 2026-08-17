@@ -10,6 +10,7 @@ export function getImageInputUnavailableReason({
   externalModelLabel,
   loadedIsMultimodal,
   modelLoaded,
+  loadError,
 }: {
   activeModel?: ChatModelSummary;
   isExternalModel: boolean;
@@ -21,6 +22,8 @@ export function getImageInputUnavailableReason({
   externalModelLabel?: string | null;
   loadedIsMultimodal: boolean;
   modelLoaded: boolean;
+  // Runtime lastModelLoadError; lets the no-model branch flag a failed load.
+  loadError?: string | null;
 }): string | null {
   if (isExternalModel) {
     const explicitlyNonVision =
@@ -39,7 +42,13 @@ export function getImageInputUnavailableReason({
     }
     return null;
   }
-  if (!modelLoaded) return "Load a model before adding images.";
+  if (!modelLoaded) {
+    // Distinguish a failed load from "no model picked yet".
+    if (loadError) {
+      return "The last model failed to load. Check the server logs, then load a model before adding images.";
+    }
+    return "Load a model before adding images.";
+  }
   // loadedIsMultimodal is true for vision OR audio; that one flag can't tell
   // them apart, so only block when activeModel confirms audio-only (audio
   // capability set AND isVision === false). Otherwise trust the load

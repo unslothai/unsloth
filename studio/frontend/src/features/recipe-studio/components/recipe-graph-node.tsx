@@ -4,6 +4,7 @@
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import {
   BalanceScaleIcon,
@@ -337,7 +338,7 @@ function renderNodeBody(
               <Badge
                 key={providerName}
                 variant="secondary"
-                className="corner-squircle font-mono text-[11px]"
+                className="corner-squircle font-mono text-ui-11"
               >
                 {providerName}
               </Badge>
@@ -454,7 +455,7 @@ function RecipeGraphNodeBase({
       : meta.tone;
   const runtimeNodeTone =
     runtimeState === "running"
-      ? "border-primary/70 ring-2 ring-primary/20 shadow-md"
+      ? "border-ring-strong shadow-md"
       : runtimeState === "done"
         ? "border-emerald-500/60 ring-1 ring-emerald-500/20"
         : "";
@@ -473,11 +474,9 @@ function RecipeGraphNodeBase({
       )}
     >
       {runtimeState === "running" && config?.kind === "llm" && (
-        <div className="pointer-events-none absolute -top-7 right-2 z-20">
-          <span
-            className="block size-6 animate-spin rounded-full border-[3px] border-primary/90 border-t-transparent bg-background"
-            aria-label="Running"
-          />
+        // rounded-full bg-background masks grid lines behind the floating spinner
+        <div className="pointer-events-none absolute -top-7 right-2 z-20 rounded-full bg-background">
+          <Spinner className="size-6 text-primary/90" />
         </div>
       )}
       <NodeResizer
@@ -506,7 +505,7 @@ function RecipeGraphNodeBase({
             <BaseNodeHeaderTitle className="truncate text-sm">
               {data.name}
             </BaseNodeHeaderTitle>
-            <p className="truncate text-[11px] text-muted-foreground">
+            <p className="truncate text-ui-11 text-muted-foreground">
               {data.subtype} · {data.title}
             </p>
           </div>

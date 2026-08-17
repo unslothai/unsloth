@@ -17,6 +17,10 @@ from utils.datasets.raw_text import prepare_raw_text_dataset
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def _load_route_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
@@ -107,10 +111,309 @@ class TestTrainingRawSupport(unittest.TestCase):
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 max_grad_norm = 0.7,
+                max_grad_value = 3.0,
+                max_grad_leaf_norm = 1.3,
             )
 
         config = mock_process.call_args.kwargs["kwargs"]["config"]
         self.assertEqual(config["max_grad_norm"], 0.7)
+        self.assertEqual(config["max_grad_value"], 3.0)
+        self.assertEqual(config["max_grad_leaf_norm"], 1.3)
+
+    def test_training_backend_forwards_random_seed_without_internal_mlx_seed_keys(self):
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 12345
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                return_value = ([0], {"selection_mode": "auto"}),
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread",
+                return_value = DummyThread(),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-seed",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                random_seed = 1234,
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertEqual(config["random_seed"], 1234)
+        self.assertNotIn("model_random_state", config)
+        self.assertNotIn("lora_random_state", config)
+
+    def test_mlx_max_grad_norm_is_honored_without_changing_the_default(self):
+        # The worker used to hardcode 0.0 and drop the request, so an explicit
+        # threshold never reached the trainer. Explicit values must pass through,
+        # while unset stays 0.0 so the clip mode is unchanged.
+        from pydantic import ValidationError
+
+        from core.training.worker import _resolve_mlx_max_grad_norm
+        from models.training import TrainingStartRequest
+
+        self.assertEqual(_resolve_mlx_max_grad_norm(None), 0.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(0), 0.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(1.0), 1.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(0.3), 0.3)
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(-1)
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm("nope")
+        # inf clears a >= 0 check but never binds, so it would train unclipped.
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(float("inf"))
+
+        def request(**overrides):
+            return TrainingStartRequest(
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                format_type = "auto",
+                **overrides,
+            )
+
+        with self.assertRaises(ValidationError):
+            request(max_grad_norm = float("inf"))
+        # Unset must survive to the resolver rather than being coerced en route,
+        # so "no opinion" stays distinguishable from an explicit 0.
+        self.assertIsNone(request().max_grad_norm)
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        self.assertIn(
+            'max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))',
+            source,
+        )
+
+    def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
+        # What refills Studio's Gradient Norm chart on Apple Silicon; see the
+        # rationale at the opt-in site in worker.py.
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        self.assertIn('if "report_grad_norm" in _supported_fields:', source)
+        self.assertIn('mlx_config_kwargs["report_grad_norm"] = True', source)
+        # Feature-detected like the other newer fields, so an older unsloth_zoo
+        # without the flag keeps working instead of raising on construction.
+        gated = source.split("_supported_fields = ")[1]
+        self.assertNotIn(
+            "report_grad_norm = True,", gated.split("MLXTrainer(")[0].split("dict(")[0]
+        )
+
+    def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
+        # None is what lets the worker apply the trainer's default; coercing it to
+        # 0.0 here would make "no opinion" indistinguishable from an explicit 0.
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 4321
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                return_value = ([0], {"selection_mode": "auto"}),
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread",
+                return_value = DummyThread(),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-grad-clip-default",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertIsNone(config["max_grad_norm"])
+
+    def test_route_forwards_all_grad_clipping_fields(self):
+        # The HTTP route builds the config dict by hand; an unforwarded schema field is silently dropped.
+        source = (_BACKEND_ROOT / "routes" / "training.py").read_text(encoding = "utf-8")
+        self.assertIn('"max_grad_norm": request.max_grad_norm', source)
+        self.assertIn('"max_grad_value": request.max_grad_value', source)
+        self.assertIn('"max_grad_leaf_norm": request.max_grad_leaf_norm', source)
+
+    def test_mlx_worker_falls_back_init_seeds_to_random_seed(self):
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+
+        # random_seed itself is normalized first so an explicit None from a raw caller cannot propagate.
+        self.assertIn('_raw_seed = config.get("random_seed", 3407)', source)
+        self.assertIn(
+            "random_seed = 3407 if _raw_seed is None else int(_raw_seed)",
+            source,
+        )
+        # Both absent and explicit None must fall back to random_seed: `dict.get(key, default)` only
+        # fills the default on absent keys, so an explicit None would reach get_peft_model.
+        self.assertIn('_model_seed = config.get("model_random_state")', source)
+        self.assertIn(
+            "model_random_state = random_seed if _model_seed is None else int(_model_seed)",
+            source,
+        )
+        self.assertIn('_lora_seed = config.get("lora_random_state")', source)
+        self.assertIn(
+            "lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)",
+            source,
+        )
+        self.assertIn("random_state = model_random_state", source)
+        self.assertIn("random_state = lora_random_state", source)
+        # MLXTrainingConfig now receives the normalized seed directly.
+        self.assertIn("seed = random_seed,", source)
+
+    def test_mlx_worker_preserves_null_max_grad_value_for_trainer_default(self):
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+
+        # None must survive to the MLX trainer so it picks its own runtime default, and any other
+        # value must coerce to float without rebinding None to 1.0 (which the legacy code did).
+        self.assertIn('max_grad_value = config.get("max_grad_value")', source)
+        self.assertIn("max_grad_value = float(max_grad_value)", source)
+        self.assertNotIn(
+            "max_grad_value = 1.0 if max_grad_value is None else float(max_grad_value)",
+            source,
+        )
+
+    def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
+        # `random_seed=None` and `cast_norm_output_to_input_dtype=None` must not
+        # leak past `TrainingBackend.start_training`: set_seed(None) raises, PEFT
+        # init goes nondeterministic, and the MLX norm-output cast flips. The MLX
+        # clip knobs are the exception, where None means "owner picks the default".
+        from core.training.training import (
+            _coerce_seed,
+            _coerce_optional_bool,
+            _coerce_optional_nonneg_float,
+        )
+
+        self.assertEqual(_coerce_seed(None), 3407)
+        self.assertEqual(_coerce_seed("123"), 123)
+        self.assertEqual(_coerce_seed("not-a-number"), 3407)
+
+        self.assertTrue(_coerce_optional_bool(None, True))
+        self.assertFalse(_coerce_optional_bool(None, False))
+        self.assertFalse(_coerce_optional_bool("false", True))
+        self.assertTrue(_coerce_optional_bool("true", False))
+
+        self.assertIsNone(_coerce_optional_nonneg_float("max_grad_value", None))
+        self.assertEqual(_coerce_optional_nonneg_float("max_grad_value", "2.5"), 2.5)
+        self.assertEqual(_coerce_optional_nonneg_float("max_grad_value", 0), 0.0)
+        with self.assertRaises(ValueError):
+            _coerce_optional_nonneg_float("max_grad_value", -1)
+        self.assertIsNone(_coerce_optional_nonneg_float("max_grad_leaf_norm", None))
+        self.assertEqual(
+            _coerce_optional_nonneg_float("max_grad_leaf_norm", "1.3"),
+            1.3,
+        )
+        with self.assertRaises(ValueError):
+            _coerce_optional_nonneg_float("max_grad_leaf_norm", -1)
+
+        # inf clears >= 0 but never binds, on all three knobs alike.
+        for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm"):
+            for bad in (float("inf"), float("-inf"), float("nan")):
+                with self.assertRaises(ValueError):
+                    _coerce_optional_nonneg_float(name, bad)
+
+    def test_mlx_clip_knobs_reject_non_finite_at_every_layer(self):
+        # All three layers guard, since raw worker callers reach none above them.
+        import math
+
+        from pydantic import ValidationError
+
+        from core.training.worker import _resolve_mlx_max_grad_norm
+        from models.training import TrainingStartRequest
+
+        for field in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm"):
+            for bad in (float("inf"), float("nan")):
+                with self.assertRaises(ValidationError):
+                    TrainingStartRequest(
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        format_type = "auto",
+                        **{field: bad},
+                    )
+
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(float("inf"))
+
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        for name in ("max_grad_value", "max_grad_leaf_norm"):
+            self.assertIn(f"if {name} < 0 or not math.isfinite({name}):", source)
+        self.assertTrue(math.isfinite(_resolve_mlx_max_grad_norm(None)))
+
+    def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
+        # `cast_norm_output_to_input_dtype`, `dataset_order`, `max_grad_leaf_norm` and `append_eos` ship
+        # in the paired unsloth-zoo update, so until that floor is in place the worker must gate them
+        # or releases predating those fields cannot construct MLXTrainingConfig.
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+
+        self.assertIn(
+            'getattr(MLXTrainingConfig, "__dataclass_fields__", {})',
+            source,
+        )
+        self.assertIn('if "cast_norm_output_to_input_dtype" in _supported_fields:', source)
+        self.assertIn('if "dataset_order" in _supported_fields:', source)
+        self.assertIn('if "max_grad_leaf_norm" in _supported_fields:', source)
+        self.assertIn(
+            'mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm',
+            source,
+        )
+        self.assertIn('if "append_eos" in _supported_fields:', source)
+        self.assertIn('format_type == "raw"', source)
+        self.assertIn('mlx_config_kwargs["append_eos"] = bool(raw_text_mode)', source)
+        # The unconditional kwargs must NOT include any gated field. Proper paren tracking is needed:
+        # `source.find(")", ...)` would stop at the first close paren inside the dict body (e.g.
+        # `int(config.get("save_steps", 0) or 0)`) and miss a later unconditional addition.
+        unconditional_block_start = source.find("mlx_config_kwargs = dict(")
+        self.assertNotEqual(unconditional_block_start, -1)
+        depth = 0
+        i = unconditional_block_start + len("mlx_config_kwargs = dict")
+        end = i
+        while i < len(source):
+            ch = source[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+            i += 1
+        unconditional = source[unconditional_block_start:end]
+        self.assertNotIn("cast_norm_output_to_input_dtype", unconditional)
+        self.assertNotIn("dataset_order", unconditional)
+        self.assertNotIn("max_grad_leaf_norm", unconditional)
+        self.assertNotIn("append_eos", unconditional)
 
     def test_training_route_forwards_embedding_learning_rate(self):
         training_route = _load_route_module(
@@ -142,6 +445,16 @@ class TestTrainingRawSupport(unittest.TestCase):
                 training_route,
                 "get_training_backend",
                 return_value = DummyBackend(),
+            ),
+            patch.object(
+                training_route.asyncio,
+                "to_thread",
+                new = _inline_to_thread,
+            ),
+            patch.object(
+                training_route,
+                "_remote_untrainable_model_format",
+                return_value = None,
             ),
             patch.object(training_route, "load_model_defaults", return_value = {}),
             patch(

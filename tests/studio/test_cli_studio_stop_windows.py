@@ -3,12 +3,9 @@
 
 """Regression tests for `unsloth studio stop` on Windows (PR #5940).
 
-`stop` once used the POSIX `os.kill(pid, 0)` probe, which raises OSError
-(WinError 87) for every pid on Windows -- crashing before reaching taskkill.
-The fix adds a cross-platform `_pid_alive(pid)` (tasklist on Windows, signal-0
-elsewhere).
-
-AST + mock-only; no real process management, no Studio deps imported.
+`stop` once used `os.kill(pid, 0)`, which raises WinError 87 on Windows before
+reaching taskkill; the fix adds cross-platform `_pid_alive` (tasklist on Windows,
+signal-0 elsewhere). AST + mock-only; no real processes, no Unsloth deps imported.
 """
 
 import ast
@@ -34,8 +31,8 @@ def _func_source(name: str) -> str:
 
 
 def _load_pid_alive(platform: str, fake_run = None):
-    """Exec just `_pid_alive` with injectable sys/subprocess, so we can drive
-    the win32 branch on any host without importing the full unsloth_cli."""
+    """Exec just `_pid_alive` with injectable sys/subprocess to drive the win32
+    branch on any host without importing unsloth_cli."""
     src = _func_source("_pid_alive")
     fake_sys = types.SimpleNamespace(platform = platform)
     fake_sub = types.SimpleNamespace(run = fake_run) if fake_run is not None else subprocess
@@ -47,9 +44,12 @@ def _load_pid_alive(platform: str, fake_run = None):
 # ── AST: stop() must not use the broken bare liveness probe ──────────────────
 
 
-def test_stop_does_not_use_bare_oskill_liveness_probe():
-    """stop() must not call os.kill(pid, 0) -- it crashes on Windows."""
-    stop_src = _func_source("stop")
+# `stop` delegates signalling to `_signal_stop`, so guarding only `stop` would
+# let os.kill(pid, 0) come back one function along and still pass.
+@pytest.mark.parametrize("func", ["stop", "_signal_stop"])
+def test_stop_does_not_use_bare_oskill_liveness_probe(func):
+    """The signalling path must not call os.kill(pid, 0) -- WinError 87 on Windows."""
+    stop_src = _func_source(func)
     tree = ast.parse(stop_src)
     for call in ast.walk(tree):
         if not isinstance(call, ast.Call):
@@ -65,14 +65,17 @@ def test_stop_does_not_use_bare_oskill_liveness_probe():
             sig = call.args[1]
             if isinstance(sig, ast.Constant) and sig.value == 0:
                 raise AssertionError(
-                    "stop() still uses os.kill(pid, 0); it raises WinError 87 on "
-                    "Windows. Use the cross-platform _pid_alive() helper instead."
+                    f"{func}() still uses os.kill(pid, 0); it raises WinError 87 "
+                    "on Windows. Use the cross-platform _pid_alive() helper."
                 )
 
 
 def test_pid_alive_helper_is_defined_and_used_by_stop():
     assert "def _pid_alive(" in _SOURCE, "_pid_alive helper missing"
     assert "_pid_alive(pid)" in _func_source("stop"), "stop() must use _pid_alive"
+    # The kill itself moved into _signal_stop; keep both ends of the path pinned.
+    assert "def _signal_stop(" in _SOURCE, "_signal_stop helper missing"
+    assert "taskkill" in _func_source("_signal_stop")
     # The helper must special-case Windows via tasklist (os.kill(pid,0) is invalid there).
     helper = _func_source("_pid_alive")
     assert 'sys.platform == "win32"' in helper

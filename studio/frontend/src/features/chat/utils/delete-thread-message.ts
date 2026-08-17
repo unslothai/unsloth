@@ -18,11 +18,16 @@ import type {
   ExportedMessageRepository,
   ThreadMessage,
 } from "@assistant-ui/react";
+import { listChatMessages } from "../api/chat-api";
 import type { MessageRecord } from "../types";
 import {
   ensureStoredChatThread,
   syncStoredChatMessages,
 } from "./chat-history-storage";
+import {
+  hasResearchMetadata,
+  reconcileServerManagedMessages,
+} from "./research-message-sync";
 
 function cloneContent(
   content: ThreadMessage["content"],
@@ -77,6 +82,25 @@ export function exportedItemToRecord(
   };
 }
 
+async function withStoredResearchMessages(
+  remoteId: string,
+  records: MessageRecord[],
+): Promise<MessageRecord[]> {
+  if (!records.some((record) => hasResearchMetadata(record.metadata))) {
+    return records;
+  }
+  // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
+  // Swallowing a failure here would send the unreconciled payload, which the server rejects
+  // wholesale, so the read failure has to surface as itself rather than as a later 409.
+  const stored = await listChatMessages(remoteId).catch((error: unknown) => {
+    throw new Error(
+      `Could not read the stored research messages for thread ${remoteId} before syncing`,
+      { cause: error },
+    );
+  });
+  return reconcileServerManagedMessages(records, stored);
+}
+
 /**
  * Persist exported messages, pruning only for explicit delete flows.
  */
@@ -86,11 +110,12 @@ export async function syncExportedRepositoryToBackend(
   options: { pruneMissing?: boolean } = {},
 ): Promise<void> {
   await ensureStoredChatThread(remoteId);
+  const records = exp.messages.map(({ message, parentId }) =>
+    exportedItemToRecord(remoteId, parentId, message),
+  );
   await syncStoredChatMessages(
     remoteId,
-    exp.messages.map(({ message, parentId }) =>
-      exportedItemToRecord(remoteId, parentId, message),
-    ),
+    await withStoredResearchMessages(remoteId, records),
     { pruneMissing: options.pruneMissing },
   );
 }
@@ -112,7 +137,26 @@ export async function deleteThreadMessage(args: {
   const exported = thread.export();
   const repo = new MessageRepository();
   repo.import(exported);
+
+  const target = exported.messages.find(
+    ({ message }) => message.id === messageId,
+  );
+  const assistantReplyIds =
+    target?.message.role === "user"
+      ? exported.messages
+          .filter(
+            ({ parentId, message }) =>
+              parentId === messageId && message.role === "assistant",
+          )
+          .map(({ message }) => message.id)
+      : [];
+
+  // Delete the prompt first; that relinks its replies up to the prompt's parent
   repo.deleteMessage(messageId);
+  for (const replyId of assistantReplyIds) {
+    repo.deleteMessage(replyId);
+  }
+
   const next = repo.export();
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {

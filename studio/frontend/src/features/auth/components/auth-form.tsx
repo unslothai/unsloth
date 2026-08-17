@@ -3,6 +3,7 @@
 
 import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
+import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -27,7 +28,6 @@ import {
   hasAuthToken,
   hasRefreshToken,
   mustChangePassword,
-  resetOnboardingDone,
   setMustChangePassword,
   storeAuthTokens,
 } from "../session";
@@ -195,8 +195,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     !isLoginMode &&
     (currentPassword.length < 8 ||
       newPassword.length < 8 ||
+      /\s/.test(newPassword) ||
       newPassword !== confirmPassword ||
       currentPassword === newPassword);
+  const showWhitespaceWarning = !isLoginMode && /\s/.test(newPassword);
   const showPasswordMismatchWarning =
     !isLoginMode &&
     newPassword.length > 0 &&
@@ -219,6 +221,10 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
       if (newPassword.length < 8) {
         setError("New password must be at least 8 characters.");
+        return;
+      }
+      if (/\s/.test(newPassword)) {
+        setError("New password cannot contain spaces.");
         return;
       }
       if (newPassword !== confirmPassword) {
@@ -284,7 +290,6 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       }
 
       if (!isLoginMode) {
-        resetOnboardingDone();
         setRequiresPasswordChange(false);
         setMustChangePassword(false);
       } else {
@@ -297,7 +302,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // reset-password"), which the installer puts on PATH on every platform.
       // Do NOT rewrite it to a relative Windows path like
       // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
-      // the Studio home dir and fails with CommandNotFoundException elsewhere.
+      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
       // Show the backend message as-is.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
@@ -311,9 +316,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   return (
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
-        <img
-          src="/Sloth emojis/large sloth wave.png"
-          alt="Unsloth waving mascot"
+        <MascotImg
+          src="Sloth emojis/large sloth wave.png"
           className="mx-auto mb-2 h-20 w-20 object-contain"
         />
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
@@ -425,13 +429,17 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             </div>
             <p
               className={`min-h-4 text-xs ${
-                showPasswordMismatchWarning ? "text-destructive" : "text-muted-foreground"
+                showWhitespaceWarning || showPasswordMismatchWarning
+                  ? "text-destructive"
+                  : "text-muted-foreground"
               }`}
               aria-live="polite"
             >
-              {showPasswordMismatchWarning
-                ? "Please ensure passwords match."
-                : "Must be at least 8 characters."}
+              {showWhitespaceWarning
+                ? "New password cannot contain spaces."
+                : showPasswordMismatchWarning
+                  ? "Please ensure passwords match."
+                  : "Must be at least 8 characters."}
             </p>
           </>
         )}
@@ -439,11 +447,15 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
         {helperText && (
           <p className="text-center text-sm text-amber-600">{helperText}</p>
         )}
-        {error && <p className="text-center text-sm text-destructive">{error}</p>}
+        {error && (
+          <p className="text-center text-sm text-destructive [overflow-wrap:anywhere]">
+            {error}
+          </p>
+        )}
 
         <Button
           type="submit"
-          className="w-full"
+          className="mx-auto flex w-fit px-4"
           disabled={
             loading ||
             statusLoading ||

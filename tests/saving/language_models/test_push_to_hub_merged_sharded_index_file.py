@@ -1,3 +1,16 @@
+# tests/saving scripts run their whole body at import, so plain pytest
+# collection would download checkpoints and train. Skip unless opted in.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
@@ -134,7 +147,7 @@ trainer = train_on_responses_only(
 trainer_stats = trainer.train()
 
 
-# saving and merging the model to local disk
+# Resolve HF username + token (prompt if unset).
 hf_username = os.environ.get("HF_USER", "")
 if not hf_username:
     hf_username = input("Please enter your Hugging Face username: ").strip()

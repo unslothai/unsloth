@@ -23,7 +23,7 @@ function getSeverityColor(percent: number): {
 } {
   if (percent > 85) return { bar: "bg-red-500", text: "text-red-500" };
   if (percent > 65) return { bar: "bg-amber-500", text: "text-amber-500" };
-  return { bar: "bg-emerald-500", text: "text-emerald-500" };
+  return { bar: "bg-control-accent", text: "text-control-accent" };
 }
 
 export const ContextUsageBar: FC<{
@@ -71,7 +71,7 @@ export const ContextUsageBar: FC<{
               : `Token usage: ${formatTokenCount(used)} tokens`
           }
           className={cn(
-            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-[13px] tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
+            "flex items-center gap-2 rounded-[10px] px-2.5 py-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover",
             className,
           )}
         >
@@ -149,7 +149,7 @@ export const ContextUsageBar: FC<{
             </span>
           </div>
           {hasKnownLimit && percent !== null && percent > 85 ? (
-            <div className="mt-1 max-w-64 text-[11px] leading-snug text-muted-foreground/90">
+            <div className="mt-1 max-w-64 text-ui-11 leading-snug text-muted-foreground/90">
               Close to the context limit. Generation will stop at 100%.
               Increase <span className="font-medium">Context Length</span> in
               the chat Settings panel to keep going.

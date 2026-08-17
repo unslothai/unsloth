@@ -29,7 +29,7 @@ export function DownloadProgressBar({
       ? formatEta(remainingBytes / bytesPerSec)
       : "";
   return (
-    <div className="flex flex-col gap-1.5 px-3 pb-1">
+    <div className="flex flex-col gap-1.5 pb-1">
       <div className="relative h-[3px] overflow-hidden rounded-full bg-foreground/[0.06] dark:bg-white/[0.06]">
         <div
           className="h-full rounded-full bg-status-warning/80 transition-[width] duration-500 ease-linear"
@@ -41,7 +41,7 @@ export function DownloadProgressBar({
           style={{ left: `${exactPercent}%` }}
         />
       </div>
-      <div className="flex items-center justify-between gap-2 text-[10.5px] text-muted-foreground tabular-nums">
+      <div className="flex items-center justify-between gap-2 text-ui-10p5 text-muted-foreground tabular-nums">
         <span>
           {formatBytes(progress.downloadedBytes)}
           {totalLabel && ` / ${totalLabel}`}

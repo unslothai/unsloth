@@ -58,8 +58,7 @@ def test_zoo_saving_utils_has_moe_merge_state():
         "_record_moe_merge_fallback",
     ):
         assert sym in src, f"{sym} missing from saving_utils.py (issue #5410 guard)."
-    # zoo#647 wraps the fallback guard's message onto a second line;
-    # allow the regex to span newlines via re.DOTALL.
+    # zoo#647 wraps the guard message across lines; match via re.DOTALL.
     assert re.search(
         r"raise\s+RuntimeError\b.*?MoE", src, re.IGNORECASE | re.DOTALL
     ), "no `raise RuntimeError(...MoE...)`; post-loop guard weakened."
@@ -84,13 +83,9 @@ def test_zoo_saving_utils_has_num_experts_resolver():
 def test_zoo_saving_utils_writes_generation_config():
     src = _fetch_saving_utils()
     _skip_until_pr_647_lands(src)
-    # zoo#647 binds the generation_config attr to a local var
-    # (`gen_cfg = getattr(model, "generation_config", ...); ...
-    # gen_cfg.save_pretrained(save_directory)`) so an exact
-    # `generation_config.save_pretrained(` substring no longer
-    # matches. Anchor on the conceptual operation: a `generation_config`
-    # mention plus a `.save_pretrained(` call nearby, which is what
-    # the canary actually cares about.
+    # zoo#647 aliases generation_config to a local var, so match a
+    # `generation_config` mention plus a nearby `.save_pretrained(` call
+    # rather than the exact `generation_config.save_pretrained(` substring.
     assert re.search(
         r"generation_config[\s\S]{0,400}?\.save_pretrained\s*\(", src
     ), "generation_config.json no longer saved (#5410)."

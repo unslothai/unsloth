@@ -1,18 +1,9 @@
-"""
-Generate a small synthetic dataset with intentional None/empty turns so
-dataset_none_detect.py can be verified end-to-end.
-
-Three formats: chatml (messages, role/content), sharegpt (conversations,
-from/value), and alpaca (instruction/output). ~20 rows each; roughly half
-have at least one bad turn. Only depends on `datasets`.
-"""
+"""Synthetic chatml/sharegpt/alpaca datasets with intentional None/empty turns for dataset_none_detect.py."""
 
 from datasets import Dataset
 
-# ChatML (messages, role/content)
-
-# pyarrow requires uniform types in a column, so messages=None / non-list (P1)
-# rows live in a SEPARATE dataset so pyarrow can infer the column type.
+# ChatML (messages, role/content). pyarrow needs uniform column types, so
+# messages=None / non-list (P1) rows live in a SEPARATE dataset.
 
 _CHATML_ROWS = [
     # clean rows
@@ -77,7 +68,7 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "Shakespeare."},
         ]
     },
-    # bad rows — None/empty turn content (all messages values are lists so pyarrow is happy)
+    # bad rows: None/empty turn content (all values are lists, so pyarrow is happy)
     {
         "messages": [
             {"role": "user", "content": None},
@@ -123,9 +114,8 @@ _CHATML_ROWS = [
     {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
 ]
 
-# P1 test rows: messages is None or non-list. Stored as plain dicts (not an
-# HF Dataset) since pyarrow can't mix list and non-list values in one column;
-# the test runner mocks find_none_chatml directly.
+# P1 rows: messages is None or non-list. Plain dicts (not an HF Dataset) since
+# pyarrow can't mix list/non-list in one column; the runner mocks find_none_chatml.
 _CHATML_P1_ROWS = [
     {"messages": None},  # whole column None
     {"messages": "not a list"},  # wrong type
@@ -133,7 +123,7 @@ _CHATML_P1_ROWS = [
 
 
 def make_chatml_p1_rows() -> list:
-    """Return the raw P1 rows (not an HF Dataset) for direct mock testing."""
+    """Raw P1 rows (not an HF Dataset) for direct mock testing."""
     return list(_CHATML_P1_ROWS)
 
 

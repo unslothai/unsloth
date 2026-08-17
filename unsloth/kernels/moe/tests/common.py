@@ -158,8 +158,8 @@ def assert_close(
         )
 
         bad_idxs = bad_idxs.unbind(-1)
-        print("ref values: ", ref[*bad_idxs].cpu())
-        print("tri values: ", tri[*bad_idxs].cpu())
+        print("ref values: ", ref[bad_idxs].cpu())
+        print("tri values: ", tri[bad_idxs].cpu())
 
     assert max_err <= maxtol
     assert rms_err <= rmstol

@@ -1,53 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { HfTokenIndicator } from "@/features/hub/components/hf-token-indicator";
-import { PageHeading } from "@/features/hub/components/page-heading";
-import { TransportToggle } from "./transport-toggle";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+import { useSettingsDialogStore } from "@/features/settings";
 import {
   ChipIcon,
+  CpuIcon,
   Database02Icon,
-  Logout01Icon,
   PackageIcon,
   RamMemoryIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { HfTokenIndicator } from "../components/hf-token-indicator";
+import { PageHeading } from "../components/page-heading";
+import { TransportToggle } from "./transport-toggle";
 
 function StatPill({
   icon,
   label,
   value,
-  tone = "default",
 }: {
   icon: IconSvgElement;
   label: string;
   value: string;
-  tone?: "default" | "active";
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className={cn(
-            "inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] transition-colors duration-150",
-            tone === "active"
-              ? "rounded-[11px] bg-emerald-500/10 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 dark:text-emerald-300"
-              : "hub-tag-soft text-muted-foreground hover:text-foreground/80",
-          )}
-        >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
-          <span className="font-medium tabular-nums">{value}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
-    </Tooltip>
+    <span className="hub-stat-pill">
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
+      <span className="hub-stat-pill-value">{value}</span>
+      <span>{label}</span>
+    </span>
   );
 }
 
@@ -57,8 +45,10 @@ export function ModelsHeader({
   isDataset,
   gpuLabel,
   ramLabel,
+  coreLabel,
   activeCheckpoint,
   activeGgufVariant,
+  onTitleClick,
   onEject,
 }: {
   cachedCount: number;
@@ -66,14 +56,18 @@ export function ModelsHeader({
   isDataset: boolean;
   gpuLabel: string;
   ramLabel: string;
+  coreLabel: string;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
+  onTitleClick: () => void;
   onEject: () => void;
 }) {
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
-        title="Hub"
+        title={isDataset ? "Datasets" : "Model hub"}
+        onTitleClick={onTitleClick}
         subtitle={
           isDataset
             ? "Discover, download, and train on datasets locally."
@@ -81,8 +75,8 @@ export function ModelsHeader({
         }
       />
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <HfTokenIndicator />
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
+        <HfTokenIndicator onOpenSettings={() => openSettings("general")} />
         <TransportToggle />
         <StatPill
           icon={PackageIcon}
@@ -95,16 +89,17 @@ export function ModelsHeader({
           value={String(localCount)}
         />
         <StatPill icon={ChipIcon} label="VRAM" value={gpuLabel} />
-        <StatPill icon={RamMemoryIcon} label="CPU RAM" value={ramLabel} />
+        <StatPill icon={RamMemoryIcon} label="RAM" value={ramLabel} />
+        <StatPill icon={CpuIcon} label="CPU" value={coreLabel} />
 
         {activeCheckpoint && (
-          <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px]">
+          <div className="hub-tag-soft ml-1 inline-flex items-center gap-1.5 px-2 py-1 text-ui-11p5">
             <span
               className="size-1.5 rounded-full bg-emerald-500"
               aria-hidden="true"
             />
             <Tooltip>
-              <TooltipTrigger asChild>
+              <TooltipTrigger asChild={true}>
                 <span className="max-w-[120px] cursor-default truncate font-medium text-primary">
                   {activeCheckpoint}
                   {activeGgufVariant ? ` · ${activeGgufVariant}` : ""}
@@ -122,10 +117,10 @@ export function ModelsHeader({
             <button
               type="button"
               onClick={onEject}
-              className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
+              className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-ui-11 text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
-                icon={Logout01Icon}
+                icon={RemoveCircleIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />

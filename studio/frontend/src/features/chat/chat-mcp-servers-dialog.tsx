@@ -1,12 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useState } from "react";
+import { type ChangeEvent, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Delete02Icon, Edit03Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon, UploadIcon } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,6 +33,7 @@ import {
   type McpServerConfig,
   createMcpServer,
   deleteMcpServer,
+  importMcpServers,
   listMcpServers,
   refreshMcpServerTools,
   testMcpServer,
@@ -194,7 +205,12 @@ export function ChatMcpServersDialog({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState<McpServerConfig | null>(
+    null,
+  );
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -315,9 +331,50 @@ export function ChatMcpServersDialog({
     }
   }
 
+  async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the user re-pick the same file later
+    if (!file) return;
+    let config: unknown;
+    try {
+      config = JSON.parse(await file.text());
+    } catch {
+      toast.error("Invalid JSON file");
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await importMcpServers(config);
+      const parts = [`${result.created.length} added`];
+      if (result.skipped.length) parts.push(`${result.skipped.length} skipped`);
+      if (result.errors.length) {
+        parts.push(
+          `${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`,
+        );
+      }
+      const summary = parts.join(", ");
+      if (result.errors.length) {
+        toast.warning(summary, {
+          description: (
+            <div className="whitespace-pre-line">
+              {result.errors.slice(0, 5).join("\n")}
+            </div>
+          ),
+        });
+      } else {
+        toast.success(summary);
+      }
+      await refresh();
+    } catch (err) {
+      toast.error("Import failed", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
   async function removeServer(server: McpServerConfig) {
-    const ok = window.confirm(`Delete MCP server "${server.display_name}"?`);
-    if (!ok) return;
     try {
       await deleteMcpServer(server.id);
       await refresh();
@@ -385,9 +442,35 @@ export function ChatMcpServersDialog({
             Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={onImportFile}
+        />
 
         {showForm ? (
           <div className="flex flex-col gap-4">
+            {view.kind === "create" && (
+              <div className="flex items-center justify-between gap-3 rounded-md border border-dashed px-3 py-2">
+                <span className="text-xs text-muted-foreground">
+                  Import servers from a config file.
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importing}
+                  title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
+                >
+                  {importing ? <Spinner /> : <UploadIcon size={14} />}
+                  Import config
+                </Button>
+              </div>
+            )}
             <div className="grid gap-2">
               <Label htmlFor="mcp-display-name">Display name</Label>
               <Input
@@ -411,7 +494,7 @@ export function ChatMcpServersDialog({
               />
               <span className="text-xs text-muted-foreground">
                 An http(s) URL for a remote server, or a local command to run an
-                stdio server (desktop app only).
+                stdio server (local installs only).
               </span>
             </div>
 
@@ -467,7 +550,17 @@ export function ChatMcpServersDialog({
           </div>
         ) : (
           <div className="flex min-w-0 flex-col gap-3">
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                title="Import servers from a mcpServers JSON config (Claude Desktop, Cursor, VS Code…)"
+              >
+                {importing ? <Spinner /> : <UploadIcon size={14} />}
+                Import config
+              </Button>
               <Button size="sm" onClick={startCreate}>
                 <HugeiconsIcon icon={PlusSignIcon} size={14} />
                 Add server
@@ -530,7 +623,7 @@ export function ChatMcpServersDialog({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        onClick={() => removeServer(server)}
+                        onClick={() => setConfirmingDelete(server)}
                         aria-label="Delete server"
                       >
                         <HugeiconsIcon icon={Delete02Icon} size={14} />
@@ -543,6 +636,38 @@ export function ChatMcpServersDialog({
           </div>
         )}
       </DialogContent>
+      <AlertDialog
+        open={confirmingDelete !== null}
+        onOpenChange={(next) => {
+          if (!next) setConfirmingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete MCP server</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete{" "}
+              <span className="font-medium text-foreground">
+                &quot;{confirmingDelete?.display_name}&quot;
+              </span>
+              ? Its tools stop being available to chats. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const server = confirmingDelete;
+                setConfirmingDelete(null);
+                if (server) void removeServer(server);
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   );
 }

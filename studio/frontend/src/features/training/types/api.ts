@@ -1,23 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { ModelInventoryFormat } from "@/features/hub";
+import type { S3Config } from "@/types/training";
+
 export interface TrainingStartRequest {
   model_name: string;
+  actual_model_repo_id?: string | null;
+  project_name: string | null;
   training_type: string;
   hf_token: string | null;
+  model_known_cached?: boolean;
+  model_local_path?: string | null;
+  model_format?: ModelInventoryFormat | null;
+  model_snapshot_path?: string | null;
   load_in_4bit: boolean;
   max_seq_length: number;
   vision_image_size?: number | null;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   hf_dataset: string | null;
+  dataset_known_cached?: boolean;
+  dataset_local_path?: string | null;
+  dataset_snapshot_path?: string | null;
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;
+  dataset_streaming: boolean;
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
   local_datasets: string[];
   local_eval_datasets: string[];
+  /** S3 bucket configuration; only sent when the dataset source is "s3". */
+  s3_config?: S3Config | null;
   format_type: string;
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;
@@ -32,7 +49,8 @@ export interface TrainingStartRequest {
   save_steps: number;
   eval_steps: number;
   weight_decay: number;
-  max_grad_norm: number;
+  max_grad_norm?: number | null;
+  max_grad_value?: number | null;
   random_seed: number;
   packing: boolean;
   optim: string;
@@ -45,6 +63,7 @@ export interface TrainingStartRequest {
   gradient_checkpointing: string;
   use_rslora: boolean;
   use_loftq: boolean;
+  use_dora: boolean;
   train_on_completions: boolean;
   finetune_vision_layers: boolean;
   finetune_language_layers: boolean;
@@ -63,12 +82,26 @@ export interface TrainingStartRequest {
 
 export interface TrainingStartResponse {
   job_id: string;
-  status: "queued" | "error";
+  status: "pending" | "queued" | "error";
   message: string;
   error: string | null;
+  error_code?: string | null;
+}
+
+export interface TrainingStartRequestStatusResponse {
+  start_request_id: string;
+  job_id: string;
+  state: "pending" | "accepted" | "rejected";
+  message: string;
+  error: string | null;
+  error_code?: string | null;
 }
 
 export interface TrainingStopResponse {
   status: "stopped" | "idle";
   message: string;
+}
+
+export interface TrainingResetResponse {
+  status: "ok" | "superseded";
 }

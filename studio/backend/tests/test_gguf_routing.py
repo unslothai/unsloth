@@ -83,6 +83,23 @@ def test_detects_gguf_in_directory(tmp_path):
     assert result.endswith("model-Q4_K_M.gguf")
 
 
+def test_directory_auto_detect_ignores_big_endian_sibling(tmp_path):
+    be = tmp_path / "model-Q4_K_M-be.gguf"
+    be.write_bytes(b"x" * 100)
+    target = tmp_path / "model-Q4_K_M.gguf"
+    target.write_bytes(b"y" * 10)
+
+    result = detect_gguf_model(str(tmp_path))
+    assert result == str(target.resolve())
+
+
+def test_direct_big_endian_file_is_not_detected(tmp_path):
+    gguf = tmp_path / "model-Q4_K_M-be.gguf"
+    gguf.write_bytes(b"")
+
+    assert detect_gguf_model(str(gguf)) is None
+
+
 def test_directory_named_like_gguf_scans_inside(tmp_path):
     """A directory named *.gguf resolves the real .gguf inside, not itself."""
     gguf_dir = tmp_path / "mymodel.gguf"

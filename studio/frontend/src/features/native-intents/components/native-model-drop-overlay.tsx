@@ -5,8 +5,30 @@ import type { NativeModelDropState } from "../use-native-drop";
 function overlayCopy(state: NativeModelDropState): { title: string; description: string } {
   if (state.status === "invalid") {
     return {
-      title: "GGUF models only",
-      description: "Other files are not handled here yet.",
+      title: "Can't use these files",
+      description: "Drop a .gguf model, or documents to chat with.",
+    };
+  }
+  if (state.status === "attach") {
+    // Only documents are indexed; images and audio ride the next message.
+    const description =
+      state.kind === "images" || state.kind === "audio"
+        ? "Attached to your next message."
+        : state.kind === "mixed"
+          ? "Documents indexed, attachments sent with your next message."
+          : "Indexed for this chat.";
+    const noun =
+      state.kind === "images"
+        ? "image"
+        : state.kind === "audio"
+          ? "audio file"
+          : "file";
+    return {
+      title:
+        state.count === 1
+          ? `Drop to attach ${noun}`
+          : `Drop to attach ${state.count} ${noun}s`,
+      description,
     };
   }
   if (state.status === "valid" && state.action === "replace") {
@@ -29,14 +51,16 @@ function overlayCopy(state: NativeModelDropState): { title: string; description:
 
 export function NativeModelDropOverlay({ state }: { state: NativeModelDropState }) {
   const isIdle = state.status === "idle";
-  const isAutoLoad = state.status === "valid" && state.action !== "chip";
+  const isAutoLoad =
+    (state.status === "valid" && state.action !== "chip") || state.status === "attach";
   const isInvalid = state.status === "invalid";
   const { title, description } = overlayCopy(state);
 
   return (
     <div
       className={cn(
-        "pointer-events-none absolute left-1/2 top-4 z-50 w-[clamp(16rem,28vw,22rem)] max-w-[calc(100vw-1rem)] -translate-x-1/2 transition-all duration-200 ease-out",
+        // Clear the chat header, which owns the top of this container.
+        "pointer-events-none absolute left-1/2 top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+0.5rem)] z-50 w-[clamp(16rem,28vw,22rem)] max-w-[calc(100vw-1rem)] -translate-x-1/2 transition-all duration-200 ease-out",
         isIdle ? "-translate-y-1 opacity-0" : "translate-y-0 opacity-100",
       )}
       role="status"
@@ -60,7 +84,7 @@ export function NativeModelDropOverlay({ state }: { state: NativeModelDropState 
           <div className="truncate text-xs font-medium text-foreground">
             {title}
           </div>
-          <div className="mt-0.5 truncate text-[11px] leading-4 text-muted-foreground">
+          <div className="mt-0.5 truncate text-ui-11 leading-4 text-muted-foreground">
             {description}
           </div>
         </div>

@@ -59,11 +59,16 @@ def _make_backend(monkeypatch, streams: list[list[str]], payloads: list[dict]):
         payload,
         _cancel_event,
         headers = None,
+        first_token_deadline = None,
     ):
         payloads.append(copy.deepcopy(payload))
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)

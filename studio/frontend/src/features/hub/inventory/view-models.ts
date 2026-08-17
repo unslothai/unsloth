@@ -164,9 +164,14 @@ export function buildCachedInventoryRow(
     repo_id: string;
     size_bytes: number;
     cache_path?: string;
+    load_cache_path?: string;
     partial?: boolean;
     partial_transport?: string | null;
+    has_variant_state?: boolean;
     pipeline_tag?: string | null;
+    task?: string | null;
+    single_file?: boolean;
+    companion?: boolean;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -176,6 +181,8 @@ export function buildCachedInventoryRow(
     runtime?: string | null;
     format_variant?: string | null;
     capabilities?: BackendModelCapabilities | null;
+    last_modified?: number | null;
+    optimistic?: boolean;
   },
   fallbackFormat: ModelInventoryFormat,
 ): CachedInventoryRow {
@@ -185,6 +192,15 @@ export function buildCachedInventoryRow(
   const inferredFromEndpoint =
     rawModelFormat === "unknown" && modelFormat !== "unknown";
   const requiresVariant = modelFormat === "gguf";
+  const capabilities = normalizeCapabilities(
+    inferredFromEndpoint ? null : row.capabilities,
+    modelFormat,
+    row.partial ?? false,
+    requiresVariant,
+  );
+  if (row.optimistic) {
+    capabilities.canChat = false;
+  }
   return {
     kind: "cache",
     id:
@@ -202,20 +218,27 @@ export function buildCachedInventoryRow(
       modelFormat,
     ),
     formatVariant: row.format_variant ?? null,
-    capabilities: normalizeCapabilities(
-      inferredFromEndpoint ? null : row.capabilities,
-      modelFormat,
-      row.partial ?? false,
-      requiresVariant,
-    ),
+    capabilities,
     bytes: row.size_bytes,
     cachePath: row.cache_path ?? null,
+    loadCachePath: row.load_cache_path ?? null,
+    lastModified:
+      typeof row.last_modified === "number" &&
+      Number.isFinite(row.last_modified) &&
+      row.last_modified > 0
+        ? row.last_modified
+        : null,
     partial: row.partial ?? false,
     partialTransport: row.partial_transport ?? null,
+    hasVariantState: row.has_variant_state ?? false,
     pipelineTag: row.pipeline_tag ?? null,
+    task: row.task ?? null,
+    singleFile: row.single_file ?? false,
+    companion: row.companion ?? false,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,
+    optimistic: row.optimistic,
   };
 }
 
@@ -272,6 +295,8 @@ export function buildLocalInventoryRows(
         title,
         source: model.source,
         sourceLabel: localSourceLabel(model.source),
+        modelId: model.model_id ?? null,
+        displayName: model.display_name,
         path: model.path,
         isGguf: modelFormat === "gguf",
         modelFormat,
@@ -286,7 +311,9 @@ export function buildLocalInventoryRows(
         updatedAt: normalizeTimestamp(model.updated_at),
         partial: model.partial ?? false,
         partialTransport: model.partial_transport ?? null,
+        activeCache: model.active_cache ?? null,
         pipelineTag: model.pipeline_tag ?? null,
+        task: model.task ?? null,
         tags: model.tags,
         libraryName: model.library_name ?? null,
         quantMethod: model.quant_method ?? null,

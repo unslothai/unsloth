@@ -16,37 +16,14 @@ from datetime import datetime, timezone
 
 from storage.studio_db import get_connection
 from hub.utils.paths import normalize_path
+from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths.sensitive import (
+    contains_sensitive_path_component as _shared_contains_sensitive_path_component,
+)
 
 
 _schema_lock = threading.Lock()
 _schema_ready = False
-_SENSITIVE_PATH_COMPONENTS = {
-    ".aws",
-    ".azure",
-    ".config",
-    ".docker",
-    ".gcloud",
-    ".gnupg",
-    ".huggingface",
-    ".kaggle",
-    ".kube",
-    ".modelscope",
-    ".ngc",
-    ".local",
-    ".mozilla",
-    ".pki",
-    ".thunderbird",
-    ".ssh",
-    ".1password",
-    ".bitwarden",
-    ".password-store",
-    "1password",
-    "bitwarden",
-    "keychains",
-    "keyrings",
-    "mozilla",
-    "thunderbird",
-}
 
 
 def _denied_path_prefixes() -> list[str]:
@@ -75,9 +52,27 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+def is_denied_system_path(path: str) -> bool:
+    """True if *path* is, or descends from, a denied system directory.
+
+    Mirrors the denylist add_scan_folder() enforces at registration so the
+    browser refuses /etc, /proc, C:\\Windows, etc. even when the allowlist holds
+    a broad root (a Windows drive root C:\\ or a legacy-registered / root). The
+    /run carve-out keeps Linux removable-media mounts browseable. Expects an
+    already-resolved (realpath) path so symlinks cannot escape into a denied subtree.
+    """
+    is_win = platform.system() == "Windows"
+    check = os.path.normcase(path) if is_win else path
+    for prefix in _denied_path_prefixes():
+        if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
+            return True
+    return False
+
+
 def _contains_sensitive_path_component(path: str) -> bool:
-    parts = os.path.normpath(path).split(os.sep)
-    return any(part.lower() in _SENSITIVE_PATH_COMPONENTS for part in parts)
+    return _shared_contains_sensitive_path_component(path)
 
 
 def contains_sensitive_path_component(path: str) -> bool:
@@ -120,8 +115,8 @@ def list_scan_folders() -> list[dict]:
         conn.close()
 
 
-def add_scan_folder(path: str) -> dict:
-    """Add a readable directory for the local OS user; not a multi-user sandbox."""
+def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
+    """Add a readable scan folder and return its row plus whether it was inserted."""
     if not path or not path.strip():
         raise ValueError("Path cannot be empty")
     normalized = os.path.realpath(os.path.expanduser(normalize_path(path.strip())))
@@ -132,8 +127,9 @@ def add_scan_folder(path: str) -> dict:
         raise ValueError("Path must be a directory, not a file")
     if not os.access(normalized, os.R_OK | os.X_OK):
         raise ValueError("Path is not readable")
-    if os.path.dirname(normalized) == normalized:
-        # Registering a filesystem root would expose denied system dirs via browse.
+    if is_local_filesystem_root(normalized):
+        # A local fs root ("/", "C:\\") would expose denied system dirs via browse;
+        # a UNC share root (\\server\share) has none under it and stays registerable.
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
@@ -142,6 +138,8 @@ def add_scan_folder(path: str) -> dict:
     check = os.path.normcase(normalized) if is_win else normalized
     for prefix in _denied_path_prefixes():
         if check == prefix or check.startswith(prefix + os.sep):
+            if prefix == "/run" and is_linux_run_media_path(check):
+                continue
             raise ValueError(f"Path under {prefix} is not allowed")
 
     conn = get_connection()
@@ -159,13 +157,15 @@ def add_scan_folder(path: str) -> dict:
                 (normalized,),
             ).fetchone()
         if existing is not None:
-            return dict(existing)
+            return dict(existing), False
+        inserted = False
         try:
             conn.execute(
                 "INSERT INTO scan_folders (path, created_at) VALUES (?, ?)",
                 (normalized, now),
             )
             conn.commit()
+            inserted = True
         except sqlite3.IntegrityError:
             pass
         fallback_sql = (
@@ -176,19 +176,26 @@ def add_scan_folder(path: str) -> dict:
         row = conn.execute(fallback_sql, (normalized,)).fetchone()
         if row is None:
             raise ValueError("Folder was concurrently removed")
-        return dict(row)
+        return dict(row), inserted
     finally:
         conn.close()
 
 
-def remove_scan_folder(id: int) -> None:
+def add_scan_folder(path: str) -> dict:
+    """Add a readable directory for the local OS user; not a multi-user sandbox."""
+    row, _ = add_scan_folder_with_status(path)
+    return row
+
+
+def remove_scan_folder(id: int) -> bool:
     # sqlite INTEGER is signed 64-bit; ids outside that range cannot exist.
     if not -(2**63) <= id < 2**63:
-        return
+        return False
     conn = get_connection()
     try:
         _ensure_schema(conn)
-        conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
+        cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
         conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()

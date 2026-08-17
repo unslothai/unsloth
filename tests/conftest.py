@@ -3,13 +3,10 @@
 
 """GPU-free test harness.
 
-unsloth's import chain hits unsloth_zoo.device_type, which calls
-get_device_type() at import time and raises NotImplementedError on CI
-runners with no CUDA / XPU / HIP visible. Pre-load the real
-unsloth_zoo.device_type under a temporarily-mocked
-torch.cuda.is_available() so its @cache permanently captures "cuda".
-On a real accelerator the pre-load is skipped and detection runs
-normally.
+unsloth_zoo.device_type calls get_device_type() at import time and raises
+NotImplementedError on CI runners with no CUDA/XPU/HIP. Pre-load it under a
+mocked torch.cuda.is_available()==True so its @cache permanently captures
+"cuda"; on a real accelerator the pre-load is skipped.
 
 Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 """
@@ -41,12 +38,9 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type under a mocked
-    torch.cuda.is_available() == True so its @cache permanently
-    captures "cuda". prereqs lists submodule names of <package> that
-    must be loaded first (e.g. 'utils' for unsloth_zoo). Returns False
-    if the package or any prerequisite cannot be imported, in which
-    case the caller falls back to a stub."""
+    """Pre-load <package>.device_type under a mocked is_available()==True so its
+    @cache captures "cuda"; prereqs are submodules to load first (e.g. 'utils').
+    Returns False if anything is unimportable, so the caller falls back to a stub."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True
@@ -98,14 +92,15 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stub torch.cuda.* probes that fire at IMPORT time of unsloth /
-    unsloth_zoo when DEVICE_TYPE was forced to "cuda" above. These are
-    queries, not real GPU work, so returning plausible Ampere values
-    lets the import chain finish; tests that touch real tensors run on
-    CPU like normal."""
+    """Stub the torch.cuda.* probes fired at import time once DEVICE_TYPE is
+    forced to "cuda"; returning plausible Ampere values lets the import finish
+    (real-tensor tests still run on CPU)."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
-        _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
+
+        # (free, total). Zero free is an exhausted card, which callers that size
+        # against it treat as fatal.
+        _cuda_memory.mem_get_info = lambda *a, **k: (60 * 1024**3, 80 * 1024**3)
     except Exception:
         pass
     try:
@@ -131,7 +126,34 @@ def _install_device_type_stub(name: str) -> None:
     sys.modules[name] = stub
 
 
+def _preimport_bitsandbytes() -> None:
+    """Bind bitsandbytes against the real torch before the CUDA spoof below.
+
+    `bitsandbytes/__init__.py` runs `if torch.cuda.is_available(): from .backends.cuda
+    import ops`, and that module reads `torch._C._cuda_getCurrentRawStream`, which a
+    CPU-only torch build does not expose. `_preload_device_type` patches
+    `torch.cuda.is_available` to return True, so a bitsandbytes import landing inside
+    that window takes the CUDA branch and dies with AttributeError.
+
+    Python then drops `bitsandbytes` from sys.modules but leaves `bitsandbytes.functional`
+    and the rest of its submodules cached, so the next import re-executes __init__ against
+    those cached submodules, re-binds nothing, and hands back a module with no
+    `.functional`. `unsloth/kernels/utils.py` reads `bnb.functional.get_ptr` at module
+    scope, so every later `import unsloth` in that process dies with
+    "module 'bitsandbytes' has no attribute 'functional'".
+
+    Importing first, outside the window, keeps bitsandbytes on its CPU backend and fully
+    usable. Must stay ahead of the `_preload_device_type` calls below.
+    """
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        # A genuinely absent or broken wheel is unsloth's own degradation path.
+        pass
+
+
 if not _has_real_accelerator():
+    _preimport_bitsandbytes()
     if not _preload_device_type("unsloth_zoo", prereqs = ("utils",)):
         _install_device_type_stub("unsloth_zoo.device_type")
     if not _preload_device_type("unsloth"):
@@ -140,11 +162,9 @@ if not _has_real_accelerator():
 
 
 # ---------------------------------------------------------------------------
-# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import
-# unsloth``; they live in ``unsloth/import_fixes.py`` and run at import time.
-# The GPU-free harness above lets ``import unsloth`` survive CPU-only runners.
-# Suites without unsloth keep passing -- the ImportError is swallowed and the
-# drift detectors surface anything the missing patches would have hidden.
+# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import unsloth``
+# (they run at import time in unsloth/import_fixes.py). The harness above lets
+# the import survive CPU-only runners; the ImportError is swallowed otherwise.
 # ---------------------------------------------------------------------------
 
 

@@ -20,7 +20,7 @@ def safe_remove_directory(path):
         return False
 
 
-# Used by the mapping function below.
+# Used by formatting_prompts_func below.
 tokenizer = None
 
 
@@ -91,5 +91,5 @@ torch.cuda.empty_cache()
 gc.collect()
 
 safe_remove_directory("./outputs")
-safe_remove_directory("./unsloth_compiled_cache")  # Clean up the cache created by this process
+safe_remove_directory("./unsloth_compiled_cache")  # cache created by this process
 print("✅ Cleanup complete. Exiting training script.")

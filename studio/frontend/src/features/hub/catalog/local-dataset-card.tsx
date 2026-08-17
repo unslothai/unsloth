@@ -25,7 +25,7 @@ export function LocalDatasetCard({
     <div className="hub-download-card">
       <div className="group/dl flex items-center">
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
             <DotTag tone="success" label="On device" />
             {source !== "hf_cache" && (
               <span className="truncate text-muted-foreground/85">
@@ -34,11 +34,7 @@ export function LocalDatasetCard({
             )}
           </span>
           <div className="ml-auto flex items-center gap-0.5">
-            <PathInfoButton
-              path={path}
-              title={sourceLabel}
-              description="Where this dataset lives on disk."
-            />
+            <PathInfoButton path={path} />
           </div>
         </div>
         {HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
@@ -47,7 +43,7 @@ export function LocalDatasetCard({
             className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
           />
         )}
-        {/* Train CTA hidden until Hub->train picker ships. */}
+        {/* Train CTA hidden until Hub→train picker ships. */}
         {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
           <button
             type="button"

@@ -1,5 +1,5 @@
-"""Static + behavioral checks for the multi-image GRPO chunking and
-zoo compatibility guard in unsloth/models/rl_replacements.py."""
+"""Static + behavioral checks for multi-image GRPO chunking and the zoo
+compatibility guard in unsloth/models/rl_replacements.py."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
 def _read_source() -> str:
-    with open(SOURCE_PATH, "r") as fh:
+    with open(SOURCE_PATH, "r", encoding = "utf-8") as fh:
         return fh.read()
 
 

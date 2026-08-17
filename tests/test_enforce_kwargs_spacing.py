@@ -1,10 +1,4 @@
-"""Tests for scripts/enforce_kwargs_spacing.py.
-
-Focus on remove_blank_after_short_import (the blank-line-after-short-import-block
-rule): it must fire on small nested import blocks, leave everything else alone,
-never change the AST, and be idempotent. A couple of enforce_spacing checks pin
-the existing kwarg-spacing behavior.
-"""
+"""Tests for scripts/enforce_kwargs_spacing.py rewrite rules (AST-preserving, idempotent)."""
 
 from __future__ import annotations
 
@@ -82,9 +76,8 @@ def test_blank_removed_for_small_import_block(name):
     out, changed = remove_blank_after_short_import(src)
     assert changed is True
     assert out != src
-    # Import and following statement now adjacent (no blank between).
+    # Import and following statement now adjacent.
     assert "\n\n" not in out or out.count("\n\n") < src.count("\n\n")
-    # Semantics preserved and idempotent.
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
     out2, changed2 = remove_blank_after_short_import(out)
     assert out2 == out and changed2 is False
@@ -125,8 +118,7 @@ def test_exact_output_try_block():
 
 
 def test_exact_output_multiple_consecutive_imports():
-    # Pins that only the blank after the LAST import in a run is dropped and
-    # both imports are kept (the loose \n\n heuristic above does not pin this).
+    # Only the blank after the LAST import in a run is dropped; both imports kept.
     src = "def f():\n    import a\n    import b\n\n    return a, b\n"
     expected = "def f():\n    import a\n    import b\n    return a, b\n"
     out, changed = remove_blank_after_short_import(src)
@@ -145,8 +137,7 @@ def test_multiple_blank_lines_in_gap_all_removed():
 
 
 def test_multiline_import_internal_blank_preserved():
-    # A blank line INSIDE a parenthesized import is part of the import span, not
-    # the gap, so it must survive; only the trailing blank before code is dropped.
+    # A blank inside a parenthesized import is part of the import, not the gap.
     src = (
         "def g():\n"
         "    from mod import (\n"
@@ -318,8 +309,7 @@ def test_merge_adjacent_strings_skips(src):
 
 
 def test_fstring_fold_skipped_when_statement_would_not_collapse():
-    # A long f + plain assert message: folding it cannot fit the statement on one
-    # line, so ruff would re-wrap the assert condition. Leave it side-by-side.
+    # Folding a long f + plain assert message can't fit on one line, so leave it.
     src = (
         "def f():\n"
         "    assert some_condition_holds_here, (\n"
@@ -332,8 +322,7 @@ def test_fstring_fold_skipped_when_statement_would_not_collapse():
 
 
 def test_fstring_fold_applied_when_statement_collapses():
-    # A multi-line f + plain that DOES fit on one line after folding is folded
-    # (ruff then collapses the call to a single line on the next pass).
+    # A multi-line f + plain that fits on one line after folding is folded.
     src = "def f():\n    raise ValueError(\n" '        f"bad {x}: " "try again"\n' "    )\n"
     out, changed = merge_adjacent_string_literals(src)
     assert changed is True
@@ -342,9 +331,7 @@ def test_fstring_fold_applied_when_statement_collapses():
 
 
 def test_fstring_fold_applied_inside_large_multiline_call():
-    # The fit guard only restricts asserts; an f + plain argument on its own line
-    # inside a big multi-line call (the lockfile case) folds even though the whole
-    # call cannot fit on one line.
+    # The fit guard only restricts asserts; an f + plain arg in a big call folds.
     src = (
         "findings.append(\n"
         "    Finding(\n"
@@ -361,8 +348,7 @@ def test_fstring_fold_applied_inside_large_multiline_call():
 
 
 # ── collapse_short_asserts: strip the magic comma holding a short assert open ──
-# The pass strips the trailing comma so ruff joins the assert onto one line on the
-# next format pass; it never changes the AST.
+# Strips the trailing comma so ruff joins the assert onto one line; AST unchanged.
 
 
 @pytest.mark.parametrize(
@@ -393,9 +379,8 @@ def test_fstring_fold_applied_inside_large_multiline_call():
 def test_collapse_short_assert_strips_trailing_comma(name, src):
     out, changed = collapse_short_asserts(src)
     assert changed is True
-    # The magic trailing comma is gone (so ruff will join it on the next pass).
+    # Magic trailing comma is gone, so ruff joins it on the next pass.
     assert out.count(",") == src.count(",") - 1
-    # Semantics preserved and idempotent at the strip level.
     assert ast.dump(ast.parse(out)) == ast.dump(ast.parse(src))
     out2, changed2 = collapse_short_asserts(out)
     assert out2 == out and changed2 is False

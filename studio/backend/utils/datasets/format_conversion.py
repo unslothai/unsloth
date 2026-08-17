@@ -5,10 +5,23 @@
 
 import os
 
-from datasets import IterableDataset
+from .iterable import is_streaming_dataset
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _quiet_bar_kwargs() -> dict:
+    """Send our own conversion bars to a null stream while the log is quiet.
+
+    They still count (the UI status poller reads tqdm._instances), they just do not
+    write carriage-return fragments beside the worker's structured records.
+    """
+    try:
+        from loggers.config import quiet_bar_kwargs
+        return quiet_bar_kwargs()
+    except Exception:  # noqa: BLE001 - a bar is never worth failing a conversion for
+        return {}
 
 
 def standardize_chat_format(
@@ -37,9 +50,8 @@ def standardize_chat_format(
     """
     import collections
     import itertools
-    from datasets import IterableDataset
 
-    # Detect a vision tokenizer
+    # Check if vision tokenizer is used
     is_vlm = False
     if tokenizer is not None:
         if hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer"):
@@ -151,7 +163,7 @@ def standardize_chat_format(
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
+    if not is_streaming_dataset(dataset):
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -162,7 +174,20 @@ def standardize_chat_format(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
 
-    return dataset.map(_standardize_dataset, **dataset_map_kwargs)
+    result = dataset.map(_standardize_dataset, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_streaming_dataset(dataset):
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming chat-format standardization failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def convert_chatml_to_alpaca(
@@ -178,11 +203,7 @@ def convert_chatml_to_alpaca(
     - "messages" or "conversations" column
     - "role"/"content" (standard) or "from"/"value" (ShareGPT)
     """
-    try:
-        from torch.utils.data import IterableDataset
-        _is_torch_iterable = isinstance(dataset, IterableDataset)
-    except ImportError:
-        _is_torch_iterable = False
+    is_iterable = is_streaming_dataset(dataset)
 
     def _convert(examples):
         chatml_data = examples.get(chat_column) if chat_column else None
@@ -226,7 +247,7 @@ def convert_chatml_to_alpaca(
         "batch_size": batch_size,
     }
 
-    if not _is_torch_iterable:
+    if not is_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -237,7 +258,20 @@ def convert_chatml_to_alpaca(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
 
-    return dataset.map(_convert, **dataset_map_kwargs)
+    result = dataset.map(_convert, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_iterable:
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def convert_alpaca_to_chatml(
@@ -250,11 +284,7 @@ def convert_alpaca_to_chatml(
 
     Output: 'conversations' column with standard 'role'/'content' dicts.
     """
-    try:
-        from torch.utils.data import IterableDataset
-        _is_torch_iterable = isinstance(dataset, IterableDataset)
-    except ImportError:
-        _is_torch_iterable = False
+    is_iterable = is_streaming_dataset(dataset)
 
     def _convert(examples):
         conversations = []
@@ -283,7 +313,7 @@ def convert_alpaca_to_chatml(
         "batch_size": batch_size,
     }
 
-    if not _is_torch_iterable:
+    if not is_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -294,7 +324,20 @@ def convert_alpaca_to_chatml(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
 
-    return dataset.map(_convert, **dataset_map_kwargs)
+    result = dataset.map(_convert, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_iterable:
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming Alpaca-to-ChatML conversion failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def _format_eta(seconds):
@@ -376,10 +419,13 @@ def convert_to_vlm_format(
             elif _image_lookup is not None and image_data in _image_lookup:
                 # Bare filename → resolve via HF repo lookup
                 from huggingface_hub import hf_hub_download
+                from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    cache_dir = active_hf_hub_cache(),
                 )
                 image_data = Image.open(local_path).convert("RGB")
             else:
@@ -578,7 +624,13 @@ def convert_to_vlm_format(
             _notify(progress_msg)
     else:
         # Sequential conversion for local/embedded images (no I/O bottleneck)
-        pbar = tqdm(dataset, total = total, desc = "Converting VLM samples", unit = "sample")
+        pbar = tqdm(
+            dataset,
+            total = total,
+            desc = "Converting VLM samples",
+            unit = "sample",
+            **_quiet_bar_kwargs(),
+        )
         for sample in pbar:
             try:
                 converted_list.append(_convert_single_sample(sample))
@@ -744,10 +796,13 @@ def convert_sharegpt_with_images_to_vlm_format(
                     return Image.open(BytesIO(f.read())).convert("RGB")
             elif _image_lookup is not None and image_data in _image_lookup:
                 from huggingface_hub import hf_hub_download
+                from utils.hf_cache_settings import active_hf_hub_cache
+
                 local_path = hf_hub_download(
                     dataset_name,
                     _image_lookup[image_data],
                     repo_type = "dataset",
+                    cache_dir = active_hf_hub_cache(),
                 )
                 return Image.open(local_path).convert("RGB")
             else:
@@ -796,7 +851,13 @@ def convert_sharegpt_with_images_to_vlm_format(
     converted_list = []
     failed_count = 0
 
-    pbar = tqdm(dataset, total = total, desc = "Converting ShareGPT+image", unit = "sample")
+    pbar = tqdm(
+        dataset,
+        total = total,
+        desc = "Converting ShareGPT+image",
+        unit = "sample",
+        **_quiet_bar_kwargs(),
+    )
     for sample in pbar:
         try:
             converted_list.append(_convert_single_sample(sample))

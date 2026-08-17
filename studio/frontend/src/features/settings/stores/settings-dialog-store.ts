@@ -7,22 +7,52 @@ export type SettingsTab =
   | "general"
   | "profile"
   | "appearance"
+  | "resources"
   | "chat"
+  | "voice"
   | "connections"
+  | "data"
   | "api-keys"
+  | "agents"
+  | "debugging"
   | "about";
+
+export type SettingsScrollTarget = "about-updates" | "appearance-sidebar-nav";
+
+/** Which archive the Data tab should open straight into. */
+export type ArchivedShelf = "chats" | "images" | "videos";
+
+interface OpenDialogOptions {
+  scrollTarget?: SettingsScrollTarget;
+}
 
 interface SettingsDialogState {
   open: boolean;
   activeTab: SettingsTab;
+  scrollTarget: SettingsScrollTarget | null;
   // Element focused when openDialog() ran. Radix's FocusScope normally tracks
   // this, but the rAF-scheduled focus() in settings-dialog.tsx races its
   // previous-focus capture, leaving focus on <body> after close. We restore
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
-  openDialog: (tab?: SettingsTab) => void;
+  // Set when something asks to jump straight to an archive listing (the archive
+  // toast). DataTab uses it as its initial subpage, then clears it.
+  archivedRequested: ArchivedShelf | null;
+  openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
+  openArchivedChats: () => void;
+  openArchivedMedia: (shelf: "images" | "videos") => void;
+  consumeArchivedChatsRequest: () => void;
+  consumeScrollTarget: (target: SettingsScrollTarget) => void;
   closeDialog: () => void;
   setActiveTab: (tab: SettingsTab) => void;
+}
+
+function captureOpener(): HTMLElement | null {
+  return typeof document !== "undefined" &&
+    document.activeElement instanceof HTMLElement &&
+    document.activeElement !== document.body
+    ? document.activeElement
+    : null;
 }
 
 const ACTIVE_TAB_KEY = "unsloth_settings_active_tab";
@@ -39,9 +69,14 @@ function loadInitialTab(): SettingsTab {
     "general",
     "profile",
     "appearance",
+    "resources",
     "chat",
+    "voice",
     "connections",
+    "data",
     "api-keys",
+    "agents",
+    "debugging",
     "about",
   ];
   return valid.includes(stored as SettingsTab)
@@ -52,28 +87,47 @@ function loadInitialTab(): SettingsTab {
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),
+  scrollTarget: null,
   opener: null,
-  openDialog: (tab) =>
+  archivedRequested: null,
+  openDialog: (tab, options) =>
     set((state) => ({
       open: true,
       activeTab: tab ?? state.activeTab,
-      opener:
-        typeof document !== "undefined" &&
-        document.activeElement instanceof HTMLElement &&
-        document.activeElement !== document.body
-          ? document.activeElement
-          : null,
+      scrollTarget: options?.scrollTarget ?? null,
+      opener: captureOpener(),
+    })),
+  openArchivedChats: () =>
+    set({
+      open: true,
+      activeTab: "data",
+      scrollTarget: null,
+      archivedRequested: "chats",
+      opener: captureOpener(),
+    }),
+  openArchivedMedia: (shelf) =>
+    set({
+      open: true,
+      activeTab: "data",
+      scrollTarget: null,
+      archivedRequested: shelf,
+      opener: captureOpener(),
+    }),
+  consumeArchivedChatsRequest: () => set({ archivedRequested: null }),
+  consumeScrollTarget: (target) =>
+    set((state) => ({
+      scrollTarget: state.scrollTarget === target ? null : state.scrollTarget,
     })),
   // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
   // pass after `open: false` lands, so the opener must still be readable
   // from the store at that point. The next openDialog() overwrites it.
-  closeDialog: () => set({ open: false }),
+  closeDialog: () => set({ open: false, scrollTarget: null }),
   setActiveTab: (tab) => {
     try {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tab);
     } catch {
       // ignore storage failures
     }
-    set({ activeTab: tab });
+    set({ activeTab: tab, scrollTarget: null });
   },
 }));

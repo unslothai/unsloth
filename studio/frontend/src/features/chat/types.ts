@@ -36,6 +36,7 @@ export interface ThreadRecord {
   projectId?: string | null;
   archived: boolean;
   createdAt: number;
+  updatedAt?: number;
   /**
    * OpenAI shell tool container id from a prior response. When set, the
    * next turn reuses it via `environment.type="container_reference"` so
@@ -57,6 +58,18 @@ export interface ThreadRecord {
    * clears this field so the next turn falls back to auto-create.
    */
   anthropicCodeExecContainerId?: string | null;
+  /**
+   * If this thread was created via fork-from-message, points back at
+   * the source thread + branch-point msg. Null/undefined for non-fork
+   * threads. Used by the sidebar "fork" badge and the parent thread's
+   * "N forks" indicator on the branch-point msg.
+   */
+  forkedFromThreadId?: string | null;
+  forkedFromMessageId?: string | null;
+  /** this chat's own settings, applied when it is opened; absent means the global ones. */
+  settings?:
+    | import("./utils/thread-scoped-settings").ThreadScopedSettings
+    | null;
 }
 
 export interface MessageRecord {
@@ -68,4 +81,14 @@ export interface MessageRecord {
   attachments?: import("@assistant-ui/react").ThreadMessage["attachments"];
   metadata?: Record<string, unknown>;
   createdAt: number;
+}
+
+/** One conversation parsed out of an import file, before it is written to storage. */
+export interface ParsedConversation {
+  title: string;
+  threadId: string;
+  messages: MessageRecord[];
+  /** Open WebUI exports carry the flag; other formats leave it unset. */
+  archived?: boolean;
+  createdAt?: number;
 }
