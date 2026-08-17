@@ -9656,14 +9656,23 @@ def _search_conversation(arguments: dict, rag_scope: dict | None) -> str:
     # chat overshooting here is a context-length error no later preflight can recover.
     budget = scope.get("budget_tokens")
     if budget is not None:
+        default_k = 1
         try:
             from core.rag import config as rag_config
             affordable = max(0, int(budget)) // max(1, int(rag_config.CHUNK_TOKENS))
+            default_k = max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
         except Exception:
             affordable = 0
         if affordable <= 0:
             return "There is no room left in this context to search earlier conversation."
-        top_k = affordable if top_k is None else max(1, min(top_k, affordable))
+        # An omitted top_k still means the configured default; room is a cap on it, not a
+        # target. Taking the room itself asked a 128K chat for 200 passages, past both the
+        # default and the ceiling the model's own value is held to.
+        top_k = (
+            min(default_k, _MAX_CONVERSATION_SEARCH_TOP_K, affordable)
+            if top_k is None
+            else max(1, min(top_k, affordable))
+        )
 
     # The branch this request is on, so a response replaced by Retry cannot be searched
     # back out of the archive. Absent callers fall back to the whole stored thread.

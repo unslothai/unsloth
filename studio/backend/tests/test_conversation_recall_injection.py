@@ -761,6 +761,45 @@ def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monke
     assert not seen
 
 
+def test_an_omitted_top_k_still_means_the_configured_default(archived, monkeypatch):
+    """Room is a cap on the default, not a target.
+
+    Budgeting an omitted top_k by dividing the whole budget asked a 128K chat for 200
+    passages, past the configured default and past the ceiling the model's own value is
+    held to.
+    """
+    from core.rag import config as rag_config
+
+    asked = []
+
+    def fake_recall(
+        thread_id,
+        query,
+        *,
+        top_k = None,
+        branch_messages = None,
+    ):
+        asked.append(top_k)
+        return ("an earlier turn", [{"id": "1"}])
+
+    monkeypatch.setattr(conversation_archive, "recall", fake_recall)
+
+    tools_mod._search_conversation(
+        {"query": "pelicans"}, {"thread_id": THREAD, "budget_tokens": 100_000}
+    )
+    assert asked == [
+        min(rag_config.CONVERSATION_ARCHIVE_TOP_K, tools_mod._MAX_CONVERSATION_SEARCH_TOP_K)
+    ]
+
+    # And a budget smaller than the default still caps it.
+    asked.clear()
+    tools_mod._search_conversation(
+        {"query": "pelicans"},
+        {"thread_id": THREAD, "budget_tokens": rag_config.CHUNK_TOKENS * 2},
+    )
+    assert asked == [2]
+
+
 def test_conversation_search_refuses_a_result_the_budget_cannot_hold(archived, monkeypatch):
     """CHUNK_TOKENS is what the chunker aims at, not what a chunk weighs.
 
