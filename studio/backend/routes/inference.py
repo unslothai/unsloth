@@ -13217,17 +13217,13 @@ async def openai_chat_completions(
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
-        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(
-            payload.video_base64
-        )
+        _needs_vision = _needs_image or bool(payload.audio_base64) or bool(payload.video_base64)
         # Size is knowable now and the switch is not cheap: refuse an oversized
         # clip before it costs a model load.
         if payload.video_base64:
             _, _video_rejection = _video_b64_rejection(payload.video_base64)
             if _video_rejection is not None:
-                raise HTTPException(
-                    status_code = _video_rejection[0], detail = _video_rejection[1]
-                )
+                raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
 
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
