@@ -68,20 +68,39 @@ const activeCompleters = new Set<() => Promise<void>>();
  * a short conversation. Reading the store needs nothing: the window never gated the store, only
  * how much of it was rendered.
  */
+export const PROGRESSIVE_MOUNT_SEARCH_MS = 400;
+
 export async function completeProgressiveMounts(): Promise<void> {
-  // Re-checked across frames rather than read once, because the completers are registered from a
-  // layout effect and a caller in the same task as the thread opening finds the set still empty.
-  // Measured on the version that read it once: the call returned in 0.1ms and the document held
-  // 16 of 220 rows two frames later, on all three engines, which is exactly the silent truncation
-  // this function exists to prevent.
-  for (let pass = 0; pass < 8; pass += 1) {
+  // Two things have to be waited for, and they fail in opposite directions.
+  //
+  // Draining is the easy half: a completer that exists is asked to finish and awaited. Reading
+  // the set ONCE was not enough, because the completers register from a layout effect, so a
+  // caller in the same task as the thread opening finds it empty. Measured on that version: the
+  // call returned in 0.1ms and the document held 16 of 220 rows two frames later.
+  //
+  // The hard half is that "empty" is ambiguous. A settled thread and a thread whose history is
+  // still loading both present an empty set, and on a cold open the load takes around 160ms, so
+  // returning at the first empty reading resolves before a single row exists. So an empty set is
+  // only believed after SEARCH_MS of looking, while a set that has been non-empty and has since
+  // drained is believed immediately.
+  //
+  // That means a caller on a settled thread pays SEARCH_MS. That is the deliberate direction to
+  // be wrong in: the alternative is a screenshot or an export of a conversation that is not
+  // there yet, and anything reading the whole thread out of the DOM is already doing something
+  // far more expensive than this.
+  const deadline = Date.now() + PROGRESSIVE_MOUNT_SEARCH_MS;
+  let observed = false;
+  for (;;) {
     if (activeCompleters.size > 0) {
+      observed = true;
       await Promise.all([...activeCompleters].map((complete) => complete()));
     }
     await new Promise<void>((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
-    if (activeCompleters.size === 0) return;
+    if (activeCompleters.size === 0 && (observed || Date.now() >= deadline)) {
+      return;
+    }
   }
 }
 

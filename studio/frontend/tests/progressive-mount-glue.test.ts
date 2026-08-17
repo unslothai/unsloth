@@ -289,8 +289,14 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
   // The completers register from an effect, so a caller in the same task as the thread opening
   // finds the set empty. Measured on the version that read it once: the call returned in 0.1ms
   // and the document held 16 of 220 rows two frames later.
-  assert.match(GLUE, /for \(let pass = 0; pass < 8; pass \+= 1\)/);
-  assert.match(GLUE, /if \(activeCompleters\.size === 0\) return;/);
+  // And an empty set is not believed straight away. A settled thread and a thread whose history
+  // is still loading both present an empty set, and on a cold open the load takes around 160ms,
+  // so returning at the first empty reading resolves before a single row exists.
+  assert.match(GLUE, /let observed = false;/);
+  assert.match(
+    GLUE,
+    /activeCompleters\.size === 0 && \(observed \|\| Date\.now\(\) >= deadline\)/,
+  );
 });
 
 test("the hook is told about every widening, including the ones with nothing to apply", () => {
