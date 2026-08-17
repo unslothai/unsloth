@@ -49,10 +49,24 @@ def _pytest_commands(text: str) -> list[str]:
     ]
 
 
+# Two different trees are run in parallel now, and the isolation below belongs to exactly
+# one of them. The repo-root job runs `tests/` from the checkout; the matrix job runs the
+# backend's own suite with `working-directory: studio/backend`, so `tests/studio/...` is
+# not a path that exists for it and demanding those ignores would be nonsense.
+#
+# Told apart by what they ignore, because that is the thing both the ignores and this
+# scan are about: only the repo-root run excludes directories that live at the repo root.
+REPO_ROOT_MARKER = "--ignore=tests/qlora"
+
+
+def _over_the_repo_root(command: str) -> bool:
+    return REPO_ROOT_MARKER in command
+
+
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
 def test_an_isolated_path_is_ignored_by_every_parallel_pytest_run(path, reason):
     for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8")):
-        if " -n " not in f" {command} ":
+        if " -n " not in f" {command} " or not _over_the_repo_root(command):
             continue
         assert f"--ignore={path}" in command, (
             f"{path} ({reason}) is not ignored by a parallel pytest run in "
@@ -79,9 +93,38 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
     """Pin the parser: a scan that matched nothing would pass both tests above."""
     commands = _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
     parallel = [command for command in commands if " -n " in f" {command} "]
-    assert len(parallel) == 1, f"expected exactly one parallel pytest run, got {parallel}"
-    assert "tests/" in parallel[0]
+    assert len(parallel) == 2, (
+        f"expected two parallel pytest runs, the backend matrix and repo-cpu-tests, got "
+        f"{parallel}. If a job stopped running in parallel, say so here rather than "
+        f"letting this scan quietly cover one run."
+    )
+    root = [command for command in parallel if _over_the_repo_root(command)]
+    assert len(root) == 1, (
+        f"expected exactly one parallel run over the repo root, got {root}. The isolation "
+        f"checks above apply to that one, and a scan that matched none of them would pass "
+        f"on nothing."
+    )
     # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q`
     # with none of its --ignore flags and the first test above passes on nothing.
-    assert "--ignore=" in parallel[0]
+    assert "--ignore=" in root[0]
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
+
+
+def test_the_backend_matrix_still_runs_in_parallel():
+    """The matrix leg was 23.3 minutes serial and is the longest job in the repo.
+
+    Measured over the same tree before it was turned on: 1322.6s serial against 343.0s at
+    -n 4, with the two failure sets equal name for name, so nothing in the backend suite
+    depends on the order it runs in. Asserted here because dropping the flag would show up
+    only as CI slowly getting slower again, which nothing reports.
+    """
+    backend = [
+        command
+        for command in _pytest_commands(WORKFLOW.read_text(encoding = "utf-8"))
+        if "--ignore=tests/test_studio_api.py" in command
+    ]
+    assert backend, "the backend matrix pytest step is gone or was renamed past this scan"
+    assert " -n " in f" {backend[0]} ", (
+        f"the backend matrix leg is running serially again, which costs about 17 minutes "
+        f"per leg on every pull request and every push to main: {backend[0]}"
+    )
