@@ -124,7 +124,6 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
                 # submits the answer as an explicit xet/http. Probe-only, so an ordinary poll stays
                 # read-only and still does not load Zoo.
                 from utils.hf_xet_fallback import free_ram_pressure_reason
-
                 pressure = free_ram_pressure_reason()
                 if pressure is not None:
                     auto_transport = TRANSPORT_HTTP

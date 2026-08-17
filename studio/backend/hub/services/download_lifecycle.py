@@ -93,7 +93,6 @@ def _memory_pressure_reason() -> Optional[str]:
     the concrete xet/http, so that probe applies the same rule. Shared helper, so the two agree."""
     try:
         from utils.hf_xet_fallback import free_ram_pressure_reason
-
         return free_ram_pressure_reason()
     except Exception as exc:  # noqa: BLE001 - a probe must not decide the transport by crashing
         logger.debug("Free-RAM probe failed, leaving the Xet verdict alone: %s", exc)
