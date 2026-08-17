@@ -543,3 +543,49 @@ test("a provider constraint does not rewrite what the chat stored", () => {
   assert.match(capture, /constraintSuppressedThreadFields\.delete\(field\)/);
   assert.match(store, /constraintSuppressedThreadFields\.clear\(\);/);
 });
+
+// The sampling params live under `params`, not as store fields of their own, so the
+// generic key loops have to be told where to look. Getting this wrong reads undefined
+// and stores nothing, which looks exactly like the feature working until you reopen.
+test("the sampling params are read and applied through params", () => {
+  assert.match(
+    store,
+    /return isThreadScopedParamKey\(key\)\s*\?\s*state\.params\[key\]\s*:\s*\(state as Record<string, unknown>\)\[key\];/,
+  );
+  // Read through the same helper on both paths, including the held-edit branch.
+  assert.equal(
+    store.match(/readThreadScopedValue\(state, key\)/g)?.length,
+    3,
+    "the snapshot, the held edit and the sameness check",
+  );
+  // One object, so they are gathered and set together rather than as fields.
+  assert.match(store, /paramsPatch\[key\] = value;/);
+  assert.match(
+    store,
+    /if \(hasKeys\(paramsPatch\)\) \{\s*nextState\.params = \{ \.\.\.state\.params, \.\.\.paramsPatch \};/,
+  );
+});
+
+// A model's own recommendation is not a choice the user made in this chat. Storing it
+// would pin every chat to whatever model happened to load while it was open.
+test("only a user edit to a sampling param lands on the chat", () => {
+  assert.match(
+    store,
+    /isThreadScopedParamKey\(key\) &&\s*options\?\.fromModelDefaults !== true &&\s*captureThreadScopedEdit\(key\)/,
+  );
+  // What the chat does not take still moves the installation defaults.
+  assert.match(
+    store,
+    /if \(hasKeys\(globalParams\)\) \{\s*saveSettingsPatch\(\{ inferenceParams: globalParams \}\);/,
+  );
+
+  // Both paths that apply a model's own params say so.
+  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const status = read("../src/features/chat/lib/apply-inference-status-to-store.ts");
+  for (const source of [runtime, status]) {
+    assert.match(
+      source,
+      /mergeBackendRecommendedInference\([\s\S]{0,400}?\{ fromModelDefaults: true \}/,
+    );
+  }
+});

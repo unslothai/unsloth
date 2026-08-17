@@ -1336,6 +1336,7 @@ export function useChatModelRuntime() {
                 modelId,
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
+              { fromModelDefaults: true },
             );
             // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
             // Anchored regex: first "Xb" / "X.Xb" after start-of-string or

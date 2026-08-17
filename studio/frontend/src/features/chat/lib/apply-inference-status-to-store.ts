@@ -160,6 +160,7 @@ export function applyActiveModelStatusToStore(
         modelId: checkpointId,
         presetSource: store.activePresetSource,
       }),
+      { fromModelDefaults: true },
     );
   }
 

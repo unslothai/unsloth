@@ -51,6 +51,7 @@ import {
   type ThreadScopedSettings,
   hasThreadScopedSettings,
   isThreadOwnedSettingKey,
+  isThreadScopedParamKey,
   sanitizeThreadScopedSettings,
 } from "../utils/thread-scoped-settings";
 import {
@@ -698,12 +699,23 @@ let threadSettingsWriteThreadId: string | null = null;
 // leaves in the store by the time the debounce fires.
 let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
 
+/** Where a thread-scoped key's live value is: the sampling ones sit under
+ * `params`, the rest are store fields of their own. */
+function readThreadScopedValue(
+  state: ChatRuntimeStore,
+  key: ThreadScopedSettingKey,
+): unknown {
+  return isThreadScopedParamKey(key)
+    ? state.params[key]
+    : (state as Record<string, unknown>)[key];
+}
+
 function readThreadScopedSettings(
   state: ChatRuntimeStore,
 ): ThreadScopedSettings {
   const source: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_SETTING_KEYS) {
-    source[key] = state[key];
+    source[key] = readThreadScopedValue(state, key);
   }
   // drops "full" with it: a stored bypass would come back without the warning dialog.
   return sanitizeThreadScopedSettings(source);
@@ -2381,7 +2393,13 @@ type ChatRuntimeStore = {
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (
     params: InferenceParams,
-    options?: { persist?: boolean; trackQueuedSettings?: boolean },
+    options?: {
+      persist?: boolean;
+      trackQueuedSettings?: boolean;
+      /** The model's own recommendation, not something the user picked, so it
+       * moves the installation defaults and never the open chat's settings. */
+      fromModelDefaults?: boolean;
+    },
   ) => void;
   setCustomPresets: (presets: Preset[]) => void;
   setActivePreset: (name: string) => void;
@@ -3172,7 +3190,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         state.settingsHydrated &&
         hasKeys(changedParams)
       ) {
-        saveSettingsPatch({ inferenceParams: changedParams });
+        // A sampling key moved with a chat open belongs to that chat. Whatever
+        // is left over is the installation's, so a change made with no chat
+        // open still moves the defaults as before. A model load re-applies its
+        // own defaults through this path too, and captureThreadScopedEdit is
+        // what keeps those off the chat: it only takes a key the user moved.
+        const globalParams: PersistedInferenceParams = {};
+        for (const [key, value] of Object.entries(changedParams)) {
+          if (
+            isThreadScopedParamKey(key) &&
+            options?.fromModelDefaults !== true &&
+            captureThreadScopedEdit(key)
+          ) {
+            continue;
+          }
+          (globalParams as Record<string, unknown>)[key] = value;
+        }
+        if (hasKeys(globalParams)) {
+          saveSettingsPatch({ inferenceParams: globalParams });
+        }
       }
       // Mirror setCheckpoint: the local load path can mutate params.checkpoint
       // via setParams() before setCheckpoint runs, leaving stale per-turn
@@ -3517,10 +3553,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const nextState: Partial<ChatRuntimeStore> = {};
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
+      const paramsPatch: Record<string, unknown> = {};
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         // the user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
-          applied[key] = state[key];
+          applied[key] = readThreadScopedValue(state, key);
           continue;
         }
         // full access was accepted through a warning dialog: a switch must not drop it.
@@ -3550,7 +3587,19 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         const value = stored?.[key] ?? globalThreadScopedDefaults?.[key];
         if (value === undefined) continue;
         applied[key] = value;
-        if (!isSameThreadScopedValue(value, state[key])) target[key] = value;
+        if (isSameThreadScopedValue(value, readThreadScopedValue(state, key))) {
+          continue;
+        }
+        // The sampling ones are one object, so they are gathered and applied
+        // together below rather than set as fields here.
+        if (isThreadScopedParamKey(key)) {
+          paramsPatch[key] = value;
+        } else {
+          target[key] = value;
+        }
+      }
+      if (hasKeys(paramsPatch)) {
+        nextState.params = { ...state.params, ...paramsPatch };
       }
       // Search and Thinking are mutually exclusive on Kimi, and the model-selection effect
       // that enforces it does not rerun on a thread switch. Restoring both, which a chat

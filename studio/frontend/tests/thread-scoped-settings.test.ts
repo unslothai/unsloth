@@ -135,3 +135,77 @@ test("an empty snapshot reads as no snapshot", () => {
   assert.equal(hasThreadScopedSettings({}), false);
   assert.equal(hasThreadScopedSettings({ toolsEnabled: false }), true);
 });
+
+// The reported gap: returning to a chat started under one system prompt showed
+// whichever prompt the last chat had. These live under `params` rather than as
+// store fields of their own, which is the only thing that makes them special.
+test("the sampling params and the system prompt travel with the chat", () => {
+  const settings = sanitizeThreadScopedSettings({
+    temperature: 0.2,
+    topP: 0.85,
+    topK: 40,
+    minP: 0.02,
+    repetitionPenalty: 1.1,
+    presencePenalty: 0.5,
+    systemPrompt: "You are a terse reviewer.",
+    systemVariables: "name=Ada",
+  });
+  assert.deepEqual(settings, {
+    temperature: 0.2,
+    topP: 0.85,
+    topK: 40,
+    minP: 0.02,
+    repetitionPenalty: 1.1,
+    presencePenalty: 0.5,
+    systemPrompt: "You are a terse reviewer.",
+    systemVariables: "name=Ada",
+  });
+  for (const key of Object.keys(settings)) {
+    assert.ok(isThreadScopedSettingKey(key), key);
+    assert.ok(isThreadOwnedSettingKey(key), key);
+  }
+});
+
+// The bounds are the PATCH model's, so a value the server would refuse must not
+// be sent: extra="forbid" refuses the whole body on one bad field.
+test("a sampling value outside the slider range is dropped", () => {
+  assert.deepEqual(
+    sanitizeThreadScopedSettings({
+      temperature: 2.5,
+      topP: -0.1,
+      topK: 101,
+      minP: 2,
+      repetitionPenalty: 0.5,
+      presencePenalty: 3,
+    }),
+    {},
+  );
+  // The edges themselves are inside.
+  assert.deepEqual(
+    sanitizeThreadScopedSettings({ temperature: 2, topP: 0, topK: 100 }),
+    { temperature: 2, topP: 0, topK: 100 },
+  );
+});
+
+test("a non-string prompt is dropped rather than coerced", () => {
+  assert.deepEqual(
+    sanitizeThreadScopedSettings({ systemPrompt: 12, systemVariables: null }),
+    {},
+  );
+  // An empty prompt is a real choice, not a missing one.
+  assert.deepEqual(sanitizeThreadScopedSettings({ systemPrompt: "" }), {
+    systemPrompt: "",
+  });
+});
+
+// Context belongs to the model that loaded, not to the conversation, so a chat
+// restoring a budget the current model cannot hold is not a thing that happens.
+test("the context and the model are not per-chat", () => {
+  for (const key of ["maxSeqLength", "maxTokens", "checkpoint"]) {
+    assert.equal(isThreadScopedSettingKey(key), false, key);
+  }
+  assert.deepEqual(
+    sanitizeThreadScopedSettings({ maxTokens: 4096, checkpoint: "some/model" }),
+    {},
+  );
+});
