@@ -133,6 +133,7 @@ import {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
+import { ChatModelNotice } from "./components/chat-model-notice";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -3256,6 +3257,19 @@ export function ChatPage({
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  // Everything the picker can offer right now, so the chat's own model is only
+  // proposed when selecting it would actually work. A model since deleted, or a
+  // connection since removed, drops out and the notice stays quiet.
+  const selectableModelIds = useMemo(
+    () =>
+      new Set<string>([
+        ...models.map((model) => model.id),
+        ...loraModels.map((model) => model.id),
+        ...externalModels.map((model) => model.id),
+      ]),
+    [models, loraModels, externalModels],
+  );
+
   const inventoryRefreshStartedRef = useRef(false);
   const refreshDeferredModelInventories = useCallback(() => {
     inventoryRefreshStartedRef.current = true;
@@ -3670,6 +3684,15 @@ export function ChatPage({
             )}
           </div>
         </div>
+
+        {view.mode === "single" && (
+          <ChatModelNotice
+            threadId={view.threadId}
+            checkpoint={inferenceParams.checkpoint}
+            selectableModelIds={selectableModelIds}
+            onSwitch={handleCheckpointChange}
+          />
+        )}
 
         {view.mode === "project" ? (
           <ProjectLanding
