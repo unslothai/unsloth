@@ -309,6 +309,34 @@ def _stub_helpers(tree: ast.Module) -> dict[str, ast.AST]:
     }
 
 
+def _own_yields(node: ast.AST):
+    """``yield`` expressions belonging to this function, not to one nested inside it."""
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        if isinstance(child, (ast.Yield, ast.YieldFrom)):
+            yield child
+        yield from _own_yields(child)
+
+
+def _helper_nodes_entered(helper: ast.AST):
+    """The part of ``helper`` that has run once the block it guards is entered.
+
+    A generator-based context manager suspends at its first ``yield``: everything
+    below runs on the way OUT of the ``with``, which is after the import inside it
+    has been attempted, so a ``sys.modules`` write down there stubs nothing for that
+    import. A plain function has no such split and runs to the end. Unreachable and
+    merely-optional branches are dropped for the reason in ``_certain_nodes``.
+    """
+    stop = min((node.lineno for node in _own_yields(helper)), default = None)
+    for statement in getattr(helper, "body", []):
+        if stop is not None and statement.lineno >= stop:
+            break
+        for node in _certain_nodes(statement):
+            if stop is None or getattr(node, "lineno", 0) < stop:
+                yield node
+
+
 def _helper_installs_stub(
     name: str,
     helpers: dict[str, ast.AST],
@@ -328,11 +356,16 @@ def _helper_installs_stub(
     Recursive with a ``seen`` set, since the helper that names the module and the helper
     that writes ``sys.modules`` are usually not the same one, and a cycle would otherwise
     not terminate.
+
+    Only the part of the helper that has run by then counts, which is what
+    ``_helper_nodes_entered`` decides. Reading the whole body accepted a stub installed
+    after the ``yield`` of a context manager, and that code runs on the way OUT of the
+    block, after the import inside it has already been attempted. Reported on this PR.
     """
     helper = helpers.get(name)
     if helper is None or name in seen:
         return False
-    nodes = list(ast.walk(helper))
+    nodes = list(_helper_nodes_entered(helper))
     if not (_names_required_stub(nodes) or _reads_a_named_stub(nodes, named)):
         return False
     if _installs_stub(nodes):
@@ -1522,6 +1555,31 @@ def test_the_guard_would_catch_an_unstubbed_module():
     # Same helper, never called: still not stubbed, or reading through the call would have
     # made a defined-and-unused helper into its own proof.
     assert _is_offender(held.replace("with _stubbed():\n    from", "from"), heavy)
+
+    # A stub installed BELOW the yield runs on the way out of the block, after the
+    # import inside it has already been attempted.
+    after_yield = held.replace(
+        "    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n    yield\n",
+        "    yield\n    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n",
+    )
+    assert after_yield != held
+    assert _is_offender(after_yield, heavy), after_yield
+    # ...and one on a branch of the helper that never runs is no better.
+    never_runs = held.replace(
+        "    for _n, _a in _STUBS:\n        sys.modules[_n] = object()\n",
+        "    if False:\n        for _n, _a in _STUBS:\n            sys.modules[_n] = object()\n",
+    )
+    assert never_runs != held
+    assert _is_offender(never_runs, heavy), never_runs
+    # The yield that stops the scan has to be the helper's OWN. One belonging to a
+    # generator defined inside it says nothing about when the helper suspends, and
+    # taking it cut the scan off above the install this file does perform.
+    nested_yield = held.replace(
+        "def _stubbed():\n",
+        "def _stubbed():\n    def _inner():\n        yield 1\n",
+    )
+    assert nested_yield != held
+    assert not _is_offender(nested_yield, heavy), nested_yield
 
     # Order still decides it INSIDE the block. Widening the search into compound
     # statements without narrowing the stub side to match read the whole enclosing
