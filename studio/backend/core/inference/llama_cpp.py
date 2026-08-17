@@ -507,13 +507,15 @@ def _keeps_compaction_boundary(thread_id: Optional[str]) -> bool:
         return False
 
 
-def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optional[list[str]]:
+def _archive_branch_transcript(
+    branch_messages: Optional[list[dict]], roles: Optional[tuple[str, ...]] = None
+) -> Optional[list[str]]:
     """The active branch, one normalised string per message, or None if there is nothing."""
     if not branch_messages:
         return None
     try:
         from core.rag import conversation_archive
-        return conversation_archive.branch_message_texts(branch_messages)
+        return conversation_archive.branch_message_texts(branch_messages, roles)
     except Exception:
         return None
 
@@ -591,7 +593,13 @@ def _sticky_compaction_boundary(
         # The stored rows are the whole DAG, so the newest assistant turn can belong to a
         # sibling branch left by Retry, whose boundary is sized for history this branch
         # does not have. Skip rows the request's own messages do not contain.
-        _branch = _archive_branch_transcript(branch_messages)
+        # Assistant messages only: the rows being checked are assistant replies, and
+        # against every role a short abandoned one ("Done") rides in on a live user
+        # message that merely contains it ("not done yet"), taking its boundary with it.
+        _branch = _archive_branch_transcript(branch_messages, ("assistant",))
+        if branch_messages and not _branch:
+            # A branch with no reply of its own has no boundary to restore.
+            return 0
         candidates = [
             message
             for message in reversed(studio_db.list_chat_messages(thread_id) or [])

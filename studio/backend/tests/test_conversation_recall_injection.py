@@ -546,6 +546,33 @@ def test_the_recall_reserve_is_dropped_once_archiving_has_failed(monkeypatch):
     assert llama_cpp._conversation_recall_reserve("t1") == 0
 
 
+def test_sticky_boundary_only_matches_assistant_messages(monkeypatch):
+    """The rows being checked are replies, so the branch has to be read as replies.
+
+    Against every role, an abandoned "Done" rides in on a live user message that merely
+    contains it ("not done yet I think"), and its much larger boundary is applied to a
+    branch that never had that reply.
+    """
+    from core.inference import llama_cpp
+
+    _fake_studio_db(
+        monkeypatch,
+        [
+            {"role": "user", "content": "did the deploy finish? not done yet I think"},
+            {
+                "role": "assistant",
+                "content": "Done",
+                "metadata": {
+                    "custom": {"contextTruncation": {"fits": True, "dropped_messages": 60}}
+                },
+            },
+        ],
+    )
+    branch = [{"role": "user", "content": "did the deploy finish? not done yet I think"}]
+
+    assert llama_cpp._sticky_compaction_boundary("t1", branch) == 0
+
+
 def test_sticky_boundary_reads_the_flattened_metadata_shape(monkeypatch):
     """The history row flattens `custom` into `metadata`; both shapes are in the wild."""
     from core.inference import llama_cpp

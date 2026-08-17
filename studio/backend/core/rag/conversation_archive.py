@@ -418,7 +418,9 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
     return [text for text in texts if text] or None
 
 
-def branch_message_texts(messages: Optional[list[dict]]) -> Optional[list[str]]:
+def branch_message_texts(
+    messages: Optional[list[dict]], roles: Optional[tuple[str, ...]] = None
+) -> Optional[list[str]]:
     """The ACTIVE branch, one normalised string PER MESSAGE, from the request's own messages.
 
     Per message rather than one blob, so the check stays inside the turn it is checking.
@@ -431,7 +433,15 @@ def branch_message_texts(messages: Optional[list[dict]]) -> Optional[list[str]]:
     thread-wide blob can validate a turn that is not on this branch. The client sends
     exactly one branch per request, and it is the same projection ``render_turn``
     archived from, so the probe compares like with like.
+
+    ``roles`` narrows it to messages of those roles. The rolling window compares stored
+    ASSISTANT rows, and against every role a short abandoned reply ("Done") matches a live
+    user message that merely contains it ("not done yet").
     """
+    if roles:
+        messages = [
+            message for message in (messages or []) if str(message.get("role") or "") in roles
+        ]
     if not messages:
         return None
     texts = [_normalise(_probe_text(message)) for message in messages]
