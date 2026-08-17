@@ -52,6 +52,10 @@ SETTLE_MS = 600
 SETTLE_TIMEOUT_S = 25.0
 # The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
+# How long the Data module is held while the deep-open is walked away from, and how far
+# into that hold the walking away happens. The gap is what makes the abandon real.
+DEEP_OPEN_HOLD_MS = 2500
+DEEP_OPEN_ABANDON_MS = 300
 
 report: dict = {
     "engine": ENGINE,
@@ -158,6 +162,88 @@ def open_dialog(page, tab: str | None = None) -> None:
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
 
 
+# Only the subpages put a back button in the panel header, so this reads "the Data tab
+# opened on an archive listing" without depending on the locale.
+ON_SUBPAGE_JS = """() => ({
+    subpage: !!document.querySelector('div[role="dialog"] main header button'),
+    elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
+        || { querySelectorAll: () => [] }).querySelectorAll('*').length,
+})"""
+
+# Deep-open to the archived chats, then walk away from it partway through the hold below.
+# Both halves run in the page, because a route handler that sleeps blocks this script too.
+ABANDON_DEEP_OPEN_JS = """(delay) => {
+    window.__abandonedAt = null;
+    window.__settingsSmoke.openArchived('chats');
+    setTimeout(() => {
+        const panel = document.querySelector('div[role="dialog"] main div.hover-scrollbar');
+        window.__abandonedAt = {
+            elements: panel ? panel.querySelectorAll('*').length : null,
+            subpage: !!document.querySelector('div[role="dialog"] main header button'),
+        };
+        window.__settingsSmoke.close();
+    }, delay);
+}"""
+
+
+def run_abandoned_deep_open(page) -> None:
+    """A deep-open the panel never mounted for must not outlive the navigation.
+
+    `openArchivedChats` sets `archivedRequested`, and DataTab is the only thing that clears
+    it. Now that the panel is fetched on first view, closing the dialog while that fetch is
+    in flight leaves the request set with nothing to consume it, and the next ordinary visit
+    to Data opens an archive listing nobody asked for. Runs before anything else opens the
+    dialog, so the Data module is still cold and the hold is what decides when it arrives.
+    """
+
+    def hold_data(route):
+        if "/data-tab" in route.request.url:
+            time.sleep(DEEP_OPEN_HOLD_MS / 1000)
+        return route.fallback()
+
+    page.route("**/*", hold_data)
+    try:
+        page.evaluate(ABANDON_DEEP_OPEN_JS, DEEP_OPEN_ABANDON_MS)
+        page.wait_for_timeout(DEEP_OPEN_HOLD_MS + 1500)
+    finally:
+        page.unroute("**/*", hold_data)
+    abandoned = page.evaluate("() => window.__abandonedAt")
+    open_dialog(page, "data")
+    settled = settle_panel(page)
+    landed = page.evaluate(ON_SUBPAGE_JS)
+    report["abandoned_deep_open"] = {
+        "abandoned_at": abandoned,
+        "landed": landed,
+        "state": page.evaluate("() => window.__settingsSmoke.state()"),
+        "settled_sig": settled.get("sig"),
+    }
+    log(f"abandoned deep-open: at close {abandoned}, later visit {landed}")
+    if not abandoned or abandoned.get("subpage"):
+        fail(f"deep-open abandon never happened mid-load, so nothing was tested ({abandoned})")
+    elif landed["elements"] < 5:
+        fail(f"after an abandoned deep-open, Data did not render at all ({landed})")
+    elif landed["subpage"]:
+        fail("an abandoned archive deep-open reopened the archive on the next visit to Data")
+    else:
+        log("an abandoned deep-open leaves the next visit to Data on the main page")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    page.wait_for_timeout(200)
+
+    # The other direction: dropping the abandoned ones must not drop the honoured ones.
+    page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
+    page.wait_for_selector('div[role="dialog"]', timeout = 15000)
+    settle_panel(page)
+    honoured = page.evaluate(ON_SUBPAGE_JS)
+    report["abandoned_deep_open"]["honoured"] = honoured
+    if not honoured["subpage"]:
+        fail(f"a deep-open the panel did reach no longer opens the archive ({honoured})")
+    else:
+        log("a deep-open the panel reaches still opens the archive")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    page.wait_for_timeout(200)
+    report["steps"].append("abandoned-deep-open")
+
+
 def run_chunk_fail(page) -> None:
     """One panel's module is blocked. The dialog must survive it, and so must the app."""
     open_dialog(page)
@@ -212,7 +298,10 @@ def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
         return
-    # --- 1. every tab renders when selected -----------------------------------------
+    # --- 1. a deep-open walked away from mid-load is not replayed later --------------
+    run_abandoned_deep_open(page)
+
+    # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)
     settle_panel(page)
     # Start from a tab that is not the persisted one, so the first iteration is a real switch.
@@ -236,7 +325,7 @@ def run(page) -> None:
             )
     report["steps"].append("all-tabs-render")
 
-    # --- 2. close/reopen, and deep-open straight to a tab ----------------------------
+    # --- 3. close/reopen, and deep-open straight to a tab ----------------------------
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(300)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
@@ -259,7 +348,7 @@ def run(page) -> None:
         page.wait_for_timeout(200)
     report["steps"].append("deep-open")
 
-    # --- 3. search, then jump to a result and confirm the scroll target flashed ------
+    # --- 4. search, then jump to a result and confirm the scroll target flashed ------
     # A real setting well down a long panel, so a jump that never happens shows in scrollTop.
     target_tab = "general"
     target_label = report["tabs"][target_tab]["settled"]["labels"][-1]

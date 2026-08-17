@@ -36,7 +36,10 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it.
+  // toast). DataTab uses it as its initial subpage, then clears it. Navigating
+  // away drops it, like scrollTarget: the panel is fetched on first view, so a
+  // dialog closed or a tab switched before it arrives has no one left to consume
+  // the request, and the next ordinary visit to Data would replay it.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -95,6 +98,7 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
       open: true,
       activeTab: tab ?? state.activeTab,
       scrollTarget: options?.scrollTarget ?? null,
+      archivedRequested: null,
       opener: captureOpener(),
     })),
   openArchivedChats: () =>
@@ -121,13 +125,14 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
   // pass after `open: false` lands, so the opener must still be readable
   // from the store at that point. The next openDialog() overwrites it.
-  closeDialog: () => set({ open: false, scrollTarget: null }),
+  closeDialog: () =>
+    set({ open: false, scrollTarget: null, archivedRequested: null }),
   setActiveTab: (tab) => {
     try {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tab);
     } catch {
       // ignore storage failures
     }
-    set({ activeTab: tab, scrollTarget: null });
+    set({ activeTab: tab, scrollTarget: null, archivedRequested: null });
   },
 }));

@@ -29,9 +29,14 @@ declare global {
     // Optional: the app typechecks this entry, and only the harness page installs the handle.
     __settingsSmoke?: {
       open: (tab?: string) => void;
+      openArchived: (shelf: string) => void;
       close: () => void;
       setTab: (tab: string) => void;
-      state: () => { open: boolean; activeTab: string };
+      state: () => {
+        open: boolean;
+        activeTab: string;
+        archivedRequested: string | null;
+      };
       errors: () => string[];
     };
   }
@@ -68,6 +73,11 @@ window.__settingsSmoke = {
   open: (tab?: string) => {
     store.getState().openDialog(tab as SettingsTab | undefined);
   },
+  // The archive toasts' deep-open: straight to Data, on the shelf they name.
+  openArchived: (shelf: string) => {
+    if (shelf === "chats") store.getState().openArchivedChats();
+    else store.getState().openArchivedMedia(shelf as "images" | "videos");
+  },
   close: () => {
     store.getState().closeDialog();
   },
@@ -76,7 +86,11 @@ window.__settingsSmoke = {
   },
   state: () => {
     const s = store.getState();
-    return { open: s.open, activeTab: s.activeTab };
+    return {
+      open: s.open,
+      activeTab: s.activeTab,
+      archivedRequested: s.archivedRequested,
+    };
   },
   errors: () => [...seenErrors],
 };
