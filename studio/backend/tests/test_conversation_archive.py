@@ -430,6 +430,44 @@ def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
     assert conversation_archive.recall("vecless-thread", "VECGONE-2020") is None
 
 
+def test_a_LATER_turn_cannot_supply_a_line_the_edit_removed(conn):
+    """The branch check has to stay inside the turn it is checking.
+
+    Against one flattened transcript, a missing line is satisfied by any later message
+    that repeats the words. Short answers repeat constantly, so an archived question and
+    the answer it got could survive that answer being edited away.
+    """
+    archived = conversation_archive.render_turn(
+        [{"role": "user", "content": "Should I deploy?"}, {"role": "assistant", "content": "No"}]
+    )
+    edited_away = [
+        {"role": "user", "content": "Should I deploy?"},
+        {"role": "assistant", "content": "Yes"},
+        {"role": "user", "content": "Is the staging queue busy?"},
+        {"role": "assistant", "content": "No"},
+    ]
+    still_there = [
+        {"role": "user", "content": "Should I deploy?"},
+        {"role": "assistant", "content": "No"},
+        {"role": "user", "content": "Is the staging queue busy?"},
+        {"role": "assistant", "content": "Yes"},
+    ]
+
+    assert (
+        conversation_archive._on_live_branch(
+            archived, conversation_archive.branch_message_texts(edited_away)
+        )
+        is False
+    )
+    # And the turn that IS still there is still found, or the check is just "no".
+    assert (
+        conversation_archive._on_live_branch(
+            archived, conversation_archive.branch_message_texts(still_there)
+        )
+        is True
+    )
+
+
 def test_a_turn_whose_lines_were_REORDERED_is_no_longer_on_the_branch(conn):
     """Independent line membership accepts a turn that was merely rearranged.
 
@@ -439,8 +477,8 @@ def test_a_turn_whose_lines_were_REORDERED_is_no_longer_on_the_branch(conn):
     original = [{"role": "assistant", "content": "REORDER-A first\nREORDER-B second"}]
     archived = conversation_archive.render_turn(original)
 
-    same = conversation_archive.branch_transcript(original)
-    swapped = conversation_archive.branch_transcript(
+    same = conversation_archive.branch_message_texts(original)
+    swapped = conversation_archive.branch_message_texts(
         [{"role": "assistant", "content": "REORDER-B second\nREORDER-A first"}]
     )
 
@@ -484,11 +522,11 @@ def test_a_tool_turn_with_BOTH_text_and_a_call_stays_on_its_branch(conn):
     ]
 
     assert conversation_archive._on_live_branch(
-        archived, conversation_archive.branch_transcript(request_shape)
+        archived, conversation_archive.branch_message_texts(request_shape)
     )
     # The stored shape keeps arguments as an object, so its spacing is not the model's.
     assert conversation_archive._on_live_branch(
-        archived, conversation_archive.branch_transcript(stored_shape)
+        archived, conversation_archive.branch_message_texts(stored_shape)
     )
 
 
@@ -548,7 +586,7 @@ def test_editing_ONE_chunk_of_a_long_turn_retires_the_whole_turn(conn):
         .fetchone()["text"]
     )
     assert conversation_archive._on_live_branch(
-        first_chunk, conversation_archive.branch_transcript(rewritten)
+        first_chunk, conversation_archive.branch_message_texts(rewritten)
     )
 
     found = conversation_archive.recall(
@@ -582,11 +620,11 @@ def test_a_long_multi_line_tool_result_stays_on_its_branch(conn):
     assert text.endswith("...")
     assert len(text.splitlines()) > 100
 
-    transcript = conversation_archive.branch_transcript(group)
+    transcript = conversation_archive.branch_message_texts(group)
 
     assert conversation_archive._on_live_branch(text, transcript) is True
     # And an edit to the part that WAS archived still retires the copy.
-    edited = conversation_archive.branch_transcript(
+    edited = conversation_archive.branch_message_texts(
         [
             group[0],
             {**group[1], "content": body.replace("opening line", "rewritten line")},

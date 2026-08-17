@@ -487,13 +487,13 @@ def _conversation_recall_reserve(thread_id: Optional[str]) -> int:
         return 0
 
 
-def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optional[str]:
-    """The active branch as one normalised blob, or None if there is nothing to compare."""
+def _archive_branch_transcript(branch_messages: Optional[list[dict]]) -> Optional[list[str]]:
+    """The active branch, one normalised string per message, or None if there is nothing."""
     if not branch_messages:
         return None
     try:
         from core.rag import conversation_archive
-        return conversation_archive.branch_transcript(branch_messages)
+        return conversation_archive.branch_message_texts(branch_messages)
     except Exception:
         return None
 
@@ -613,7 +613,13 @@ def _archive_and_recall(
     Recall fires at most once per request. The tool loop refits on every iteration, and
     without the guard each pass would stack another recall block onto the prompt.
     """
-    result = {"conversation": conversation, "events": [], "counts": {}, "recalled": False}
+    result = {
+        "conversation": conversation,
+        "events": [],
+        "counts": {},
+        "recalled": False,
+        "anchored": [],
+    }
     if not thread_id:
         return result
     try:
@@ -698,6 +704,7 @@ def _archive_and_recall(
 
             result["conversation"] = candidate["conversation"]
             result["events"] = candidate["events"]
+            result["anchored"] = candidate["anchored"]
             break
 
         counts["recalled_chunks"] = int(recall.get("sources") or 0)
@@ -709,7 +716,13 @@ def _archive_and_recall(
 
 
 def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Optional[dict]:
-    """The conversation with ``recall`` added, or None if there was nowhere to put it."""
+    """The conversation with ``recall`` added, or None if there was nowhere to put it.
+
+    ``anchored`` is exactly what this injection is responsible for keeping: the two
+    synthetic messages for a tool exchange, or the single rewritten user message inline.
+    The caller protects those from a later refit, and protecting anything else would pin
+    a real turn that the fit is entitled to evict.
+    """
     if style == "inline":
         prefix = recall.get("prefix") or ""
         updated = list(conversation)
@@ -719,10 +732,12 @@ def _inject_recall(conversation: list[dict], recall: dict, style: str) -> Option
                 break
         else:
             return None
-        return {"conversation": updated, "events": []}
+        return {"conversation": updated, "events": [], "anchored": [updated[index]]}
+    added = list(recall["messages"])
     return {
-        "conversation": list(conversation) + list(recall["messages"]),
+        "conversation": list(conversation) + added,
         "events": list(recall["events"]),
+        "anchored": added,
     }
 
 
@@ -20633,9 +20648,14 @@ class LlamaCppBackend:
                         truncation = {**truncation, **_recalled["counts"]}
                         if _recalled["recalled"]:
                             _conversation_recall_done = True
-                            # Anchor the recalled turns so a later refit in this same
-                            # request cannot evict what we just paid to bring back.
-                            for _message in _recalled["conversation"][-2:]:
+                            # Anchor exactly what the injection added, so a later refit in
+                            # this same request cannot evict what we just paid to bring
+                            # back. NOT the last two messages: inline recall appends
+                            # nothing and rewrites the latest user turn in place, so that
+                            # slice also pinned the assistant turn before it, and with it
+                            # a whole eviction unit the fit was entitled to drop -- enough
+                            # to fail a later iteration that would otherwise have fit.
+                            for _message in _recalled["anchored"]:
                                 _rolling_anchor_ids.add(id(_message))
                             for _ev in _recalled["events"]:
                                 yield _ev
@@ -22010,7 +22030,7 @@ class LlamaCppBackend:
                     truncation = {**truncation, **_recalled["counts"]}
                     if _recalled["recalled"]:
                         _conversation_recall_done = True
-                        for _message in _recalled["conversation"][-2:]:
+                        for _message in _recalled["anchored"]:
                             _rolling_anchor_ids.add(id(_message))
                         for _ev in _recalled["events"]:
                             yield _ev

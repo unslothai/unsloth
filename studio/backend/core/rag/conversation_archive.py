@@ -403,8 +403,8 @@ def _normalise(text: str) -> str:
     return " ".join((text or "").split()).lower()
 
 
-def _live_transcript(thread_id: str) -> Optional[str]:
-    """The thread's saved messages as one normalised blob, or None if it has none.
+def _live_transcript(thread_id: str) -> Optional[list[str]]:
+    """The thread's saved messages, one normalised string each, or None if it has none.
 
     Used to keep recall on the branch the user is actually on. Editing an earlier message
     rewinds a thread and continues down a new branch, but the archive is append-only and
@@ -424,12 +424,18 @@ def _live_transcript(thread_id: str) -> Optional[str]:
         return None
     if not messages:
         return None
-    blob = _normalise("\n".join(part for part in map(_probe_text, messages) if part))
-    return blob or None
+    texts = [_normalise(_probe_text(message)) for message in messages]
+    return [text for text in texts if text] or None
 
 
-def branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
-    """The ACTIVE branch, normalised the same way, built from the request's own messages.
+def branch_message_texts(messages: Optional[list[dict]]) -> Optional[list[str]]:
+    """The ACTIVE branch, one normalised string PER MESSAGE, from the request's own messages.
+
+    Per message rather than one blob, because the branch check has to stay inside the turn
+    it is checking. Flattened together, a probe can be satisfied by any later message that
+    happens to repeat the words: an archived "Should I deploy? / No" whose answer was
+    edited to "Yes" still matched, because an unrelated later turn said "No". Reproduced
+    against this code before the split.
 
     Preferred over ``_live_transcript`` wherever the caller has it, because the stored
     rows are the whole message DAG, not a branch. Retry and regenerate keep the abandoned
@@ -444,11 +450,11 @@ def branch_transcript(messages: Optional[list[dict]]) -> Optional[str]:
     """
     if not messages:
         return None
-    blob = _normalise("\n".join(part for part in map(_probe_text, messages) if part))
-    return blob or None
+    texts = [_normalise(_probe_text(message)) for message in messages]
+    return [text for text in texts if text] or None
 
 
-def content_on_branch(content, transcript: Optional[str]) -> bool:
+def content_on_branch(content, transcript: Optional[list[str]]) -> bool:
     """Whether one stored message's text appears on the branch ``transcript`` describes.
 
     Shared with the rolling window, which has the same problem recall does: a thread's
@@ -459,7 +465,7 @@ def content_on_branch(content, transcript: Optional[str]) -> bool:
     if not transcript:
         return True
     text = _normalise(_probe_text({"content": content}))
-    return not text or text in transcript
+    return not text or any(text in message for message in transcript)
 
 
 _ROLE_PREFIX = re.compile(
@@ -473,7 +479,7 @@ _ROLE_PREFIX = re.compile(
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
 
 
-def _on_live_branch(text: str, transcript: str) -> bool:
+def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
     """Whether an archived turn still exists in the saved thread.
 
     Substring containment on a normalised prefix rather than a digest match: the archived
@@ -503,25 +509,44 @@ def _on_live_branch(text: str, transcript: str) -> bool:
     probes = [probe for probe in probes if probe]
     if not probes:
         return False
-    # EVERY line, IN ORDER. A turn is archived as a unit, so editing only the assistant
-    # half leaves the user line matching and would keep serving the answer that no longer
-    # exists; requiring all of them means an edit to any part of a turn retires the whole
-    # archived copy. Requiring them in order closes the rest of the same hole: independent
-    # membership accepts a turn whose lines were merely rearranged, and would serve the
-    # pre-edit ordering back as though it were what happened.
+    if not transcript:
+        return False
+    # EVERY line, IN ORDER, and WITHIN ONE RUN OF ADJACENT MESSAGES.
     #
-    # Both sides are rendered by render_turn, so the order being compared is the order the
-    # archive itself wrote, not an assumption about how a message store lays a turn out.
-    position = 0
+    # All of a turn: it is archived as a unit, so editing only the assistant half leaves
+    # the user line matching and would keep serving an answer that no longer exists.
+    # In order: independent membership accepts a turn whose lines were merely rearranged.
+    # In one bounded run: a global scan lets a missing line be supplied by any later
+    # message that repeats the words, which is how "Should I deploy? / No" survived its
+    # answer being edited to "Yes".
+    #
+    # The window is the probe count, and a group of m messages always renders at least m
+    # lines, so the real turn always fits inside it.
+    window = len(probes)
+    return any(
+        _probes_match_from(probes, transcript, start, window) for start in range(len(transcript))
+    )
+
+
+def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
+    """Whether ``probes`` appear in order within ``messages[start:start + window]``."""
+    index = start
+    cursor = 0
+    last = min(len(messages), start + window)
     for probe in probes:
-        found = transcript.find(probe, position)
-        if found < 0:
+        while index < last:
+            found = messages[index].find(probe, cursor)
+            if found >= 0:
+                cursor = found + len(probe)
+                break
+            index += 1
+            cursor = 0
+        else:
             return False
-        position = found + len(probe)
     return True
 
 
-def _document_on_live_branch(conn, document_id: str, transcript: str, cache: dict) -> bool:
+def _document_on_live_branch(conn, document_id: str, transcript: list[str], cache: dict) -> bool:
     """Whether EVERY chunk of an archived turn is still on the branch.
 
     Per chunk is not enough. A turn longer than CHUNK_TOKENS is stored as several
@@ -615,7 +640,7 @@ def recall(
         # The request's own branch first: the stored rows are the whole DAG, siblings
         # included. Falling back to them is still better than not filtering at all, for
         # a caller that has no branch to offer.
-        transcript = branch_transcript(branch_messages) or _live_transcript(thread_id)
+        transcript = branch_message_texts(branch_messages) or _live_transcript(thread_id)
         fetch = limit * _BRANCH_FILTER_OVERFETCH
         rows: dict = {}
         hits: list = []

@@ -676,6 +676,72 @@ def test_a_model_initiated_search_is_filtered_to_the_request_branch(archived, mo
     assert seen["branch_messages"] == branch
 
 
+def test_inline_recall_anchors_only_the_turn_it_rewrote(archived, monkeypatch):
+    """Inline recall appends nothing; it rewrites the latest user message in place.
+
+    Anchoring the last two messages therefore pinned the assistant turn before it as well,
+    and with it a whole eviction unit the fit was entitled to drop. On a request whose
+    next iteration overflows, that is the difference between compacting and failing.
+    """
+    from core.inference import llama_cpp
+
+    conversation = [
+        {"role": "user", "content": "an earlier question"},
+        {"role": "assistant", "content": "an earlier answer"},
+        {"role": "user", "content": "what was that limerick"},
+    ]
+    monkeypatch.setattr(
+        tools_mod,
+        "build_conversation_recall",
+        lambda *args, **kwargs: {"prefix": "RECALLED ", "messages": [], "events": [], "sources": 1},
+    )
+
+    out = llama_cpp._archive_and_recall(
+        conversation,
+        conversation,
+        thread_id = THREAD,
+        style = "inline",
+        recall_done = False,
+        # Any non-zero budget: with none, the fit obtained no room and recall is skipped.
+        recall_budget_tokens = 100_000,
+    )
+
+    assert out["recalled"] is True
+    # Exactly one message is anchored, and it is the rewritten latest user turn.
+    assert len(out["anchored"]) == 1
+    assert out["anchored"][0]["content"].startswith("RECALLED ")
+    assert out["anchored"][0] is out["conversation"][-1]
+    # The assistant turn before it stays evictable.
+    assert id(conversation[1]) not in {id(message) for message in out["anchored"]}
+
+
+def test_tool_recall_anchors_the_synthetic_exchange(archived, monkeypatch):
+    """The tool style DOES append two messages, and those are what must survive a refit."""
+    from core.inference import llama_cpp
+
+    conversation = [{"role": "user", "content": "what was that limerick"}]
+    synthetic = [
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "conv_recall_x"}]},
+        {"role": "tool", "tool_call_id": "conv_recall_x", "content": "an earlier turn"},
+    ]
+    monkeypatch.setattr(
+        tools_mod,
+        "build_conversation_recall",
+        lambda *args, **kwargs: {"messages": synthetic, "events": [], "sources": 1},
+    )
+
+    out = llama_cpp._archive_and_recall(
+        conversation,
+        conversation,
+        thread_id = THREAD,
+        style = "tool",
+        recall_done = False,
+        recall_budget_tokens = 100_000,
+    )
+
+    assert [id(message) for message in out["anchored"]] == [id(m) for m in out["conversation"][-2:]]
+
+
 def test_an_over_budget_recall_is_retried_with_fewer_turns(archived, monkeypatch):
     """Dropping the lot is the wrong answer when three of four chunks would fit.
 
