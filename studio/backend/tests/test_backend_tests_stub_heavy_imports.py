@@ -475,15 +475,22 @@ def _functions_called_at_import(tree: ast.Module) -> dict[str, int]:
     while changed:
         changed = False
         for caller, line in list(first.items()):
-            for node in ast.walk(functions[caller]):
-                if not isinstance(node, ast.Call):
-                    continue
-                callee = _callee_name(node)
-                # The inner helper runs when the OUTER one is called, so it inherits
-                # that line rather than its own, which is only where it is written.
-                if callee in functions and line < first.get(callee, line + 1):
-                    first[callee] = line
-                    changed = True
+            # Only the calls that actually run when the outer helper runs. ast.walk
+            # would also visit one under `if False:` and one inside a nested def that
+            # nothing calls, and handing those the outer boundary fails a file Python
+            # never executes that way. Reported on this PR. Same reachability rule as
+            # the module body uses, so the two cannot answer differently.
+            for statement in functions[caller].body:
+                for node in _reachable_import_time_nodes(statement):
+                    if not isinstance(node, ast.Call):
+                        continue
+                    callee = _callee_name(node)
+                    # The inner helper runs when the OUTER one is called, so it
+                    # inherits that line rather than its own, which is only where it
+                    # is written.
+                    if callee in functions and line < first.get(callee, line + 1):
+                        first[callee] = line
+                        changed = True
     return first
 
 
@@ -1004,6 +1011,35 @@ def test_the_importorskip_guard_would_catch_an_unstubbed_module():
     )
     assert calls(nested_helper_at_import) == [("core.inference.inference", 6)]
     assert not safe(nested_helper_at_import)
+
+    # A call the outer helper never makes does not propagate: neither one under a
+    # constant-false test, nor one inside a nested def that nothing invokes. Handing
+    # those the outer boundary failed a file Python never executes that way. Reported
+    # on this PR.
+    unreachable_inner_call = (
+        "import pytest, sys\n"
+        "def _inner():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "def _outer():\n"
+        "    if False:\n"
+        "        _inner()\n"
+        "    return None\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(unreachable_inner_call)
+    deferred_inner_call = (
+        "import pytest, sys\n"
+        "def _inner():\n"
+        "    return pytest.importorskip('core.inference.inference')\n"
+        "def _outer():\n"
+        "    def _later():\n"
+        "        return _inner()\n"
+        "    return _later\n"
+        "_outer()\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert safe(deferred_inner_call)
 
     # A chain nothing calls at import time still keeps the deferred boundary.
     nested_helper_never_called = (
