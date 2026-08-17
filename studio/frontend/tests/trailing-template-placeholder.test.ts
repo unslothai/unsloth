@@ -11,8 +11,8 @@ import {
 
 /**
  * What the adapter used to run over the whole buffer on every arrival. The
- * bounded scan has to agree with it character for character on anything that
- * fits in the window, or the strip has changed what reaches the bubble.
+ * bounded scan must agree with it character for character on anything that fits
+ * in the window, or the strip has changed what reaches the bubble.
  */
 const UNBOUNDED = /\s*\$\{[^}]*\}\s*$/;
 function stripUnbounded(text: string): string {
@@ -58,11 +58,10 @@ test("bounded strip matches the unbounded pattern on fixed cases", () => {
 });
 
 /**
- * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is
- * not usable here: the product runs past 2^53, so the low bits it is sampled
- * on come out constant and half of any alphabet is never drawn, which is how
- * the first draft of this test came to compare 20,000 strings that the pattern
- * could not match.
+ * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is not
+ * usable here: the product runs past 2^53, so the sampled low bits come out
+ * constant and half of any alphabet is never drawn, which is how the first draft
+ * of this test came to compare 20,000 strings the pattern could not match.
  */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
@@ -76,8 +75,8 @@ function mulberry32(seed: number): () => number {
 }
 
 /**
- * Random strings over the characters that matter here, half of them ending in
- * something the pattern has a real chance of matching.
+ * Random strings over the characters that matter, each ending in a tail the
+ * pattern has a real chance of matching.
  */
 function* randomInputs(count: number, seed = 20260816): Generator<string> {
   const alphabet = ["$", "{", "}", " ", "\n", "\t", "a", "b", "x", "${", "a}"];
@@ -120,8 +119,8 @@ test("bounded strip matches the unbounded pattern on random inputs", () => {
     if (reference !== input) stripped += 1;
   }
   assert.equal(checked, 20_000);
-  // Without this the comparison above holds for an implementation that returns
-  // its argument, which is exactly what the first draft of this test did.
+  // Without this the comparison above also holds for an implementation that
+  // returns its argument, which is what the first draft of this test did.
   assert.equal(
     stripped > 2_000,
     true,
@@ -130,8 +129,8 @@ test("bounded strip matches the unbounded pattern on random inputs", () => {
 });
 
 test("bounded strip matches the unbounded pattern behind a long reply", () => {
-  // The window is what makes the scan cheap; a placeholder at the end of a
-  // long reply still has to be stripped exactly, whatever precedes it.
+  // The window makes the scan cheap, but a placeholder at the end of a long
+  // reply still has to be stripped exactly, whatever precedes it.
   const prefixes = [
     "word ".repeat(20_000),
     "}".repeat(5_000),
@@ -158,8 +157,7 @@ test("a placeholder past the window is left whole, never cut in half", () => {
   assert.equal(stripUnbounded(input), "answer");
   const stripped = stripTrailingTemplatePlaceholder(input);
   assert.equal(stripped, input, "an oversized fragment must be left alone");
-  // What must never happen: a result that keeps half a fragment, or that is
-  // not a prefix of the input at all.
+  // Never acceptable: half a fragment kept, or a result that is not a prefix.
   assert.equal(input.startsWith(stripped), true);
 });
 
@@ -172,7 +170,7 @@ test("a whitespace run past the window cannot restart the whole-buffer scan", ()
 
 test("a narrow window only ever strips less than the unbounded pattern", () => {
   // Whatever the window, the scan may keep text the unbounded pattern would
-  // have removed, but it may never remove text the unbounded pattern kept.
+  // have removed, but never remove text the unbounded pattern kept.
   let differed = 0;
   for (const window of [1, 2, 4, 8, 16]) {
     for (const input of randomInputs(4_000)) {
@@ -196,8 +194,8 @@ test("a narrow window only ever strips less than the unbounded pattern", () => {
       if (bounded !== input) differed += 1;
     }
   }
-  // The property is trivially true of a scan that never strips anything, so
-  // the inputs have to reach the strip for this to mean something.
+  // The property is trivial for a scan that never strips, so the inputs have to
+  // reach the strip for it to mean anything.
   assert.equal(
     differed > 1_000,
     true,

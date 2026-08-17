@@ -10,9 +10,9 @@ import {
 } from "../src/features/chat/utils/parse-assistant-content.ts";
 
 /**
- * Feed `chunks` in order and assert the tracker agrees with a full rescan
- * after every one of them. `hasUnclosedThinkTag` is the reference: the
- * tracker exists only to give the same answer without rereading the buffer.
+ * Feed `chunks` in order and assert the tracker agrees with a full rescan after
+ * each one. `hasUnclosedThinkTag` is the reference: the tracker exists only to
+ * give the same answer without rereading the buffer.
  */
 function assertAgreesOnStream(
   chunks: string[],
@@ -78,8 +78,8 @@ test("tags delivered one character per arrival are seen", () => {
 });
 
 test("a tag split across arrivals that carry nothing else is seen", () => {
-  // The worst case for an overlap that is too short: every arrival is a single
-  // character of the tag, with empty arrivals in between.
+  // Worst case for too short an overlap: one tag character per arrival, with
+  // empty arrivals in between.
   assertAgreesOnStream(
     ["a", "<", "", "t", "", "h", "i", "", "n", "k", "", ">", "b"],
     "empty arrivals between tag characters",
@@ -124,8 +124,8 @@ test("a stream seeded with a continuation partial is tracked", () => {
 });
 
 test("a suffix removed from the buffer is accounted for", () => {
-  // The adapter strips a trailing ${...} fragment after appending, so the
-  // buffer it hands over can be shorter than the one from the arrival before.
+  // The adapter strips a trailing ${...} fragment after appending, so its
+  // buffer can be shorter than the one from the arrival before.
   const cases: Array<{ steps: string[]; label: string }> = [
     { steps: ["<think>a", "<think>a ${x}", "<think>a"], label: "plain strip" },
     {
@@ -133,8 +133,8 @@ test("a suffix removed from the buffer is accounted for", () => {
       label: "strip after a close",
     },
     {
-      // The removed suffix takes the closing tag with it, so the buffer is
-      // unclosed again and the tracker has to find the earlier close.
+      // The suffix takes the closing tag with it, so the buffer is unclosed
+      // again and the tracker has to find the earlier close.
       steps: ["<think>a</think>b</think>", "<think>a</think>b"],
       label: "strip removes the last close tag",
     },
@@ -162,8 +162,8 @@ test("a suffix removed from the buffer is accounted for", () => {
 });
 
 test("append then strip within one arrival is tracked", () => {
-  // What the adapter actually does: append the delta, strip a trailing
-  // fragment, then ask once. Only the post-strip buffer is ever seen.
+  // What the adapter does: append the delta, strip a trailing fragment, then
+  // ask once. Only the post-strip buffer is ever seen.
   const tracker = createThinkTagTracker();
   const deltas = [
     "<think>",
@@ -187,9 +187,9 @@ test("append then strip within one arrival is tracked", () => {
 });
 
 /**
- * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is
- * not usable here: the product runs past 2^53, so the low bits it is sampled
- * on come out constant and half of any alphabet is never drawn.
+ * Deterministic pseudo-random generator. A plain `seed * 1103515245` loop is not
+ * usable here: the product runs past 2^53, so the sampled low bits come out
+ * constant and half of any alphabet is never drawn.
  */
 function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
@@ -235,7 +235,7 @@ test("tracker agrees with a full rescan on random streams", () => {
     closed += seen.closed;
   }
   // Both answers have to occur, or the comparison above would hold for a
-  // tracker that returns a constant.
+  // constant tracker.
   assert.equal(unclosed > 1_000, true, `only ${unclosed} unclosed states seen`);
   assert.equal(closed > 1_000, true, `only ${closed} closed states seen`);
 });
@@ -252,7 +252,7 @@ test("tracker agrees with a full rescan on random streams with strips", () => {
     const count = 1 + (next() % 16);
     for (let i = 0; i < count; i += 1) {
       text += alphabet[next() % alphabet.length];
-      // Cut a suffix off, the way the trailing-fragment strip does.
+      // Cut a suffix off, as the trailing-fragment strip does.
       if (next() % 3 === 0) {
         const shorter = text.slice(0, Math.max(0, text.length - (next() % 12)));
         if (shorter.length < text.length) strips += 1;

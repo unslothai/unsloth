@@ -12,18 +12,17 @@ import {
 import { stripTrailingTemplatePlaceholder } from "../src/features/chat/utils/trailing-template-placeholder.ts";
 
 /**
- * These are complexity tests, not timing tests: they count the characters the
- * scans look at, so they say the same thing on an idle laptop and on a loaded
- * CI box. Every string primitive the two scans use is counted, by the number
- * of characters it can read:
+ * Complexity tests, not timing tests: they count the characters the scans look
+ * at, so they say the same thing on an idle laptop and a loaded CI box. Every
+ * string primitive the scans use is counted by what it can read:
  *
  *   String replace / lastIndexOf / indexOf   the receiver's length
  *   String slice                             the length it produces
  *   RegExp exec / test                       the length of the subject
  *
- * `test` is in the list because the bounded strip walks the trailing
- * whitespace run one character at a time; each of those reads shows up as a
- * one-character subject, so a walk that ran away would be counted, not hidden.
+ * `test` is included because the bounded strip walks the trailing whitespace run
+ * one character at a time; each read shows up as a one-character subject, so a
+ * runaway walk is counted rather than hidden.
  */
 type Counted = { chars: number };
 
@@ -120,7 +119,7 @@ function code(chars: number): string {
   return `${out.slice(0, Math.max(7, chars - 4))}\n\`\`\`\n`;
 }
 
-/** A reply shaped like a reasoning model's: a think block, prose, and code. */
+/** A reply shaped like a reasoning model's: think block, prose, code. */
 function buildReply(chars: number): string {
   const think = `<think>${prose(Math.round(chars * 0.25), 1)}</think>`;
   const body = prose(Math.round(chars * 0.5), 2);
@@ -186,17 +185,17 @@ test("the trailing placeholder strip is linear in the reply length", () => {
   const large = stripCost(LARGE, stripTrailingTemplatePlaceholder);
   const growth = large / small;
 
-  // Twice the reply, twice the arrivals, so a scan whose per-arrival cost does
-  // not depend on what came before doubles. Anything near 4 is the whole
-  // buffer being read again on every arrival.
+  // Twice the reply, twice the arrivals, so a scan whose per-arrival cost is
+  // independent of what came before doubles. Near 4 means the whole buffer is
+  // being read again on every arrival.
   assert.equal(
     growth < 2.5,
     true,
     `strip cost grew ${growth.toFixed(2)}x for twice the reply (${small} -> ${large} chars scanned); that is not linear`,
   );
 
-  // And the defect it replaces, measured the same way, so this test says what
-  // it is guarding against rather than only asserting a number.
+  // The defect it replaces, measured the same way, so the test states what it
+  // guards against rather than only asserting a number.
   const unboundedSmall = stripCost(SMALL, (text) => text.replace(UNBOUNDED, ""));
   const unboundedLarge = stripCost(LARGE, (text) => text.replace(UNBOUNDED, ""));
   const unboundedGrowth = unboundedLarge / unboundedSmall;
@@ -228,8 +227,8 @@ test("think tag tracking is linear in the reply length", () => {
     `tracker cost grew ${growth.toFixed(2)}x for twice the reply (${small} -> ${large} chars scanned); that is not linear`,
   );
 
-  // The tracker reads each character of the reply a small, fixed number of
-  // times, so its total is a multiple of the reply, not of the reply squared.
+  // Each character is read a small fixed number of times, so the total is a
+  // multiple of the reply, not of the reply squared.
   assert.equal(
     large < LARGE * 30,
     true,
@@ -268,7 +267,7 @@ function withoutComments(source: string): string {
       if (at === -1) {
         return line;
       }
-      // Keep a line whose "//" sits inside a string literal, as in "https://".
+      // Keep a "//" inside a string literal, as in "https://".
       const quotes = line.slice(0, at).match(/["'`]/g)?.length ?? 0;
       return quotes % 2 === 1 ? line : line.slice(0, at);
     })
@@ -305,7 +304,7 @@ test("the adapter asks the tracker once per arrival, not inside a condition", ()
     "the tracker has to see every state the buffer passes through, so exactly one call site",
   );
 
-  // The call has to be its own statement. Inside the `&&` chain below it, the
+  // The call has to be its own statement: inside the `&&` chain below, the
   // short-circuit would skip arrivals, and a strip on a skipped arrival would
   // leave the tracker's recorded tag positions describing text that is gone.
   assert.match(

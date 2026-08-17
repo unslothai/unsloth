@@ -4671,9 +4671,9 @@ export function createOpenAIStreamAdapter(
       // the finalizers re-derive the new output and repair a repeat/restart.
       let cumulativeText = continuation ? continuation.partial : "";
       // Answers "does the text end inside <think>" from what each arrival adds
-      // rather than from the whole buffer. It has to see every state the
-      // buffer passes through, so it is updated once per arrival, next to the
-      // strip below, and never behind a short-circuiting condition.
+      // rather than from the whole buffer. It has to see every state the buffer
+      // passes through, so it is updated once per arrival, next to the strip
+      // below, and never behind a short-circuiting condition.
       const thinkTags = createThinkTagTracker();
       // What the cap is measured against: only grows, unlike cumulativeText,
       // and counts tool-argument deltas, which never reach it.
@@ -6338,9 +6338,9 @@ export function createOpenAIStreamAdapter(
                   stripTrailingTemplatePlaceholder(cumulativeText);
               }
               // Right after the strip, so the tracker sees the buffer the
-              // arrival ended with. Kept out of the condition below, which
-              // short-circuits: skipping arrivals would leave the strip's
-              // removals unaccounted for.
+              // arrival ended with. Kept out of the short-circuiting condition
+              // below: skipping arrivals would leave the strip's removals
+              // unaccounted for.
               const textEndsInsideThink = thinkTags.update(cumulativeText);
               const assistantContent = liveAssistantContent();
 
