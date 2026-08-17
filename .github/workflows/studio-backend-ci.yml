@@ -109,6 +109,22 @@ jobs:
           # keeps the install ~250 MB / ~1 min on a clean runner.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple 'torch>=2.4,<2.11'
           pip install 'transformers>=4.51,<5.5'
+          # peft: core/inference/inference.py imports it at module scope, and it is listed
+          # only in extras-no-deps.txt and no-torch-runtime.txt, neither of which this job
+          # installs. Without it every importorskip of that module SKIPS instead of running,
+          # which is invisible: test_safetensors_reasoning_stream.py reported 10 passed and
+          # 3 skipped here, green. Stubbing it instead does not work -- transformers probes
+          # `importlib.util.find_spec("peft")`, which raises on a stub whose __spec__ is None.
+          # AFTER the CPU torch line above, not before it: peft depends on torch, so pip
+          # would resolve that from PyPI, and the CUDA wheel it picks satisfies the range
+          # the next line asks for, leaving this nominally CPU-only job carrying the CUDA
+          # distribution and its nvidia-* dependencies.
+          # The version comes from the requirements file rather than being written here:
+          # extras-no-deps.txt pins peft==0.18.1 deliberately (0.19.0 breaks Unsloth's
+          # export subprocess), and an unconstrained install takes the newest release,
+          # so this job would test against a peft production never ships and no other
+          # job installs. Read out of the file so the two cannot drift apart.
+          pip install "$(grep -m1 -E '^peft==' studio/backend/requirements/extras-no-deps.txt)"
           # torchao: the pre-quant allowlist is built by importing the torchao tensor
           # constructors a checkpoint names, and registration refuses unless at least one of
           # them resolves. Without it every pre-quant load returns None and 21 tests across
