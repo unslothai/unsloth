@@ -699,7 +699,10 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
     proc = subprocess.Popen(
         [sys.executable, str(script)],
-        env = env, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
     )
     try:
         _await_ready(proc)
@@ -760,7 +763,10 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
     proc = subprocess.Popen(
         [sys.executable, str(script)],
-        env = env, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
     )
     try:
         _await_ready(proc)
@@ -812,8 +818,7 @@ def test_the_leaked_warning_is_still_a_github_annotation(tmp_path, monkeypatch, 
     lines = capsys.readouterr().out.splitlines()
     warnings = [l for l in lines if "Kaggle kernels may still be running" in l]
     assert warnings, (
-        f"release() never warned about the kernel it could not delete. Output was: "
-        f"{lines[-8:]}"
+        f"release() never warned about the kernel it could not delete. Output was: " f"{lines[-8:]}"
     )
     assert warnings[0].startswith("::warning"), (
         f"the annotation was written as {warnings[0]!r}. GitHub matches ::warning at the "
