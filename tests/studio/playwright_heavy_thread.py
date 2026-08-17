@@ -1877,25 +1877,23 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
         # own. Only the runtime's copy shows the keystroke reached React rather than just
         # the textarea, and a keystroke that reached nothing still reports the ~33ms
         # paint floor, which reads as a plausible timing.
-                # Per repetition, not just the last one. An earlier repetition that typed into
-                # a dead composer contributed its timing to the median all the same.
-                dom_texts = keystroke.get("domText_per_repetition", [keystroke["domText"]])
-                runtime_texts = keystroke.get(
-                    "runtimeText_per_repetition", [keystroke["runtimeText"]]
+        # Per repetition, not just the last one. An earlier repetition that typed into
+        # a dead composer contributed its timing to the median all the same.
+        dom_texts = keystroke.get("domText_per_repetition", [keystroke["domText"]])
+        runtime_texts = keystroke.get("runtimeText_per_repetition", [keystroke["runtimeText"]])
+        for index, (dom, runtime) in enumerate(zip(dom_texts, runtime_texts)):
+            if runtime != dom:
+                failures.append(
+                    f"{where} typed {dom!r} into the DOM on repetition {index + 1} but "
+                    f"the runtime holds {runtime!r}; the keystroke never reached the "
+                    "composer state, and that repetition is inside the median"
                 )
-                for index, (dom, runtime) in enumerate(zip(dom_texts, runtime_texts)):
-                    if runtime != dom:
-                        failures.append(
-                            f"{where} typed {dom!r} into the DOM on repetition {index + 1} but "
-                            f"the runtime holds {runtime!r}; the keystroke never reached the "
-                            "composer state, and that repetition is inside the median"
-                        )
-        # Sitting on the paint floor is NOT a harness failure here, and the reason is a
-        # finding rather than an excuse: the character reaches the composer and paints on
-        # the very next frame at every size, while the thread churns for another 180ms
-        # afterwards. `runtimeText == domText` above is what proves the keystroke landed;
-        # the floor comparison only says this particular axis has no room to move, which
-        # the growth report states per axis.
+    # Sitting on the paint floor is NOT a harness failure here, and the reason is a
+    # finding rather than an excuse: the character reaches the composer and paints on
+    # the very next frame at every size, while the thread churns for another 180ms
+    # afterwards. `runtimeText == domText` above is what proves the keystroke landed;
+    # the floor comparison only says this particular axis has no room to move, which
+    # the growth report states per axis.
     scroll = actions["scroll"]
     # Equal travel at every size or the columns are not the same gesture.
     if scroll.get("ran") and scroll["scrolledPx"] < SCROLL_STEPS * SCROLL_STEP_PX * 0.9:

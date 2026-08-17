@@ -134,8 +134,8 @@ def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
     # repetition, so a keystroke that reached a dead composer on repetition 1 still contributed
     # its timing to the reported number and a verdict reading the last repetition alone passes it.
     decision = verdict()
-    assert 'domText_per_repetition' in decision
-    assert 'runtimeText_per_repetition' in decision
+    assert "domText_per_repetition" in decision
+    assert "runtimeText_per_repetition" in decision
     assert "for index, (dom, runtime) in enumerate(zip(dom_texts, runtime_texts)):" in decision
 
 
