@@ -209,6 +209,7 @@ import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import { MicIcon } from "@/lib/mic-icon";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -4662,7 +4663,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
 
   if (useDropdown) {
     return (
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild={true}>
           <button
             type="button"
@@ -4686,6 +4687,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          onPointerDownOutside={swallowDismissingClick}
           side={side}
           align="end"
           avoidCollisions={true}
@@ -5481,6 +5483,7 @@ const ComposerToolsMenu: FC<{
       }}
     />
     <DropdownMenu
+      modal={false}
       onOpenChange={(open) => {
         if (open) void refreshRecentPrompts();
       }}
@@ -5496,6 +5499,7 @@ const ComposerToolsMenu: FC<{
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
+        onPointerDownOutside={swallowDismissingClick}
         side={side}
         align="start"
         sideOffset={0}
@@ -6863,7 +6867,7 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ActionBarMorePrimitive.Root>
+        <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
               tooltip="More"
@@ -6873,6 +6877,7 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarMorePrimitive.Trigger>
           <ActionBarMorePrimitive.Content
+            onPointerDownOutside={swallowDismissingClick}
             side="bottom"
             align="start"
             onCloseAutoFocus={(e) => e.preventDefault()}

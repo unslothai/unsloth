@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
@@ -207,7 +208,7 @@ export function ThreadSidebar({
           {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
@@ -217,7 +218,7 @@ export function ThreadSidebar({
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
                 </button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent side="bottom" align="end" className="w-56">
+              <DropdownMenuContent side="bottom" align="end" className="w-56" onPointerDownOutside={swallowDismissingClick}>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
@@ -277,14 +278,14 @@ export function ThreadSidebar({
                     ) : null}
                     <span>{item.title}</span>
                   </SidebarMenuButton>
-                  <DropdownMenu>
+                  <DropdownMenu modal={false}>
                     <DropdownMenuTrigger asChild>
                       <SidebarMenuAction showOnHover className="focus:outline-none focus-visible:ring-0" onClick={(e) => e.stopPropagation()}>
                         <HugeiconsIcon icon={MoreHorizontalIcon} className="size-4" />
                         <span className="sr-only">More options</span>
                       </SidebarMenuAction>
                     </DropdownMenuTrigger>
-                    <DropdownMenuContent side="bottom" align="end" className="w-44">
+                    <DropdownMenuContent side="bottom" align="end" className="w-44" onPointerDownOutside={swallowDismissingClick}>
                       <DropdownMenuItem onSelect={() => openRename(item)}>
                         <HugeiconsIcon icon={PencilEdit02Icon} className="mr-2 size-4" />
                         Rename

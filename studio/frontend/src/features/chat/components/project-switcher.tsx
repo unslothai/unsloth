@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Folder01Icon } from "@hugeicons/core-free-icons";
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -38,7 +39,7 @@ export function ProjectSwitcher({
   const [open, setOpen] = useState(false);
 
   return (
-    <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>
+    <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)} modal={false}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -72,6 +73,7 @@ export function ProjectSwitcher({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
+        onPointerDownOutside={swallowDismissingClick}
         side="bottom"
         align="start"
         sideOffset={0}

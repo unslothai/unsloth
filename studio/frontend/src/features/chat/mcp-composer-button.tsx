@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -242,6 +243,7 @@ export function McpComposerButton({
     <>
       {usable ? (
         <DropdownMenu
+          modal={false}
           open={menuOpen}
           onOpenChange={(open) => {
             setMenuOpen(open);
@@ -287,6 +289,7 @@ export function McpComposerButton({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
+            onPointerDownOutside={swallowDismissingClick}
             side={side}
             align="start"
             sideOffset={0}

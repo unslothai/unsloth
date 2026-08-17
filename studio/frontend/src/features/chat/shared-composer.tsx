@@ -9,6 +9,7 @@ import {
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
 import { BulbIcon } from "@/lib/bulb-icon";
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import { MicIcon } from "@/lib/mic-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -2141,6 +2142,7 @@ export function SharedComposer({
           {/* Same + menu as single-chat (ComposerToolsMenu), wired to the
               compare composer's own file/audio inputs and tools. */}
           <DropdownMenu
+            modal={false}
             onOpenChange={(open) => {
               if (open) void refreshRecentPrompts();
             }}
@@ -2155,6 +2157,7 @@ export function SharedComposer({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
+              onPointerDownOutside={swallowDismissingClick}
               side="top"
               align="start"
               sideOffset={0}
@@ -2405,7 +2408,7 @@ export function SharedComposer({
         <div className="ml-auto mr-0.5 flex items-center gap-1.5">
           {showReasoningControl ? (
             isEffort || supportsPreserveThinking ? (
-              <DropdownMenu>
+              <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild={true}>
                   <button
                     type="button"
@@ -2434,6 +2437,7 @@ export function SharedComposer({
                   </button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent
+                  onPointerDownOutside={swallowDismissingClick}
                   side="top"
                   align="end"
                   className={cn(

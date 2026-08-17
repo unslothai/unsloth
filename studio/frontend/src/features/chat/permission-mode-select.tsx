@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { swallowDismissingClick } from "@/lib/menu-dismiss";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -195,7 +196,7 @@ export function PermissionModeDropdown({
 
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild={true}>
           <Button
             variant="outline"
@@ -217,6 +218,7 @@ export function PermissionModeDropdown({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
+          onPointerDownOutside={swallowDismissingClick}
           side={side}
           align={align}
           className="w-[300px]"
@@ -263,7 +265,7 @@ export function PermissionModeComposerPill({
   const fullAccess = permissionMode === "full";
 
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
@@ -286,6 +288,7 @@ export function PermissionModeComposerPill({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
+        onPointerDownOutside={swallowDismissingClick}
         side={side}
         align="start"
         sideOffset={0}
