@@ -36,9 +36,7 @@ _PROBE_DEPTH = 2
 _PROBE_OPEN_LIMIT = 64
 
 
-def _probe_dir(
-    path: str, *, depth: int, budget: list[int]
-) -> tuple[str, Optional[str]]:
+def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Optional[str]]:
     """Open ``path``, then its subdirectories down to ``depth``, depth first.
 
     Returns the status and the directory that refused. Depth first so a denied
@@ -217,6 +215,5 @@ def annotate_scan_folders(folders: list[dict]) -> list[dict]:
     if not _failed:
         return [{**folder, "status": STATUS_OK} for folder in folders]
     return [
-        {**folder, "status": scan_folder_status(str(folder.get("path", "")))}
-        for folder in folders
+        {**folder, "status": scan_folder_status(str(folder.get("path", "")))} for folder in folders
     ]
