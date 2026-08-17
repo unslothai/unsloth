@@ -72,6 +72,8 @@ BACKEND_ISOLATED = [
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
     ("tests/test_tool_xml_strip.py", "asserts a regex benchmark under 0.1s"),
     ("tests/test_diffusion_checkpoint_resume.py", "compares one duration against another"),
+    ("tests/test_tool_output_streaming.py", "compares when a callback fired against when the child exited"),
+    ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
 ]
 
 # Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
@@ -90,6 +92,24 @@ TIGHT_BOUND_S = 0.1
 
 BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "tests"
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
+
+
+# Sites the scan finds and a human has read. The scan looks for a comparison between two
+# clock-derived quantities, which is the right net to cast, but not every such comparison
+# is a performance claim. None of these can be broken by descheduling:
+#
+#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two
+#   reads. Widening the gap cannot falsify it.
+#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the
+#   pattern that replaces a guessed sleep. Its 5s budget is a timeout, not a measurement.
+#   a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
+#
+# Keyed on the enclosing function rather than a line number, so an edit above it does not
+# silently move the exemption onto something else.
+BENIGN_TIMING = {
+    ("test_media_auto_switch.py", "_until"),
+    ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
+}
 
 
 def _reads_a_clock(node: ast.AST) -> bool:
@@ -122,12 +142,27 @@ def _timing_helpers(tree: ast.AST) -> set:
 
 
 def _timed_names(tree: ast.AST) -> set:
-    """Names assigned from a clock difference."""
+    """Anything holding a clock value: a duration, an instant, or a list of them.
+
+    Three ways one gets there, all present in this suite:
+        elapsed = time.monotonic() - start      a difference
+        started = time.monotonic()              an instant, subtracted later
+        first_seen_at.append(time.monotonic())  an instant parked in a container,
+                                                usually from inside a callback
+
+    Instants count, not only differences. test_tool_output_streaming compares
+    `first_seen_at[0] - started` against `finished - started - 0.5`, where every term is
+    an instant and no single name ever holds a duration.
+    """
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.BinOp):
-            if isinstance(node.value.op, ast.Sub) and _reads_a_clock(node.value):
-                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if isinstance(node, ast.Assign) and _reads_a_clock(node.value):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("append", "add", "insert") and _reads_a_clock(node):
+                holder = node.func.value
+                if isinstance(holder, ast.Name):
+                    names.add(holder.id)
     return names
 
 
@@ -139,14 +174,15 @@ def _is_timed(node: ast.AST, names: set, helpers: set) -> bool:
       time.monotonic() - started < 0.2        the difference written inline
       _elapsed(big) < 8 * _elapsed(small)     a helper that returns a difference
     """
-    if isinstance(node, ast.Name) and node.id in names:
-        return True
-    if _reads_a_clock(node):
-        return True
-    return any(
-        isinstance(inner, ast.Call) and getattr(inner.func, "id", None) in helpers
-        for inner in ast.walk(node)
-    )
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.Name) and inner.id in names:
+            return True
+        if isinstance(inner, ast.Call):
+            if getattr(inner.func, "attr", "") in _CLOCKS:
+                return True
+            if getattr(inner.func, "id", None) in helpers:
+                return True
+    return False
 
 
 def _fragile_timing_asserts(path: Path) -> list:
@@ -167,9 +203,17 @@ def _fragile_timing_asserts(path: Path) -> list:
     except SyntaxError:
         return []
     names, helpers = _timed_names(tree), _timing_helpers(tree)
+    enclosing = {}
+    for holder in ast.walk(tree):
+        if isinstance(holder, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(holder):
+                enclosing.setdefault(inner, holder.name)
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assert):
+            continue
+        where = enclosing.get(node, "<module>")
+        if (path.name, where) in BENIGN_TIMING:
             continue
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
@@ -304,11 +348,20 @@ def test_every_tight_elapsed_bound_is_isolated():
         if bounds and f"tests/{path.name}" not in isolated:
             stray[path.name] = bounds
     assert not stray, (
-        f"these backend tests assert an elapsed-time bound at or below {TIGHT_BOUND_S}s "
-        f"and still run under -n 4, where four workers share four vCPUs and a bound that "
-        f"small measures the scheduler as much as the code: {stray}. Either add the file "
-        f"to BACKEND_ISOLATED and to both halves of the workflow, or give the assertion "
-        f"enough headroom to survive being descheduled."
+        f"these backend tests compare clock-derived values and still run under -n 4, "
+        f"where four workers share four vCPUs: {stray}.\n"
+        f"\n"
+        f"Three ways out, in the order worth trying:\n"
+        f"  1. If it is a PERFORMANCE claim -- one measurement against another, or an "
+        f"absolute bound at or below {TIGHT_BOUND_S}s -- add the file to "
+        f"BACKEND_ISOLATED and to BOTH halves of studio-backend-ci.yml: the --ignore on "
+        f"the parallel run and the serial step that reruns it.\n"
+        f"  2. If descheduling cannot falsify it, add (file, enclosing function) to "
+        f"BENIGN_TIMING with a one-line reason. A sandwich (`before <= x <= after`), a "
+        f"poll deadline, and a sentinel comparison are all already there. This net is "
+        f"cast wide on purpose, so landing here does not mean the test is wrong.\n"
+        f"  3. If it is an absolute bound that is simply too tight, give it enough "
+        f"headroom to survive being descheduled."
     )
 
 
