@@ -357,10 +357,19 @@ def start_ingestion(
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
     background: bool = True,
+    replaces: tuple[str, str | None] | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
-    existing id with an already-completed job (no re-ingest)."""
+    existing id with an already-completed job (no re-ingest).
+
+    ``replaces`` is ``(old_document_id, old_stored_path)``: the named document is
+    retired by the worker only once this ingestion completes, so a failed re-index
+    never destroys the still-searchable original. It is how an edited source
+    replaces the one it was edited from. Only valid with ``dedupe=False``, because
+    the dedupe branch owns that value and its early return would drop a caller's."""
+    if replaces is not None and dedupe:
+        raise ValueError("replaces requires dedupe=False")
     ext = os.path.splitext(stored_path)[1].lower()
     if ext not in config.UPLOAD_EXTS:
         raise ValueError(f"unsupported file type: {ext}")
@@ -389,10 +398,9 @@ def start_ingestion(
         ).fetchone():
             conn.rollback()
             raise RuntimeError("Owning scope is being deleted")
-        # (old_document_id, old_stored_path) replaced by this upload; deleted by
-        # the worker only after the replacement completes, so a failed re-index
-        # never destroys the still-searchable original.
-        replaces: tuple[str, str | None] | None = None
+        # A re-upload of identical bytes can also retire the document it supersedes
+        # (see the stale-embedder and empty-ingest cases below). Only reachable
+        # under dedupe, which the caller-supplied `replaces` above excludes.
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)

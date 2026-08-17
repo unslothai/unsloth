@@ -62,7 +62,9 @@ const ZOOM_STEP = 0.25;
 const clampZoom = (z: number) =>
   Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(z.toFixed(2))));
 
-function PdfPreview({
+/** Exported for the source preview modal, which renders the same viewer without
+ * the citation sheet around it (`regions` empty, opening at page 1). */
+export function PdfPreview({
   fileUrl,
   initialPage,
   regions,

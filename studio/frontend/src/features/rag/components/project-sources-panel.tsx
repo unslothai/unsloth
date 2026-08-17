@@ -43,6 +43,7 @@ import {
 import { RAG_UPLOAD_ACCEPT } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
+import { SourcePreviewDialog } from "./source-preview-dialog";
 import { useRagDocuments } from "./use-rag-documents";
 
 const SORT_MODES: SourceSortMode[] = ["uploaded", "name", "size"];
@@ -72,6 +73,14 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   );
   const [confirmingBulkRemove, setConfirmingBulkRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
+  // The source open in the preview modal. Held here rather than in the citation
+  // sheet's global store: the two viewers are unrelated, and sharing state would
+  // let one regress the other. The filename is captured so the header stays
+  // stable while the content loads.
+  const [previewDoc, setPreviewDoc] = useState<{
+    id: string;
+    filename: string;
+  } | null>(null);
   // Mirrored in a ref so the drop handler reads the live value rather than the
   // one captured when the callback was created.
   const removingRef = useRef(false);
@@ -146,7 +155,16 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     setSelectedIds(new Set());
     setQuery("");
     setExpanded(false);
+    // A source from the previous project must not stay open over the new one's list.
+    setPreviewDoc(null);
   }, [projectId]);
+
+  // Refresh after a save: the edit is ingested as a replacement document, so the
+  // panel is holding a stale id until it refetches.
+  const handleSourceSaved = useCallback(() => {
+    invalidateProjectSources(projectId);
+    void refresh({ quiet: true });
+  }, [projectId, refresh]);
 
   const searching = query.trim() !== "";
   const matched = useMemo(
@@ -395,6 +413,17 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
                     progress={doc.progress}
                     error={doc.error}
                     selected={selectedIds.has(doc.id)}
+                    // An optimistic chip has no server id to fetch yet, and a row
+                    // queued for deletion should not be opened for editing.
+                    onOpen={
+                      doc.id.startsWith("pending_") || removing
+                        ? undefined
+                        : () =>
+                            setPreviewDoc({
+                              id: doc.id,
+                              filename: doc.filename,
+                            })
+                    }
                     // A concurrent single delete during a batch would race the
                     // loop and make it report a false failure on the 404.
                     onRemove={
@@ -427,6 +456,13 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           ) : null}
         </div>
       )}
+
+      <SourcePreviewDialog
+        documentId={previewDoc?.id ?? null}
+        filename={previewDoc?.filename ?? ""}
+        onClose={() => setPreviewDoc(null)}
+        onSaved={handleSourceSaved}
+      />
 
       <AlertDialog
         open={confirmingBulkRemove}
