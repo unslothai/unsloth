@@ -72,7 +72,10 @@ BACKEND_ISOLATED = [
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
     ("tests/test_tool_xml_strip.py", "asserts a regex benchmark under 0.1s"),
     ("tests/test_diffusion_checkpoint_resume.py", "compares one duration against another"),
-    ("tests/test_tool_output_streaming.py", "compares when a callback fired against when the child exited"),
+    (
+        "tests/test_tool_output_streaming.py",
+        "compares when a callback fired against when the child exited",
+    ),
     ("tests/test_web_fetch_extraction.py", "compares parse time at two input sizes"),
 ]
 
