@@ -1216,6 +1216,7 @@ async def list_local_models(
 async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
     """List all registered custom model scan folders."""
     from storage.studio_db import list_scan_folders
+
     folders = list_scan_folders()
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
