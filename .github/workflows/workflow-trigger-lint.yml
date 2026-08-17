@@ -78,3 +78,9 @@ jobs:
       # Same cost shape as the lint above: filesystem reads, seconds.
       - name: Playwright suites still run somewhere
         run: python3 -m pytest tests/studio/test_playwright_suites_run_in_ci.py -q
+
+      # And here for the same reason: this one reads the three OS smoke workflows, so
+      # the change that breaks it edits a workflow and nothing else, which no paths
+      # filter in the repo matches. Filesystem reads, seconds.
+      - name: The OS smoke legs still share one script
+        run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q
