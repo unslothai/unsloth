@@ -1122,11 +1122,16 @@ class FastBaseModel:
                 revision = _revision,
             )
         model_class = resolve_model_class(auto_model, auto_config)
+        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
+        torch_dtype = dtype
+        if do_forced_float32:
+            torch_dtype = torch.bfloat16
         attn_impl = resolve_attention_implementation(
             model_class,
             auto_config,
             requested_attn_implementation = kwargs.get("attn_implementation", None),
             supports_sdpa = supports_sdpa,
+            dtype = torch_dtype,
         )
 
         # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
@@ -1316,11 +1321,6 @@ class FastBaseModel:
                         pass
                     if user_quantization_config is None:
                         kwargs["quantization_config"] = quantization_config
-
-        # Check if using forced float32 - we load it in bfloat16, then cast to float16!
-        torch_dtype = dtype
-        if do_forced_float32:
-            torch_dtype = torch.bfloat16
 
         kwargs = add_dtype_kwargs(torch_dtype, kwargs)
 

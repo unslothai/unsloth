@@ -832,6 +832,7 @@ def resolve_attention_implementation(
     config,
     requested_attn_implementation = None,
     supports_sdpa = None,
+    dtype = None,
 ):
     model_type_name = _config_get(config, "model_type", "")
     model_type = model_type_name.lower()
@@ -849,6 +850,10 @@ def resolve_attention_implementation(
     )
     supports_flex_attention = _supports_flex_attention(model_class, config, model_type)
     disable_reason = _get_flash_attention_disable_reason(config)
+    if disable_reason is None and dtype is torch.float32:
+        # Flash Attention kernels only accept float16/bfloat16, and generate on a
+        # float32 model runs without autocast, so FA2 would raise at the first forward.
+        disable_reason = "the model loads in float32 which Flash Attention does not support"
     flash_attention_disabled = disable_reason is not None
 
     if model_class is None:

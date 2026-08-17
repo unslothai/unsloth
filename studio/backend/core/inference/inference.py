@@ -433,6 +433,8 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             config.path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
@@ -505,6 +507,8 @@ class InferenceBackend:
                         model, tokenizer = FastModel.from_pretrained(
                             llm_path,
                             dtype = torch.float32,
+                            # Flash Attention cannot run float32
+                            attn_implementation = "sdpa",
                             load_in_4bit = False,
                             device_map = device_map,
                             token = hf_token if hf_token and hf_token.strip() else None,
