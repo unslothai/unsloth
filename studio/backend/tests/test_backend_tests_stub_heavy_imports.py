@@ -287,13 +287,39 @@ def _offenders() -> list[str]:
     ]
 
 
-def _importorskip_targets(tree: ast.Module, heavy: frozenset[str]) -> list[str]:
-    """Heavy backend modules this file reaches through ``pytest.importorskip``, any scope."""
-    found: list[str] = []
+def _importorskip_calls(tree: ast.Module, heavy: frozenset[str]) -> list[tuple[str, int]]:
+    """``(target, line the stub must be installed before)`` per heavy ``importorskip``.
+
+    Two forms count. ``pytest.importorskip(...)`` is the attribute one, and
+    ``from pytest import importorskip`` then a bare ``importorskip(...)`` is equally
+    supported by pytest, so matching only the attribute form leaves the bare one
+    invisible to this guard.
+
+    The boundary differs by scope, and that is the point:
+
+    - **inside a def**: the call runs at test time, so a stub installed anywhere in
+      the module body is in place by then. Boundary is the end of the module.
+    - **at module scope**: the call runs during collection, so a stub installed
+      BELOW it lands too late and the import has already raised. Boundary is the
+      call's own line. Scanning to the end of the module here would see that later
+      stub and call the file safe while it still breaks collection.
+    """
+    module_scope = {
+        id(node) for statement in tree.body for node in _runtime_nodes(statement)
+    }
+    end = max((statement.lineno for statement in tree.body), default = 0) + 1
+    calls: list[tuple[str, int]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not node.args:
             continue
-        if getattr(node.func, "attr", "") != "importorskip":
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            called = func.attr
+        elif isinstance(func, ast.Name):
+            called = func.id
+        else:
+            continue
+        if called != "importorskip":
             continue
         target = node.args[0]
         if (
@@ -301,8 +327,8 @@ def _importorskip_targets(tree: ast.Module, heavy: frozenset[str]) -> list[str]:
             and isinstance(target.value, str)
             and target.value in heavy
         ):
-            found.append(target.value)
-    return sorted(set(found))
+            calls.append((target.value, node.lineno if id(node) in module_scope else end))
+    return calls
 
 
 def _importorskip_offenders() -> list[str]:
@@ -313,12 +339,8 @@ def _importorskip_offenders() -> list[str]:
             tree = _parse(path.read_text(encoding = "utf-8"))
         except (SyntaxError, UnicodeDecodeError):
             continue
-        if not _importorskip_targets(tree, heavy):
-            continue
-        # Anywhere at module scope, not "before line N": the call runs at test time, so a
-        # stub installed anywhere above it in the module body is in place by then.
-        end = max((statement.lineno for statement in tree.body), default = 0) + 1
-        if not _stubs_before(tree, end):
+        calls = _importorskip_calls(tree, heavy)
+        if calls and not all(_stubs_before(tree, boundary) for _target, boundary in calls):
             offenders.append(path.name)
     return offenders
 
@@ -351,30 +373,62 @@ def test_no_test_module_reaches_a_heavy_module_through_importorskip_unstubbed():
 
 
 def test_the_importorskip_guard_would_catch_an_unstubbed_module():
-    """Pin both answers, so the check above cannot pass by matching nothing."""
+    """Pin every answer, so the check above cannot pass by matching nothing."""
     heavy = _heavy_backend_modules()
     assert "core.inference.inference" in heavy
 
-    unstubbed = _parse(
+    def calls(source):
+        return _importorskip_calls(_parse(source), heavy)
+
+    def safe(source):
+        tree = _parse(source)
+        found = _importorskip_calls(tree, heavy)
+        return bool(found) and all(_stubs_before(tree, line) for _t, line in found)
+
+    lazy_unstubbed = (
         "import pytest\n"
         "def test_x():\n"
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
-    assert _importorskip_targets(unstubbed, heavy) == ["core.inference.inference"]
-    end = max((s.lineno for s in unstubbed.body), default = 0) + 1
-    assert not _stubs_before(unstubbed, end)
+    assert calls(lazy_unstubbed) and not safe(lazy_unstubbed)
 
-    stubbed = _parse(
+    lazy_stubbed = (
         "import pytest, sys\n"
         "_stub_if_missing('unsloth', ())\n"
         "def test_x():\n"
         "    inf = pytest.importorskip('core.inference.inference')\n"
     )
-    assert _stubs_before(stubbed, max(s.lineno for s in stubbed.body) + 1)
+    assert safe(lazy_stubbed)
 
-    # A module that importorskips something harmless is not an offence.
-    harmless = _parse("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n")
-    assert _importorskip_targets(harmless, heavy) == []
+    # `from pytest import importorskip` then a bare call: the same offence, and the
+    # attribute-only match this guard shipped with could not see it at all.
+    bare_unstubbed = (
+        "from pytest import importorskip\n"
+        "def test_x():\n"
+        "    inf = importorskip('core.inference.inference')\n"
+    )
+    assert calls(bare_unstubbed) == [("core.inference.inference", 3)]  # end-of-module boundary
+    assert not safe(bare_unstubbed)
+
+    # A module-scope call runs during collection, so a stub BELOW it is too late.
+    # Scanning to the end of the module would call this safe.
+    stub_too_late = (
+        "import pytest, sys\n"
+        "inf = pytest.importorskip('core.inference.inference')\n"
+        "_stub_if_missing('unsloth', ())\n"
+    )
+    assert calls(stub_too_late) == [("core.inference.inference", 2)]
+    assert not safe(stub_too_late)
+
+    stub_in_time = (
+        "import pytest, sys\n"
+        "_stub_if_missing('unsloth', ())\n"
+        "inf = pytest.importorskip('core.inference.inference')\n"
+    )
+    assert safe(stub_in_time)
+
+    # importorskip of something harmless is not an offence.
+    assert calls("import pytest\ndef test_x():\n    pytest.importorskip('numpy')\n") == []
 
 
 def test_the_heavy_module_set_is_derived_from_the_backend_sources():
