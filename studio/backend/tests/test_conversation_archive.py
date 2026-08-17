@@ -478,6 +478,124 @@ def test_a_turns_CHUNKS_must_all_sit_in_the_same_place_on_the_branch(conn):
     )
 
 
+def test_a_turns_CHUNKS_cannot_spill_into_the_message_after_the_turn(conn):
+    """The run is bounded by the MESSAGES the turn was rendered from, not by its lines.
+
+    A turn is two or three messages however long it is, so bounding the run by the line
+    count let the tail of a long answer be satisfied by a message well outside the turn.
+    Here the edit removes the end of the answer and the very next message repeats it,
+    which is the shape a short correction takes in an ordinary chat.
+
+    The chunks are shaped the way the chunker really produces them: only the rendered
+    text carries the role labels, so a continuation chunk starts mid-message.
+    """
+    rows = [
+        {
+            "text": "user: how do I deploy\nassistant: Run the deploy script from the release branch."
+        },
+        {"text": "Never deploy on a Friday afternoon."},
+    ]
+    edited = [
+        {"role": "user", "content": "how do I deploy"},
+        {"role": "assistant", "content": "Run the deploy script from the release branch."},
+        {"role": "user", "content": "Never deploy on a Friday afternoon."},
+    ]
+    intact = [
+        {"role": "user", "content": "how do I deploy"},
+        {
+            "role": "assistant",
+            "content": (
+                "Run the deploy script from the release branch.\n"
+                "Never deploy on a Friday afternoon."
+            ),
+        },
+        {"role": "user", "content": "thanks"},
+    ]
+
+    assert (
+        conversation_archive._document_matches_one_run(
+            rows, conversation_archive.branch_message_texts(edited)
+        )
+        is False
+    )
+    # The same two chunks, with the answer still whole, are still accepted.
+    assert (
+        conversation_archive._document_matches_one_run(
+            rows, conversation_archive.branch_message_texts(intact)
+        )
+        is True
+    )
+
+
+def test_one_turn_archived_twice_at_once_is_stored_once(conn, monkeypatch):
+    """Two generations compacting the same thread both clear the hash check.
+
+    The slow part is the embedding pass that sits between the check and the insert, and
+    `(scope, sha256)` carries a plain index rather than a unique one, so both wrote. The
+    turn was then stored twice and its copies took two of the few recall slots.
+    """
+    import threading
+
+    from core.rag import embeddings, store
+    from storage import studio_db
+
+    thread_id = "concurrent-archive"
+    studio_db.upsert_chat_thread(
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "m",
+            "createdAt": 1,
+        }
+    )
+    studio_db.sync_chat_messages(
+        thread_id,
+        [
+            {
+                "id": "m1",
+                "threadId": thread_id,
+                "role": "user",
+                "content": [{"type": "text", "text": "hello"}],
+                "createdAt": 2,
+            }
+        ],
+    )
+
+    barrier = threading.Barrier(2)
+    real_encode = embeddings.encode_with_identity
+
+    def slow_encode(texts, **kwargs):
+        # Both passes are inside the window: neither has inserted yet.
+        barrier.wait(timeout = 10)
+        return real_encode(texts, **kwargs)
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", slow_encode)
+
+    evicted = [
+        {"role": "user", "content": "what is the deploy code"},
+        {"role": "assistant", "content": "the deploy code is 5150"},
+    ]
+    workers = [
+        threading.Thread(
+            target = lambda: conversation_archive.archive_turns(
+                thread_id, [dict(message) for message in evicted]
+            )
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    rows = conn.execute(
+        "SELECT COUNT(*) AS c FROM documents WHERE scope = ?",
+        (store.conversation_archive_scope(thread_id),),
+    ).fetchone()
+    assert rows["c"] == 1
+
+
 def test_a_LATER_turn_cannot_supply_a_line_the_edit_removed(conn):
     """The branch check has to stay inside the turn it is checking.
 

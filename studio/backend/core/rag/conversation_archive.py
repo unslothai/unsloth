@@ -332,6 +332,24 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             # vector write fails, and `document_by_hash` then skips that turn on every
             # later compaction: the turn is silently unarchivable forever, and it looks
             # finished, so nothing retries it.
+            # Re-checked here, under a write lock, and not only before the embedding
+            # pass above: two generations compacting the same thread both clear that
+            # first check while the other is still embedding, and `(scope, sha256)`
+            # carries a plain index rather than a unique one, so both insert. The turn
+            # is then stored twice and its copies take two of the few recall slots,
+            # displacing other turns. Reproduced with two concurrent archive passes.
+            _write_lock = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                _write_lock = True
+            except Exception:
+                # Already inside a transaction: the insert below is still atomic with
+                # respect to the re-check, which is what this is for.
+                logger.debug("conversation_archive.no_write_lock", exc_info = True)
+            if store.document_by_hash(conn, scope, digest):
+                if _write_lock:
+                    conn.rollback()
+                continue
             document_id = store.create_document(
                 conn,
                 scope = scope,
@@ -540,11 +558,18 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
     )
 
 
-def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
-    """Whether ``probes`` appear in order within ``messages[start:start + window]``."""
+def _scan_probes(probes: list[str], messages: list[str], start: int, last: int) -> Optional[int]:
+    """Index of the message where ``probes`` finish matching in order, or None.
+
+    Returned rather than a bool so the chunks of one document can be scanned as a single
+    pass: the next chunk continues from where the previous one stopped instead of
+    restarting, which is what stops two chunks of the same turn matching two different
+    places. The cursor within that message is deliberately NOT carried over, because
+    chunks overlap by ``CHUNK_OVERLAP`` and the next chunk legitimately repeats the tail
+    of the last one.
+    """
     index = start
     cursor = 0
-    last = min(len(messages), start + window)
     for probe in probes:
         while index < last:
             found = messages[index].find(probe, cursor)
@@ -554,8 +579,34 @@ def _probes_match_from(probes: list[str], messages: list[str], start: int, windo
             index += 1
             cursor = 0
         else:
-            return False
-    return True
+            return None
+    return index
+
+
+def _probes_match_from(probes: list[str], messages: list[str], start: int, window: int) -> bool:
+    """Whether ``probes`` appear in order within ``messages[start:start + window]``."""
+    return _scan_probes(probes, messages, start, min(len(messages), start + window)) is not None
+
+
+def _rendered_message_count(rows) -> int:
+    """How many messages the archived turn was rendered from.
+
+    ``render_turn`` labels every message it writes, so counting the labelled lines counts
+    the messages. That is the run this document is allowed to occupy on the branch, and it
+    is far tighter than the number of lines: a two-message turn may be a hundred lines
+    long, and a hundred-message window will find its tail almost anywhere.
+
+    Chunks overlap, so a labelled line can be counted twice. That only widens the window,
+    which is the safe direction: too wide costs strictness, too narrow retires turns that
+    are still live.
+    """
+    total = 0
+    for row in rows:
+        for line in (row["text"] or "").splitlines():
+            stripped = line.strip()
+            if _ROLE_PREFIX.match(stripped) or _TOOL_CALL_PREFIX.match(stripped):
+                total += 1
+    return total
 
 
 def _document_on_live_branch(conn, document_id: str, transcript: list[str], cache: dict) -> bool:
@@ -604,11 +655,21 @@ def _document_matches_one_run(rows, transcript: Optional[list[str]]) -> bool:
     probe_lists = [_probes_for(row["text"]) for row in rows]
     if any(not probes for probes in probe_lists):
         return False
-    window = sum(len(probes) for probes in probe_lists)
-    return any(
-        all(_probes_match_from(probes, transcript, start, window) for probes in probe_lists)
-        for start in range(len(transcript))
-    )
+    # The messages the turn was rendered from, not the lines it produced. Bounding by
+    # lines let the tail of a long answer be satisfied by a message far outside the turn.
+    window = _rendered_message_count(rows) or sum(len(probes) for probes in probe_lists)
+
+    def _one_run_from(start: int) -> bool:
+        last = min(len(transcript), start + window)
+        position = start
+        for probes in probe_lists:
+            found = _scan_probes(probes, transcript, position, last)
+            if found is None:
+                return False
+            position = found
+        return True
+
+    return any(_one_run_from(start) for start in range(len(transcript)))
 
 
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
