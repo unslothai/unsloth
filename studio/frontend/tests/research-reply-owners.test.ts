@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Every user message's action bar asks whether that message owns a research reply, and the
-// answer needs the whole repository rather than the visible message list, because a reply can
-// sit on a branch the current view is not showing. Asking it per message meant one full export
-// per user message on every thread change: quadratic in thread length, and paid on every token
-// of a generation as well as on every delete.
+// Every user message's action bar asks whether it owns a research reply. The answer needs the
+// whole repository, not the visible message list, because a reply can sit on a branch the view is
+// not showing. One export per message made every thread change quadratic in thread length, paid
+// on every delete and every generated token.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,8 +21,8 @@ function items(): ExportedReplyItem[] {
     { parentId: null, message: { metadata: {} } },
     { parentId: "prompt-1", message: { metadata: research("run-a") } },
     { parentId: "prompt-2", message: { metadata: {} } },
-    // A second reply under the same prompt, on another branch. The visible list holds one of
-    // them at most, which is why this cannot be answered from thread.messages.
+    // A second reply under the same prompt, on another branch. The visible list holds at most one
+    // of them, which is why this cannot be answered from thread.messages.
     { parentId: "prompt-1", message: { metadata: research("run-b") } },
   ];
 }
@@ -59,7 +58,7 @@ test("one export serves every message at the same revision", () => {
     return items();
   };
 
-  // Stands in for the action bars of a thread: each asks about its own message, at one revision.
+  // Stands in for a thread's action bars: each asks about its own message, at one revision.
   for (const messageId of ["prompt-1", "prompt-2", "prompt-3"]) {
     researchReplyOwners(revision, read, isResearch).has(messageId);
   }

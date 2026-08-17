@@ -5,19 +5,13 @@
  * Which messages own a research reply, answered once per thread revision instead of once per
  * message.
  *
- * "Does this prompt own a research reply?" is a question about the whole repository: a reply can
- * sit on a branch the current view is not showing, so it cannot be read off the visible message
- * list. The action bar of every user message asks it, and answering it by exporting the
- * repository per message made the cost of any thread change quadratic in thread length. That is
- * paid on every delete and on every token of a generation, not once per thread.
+ * A reply can sit on a branch the view is not showing, so this needs the whole repository, not
+ * the visible message list. Every user message's action bar asks it, and one export per message
+ * made any thread change quadratic in thread length -- paid on every delete and every generated
+ * token. One pass per revision removes the per-message factor (not the export itself).
  *
- * The answer changes only when the repository does, so one pass over one export serves every
- * message at that revision. What is removed is the per-message factor, not the export: a
- * generation still pays one export per token rather than one per user message per token.
- *
- * The cache is keyed on the revision ALONE, so it assumes one question. A second caller asking a
- * different question of the same repository would be handed this one's answer; give it its own
- * map rather than a second predicate here.
+ * Keyed on the revision ALONE, so it assumes ONE question: a second caller asking something else
+ * of the same repository would get this answer. Give it its own map, not a second predicate.
  */
 
 export type ExportedReplyItem = {
@@ -25,19 +19,18 @@ export type ExportedReplyItem = {
   message: { metadata?: unknown };
 };
 
-// Keyed on the caller's revision object rather than on a counter, so a stale entry is not
-// reachable: a revision that is still current is the same object, and one that is not has been
-// replaced. Weak, so a thread that goes away takes its entry with it.
+// Keyed on the revision object, not a counter, so a stale entry is unreachable: a current
+// revision is the same object, a stale one has been replaced. Weak, so a dead thread's entry goes
+// with it.
 const ownersByRevision = new WeakMap<object, ReadonlySet<string>>();
 
 /**
  * Ids of the messages that have at least one research reply.
  *
- * @param revision object identity that changes whenever the exported repository could have
- *   changed. assistant-ui rebuilds its message array on every repository mutation (add, delete,
- *   branch switch, reset all dirty the cached list), so that array is such an identity.
- * @param exportItems reads the repository. Called at most once per revision, and not at all when
- *   the answer for this revision is already known.
+ * @param revision identity that changes whenever the exported repository could have. assistant-ui
+ *   rebuilds its message array on every repository mutation (add, delete, branch switch, reset),
+ *   so that array is one.
+ * @param exportItems reads the repository. Called at most once per revision.
  * @param isResearchReply whether a message's metadata marks it as a research reply.
  */
 export function researchReplyOwners(

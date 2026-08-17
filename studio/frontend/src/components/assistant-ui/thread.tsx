@@ -1420,11 +1420,9 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
-// One message, picked from its own role and edit state rather than from a `components` map. See
+// One message, picked from its role and edit state rather than from a `components` map. See
 // thread-message-slot.ts for why the map form costs a full-thread re-render on every delete.
-//
-// The selectors are the ones assistant-ui's own ThreadMessageComponent uses, so what a message
-// subscribes to is unchanged.
+// The selectors are ThreadMessageComponent's own, so what a message subscribes to is unchanged.
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
@@ -1440,9 +1438,9 @@ const ThreadMessage: FC = () => {
   }
 };
 
-// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render.
-// An inline arrow would change identity each time, invalidating the memo that keeps the message
-// array from being rebuilt, and the bail-out below it would never get the chance to run.
+// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
+// inline arrow changes identity each time, invalidating the memo that keeps the message array from
+// being rebuilt, and the bail-out below it would never get to run.
 const renderThreadMessage = proplessSlot(ThreadMessage);
 
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
@@ -6662,19 +6660,18 @@ const useResearchMessageRunId = () => {
   return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
 
-// Boolean(), not `!== null`: getResearchRunId hands back whatever string it found, and an empty
-// one counted as "no research reply" before. Keeping that keeps an empty id from hiding a
-// message's edit and delete controls.
+// Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
+// counted as "no research reply" before. Keeping that stops an empty id hiding a message's edit
+// and delete controls.
 const hasResearchRunId = (metadata: unknown): boolean =>
   Boolean(getResearchRunId(metadata));
 
 const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  // The ANSWER is selected, not the message array. Selecting the array subscribed every user
-  // message's action bar to every thread change, so deleting one message re-rendered all of them
-  // -- each with its copy, edit, fork and delete controls and their tooltips -- whether or not
-  // the answer had moved. The export behind it is shared across messages at one revision.
+  // The ANSWER is selected, not the message array: selecting the array subscribed every user
+  // message's action bar (and its tooltips) to every thread change, so one delete re-rendered all
+  // of them even when the answer had not moved. The export is shared across one revision.
   return useAuiState(({ thread }) => {
     if (thread.messages.length === 0) {
       return false;

@@ -155,12 +155,11 @@ def test_research_presentation_is_integrated() -> None:
     assert "if (researchRunId) return null" in thread
     assert "!researchRunId &&" in thread
     assert "if (researchRunId || ownsResearchMessage)" in thread
-    # A prompt whose reply is a research message loses its edit and delete controls. That
-    # ownership is a question about the whole repository, not about the visible message list: a
-    # reply can sit on a branch the view is not showing. It used to be answered by exporting the
-    # repository once per user message, which is quadratic in thread length; the answer is now
-    # shared across the thread's messages, so what is pinned here is the question and its scope
-    # rather than the expression that used to compute it.
+    # A prompt whose reply is a research message loses its edit and delete controls. Ownership is
+    # a question about the whole repository, not the visible message list: a reply can sit on a
+    # branch the view is not showing. It used to be one export per user message (quadratic in
+    # thread length); the answer is now shared across the thread, so what is pinned here is the
+    # question and its scope rather than the expression that computed it.
     owners = source("components/assistant-ui/research-reply-owners.ts")
     assert "researchReplyOwners(" in thread
     assert "() => aui.thread().export().messages" in thread
