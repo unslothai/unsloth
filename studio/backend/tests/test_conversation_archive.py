@@ -430,6 +430,54 @@ def test_deleting_a_thread_works_without_sqlite_vec(conn, monkeypatch):
     assert conversation_archive.recall("vecless-thread", "VECGONE-2020") is None
 
 
+def test_a_turns_CHUNKS_must_all_sit_in_the_same_place_on_the_branch(conn):
+    """The chunks of one turn are consecutive slices of one rendering.
+
+    Validating them independently lets a turn be reassembled out of parts that never sat
+    together: the head matching the question and its current answer, the tail matching
+    some later message that repeats the passage the edit removed.
+    """
+    rows = [
+        {
+            "text": "user: How do I deploy?\nassistant: Run the deploy script from the release branch."
+        },
+        {"text": "assistant: Never deploy on a Friday afternoon."},
+    ]
+    edited_with_a_later_echo = [
+        {"role": "user", "content": "How do I deploy?"},
+        {
+            "role": "assistant",
+            "content": "Run the deploy script from the release branch. Any day is fine.",
+        },
+        {"role": "user", "content": "What was that old rule of thumb?"},
+        {"role": "assistant", "content": "Never deploy on a Friday afternoon."},
+    ]
+    intact = [
+        {"role": "user", "content": "How do I deploy?"},
+        {
+            "role": "assistant",
+            "content": (
+                "Run the deploy script from the release branch.\n"
+                "Never deploy on a Friday afternoon."
+            ),
+        },
+        {"role": "user", "content": "Thanks"},
+    ]
+
+    # Each chunk on its own still matches somewhere: that is exactly the trap.
+    texts = conversation_archive.branch_message_texts(edited_with_a_later_echo)
+    assert all(conversation_archive._on_live_branch(row["text"], texts) for row in rows)
+    # As one document sharing a run, it is correctly rejected.
+    assert conversation_archive._document_matches_one_run(rows, texts) is False
+    # And a turn that really is still there is still accepted.
+    assert (
+        conversation_archive._document_matches_one_run(
+            rows, conversation_archive.branch_message_texts(intact)
+        )
+        is True
+    )
+
+
 def test_a_LATER_turn_cannot_supply_a_line_the_edit_removed(conn):
     """The branch check has to stay inside the turn it is checking.
 

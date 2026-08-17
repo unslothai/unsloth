@@ -479,8 +479,8 @@ _ROLE_PREFIX = re.compile(
 _TOOL_CALL_PREFIX = re.compile(r"^assistant called (?:[^:\n]+:\s*)?", re.IGNORECASE)
 
 
-def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
-    """Whether an archived turn still exists in the saved thread.
+def _probes_for(text: str) -> list[str]:
+    """The lines of an archived chunk, normalised into things to look for on the branch.
 
     Substring containment on a normalised prefix rather than a digest match: the archived
     text was rendered from the inference projection and the saved copy comes back through
@@ -506,10 +506,13 @@ def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
         if stripped.endswith(_TRUNCATION_MARKER.strip()):
             stripped = stripped[: -len(_TRUNCATION_MARKER.strip())].strip()
         probes.append(stripped)
-    probes = [probe for probe in probes if probe]
-    if not probes:
-        return False
-    if not transcript:
+    return [probe for probe in probes if probe]
+
+
+def _on_live_branch(text: str, transcript: Optional[list[str]]) -> bool:
+    """Whether one archived chunk still exists in the saved thread."""
+    probes = _probes_for(text)
+    if not probes or not transcript:
         return False
     # EVERY line, IN ORDER, and WITHIN ONE RUN OF ADJACENT MESSAGES.
     #
@@ -571,9 +574,32 @@ def _document_on_live_branch(conn, document_id: str, transcript: list[str], cach
         # chunk itself said, which is the previous behaviour.
         cache[document_id] = True
         return True
-    live = all(_on_live_branch(row["text"], transcript) for row in rows) if rows else False
-    cache[document_id] = live
-    return live
+    cache[document_id] = _document_matches_one_run(rows, transcript)
+    return cache[document_id]
+
+
+def _document_matches_one_run(rows, transcript: Optional[list[str]]) -> bool:
+    """Every chunk of the turn, found within ONE run of adjacent messages.
+
+    Chunk by chunk independently is not enough. The chunks are consecutive slices of a
+    single rendered turn, so letting each pick its own place on the branch lets a turn be
+    reassembled out of parts that never sat together: the head matching the question and
+    its current answer, the tail matching some later message that happens to repeat the
+    passage the edit removed. Reproduced against this code before the run was shared.
+
+    The run is bounded by the document's total line count, which is at least the number of
+    messages the turn was rendered from, so a turn that really is still there always fits.
+    """
+    if not rows or not transcript:
+        return False
+    probe_lists = [_probes_for(row["text"]) for row in rows]
+    if any(not probes for probes in probe_lists):
+        return False
+    window = sum(len(probes) for probes in probe_lists)
+    return any(
+        all(_probes_match_from(probes, transcript, start, window) for probes in probe_lists)
+        for start in range(len(transcript))
+    )
 
 
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
