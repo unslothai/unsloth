@@ -6481,8 +6481,17 @@ function useActionBarFocusReveal() {
   // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
   // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
   // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
+  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
+  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
+  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
+  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
+  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
+  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
   const openPopupTrigger = useCallback(
-    () => rootRef.current?.querySelector('[aria-expanded="true"]') ?? null,
+    () =>
+      rootRef.current?.querySelector(
+        '.aui-assistant-action-bar-root [aria-expanded="true"]',
+      ) ?? null,
     [],
   );
 
