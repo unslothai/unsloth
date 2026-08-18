@@ -156,6 +156,15 @@ def _launch(
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *a, **k: None
+    # This harness does not model host RAM, and None is the documented way to say so:
+    # both _apu_ram_shortfall_message and _host_offload_shortfall_message treat unknown
+    # available memory as "never refuse". Without it the sibling host-RAM guard fires on
+    # the paravirtual path, which is the one placement here that reports
+    # child_has_no_gpu and so gets past that guard's empty-pool early return. It then
+    # prices the model against the REAL machine, so the virtualised-device tests passed
+    # on a 16 GB runner and failed on a 7 GB macos-14 one. Host-memory dependent, not
+    # OS dependent: a real 8 GB Mac would have failed the same way.
+    backend._available_system_memory_mib = lambda *a, **k: None
     backend._amd_apu_wants_unified_memory = lambda *a, **k: False
     backend._find_llama_server_binary = lambda include_denied = False: "/fake/llama-server"
     backend._is_vulkan_backend = lambda _binary = None: False
