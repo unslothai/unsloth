@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { fileToBase64 } from "@/lib/audio-utils";
-import { VIDEO_ACCEPT, getVideoSizeError } from "@/lib/video-utils";
+import {
+  VIDEO_ACCEPT,
+  getVideoSizeError,
+  videoMimeForFile,
+} from "@/lib/video-utils";
 import type {
   Attachment,
   AttachmentAdapter,
@@ -72,7 +76,7 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
       id,
       type: "file",
       name: file.name,
-      contentType: file.type || "video/mp4",
+      contentType: videoMimeForFile(file),
       file,
       status: { type: "requires-action", reason: "composer-send" },
     };
@@ -91,7 +95,9 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
             type: "file",
             filename: attachment.name,
             data,
-            // Empty for mkv in some browsers, and the extractor keys off it.
+            // Normalised at pick time: the extractor keys off this, and a
+            // browser that answered "" or application/octet-stream for an mkv
+            // would otherwise cost the clip silently.
             mimeType: attachment.contentType || "video/mp4",
           },
         ],

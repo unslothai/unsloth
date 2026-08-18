@@ -19,8 +19,38 @@ export function getVideoSizeError(size: number): string | null {
     : null;
 }
 
-const VIDEO_EXTENSIONS = [".mp4", ".mov", ".webm", ".mkv", ".avi"];
+// Mirrors the extension table in native_intents.rs, which the parity test keeps
+// in step: a clip that arrives through the desktop reader and one picked in the
+// browser must reach the route as the same mime type.
+const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".webm": "video/webm",
+  ".mkv": "video/x-matroska",
+  ".avi": "video/x-msvideo",
+};
+
+const VIDEO_EXTENSIONS = Object.keys(VIDEO_MIME_BY_EXTENSION);
 const VIDEO_MIME_RE = /^video\//i;
+
+/** The mime type to send a picked clip under.
+ *
+ * The accept list carries extensions as well as mime types because the browser's
+ * answer is unreliable for mkv and some mov files, so a file the picker took on
+ * its extension can arrive as "" or as application/octet-stream. Both are then
+ * carried into the attachment, and the request builder only recognises a file
+ * part whose mimeType matches ^video/, so the clip is dropped and the model
+ * answers as though it were never attached. Trust the extension whenever the
+ * browser did not say video.
+ */
+export function videoMimeForFile(file: File): string {
+  if (VIDEO_MIME_RE.test(file.type)) return file.type;
+  const name = file.name.toLowerCase();
+  for (const [ext, mime] of Object.entries(VIDEO_MIME_BY_EXTENSION)) {
+    if (name.endsWith(ext)) return mime;
+  }
+  return "video/mp4";
+}
 
 /** Whether a picked file is a video. mkv and some mov files arrive with an
  * empty MIME type, hence the extension fallback. */
