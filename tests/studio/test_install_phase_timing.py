@@ -353,7 +353,7 @@ def test_a_hostile_inherited_origin_never_breaks_a_posix_install(script, value):
     local clock. Run rather than read: a text check would miss exactly this shape.
     """
     body = _sh_function_of(REPO / script, "step")
-    prog = "set -euo pipefail\nC_DIM= C_OK= C_RST= C_WARN=\n" + body + '\nstep lbl msg\n'
+    prog = "set -euo pipefail\nC_DIM= C_OK= C_RST= C_WARN=\n" + body + "\nstep lbl msg\n"
     r = subprocess.run(
         ["bash", "-c", prog],
         capture_output = True,
@@ -361,9 +361,9 @@ def test_a_hostile_inherited_origin_never_breaks_a_posix_install(script, value):
         env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1", f"{ENV_VAR}_T0": value},
     )
     assert r.returncode == 0, f"{script} aborted on {ENV_VAR}_T0={value!r}: {r.stderr.strip()}"
-    assert re.search(r"\[\d+s\] ", r.stdout), (
-        f"{script} produced no usable prefix for {ENV_VAR}_T0={value!r}: {r.stdout!r}"
-    )
+    assert re.search(
+        r"\[\d+s\] ", r.stdout
+    ), f"{script} produced no usable prefix for {ENV_VAR}_T0={value!r}: {r.stdout!r}"
 
 
 def test_the_posix_installer_is_timed_on_the_same_terms_as_the_windows_one():
