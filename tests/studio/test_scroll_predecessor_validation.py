@@ -366,3 +366,27 @@ def test_the_predecessor_probe_itself_triggers_the_workflow() -> None:
         "scroll_predecessor_probe.py is absent from the workflow's pull_request.paths, so a "
         "change to the probe alone does not run the contract tests that validate it"
     )
+
+def test_no_generated_runtime_database_is_tracked() -> None:
+    """A test run writes .studio-test-root/studio.db, and `git add -A` then commits it.
+
+    It is a mutable SQLite runtime database rather than a fixture: nothing reads it, any test
+    run or Studio start rewrites it, and a later accidental commit could capture real local chat
+    or settings data. It also puts 221 KB into every clone. This asserts against the git index
+    rather than the filesystem, because the file existing is normal and only tracking it is the
+    defect.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*.db", "*.sqlite", "*.sqlite3", ".studio-test-root"],
+        cwd = WORKDIR,
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout
+    found = [f for f in tracked.split("\0") if f]
+    assert not found, (
+        f"generated runtime database files are tracked: {found}. They are written by test runs, "
+        f"so committing one dirties every later checkout and risks capturing local data."
+    )
