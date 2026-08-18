@@ -434,6 +434,30 @@ MEASURE = """
     railGutterPx: rail ? Math.round(rail.offsetWidth - rail.clientWidth) : null,
     cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
     railPointerEvents: rail ? getComputedStyle(rail).pointerEvents : null,
+    // Everything needed to say WHY a card came out narrow, reported with the
+    // failure instead of being guessed at afterwards from two numbers. A card
+    // that lost width to a scrollbar and a card that lost it to an unfinished
+    // transform read identically as `cardWidth`, and the engine that reports
+    // offsetWidth === clientWidth while still taking the width out of the
+    // content box (Playwright WebKit on Linux) makes railGutterPx no help on
+    // its own. `borderBox` is the layout width with no transform applied.
+    widthWhy: card && rail ? {
+      transform: getComputedStyle(card).transform,
+      borderBox: card.offsetWidth,
+      cssWidth: getComputedStyle(card).width,
+      maxWidth: getComputedStyle(card).maxWidth,
+      innerWidth: innerWidth,
+      docClientWidth: document.documentElement.clientWidth,
+      railOffsetW: rail.offsetWidth,
+      railClientW: rail.clientWidth,
+      railContentW: rail.clientWidth
+        - parseFloat(getComputedStyle(rail).paddingLeft || '0')
+        - parseFloat(getComputedStyle(rail).paddingRight || '0'),
+      railScrollH: rail.scrollHeight,
+      railClientH: rail.clientHeight,
+      railMaxHeight: getComputedStyle(rail).maxHeight,
+      kids: [...rail.children].map((c) => Math.round(c.getBoundingClientRect().height)),
+    } : null,
     // What a click on the rail's own gutter lands on when it is click-through.
     gutterIsRail: rail ? (() => {
       const r = rail.getBoundingClientRect();
@@ -555,14 +579,16 @@ def measure(page, label: str) -> dict:
             f"{label}: the card keeps its full width whatever the scrollbar does",
             abs(facts["cardWidth"] - want) <= 1,
             f"cardWidth={facts['cardWidth']} want={want} "
-            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']}",
+            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
         check(
             f"{label}: the rail takes pointer input exactly when it scrolls",
             facts["railPointerEvents"] == ("auto" if scrolls else "none"),
-            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']}",
+            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
         # Click-through is what pointer-events-none is for, and the gutter is
         # the widest part of the rail that no card covers.
