@@ -3,6 +3,20 @@
 
 import type { ChatModelSummary } from "../types/runtime";
 
+import type { MmprojFallbackReason } from "../types/api";
+import { isTextOnlyMmprojFallback } from "./mmproj-fallback";
+
+function textOnlyMmprojUnavailableReason(
+  activeModel: ChatModelSummary | undefined,
+  reason: MmprojFallbackReason | null | undefined,
+): string | null {
+  if (!isTextOnlyMmprojFallback(reason)) {
+    return null;
+  }
+  const label = activeModel?.name || activeModel?.id || "This vision model";
+  return `${label}'s vision projector failed to start, so Studio reloaded it in text-only mode. Free memory or update Studio, then reload the model before attaching images.`;
+}
+
 export function getImageInputUnavailableReason({
   activeModel,
   isExternalModel,
@@ -12,6 +26,7 @@ export function getImageInputUnavailableReason({
   modelLoaded,
   loadError,
   visionDisabledByUser,
+  mmprojFallbackReason,
 }: {
   activeModel?: ChatModelSummary;
   isExternalModel: boolean;
@@ -28,6 +43,7 @@ export function getImageInputUnavailableReason({
   // Backend-reported: image input is off because Vision was switched off for this
   // model, not because no projector could be found.
   visionDisabledByUser?: boolean | null;
+  mmprojFallbackReason?: MmprojFallbackReason | null;
 }): string | null {
   if (isExternalModel) {
     const explicitlyNonVision =
@@ -53,6 +69,14 @@ export function getImageInputUnavailableReason({
     }
     return "Load a model before adding images.";
   }
+  const fallbackReason = textOnlyMmprojUnavailableReason(
+    activeModel,
+    mmprojFallbackReason,
+  );
+  if (fallbackReason) {
+    return fallbackReason;
+  }
+
   // loadedIsMultimodal is true for vision OR audio; that one flag can't tell
   // them apart, so only block when activeModel confirms audio-only (audio
   // capability set AND isVision === false). Otherwise trust the load
@@ -61,9 +85,10 @@ export function getImageInputUnavailableReason({
     const isAudioOnly =
       Boolean(activeModel?.isAudio || activeModel?.hasAudioInput) &&
       activeModel?.isVision === false;
-    if (!isAudioOnly) return null;
+    if (!isAudioOnly) {
+      return null;
+    }
   }
-
   const label = activeModel?.name || activeModel?.id || "Current model";
   // Before the generic message below, which would otherwise send someone who
   // switched Vision off hunting for a vision model with a valid mmproj. The
@@ -74,5 +99,8 @@ export function getImageInputUnavailableReason({
   const suffix = activeModel?.isGguf
     ? " with a valid mmproj before attaching images."
     : " before attaching images.";
-  return `${label} cannot accept images. Load a vision-capable model${suffix}`;
+  return (
+    fallbackReason ??
+    `${label} cannot accept images. Load a vision-capable model${suffix}`
+  );
 }

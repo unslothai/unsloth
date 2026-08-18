@@ -595,6 +595,9 @@ export function SharedComposer({
   const loadedVisionDisabledByUser = useChatRuntimeStore(
     (s) => s.loadedVisionDisabledByUser,
   );
+  const mmprojFallbackReason = useChatRuntimeStore(
+    (s) => s.mmprojFallbackReason,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -675,6 +678,7 @@ export function SharedComposer({
     modelLoaded,
     loadError: lastModelLoadError,
     visionDisabledByUser: loadedVisionDisabledByUser,
+    mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -1643,6 +1647,7 @@ export function SharedComposer({
           // Set alongside loadedIsMultimodal so the composer can say WHY images
           // are unavailable in compare mode too.
           loadedVisionDisabledByUser: resp.vision_disabled_by_user ?? false,
+          mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use

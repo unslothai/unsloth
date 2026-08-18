@@ -1079,3 +1079,68 @@ def test_the_probe_reserves_the_compute_buffer_on_every_split_device(tmp_path):
     assert "--no-mmproj-offload" in cmd
     assert cmd[cmd.index("--fit") + 1] == "off"
     assert cmd[cmd.index("-c") + 1] == "32768"
+
+
+def test_the_predicted_pin_is_reported_through_both_responses(tmp_path):
+    """A projector the fit moved to host RAM must say so, on the same channel the
+    startup-recovery pin uses.
+
+    Both routes end at the same placement and the same user-visible cost, so the
+    notice cannot depend on which one got there. Without this the predicted pin is
+    silent outside the server log: image encoding simply gets slower with nothing in
+    the UI to explain it, which is the complaint the recovery path exists to answer.
+    The card here is the one the pin fires on.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
+    cmd = _launch(backend, gguf)["cmd"]
+
+    # Premise: this really is the predicted pin, not a post-crash recovery.
+    assert "--no-mmproj-offload" in cmd
+    assert backend.mmproj_fallback_reason == "cpu_offload"
+
+    fields = _llama_runtime_fields(backend)
+    load = LoadResponse(
+        status = "loaded", model = "test", display_name = "test", inference = {}, **fields
+    ).model_dump()
+    status = InferenceStatusResponse(active_model = "test", **fields).model_dump()
+    for payload, where in ((load, "load"), (status, "status")):
+        assert payload["mmproj_fallback_reason"] == "cpu_offload", where
+
+
+def test_a_load_that_keeps_the_projector_on_the_gpu_reports_nothing(tmp_path):
+    """The control: the reason is a report of something that happened, so a load that
+    never moved the projector must leave it None rather than always claiming CPU."""
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--no-mmproj-offload" not in cmd
+    assert backend.mmproj_fallback_reason is None
+
+
+@pytest.mark.parametrize(
+    ("env", "expected_retry"),
+    [
+        # get_value_from_env checks the LLAMA_ARG_NO_ spelling first and forces falsey
+        # on presence alone, so the projector is already in host RAM either way.
+        ({"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}, False),
+        ({"LLAMA_ARG_NO_MMPROJ_OFFLOAD": ""}, False),
+        # It wins over the positive spelling, exactly as arg.cpp orders them.
+        ({"LLAMA_ARG_MMPROJ_OFFLOAD": "1", "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "0"}, False),
+        # is_falsey accepts `disabled`; the spelling list alone does not.
+        ({"LLAMA_ARG_MMPROJ_OFFLOAD": "disabled"}, False),
+        # Still a GPU projector, so the recovery retry is real work.
+        ({"LLAMA_ARG_MMPROJ_OFFLOAD": "enabled"}, True),
+        ({}, True),
+    ],
+)
+def test_the_recovery_retry_sees_every_environment_pin(env, expected_retry):
+    """A projector the environment already pinned to CPU cannot be rescued by pinning
+    it again: the retry respawns a command identical in effect, cannot clear the
+    allocation failure, and costs the caller the real error, because the branch that
+    surfaces that OOM only runs when this returns None."""
+    cmd = ["llama-server", "-m", "/cache/model.gguf", "--mmproj", "/cache/mmproj.gguf"]
+    retry = LlamaCppBackend._with_mmproj_offload_disabled(cmd, env)
+
+    assert (retry is not None) is expected_retry
+    if expected_retry:
+        assert retry[-1] == "--no-mmproj-offload"
