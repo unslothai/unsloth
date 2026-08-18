@@ -47,7 +47,7 @@ test("leaving the audio page aborts an in-flight transcription", () => {
   );
   assert.match(
     source,
-    /transcribeAudioBlob\(blob, \{[\s\S]*signal: controller\.signal/,
+    /transcribeAudioBlobDetailed\(blob, \{[\s\S]*signal: controller\.signal/,
   );
   assert.match(
     source,

@@ -295,7 +295,7 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
 test("Audio transcription uses backend language auto-detection", () => {
   assert.match(
     audioPageSource,
-    /transcribeAudioBlob\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
+    /transcribeAudioBlobDetailed\(blob, \{[\s\S]*model: key,[\s\S]*engine,[\s\S]*language: ""/,
   );
 });
 
@@ -461,7 +461,7 @@ test("the transcript download revokes its URL only after the click is consumed",
   // asynchronously, leaving the action with no file.
   assert.match(
     audioPageSource,
-    /anchor\.download = `\$\{\(transcribedName[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
+    /anchor\.download = `\$\{stem\}[\s\S]*?anchor\.click\(\);[\s\S]*?window\.setTimeout\(\(\) => URL\.revokeObjectURL\(url\), 0\);/,
   );
 });
 

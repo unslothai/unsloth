@@ -826,11 +826,15 @@ class _FakeWhisperHandler(http.server.BaseHTTPRequestHandler):
     """Stands in for whisper-server's /inference endpoint."""
 
     response_text = "Hello world.\n Second line."
+    response_segments = None
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
         self.rfile.read(length)
-        body = json.dumps({"text": self.response_text}).encode()
+        payload = {"text": self.response_text}
+        if self.response_segments is not None:
+            payload["segments"] = self.response_segments
+        body = json.dumps(payload).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -865,6 +869,39 @@ def test_transcribe_joins_segments_one_line(monkeypatch, fake_whisper_server):
     assert result["language"] == "en"
     assert result["model"] == "small"
     assert result["duration"] == pytest.approx(1.0)
+    assert result["segments"] is None
+
+
+def test_transcribe_surfaces_verbose_json_segments(monkeypatch, fake_whisper_server):
+    _available(monkeypatch)
+    monkeypatch.setattr(ggml_module, "_cached_model_path", lambda model_id: "/tmp/ggml.bin")
+    monkeypatch.setattr(
+        _FakeWhisperHandler,
+        "response_text",
+        "Hello world. Second line.",
+    )
+    monkeypatch.setattr(
+        _FakeWhisperHandler,
+        "response_segments",
+        [
+            {"text": "Hello world.", "t0": 0, "t1": 150},
+            {"text": "Second line.", "start": 1.5, "end": 2.75},
+            {"text": "   ", "start": 2.75, "end": 3.0},
+        ],
+        raising = False,
+    )
+    sidecar = GgmlSttSidecar()
+
+    def fake_load(model = None):
+        sidecar._port = fake_whisper_server
+        sidecar._model_id = ggml_module.resolve_ggml_model_id(model)
+
+    monkeypatch.setattr(sidecar, "load", fake_load)
+    result = sidecar.transcribe(b"RIFF", model = "small", language = "en", fast = True)
+    assert result["segments"] == [
+        {"start": 0.0, "end": 1.5, "text": "Hello world."},
+        {"start": 1.5, "end": 2.75, "text": "Second line."},
+    ]
 
 
 def test_transcribe_maps_bad_payload_to_decode_error(monkeypatch, fake_whisper_server):
