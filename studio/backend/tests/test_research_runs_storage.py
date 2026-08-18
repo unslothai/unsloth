@@ -352,6 +352,8 @@ def test_report_prompt_requires_comprehensive_evidence_based_detail():
     from core import research_runs as worker
 
     prompt = worker._REPORT_SYSTEM_PROMPT
+    assert worker._REPORT_BOUNDARY_MARKER in prompt
+    assert "Before writing any report content" in prompt
     assert "detailed, comprehensive report" in prompt
     assert "every material dimension in the approved plan" in prompt
     assert "implications, tradeoffs, limitations" in prompt
@@ -1580,7 +1582,24 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
     assert "&lt;/untrusted_web_evidence&gt;" in prompt
 
 
-def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_home, monkeypatch):
+@pytest.mark.parametrize(
+    ("initial_synthesis", "recovery_in_reasoning"),
+    (
+        pytest.param(
+            ("", "Repeated a truncated source URL.", "length", None),
+            False,
+            id = "length",
+        ),
+        pytest.param(
+            ("<!-- UNSLOTH_FINAL_REPORT -->\n", "Analysis.", "stop", None),
+            True,
+            id = "marker-only",
+        ),
+    ),
+)
+def test_supervisor_planning_and_research_are_durable_with_mocked_io(
+    research_home, monkeypatch, initial_synthesis, recovery_in_reasoning
+):
     from core import research_runs as worker
 
     rag_scope = {"kb_id": "kb-1", "default_top_k": 4}
@@ -1702,8 +1721,18 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
                 None,
             )
         if kwargs.get("phase") == "synthesis":
-            return "", "Repeated a truncated source URL.", "length", None
+            return initial_synthesis
         report = report_response
+        if recovery_in_reasoning:
+            return (
+                "",
+                "Checked the available evidence.\n"
+                + worker._REPORT_BOUNDARY_MARKER
+                + "\n"
+                + report,
+                "stop",
+                None,
+            )
         research_db.set_report_progress(run["id"], report)
         return report, "Checked the available evidence.", "stop", None
 
