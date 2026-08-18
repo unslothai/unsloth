@@ -773,10 +773,10 @@ def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
     runtime that was already the one asked for. The switch must not be what decides,
     so both spellings of the request have to reach the same verdict."""
     from core.inference.llama_cpp import (
-    GgufLoadIntent,
-    LlamaCppBackend,
-    _resolved_mmproj_offload,
-)
+        GgufLoadIntent,
+        LlamaCppBackend,
+        _resolved_mmproj_offload,
+    )
 
     backend = LlamaCppBackend()
     backend._is_diffusion = True
