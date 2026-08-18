@@ -20,6 +20,10 @@ import { type RagUploadItem, uploadItemFromIntent } from "./use-rag-documents";
 export interface SourceDropOptions {
   /** Receives what the drop yielded; never called with an empty list. */
   onItems: (items: RagUploadItem[]) => void;
+  /** Set while the surface cannot take files, such as during an upload the
+   * uploader would not keep separate from a second one. The drop is refused
+   * with this message rather than started. */
+  disabledReason?: string;
 }
 
 export interface SourceDropProps {
@@ -41,7 +45,11 @@ function isFileDrag(event: ReactDragEvent): boolean {
 
 /** Drop files onto a RAG surface, from the browser or from the desktop, where a
  * drop arrives as a path rather than bytes. */
-export function useSourceDrop({ onItems }: SourceDropOptions): SourceDrop {
+export function useSourceDrop({
+  onItems,
+  disabledReason,
+}: SourceDropOptions): SourceDrop {
+  const disabled = disabledReason !== undefined;
   // Count enter/leave pairs: children fire dragleave on the parent.
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
@@ -87,8 +95,14 @@ export function useSourceDrop({ onItems }: SourceDropOptions): SourceDrop {
   );
 
   const nativeDropTarget = useNativeDropTarget({
-    onDrop: (paths) => void addNativePaths(paths),
-    onDragOver: setDragging,
+    onDrop: (paths) => {
+      if (disabled) {
+        toast.info(disabledReason);
+        return;
+      }
+      void addNativePaths(paths);
+    },
+    onDragOver: (over) => setDragging(over && !disabled),
   });
 
   const endDrag = useCallback(() => {
@@ -101,17 +115,17 @@ export function useSourceDrop({ onItems }: SourceDropOptions): SourceDrop {
   const dropProps: SourceDropProps = {
     onDragEnter: (event) => {
       event.preventDefault();
-      if (!isFileDrag(event)) return;
+      if (disabled || !isFileDrag(event)) return;
       dragDepth.current += 1;
       setDragging(true);
     },
     onDragOver: (event) => {
       event.preventDefault();
-      if (!isFileDrag(event)) return;
+      if (disabled || !isFileDrag(event)) return;
       event.dataTransfer.dropEffect = "copy";
     },
     onDragLeave: (event) => {
-      if (!isFileDrag(event)) return;
+      if (disabled || !isFileDrag(event)) return;
       dragDepth.current = Math.max(0, dragDepth.current - 1);
       if (dragDepth.current === 0) setDragging(false);
     },
@@ -119,6 +133,10 @@ export function useSourceDrop({ onItems }: SourceDropOptions): SourceDrop {
       event.preventDefault();
       endDrag();
       if (!isFileDrag(event)) return;
+      if (disabledReason !== undefined) {
+        toast.info(disabledReason);
+        return;
+      }
       const { supported, unsupported } = partitionSupported(
         Array.from(event.dataTransfer.files ?? []),
         (file) => file.name,

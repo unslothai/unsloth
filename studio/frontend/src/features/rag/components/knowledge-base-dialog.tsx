@@ -346,6 +346,11 @@ function KnowledgeBaseDocuments({
   }, [refresh]);
   const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
     onItems: (items) => void upload(items),
+    // upload() tracks one run at a time, so a second batch would clear the
+    // in-flight guard the first one is still relying on.
+    disabledReason: uploading
+      ? "An upload is already running. Add these when it finishes."
+      : undefined,
   });
 
   return (

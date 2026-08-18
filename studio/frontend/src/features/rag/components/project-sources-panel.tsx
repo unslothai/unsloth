@@ -74,6 +74,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
 
   const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
     onItems: (items) => void handleItems(items),
+    // upload() tracks one run at a time, so a second batch would clear the
+    // in-flight guard the first one is still relying on.
+    disabledReason: uploading
+      ? "An upload is already running. Add these when it finishes."
+      : undefined,
   });
 
   const empty = documents.length === 0;
