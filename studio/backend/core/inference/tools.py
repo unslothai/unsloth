@@ -9225,6 +9225,17 @@ def _edit_file_create(
             with os.fdopen(fd, "wb") as fh:
                 fh.write(payload)
         except OSError as exc:
+            # O_EXCL published the name before the first byte, and the payload
+            # reaches the disk a buffer at a time, so ENOSPC or a quota partway
+            # through leaves the bytes that fit -- a file truncated mid-token.
+            # close() reports such a failure for data written earlier, so the
+            # error can arrive after most of the file is already there. The
+            # retry the message asks for cannot clear it either: an empty
+            # old_string refuses a non-empty target, and no other old_string is
+            # in a file the model never saw. Removing the inode this call just
+            # created puts the retry back on the create path.
+            with contextlib.suppress(OSError):
+                os.remove(target)
             return f"Error: cannot write '{name}': {exc}"
         return f"Created {name} ({new.count(chr(10)) + 1} lines)"
     try:

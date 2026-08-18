@@ -544,3 +544,114 @@ class TestFullAccessEscapesTheWorkdir:
         )
         assert not result.startswith("Error:")
         assert outside.read_text() == "x = 2\n"
+
+
+@pytest.mark.skipif(os.name != "posix", reason = "RLIMIT_FSIZE is POSIX-only")
+class TestCreationLeavesNothingBehindWhenTheWriteFails:
+    """A create that runs out of space must not strand a truncated file.
+
+    RLIMIT_FSIZE is a real kernel write failure with the same shape as ENOSPC or
+    a quota: the bytes that fit are on disk and the rest fail. Mocked here only
+    to the extent of choosing when it happens.
+    """
+
+    @staticmethod
+    def _capped(limit):
+        import resource
+        import signal
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+        previous = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+        return (soft, hard, previous)
+
+    @staticmethod
+    def _restore(saved):
+        import resource
+        import signal
+
+        soft, hard, previous = saved
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+        signal.signal(signal.SIGXFSZ, previous)
+
+    def test_a_half_written_file_is_removed_not_left_truncated(self, workdir):
+        # The failure lands mid-payload, so without the cleanup the file is a
+        # source file cut off in the middle of a token.
+        body = "".join(f"def f{i}():\n    return {i}\n\n" for i in range(4000))
+        saved = self._capped(4096)
+        try:
+            result = execute_tool(
+                "edit_file",
+                {"path": "report.py", "old_string": "", "new_string": body},
+                session_id = "t",
+            )
+        finally:
+            self._restore(saved)
+        assert result.startswith("Error:")
+        assert not (workdir / "report.py").exists()
+
+    def test_the_retry_the_error_asks_for_then_succeeds(self, workdir):
+        # An empty old_string refuses a non-empty target, so a leftover partial
+        # file would make the failure permanent: nothing could ever write it.
+        body = "".join(f"def f{i}():\n    return {i}\n\n" for i in range(4000))
+        saved = self._capped(4096)
+        try:
+            execute_tool(
+                "edit_file",
+                {"path": "report.py", "old_string": "", "new_string": body},
+                session_id = "t",
+            )
+        finally:
+            self._restore(saved)
+        retry = execute_tool(
+            "edit_file",
+            {"path": "report.py", "old_string": "", "new_string": body},
+            session_id = "t",
+        )
+        assert not retry.startswith("Error:")
+        assert (workdir / "report.py").read_text() == body
+
+    def test_a_failure_at_close_leaves_nothing_either(self, workdir, monkeypatch):
+        # A payload smaller than the io buffer reaches the disk only at close,
+        # and close() is exactly where a full disk reports the failure of data
+        # written earlier. Injected rather than rlimit'd so it lands at close
+        # whatever the filesystem's block size makes the buffer.
+        real = os.fdopen
+
+        def failing(fd, *args, **kwargs):
+            handle = real(fd, *args, **kwargs)
+            closed = handle.close
+
+            def close():
+                # CPython releases the descriptor even when the closing flush
+                # fails, so the real failure closes before it raises.
+                closed()
+                raise OSError(28, "No space left on device")
+
+            handle.close = close
+            return handle
+
+        monkeypatch.setattr(os, "fdopen", failing)
+        result = execute_tool(
+            "edit_file",
+            {"path": "notes.py", "old_string": "", "new_string": "print('hi')\n"},
+            session_id = "t",
+        )
+        monkeypatch.undo()
+        assert result.startswith("Error:")
+        assert not (workdir / "notes.py").exists()
+
+    def test_a_failed_create_does_not_remove_someone_elses_file(self, workdir):
+        # The cleanup must only ever reach the inode this call created. An
+        # existing non-empty target is refused before the O_EXCL open, so it
+        # can never reach the failure path at all.
+        target = workdir / "keep.py"
+        target.write_text("x = 1\n")
+        result = execute_tool(
+            "edit_file",
+            {"path": "keep.py", "old_string": "", "new_string": "y = 2\n"},
+            session_id = "t",
+        )
+        assert result.startswith("Error:")
+        assert "already exists" in result
+        assert target.read_text() == "x = 1\n"
