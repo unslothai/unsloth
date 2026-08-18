@@ -36,6 +36,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 SETUP_PS1 = REPO / "studio" / "setup.ps1"
 SETUP_SH = REPO / "studio" / "setup.sh"
+INSTALL_PS1 = REPO / "install.ps1"
 WORKFLOWS = REPO / ".github" / "workflows"
 
 ENV_VAR = "UNSLOTH_INSTALL_TIMING"
@@ -183,28 +184,95 @@ def test_the_print_helpers_call_nothing_defined_elsewhere_in_the_file():
         )
 
 
-def _windows_install_steps():
+def _windows_steps(pattern: str):
+    """(workflow, job id, job, step) for every Windows step whose `run` matches."""
     for f in sorted(WORKFLOWS.glob("studio-windows-*.yml")):
         doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
         for jid, job in (doc.get("jobs") or {}).items():
             if not isinstance(job, dict):
                 continue
             for step in job.get("steps") or []:
-                if "install.ps1 --local --no-torch" in str(step.get("run", "")):
-                    yield f.name, jid, step
+                if re.search(pattern, str(step.get("run", ""))):
+                    yield f.name, jid, job, step
+
+
+def _timing_enabled(job: dict, step: dict) -> bool:
+    """Job-scope env is inherited by every step, so either level counts."""
+    for scope in (step, job):
+        if (scope.get("env") or {}).get(ENV_VAR) in ("1", 1):
+            return True
+    return False
 
 
 def test_every_windows_install_step_asks_for_the_breakdown():
-    steps = list(_windows_install_steps())
+    steps = list(_windows_steps(r"install\.ps1 --local --no-torch"))
     assert steps, "no Windows step runs install.ps1 --local --no-torch any more"
     missing = [
-        f"{name}:{jid}"
-        for name, jid, step in steps
-        if (step.get("env") or {}).get(ENV_VAR) not in ("1", 1)
+        f"{name}:{jid}" for name, jid, job, step in steps if not _timing_enabled(job, step)
     ]
     assert not missing, (
         f"these Windows install steps do not set {ENV_VAR}, so their logs stay unreadable "
         f"about where the 260-291s goes: {missing}"
+    )
+
+
+def test_the_update_invocations_ask_for_it_too():
+    """The 297s no-op update is the anomaly that motivated the switch.
+
+    `unsloth studio update --local` over an already-complete install cost MORE than the
+    281s full install it followed. A variable scoped to the install step alone left that
+    number exactly as unexplained as before, since the update steps declare their own env.
+    """
+    steps = list(_windows_steps(r"unsloth studio update"))
+    assert steps, "no Windows step runs `unsloth studio update` any more"
+    missing = [
+        f"{name}:{jid}: {step.get('name')}"
+        for name, jid, job, step in steps
+        if not _timing_enabled(job, step)
+    ]
+    assert not missing, (
+        f"these update steps produce no phase breakdown: {missing}. Setting {ENV_VAR} at "
+        f"job scope covers them and any step added later."
+    )
+
+
+def test_the_outer_installer_is_timed_as_well_as_the_child():
+    """install.ps1 is what CI runs; setup.ps1 is only the second half of it.
+
+    The uv bootstrap and the whole Unsloth dependency install happen in install.ps1
+    before it hands off, so instrumenting only studio/setup.ps1 leaves the larger half of
+    the 260-291s unattributed.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "StudioTimingEnabled" in src, (
+        "install.ps1 carries no phase timing, so the outer half of the Windows install is "
+        "invisible in the log and the child's clock restarts at the handoff"
+    )
+    assert f"$env:{ENV_VAR} -ne '0'" in src, (
+        f"install.ps1's timing switch lost its guard against a truthy \"0\""
+    )
+    for fn in ("function step {", "function substep {"):
+        block = src[src.index(fn) :][:2000]
+        assert "Variable:script:StudioTimingEnabled" in block, (
+            f"install.ps1's {fn.strip()} does not consult the timing switch"
+        )
+
+
+def test_the_child_continues_the_parent_clock_rather_than_restarting_it():
+    """Two halves each counting from their own zero cannot be read as one timeline."""
+    outer = INSTALL_PS1.read_text(encoding = "utf-8")
+    inner = SETUP_PS1.read_text(encoding = "utf-8")
+    handoff = f"{ENV_VAR}_T0"
+    assert f"$env:{handoff} =" in outer, (
+        f"install.ps1 no longer publishes {handoff}, so setup.ps1 restarts the clock at the "
+        f"handoff and its numbers no longer line up with the outer installer's"
+    )
+    assert f"$env:{handoff}" in inner, (
+        f"setup.ps1 ignores {handoff}, so it counts from its own zero"
+    )
+    assert "TryParse" in inner, (
+        "setup.ps1 no longer parses the handoff defensively; junk inherited from an outer "
+        "process must fall back to starting the clock locally, not crash the installer"
     )
 
 

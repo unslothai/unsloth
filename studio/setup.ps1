@@ -38,7 +38,27 @@ $ErrorActionPreference = "Stop"
 # `[bool]` on its own is not enough: in PowerShell every non-empty string is true,
 # so UNSLOTH_INSTALL_TIMING=0 would enable it.
 $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
-$script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
+# Continue the OUTER installer's clock when there is one. install.ps1 does the uv
+# bootstrap and the whole Unsloth dependency install before it hands off to this
+# script, so a stopwatch started here reads 0.0s at a point that is already minutes
+# into the run, and the two halves of one install log would each count from their own
+# zero. install.ps1 publishes its start as UTC ticks; anything else (unset, or junk
+# inherited from an outer process) falls back to starting the clock here.
+$script:StudioTimingSw = $null
+if ($env:UNSLOTH_INSTALL_TIMING_T0) {
+    [long]$_t0 = 0
+    if ([long]::TryParse($env:UNSLOTH_INSTALL_TIMING_T0, [ref]$_t0)) {
+        $_elapsed = [System.DateTime]::UtcNow - [System.DateTime]::new($_t0, [System.DateTimeKind]::Utc)
+        if ($_elapsed.Ticks -ge 0) {
+            $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
+            $script:StudioTimingOffset = $_elapsed
+        }
+    }
+}
+if (-not $script:StudioTimingSw) { $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew() }
+if (-not (Test-Path Variable:script:StudioTimingOffset)) {
+    $script:StudioTimingOffset = [System.TimeSpan]::Zero
+}
 
 # This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
 # below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
@@ -1780,7 +1800,9 @@ function step {
     # neither a helper nor the $script: state above exists, and reading an unset $script:
     # variable under a caller's Set-StrictMode is fatal rather than empty.
     if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-        $Value = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Value
+        $_e = $script:StudioTimingSw.Elapsed
+        if (Test-Path Variable:script:StudioTimingOffset) { $_e = $_e + $script:StudioTimingOffset }
+        $Value = ("[{0,7:N1}s] " -f $_e.TotalSeconds) + $Value
     }
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     # Exactly one sink: the console handle when redirected, Write-Host (the only
@@ -1823,7 +1845,9 @@ function substep {
     # Same reasoning as `step` above: prefix once, before the sinks diverge, inline and
     # guarded so this function still runs when dot-sourced on its own.
     if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-        $Message = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Message
+        $_e = $script:StudioTimingSw.Elapsed
+        if (Test-Path Variable:script:StudioTimingOffset) { $_e = $_e + $script:StudioTimingOffset }
+        $Message = ("[{0,7:N1}s] " -f $_e.TotalSeconds) + $Message
     }
     # Exactly one sink, as in `step` above.
     if ($script:StudioStdoutRedirected) {
