@@ -144,7 +144,9 @@ export function ModelRowShell({
         target.focus({ preventScroll: true });
       }
     }
-    if (replay.pointer) {
+    // No constructible PointerEvent (an old WebView) only costs the replay: the row is mounted
+    // either way and the next real move opens the tooltip.
+    if (replay.pointer && typeof PointerEvent === "function") {
       const under = document.elementFromPoint(replay.pointer.x, replay.pointer.y);
       // Stale coordinates are worse than no replay: if the pointer has already left this row, the
       // event would announce a hover that is not happening.
