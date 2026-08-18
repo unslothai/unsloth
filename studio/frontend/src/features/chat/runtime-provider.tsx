@@ -84,6 +84,7 @@ import {
   releasePreStreamRunReservation,
 } from "./utils/pre-stream-run-reservation";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
+import { restoredAssistantStatus } from "./utils/continuation";
 import {
   chatContentPartAttachmentIdFromSignature,
   chatContentPartAttachmentSignature,
@@ -673,7 +674,7 @@ function toThreadMessage(m: MessageRecord): ThreadMessage {
       ThreadMessage,
       { role: "assistant" }
     >["content"],
-    status: { type: "complete" as const, reason: "unknown" as const },
+    status: restoredAssistantStatus({ custom }),
     metadata: {
       custom,
       ...(savedTiming ? { timing: savedTiming } : {}),
