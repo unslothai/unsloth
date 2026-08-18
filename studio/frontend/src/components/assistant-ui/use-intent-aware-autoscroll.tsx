@@ -77,16 +77,15 @@ type AutoScrollContextValue = {
    */
   detachFromBottom: () => void;
   /**
-   * Content of `deltaPx` height was just inserted ABOVE the viewport, so shift
-   * the viewport by it and the user keeps looking at what they were looking at.
-   * Progressive mounting (see progressive-mount-controller) is the only caller,
-   * and it calls on EVERY widening commit, `deltaPx` of zero included, because
-   * a zero correction still has to resync the intent bookkeeping below.
+   * `deltaPx` of content was inserted ABOVE the viewport; shift by it so the
+   * user keeps looking at the same thing. Progressive mounting (see
+   * progressive-mount-controller) is the only caller and calls on EVERY
+   * widening commit, zero included, since a zero correction still resyncs the
+   * intent bookkeeping below.
    *
-   * This hook owns scrollTop and the caller never writes it, which is the whole
-   * reason this exists as a method rather than as a scrollTop write next to the
-   * commit that inserted the rows. See the implementation for why it no-ops
-   * while the user is following.
+   * This exists as a method rather than a scrollTop write next to the inserting
+   * commit because this hook owns scrollTop and the caller never writes it. See
+   * the implementation for why it no-ops while the user is following.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => void;
 };
@@ -364,30 +363,25 @@ export function useIntentAwareAutoScroll(): {
       };
 
       // Content inserted above the viewport by a progressive-mount widening.
-      //
-      // Ownership, stated once so the two mechanisms are never both writing:
-      // THIS HOOK OWNS scrollTop. The progressive mount never writes it, it
-      // only reports the height it put above the fold.
+      // THIS HOOK OWNS scrollTop; the progressive mount only reports the height
+      // it put above the fold, so the two never both write.
       //
       // While the user is FOLLOWING there is deliberately nothing to do. The
-      // widening commit is a childList mutation on this subtree, so the
-      // MutationObserver below already runs onLayoutChange -> pinIfFollowing
-      // in the same frame, before paint; and because widening only ever
-      // prepends, "pin to the bottom" and "shift down by the height inserted
-      // above" are the same pixel. Correcting here as well would be a second
-      // writer for no gain, would double the forced layouts per widening
-      // frame, and the scroll event it emits could re-attach a user who had
+      // widening commit is a childList mutation, so the MutationObserver below
+      // already runs onLayoutChange -> pinIfFollowing in the same frame before
+      // paint, and since widening only prepends, "pin to the bottom" and "shift
+      // by the height inserted above" are the same pixel. Correcting here too
+      // would be a second writer for no gain, would double the forced layouts
+      // per frame, and its scroll event could re-attach a user who
       // deliberately detached within RE_ATTACH_THRESHOLD_PX of the bottom.
       //
-      // While the user is DETACHED nothing else moves the viewport at all:
-      // extendFollow early-returns, stabilize only rebases its high-water
-      // mark, and pinIfFollowing returns without scrolling. So this is the
-      // only actor, and without it the page slides down under the reader on
-      // every widening frame.
+      // While the user is DETACHED nothing else moves the viewport: extendFollow
+      // early-returns, stabilize only rebases its high-water mark, and
+      // pinIfFollowing returns without scrolling. So this is the only actor, and
+      // without it the page slides down under the reader every widening frame.
       //
-      // `behavior: "instant"` is required, not stylistic: the viewport class
-      // list carries `scroll-smooth`, so an animated write would still be in
-      // flight when the next widening frame issued the next one.
+      // `behavior: "instant"` is required: the viewport carries `scroll-smooth`,
+      // so an animated write would still be in flight at the next frame's write.
       adjustImplRef.current = (deltaPx: number) => {
         if (!userDetachedRef.current) {
           return;
@@ -395,24 +389,21 @@ export function useIntentAwareAutoScroll(): {
         if (deltaPx !== 0) {
           el.scrollTo({ top: el.scrollTop + deltaPx, behavior: "instant" });
         }
-        // Advance the intent bookkeeping whether or not anything was written,
-        // and that is two fixes rather than one.
+        // Advance the intent bookkeeping whether or not anything was written.
         //
-        // With a write, it stops the scroll event the write provokes from
-        // reading as movement the reader made: the `delta > 0` branch below
-        // would otherwise re-attach a user parked near the bottom
-        // (detachFromBottom puts them exactly there when the composer grows)
-        // and the next widening frame would yank them to the bottom.
+        // With a write, this stops the scroll event it provokes from reading as
+        // reader movement: the `delta > 0` branch below would re-attach a user
+        // parked near the bottom (where detachFromBottom puts them when the
+        // composer grows) and the next widening frame would yank them down.
         //
-        // WITHOUT a write it matters just as much, which is the part that was
-        // missing. When native scroll anchoring absorbs a widening in full the
-        // correction above is zero, but the browser still moved scrollTop by
-        // the whole inserted height and still fires a scroll event for it:
-        // measured, one event carrying the new offset on Chromium 151, WebKit
-        // 26.5 and Firefox 153. Returning early there left lastScrollTop a
-        // whole insertion behind, so that event arrived as a large downward
-        // scroll nobody made. Layout effects run before the event is
-        // dispatched, so resyncing here is what makes it read as zero.
+        // WITHOUT a write it matters just as much. When native scroll anchoring
+        // absorbs a widening in full the correction is zero, but the browser
+        // still moved scrollTop by the whole inserted height and still fires a
+        // scroll event for it: measured, one event carrying the new offset on
+        // Chromium 151, WebKit 26.5 and Firefox 153. Returning early left
+        // lastScrollTop a whole insertion behind, so that event arrived as a
+        // large downward scroll nobody made. Layout effects run before the event
+        // is dispatched, so resyncing here is what makes it read as zero.
         lastScrollTop = el.scrollTop;
         lastDistanceFromBottom = distanceFromBottom();
       };

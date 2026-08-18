@@ -37,12 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - the message IS the behaviour
-    # This probe drives #9016's fixture page, and #9016 is not merged, so on this branch
-    # `playwright_heavy_thread.py`, `smoke-heavy-thread.html` and `smoke-heavy-thread-main.tsx`
-    # are all absent and this import is where that becomes visible. Say so instead of raising a
-    # bare ModuleNotFoundError, and do not vendor a copy of the harness to paper over it: two
-    # copies of a measurement harness is how the two copies stop agreeing, and the numbers this
-    # probe produces are only comparable to #9016's while there is exactly one of it.
+    # #9016 is not merged, so its three fixture files are absent and this import is where that
+    # becomes visible. Say so instead of raising a bare ModuleNotFoundError, and do not vendor a
+    # copy: two copies of a measurement harness stop agreeing, and these numbers are only
+    # comparable to #9016's while there is exactly one.
     raise SystemExit(
         "probe_progressive_anchor needs #9016's heavy-thread harness, which is not on this "
         "branch yet: tests/studio/playwright_heavy_thread.py plus "
@@ -65,8 +63,8 @@ LABEL = os.environ.get("SMOKE_LABEL", "tree")
 OUT = Path(os.environ.get("PW_ART_DIR", "logs/progressive-anchor"))
 OUT.mkdir(parents = True, exist_ok = True)
 
-# How far up to scroll on the frame the thread comes back. Two viewports puts the reader well clear
-# of the bottom, so the hook's follow window is genuinely disarmed rather than merely expired.
+# How far up to scroll on the frame the thread comes back. Two viewports puts the reader clear of
+# the bottom, so the hook's follow window is disarmed rather than merely expired.
 SCROLL_UP_PX = int(os.environ.get("SMOKE_ANCHOR_SCROLL_PX", "4000"))
 SETTLE_MS = int(os.environ.get("SMOKE_ANCHOR_SETTLE_MS", "8000"))
 
@@ -75,10 +73,8 @@ def info(message: str) -> None:
     print(f"[anchor] {message}", flush = True)
 
 
-# Runs in the page. Returns the per-frame document-space top of one message, plus enough context to
-# prove the probe actually detached and actually caught the widening.
-# Stage 1, in the page: unmount and re-open, and return as soon as the first row is painted so the
-# caller can scroll up while the widening is still in flight.
+# Stage 1, in the page: unmount and re-open, returning as soon as the first row paints so the caller
+# can scroll up while the widening is still in flight.
 REOPEN_JS = """
 async () => {
   const api = window.__heavyThread;
@@ -112,13 +108,9 @@ async () => {
 }
 """
 
-# Stage 3, in the page: pick a message that is on screen and sample its document-space top every
-# frame until the thread has converged.
-#
-# Document space (viewport offset plus scrollTop) rather than viewport space, for the same reason
-# the change itself measures in document space: the point is to isolate movement caused by rows
-# being inserted above, and viewport coordinates also move when the user scrolls or when anything
-# else writes scrollTop.
+# Stage 3, in the page: pick an on-screen message and sample its position every frame until the
+# thread converges. Document space (viewport offset plus scrollTop) is recorded alongside viewport
+# space to isolate movement caused by rows inserted above.
 SAMPLE_JS = """
 async ([before, settleMs]) => {
   const api = window.__heavyThread;
@@ -191,9 +183,8 @@ def main() -> int:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless = True, args = chromium_launch_args())
             context = browser.new_context(viewport = {"width": 1280, "height": 900})
-            # Reuse #9016's page instrumentation rather than reimplement it: __nextPaint is the
-            # double-rAF this probe samples on, and it must be the SAME clock the re-open column
-            # uses or the two sets of numbers are not comparable.
+            # Reuse #9016's instrumentation: __nextPaint is the double-rAF this samples on, and it
+            # must be the SAME clock the re-open column uses or the numbers are not comparable.
             context.add_init_script(RECORDER_INIT)
             page = context.new_page()
             page.goto(PAGE, wait_until = "domcontentloaded")
@@ -211,20 +202,19 @@ def main() -> int:
                 if opened is None:
                     info("fixture did not land")
                     return 1
-                # A REAL wheel, from the input pipeline, over a message rather than the scroll
-                # container. A synthetic viewport.dispatchEvent(new WheelEvent(...)) does not
-                # detach: the hook asks innerScrollWillConsumeUpward(e.target) whether something
-                # nested is going to consume the gesture, and a synthetic event dispatched ON the
-                # viewport answers that question about the viewport itself. The first version of
-                # this probe made exactly that mistake and its own guard caught it, reporting a
-                # reader sitting at distance 0 from the bottom.
+                # A REAL wheel from the input pipeline, over a message rather than the scroll
+                # container. A synthetic dispatchEvent on the viewport does not detach: the hook
+                # asks innerScrollWillConsumeUpward(e.target) whether something nested will consume
+                # the gesture, and an event dispatched ON the viewport answers that about the
+                # viewport itself. The first version did that and its own guard caught it, reporting
+                # a reader at distance 0 from the bottom.
                 if not opened["widenedBeforeScroll"]:
                     info("no widening landed before the scroll; the fixture is not long enough")
                     return 1
                 page.mouse.move(640, 450)
                 page.mouse.wheel(0, -SCROLL_UP_PX)
-                # The viewport carries scroll-smooth, so the wheel animates. Let it finish, or the
-                # first samples record the probe's own gesture as drift.
+                # The viewport is scroll-smooth, so the wheel animates. Let it finish or the first
+                # samples record the probe's own gesture as drift.
                 page.wait_for_function(
                     """() => {
                         const el = window.__heavyThread.viewport();
@@ -264,7 +254,7 @@ def main() -> int:
     print()
     info(f"wrote {OUT / f'{LABEL}.json'}")
 
-    # The only failure this probe asserts: it has to have caught the thing it claims to measure.
+    # The only failure asserted: it must have caught what it claims to measure.
     if not any(r["caughtWidening"] for r in results):
         info(
             "PROBE-BROKEN the thread was already whole at the first paint in every repetition, so "

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The widen-only mount window, tested where it is pure. The React glue around it is a .tsx and
-// node's type stripping cannot import one, so the parts of the glue that carry a real invariant
-// are pinned by source assertion in progressive-mount-glue.test.ts instead.
+// The widen-only mount window, tested where it is pure. The React glue is a .tsx and node's type
+// stripping cannot import one, so the invariants it carries are pinned by source assertion in
+// progressive-mount-glue.test.ts instead.
 //
-// The property every one of these is protecting: the window only ever grows, and it always
-// reaches null. A window that shrank would unmount a message, which is the whole failure mode
-// this change exists to avoid.
+// The property all of these protect: the window only ever grows, and it always reaches null. A
+// window that shrank would unmount a message, the failure mode this change exists to avoid.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -42,9 +41,8 @@ test("a thread at the floor is windowed", () => {
 });
 
 test("the first commit mounts the tail, not the head", () => {
-  // The thread is bottom-anchored, so the messages the user is about to look at are the last
-  // ones. A window anchored at the head would mount 16 messages nobody can see and still paint
-  // an empty viewport.
+  // The thread is bottom-anchored, so a head-anchored window would mount 16 messages nobody can
+  // see and still paint an empty viewport.
   const w = initialWindow(220, false);
   assert.equal(w?.start, 220 - INITIAL_MESSAGES);
   assert.equal(admits(w, 219), true);
@@ -85,10 +83,9 @@ test("widening reaches null from every thread length", () => {
 });
 
 test("the number of widening frames is bounded and small", () => {
-  // One frame per chunk after the first commit. 220 messages is #9016's largest fixture; at
-  // 60Hz seven frames is under 120ms of wall clock, which is the budget the whole change rests
-  // on. A constant edited into something that makes a long thread take a second to converge
-  // fails here.
+  // One frame per chunk after the first commit. 220 messages is #9016's largest fixture, and at
+  // 60Hz seven frames is under 120ms, the budget this whole change rests on. A constant edited
+  // into a long thread taking a second to converge fails here.
   assert.equal(
     stepsToCover(220),
     Math.ceil((220 - INITIAL_MESSAGES) / CHUNK_MESSAGES),
@@ -101,9 +98,8 @@ test("the number of widening frames is bounded and small", () => {
 });
 
 test("widen returns null in the same commit that mounts the last chunk", () => {
-  // Not a frame later: a trailing window of {start: 0} is indistinguishable from null in what it
-  // renders, so leaving one would spend a whole extra frame re-rendering the entire thread to
-  // produce a byte-identical tree.
+  // Not a frame later: {start: 0} renders the same as null, so leaving one spends an extra frame
+  // re-rendering the whole thread into a byte-identical tree.
   const nearlyDone: MountWindow = { start: CHUNK_MESSAGES };
   assert.equal(widen(nearlyDone, 220), null);
   const exactlyOneChunkLeft: MountWindow = { start: CHUNK_MESSAGES - 1 };
@@ -111,8 +107,8 @@ test("widen returns null in the same commit that mounts the last chunk", () => {
 });
 
 test("widen never returns a start above the message count", () => {
-  // A thread that SHRANK under a live window (a delete, or a branch switch) must not leave the
-  // window pointing past the end, which would admit nothing and paint an empty thread.
+  // A thread that SHRANK under a live window (a delete or a branch switch) must not leave it
+  // pointing past the end, which would admit nothing and paint an empty thread.
   const stale: MountWindow = { start: 200 };
   const next = widen(stale, 10);
   assert.equal(
@@ -132,10 +128,10 @@ test("isCovered is true exactly when nothing is being withheld", () => {
 });
 
 test("the constants stay inside the range they were measured over", () => {
-  // Bounds, not equalities: the point is that a future edit cannot quietly turn the first commit
-  // into one row or the floor into every thread and still be green. INITIAL_MESSAGES must cover
-  // more than one viewport of the #9016 fixture (under two messages), and the floor must stay
-  // above a thread length where the re-open is already at its 438ms floor.
+  // Bounds, not equalities, so a future edit cannot quietly turn the first commit into one row or
+  // the floor into every thread and stay green. INITIAL_MESSAGES must cover more than one viewport
+  // of the #9016 fixture (under two messages), and the floor must stay above a thread length whose
+  // re-open is already at 438ms.
   assert.ok(
     INITIAL_MESSAGES >= 8 && INITIAL_MESSAGES <= 64,
     `INITIAL_MESSAGES ${INITIAL_MESSAGES} is outside the measured range`,
@@ -150,10 +146,9 @@ test("the constants stay inside the range they were measured over", () => {
   );
 });
 
-// anchorCorrection. The scroll correction used to live entirely inside the .tsx, where nothing
-// could test it, and the one bug it has already had -- measuring in document space against an
-// engine that had already compensated -- was found by a browser probe rather than by a test.
-// This is the arithmetic, extracted.
+// anchorCorrection, extracted. The correction used to live inside the .tsx where nothing could
+// test it, and its one bug so far, measuring in document space against an engine that had already
+// compensated, was found by a browser probe rather than a test.
 
 const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_000) => ({
   viewportOffset,
@@ -162,18 +157,16 @@ const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_
 });
 
 test("the correction is the height inserted above, in document space", () => {
-  // scrollTop did not move, so the anchor moved down the screen by everything inserted above it.
+  // scrollTop did not move, so the anchor moved down by everything inserted above it.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(11500, 20000)), 12000);
 });
 
 test("the reader's own scroll is subtracted, not skipped", () => {
-  // 12000px inserted above in the same frame the reader scrolled down 3000px. Document space nets
-  // those to the 12000px that has to be applied. The version that skipped such a frame instead,
-  // on the grounds that the browser had already compensated, left the reader 19,259px out when
-  // the browser had not.
+  // 12000px inserted above in the frame the reader scrolled down 3000px; document space nets those
+  // to the 12000px to apply. The version that skipped such frames, assuming the browser had
+  // compensated, left the reader 19,259px out when it had not.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(8500, 23000)), 12000);
-  // A frame with only the reader's own scroll in it is a no-op, with no gesture bookkeeping
-  // needed to notice that.
+  // A frame holding only the reader's own scroll is a no-op, with no gesture bookkeeping needed.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(-3500, 23000)), null);
 });
 
@@ -193,9 +186,8 @@ test("sub-pixel movement is never acted on", () => {
 
 test("a window past the end of a shrunken thread is dropped, never narrowed", () => {
   // The failure this rules out: {start: 204} against a thread that shrank to 100. Clamping to
-  // count and then subtracting a chunk gives {start: 68}, and the caller has ALREADY rendered all
-  // 100 rows because start was past the end, so rows 0 to 67 would be unmounted again. Nothing in
-  // this design is allowed to unmount a row.
+  // count then subtracting a chunk gives {start: 68}, and the caller already rendered all 100 rows
+  // because start was past the end, so rows 0 to 67 would be unmounted. Nothing here may unmount.
   assert.equal(widen({ start: 204 }, 100), null);
   assert.equal(widen({ start: 204 }, 0), null);
   assert.equal(widen({ start: 100 }, 100), null);
@@ -204,8 +196,8 @@ test("a window past the end of a shrunken thread is dropped, never narrowed", ()
 });
 
 test("widening is monotone in start for every reachable window and count", () => {
-  // The property behind the case above, stated for everything rather than for one example: the
-  // next window never withholds more than the current one does.
+  // The general property behind the case above: the next window never withholds more than this
+  // one does.
   for (let count = 0; count <= 300; count += 7) {
     for (let start = 0; start <= 300; start += 5) {
       const next = widen({ start }, count);
@@ -219,18 +211,18 @@ test("widening is monotone in start for every reachable window and count", () =>
 });
 
 test("a shrink the browser already clamped is not corrected twice", () => {
-  // With anchoring off the browser moves scrollTop for exactly one reason: content above a reader
-  // near the bottom shrinks, the offset they were at stops existing, and it is clamped to the new
-  // maximum. The document-space delta reports the whole shrink regardless, so applying it on top
-  // of the clamp moves the viewport twice by the clamped part.
+  // With anchoring off the browser moves scrollTop for exactly one reason: content shrinks above a
+  // reader near the bottom, their offset stops existing, and it clamps to the new maximum. The
+  // document-space delta reports the whole shrink anyway, so applying it on top of the clamp moves
+  // the viewport twice by the clamped part.
   //
-  // 500px removed above a reader at scrollTop 9000 in a document whose maximum drops to 8600:
-  // the browser has already absorbed 400 of it, so 100 is left to apply.
+  // 500px removed above a reader at scrollTop 9000, maximum dropping to 8600: the browser absorbed
+  // 400, so 100 is left to apply.
   assert.equal(
     anchorCorrection(sample(200, 9000, 9100), sample(100, 8600, 8600)),
     -100,
   );
-  // The same shrink with room to spare is corrected in full, because nothing was clamped.
+  // The same shrink with room to spare is corrected in full: nothing was clamped.
   assert.equal(
     anchorCorrection(sample(200, 9000, 50_000), sample(-300, 9000, 49_500)),
     -500,

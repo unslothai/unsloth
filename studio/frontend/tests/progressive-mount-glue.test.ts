@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The parts of the progressive mount that are not pure, pinned by source assertion because they
-// live in .tsx files and node's type stripping cannot import one (same reason and same shape as
-// chat-autoscroll-frame-budget.test.ts).
-//
-// Each of these is a real invariant with a real failure behind it, not a spelling check. The
-// failure is named in the test.
+// The impure parts of the progressive mount, pinned by source assertion because they live in .tsx
+// files and node's type stripping cannot import one (same shape as
+// chat-autoscroll-frame-budget.test.ts). Each is a real invariant with a real failure behind it,
+// named in the test, not a spelling check.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -16,9 +14,9 @@ const read = (path: string): string =>
   readFileSync(new URL(path, import.meta.url), "utf8");
 
 /**
- * Source with comments removed. Every "this must not appear" assertion below runs against this
- * rather than the raw file: these files explain at length what they deliberately do NOT do, and a
- * prose mention of the banned construct must not fail its own test.
+ * Source with comments removed. The "must not appear" assertions run against this: these files
+ * explain at length what they deliberately do NOT do, and a prose mention of a banned construct
+ * must not fail its own test.
  */
 const code = (source: string): string =>
   source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
@@ -32,14 +30,11 @@ const HOOK = code(
 const THREAD = code(read("../src/components/assistant-ui/thread.tsx"));
 
 /**
- * The region of `source` between two markers, with BOTH markers required.
- *
- * Every slice below used to be `source.slice(source.indexOf(marker))`, which is the single
- * sharpest edge in a file of source assertions: `indexOf` returns -1 for a marker that has been
- * renamed, `slice(-1)` is the last character of the file, and every assertion against that region
- * then fails for the wrong reason -- or, for a slice with an end marker that moved, silently
- * widens to the rest of the file and passes for the wrong reason. Asserting the markers exist
- * turns both of those into a named failure.
+ * The region of `source` between two markers, with BOTH required. A bare
+ * `source.slice(source.indexOf(marker))` is the sharpest edge in a file of source assertions: a
+ * renamed marker gives -1, `slice(-1)` is the file's last character, and every assertion then
+ * fails for the wrong reason, or, with a moved end marker, widens to the rest of the file and
+ * PASSES for the wrong reason. Requiring both markers makes either a named failure.
  */
 const section = (source: string, from: string, to: string): string => {
   const start = source.indexOf(from);
@@ -50,10 +45,9 @@ const section = (source: string, from: string, to: string): string => {
 };
 
 /**
- * The mount window and the row map, without the one-off scroll-anchoring feature probe above
- * them. The "this must never appear" assertions below are all about what the WINDOW does to the
- * thread's viewport, and the probe legitimately does several of those things to a 50x50 element
- * of its own that is never in the thread: it hides it, it scrolls it, and it inserts into it.
+ * The mount window and the row map only. The "must never appear" assertions are about what the
+ * WINDOW does to the thread's viewport, and anything above it may legitimately hide, scroll or
+ * insert into elements of its own that are never in the thread.
  */
 const GLUE_WINDOW = () =>
   section(
@@ -63,12 +57,10 @@ const GLUE_WINDOW = () =>
   );
 
 test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Messages", () => {
-  // ThreadPrimitive.Messages renders MessageByIndexProvider -> RenderChildrenWithAccessor ->
-  // children; the row map here renders MessageByIndexProvider -> children, dropping the accessor
-  // wrapper the thread's slot does not use. Rendering upstream's tree while settled and this one
-  // while windowed would change the element type at that position on the convergence commit, and
-  // React would unmount and rebuild every message in the thread, which is the exact cost this
-  // change exists to avoid.
+  // Upstream renders MessageByIndexProvider -> RenderChildrenWithAccessor -> children; this row
+  // map renders MessageByIndexProvider -> children, dropping an accessor the thread's slot does not
+  // use. Switching between the two on convergence would change the element type at that position,
+  // so React would unmount and rebuild every message: the cost this change exists to avoid.
   assert.match(GLUE, /<MessageByIndexProvider key=\{index\} index=\{index\}>/);
   assert.doesNotMatch(
     GLUE,
@@ -81,9 +73,9 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
     "Thread must render the progressive list, not the unbounded one",
   );
   assert.match(THREAD, /<ProgressiveMessages/);
-  // And it takes the same propless slot #9042 gave ThreadPrimitive.Messages. One shared element
-  // per row is what React's own bail-out needs; a `components` object allocates fresh props per
-  // row per commit, so every delete re-renders every body, action bar and tooltip in the thread.
+  // And it takes the propless slot #9042 gave ThreadPrimitive.Messages: React's bail-out needs one
+  // shared element per row, whereas a `components` object allocates fresh props per row per commit
+  // and every delete re-renders every body, action bar and tooltip.
   assert.match(THREAD, /renderMessage=\{renderThreadMessage\}/);
   assert.match(GLUE, /const message = renderMessage\(\);/);
   assert.doesNotMatch(
@@ -94,8 +86,8 @@ test("the thread renders rows through MessageByIndex, never ThreadPrimitive.Mess
 });
 
 test("rows outside the window are not rendered rather than rendered and hidden", () => {
-  // The cost being avoided is mounting them. A display:none row costs the same to mount, so a
-  // rewrite to hiding would keep the tests green and collect nothing.
+  // The cost avoided is mounting. A display:none row costs the same to mount, so a rewrite to
+  // hiding would stay green and collect nothing.
   const glue = GLUE_WINDOW();
   assert.doesNotMatch(glue, /display:\s*["']?none/);
   assert.doesNotMatch(glue, /visibility:\s*["']?hidden/);
@@ -103,9 +95,8 @@ test("rows outside the window are not rendered rather than rendered and hidden",
 });
 
 test("the window is only ever advanced through widen", () => {
-  // setMountWindow is allowed to set the initial window, to clear it (null), or to call widen.
-  // Anything else could move `start` upward, which would unmount a message that had been
-  // mounted, which is the failure mode the whole design rules out.
+  // setMountWindow may set the initial window, clear it (null), or call widen. Anything else could
+  // move `start` upward and unmount a mounted message, the failure mode this design rules out.
   const calls = [...GLUE.matchAll(/setMountWindow\(([^;]*?)\)\s*[;,]/gs)].map(
     (m) => m[1].trim(),
   );
@@ -127,8 +118,8 @@ test("the window is only ever advanced through widen", () => {
 
 test("a run drops the window", () => {
   // Streaming and widening both move the scroll position, and a reply must never commit into a
-  // tree that has not reached it. Two gates: the reactive one for a run that starts after the
-  // window opened, and the re-check inside the frame for one that starts between commit and rAF.
+  // tree that has not reached it. Two gates: reactive, for a run starting after the window opened,
+  // and an in-frame re-check for one starting between commit and rAF.
   assert.match(GLUE, /thread\.isRunning/);
   assert.match(
     GLUE,
@@ -138,19 +129,18 @@ test("a run drops the window", () => {
 });
 
 test("the widening step is deferred and transition-wrapped", () => {
-  // Without requestAnimationFrame the chunks collapse into one commit and the first paint is no
-  // earlier than it was. Without startTransition the widening blocks input.
+  // Without rAF the chunks collapse into one commit and the first paint is no earlier than before.
+  // Without startTransition the widening blocks input.
   assert.match(GLUE, /requestAnimationFrame\(/);
   assert.match(GLUE, /startTransition\(/);
   assert.match(GLUE, /cancelAnimationFrame\(frame\)/);
 });
 
 test("the anchor is measured against its scroll container, not against the window", () => {
-  // getBoundingClientRect().top is measured against the WINDOW, so it also moves when the scroll
-  // container moves, and this container moves for reasons that have nothing to do with the
-  // thread: the composer grows a line, the mobile browser chrome slides away, a parent relayouts.
-  // Any of those landing between the capture and the widening commit would read as content
-  // inserted above and be corrected away, moving a detached reader for no reason.
+  // getBoundingClientRect().top is WINDOW-relative, so it also moves when the scroll container
+  // does, which happens for reasons unrelated to the thread: the composer grows a line, mobile
+  // chrome slides away, a parent relayouts. Any of those between capture and the widening commit
+  // would read as content inserted above and move a detached reader for nothing.
   assert.match(
     GLUE,
     /element\.getBoundingClientRect\(\)\.top -\s*viewport\.getBoundingClientRect\(\)\.top/,
@@ -160,10 +150,9 @@ test("the anchor is measured against its scroll container, not against the windo
   assert.match(GLUE, /function sampleAnchor\(/);
   assert.match(GLUE, /sampleAnchor\(viewport, anchor\)/);
   assert.match(GLUE, /anchorCorrection\(baseline, sampleAnchor\(viewport, element\)\)/);
-  // The row the anchor sits in is captured alongside it. pickAnchorRow descends to the fold, so
-  // the anchor is often the very <pre> Streamdown replaces when Shiki finishes highlighting it,
-  // and a transition-deferred widening leaves room for that. Dropping the correction when it
-  // happens would move a detached reader by a whole chunk with anchoring off.
+  // The enclosing row is captured as a fallback: pickAnchorRow descends to the fold, so the anchor
+  // is often the <pre> Streamdown replaces when Shiki finishes, and dropping the correction then
+  // would move a detached reader by a whole chunk with anchoring off.
   assert.match(GLUE, /const row = anchor\?\.closest\("\[data-role\]"\) \?\? null;/);
   assert.match(GLUE, /captured\.row\?\.isConnected && captured\.rowSample/);
   assert.match(GLUE, /scrollTop: viewport\.scrollTop,/);
@@ -176,14 +165,13 @@ test("the anchor is measured against its scroll container, not against the windo
 
 test("a completion waiter is settled when its thread goes away", () => {
   // completeProgressiveMounts awaits a promise this component resolves. Without an unmount path
-  // the layout effect's cleanup removed the completer from the set but left that promise pending
-  // forever, so a DOM capture that raced a thread switch hung rather than completing.
+  // the cleanup removed the completer but left the promise pending forever, so a DOM capture racing
+  // a thread switch hung.
   assert.match(
     GLUE,
     /useEffect\(\(\) => flushCompletionWaiters, \[flushCompletionWaiters\]\)/,
   );
-  // And a cancelled frame must not drop them either, so the ref is emptied by the flush rather
-  // than by the effect that schedules it.
+  // A cancelled frame must not drop them either, so the flush empties the ref, not the scheduler.
   const scheduler = section(
     GLUE,
     "if (mountWindow != null || completionWaiters.current.length === 0) return;",
@@ -193,40 +181,37 @@ test("a completion waiter is settled when its thread goes away", () => {
 });
 
 test("the window owns the viewport's scroll-anchoring mode while it is open", () => {
-  // The correction is document-space arithmetic, and that is only correct if nothing else is
-  // moving scrollTop. Native scroll anchoring moves it on some frames and not others -- not at
-  // all on any shipping Safari, and suppressed per frame everywhere else after a programmatic
-  // scroll, which is what a scrollbar drag, PageUp and middle-click autoscroll are -- and no
-  // measurement taken inside the frame can tell the two apart. Measured with it left on: 19,259px
-  // of drift on a parked reader where the engine did not compensate, and 45,161px on Chromium
-  // where it did but was suppressed. So it is turned off while the window is open.
+  // The correction is document-space arithmetic, correct only if nothing else moves scrollTop.
+  // Native anchoring moves it on some frames and not others (never on any shipping Safari, and
+  // suppressed per frame elsewhere after a programmatic scroll, which scrollbar drag, PageUp and
+  // middle-click autoscroll all are), and no in-frame measurement tells the two apart. Measured
+  // with it left on: 19,259px of drift on a parked reader where the engine did not compensate, and
+  // 45,161px on Chromium where it did but was suppressed. So it is off while the window is open.
   assert.match(GLUE, /setProperty\("overflow-anchor", "none"\)/);
-  // Set from the rAF that captures the anchor, NOT from a layout effect. This component is a
-  // descendant of the viewport element, so on the commit that mounts them both React runs this
-  // subtree's layout effects before the viewport's ref callback and the ref is still null.
-  // Measured on the layout-effect version: computed overflow-anchor stayed `auto` from the first
-  // painted row at +305ms until the first widening at +803ms, so that widening ran with anchoring
-  // live and the document-space correction applied on top of the browser's own. A reader who
-  // scrolled 4000px in that window was left 776px short of where they parked, and one whose whole
-  // gesture landed inside it was carried back to 24px from the bottom of a 118,004px thread.
+  // Set from the anchor-capture rAF, NOT a layout effect: this component is a descendant of the
+  // viewport, so on the mounting commit React runs this subtree's layout effects before the
+  // viewport's ref callback and the ref is still null. Measured on that version, computed
+  // overflow-anchor stayed `auto` from the first painted row at +305ms until the first widening at
+  // +803ms, so that widening ran with anchoring live and applied the document-space correction on
+  // top of the browser's: a reader who scrolled 4000px was left 776px short, and one whose whole
+  // gesture landed inside it ended 24px from the bottom of a 118,004px thread.
   const capture = section(
     GLUE,
     "const captureAnchor = useCallback(",
     "}, [viewportRef]);",
   );
   assert.match(capture, /setProperty\("overflow-anchor", "none"\)/);
-  // And turned back on when the window closes, or a settled thread is not the thread that
-  // shipped before this change.
+  // And back on when the window closes, or a settled thread is not the pre-change thread.
   assert.match(GLUE, /removeProperty\("overflow-anchor"\)/);
-  // No feature probe and no gesture bookkeeping: both existed to decide which of two behaviours
-  // the browser was giving us, and the browser is no longer in that loop.
+  // No feature probe and no gesture bookkeeping: both decided which behaviour the browser was
+  // giving us, and the browser is no longer in that loop.
   assert.doesNotMatch(GLUE, /getUserGestureSeq/);
   assert.doesNotMatch(HOOK, /userGestureSeqRef/);
 });
 
 test("the mount window never writes scrollTop itself", () => {
-  // Ownership: the autoscroll hook owns scrollTop. Two writers per widening frame double the
-  // forced layouts and can re-attach a deliberately detached user through onScroll.
+  // The autoscroll hook owns scrollTop. Two writers per widening frame double the forced layouts
+  // and can re-attach a deliberately detached user through onScroll.
   const glue = GLUE_WINDOW();
   assert.doesNotMatch(glue, /scrollTop\s*=[^=]/);
   assert.doesNotMatch(glue, /\.scrollTo\(/);
@@ -235,35 +220,32 @@ test("the mount window never writes scrollTop itself", () => {
 });
 
 test("the hook's correction stands down while the user is following", () => {
-  // While following, the hook's own MutationObserver path pins to the bottom in the same frame,
-  // and because widening only prepends that is the same pixel. Correcting as well would be a
-  // second writer for no gain.
+  // While following, the hook's MutationObserver path pins to the bottom in the same frame, and
+  // since widening only prepends that is the same pixel. Correcting too is a second writer.
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.match(body, /if \(!userDetachedRef\.current\) \{\s*return;/);
 });
 
 test("the hook's correction is instant, because the viewport is scroll-smooth", () => {
-  // scroll-smooth on the viewport means an animated write would still be in flight when the next
-  // widening frame issued the next one.
+  // With scroll-smooth on the viewport, an animated write would still be in flight at the next
+  // widening frame's write.
   assert.match(THREAD, /scroll-smooth/);
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.match(body, /behavior: "instant"/);
 });
 
 test("the correction advances the intent bookkeeping with its write", () => {
-  // Otherwise onScroll sees a downward scroll nobody made, and a user who detached within
-  // RE_ATTACH_THRESHOLD_PX of the bottom (detachFromBottom does exactly that when the composer
-  // grows) is silently re-attached by their own correction and yanked to the bottom on the next
-  // widening frame.
+  // Otherwise onScroll sees a downward scroll nobody made, and a user detached within
+  // RE_ATTACH_THRESHOLD_PX of the bottom (where detachFromBottom puts them when the composer grows)
+  // is re-attached by their own correction and yanked to the bottom on the next widening frame.
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.match(body, /lastScrollTop = el\.scrollTop;/);
   assert.match(body, /lastDistanceFromBottom = distanceFromBottom\(\);/);
 });
 
 test("the escape hatch exists, resolves after a paint, and is registered only while withholding", () => {
-  // A DOM read taken during the few frames a long thread takes to converge would silently see a
-  // short conversation. Resolving on a single rAF would resolve before the commit it forced had
-  // painted.
+  // A DOM read during the few frames a long thread takes to converge would silently see a short
+  // conversation, and a single rAF resolves before the commit it forced has painted.
   assert.match(
     GLUE,
     /export async function completeProgressiveMounts\(\): Promise<void>/,
@@ -277,16 +259,15 @@ test("the escape hatch exists, resolves after a paint, and is registered only wh
 });
 
 test("the viewport comes from a ref, not a document-wide query", () => {
-  // The Compare panes each mount their own Thread, so a document-wide query for the viewport
-  // class finds whichever one is first in the document rather than the one these rows are in.
+  // The Compare panes each mount their own Thread, so a document-wide query finds whichever
+  // viewport comes first rather than the one these rows are in.
   assert.doesNotMatch(GLUE, /document\.querySelector/);
   assert.match(GLUE, /viewportRef\.current/);
 });
 
 test("the row map is memoized on the slot identity", () => {
-  // ThreadPrimitive.Messages skipped re-rendering entirely when its children function held its
-  // identity. A replacement that rebuilt 220 elements on every Thread re-render would hand back
-  // a share of what the windowing collects.
+  // ThreadPrimitive.Messages skipped re-rendering entirely while its children function kept its
+  // identity; rebuilding 220 elements per Thread re-render hands back what the windowing collects.
   assert.match(
     GLUE,
     /useMemo\(\(\) => \{[\s\S]*?\}, \[count, mountWindow, renderMessage\]\)/,
@@ -297,19 +278,17 @@ test("the row map is memoized on the slot identity", () => {
 
 test("a thread that shrank under a live window drops the restriction, it does not clamp", () => {
   // Clamping `start` to `count` makes the row loop emit NOTHING, and the widen that would heal it
-  // is inside startTransition. Measured on the version that clamped: dropping a 220-message
-  // thread to 10 while the window sat at start=204 painted an empty column for 2 to 8 frames on
-  // chromium, webkit and firefox. This is a source assertion because the failure is a React
-  // commit rather than a value: seeing it at all needs a real engine driving a live thread, so
-  // there is no in-tree gate on the behaviour, only on the shape of the code that produces it.
+  // is inside startTransition. Measured on the clamping version: dropping a 220-message thread to
+  // 10 with the window at start=204 painted an empty column for 2 to 8 frames on all three engines.
+  // A source assertion because the failure is a React commit rather than a value, and seeing it
+  // needs a real engine driving a live thread.
   assert.match(
     GLUE,
     /mountWindow == null \|\| mountWindow\.start >= count/,
     "start >= count must drop the window, not clamp it to count",
   );
-  // And the STATE is reconciled, not just the local `first`. Rendering every row is half of it:
-  // leaving the window at start 204 against a 100-message thread lets the next widen produce
-  // start 68 and unmount the 68 rows that render just mounted.
+  // And the STATE is reconciled, not just the local `first`: leaving the window at start 204
+  // against a 100-message thread lets the next widen produce start 68 and unmount 68 mounted rows.
   assert.match(
     GLUE,
     /if \(mountWindow != null && mountWindow\.start >= count\) \{\s*setMountWindow\(null\);/,
@@ -322,9 +301,9 @@ test("a thread that shrank under a live window drops the restriction, it does no
 });
 
 test("the window re-arms on the commit that first fills an empty tree", () => {
-  // The app mounts this component before the history adapter has delivered anything, so without
-  // this the cold open -- the one users actually complain about -- was never windowed at all.
-  // Measured in the app: mount at count 0, count 220 about 160ms later, same resetKey.
+  // The app mounts this before the history adapter delivers anything, so without this the cold
+  // open, the one users complain about, was never windowed at all. Measured in the app: mount at
+  // count 0, count 220 about 160ms later, same resetKey.
   assert.match(GLUE, /previousCount === 0 && count > 0/);
   assert.doesNotMatch(
     GLUE,
@@ -335,11 +314,9 @@ test("the window re-arms on the commit that first fills an empty tree", () => {
 
 test("the escape hatch re-reads the completer set instead of sampling it once", () => {
   // The completers register from an effect, so a caller in the same task as the thread opening
-  // finds the set empty. Measured on the version that read it once: the call returned in 0.1ms
-  // and the document held 16 of 220 rows two frames later.
-  // And an empty set is not believed straight away. A settled thread and a thread whose history
-  // is still loading both present an empty set, and on a cold open the load takes around 160ms,
-  // so returning at the first empty reading resolves before a single row exists.
+  // finds the set empty. Measured on the read-once version: returned in 0.1ms, 16 of 220 rows two
+  // frames later. Nor is an empty set believed straight away, since a settled thread and one still
+  // loading history (about 160ms on a cold open) look alike.
   assert.match(GLUE, /let observed = false;/);
   assert.match(
     GLUE,
@@ -348,12 +325,11 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
 });
 
 test("the hook is told about every widening, including the ones with nothing to apply", () => {
-  // A widening with nothing to apply still has to resync the hook's bookkeeping, because
-  // something else may have moved scrollTop in the same frame. Measured on the version that
-  // returned early: a scroll-anchoring adjustment fires a scroll event carrying the new offset
-  // (one event, on Chromium 151, WebKit 26.5 and Firefox 153), lastScrollTop stayed a whole
-  // insertion behind, and that event read as a large downward scroll, re-attaching a reader
-  // parked within the 24px threshold.
+  // A widening with nothing to apply still resyncs the hook's bookkeeping, since something else
+  // may have moved scrollTop in the same frame. Measured on the early-return version: a
+  // scroll-anchoring adjustment fires one scroll event carrying the new offset (Chromium 151,
+  // WebKit 26.5, Firefox 153), lastScrollTop stayed a whole insertion behind, and that event read
+  // as a large downward scroll, re-attaching a reader parked within the 24px threshold.
   assert.match(GLUE, /adjustForContentInsertedAbove\(shift \?\? 0\)/);
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
   assert.doesNotMatch(
@@ -365,23 +341,23 @@ test("the hook is told about every widening, including the ones with nothing to 
 });
 
 test("the anchor is the first row the reader can see, not the first row in the list", () => {
-  // Widening prepends above everything, so for a widening any row will do. Content that RELAYOUTS
-  // does not: a row growing between the topmost row and the fold moves the reader while leaving
-  // the topmost row exactly where it was. Measured with a 600px height change injected into one
-  // row above a detached reader while the window was open: 600px of movement, reported as 0 by a
-  // topmost-row anchor, and 0px of movement once the anchor was the visible one.
+  // Widening prepends above everything, so any row will do for it. A RELAYOUT will not: a row
+  // growing between the topmost row and the fold moves the reader while leaving the topmost row
+  // still. Measured with a 600px height change injected above a detached reader with the window
+  // open: 600px of movement, reported as 0 by a topmost-row anchor and 0px once the anchor was the
+  // visible row.
   assert.match(GLUE, /function pickAnchorRow\(viewport: HTMLElement\)/);
   assert.match(GLUE, /if \(row\.getBoundingClientRect\(\)\.bottom > fold\) \{/);
-  // And then down to the fold itself, because a row can be taller than the viewport: a reader
-  // partway through a long answer has the row's top ABOVE them, so an image or a Shiki block
-  // earlier in that same message moves everything they can see and leaves the row's top still.
+  // Then down to the fold, because a row can be taller than the viewport: a reader partway through
+  // a long answer has the row's top ABOVE them, so an image or Shiki block earlier in that message
+  // moves everything they see while the row's top stays put.
   assert.match(GLUE, /for \(const child of anchor\.children\)/);
-  // Visibility is tested by the row's own box, not by its top offset: a tall row scrolled just
-  // past can have its top within a viewport of the fold while none of it is on screen.
+  // Visibility is tested by the row's box, not its top offset: a tall row just off screen can
+  // still have its top within a viewport of the fold.
   assert.match(GLUE, /function isAnchorVisible\(/);
   assert.match(GLUE, /return box\.bottom > fold && box\.top < fold \+ viewport\.clientHeight;/);
-  // And a widening hands the sampler a post-correction baseline rather than nulling it, or a
-  // reflow landing before the next frame is folded into the new baseline and never corrected.
+  // A widening hands the sampler a post-correction baseline rather than nulling it, or a reflow
+  // landing before the next frame is folded into the new baseline and never corrected.
   assert.doesNotMatch(GLUE, /idleRef\.current = null;\s*\}, \[mountWindow/);
   assert.doesNotMatch(
     GLUE,
@@ -394,18 +370,16 @@ test("the anchor is the first row the reader can see, not the first row in the l
 });
 
 test("the interval between widenings is compensated too, not just the widening commits", () => {
-  // Native anchoring is what normally absorbs a <pre> swapping in Shiki output or a KaTeX resize,
-  // and it is disabled for the whole mount window, so the compensation has to cover the whole
-  // interval. The autoscroll hook does not help: it pins a FOLLOWING reader and deliberately
-  // leaves a detached one alone.
+  // Native anchoring normally absorbs a <pre> swapping in Shiki output or a KaTeX resize, and it is
+  // off for the whole mount window, so compensation has to cover the whole interval. The autoscroll
+  // hook does not help: it pins a FOLLOWING reader and leaves a detached one alone.
   assert.match(GLUE, /idleRef/);
   assert.match(GLUE, /if \(!viewport \|\| anchorRef\.current\) return;/);
-  // The idle path carries the same stable fallback the widening path does, because the anchor is
-  // often the very pre Streamdown replaces, and re-picking after a replacement would re-base
-  // AFTER that replacement's own reflow and keep it.
+  // The idle path carries the same fallback as the widening path, because the anchor is often the
+  // pre Streamdown replaces, and re-picking would re-base AFTER that replacement's own reflow.
   assert.match(GLUE, /function holdAnchor\(viewport: HTMLElement, element: Element\): HeldAnchor/);
   assert.match(GLUE, /held\.row\?\.isConnected && held\.rowSample/);
-  // And it re-bases every frame, including the no-op ones. Returning early on those left the
-  // baseline's scrollTop several frames stale, and anchorCorrection's clamp term reads it.
+  // And it re-bases every frame, no-ops included: returning early left the baseline's scrollTop
+  // several frames stale, and anchorCorrection's clamp term reads it.
   assert.match(GLUE, /if \(shift !== null\) adjustForContentInsertedAbove\(shift\);/);
 });

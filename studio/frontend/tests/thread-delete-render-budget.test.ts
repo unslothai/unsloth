@@ -33,11 +33,10 @@ test("the message list is rendered through a render prop, not a components map",
   // the map form returns <ThreadMessageComponent components={...} />, whose props object is
   // freshly allocated per render.
   //
-  // The list itself is ProgressiveMessages rather than ThreadPrimitive.Messages (#9058, which
-  // bounds the first commit on a long thread to its tail), so what is pinned here is that the
-  // slot still reaches the row map. That list maps MessageByIndexProvider over a bounded index
-  // range and renders this same propless element in each one, so the bail-out is unchanged; see
-  // progressive-mount-glue.test.ts for the rest of its wiring.
+  // The list is ProgressiveMessages, not ThreadPrimitive.Messages (#9058), so what is pinned here
+  // is that the slot still reaches the row map. That list renders this same propless element in
+  // each MessageByIndexProvider, so the bail-out is unchanged; the rest of its wiring is in
+  // progressive-mount-glue.test.ts.
   assert.match(thread, /renderMessage=\{renderThreadMessage\}/);
   assert.doesNotMatch(thread, /<ThreadPrimitive\.Messages\b/);
   assert.doesNotMatch(thread, /<ProgressiveMessages[^>]*\scomponents=/s);

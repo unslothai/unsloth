@@ -1526,10 +1526,9 @@ export const Thread: FC<{
   // the spacer clamp math. State, not a ref: the keyed provider remounts the
   // viewport on thread switches and the scroll listener must re-attach.
   const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
-  // Same element, in a ref whose identity never changes, so ProgressiveMessages can read the
-  // viewport it lives in without taking a prop that would rebuild its row array on thread switch.
-  // A ref rather than the state above because the Compare panes each mount their own Thread, so a
-  // document-wide query for the viewport class would find the wrong one.
+  // Same element in an identity-stable ref, so ProgressiveMessages can read its viewport without a
+  // prop that would rebuild its row array on thread switch. A ref rather than a document-wide query
+  // for the viewport class because the Compare panes each mount their own Thread.
   const viewportElRef = useRef<HTMLElement | null>(null);
   const composedViewportRef = useCallback(
     (node: HTMLElement | null) => {
@@ -1745,13 +1744,12 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            {/* Drop-in for ThreadPrimitive.Messages that bounds the first commit on a long
-            thread to the tail and mounts the rest over the following frames. Nothing ever
-            unmounts and the document converges to the same tree this rendered before, so every
-            DOM consumer is unaffected once it settles; the ones that cannot wait call
-            completeProgressiveMounts. See progressive-mount-controller.ts. It takes the same
-            propless slot #9042 introduced, and for the same reason: one shared element per row
-            is what React's own bail-out needs. */}
+            {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
+            the tail and mounts the rest over the following frames. Nothing unmounts and the
+            document converges to the tree this rendered before, so DOM consumers are unaffected
+            once it settles; those that cannot wait call completeProgressiveMounts. It takes the
+            propless slot #9042 introduced, for the same reason: React's bail-out needs one shared
+            element per row. See progressive-mount-controller.ts. */}
             <ProgressiveMessages
               renderMessage={renderThreadMessage}
               resetKey={runtimeThreadId}

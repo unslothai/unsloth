@@ -54,9 +54,8 @@ window.__nextPaint = () => new Promise((resolve) =>
   requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 """
 
-# Re-open the thread and sample the viewport on every frame from the commit that paints the first
-# row until the thread has stopped growing, so the gap is measured as a timeline rather than as a
-# single reading.
+# Re-open and sample the viewport every frame from the first painted row until the thread stops
+# growing, so the gap is a timeline rather than a single reading.
 RUN_JS = """
 async ([total, settleFrames]) => {
   const api = window.__heavyThread;
@@ -101,8 +100,7 @@ def run_engine(pw, engine: str) -> dict:
         page = context.new_page()
         page.goto(PAGE, wait_until = "load", timeout = 180000)
         page.wait_for_function("() => !!window.__heavyThread", timeout = 120000)
-        # Named here rather than left to fail as `seedCompactTail is not a function` inside an
-        # evaluate, which surfaces as a bare JS error with no hint of what is missing.
+        # Named here rather than surfacing as a bare `seedCompactTail is not a function` JS error.
         missing = page.evaluate(
             """() => ["seedCompactTail", "gapMetrics"].filter(
                 (k) => typeof window.__heavyThread[k] !== "function")"""
@@ -126,20 +124,17 @@ def run_engine(pw, engine: str) -> dict:
             result = page.evaluate(RUN_JS, [plan["messages"], 6])
             samples = result["samples"]
             first = samples[0]
-            # The gap the item describes: empty band below the last mounted row, measured
-            # against the SETTLED value of the same quantity rather than against zero. The
-            # viewport's bottom spacer and its sticky footer leave a band that is there before
-            # and after this change, and only the excess over that is this change's doing.
+            # Empty band below the last mounted row, measured against the SETTLED value of the
+            # same quantity, not zero: the bottom spacer and sticky footer leave a band before and
+            # after this change, and only the excess over it is this change's doing.
             baseline = samples[-1]["gapBottom"]
 
             def netgap(s):
                 return max(0, s["gapBottom"] - baseline)
 
             gap0 = netgap(first)
-            # How long the gap is on screen: from the first painted frame to the first frame
-            # that no longer has one. Measured to the frame that CLOSES it rather than to the
-            # last frame that still shows it, so a gap visible in a single frame is reported as
-            # that frame's duration and not as 0ms.
+            # Time on screen, measured to the frame that CLOSES the gap rather than the last one
+            # showing it, so a single-frame gap reads as that frame's duration and not 0ms.
             lingering = [s for s in samples if netgap(s) > 8]
             if lingering:
                 closed = next(
@@ -172,7 +167,7 @@ def run_engine(pw, engine: str) -> dict:
                 (OUT / f"{LABEL}-{engine}-{height}-timeline.json").write_text(
                     json.dumps(samples, indent = 1)
                 )
-        # A screenshot of the first commit, taken on its own re-open so nothing is settled.
+        # First commit, on its own re-open so nothing is settled.
         page.evaluate(
             """async () => {
                 const api = window.__heavyThread;
@@ -184,8 +179,8 @@ def run_engine(pw, engine: str) -> dict:
         )
         page.screenshot(path = str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
         out[height] = rounds
-        # Written after every height, not once at the end: a browser that dies on the tallest
-        # viewport used to take every measurement before it down with the process.
+        # After every height, not once at the end: a browser dying on the tallest viewport used to
+        # take every earlier measurement down with it.
         (OUT / f"{LABEL}-{engine}-rounds.json").write_text(json.dumps(out, indent = 1))
         context.close()
     browser.close()
