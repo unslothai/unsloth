@@ -19,7 +19,9 @@ def _locale_encoding() -> str:
     Empty on a UTF-8 host, where there is no codepage to attribute the file to.
     """
     try:
-        preferred = locale.getencoding()
+        # novermin -- 3.11, and the except below IS the guard. vermin reads names
+        # rather than control flow, so it cannot see that this is already handled.
+        preferred = locale.getencoding()  # novermin
     except AttributeError:  # Python < 3.11
         preferred = locale.getpreferredencoding(False)
     if preferred.lower().replace("-", "").replace("_", "") == "utf8":
