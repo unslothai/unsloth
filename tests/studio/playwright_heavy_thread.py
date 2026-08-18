@@ -166,6 +166,14 @@ ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "120000"))
 # action that never happened and nothing else, so it has to stay well above the slowest honest
 # measurement or a very slow open is reported as "never opened".
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "120000"))
+# How long the highlighter has to stay still before a re-open counts as finished. Four polls of
+# the 250ms interval wait_for_highlighting_settled() uses, because that is what was MEASURED to be
+# needed: a gate that released after one 250ms lull released mid-rebuild. The grace is not charged
+# to the action -- quietUntilIdle() reports the time of the last activity, not of the timeout.
+HIGHLIGHT_GRACE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_GRACE_MS", "1000"))
+# How often the settle loop is allowed to count highlighted tokens. It is a document-wide query,
+# so per frame it would be an O(nodes) cost inside the region being timed, growing with the thread.
+HIGHLIGHT_PROBE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_PROBE_MS", "100"))
 ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 # Installed into every page before anything else runs.
@@ -214,18 +222,37 @@ RECORDER_INIT = """
 
   const recorder = {
     running: false,
+    // Which begin() a scheduled callback belongs to. `running` alone cannot answer that: when the
+    // next action starts before the previous action's already-scheduled rAF has fired -- and it
+    // does, because the actions are issued back to back over a CDP round trip that is shorter
+    // than one frame -- that stale callback wakes to `running === true`, pushes the whole
+    // between-action gap into the NEW arrays as if it were a frame, and schedules a second
+    // recursive loop that then runs alongside the real one for the rest of the run. Measured on
+    // the node harness in test_heavy_thread_measurement_integrity.py: without this token the
+    // second action records the inter-action gap as its worst frame and counts double the frames.
+    generation: 0,
     frames: [],
     stalls: [],
+    // When each sample was taken, so end() can close the window at an earlier instant than the
+    // one it was called at without the samples from after that instant still being in the arrays.
+    frameAt: [],
+    stallAt: [],
     startedAt: 0,
     begin() {
       this.running = true;
+      this.generation += 1;
+      const generation = this.generation;
       this.frames = [];
       this.stalls = [];
+      this.frameAt = [];
+      this.stallAt = [];
       this.startedAt = performance.now();
       let lastFrame = performance.now();
       const frame = () => {
+        if (generation !== this.generation) return;
         const now = performance.now();
         this.frames.push(now - lastFrame);
+        this.frameAt.push(now);
         lastFrame = now;
         if (this.running) nativeRaf(frame);
       };
@@ -236,18 +263,32 @@ RECORDER_INIT = """
       // resolution, which is far below any stall a user can feel.
       let lastStall = performance.now();
       const stall = () => {
+        if (generation !== this.generation) return;
         const now = performance.now();
         this.stalls.push(now - lastStall);
+        this.stallAt.push(now);
         lastStall = now;
         if (this.running) setTimeout(stall, 1);
       };
       setTimeout(stall, 1);
     },
-    end() {
+    /**
+     * Close the window. `untilMs` closes it at an earlier instant than "now" -- used by the
+     * settle loops, which have to keep watching for a while after the page went quiet in order
+     * to know that it stayed quiet, and must not charge that watching to the action.
+     */
+    end(untilMs) {
       this.running = false;
-      const wallMs = performance.now() - this.startedAt;
-      const frames = this.frames;
-      const stalls = this.stalls;
+      // Retire this generation as well as stopping it, so the one callback already in flight
+      // cannot append to the array a later begin() is about to hand out.
+      this.generation += 1;
+      const cutoff = untilMs === undefined ? Infinity : untilMs;
+      const wallMs = (untilMs === undefined ? performance.now() : untilMs) - this.startedAt;
+      // Trimmed, not just clocked: a settle loop that watches an idle page for another second
+      // would otherwise add sixty fast frames to the count and drag median_frame_ms down with
+      // them, at every size equally, which is the same constant-offset trap as the wall clock.
+      const frames = this.frames.filter((_, i) => this.frameAt[i] <= cutoff);
+      const stalls = this.stalls.filter((_, i) => this.stallAt[i] <= cutoff);
       const sorted = frames.slice().sort((a, b) => a - b);
       return {
         wall_ms: Math.round(wallMs * 10) / 10,
@@ -284,6 +325,52 @@ RECORDER_INIT = """
         if (calm >= 3) return performance.now() - this.startedAt;
       }
       return null;
+    },
+    /**
+     * Settle for an action that also restarts the SYNTAX HIGHLIGHTER, which quiet() cannot see.
+     *
+     * quiet() declares an action settled after three sub-33ms frames. Shiki highlights each fence
+     * on its own task, and the lull between two of those batches is longer than that -- the same
+     * lull wait_for_highlighting_settled() exists for, where a two-read gate released at 577
+     * highlighted tokens out of the 3216 a finished thread holds. So on re-open, which rebuilds
+     * every fence from nothing, quiet() stops the clock partway through the rebuild.
+     *
+     * Settled here means: no frame over 33ms AND no new highlighted token, for graceMs.
+     *
+     * The returned time is the time of the LAST activity, not the time the grace window expired.
+     * graceMs is a fixed cost that every size would pay equally, and a constant added to both
+     * ends of a ratio drags it towards 1 -- the same trap the paint floor is subtracted for.
+     *
+     * `probe` counts highlighted tokens, which is a document-wide query, so it runs on an
+     * INTERVAL and not once per frame. An O(nodes) query inside the window being timed would cost
+     * more the bigger the thread is, which is to say it would grow like the signal -- the same
+     * reason DELETE_JS polls isConnected on a captured node instead of re-counting [data-role].
+     * The price is that the returned time is quantised to probeEveryMs, which is far below the
+     * differences this axis exists to show.
+     */
+    async quietUntilIdle(timeoutMs, graceMs, probe, probeEveryMs) {
+      const started = performance.now();
+      let lastActivity = performance.now();
+      let lastCount = probe();
+      let lastProbeAt = performance.now();
+      let last = performance.now();
+      while (performance.now() - started < timeoutMs) {
+        await new Promise((resolve) => nativeRaf(() => resolve()));
+        const now = performance.now();
+        let changed = false;
+        if (now - lastProbeAt >= probeEveryMs) {
+          const count = probe();
+          changed = count !== lastCount;
+          lastCount = count;
+          lastProbeAt = now;
+        }
+        if (now - last > 33 || changed) lastActivity = now;
+        last = now;
+        if (now - lastActivity >= graceMs) {
+          return { settleMs: lastActivity - this.startedAt, at: lastActivity };
+        }
+      }
+      return { settleMs: null, at: performance.now() };
     },
   };
   window.__hv = recorder;
@@ -524,7 +611,7 @@ async (timeoutMs) => {
 # again from nothing. This is the action users describe as "it hangs when I click back into the
 # conversation", and it is the one that has no incremental path at all.
 REOPEN_JS = """
-async ([timeoutMs, settleMs]) => {
+async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const api = window.__heavyThread;
   const before = api.messageCount();
   if (!before) return null;
@@ -544,12 +631,19 @@ async ([timeoutMs, settleMs]) => {
     if (api.messageCount() >= before) { ms = performance.now() - reopenStarted; break; }
     await window.__nextPaint();
   }
-  const settleMsTaken = await window.__hv.quiet(settleMs);
-  const metrics = window.__hv.end();
+  // Not quiet(): re-open is the action whose whole cost is re-highlighting, and three calm frames
+  // land inside the lull between two Shiki batches.
+  const settled = await window.__hv.quietUntilIdle(
+    settleMs,
+    graceMs,
+    () => api.highlightedTokenCount(),
+    probeEveryMs,
+  );
+  const metrics = window.__hv.end(settled.at);
   return {
     ms,
     closedMs: closedMs === null ? null : Math.round(closedMs * 10) / 10,
-    settleMs: settleMsTaken === null ? null : Math.round(settleMsTaken * 10) / 10,
+    settleMs: settled.settleMs === null ? null : Math.round(settled.settleMs * 10) / 10,
     before,
     after: api.messageCount(),
     metrics,
@@ -576,10 +670,20 @@ async (samples) => {
 """
 
 
-def median(values: list[float]) -> float | None:
-    ordered = sorted(v for v in values if v is not None)
-    if not ordered:
+def median(values: list[float | None]) -> float | None:
+    """Median across the repetitions, or None if any repetition did not produce a number.
+
+    A None here is not a missing reading, it is a repetition in which the thing being timed never
+    happened: the menu that never opened inside SETTLE_TIMEOUT_MS, the delete whose message never
+    left the DOM, the action that never reached a settled state. Dropping those and taking the
+    median of what is left changes the sample population and reports a partially broken action as
+    a clean three-repetition measurement -- and it hides it from harness_failures(), whose
+    `openMs is None` / `ms is None` checks then read the median of the repetitions that did work.
+    So one bad repetition poisons the aggregate, and the run says so.
+    """
+    if not values or any(v is None for v in values):
         return None
+    ordered = sorted(values)
     middle = len(ordered) // 2
     if len(ordered) % 2:
         return round(ordered[middle], 1)
@@ -683,19 +787,16 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
     return out
 
 
-def one_repetition(page, cdp) -> dict[str, dict]:
-    """The five scripted actions, once, in the order a user meets them."""
-    rep: dict[str, dict] = {}
-    # The previous repetition ended by re-opening the thread, which throws away every highlighted
-    # fence and starts Shiki again. Without this wait, repetitions 2 and 3 measure a thread that
-    # is still building itself: measured on Chromium at 300K, the scroll gesture read 667ms on
-    # the first repetition and 1100ms on the two that followed, and the difference was the
-    # re-highlighting, not the scroll.
-    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
-    # Re-open unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so
-    # without this every repetition after the first would run against a thread with no tool
-    # result panes in it -- a different, cheaper fixture wearing the same label. Idempotent: on
-    # the first repetition the cards are already open and nothing is clicked. Untimed.
+def build_fixture(page) -> None:
+    """Bring the page back to the fixture every column claims to have been measured on, untimed.
+
+    Order matters and it is the reason this is one function rather than three call sites. Radix
+    unmounts collapsed content, so the tool result panes -- which are CODE, two of the seven fences
+    a content cycle produces -- do not exist until expandTools() has run. Waiting for the
+    highlighter BEFORE expanding therefore gates on the fences that were already there and then
+    mounts a fresh batch of unhighlighted ones, whose Shiki work lands in whatever is timed next.
+    Expand first, then wait for the highlighter, which is the order measure_cell() seeds in.
+    """
     expanded = page.evaluate("() => window.__heavyThread.expandTools()")
     if expanded:
         page.wait_for_function(
@@ -703,6 +804,18 @@ def one_repetition(page, cdp) -> dict[str, dict]:
             arg = expanded,
             timeout = ACTION_TIMEOUT_MS,
         )
+    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
+
+
+def one_repetition(page, cdp) -> dict[str, dict]:
+    """The five scripted actions, once, in the order a user meets them."""
+    rep: dict[str, dict] = {}
+    # The previous repetition ended by re-opening the thread, which throws away every highlighted
+    # fence and starts Shiki again, and by deleting a message, which the restore below puts back.
+    # Without this wait, repetitions 2 and 3 measure a thread that is still building itself:
+    # measured on Chromium at 300K, the scroll gesture read 667ms on the first repetition and
+    # 1100ms on the two that followed, and the difference was the re-highlighting, not the scroll.
+    build_fixture(page)
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
         page,
@@ -735,12 +848,27 @@ def one_repetition(page, cdp) -> dict[str, dict]:
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
     rep["delete"] = run_action(page, cdp, "delete", DELETE_JS, SETTLE_TIMEOUT_MS)
 
+    # The delete is PERMANENT: it removes a message from the runtime's repository, not from the
+    # view. Left alone, repetition 2 re-opens and measures a thread one message shorter than the
+    # one the census at the top of this cell asserted, and repetition 3 one shorter again. At the
+    # smallest size the whole thread is a single ten-kind cycle, so those three deletions take the
+    # json fence, then both inline images, then the svg -- the exact "the fixture quietly lost a
+    # content kind" failure harness_failures() gates on, except that the gate reads a census taken
+    # before any repetition ran and so never sees it. Restore, then rebuild, untimed.
+    restored = page.evaluate("() => window.__heavyThread.restore()")
+    page.wait_for_function(
+        "(n) => window.__heavyThread.messageCount() >= n",
+        arg = restored,
+        timeout = ACTION_TIMEOUT_MS,
+    )
+    build_fixture(page)
+
     rep["reopen"] = run_action(
         page,
         cdp,
         "reopen",
         REOPEN_JS,
-        [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS],
+        [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS, HIGHLIGHT_GRACE_MS, HIGHLIGHT_PROBE_MS],
     )
     return rep
 
@@ -770,7 +898,13 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         numeric_keys = set()
         for row in rows:
             for key, value in row.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # `value is None` is deliberately a key too. A timing that came back null in every
+                # repetition would otherwise be absent from the merged row entirely, and the
+                # verdict's `menu["openMs"] is None` would raise KeyError instead of reporting the
+                # menu that never opened. Present-and-None is the readable form of that.
+                if value is None or (
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                ):
                     numeric_keys.add(key)
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
@@ -1070,23 +1204,25 @@ def print_table(results: dict) -> None:
         info(name.ljust(label_width) + "".join(cell.rjust(cell_width) for cell in cells))
 
 
-# Growth axes: the whole point of the harness is that these rise with content. `floored` marks a
-# metric clocked across a double rAF, which carries the ~33ms vsync floor; left in, the floor
-# compresses every ratio towards 1 and lets a real regression sit under the threshold.
+# Growth axes: the whole point of the harness is that these rise with content. The third field is
+# HOW MANY double-rAF waits the metric is clocked across; each one carries its own ~33ms vsync
+# floor, and left in, that floor compresses every ratio towards 1 and lets a real regression sit
+# under the threshold. `menu open+close ms` is the sum of two independently floored timings, so it
+# carries two.
 GROWTH_AXES = tuple(
-    [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), False) for a in ACTIONS]
-    + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), False) for a in ACTIONS]
-    + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), False) for a in ACTIONS]
-    + [(f"{a} wall ms", _action(a, "wall_ms"), False) for a in ACTIONS]
+    [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), 0) for a in ACTIONS]
+    + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), 0) for a in ACTIONS]
+    + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), 0) for a in ACTIONS]
+    + [(f"{a} wall ms", _action(a, "wall_ms"), 0) for a in ACTIONS]
     + [
-        ("keystroke median ms", _action("keystroke", "median_sample_ms"), True),
-        ("scroll gesture ms", _action("scroll", "gestureMs"), False),
-        ("scroll settle ms", _action("scroll", "settleMs"), False),
-        ("jump painted ms", _action("jump", "paintedMs"), True),
-        ("jump settle ms", _action("jump", "settleMs"), False),
-        ("menu open+close ms", _action("menu", "open_close_ms"), True),
-        ("delete ms", _action("delete", "ms"), True),
-        ("reopen ms", _action("reopen", "ms"), False),
+        ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
+        ("scroll gesture ms", _action("scroll", "gestureMs"), 0),
+        ("scroll settle ms", _action("scroll", "settleMs"), 0),
+        ("jump painted ms", _action("jump", "paintedMs"), 1),
+        ("jump settle ms", _action("jump", "settleMs"), 0),
+        ("menu open+close ms", _action("menu", "open_close_ms"), 2),
+        ("delete ms", _action("delete", "ms"), 1),
+        ("reopen ms", _action("reopen", "ms"), 0),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond
@@ -1099,7 +1235,16 @@ DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5")
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
-def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | None, float | None]:
+def growth(cells: dict, pick, floored: int, sizes: list[int]) -> tuple[float | None, float | None]:
+    """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
+
+    Each `await __nextPaint()` a metric is clocked across contributes its own ~33ms vsync floor,
+    and a metric that contains two of them carries two. `menu open+close ms` is the case: settle()
+    reads the pre-MutationObserver state on entry, both times, so opening and closing each wait
+    out a full double rAF before their first true comparison. Subtracting one floor from a sum of
+    two left ~33ms of constant baseline in the number, which drags the ratio towards 1 in exactly
+    the way the floor is subtracted to prevent.
+    """
     try:
         rows = (cells[str(sizes[0])], cells[str(sizes[-1])])
         values = []
@@ -1108,7 +1253,7 @@ def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | 
             if value is None:
                 return None, None
             if floored:
-                value -= row["paint_floor_ms"]
+                value -= floored * row["paint_floor_ms"]
             values.append(round(value, 2))
         return values[0], values[1]
     except (KeyError, TypeError):
@@ -1274,6 +1419,19 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             for name in ACTIONS:
                 if not actions[name].get("ran"):
                     failures.append(f"{where} could not run the {name} action at all")
+            # A null settle time is the settle loop giving up: the page never produced a calm
+            # window inside SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that",
+            # but it prints as the same `-`, and the axis it feeds merely becomes "not
+            # recorded" -- so another axis can carry the discrimination check and the run exits
+            # 0 having timed out without measuring settlement.
+            for name in ("scroll", "jump", "reopen"):
+                settling = actions[name]
+                if settling.get("ran") and settling.get("settleMs") is None:
+                    failures.append(
+                        f"{where} ran the {name} action but it never reached a settled state "
+                        f"within {SETTLE_TIMEOUT_MS}ms, so its settle time and the frame counts "
+                        "beside it are the timeout rather than a measurement"
+                    )
             keystroke = actions["keystroke"]
             if keystroke.get("ran"):
                 # The DOM value is what the harness itself wrote, so it proves nothing on its

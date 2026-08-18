@@ -58,7 +58,7 @@ import {
   createRootRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
@@ -603,14 +603,31 @@ function HeavyThreadApi({
   setMounted: (value: boolean) => void;
 }): null {
   const aui = useAui();
+  // What seed() last built. The delete action removes a message from the REPOSITORY, so without
+  // a way to put it back every repetition after the first measures a shorter thread than the one
+  // the harness took its census of.
+  const seeded = useRef<ThreadMessageLike[]>([]);
 
   useEffect(() => {
     const api = {
       /** Replace the thread with whole cycles of content until `targetChars` is reached. */
       seed(targetChars: number): Plan {
         const built = buildThread(targetChars);
+        seeded.current = built.messages;
         aui.thread().import(ExportedMessageRepository.fromArray(built.messages));
         return built.plan;
+      },
+      /**
+       * Put the seeded thread back, and answer with how many messages that is.
+       *
+       * Deleting a message is destructive to the repository, not to the view, so re-opening does
+       * not undo it. Restoring is the same import seed() does: cheap on the harness side, and it
+       * is untimed, but every timed repetition then runs on the same fixture rather than on a
+       * thread that is one message shorter each time round.
+       */
+      restore(): number {
+        aui.thread().import(ExportedMessageRepository.fromArray(seeded.current));
+        return seeded.current.length;
       },
       /**
        * Open every tool card. Radix unmounts collapsed content, so a thread of closed cards
