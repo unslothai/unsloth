@@ -207,9 +207,7 @@ def _timing_enabled(job: dict, step: dict) -> bool:
 def test_every_windows_install_step_asks_for_the_breakdown():
     steps = list(_windows_steps(r"install\.ps1 --local --no-torch"))
     assert steps, "no Windows step runs install.ps1 --local --no-torch any more"
-    missing = [
-        f"{name}:{jid}" for name, jid, job, step in steps if not _timing_enabled(job, step)
-    ]
+    missing = [f"{name}:{jid}" for name, jid, job, step in steps if not _timing_enabled(job, step)]
     assert not missing, (
         f"these Windows install steps do not set {ENV_VAR}, so their logs stay unreadable "
         f"about where the 260-291s goes: {missing}"
@@ -248,14 +246,14 @@ def test_the_outer_installer_is_timed_as_well_as_the_child():
         "install.ps1 carries no phase timing, so the outer half of the Windows install is "
         "invisible in the log and the child's clock restarts at the handoff"
     )
-    assert f"$env:{ENV_VAR} -ne '0'" in src, (
-        f"install.ps1's timing switch lost its guard against a truthy \"0\""
-    )
+    assert (
+        f"$env:{ENV_VAR} -ne '0'" in src
+    ), f'install.ps1\'s timing switch lost its guard against a truthy "0"'
     for fn in ("function step {", "function substep {"):
         block = src[src.index(fn) :][:2000]
-        assert "Variable:script:StudioTimingEnabled" in block, (
-            f"install.ps1's {fn.strip()} does not consult the timing switch"
-        )
+        assert (
+            "Variable:script:StudioTimingEnabled" in block
+        ), f"install.ps1's {fn.strip()} does not consult the timing switch"
 
 
 def test_the_child_continues_the_parent_clock_rather_than_restarting_it():
@@ -267,9 +265,9 @@ def test_the_child_continues_the_parent_clock_rather_than_restarting_it():
         f"install.ps1 no longer publishes {handoff}, so setup.ps1 restarts the clock at the "
         f"handoff and its numbers no longer line up with the outer installer's"
     )
-    assert f"$env:{handoff}" in inner, (
-        f"setup.ps1 ignores {handoff}, so it counts from its own zero"
-    )
+    assert (
+        f"$env:{handoff}" in inner
+    ), f"setup.ps1 ignores {handoff}, so it counts from its own zero"
     assert "TryParse" in inner, (
         "setup.ps1 no longer parses the handoff defensively; junk inherited from an outer "
         "process must fall back to starting the clock locally, not crash the installer"
