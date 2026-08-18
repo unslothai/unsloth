@@ -515,6 +515,12 @@ async (settleMs) => {
 #
 # The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and
 # the whole measurement silently reads zero. Hence the pointer pair.
+#
+# Everything this window scans, it scans a FIXED number of times: two observer queries, one per
+# portal mutation, and the two censuses below, once each. Measured on Chromium at 300K that is
+# 2.7ms of a 3208ms open+close, against 0.3ms of 375ms at 25K -- 0.08% of the number at both
+# ends, so the share does not grow with the axis. Removing them entirely was measured too, on one
+# page, alternating with the version above: 3389ms against 3394ms at 300K.
 MENU_JS = """
 async (timeoutMs) => {
   const api = window.__heavyThread;
@@ -610,6 +616,24 @@ async (timeoutMs) => {
 # down and rebuilt, which is every markdown block, every Shiki fence and every action bar mounted
 # again from nothing. This is the action users describe as "it hangs when I click back into the
 # conversation", and it is the one that has no incremental path at all.
+#
+# What comes back is the thread with its COMPLETED TOOL CARDS SHUT, because that is what the app
+# does: tool-ui-python.tsx mounts with `defaultOpen={isRunning}` and tool-ui-code-execution.tsx
+# initialises its `open` state from the same false flag, so a finished card remounts collapsed.
+# The panes are therefore in the census this cell prints and not in the rebuild it times, and the
+# gap was measured rather than assumed: 3999 DOM nodes expanded against 3981 rebuilt at 25K, and
+# 42873 against 42675 at 300K. That is 0.45% and 0.46% of the tree, the same fraction at both
+# ends, so it moves the ratio by nothing. Highlighted tokens are IDENTICAL in the two states
+# (3216 and 35086), because the Shiki-highlighted cell renders outside the collapsible by design
+# (#7165) and what is inside it is a plain <pre>: the settle probe below sees the same signal
+# either way. Expanding them inside the window would mean a document-wide querySelectorAll for
+# the triggers plus one synthetic click per card, 22 of them at 300K -- harness work that grows
+# with the axis, to time a state the app never rebuilds into.
+#
+# The two messageCount() calls this makes inside the window are the harness's whole footprint in
+# the number: measured on Chromium at 300K, 0.4ms of a 2292ms re-open, and 0.0ms of 363ms at 25K.
+# The loop cannot poll more often than that because the rebuild is one blocking commit, so the
+# rAF the loop waits on does not fire during it.
 REOPEN_JS = """
 async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const api = window.__heavyThread;
@@ -787,6 +811,20 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
     return out
 
 
+# The gate that says expandTools() really mounted the result panes.
+#
+# It reads codeExecutionPanes, which is `[data-slot="tool-fallback-content"] pre`, and NOT
+# collapsibleOutputs, which is the content element itself. Radix keeps that element in the tree
+# for its collapse animation, so it is present while the card is shut: measured on this tree at
+# 300K characters, immediately after seeding and BEFORE any expandTools() call, collapsibleOutputs
+# was already 22 of the 22 expected while codeExecutionPanes was 0. A `collapsibleOutputs >= n`
+# gate is therefore satisfied by a thread of closed cards -- it cannot fail, and it released the
+# highlighter wait below before the fences it exists to sequence had mounted. The pane's <pre> is
+# a child of that element, so it appears only once the card is really open: 0 collapsed, 22
+# expanded, at both sizes on all three engines.
+EXPANDED_PANES_GATE_JS = "(n) => window.__heavyThread.counts().codeExecutionPanes >= n"
+
+
 def build_fixture(page) -> None:
     """Bring the page back to the fixture every column claims to have been measured on, untimed.
 
@@ -800,7 +838,7 @@ def build_fixture(page) -> None:
     expanded = page.evaluate("() => window.__heavyThread.expandTools()")
     if expanded:
         page.wait_for_function(
-            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
+            EXPANDED_PANES_GATE_JS,
             arg = expanded,
             timeout = ACTION_TIMEOUT_MS,
         )
@@ -967,7 +1005,7 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # is looking at them open, and the closed thread is a different fixture.
         result["tool_triggers_expanded"] = page.evaluate("() => window.__heavyThread.expandTools()")
         page.wait_for_function(
-            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
+            EXPANDED_PANES_GATE_JS,
             arg = max(1, result["tool_triggers_expanded"]),
             timeout = SEED_TIMEOUT_MS,
         )

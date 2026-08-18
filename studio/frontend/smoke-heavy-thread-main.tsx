@@ -774,8 +774,11 @@ function HeavyThreadApi({
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
-          // Radix mounts collapsible content only while it is open, so this counts the panes a
-          // user can actually see rather than the cards that could produce one.
+          // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse
+          // animation. It is present whether the card is open or shut, so it counts cards, not
+          // visible panes: measured at 25000 chars it reads 2 with every card closed and 2 again
+          // after expandTools(). Do NOT gate a wait on this; such a gate is satisfied by a thread
+          // of closed cards and cannot fail. Use codeExecutionPanes, which is 0 then 2.
           collapsibleOutputs: document.querySelectorAll(
             '[data-slot="tool-fallback-content"]',
           ).length,

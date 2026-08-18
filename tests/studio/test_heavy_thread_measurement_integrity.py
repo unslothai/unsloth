@@ -45,6 +45,9 @@ from _node_harness import require_node, run_harness  # noqa: E402
 
 WORKDIR = Path(__file__).resolve().parents[2]
 TEMP_ROOT = WORKDIR / "logs" / "heavy-thread-node"
+HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py").read_text(
+    encoding = "utf-8"
+)
 
 
 def _load_harness():
@@ -237,6 +240,144 @@ def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
     # Same reason, for wall ms, which is a growth axis in its own right.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["wallMs"] <= got["lastChangeAt"] + 120, got
+
+
+# ── no-regression guards: what the timed windows may scan ─────────────
+#
+# GUARDS, not evidence for a finding. They pass on this tree and are here to keep it that way.
+#
+# Both timed windows are measured in the browser and the harness-owned DOM scans inside them are
+# a rounding error today: on Chromium at 300000 characters the re-open window makes 2 selector
+# passes costing 0.4ms of a 2292ms re-open (0.02%), and the menu window makes 2 observer queries
+# and 2 censuses costing 2.7ms of a 3208ms open+close (0.08%). That holds because the count of
+# scans is FIXED while their unit cost grows with the thread (messageCount 0.01ms at 25000 chars,
+# 0.105ms at 300000). Swap one of them for the full census, or move any of them inside the poll
+# loop, and the harness starts adding size-dependent work to the number it publishes. These pin
+# the count.
+
+SCAN_BUDGET_BODY = """
+eval(RECORDER_INIT);
+let mounted = true;
+let tokens = 3000;
+let highlightFrames = 0;
+// The rebuild straddles this many frames, so the poll loop really does go round more than once.
+let mountFrames = 4;
+let scans = 0;
+let censuses = 0;
+let probes = 0;
+window.__heavyThread = {
+  messageCount: () => { scans += 1; return mounted && mountFrames <= 0 ? 20 : 0; },
+  counts: () => { censuses += 1; return { messages: 20, domNodes: 4000 }; },
+  closeThread: () => { mounted = false; tokens = 0; },
+  openThread: () => { mounted = true; mountFrames = 4; highlightFrames = 40; },
+  highlightedTokenCount: () => { probes += 1; return tokens; },
+};
+mountFrames = 0;
+const reopen = eval("(" + REOPEN_JS + ")");
+let done = null;
+let doneAt = null;
+const startedAt = now;
+reopen([100000, 100000, 1000, 100]).then((r) => { done = r; doneAt = now; });
+for (let i = 0; i < 200; i += 1) {
+  if (mountFrames > 0) mountFrames -= 1;
+  if (highlightFrames > 0) { tokens += 75; highlightFrames -= 1; }
+  await tick(16);
+}
+say({
+  scans, censuses, probes,
+  mountFrames: 4,
+  probeBudget: Math.ceil((doneAt - startedAt) / 100) + 2,
+  ms: done === null ? null : done.ms,
+});
+"""
+
+
+def test_the_reopen_window_never_runs_the_document_census() -> None:
+    # GUARD. counts() is a dozen document-wide queries including getElementsByTagName("*"), and it
+    # is 25 times the cost of messageCount() at 25000 chars and 24 times at 300000 (measured
+    # 0.15ms/0.01ms and 2.51ms/0.105ms on Chromium). One of those per frame inside the re-open
+    # window is the harness measuring itself.
+    got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
+    assert got["censuses"] == 0, got
+
+
+def test_the_reopen_window_scans_no_more_than_once_per_frame_of_the_rebuild() -> None:
+    # GUARD. Six [data-role] passes for this rebuild on the virtual clock, and the six are
+    # enumerable: `before` sizes the thread, one closes the unmount loop, three run the re-open
+    # loop while the stub rebuild is still blocked, and `after` proves the thread came back. Only
+    # the middle four are inside the recorder window and only one of them is inside the reported
+    # `ms`. A second pass per iteration doubles the size-dependent work in the number, and at
+    # 300000 characters each pass is 0.105ms against 0.01ms at 25000.
+    got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
+    assert got["scans"] <= 6, got
+
+
+def test_the_highlight_probe_stays_on_its_interval_inside_the_settle_loop() -> None:
+    # GUARD. quietUntilIdle()'s probe is `pre code span` over the whole document: 0.03ms at 25000
+    # chars and 0.465ms at 300000 on Chromium, 2.05ms on Firefox. Per frame that is an O(nodes)
+    # query inside the window being timed, growing like the signal; on the interval it is a few
+    # milliseconds across the whole settle.
+    got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
+    assert got["probes"] <= got["probeBudget"], got
+
+
+MENU_SCAN_BODY = """
+eval(RECORDER_INIT);
+let menuOpen = false;
+let observer = null;
+let notifications = 0;
+let querySelectorCalls = 0;
+let querySelectorAllCalls = 0;
+class FakeMutationObserver {
+  constructor(cb) { observer = cb; }
+  observe() {}
+  disconnect() { observer = null; }
+}
+globalThis.MutationObserver = FakeMutationObserver;
+globalThis.PointerEvent = class { constructor(type) { this.type = type; } };
+globalThis.KeyboardEvent = class { constructor(type) { this.type = type; } };
+globalThis.getComputedStyle = () => ({ pointerEvents: menuOpen ? "none" : "auto" });
+const notify = () => {
+  queueMicrotask(() => { if (observer) { notifications += 1; observer([]); } });
+};
+const trigger = {
+  dispatchEvent: (e) => { if (e.type === "pointerdown") { menuOpen = true; notify(); } },
+};
+globalThis.document = {
+  body: {},
+  querySelector: (sel) => {
+    querySelectorCalls += 1;
+    return sel === ".aui-action-bar-more-content" && menuOpen ? {} : null;
+  },
+  querySelectorAll: () => { querySelectorAllCalls += 1; return []; },
+  dispatchEvent: (e) => { if (e.type === "keydown") { menuOpen = false; notify(); } },
+};
+window.__heavyThread = { actionButton: () => trigger, openMenuItemCount: () => 5 };
+const menu = eval("(" + MENU_JS + ")");
+let done = null;
+menu(100000).then((r) => { done = r; });
+for (let i = 0; i < 40 && done === null; i += 1) await tick(16);
+say({ notifications, querySelectorCalls, querySelectorAllCalls, openMs: done.openMs });
+"""
+
+
+def test_the_menu_reads_its_open_flag_from_the_mutation_and_not_from_a_scan() -> None:
+    # GUARD. The menu content is portaled to the END of document.body, so a querySelector for it
+    # walks the whole message list -- and for the entire open latency it walks it and finds
+    # nothing. Measured on Chromium at 300000 chars that query is 0.25ms a call against 0.025ms at
+    # 25000. One per mutation is 2 in the window; one per frame would be one per 16ms of the very
+    # latency being measured, on a cost that grows with the thread.
+    got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
+    assert got["querySelectorCalls"] <= got["notifications"] + 1, got
+
+
+def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
+    # GUARD. The tooltip-trigger census is the only querySelectorAll the menu window runs
+    # (measured 0.13ms at 300000 chars against 0.005ms at 25000). It is taken once, under the
+    # pointer, because an action bar that never mounts and one that is autohidden at rest are
+    # otherwise indistinguishable.
+    got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
+    assert got["querySelectorAllCalls"] <= 1, got
 
 
 # ── the menu total carries two paint floors, not one ──────────────────
@@ -532,8 +673,8 @@ class StubPage:
     ):
         if "highlightedTokenCount" in script:
             self.log.append(("wait", "highlighting"))
-        elif "collapsibleOutputs" in script:
-            self.log.append(("wait", "collapsibleOutputs"))
+        elif "codeExecutionPanes" in script:
+            self.log.append(("wait", "toolPanes"))
         elif "messageCount" in script:
             self.log.append(("wait", "messageCount"))
         else:
@@ -588,6 +729,20 @@ def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() 
     reopen = log.index(("action", "REOPEN_JS"))
     assert any(entry == ("wait", "highlighting") for entry in log[restore:reopen]), log
     assert any(entry == ("evaluate", "expandTools") for entry in log[restore:reopen]), log
+
+
+def test_the_tool_expand_gate_is_not_satisfied_by_a_thread_of_closed_cards() -> None:
+    # `collapsibleOutputs` is the CollapsibleContent element itself, and Radix keeps that element
+    # in the tree for its collapse animation, so it is there while the card is shut. Measured on
+    # this tree at 300000 characters, straight after seeding and before any expandTools() call:
+    # collapsibleOutputs 22 of the 22 expected, codeExecutionPanes 0. A `collapsibleOutputs >= n`
+    # gate is therefore satisfied by the closed thread, which is a wait that cannot fail -- and it
+    # released the highlighter gate below it before the two fences per cycle it exists to sequence
+    # had mounted. The pane's <pre> is a CHILD of that element: 0 collapsed, 22 expanded.
+    gates = [line for line in HARNESS_SOURCE.splitlines() if "counts()." in line]
+    assert gates, "the fixture no longer gates on a count at all"
+    for line in gates:
+        assert "codeExecutionPanes" in line, line
 
 
 def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
