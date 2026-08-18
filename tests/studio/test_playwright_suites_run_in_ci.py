@@ -40,6 +40,19 @@ NOT_IN_CI = {
     # can go wrong silently, the verdict in harness_failures, is driven without a
     # browser by test_autoscroll_harness_contract.py, which CI does run.
     "playwright_thread_weight.py",
+    # A measurement harness rather than a gate: it prints the retained-heap slope per streamed
+    # code fence that #9228 was sized from, and sets no budget. It needs a forced GC between
+    # samples, so it is Chromium-with-CDP only, and the sizes that make the slope mean anything
+    # (six 32 KB fences per arm across four arms, plus a tick-rate ladder) cost tens of minutes.
+    # Run by hand when that slope needs re-measuring. What can go wrong silently in it, a settle
+    # predicate that reports "finished" while highlighting is still queued, is covered without a
+    # browser by studio/frontend/tests/code-token-cache.test.ts, which CI does run.
+    "playwright_shiki_retention.py",
+    # The same, for frame timing: it accumulates 40 streamed replies to separate the arms by
+    # hundreds of megabytes of retained heap before recording a single frame, which is minutes per
+    # arm, and it reports a comparison rather than gating on it. Its result was a NULL (the
+    # retained heap costs bytes, not frames), so there is no budget here to defend.
+    "playwright_shiki_jank.py",
 }
 
 

@@ -61,6 +61,31 @@ test("a streamed fence occupies one entry, not one per refresh window", () => {
   }
 });
 
+test("two fences on screen at once, one extending the other, both stay cached", () => {
+  // The live-lock this exists to stop. A miss returns null to the renderer, which schedules an
+  // asynchronous tokenisation, whose callback re-renders and asks again. If storing the longer
+  // fence evicted the shorter one AND storing the shorter one evicted the longer, two fences on
+  // screen would miss forever and the page would never go idle. That hung a CI job for thirty
+  // minutes before eviction was made one-directional.
+  const cache = roomy();
+  const short = "def f():\n    return 1\n";
+  const long = `${short}def g():\n    return 2\n`;
+  let misses = 0;
+  for (let round = 0; round < 8; round += 1) {
+    for (const code of [short, long]) {
+      if (cache.get(GROUP, code) === null) {
+        misses += 1;
+        cache.set(GROUP, code, `tokens-${code.length}`);
+      }
+    }
+  }
+  // Three at most: each fence missing once, plus one re-fetch if the first store evicted it.
+  assert.ok(misses <= 3, `the cache never settled: ${misses} misses over 8 rounds`);
+  assert.equal(cache.stats().entries, 2);
+  assert.equal(cache.get(GROUP, short), `tokens-${short.length}`);
+  assert.equal(cache.get(GROUP, long), `tokens-${long.length}`);
+});
+
 test("prefix eviction does not reach across groups", () => {
   const cache = roomy();
   cache.set(OTHER_GROUP, "const a", "ts-tokens");

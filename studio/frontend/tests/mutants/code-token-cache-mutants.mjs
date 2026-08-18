@@ -40,6 +40,14 @@ const MUTANTS = [
     to: "        if (false) {\n          drop(otherKey, other);\n        }",
   },
   {
+    // The shipped bug: evicting in BOTH directions live-locks two fences that are on screen at
+    // once when one extends the other.
+    name: "prefix eviction runs in both directions",
+    test: "two fences on screen at once, one extending the other, both stay cached",
+    from: "        if (code.startsWith(other.code)) {",
+    to: "        if (code.startsWith(other.code) || other.code.startsWith(code)) {",
+  },
+  {
     name: "prefix eviction ignores the group",
     test: "prefix eviction does not reach across groups",
     from: "        if (other.group !== group) continue;",

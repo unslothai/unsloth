@@ -17,7 +17,8 @@
 //                    storing frame N drops frames 1..N-1 of the same fence immediately. A
 //                    streaming reply occupies ONE entry while it streams, not one per window.
 //                    A size cap alone would not do this: the prefixes would sit in the cache
-//                    until later replies pushed them out one at a time.
+//                    until later replies pushed them out one at a time. It is ONE-DIRECTIONAL on
+//                    purpose; see the comment at the eviction itself.
 //   A CHARACTER CAP  tokens cost roughly 17x their source in retained heap, so a budget in
 //                    characters of source is a budget in megabytes. A count cap alone would let
 //                    64 large fences pin far more than 64 small ones.
@@ -87,7 +88,20 @@ export function createTokenCache<T>(options: TokenCacheOptions): TokenCache<T> {
       // the rest, so this walk is safe.
       for (const [otherKey, other] of entries) {
         if (other.group !== group) continue;
-        if (code.startsWith(other.code) || other.code.startsWith(code)) {
+        // ONE DIRECTION ONLY: drop what the new code EXTENDS, never what extends it.
+        //
+        // Evicting both ways live-locks the app. Two fences can be on screen at once where one is
+        // a prefix of the other, which is what a page showing the same snippet at two lengths
+        // does. Storing the long one would evict the short one, the short one's next render would
+        // miss and evict the long one, and so on: a miss returns null, which schedules an
+        // asynchronous tokenisation, whose callback re-renders, which misses again. Measured on
+        // the pair below before this was one-directional: two misses per round, forever, with the
+        // cache stuck at one entry. It hung a CI job for thirty minutes.
+        //
+        // The direction kept here is the one the memory win needs. Every earlier frame of a
+        // GROWING fence is a prefix of the current one, so this still collapses a streamed reply
+        // onto one entry. The reverse case, a source that SHRINKS, is left to the size cap.
+        if (code.startsWith(other.code)) {
           drop(otherKey, other);
         }
       }
