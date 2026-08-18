@@ -212,7 +212,7 @@ def test_the_fork_count_stub_matches_the_url_the_app_actually_requests() -> None
     # parseable zero. That is DOM in proportion to thread size, on the axis this harness measures.
     # getThreadForkCounts reads `data.counts`, so that is the key that has to be there.
     assert isinstance(json.loads(body).get("counts"), dict), (
-        "the fork-count stub must answer with the {\"counts\": {...}} body getThreadForkCounts "
+        'the fork-count stub must answer with the {"counts": {...}} body getThreadForkCounts '
         f"parses, so every badge reads a real zero. Got: {body!r}"
     )
 
