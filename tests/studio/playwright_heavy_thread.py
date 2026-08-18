@@ -1830,6 +1830,18 @@ def merge_seeds(seeds: list[dict]) -> dict:
         "cpu_throttle_rate": seeds[0]["cpu_throttle_rate"],
         "long_task_supported": all(s["long_task_supported"] for s in seeds),
         "paint_floor_ms": median(floors),
+        # The floor MEASURED ON THE PAGE THAT PRODUCED EACH ACTION'S timing. In the
+        # isolated table every action runs on its own page, so there are seven floors and
+        # the median above belongs to none of them in particular. growth() subtracts a
+        # floor per double-rAF wait, so subtracting the median from an action measured on
+        # a page whose own floor was higher or lower moved the corrected endpoints, and
+        # with them the discrimination ratio. paint_floor_spread_ms exposed that the
+        # pages disagreed but did nothing about it.
+        "paint_floor_ms_by_action": {
+            s["arm"].split(":", 1)[1]: s["paint_floor_ms"]
+            for s in seeds
+            if s.get("arm", "").startswith("isolated:")
+        },
         "seed_api_requests": sum(s["seed_api_requests"] for s in seeds),
         "stubbed_api_requests": sum(s.get("stubbed_api_requests", 0) for s in seeds),
         "seed_console_warnings": max(s["seed_console_warnings"] for s in seeds),
@@ -2312,7 +2324,22 @@ def resolve_floor(floored, row: dict) -> float:
     return value if isinstance(value, (int, float)) else 0
 
 
-def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, float | None]:
+def action_floor(row: dict, action: str | None) -> float:
+    """The paint floor to subtract for one axis: the action's own page, or the median.
+
+    The median is the fallback for axes that are not per-action (and for the sequenced table,
+    where every action really did run on one page and therefore shares one floor).
+    """
+    if action:
+        by_action = row.get("paint_floor_ms_by_action") or {}
+        if action in by_action:
+            return by_action[action]
+    return row.get("paint_floor_ms", 0)
+
+
+def growth(
+    cells: dict, pick, floored, sizes: list[int], action: str | None = None
+) -> tuple[float | None, float | None]:
     """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
 
     It may be an int, declared once for an axis, or a callable taking the row, for an axis whose
@@ -2336,11 +2363,22 @@ def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, 
                 return None, None
             count = resolve_floor(floored, row)
             if count:
-                value -= count * row["paint_floor_ms"]
+                value -= count * action_floor(row, action)
             values.append(round(value, 2))
         return values[0], values[1]
     except (KeyError, TypeError):
         return None, None
+
+
+def axis_action(axis_name: str) -> str | None:
+    """The action an axis belongs to, or None for the axes that are not per-action.
+
+    Axis names for per-action metrics are built as f"{action} ...", so the action is the leading
+    word. Matched against ACTIONS rather than split blindly, so a future axis whose first word
+    happens to collide with nothing still returns None instead of a bogus key.
+    """
+    head = axis_name.split(" ", 1)[0]
+    return head if head in ACTIONS else None
 
 
 def report_growth(results: dict) -> dict[str, dict[str, dict]]:
@@ -2350,7 +2388,8 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         cells = results["by_engine"][engine]["by_size"]
         per_axis: dict[str, dict] = {}
         for name, pick, floored in GROWTH_AXES:
-            small, large = growth(cells, pick, floored, results["sizes"])
+            action = axis_action(name)
+            small, large = growth(cells, pick, floored, results["sizes"], action)
             # Resolved here, once, so what lands in the JSON is the count that was actually
             # subtracted at each end rather than the thing that computes it.
             floor_counts = [

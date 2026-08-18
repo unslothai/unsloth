@@ -482,3 +482,43 @@ def test_the_frontend_job_has_room_for_every_page_the_smoke_seeds() -> None:
         f"the build job seeds {seeds} pages ({n_actions} isolated + 1 sequenced, over {n_sizes} "
         f"sizes) but allows only {timeout} minutes for that plus six later browser smokes"
     )
+
+def test_the_probe_waits_for_panes_that_actually_appear() -> None:
+    """`collapsibleOutputs >= n` is true before expandTools() runs, so it is not a wait at all.
+
+    Radix keeps the collapsible content element mounted while the card is closed so it can
+    animate the collapse. The main harness measured this: at 300K characters, immediately after
+    seeding and before any expandTools() call, collapsibleOutputs was already 22 of the 22
+    expected while codeExecutionPanes was 0. A probe gating on the first one returns immediately
+    and lets the next predecessor, or the measured scroll itself, begin against a fixture whose
+    panes have not mounted.
+    """
+    import re
+
+    expand = SOURCE[SOURCE.index("def expand(page)") : SOURCE.index("def hover_last(page)")]
+    # Comments are stripped first: this file explains WHY collapsibleOutputs is wrong, and a
+    # naive substring check would fire on that explanation instead of on the code.
+    code = "\n".join(re.sub(r"#.*$", "", ln) for ln in expand.split("\n"))
+    assert "collapsibleOutputs" not in code, (
+        "expand() still gates on collapsibleOutputs, which is already satisfied by closed cards"
+    )
+    assert "EXPANDED_PANES_GATE_JS" in expand, (
+        "expand() must use the harness's own codeExecutionPanes gate, so the probe and the "
+        "harness cannot drift apart on what counts as expanded"
+    )
+
+
+def test_the_shared_pane_gate_reads_the_counter_that_starts_at_zero() -> None:
+    """Acceptance control for the guard above: the shared gate must be the RIGHT one.
+
+    Without this, the rule above is satisfied by a constant named EXPANDED_PANES_GATE_JS that
+    reads collapsibleOutputs anyway.
+    """
+    import re
+
+    gate = re.search(r'EXPANDED_PANES_GATE_JS = "([^"]+)"', HARNESS_SOURCE)
+    assert gate, "EXPANDED_PANES_GATE_JS is no longer a simple string literal in the harness"
+    assert "codeExecutionPanes" in gate.group(1), (
+        f"the shared gate does not read codeExecutionPanes: {gate.group(1)!r}"
+    )
+    assert "collapsibleOutputs" not in gate.group(1)

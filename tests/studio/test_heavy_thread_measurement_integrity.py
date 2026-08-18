@@ -1342,3 +1342,84 @@ def test_the_scroll_ratio_is_not_compressed_by_the_gesture_floors() -> None:
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_growth_subtracts_the_floor_of_the_page_that_produced_the_timing() -> None:
+    """Driven, with numbers, because a source check cannot show the arithmetic changed.
+
+    Two sizes, one action, and a page whose own floor (40ms) is deliberately far from the merged
+    median (10ms). One double-rAF wait is declared, so the corrected value is the raw timing
+    minus one floor. Using the median would leave 30ms of vsync in both ends and report a
+    different ratio.
+    """
+    cells = {
+        "1000": {
+            "actions": {"scroll": {"settleMs": 100.0}},
+            "paint_floor_ms": 10.0,
+            "paint_floor_ms_by_action": {"scroll": 40.0},
+        },
+        "2000": {
+            "actions": {"scroll": {"settleMs": 200.0}},
+            "paint_floor_ms": 10.0,
+            "paint_floor_ms_by_action": {"scroll": 40.0},
+        },
+    }
+    pick = HARNESS._action("scroll", "settleMs")
+    small, large = HARNESS.growth(cells, pick, 1, [1000, 2000], "scroll")
+    assert (small, large) == (60.0, 160.0), (
+        f"expected the action's own 40ms floor to be subtracted, got {(small, large)}; "
+        f"(90.0, 190.0) means it used the merged median instead"
+    )
+
+    # ACCEPTANCE CONTROL. With no per-action floor recorded it must fall back to the median,
+    # otherwise the sequenced table and every non-action axis silently lose their correction.
+    fallback = {k: {**v, "paint_floor_ms_by_action": {}} for k, v in cells.items()}
+    assert HARNESS.growth(fallback, pick, 1, [1000, 2000], "scroll") == (90.0, 190.0)
+
+
+def test_the_axis_action_lookup_only_matches_real_actions() -> None:
+    """A blind first-word split would invent a floor key for any axis that starts with a word."""
+    assert HARNESS.axis_action("scroll settle ms") == "scroll"
+    assert HARNESS.axis_action("paint floor spread ms") is None
+    assert HARNESS.axis_action("pages seeded") is None
+
+def test_merge_seeds_records_the_floor_of_every_isolated_page() -> None:
+    """Without this, the per-action floor fix is inert and nobody notices.
+
+    `action_floor` falls back to the merged median when a per-action floor is missing, which is
+    correct for the sequenced table but means that if merge_seeds simply stopped recording them,
+    every isolated action would quietly go back to the median and every source-level and driven
+    check above would still pass. This is the one that fails.
+    """
+    seeds = [
+        {
+            "arm": f"isolated:{name}",
+            "paint_floor_ms": floor,
+            "plan": {"chars": 1000},
+            "counts": {},
+            "viewport": {},
+            "tool_triggers_expanded": 0,
+            "cpu_throttle_rate": 1,
+            "long_task_supported": True,
+            "seed_api_requests": 0,
+            "seed_console_warnings": 0,
+            "first_seed_warning": "-",
+            "seed_console_errors": 0,
+            "first_seed_error": "-",
+            "raf_callbacks": 0,
+            "stray_api_requests": 0,
+            "console_warnings": 0,
+            "first_console_warning": "-",
+            "console_errors": 0,
+            "first_console_error": "-",
+        }
+        for name, floor in (("scroll", 16.0), ("menu", 48.0))
+    ]
+    merged = HARNESS.merge_seeds(seeds)
+    by_action = merged.get("paint_floor_ms_by_action")
+    assert by_action == {"scroll": 16.0, "menu": 48.0}, (
+        f"merge_seeds no longer keeps each isolated page's own floor: {by_action!r}. Every "
+        f"isolated action silently reverts to the merged median."
+    )
+    # And the median is still there, because the non-action axes and the sequenced table need it.
+    assert merged["paint_floor_ms"] == 32.0

@@ -71,13 +71,16 @@ def settled(page) -> None:
 
 
 def expand(page) -> None:
+    # hv.EXPANDED_PANES_GATE_JS, not a `collapsibleOutputs` predicate. Radix keeps the
+    # collapsible CONTENT element mounted while the card is closed so it can animate the
+    # collapse, so `collapsibleOutputs >= n` is already true of closed cards and returns
+    # immediately: measured on the main harness at 300K characters, it was 22 of the 22 expected
+    # straight after seeding and BEFORE any expandTools() call, while codeExecutionPanes was 0.
+    # Used here, that let the next predecessor or the measured scroll start before the panes had
+    # mounted, folding expansion work or a collapsed fixture into the arm.
     n = page.evaluate("() => window.__heavyThread.expandTools()")
     if n:
-        page.wait_for_function(
-            "(k) => window.__heavyThread.counts().collapsibleOutputs >= k",
-            arg = n,
-            timeout = 600_000,
-        )
+        page.wait_for_function(hv.EXPANDED_PANES_GATE_JS, arg = n, timeout = 600_000)
 
 
 def hover_last(page) -> None:

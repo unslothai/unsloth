@@ -161,8 +161,22 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
     # regression sit under the discrimination threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    assert 'value -= count * row["paint_floor_ms"]' in section(
+    # Was `row["paint_floor_ms"]`, the merged MEDIAN. In the isolated table each action runs on
+    # its own page with its own measured floor, so the median belongs to none of them and
+    # subtracting it from an action measured on a higher or lower page moved the corrected
+    # endpoints and the discrimination ratio with them. The stronger property is asserted here:
+    # the subtraction goes through action_floor(), which prefers the floor of the page that
+    # produced the timing and falls back to the median only when there is no per-action floor.
+    assert "value -= count * action_floor(row, action)" in section(
         text, "def growth(", "def report_growth"
+    )
+    floor_fn = section(text, "def action_floor(", "def growth(")
+    assert '"paint_floor_ms_by_action"' in floor_fn, (
+        "action_floor no longer consults the per-action floors, so every action is back on the "
+        "merged median"
+    )
+    assert 'row.get("paint_floor_ms", 0)' in floor_fn, (
+        "action_floor has no median fallback, so axes that are not per-action lose their floor"
     )
 
 
