@@ -65,10 +65,15 @@ jobs:
   ui-smoke:
     name: Chat UI Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Was 30, for one job that ran everything below in sequence and landed at 22m30s of
-    # its previous 25, taking the banner step over the edge and leaving the three image
-    # steps unrun. Each shard now carries a quarter of that.
-    timeout-minutes: 20
+    # Left at 30 even though each shard now carries a quarter of the work.
+    #
+    # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
+    # of the budget. Staging then cancelled three shards at 20m0s inside "Linux deps", an
+    # apt step that takes 13 SECONDS in the org repo. The work was not slow; the runner
+    # was. Tightening a timeout to fit the expected duration converts that kind of
+    # infrastructure stall from a slow pass into a red build, and a timeout is there to
+    # catch a hang, not to police the mean.
+    timeout-minutes: 30
     strategy:
       # Four shards, split where the job already split itself.
       #
