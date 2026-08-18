@@ -186,3 +186,88 @@ def test_the_travel_the_arms_are_compared_on_is_published():
     """`scrolled_px` in the results JSON is what makes the check auditable after the fact."""
     assert '"scrolled_px": med("scrolledPx")' in MAIN
     assert '"scrolled_px_all"' in MAIN
+
+
+# ── travel is observed, not planned ───────────────────────────────────
+#
+# `scroll_row_problems` above rejects a row that reports no travel, but that is only worth
+# anything if the number it reads is what the viewport DID rather than what the harness ASKED
+# for. SCROLL_JS accumulated `next - target`, both of which are requests. Studio replaces
+# assistant-ui's autoscroll with an intent-aware one that can snap a programmatic scroll straight
+# back, and the browser clamps at either end, so a gesture that moved nothing still reported the
+# full planned distance and every check downstream passed on it.
+
+HARNESS_SOURCE = (Path(__file__).resolve().parent / "playwright_heavy_thread.py").read_text(
+    encoding="utf-8"
+)
+
+
+def _loop_body(script: str) -> str:
+    return script.split("window.__hv.begin();", 1)[1]
+
+
+def test_the_scroll_gesture_accumulates_what_the_viewport_did() -> None:
+    body = _loop_body(PROBE.hv.SCROLL_JS)
+    assert "const landed = viewport.scrollTop;" in body, (
+        "the scroll no longer reads back where it landed"
+    )
+    assert "travelled += Math.abs(landed - observed);" in body, (
+        "travel is accumulated from the requested position again, so a viewport that was clamped "
+        "or snapped back still reports the full planned distance"
+    )
+    assert "travelled += Math.abs(next - target);" not in body
+
+
+def test_the_jump_reports_observed_travel_and_where_it_started() -> None:
+    jump = PROBE.hv.JUMP_JS
+    assert "travelledPx: Math.abs(landedAt - startedFrom)," in jump, (
+        "the jump reports its planned full-height travel again rather than what it covered"
+    )
+    assert "const startedFrom = viewport.scrollTop;" in jump
+    assert "travelledPx: bottom," not in jump
+
+
+# ── every raw jump starts where the harness's does ────────────────────
+
+
+def test_the_jump_predecessor_applies_the_registered_anchor() -> None:
+    """The measured scroll leaves the viewport thousands of px above the bottom, so from
+    repetition 2 on an unanchored jump is a shorter gesture aggregated under the same median."""
+    source = Path(PROBE.__file__).read_text(encoding="utf-8")
+    body = source.split("def before_jump", 1)[1].split("\ndef ", 1)[0]
+    assert 'hv.ACTION_SETUPS["jump"]' in body, (
+        "before_jump calls JUMP_JS raw, bypassing the anchor the harness applies to its own jump"
+    )
+    assert body.index('ACTION_SETUPS["jump"]') < body.index("hv.JUMP_JS"), (
+        "the anchor runs after the jump, which is not an anchor"
+    )
+
+
+def jump_out(**overrides) -> dict:
+    out = {"landedAt": 0, "travelledPx": 8000, "startedFrom": 8000, "bottom": 8000}
+    out.update(overrides)
+    return out
+
+
+def test_a_jump_from_the_bottom_is_accepted() -> None:
+    """The control. Without it the two checks below could be met by rejecting every jump."""
+    assert PROBE.PREDECESSOR_PROOFS["jump"](jump_out()) == []
+
+
+def test_a_jump_that_began_part_way_up_the_thread_is_rejected() -> None:
+    problems = PROBE.PREDECESSOR_PROOFS["jump"](jump_out(startedFrom=3000, travelledPx=3000))
+    assert any("above the bottom" in p for p in problems), problems
+
+
+def test_a_jump_that_did_not_say_where_it_started_is_rejected() -> None:
+    """Reporting nothing must not read as reporting something acceptable."""
+    out = jump_out()
+    del out["startedFrom"]
+    problems = PROBE.PREDECESSOR_PROOFS["jump"](out)
+    assert any("unverifiable" in p for p in problems), problems
+
+
+def test_a_jump_that_did_not_reach_the_bottom_is_still_rejected() -> None:
+    """The pre-existing half of the proof, kept red-able beside the new half."""
+    problems = PROBE.PREDECESSOR_PROOFS["jump"](jump_out(landedAt=4000))
+    assert any("landed at" in p for p in problems), problems

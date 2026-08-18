@@ -620,6 +620,12 @@ async ([steps, stepPx, settleMs]) => {
   // same gesture, so the two columns would not be comparable.
   let direction = -1;
   let travelled = 0;
+  // Where the viewport ACTUALLY is, read back after every paint. `target` is what was requested.
+  // Accumulating from `target` reported the planned distance: Studio replaces assistant-ui's
+  // autoscroll with an intent-aware one that can snap a programmatic scroll straight back, and
+  // the browser clamps at either end, so a gesture that moved nothing still reported the full
+  // 8000px and every completion and cross-arm check downstream passed on it.
+  let observed = viewport.scrollTop;
   window.__hv.begin();
   for (let i = 0; i < steps; i += 1) {
     if (direction < 0 && target <= 0) direction = 1;
@@ -632,7 +638,12 @@ async ([steps, stepPx, settleMs]) => {
     );
     viewport.scrollTo({ top: next, behavior: "instant" });
     await window.__nextPaint();
-    travelled += Math.abs(next - target);
+    const landed = viewport.scrollTop;
+    travelled += Math.abs(landed - observed);
+    observed = landed;
+    // Planning continues from the REQUEST, not from where it landed, so the gesture keeps its
+    // shape. If the viewport is being snapped back, the requests stay the same and `travelled`
+    // correctly falls to nothing, which is the signal the validation is looking for.
     target = next;
   }
   const gestureMs = performance.now() - window.__hv.startedAt;
@@ -664,6 +675,7 @@ async (settleMs) => {
   // Anchored to the bottom by ACTION_SETUPS before run_action took any snapshot, for the same
   // reason the reset at the end of this script runs from ACTION_RESETS after all of them.
   const bottom = viewport.scrollHeight - viewport.clientHeight;
+  const startedFrom = viewport.scrollTop;
   window.__hv.begin();
   const started = performance.now();
   // The wheel event first, and it is load-bearing. Studio replaces assistant-ui's autoscroll
@@ -688,7 +700,12 @@ async (settleMs) => {
   return {
     paintedMs: Math.round(paintedMs * 10) / 10,
     settleMs: settleMsTaken === null ? null : Math.round(settleMsTaken * 10) / 10,
-    travelledPx: bottom,
+    // Observed, not planned. Reporting `bottom` here claimed a full-height jump even when the
+    // gesture was snapped back or started from somewhere other than the bottom.
+    travelledPx: Math.abs(landedAt - startedFrom),
+    startedFrom,
+    // So a caller can prove the gesture began at the bottom rather than assume it.
+    bottom,
     landedAt,
     metrics,
   };

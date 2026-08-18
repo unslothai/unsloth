@@ -115,12 +115,28 @@ def _keystroke_proof(out: dict) -> list[str]:
     return []
 
 
+# How far from the bottom a jump may start and still count as a full-height jump. One px of
+# rounding, not room for a repetition to begin thousands of px up the thread.
+JUMP_ANCHOR_TOLERANCE_PX = 2
+
+
 def _jump_proof(out: dict) -> list[str]:
     landed = out.get("landedAt")
     travelled = out.get("travelledPx") or 0
+    problems = []
     if landed is None or landed > 1 or travelled <= 0:
-        return [f"landed at {landed}px after {travelled}px of travel"]
-    return []
+        problems.append(f"landed at {landed}px after {travelled}px of travel")
+    # travelledPx is observed now, so a jump that began part-way up the thread reports a smaller
+    # number rather than the full height, and the arm would quietly average unequal gestures.
+    started, bottom = out.get("startedFrom"), out.get("bottom")
+    if started is None or bottom is None:
+        problems.append("it did not report where it started, so its length is unverifiable")
+    elif abs(bottom - started) > JUMP_ANCHOR_TOLERANCE_PX:
+        problems.append(
+            f"it began {round(bottom - started)}px above the bottom rather than at it, so this "
+            "repetition is a shorter gesture than the ones it is aggregated with"
+        )
+    return problems
 
 
 def _menu_proof(out: dict) -> list[str]:
@@ -256,6 +272,12 @@ def before_keystroke(page):
 
 
 def before_jump(page):
+    # The measured scroll leaves the viewport thousands of px above the bottom, so from
+    # repetition 2 on a raw JUMP_JS would begin from a different place than repetition 1 and the
+    # arm would take a median across gestures of different lengths. ACTION_SETUPS is what the
+    # harness applies to its own jump for exactly this reason; applying it here keeps the
+    # predecessor the same gesture as the harness's, repetition after repetition.
+    page.evaluate(hv.ACTION_SETUPS["jump"])
     return checked("jump", page.evaluate(hv.JUMP_JS, SETTLE))
 
 
