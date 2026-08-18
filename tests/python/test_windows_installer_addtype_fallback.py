@@ -426,8 +426,11 @@ def test_the_private_temp_directory_is_somewhere_uninstall_reclaims():
     # would be worse than litter: that directory is removed only when it is empty,
     # so anything left there stops the uninstaller clearing it at all.
     assert 'Join-Path $env:USERPROFILE ".unsloth\\.cache\\temp"' in roots
-    assert '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }' in uninstall
-    assert '.unsloth\\temp' not in roots
+    assert (
+        '$defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" }'
+        in uninstall
+    )
+    assert ".unsloth\\temp" not in roots
 
 
 def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
