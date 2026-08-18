@@ -2088,3 +2088,138 @@ def test_a_floor_nothing_clears_still_returns_nothing(conn, monkeypatch):
     assert conversation_archive.recall(THREAD, "pelican", top_k = 4, forced = True) is None
     # And the tool-initiated path is untouched by the floor.
     assert conversation_archive.recall(THREAD, "pelican", top_k = 4) is not None
+
+def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
+    """A tie in the score is not an order, and truncating it silently picked the past.
+
+    FTS5 floors the IDF of a term that appears in more than half the index at 1e-6, and in
+    a per-thread archive the identifier the whole conversation is about is exactly such a
+    term. When the revisions share nothing else with the question, every one of them comes
+    back with the SAME bm25, so `hits[:limit]` kept whichever rows SQLite happened to emit
+    first, which is the oldest. Measured on eight revisions at top_k 4: one distinct score
+    across all eight, and the recall returned revisions 1 to 4 with the current value
+    absent.
+
+    That is worse than a miss. `format_conversation_recall` tells the model that a later
+    turn supersedes an earlier one, so the stale value is handed over as the authoritative
+    one.
+
+    Taking from both ends of an equal-score run is what keeps this test and the
+    original-assignment guard true at the same time: preferring the newest outright fails
+    that guard, which exists precisely to stop a fix that just returns the latest thing it
+    can find.
+    """
+    values = _revisions(8)
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}", top_k = 4)
+
+    assert found is not None
+    text, _sources = found
+    assert values[-1] in text, (
+        "the newest revision was dropped by a tie-break that prefers whatever the index "
+        "emitted first"
+    )
+    assert values[0] in text, "the oldest revision must not be dropped either"
+
+
+def test_an_overlapping_anchor_query_does_not_shrink_the_recall(conn):
+    """Two queries must never return LESS than either of them alone.
+
+    The anchor is a second query drawn from the same thread as the first, so overlap is
+    the normal case, not the corner. Each query's slice was cut to its share BEFORE the
+    dedup, so every chunk they agreed on consumed a slot and left it empty: measured on
+    six turns matching both queries at top_k 4, each query alone returned 4 sources and
+    the pair returned 2, with four eligible chunks sitting unread. Adding the anchor
+    that exists to RESCUE a thin message made the recall smaller than not adding it.
+    """
+    for index in range(6):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+
+    alone = conversation_archive.recall(THREAD, "pelican", top_k = 4)
+    merged = conversation_archive.recall(THREAD, "pelican", top_k = 4, extra_queries = ["statement"])
+
+    assert alone is not None and merged is not None
+    assert len(alone[1]) == 4
+    assert (
+        len(merged[1]) == 4
+    ), f"the anchor cost slots to its overlap with the latest query: {len(merged[1])} of 4"
+
+
+def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
+    """Capitals only mean "identifier" where there is lower case to contrast with.
+
+    In a line with no lower case at all the rule fires on every word, so the focused pass
+    ORs in "what" and "the" and filters nothing, leaving the permissive BM25 ranking to
+    hand the slot to whatever filler shares a content word. Measured on the same fixture
+    as `test_the_questions_filler_cannot_outrank_the_subject`, at top_k 1: typed normally
+    the slot went to the variable, shouted it went to the retry-budget turn.
+    """
+    for index in range(6):
+        _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
+    question = f"What is the current value of {VARIABLE}?"
+
+    assert store.conversation_match_queries(question.upper()) == (
+        store.conversation_match_queries(question)
+    )
+    found = conversation_archive.recall(THREAD, question.upper(), top_k = 1)
+
+    assert found is not None
+    assert (
+        VARIABLE.lower() in found[0].lower()
+    ), "the shouted question filtered nothing and spent its only slot on filler"
+
+
+def test_a_numeric_subject_is_still_an_identifier_when_the_question_is_shouted(conn):
+    """Making the capitals rule need contrast must not cost numbers their shape.
+
+    A purely numeric subject qualified only through the capitals rule, because "9134"
+    upper-cased is itself, and the shape rule demanded a letter as well. So in a shouted
+    question it stopped being an identifier altogether, the focused pass was dropped, and
+    measured at top_k 1 the slot went to a turn about a retry budget rather than the
+    number asked about. Shape is now "contains a digit", which for any ordinary-case
+    query is the answer the capitals rule already gave.
+    """
+    for index in range(6):
+        _archive(_turn(f"Set 9134 to 42{index}.", f"Understood. 9134 is 42{index}."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
+    question = "What is the current value of 9134?"
+
+    assert store.conversation_match_queries(question)[0] == '"9134"'
+    assert store.conversation_match_queries(question.upper())[0] == '"9134"'
+    found = conversation_archive.recall(THREAD, question.upper(), top_k = 1)
+
+    assert found is not None
+    assert "9134" in found[0]
+
+
+def test_turning_the_query_focus_off_restores_the_old_order_on_a_tied_archive(conn, monkeypatch):
+    """The rollback knob says the candidate set is identical to before, so it must be.
+
+    The tie-break reorders CANDIDATES, which is selection, not presentation, so leaving it
+    outside the knob meant an operator who turned the feature off still got the new
+    behaviour out of an archive whose scores are tied. Measured before this gate: the
+    knobs-off recall returned the both-ends set rather than the four the previous build
+    returned.
+    """
+    from core.rag import config
+
+    monkeypatch.setattr(config, "CONVERSATION_QUERY_FOCUS", False)
+    monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
+    values = _revisions(8, distractors = 0)
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}", top_k = 4)
+
+    assert found is not None
+    returned = [value for value in values if value in found[0]]
+    assert returned == values[:4], f"the knob did not restore the previous selection: {returned}"

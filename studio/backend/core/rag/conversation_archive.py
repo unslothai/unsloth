@@ -842,10 +842,76 @@ def _above_floor(hits: list, min_dense_score: float) -> list:
         return hits
     return [hit for hit in hits if hit.dense_score is None or hit.dense_score >= min_dense_score]
 
+def _ends_first_within_ties(conn, hits: list) -> list:
+    """Reorder each run of EQUAL lexical scores as newest, oldest, next-newest, ...
+
+    A tie is not an order. FTS5 floors the IDF of a term appearing in more than half the
+    index at 1e-6, so in a per-thread archive every turn naming the subject of the
+    conversation can score identically -- measured at ONE distinct bm25 across eight
+    revisions of the same variable. The candidate list then arrives in rowid order, the
+    caller truncates it at `top_k`, and the slots go to the OLDEST turns purely because
+    SQLite emitted them first: the current value never reached the model, while
+    `format_conversation_recall` told it a later turn supersedes an earlier one. A stale
+    answer presented as the authoritative one is worse than a miss.
+
+    Newest-first outright is the obvious fix and it is wrong: measured, it fails BOTH
+    `test_asking_what_it_was_originally_still_returns_the_first_assignment` -- the guard
+    against a fix that just returns the latest thing it can find -- and the tie test
+    below it. Both ends is what keeps "what is it now" and "what was it originally"
+    answerable out of the same tied run.
+
+    Only WITHIN a run of equal scores, so nothing ever moves past a chunk the ranking pass
+    actually separated. Ordering is `_conversation_order`, so legacy NULL ordinals still
+    count as oldest.
+    """
+    if not config.CONVERSATION_QUERY_FOCUS:
+        # The rollback knob promises the candidate set is "identical to before", and this
+        # reorders candidates, so it is selection and belongs behind that knob rather than
+        # behind the presentation one. Without this an operator who turned the feature off
+        # still got the new order out of a tied archive.
+        return hits
+    if len(hits) < 2:
+        return hits
+    if len({hit.lexical_score for hit in hits}) == len(hits):
+        # Nothing tied: skip the row fetch entirely, which is the common case.
+        return hits
+    try:
+        rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
+    except Exception:  # noqa: BLE001 -- ordering must never break a recall
+        return hits
+    ordered: list = []
+    run: list = []
+
+    def _flush():
+        if not run:
+            return
+        by_time = sorted(run, key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
+        while by_time:
+            ordered.append(by_time.pop())
+            if by_time:
+                ordered.append(by_time.pop(0))
+
+    for hit in hits:
+        if run and run[-1].lexical_score != hit.lexical_score:
+            _flush()
+            run = []
+        run.append(hit)
+    _flush()
+    return ordered
+
 
 def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> list:
-    return retrieval.retrieve_hybrid(
-        conn, scope, query, k = k, model_name = model, mode = "lexical", lexical_query = expression
+    return _ends_first_within_ties(
+        conn,
+        retrieval.retrieve_hybrid(
+            conn,
+            scope,
+            query,
+            k = k,
+            model_name = model,
+            mode = "lexical",
+            lexical_query = expression,
+        ),
     )
 
 
@@ -997,14 +1063,29 @@ def recall(
             room = limit - len(merged) if index == len(queries) - 1 else share
             if room <= 0:
                 break
+            # Over-fetched by what is already held, because the cut used to happen BEFORE
+            # the dedup: two queries drawn from the same thread overlap by construction,
+            # so every shared chunk cost a slot that was then never refilled. Measured on
+            # six turns matching both queries at top_k 4, either query alone returned 4
+            # and the pair returned 2, with four eligible chunks left unread. Adding the
+            # anchor made the recall smaller than not adding it.
             found = recall(
-                thread_id, one, top_k = room, branch_messages = branch_messages, forced = forced
+                thread_id,
+                one,
+                top_k = room + len(seen_ids),
+                branch_messages = branch_messages,
+                forced = forced,
             )
             if not found:
                 continue
-            for source in found[1]:
-                if source["chunkId"] in seen_ids:
-                    continue
+            fresh = [source for source in found[1] if source["chunkId"] not in seen_ids]
+            # Re-sorted by score because the inner call orders its OWN slice
+            # chronologically, so a widened fetch arrives oldest-first and taking the head
+            # of it would spend the refilled slots on the oldest turns. That is the exact
+            # failure `_ends_first_within_ties` exists to prevent, reintroduced one level
+            # up. The block is re-ordered chronologically below either way.
+            fresh.sort(key = lambda source: -(source.get("score") or 0.0))
+            for source in fresh[:room]:
                 seen_ids.add(source["chunkId"])
                 merged.append(source)
         if not merged:

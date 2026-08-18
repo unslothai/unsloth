@@ -92,10 +92,18 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish: a token mixing letters and digits (ZQXVARA123, 9134), one containing an
+# Identifier-ish: a token CONTAINING a digit (ZQXVARA123, 9134), one containing an
 # underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
 # or an "OK". These are the tokens a person uses when they mean one specific thing.
-_HAS_LETTER_AND_DIGIT = re.compile(r"(?=.*[^\W\d_])(?=.*\d)", re.UNICODE)
+#
+# Containing, not mixing. A purely numeric subject ("what is the current value of 9134")
+# used to qualify only through the capitals rule, since "9134".upper() is itself, so
+# requiring a letter as well left it with no shape at all once that rule was made to
+# need contrast. In a shouted question it then stopped being an identifier, the focused
+# pass was dropped, and the single slot went to a turn about a retry budget instead of
+# the number asked about. For any ordinary-case query this is the same answer the
+# capitals rule already gave, so nothing else moves.
+_HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 
 
 def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
@@ -106,10 +114,14 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     length, which a pasted log turns into a multi-second stall on the request that
     compacts the thread (48 KB of pasted text measured at 4.6s, 96 KB at 17.7s, against
     2.3ms for the same text through `_match_query`).
+
+    The capitals rule needs CONTRAST, not just capitals: in a line with no lower case
+    anywhere every word satisfies it and the filter stops filtering. The caller passes an
+    empty ``raw_tokens`` for such a line, so shape alone decides there.
     """
     if "_" in token:
         return True
-    if _HAS_LETTER_AND_DIGIT.match(token):
+    if _HAS_DIGIT.search(token):
         return True
     return len(token) >= 3 and token.upper() in raw_tokens
 
@@ -150,7 +162,16 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    raw_tokens = frozenset(_TOKEN.findall(query))
+    # The capitals rule needs CONTRAST to mean anything. In a line with no lower case at
+    # all, every word passes it, so the filter ORs in "what" and "the" and stops filtering
+    # anything: measured, "WHAT IS THE CURRENT VALUE OF ZQXVARA123?" produced
+    # '"what" OR "the" OR "current" OR "value" OR "zqxvara123"' where the same question in
+    # ordinary case produced '"zqxvara123"', and at top_k 1 the single slot went to a turn
+    # about a retry budget instead of the variable. Shape still decides, so ZQXVARA123 is
+    # an identifier either way; only the shouted-prose case changes, and a pure-letter
+    # name in a shouted question falls back to the permissive pass exactly as the
+    # lower-case spelling of that question already does.
+    raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
     permissive = " OR ".join(f'"{t}"' for t in content)
