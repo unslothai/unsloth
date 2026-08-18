@@ -814,7 +814,8 @@ def test_unlimited_stream_keeps_header_and_idle_timeouts(monkeypatch):
     ) == ("report", "", "stop", None)
     assert len(timeouts) == 1
     assert timeouts[0].connect == 10
-    assert timeouts[0].read == research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+    # Strictly looser than the idle guard, so the named stall wins the race against HTTPX.
+    assert timeouts[0].read > research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
 
 
 class _QueuedThenSilentResponse:
@@ -847,6 +848,46 @@ def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
             asyncio.wait_for(
                 supervisor._stream_completion(run, [{"role": "user"}], report_progress = False),
                 timeout = 30,
+            )
+        )
+
+
+class _ReadTimeoutResponse:
+    """A transport that times out reading the body, which HTTPX reports with no message."""
+
+    status_code = 200
+
+    def __init__(self, lines = ()):
+        self._lines = list(lines)
+
+    def raise_for_status(self):
+        return None
+
+    async def aclose(self):
+        return None
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        raise httpx.ReadTimeout("")
+
+
+# Unlimited leaves no wall clock to convert, so a bare ReadTimeout would otherwise reach the
+# user as an empty error string instead of naming the stall.
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    (
+        ((), research_runs.ModelFirstOutputTimeout),
+        (('data: {"choices": [{"delta": {"content": "hi"}}]}',), research_runs.ModelOutputIdleTimeout),
+    ),
+)
+def test_a_bare_read_timeout_is_reported_as_a_named_stall(monkeypatch, lines, expected):
+    _install_fake_client(monkeypatch, [_ReadTimeoutResponse(lines)])
+    supervisor = _make_supervisor(_noop_check_active)
+    with pytest.raises(expected):
+        asyncio.run(
+            supervisor._stream_completion(
+                _waiting_run(0), [{"role": "user"}], report_progress = False
             )
         )
 

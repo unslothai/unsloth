@@ -116,6 +116,8 @@ _ADMISSION_DONE_COMMENT = ": admission-done"
 # a poll loop must stay bounded however long generation itself is allowed to run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+# Headroom so the named stall guards expire before HTTPX's own read timeout does.
+_STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
 
 def _model_wait_budget(run: dict) -> float:
@@ -1282,7 +1284,12 @@ class ResearchSupervisor:
             timeout = (
                 httpx.Timeout(model_timeout)
                 if model_timeout
-                else httpx.Timeout(first_output_budget, read = admission_gap_budget)
+                else httpx.Timeout(
+                    first_output_budget,
+                    # Strictly looser, so the guards above report the stall by name instead of
+                    # racing HTTPX for it and losing to a ReadTimeout that carries no message.
+                    read = admission_gap_budget + _STREAM_READ_TIMEOUT_MARGIN_SECONDS,
+                )
             )
             loop = asyncio.get_running_loop()
 
@@ -1460,6 +1467,13 @@ class ResearchSupervisor:
                             )
             await flush_progress()
             return report, reasoning, finish_reason, usage
+        except (ModelFirstOutputTimeout, ModelOutputIdleTimeout, ModelWallClockTimeout):
+            raise
+        except httpx.ReadTimeout as exc:
+            # Transport backstop: HTTPX raises this with no message, so name the stall instead.
+            if semantic_output_at is None:
+                raise ModelFirstOutputTimeout("Local model never produced output") from exc
+            raise ModelOutputIdleTimeout("Local model stopped producing output") from exc
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ModelWallClockTimeout(
                 "Local model request exceeded its wall-clock timeout"
