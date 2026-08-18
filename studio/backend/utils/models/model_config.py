@@ -215,18 +215,22 @@ MODEL_NAME_MAPPING = {
     "unsloth_gemma-4-31B-it.yaml": [
         "unsloth/gemma-4-31B-it",
         "google/gemma-4-31B-it",
+        "unsloth/gemma-4-31B-it-GGUF",
     ],
     "unsloth_gemma-4-26B-A4B-it.yaml": [
         "unsloth/gemma-4-26B-A4B-it",
         "google/gemma-4-26B-A4B-it",
+        "unsloth/gemma-4-26B-A4B-it-GGUF",
     ],
     "unsloth_gemma-4-E2B-it.yaml": [
         "unsloth/gemma-4-E2B-it",
         "google/gemma-4-E2B-it",
+        "unsloth/gemma-4-E2B-it-GGUF",
     ],
     "unsloth_gemma-4-E4B-it.yaml": [
         "unsloth/gemma-4-E4B-it",
         "google/gemma-4-E4B-it",
+        "unsloth/gemma-4-E4B-it-GGUF",
     ],
     "unsloth_gemma-4-31B.yaml": [
         "unsloth/gemma-4-31B",
@@ -441,6 +445,10 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-4B-Instruct-2507-FP8",
         "unsloth/Qwen3-4B-Instruct-2507-FP8",
     ],
+    "unsloth_Qwen3-30B-A3B-Instruct-2507.yaml": [
+        "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "unsloth/Qwen3-30B-A3B-Instruct-2507-bnb-4bit",
+    ],
     "unsloth_Qwen3-4B-Thinking-2507.yaml": [
         "unsloth/Qwen3-4B-Thinking-2507-unsloth-bnb-4bit",
         "Qwen/Qwen3-4B-Thinking-2507",
@@ -485,6 +493,11 @@ MODEL_NAME_MAPPING = {
     "unsloth_tinyllama-bnb-4bit.yaml": [
         "unsloth/tinyllama",
         "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+    ],
+    "unsloth_GLM-4.7-Flash.yaml": [
+        "unsloth/GLM-4.7-Flash-unsloth-bnb-4bit",
+        "unsloth/GLM-4.7-Flash-bnb-4bit",
+        "THUDM/GLM-4.7-Flash",
     ],
     "unsloth_whisper-large-v3.yaml": [
         "unsloth/whisper-large-v3",
@@ -3496,6 +3509,23 @@ def _log_model_defaults(
     getattr(logger, level)(message)
 
 
+def defaults_lookup_names(model_name: str) -> List[str]:
+    """Names to look a model id up under in configs/model_defaults, most specific first.
+
+    A repo id is used as-is. A local path also contributes its last two and last one path
+    components, so a model on disk resolves to the same config as the id it came from: an
+    LM Studio or custom scan folder is laid out `<root>/<publisher>/<model>`, and an adapter
+    can point at `<root>/Spark-TTS-0.5B/LLM`. The drive or root is dropped: it is part of no
+    id, and it makes rglob raise "Non-relative patterns are unsupported" on Windows.
+    """
+    if not is_local_path(model_name):
+        return [model_name]
+    # Normalize Windows backslashes: pathlib treats them as literals on POSIX/WSL.
+    path = Path(normalize_path(model_name))
+    parts = path.parts[1:] if path.anchor else path.parts
+    return ["/".join(parts[-depth:]) for depth in (2, 1) if len(parts) >= depth]
+
+
 def load_model_defaults(model_name: str) -> Dict[str, Any]:
     """Load default training parameters for a model from a YAML file.
 
@@ -3511,53 +3541,35 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
         script_dir = Path(__file__).parent.parent.parent
         defaults_dir = script_dir / "assets" / "configs" / "model_defaults"
 
-        if model_name.lower() in _REVERSE_MODEL_MAPPING:
-            canonical_file = _REVERSE_MODEL_MAPPING[model_name.lower()]
+        lookup_names = defaults_lookup_names(model_name)
+
+        for name in lookup_names:
+            canonical_file = _REVERSE_MODEL_MAPPING.get(name.lower())
+            if canonical_file is None:
+                continue
             for config_path in defaults_dir.rglob(canonical_file):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
                         _log_model_defaults(
-                            f"Loaded model defaults from {config_path} (via mapping)",
+                            f"Loaded model defaults from {config_path} (via mapping '{name}')",
                             f"{model_name}|{config_path}|mapping",
                         )
                         return config
 
-        # For local paths (e.g. .../Spark-TTS-0.5B/LLM from adapter_config.json, or a Windows
-        # path), match the last 1-2 path components against the registry.
-        _is_local_path = is_local_path(model_name)
-        # Normalize Windows backslashes: pathlib treats them as literals on POSIX/WSL.
-        _normalized = normalize_path(model_name) if _is_local_path else model_name
-        if model_name.lower() not in _REVERSE_MODEL_MAPPING and _is_local_path:
-            parts = Path(_normalized).parts
-            for depth in [2, 1]:
-                if len(parts) >= depth:
-                    suffix = "/".join(parts[-depth:])
-                    if suffix.lower() in _REVERSE_MODEL_MAPPING:
-                        canonical_file = _REVERSE_MODEL_MAPPING[suffix.lower()]
-                        for config_path in defaults_dir.rglob(canonical_file):
-                            if config_path.is_file():
-                                with open(config_path, "r", encoding = "utf-8") as f:
-                                    config = yaml.safe_load(f) or {}
-                                    _log_model_defaults(
-                                        f"Loaded model defaults from {config_path} (via path suffix '{suffix}')",
-                                        f"{model_name}|{config_path}|suffix",
-                                    )
-                                    return config
-
-        # Exact name match (backward compat). For local paths use only the dir basename: absolute
-        # paths make rglob raise "Non-relative patterns are unsupported" on Windows.
-        _lookup_name = Path(_normalized).name if _is_local_path else model_name
-        model_filename = _lookup_name.replace("/", "_") + ".yaml"
-        for config_path in defaults_dir.rglob(model_filename):
-            if config_path.is_file():
-                with open(config_path, "r", encoding = "utf-8") as f:
-                    config = yaml.safe_load(f) or {}
-                    _log_model_defaults(
-                        f"Loaded model defaults from {config_path}",
-                        f"{model_name}|{config_path}|exact",
-                    )
-                    return config
+        # org/model -> org_model.yaml. Runs after the whole registry so an alias never loses to
+        # a filename, and over every lookup name so a config covers its own id from a local path
+        # too, without having to repeat that id in MODEL_NAME_MAPPING.
+        for name in lookup_names:
+            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+                if config_path.is_file():
+                    with open(config_path, "r", encoding = "utf-8") as f:
+                        config = yaml.safe_load(f) or {}
+                        _log_model_defaults(
+                            f"Loaded model defaults from {config_path} (via name '{name}')",
+                            f"{model_name}|{config_path}|exact",
+                        )
+                        return config
 
         default_config_path = defaults_dir / "default.yaml"
         if default_config_path.exists():
