@@ -1243,9 +1243,7 @@ def axis_floor(name):
     raise AssertionError(f"{name} is not an axis")
 
 
-@pytest.mark.parametrize(
-    "name", ("scroll gesture ms", "scroll settle ms", "jump settle ms")
-)
+@pytest.mark.parametrize("name", ("scroll gesture ms", "scroll settle ms", "jump settle ms"))
 def test_whole_window_axes_use_the_measured_floor(name) -> None:
     floored = axis_floor(name)
     assert callable(floored), f"{name} declares a fixed floor but spans the whole window"
@@ -1263,9 +1261,9 @@ def test_partial_window_axes_keep_their_declared_floor(name) -> None:
     window count to either would subtract a floor the number never contained, or remove one that
     it did.
     """
-    assert not callable(axis_floor(name)), (
-        f"{name} was given the whole-window floor, which it does not carry"
-    )
+    assert not callable(
+        axis_floor(name)
+    ), f"{name} was given the whole-window floor, which it does not carry"
 
 
 def test_the_scroll_ratio_is_not_compressed_by_the_gesture_floors() -> None:
