@@ -519,6 +519,9 @@ export function ChatSettingsPanel({
     activeGgufVariant != null ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  const activeModelSummary = useChatRuntimeStore(
+    (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
+  );
   // The predicate the request body gates on too, so the panel cannot offer a seed it drops.
   const showSeed =
     !isExternalModel &&
@@ -526,6 +529,7 @@ export function ChatSettingsPanel({
       activeGgufVariant,
       ggufContextLength,
       currentCheckpoint,
+      activeModelSummary,
     );
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
