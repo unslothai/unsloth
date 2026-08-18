@@ -204,3 +204,40 @@ def test_every_setup_python_step_still_pins_an_interpreter():
         and not (step.get("with") or {}).get("python-version")
     ]
     assert not offenders, f"setup-python without an explicit python-version: {offenders}"
+
+
+def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed():
+    """A partial download saved under an immutable key poisons every later run.
+
+    `playwright install` fetches three engines from a CDN. If it fails part-way, the
+    directory still exists with some of them in it, and a save gated only on `always()`
+    stores that. The key is pinned to the resolved Playwright version, so it does not roll
+    over: every subsequent run restores the partial tree, sees `cache-hit == 'true'`, runs
+    only `install-deps`, and drives a browser that was never downloaded. The UI jobs fail
+    until somebody deletes the entry by hand, and nothing in the log says cache.
+
+    So a save step whose payload is produced by an earlier step must check that step's
+    outcome. `always()` on its own is the bug, not the fix.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        producers = {
+            s.get("id")
+            for s in steps
+            if s.get("id") and re.search(r"install|download|build|prime", str(s.get("run", "")))
+        }
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if "actions/cache" not in uses or "/restore@" in uses:
+                continue
+            cond = str(step.get("if", ""))
+            if "always()" not in cond:
+                continue  # not force-run, so a failed producer already skips it
+            if not any(f"steps.{pid}.outcome" in cond for pid in producers if pid):
+                offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
+    assert not offenders, (
+        "these cache saves run under always() without checking that the step which "
+        "produced the payload succeeded, so a partial download can be stored under an "
+        "immutable key and served to every later run:\n  " + "\n  ".join(offenders)
+    )

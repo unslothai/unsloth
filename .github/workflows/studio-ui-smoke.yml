@@ -202,6 +202,7 @@ jobs:
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Install Playwright browsers
+        id: pw-install
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -219,8 +220,21 @@ jobs:
       # main's copy -- the one every PR can actually read -- gets evicted, so the next
       # PR misses and writes its own. This key was measured holding 3 copies for 0.91
       # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
       - name: Save the Playwright browser cache
-        if: always() && github.ref == 'refs/heads/main' && steps.pw-cache.outputs.cache-hit != 'true'
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
@@ -628,6 +642,7 @@ jobs:
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Install Playwright browsers
+        id: pw-install
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -645,8 +660,21 @@ jobs:
       # main's copy -- the one every PR can actually read -- gets evicted, so the next
       # PR misses and writes its own. This key was measured holding 3 copies for 0.91
       # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
       - name: Save the Playwright browser cache
-        if: always() && github.ref == 'refs/heads/main' && steps.pw-cache.outputs.cache-hit != 'true'
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
