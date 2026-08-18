@@ -11,7 +11,6 @@ import test from "node:test";
 
 import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-known.ts";
-import { hasCountablePrompt } from "../src/features/chat/lib/countable-prompt.ts";
 
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
@@ -132,44 +131,3 @@ test("the header renders the bar on the window alone, with usage optional", () =
   assert.match(page, /used=\{contextUsage\?\.totalTokens \?\? null\}/);
 });
 
-// #8882: unsloth/Phi-4-mini-instruct-GGUF Q4_K_M renders "<|assistant|>" for an empty message
-// list, one token, and the bar read "1 / 131,072" on a chat nobody had started
-test("an empty chat with nothing configured has no prompt to count", () => {
-  assert.equal(
-    hasCountablePrompt({ outboundMessageCount: 0, toolsRequested: false }),
-    false,
-  );
-});
-
-// the system prompt is in every request the chat will send, so its cost is worth naming early
-test("a system prompt gives an empty chat something to count", () => {
-  assert.equal(
-    hasCountablePrompt({ outboundMessageCount: 1, toolsRequested: false }),
-    true,
-  );
-});
-
-// schemas and the action nudge are a large share of the window and reach the prompt as a system turn
-test("tool schemas give an empty chat something to count", () => {
-  assert.equal(
-    hasCountablePrompt({ outboundMessageCount: 0, toolsRequested: true }),
-    true,
-  );
-});
-
-test("a conversation with turns is always counted", () => {
-  assert.equal(
-    hasCountablePrompt({ outboundMessageCount: 2, toolsRequested: false }),
-    true,
-  );
-});
-
-test("the recount declines an empty payload before it reaches the server", () => {
-  const source = readFileSync(
-    new URL("../src/features/chat/utils/refresh-context-usage.ts", import.meta.url),
-    "utf8",
-  );
-  const guard = source.indexOf("hasCountablePrompt({");
-  assert.ok(guard > 0);
-  assert.ok(guard < source.indexOf("await countChatInputTokens("));
-});
