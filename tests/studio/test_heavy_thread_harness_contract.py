@@ -360,3 +360,107 @@ def test_the_jump_does_not_scroll_back_inside_its_own_measurement() -> None:
     assert (
         "scrollTo(" not in after_end
     ), "JUMP_JS scrolls again after __hv.end(), inside the evaluate the counters bracket"
+
+
+def test_the_smoke_page_can_put_a_deleted_message_back() -> None:
+    # `delete` removes a message from the runtime's REPOSITORY, not from the view, so neither
+    # closeThread/openThread nor expandTools undoes it. Without a restore the isolated delete arm
+    # measures a thread that is one message shorter on every repetition.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert "restore(): number {" in page, "the smoke page exposes no way to rebuild the fixture"
+    # And it has to re-IMPORT the seeded messages. A restore that only re-renders what the
+    # repository still holds puts nothing back.
+    restore = section(page, "restore(): number {", "expandTools()")
+    assert "aui.thread().import(" in restore, restore
+
+
+def test_the_isolated_runner_restores_the_fixture_after_a_mutating_action() -> None:
+    # REPEATS repetitions of `delete` on ONE page, each removing the last assistant message. The
+    # fixture is whole cycles of one message per kind, so the three timings behind the median
+    # delete three different subtree types on a shrinking thread, which is the 25K vs 300K growth
+    # comparison this file exists for.
+    isolated = section(source(HARNESS), "def isolated_repetitions(", "def sequenced_repetition(")
+    assert "if name in MUTATING_ACTIONS:" in isolated
+    assert "restore_fixture(page)" in isolated
+    mutating = section(source(HARNESS), "MUTATING_ACTIONS = (", ")")
+    assert '"delete"' in mutating, mutating
+    # `__heavyThread.restore()` with the parens, not a bare "restore": `restore_fixture` and the
+    # comment above it both contain the word.
+    helper = section(source(HARNESS), "def restore_fixture(", "def isolated_repetitions(")
+    assert "window.__heavyThread.restore()" in helper
+
+
+def test_the_isolated_runner_records_the_thread_each_repetition_started_from() -> None:
+    # The restore above is an assertion rather than an intention only if the run reads it back.
+    isolated = section(source(HARNESS), "def isolated_repetitions(", "def sequenced_repetition(")
+    assert "window.__heavyThread.messageCount()" in isolated
+    assert 'row["fixture_messages"] = fixture_messages' in isolated
+    decision = verdict()
+    assert "fixture_messages_per_repetition" in decision
+    assert "the fixture was not restored between them" in decision
+
+
+def test_the_probe_restores_the_fixture_between_mutating_repetitions() -> None:
+    # PROBE_REPS repetitions per arm on one seeded page. `delete` and `delete_reopen_keystroke`
+    # each remove another assistant message, and the arms are compared against a `nothing` control
+    # that still holds the whole fixture.
+    probe = source(PROBE)
+    assert "window.__heavyThread.restore()" in probe
+    mutating = section(probe, "MUTATING_ARMS = (", ")")
+    for arm in ('"delete"', '"delete_reopen_keystroke"'):
+        assert arm in mutating, mutating
+    # And the drift has to be read back, or the restore is only an intention.
+    assert "def fixture_drift(" in probe
+    assert "raise RuntimeError(drift)" in probe
+
+
+def test_the_probe_checks_that_each_predecessor_completed() -> None:
+    # Every action script encodes a timeout as a null FIELD and a missing element as a null
+    # RETURN, neither of which raises, and the probe's arm loop records an arm as failed only on
+    # an exception. So a menu that never opened published a scroll with no predecessor in front of
+    # it, in the row labelled `menu`, under a zero exit code.
+    tree = probe_tree()
+    checked = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "checked" in checked, "no predecessor is validated"
+    # Every `before_*` that evaluates one of the harness's action scripts has to route it through
+    # `checked`, not just some of them.
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or not node.name.startswith("before_"):
+            continue
+        drives = [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "evaluate"
+            and any(
+                isinstance(a, ast.Attribute) and a.attr.endswith("_JS") for a in call.args
+            )
+        ]
+        validated = [
+            call
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "checked"
+        ]
+        assert len(validated) >= len(drives), f"{node.name} publishes an unchecked predecessor"
+
+
+def test_the_verdict_reads_every_numeric_proof_per_repetition() -> None:
+    # median() returns None the moment one repetition is None, which covers every TIMING because
+    # a timed-out action reports null. It does nothing for a proof that is a NUMBER in every
+    # repetition and merely the wrong number in one: a jump that landed at [0, bottom, 0] medians
+    # to 0, which is exactly what an arrived jump looks like.
+    text = source(HARNESS)
+    summarise_body = section(text, "def summarise(", "class SeededPage")
+    assert "for key in NUMERIC_PROOFS:" in summarise_body
+    proofs = section(text, "NUMERIC_PROOFS = (", ")")
+    decision = verdict()
+    for key in ("scrolledPx", "landedAt", "travelledPx", "itemsWhileOpen", "before", "after"):
+        assert f'"{key}"' in proofs, key
+        assert f'"{key}_per_repetition"' in decision, key

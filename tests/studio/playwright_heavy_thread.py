@@ -1134,6 +1134,31 @@ def reveal_last_action_bar(page) -> None:
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
 
 
+# Actions that mutate the seeded thread PERMANENTLY. `delete` takes a message out of the runtime's
+# repository, not out of the view, so neither re-opening the thread nor re-expanding its tool cards
+# puts it back: without a restore, repetition 2 of the isolated delete arm runs against a thread
+# one message shorter and repetition 3 one shorter again. The fixture is whole cycles of one
+# message per kind, so each pass deletes a DIFFERENT content kind -- json fence, then image, then
+# svg at the smallest size -- and the three timings behind the delete median are three different
+# subtrees on three different threads. That is the growth comparison this file exists for.
+MUTATING_ACTIONS = ("delete",)
+
+
+def restore_fixture(page) -> int:
+    """Put the seeded thread back. Untimed, and outside every recorder window.
+
+    Runs AFTER the row has been taken, so nothing here is inside the action's portable recorder,
+    its CDP counters or its long-task window -- the same rule ACTION_RESETS follows.
+    """
+    restored = page.evaluate("() => window.__heavyThread.restore()")
+    page.wait_for_function(
+        "(n) => window.__heavyThread.messageCount() >= n",
+        arg = restored,
+        timeout = ACTION_TIMEOUT_MS,
+    )
+    return restored
+
+
 def isolated_repetitions(page, cdp, name: str) -> list[dict]:
     """REPEATS repetitions of ONE action on a page that has only ever done that action.
 
@@ -1152,10 +1177,20 @@ def isolated_repetitions(page, cdp, name: str) -> list[dict]:
         # is not in the DOM.
         if name in ("menu", "delete"):
             reveal_last_action_bar(page)
+        # The thread this repetition is about to be measured against, read BEFORE the action and
+        # carried into the row. It is what makes the restore below an assertion rather than an
+        # intention: `action_failures` rejects a table whose repetitions did not all start from
+        # the same fixture.
+        fixture_messages = page.evaluate("() => window.__heavyThread.messageCount()")
+        info(f"      fixture: {fixture_messages} messages at the start of this repetition")
         # `scroll` needs one too, and needed one from the moment each action got its own page. A
         # fresh page has never moved Playwright's mouse, so it sits at (0, 0) -- the scroller's
         # gutter -- and the gesture then measures the arm the probe calls `gutter_only`.
-        rows.append(drive_scroll(page, cdp) if name == "scroll" else drive(page, cdp, name))
+        row = drive_scroll(page, cdp) if name == "scroll" else drive(page, cdp, name)
+        row["fixture_messages"] = fixture_messages
+        rows.append(row)
+        if name in MUTATING_ACTIONS:
+            restore_fixture(page)
     return rows
 
 
@@ -1214,6 +1249,28 @@ HEADLINE = {
 }
 
 
+# Numbers that are PROOFS the interaction happened, not timings. Every one of them is aggregated
+# into the printed table by median() like any other number, and every one of them is also read by
+# `action_failures`, which is the combination that makes a failed repetition invisible: median()
+# only propagates a null, and none of these is ever null.
+NUMERIC_PROOFS = (
+    # How far the gesture actually travelled.
+    "scrolledPx",
+    # Where the jump landed, and how far it had to go.
+    "landedAt",
+    "travelledPx",
+    # That the popover that opened had something in it, and that a bar was mounted under the
+    # pointer at all.
+    "itemsWhileOpen",
+    "triggersWhileHovered",
+    # The message count either side of a delete or a re-open.
+    "before",
+    "after",
+    # The size of the thread this repetition was measured against, recorded before the action ran.
+    "fixture_messages",
+)
+
+
 def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
     """Median across repetitions, per action, per metric.
 
@@ -1263,6 +1320,20 @@ def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
         ):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
+            values = [r.get(key) for r in rows]
+            if any(value is not None for value in values):
+                merged[f"{key}_per_repetition"] = values
+        # The NUMERIC proofs, which are counts and positions rather than timings, and which
+        # median() cannot protect because none of them is ever null: a repetition that failed
+        # reports a NUMBER that happens to be the wrong one. Collapsing them to a median is the
+        # numeric half of the defect the loop above fixes for the non-numeric proofs. Measured
+        # shape of it: a jump that landed at [0, bottom, 0] has a median of 0, which is exactly
+        # what "the jump arrived" looks like, so the repetition that never moved passes the
+        # verdict while its timing stays in the published median. Same for a delete whose count
+        # did not drop on one pass, a scroll that travelled nothing on one pass, and a menu that
+        # opened empty on one pass. The median stays -- it is what the table prints -- and every
+        # repetition is kept beside it for `action_failures` to read.
+        for key in NUMERIC_PROOFS:
             values = [r.get(key) for r in rows]
             if any(value is not None for value in values):
                 merged[f"{key}_per_repetition"] = values
@@ -1743,6 +1814,31 @@ TABLE_ROWS = TABLE_ROWS + (
     ("reopen messages after", _action("reopen", "after")),
 )
 
+# The numeric proofs, per repetition, printed beside the median of each above. A median of a proof
+# is what hides a failed repetition -- [0, bottom, 0] medians to 0, which is what an arrived jump
+# looks like -- so the spread the verdict reads is in the table rather than only in the JSON.
+NUMERIC_PROOF_ROWS = (
+    ("scroll", "scrolledPx", "scroll px per repetition"),
+    ("jump", "landedAt", "jump landed at per repetition"),
+    ("jump", "travelledPx", "jump px per repetition"),
+    ("menu", "itemsWhileOpen", "menu items per repetition"),
+    ("menu", "triggersWhileHovered", "menu triggers per repetition"),
+    ("delete", "before", "delete messages before per repetition"),
+    ("delete", "after", "delete messages after per repetition"),
+    ("reopen", "before", "reopen messages before per repetition"),
+    ("reopen", "after", "reopen messages after per repetition"),
+) + tuple((_name, "fixture_messages", f"{_name} fixture per repetition") for _name in ACTIONS)
+
+TABLE_ROWS = TABLE_ROWS + tuple(
+    (
+        _label,
+        lambda r, _a = _act, _k = _key: format_repetitions(
+            r["actions"][_a][f"{_k}_per_repetition"]
+        ),
+    )
+    for _act, _key, _label in NUMERIC_PROOF_ROWS
+)
+
 
 def as_table(row: dict, table: str) -> dict:
     """A cell viewed through one of its two tables.
@@ -2099,6 +2195,18 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
     for name in ACTIONS:
         if not actions[name].get("ran"):
             failures.append(f"{where} could not run the {name} action at all")
+            continue
+        # Every repetition has to have started from the same thread, or the row is N measurements
+        # of N different fixtures behind one median. `delete` is the action that drifts on its
+        # own: it removes a message from the runtime's REPOSITORY, which re-opening the thread
+        # does not undo, and the fixture is whole cycles of one message per kind, so each pass
+        # takes a different content kind off the end of a shrinking thread.
+        seen = actions[name].get("fixture_messages_per_repetition")
+        if seen and len(set(seen)) > 1:
+            failures.append(
+                f"{where} ran the {name} action against {seen} messages across its repetitions; "
+                "the fixture was not restored between them, so its median spans several threads"
+            )
     # A null settle time is the settle loop giving up: the page never produced a calm window
     # inside SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that", but it prints as the
     # same `-`, and the axis it feeds merely becomes "not recorded" -- so another axis can carry
@@ -2155,28 +2263,48 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
                 "gutter arm, not a user wheel-scrolling a conversation, and it under-reports "
                 "longest stall and worst frame"
             )
-    # Equal travel at every size or the columns are not the same gesture.
-    if scroll.get("ran") and scroll["scrolledPx"] < SCROLL_STEPS * SCROLL_STEP_PX * 0.9:
-        failures.append(
-            f"{where} travelled only {scroll['scrolledPx']}px of the "
-            f"{SCROLL_STEPS * SCROLL_STEP_PX}px gesture, so its scroll column is not "
-            "comparable with the others"
-        )
+    # Equal travel at every size or the columns are not the same gesture. Per repetition, because
+    # the distance is a NUMBER in every repetition rather than a null in the bad one, so median()
+    # cannot see it: [8000, 0, 8000] has a median of 8000, and the repetition whose viewport never
+    # moved is inside the published gesture time.
+    if scroll.get("ran"):
+        wanted_px = SCROLL_STEPS * SCROLL_STEP_PX
+        for index, travelled in enumerate(
+            scroll.get("scrolledPx_per_repetition", [scroll.get("scrolledPx")])
+        ):
+            if travelled is None or travelled < wanted_px * 0.9:
+                failures.append(
+                    f"{where} travelled only {travelled}px of the {wanted_px}px gesture on "
+                    f"repetition {index + 1}, so its scroll column is not comparable with the "
+                    "others"
+                )
     jumped = actions["jump"]
     if jumped.get("ran"):
         # Unlike the gesture, the jump is DELIBERATELY not the same distance at every
         # size: it is bottom to top, which is the point. What has to hold is that it
         # arrived, or the column is timing a scroll that did not move.
-        if jumped["landedAt"] > 1:
-            failures.append(
-                f"{where} jumped to the top of the thread and landed at "
-                f"{jumped['landedAt']}px; the viewport did not move"
-            )
-        if jumped["travelledPx"] <= viewport["clientHeight"]:
-            failures.append(
-                f"{where} had only {jumped['travelledPx']}px to jump through, which is "
-                "less than one viewport; nothing had to be painted"
-            )
+        #
+        # PER REPETITION, and this is the clearest case of why. A jump that landed at
+        # [0, bottom, 0] has a median of 0, which is the exact value "the jump arrived"
+        # produces, so the repetition that never left the bottom passes this check while
+        # its timing stays in the published median. The landing is a number in every
+        # repetition, so median()'s null guard never fires on it.
+        for index, landed in enumerate(
+            jumped.get("landedAt_per_repetition", [jumped.get("landedAt")])
+        ):
+            if landed is None or landed > 1:
+                failures.append(
+                    f"{where} jumped to the top of the thread and landed at {landed}px on "
+                    f"repetition {index + 1}; the viewport did not move"
+                )
+        for index, travelled in enumerate(
+            jumped.get("travelledPx_per_repetition", [jumped.get("travelledPx")])
+        ):
+            if travelled is None or travelled <= viewport["clientHeight"]:
+                failures.append(
+                    f"{where} had only {travelled}px to jump through on repetition "
+                    f"{index + 1}, which is less than one viewport; nothing had to be painted"
+                )
     menu = actions["menu"]
     if menu.get("ran"):
         if menu["openMs"] is None:
@@ -2204,19 +2332,52 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
                 f"{where} left the body on the modal layer after closing the menu on "
                 f"repetition(s) {stuck}"
             )
-        # An empty popover satisfies "the menu opened" and costs nothing to render.
-        elif not menu["itemsWhileOpen"]:
-            failures.append(f"{where} opened an action menu with no items in it")
-        if not menu["triggersWhileHovered"] and counts["actionBars"] <= 0:
+        else:
+            # An empty popover satisfies "the menu opened" and costs nothing to render. Per
+            # repetition: a count of [5, 0, 5] has a median of 5, so the pass that opened an
+            # empty popover is invisible and its cheap timing is inside the median.
+            empty = [
+                index + 1
+                for index, value in enumerate(
+                    menu.get("itemsWhileOpen_per_repetition", [menu.get("itemsWhileOpen")])
+                )
+                if not value
+            ]
+            if empty:
+                failures.append(
+                    f"{where} opened an action menu with no items in it on repetition(s) {empty}"
+                )
+        bare = [
+            index + 1
+            for index, value in enumerate(
+                menu.get(
+                    "triggersWhileHovered_per_repetition", [menu.get("triggersWhileHovered")]
+                )
+            )
+            if not value
+        ]
+        if bare and counts["actionBars"] <= 0:
             failures.append(
-                f"{where} mounted no action bar at rest and none under the pointer either"
+                f"{where} mounted no action bar at rest and none under the pointer either on "
+                f"repetition(s) {bare}"
             )
     deleted = actions["delete"]
     if deleted.get("ran"):
         if deleted["ms"] is None:
             failures.append(f"{where} never deleted a message")
-        elif deleted["after"] >= deleted["before"]:
-            failures.append(f"{where} clicked delete and the message count did not drop")
+        else:
+            # Per repetition, and the pair together. Both counts are medianed independently, so
+            # [20, 19, 19] before and [19, 18, 19] after report 19 and 18 -- a clean drop -- while
+            # repetition 3 deleted nothing at all. Neither number is ever null, so median()'s
+            # guard does not reach this.
+            befores = deleted.get("before_per_repetition", [deleted.get("before")])
+            afters = deleted.get("after_per_repetition", [deleted.get("after")])
+            for index, (before, after) in enumerate(zip(befores, afters)):
+                if before is None or after is None or after >= before:
+                    failures.append(
+                        f"{where} clicked delete and the message count did not drop on "
+                        f"repetition {index + 1} ({before} -> {after})"
+                    )
     reopened = actions["reopen"]
     if reopened.get("ran"):
         if reopened["ms"] is None:

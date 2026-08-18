@@ -97,6 +97,91 @@ def hover_last(page) -> None:
     page.locator('[data-role="assistant"]').last.hover(timeout = 600_000)
 
 
+# What each predecessor's OWN return value has to say before the scroll after it may be published
+# under that predecessor's name. Every one of the harness's action scripts encodes "I did not
+# happen" as a value rather than by throwing -- `return null` when the element it needs is not in
+# the DOM, and a null FIELD when the DOM never reached the state it was waiting for inside
+# SETTLE. MENU_JS returns normally with openMs None when the menu never opened, DELETE_JS with ms
+# None when the message never left, REOPEN_JS with ms and closedMs None. The loop in main() marks
+# an arm failed only when something RAISED, so without these an arm whose predecessor silently did
+# nothing measures a scroll with no predecessor at all, reports it in the `menu` or `delete` row,
+# and the process exits 0.
+def _keystroke_proof(out: dict) -> list[str]:
+    """The DOM value is what this file wrote; only the runtime's copy shows React received it."""
+    if out.get("median_sample_ms") is None:
+        return ["no keystroke was timed"]
+    if out.get("runtimeText") != out.get("domText"):
+        return [f"the composer holds {out.get('runtimeText')!r}, not {out.get('domText')!r}"]
+    return []
+
+
+def _jump_proof(out: dict) -> list[str]:
+    landed = out.get("landedAt")
+    travelled = out.get("travelledPx") or 0
+    if landed is None or landed > 1 or travelled <= 0:
+        return [f"landed at {landed}px after {travelled}px of travel"]
+    return []
+
+
+def _menu_proof(out: dict) -> list[str]:
+    problems = []
+    if out.get("openMs") is None:
+        problems.append(f"the menu never opened within {SETTLE}ms")
+    if out.get("closeMs") is None:
+        problems.append(f"the menu never closed within {SETTLE}ms")
+    if not out.get("itemsWhileOpen"):
+        problems.append("the menu opened with no items in it")
+    return problems
+
+
+def _delete_proof(out: dict) -> list[str]:
+    problems = []
+    if out.get("ms") is None:
+        problems.append(f"the message never left the DOM within {SETTLE}ms")
+    before, after = out.get("before"), out.get("after")
+    if before is None or after is None or after >= before:
+        problems.append(f"the message count did not drop ({before} -> {after})")
+    return problems
+
+
+def _reopen_proof(out: dict) -> list[str]:
+    problems = []
+    if out.get("ms") is None:
+        problems.append(f"the thread never came back within {SETTLE}ms")
+    if out.get("closedMs") is None:
+        problems.append(f"the thread was never seen to unmount within {SETTLE}ms")
+    before, after = out.get("before"), out.get("after")
+    if before is None or after is None or after < before:
+        problems.append(f"it came back with {after} of {before} messages")
+    return problems
+
+
+PREDECESSOR_PROOFS = {
+    "keystroke": _keystroke_proof,
+    "jump": _jump_proof,
+    "menu": _menu_proof,
+    "delete": _delete_proof,
+    "reopen": _reopen_proof,
+}
+
+
+def checked(action: str, out):
+    """The predecessor's own return value, or an exception naming what it failed to prove.
+
+    Raised rather than recorded, because `main()` already treats a raise as a failed arm, writes
+    the JSON without it and exits 1. A predecessor that did not happen leaves the arm measuring
+    the control under another arm's label, which is worse than measuring nothing.
+    """
+    if out is None:
+        raise RuntimeError(
+            f"the {action} predecessor returned null: the element it needs was not in the DOM"
+        )
+    problems = PREDECESSOR_PROOFS[action](out)
+    if problems:
+        raise RuntimeError(f"the {action} predecessor did not complete: {'; '.join(problems)}")
+    return out
+
+
 # Each entry runs `before(page)` and then the harness's own SCROLL_JS. `nothing` is the control:
 # it is repetition one of the harness, which is the repetition that comes in at the floor.
 def before_nothing(page):
@@ -104,11 +189,11 @@ def before_nothing(page):
 
 
 def before_keystroke(page):
-    return page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES)
+    return checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))
 
 
 def before_jump(page):
-    return page.evaluate(hv.JUMP_JS, SETTLE)
+    return checked("jump", page.evaluate(hv.JUMP_JS, SETTLE))
 
 
 def before_hover_only(page):
@@ -209,35 +294,41 @@ def before_gutter_only(page):
 
 def before_menu(page):
     hover_last(page)
-    return page.evaluate(hv.MENU_JS, SETTLE)
+    return checked("menu", page.evaluate(hv.MENU_JS, SETTLE))
 
 
 def before_delete(page):
     hover_last(page)
-    return page.evaluate(hv.DELETE_JS, SETTLE)
+    return checked("delete", page.evaluate(hv.DELETE_JS, SETTLE))
 
 
 def before_reopen(page):
-    out = page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE])
+    out = checked("reopen", page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE]))
     settled(page)
     expand(page)
     return out
 
 
 def before_delete_reopen_keystroke(page):
-    """The exact predecessor set of the harness's repetition two."""
+    """The exact predecessor set of the harness's repetition two.
+
+    Every step is checked, not just the last one. A composite arm that publishes only its final
+    keystroke's proof is an arm whose delete and reopen can both have silently failed.
+    """
     hover_last(page)
-    page.evaluate(hv.DELETE_JS, SETTLE)
-    page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE])
+    deleted = checked("delete", page.evaluate(hv.DELETE_JS, SETTLE))
+    reopened = checked("reopen", page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE]))
     settled(page)
     expand(page)
-    return page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES)
+    typed = checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))
+    return {"delete": deleted, "reopen": reopened, "keystroke": typed}
 
 
 def before_menu_keystroke(page):
     hover_last(page)
-    page.evaluate(hv.MENU_JS, SETTLE)
-    return page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES)
+    opened = checked("menu", page.evaluate(hv.MENU_JS, SETTLE))
+    typed = checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))
+    return {"menu": opened, "keystroke": typed}
 
 
 ARMS = [
@@ -276,6 +367,31 @@ ARMS = [
         "open and close the menu, then type into the composer, then scroll",
     ),
 ]
+
+
+# Arms whose predecessor PERMANENTLY removes a message from the runtime's repository. Re-opening
+# the thread does not undo a delete -- reopen deliberately preserves the runtime -- so these are
+# the arms whose fixture shrinks by one message per repetition unless it is put back.
+MUTATING_ARMS = ("delete", "delete_reopen_keystroke")
+# Arms after which the thread has to be re-highlighted and its tool cards re-opened: the two above
+# because restoring re-imports the thread, and `reopen` because it tears the view down itself.
+SETTLE_AFTER_ARMS = MUTATING_ARMS + ("reopen",)
+
+
+def fixture_drift(counts: list[int]) -> str | None:
+    """The message count at the start of every repetition, or a complaint if they differ.
+
+    The claim this whole file rests on is that every arm scrolled the SAME thread with a different
+    thing in front of it. A count that falls between repetitions says the later repetitions of
+    that arm scrolled a smaller thread than the `nothing` control did, and the arm's median is
+    then part predecessor and part missing content.
+    """
+    if len(set(counts)) <= 1:
+        return None
+    return (
+        f"the thread changed size between repetitions ({counts}); the fixture was not restored, "
+        "so the later repetitions scrolled a smaller thread than the control did"
+    )
 
 
 def main() -> int:
@@ -340,6 +456,7 @@ def main() -> int:
                     settled(page)
                     rows = []
                     applied = None
+                    fixture = []
                     # The mechanism claim is that the cost tracks how often the element under a
                     # stationary cursor CHANGES. That is directly countable, so count it rather
                     # than infer it from the timings.
@@ -360,6 +477,13 @@ def main() -> int:
                                  distinctTargets: window.__pb.targets.size };
                     }"""
                     for i in range(REPS):
+                        # The thread this repetition is about to be measured against, read before
+                        # the predecessor runs. Printed and published, because the whole claim of
+                        # this file is that N arms scrolled the SAME thread with different things
+                        # in front of them, and a drifting count says they did not.
+                        fixture.append(
+                            page.evaluate("() => window.__heavyThread.messageCount()")
+                        )
                         # Kept, not discarded: `park_pointer_outside` verifies through
                         # elementFromPoint that the cursor really left the scroller, and an arm
                         # whose whole meaning is "the pointer is elsewhere" must publish that
@@ -378,17 +502,39 @@ def main() -> int:
                         rows[-1]["boundary"] = page.evaluate(read_boundary_counter)
                         r = rows[-1]
                         info(
-                            f"  rep {i + 1}/{REPS} gesture {r.get('gestureMs')} "
+                            f"  rep {i + 1}/{REPS} fixture {fixture[-1]} msgs "
+                            f"gesture {r.get('gestureMs')} "
                             f"f>33 {r.get('frames_over_33')} worst {r.get('worst_frame_ms')} "
                             f"longtasks {r.get('long_tasks')}/{r.get('long_task_ms')}ms "
                             f"task {r.get('task_ms')} layout {r.get('layout_ms')} "
                             f"style {r.get('recalc_style_ms')}"
                         )
-                        if name in ("delete", "delete_reopen_keystroke", "reopen"):
-                            # These mutate the thread, so re-settle before the next repetition
-                            # rather than letting arm state drift silently.
+                        if name in MUTATING_ARMS:
+                            # `delete` is destructive to the runtime's REPOSITORY, not to the
+                            # view, so neither re-opening the thread nor re-expanding its tool
+                            # cards puts the message back. Left alone, repetition 2 of these arms
+                            # scrolls a thread one message shorter than repetition 1 and
+                            # repetition 3 one shorter again -- and the fixture is whole cycles of
+                            # one message per kind, so each pass takes a DIFFERENT content kind
+                            # off the end. The arms would then be compared against a `nothing`
+                            # control that still holds the whole fixture. Untimed, and after every
+                            # snapshot for this repetition has been taken.
+                            restored = page.evaluate("() => window.__heavyThread.restore()")
+                            page.wait_for_function(
+                                "(n) => window.__heavyThread.messageCount() >= n",
+                                arg = restored,
+                                timeout = 600_000,
+                            )
+                        if name in SETTLE_AFTER_ARMS:
+                            # A restore and a re-open both throw away every highlighted fence and
+                            # collapse every tool card, so re-settle and re-expand before the next
+                            # repetition rather than letting arm state drift silently.
                             settled(page)
                             expand(page)
+
+                    drift = fixture_drift(fixture)
+                    if drift:
+                        raise RuntimeError(drift)
 
                     def med(k):
                         vals = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
@@ -397,6 +543,10 @@ def main() -> int:
                     results["arms"][name] = {
                         "why": why,
                         "applied": applied,
+                        # Flat across repetitions on a healthy arm. A descending list is the
+                        # fixture drifting under the arm, which makes its later repetitions
+                        # incomparable with the `nothing` control.
+                        "fixture_messages": fixture,
                         "gesture_ms": med("gestureMs"),
                         "gesture_ms_all": [r.get("gestureMs") for r in rows],
                         "frames_over_33": med("frames_over_33"),

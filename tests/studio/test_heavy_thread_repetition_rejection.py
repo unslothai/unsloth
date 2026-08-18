@@ -22,6 +22,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 WORKDIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -240,3 +242,197 @@ def test_the_verdict_rejects_an_action_that_never_settled() -> None:
             name,
             failures(actions),
         )
+
+
+# ── the NUMERIC proofs ────────────────────────────────────────────────
+#
+# The half of the defect above that median() cannot reach. median() returns None the moment one
+# repetition is None, which covers every TIMING, because a timed-out action reports null. It does
+# nothing for a proof that is a NUMBER in every repetition and merely the wrong number in one of
+# them: the jump that never left the bottom reports `landedAt = bottom`, and the median of
+# [0, bottom, 0] is 0, which is exactly what an arrived jump looks like.
+
+
+def jump_row(landed: float, travelled: float = 19000.0) -> dict:
+    return {
+        "name": "jump",
+        "ran": True,
+        "paintedMs": 90.0,
+        "settleMs": 200.0,
+        "travelledPx": travelled,
+        "landedAt": landed,
+    }
+
+
+def test_the_verdict_rejects_a_jump_that_did_not_move_in_one_repetition() -> None:
+    # The airtight case: two good repetitions either side of one that never left the bottom.
+    rows = [jump_row(0), jump_row(19000.0), jump_row(0)]
+    actions = clean_actions()
+    actions["jump"] = HARNESS.summarise({"jump": rows})["jump"]
+    assert actions["jump"]["landedAt"] == 0, "the median is still the arrived-looking 0"
+    assert any(
+        "landed at 19000.0px on repetition 2" in f for f in failures(actions)
+    ), failures(actions)
+
+
+def test_the_verdict_rejects_a_jump_with_nothing_to_jump_through_in_one_repetition() -> None:
+    # travelledPx is medianed the same way, so one repetition taken on a collapsed viewport is
+    # invisible between two full-height ones.
+    rows = [jump_row(0), jump_row(0, travelled = 100.0), jump_row(0)]
+    actions = clean_actions()
+    actions["jump"] = HARNESS.summarise({"jump": rows})["jump"]
+    assert any(
+        "had only 100.0px to jump through on repetition 2" in f for f in failures(actions)
+    ), failures(actions)
+
+
+def test_the_verdict_rejects_a_scroll_that_travelled_nothing_in_one_repetition() -> None:
+    full = HARNESS.SCROLL_STEPS * HARNESS.SCROLL_STEP_PX
+    rows = [
+        {**scroll_row(True, "p"), "scrolledPx": full},
+        {**scroll_row(True, "p"), "scrolledPx": 0},
+        {**scroll_row(True, "p"), "scrolledPx": full},
+    ]
+    actions = clean_actions()
+    actions["scroll"] = HARNESS.summarise({"scroll": rows})["scroll"]
+    assert actions["scroll"]["scrolledPx"] == full, "the median still reads a full gesture"
+    assert any(
+        "travelled only 0px" in f and "on repetition 2" in f for f in failures(actions)
+    ), failures(actions)
+
+
+def test_the_verdict_rejects_a_menu_that_opened_empty_in_one_repetition() -> None:
+    # An empty popover satisfies "the menu opened" and costs nothing to render, and [5, 0, 5]
+    # medians to 5.
+    rows = [menu_row(80.0), menu_row(100.0), menu_row(120.0)]
+    rows[1]["itemsWhileOpen"] = 0
+    actions = clean_actions()
+    actions["menu"] = HARNESS.summarise({"menu": rows})["menu"]
+    assert actions["menu"]["itemsWhileOpen"] == 5, "the median still reads a populated menu"
+    assert any(
+        "no items in it on repetition(s) [2]" in f for f in failures(actions)
+    ), failures(actions)
+
+
+def test_the_verdict_rejects_a_delete_whose_count_did_not_drop_in_one_repetition() -> None:
+    # before and after are medianed INDEPENDENTLY, so a repetition that deleted nothing hides
+    # between two that did: the medians below are 20 and 19, which reads as a clean drop, while
+    # repetition 3 clicked delete and the count did not move.
+    rows = [
+        {"name": "delete", "ran": True, "ms": 120.0, "before": 20, "after": after}
+        for after in (19, 19, 20)
+    ]
+    actions = clean_actions()
+    actions["delete"] = HARNESS.summarise({"delete": rows})["delete"]
+    assert actions["delete"]["before"] == 20 and actions["delete"]["after"] == 19, actions["delete"]
+    assert any(
+        "the message count did not drop on repetition 3 (20 -> 20)" in f for f in failures(actions)
+    ), failures(actions)
+
+
+# ── the fixture between repetitions ───────────────────────────────────
+
+
+def test_the_verdict_rejects_repetitions_measured_against_different_threads() -> None:
+    # The isolated delete arm reuses one page for REPEATS repetitions and each one removes
+    # another assistant message from the RUNTIME's repository, which re-opening does not undo.
+    # The fixture is whole cycles of one message per kind, so the three timings behind the median
+    # delete three different subtree types on a shrinking thread.
+    rows = [
+        {"name": "delete", "ran": True, "ms": 120.0, "before": b, "after": b - 1,
+         "fixture_messages": b}
+        for b in (20, 19, 18)
+    ]
+    actions = clean_actions()
+    actions["delete"] = HARNESS.summarise({"delete": rows})["delete"]
+    assert any(
+        "against [20, 19, 18] messages across its repetitions" in f for f in failures(actions)
+    ), failures(actions)
+
+
+def test_a_restored_fixture_is_not_a_failure() -> None:
+    # Expected green in both directions: a no-regression guard so the check above is known to be
+    # firing on the drift rather than on the field existing at all.
+    rows = [
+        {"name": "delete", "ran": True, "ms": 120.0, "before": 20, "after": 19,
+         "fixture_messages": 20}
+        for _ in range(3)
+    ]
+    actions = clean_actions()
+    actions["delete"] = HARNESS.summarise({"delete": rows})["delete"]
+    assert failures(actions) == []
+
+
+# ── the predecessor probe ─────────────────────────────────────────────
+#
+# scroll_predecessor_probe.py drives the harness's OWN action scripts as predecessors to an
+# otherwise identical scroll. It shares both defects above: its repetition loop reuses one page
+# per arm, and it published whatever the predecessor returned without ever reading it.
+
+def _load_probe():
+    """The probe, on the stub `_load_harness` already installed for the harness it imports."""
+    import scroll_predecessor_probe
+
+    return scroll_predecessor_probe
+
+
+PROBE = _load_probe()
+
+
+def test_a_predecessor_that_timed_out_fails_its_arm() -> None:
+    # MENU_JS returns NORMALLY with openMs None when the menu never opened inside its timeout, so
+    # nothing raises, the arm measures a scroll with no predecessor in front of it, and the row is
+    # published under the label `menu`.
+    timed_out = {
+        "openMs": None,
+        "closeMs": 40.0,
+        "itemsWhileOpen": 5,
+        "bodyPointerEvents": "none",
+    }
+    with pytest.raises(RuntimeError, match = "the menu never opened"):
+        PROBE.checked("menu", timed_out)
+
+
+def test_a_predecessor_whose_target_was_missing_fails_its_arm() -> None:
+    # Every action script starts with `if (!element) return null`.
+    with pytest.raises(RuntimeError, match = "returned null"):
+        PROBE.checked("delete", None)
+
+
+def test_a_delete_predecessor_that_removed_nothing_fails_its_arm() -> None:
+    # `ms` can be a real number while the count did not move: DELETE_JS polls `target.isConnected`
+    # on the captured node, so a message re-parented rather than removed resolves the wait.
+    with pytest.raises(RuntimeError, match = "did not drop"):
+        PROBE.checked("delete", {"ms": 120.0, "before": 20, "after": 20})
+
+
+def test_a_keystroke_predecessor_that_never_reached_the_runtime_fails_its_arm() -> None:
+    with pytest.raises(RuntimeError, match = "the composer holds"):
+        PROBE.checked(
+            "keystroke",
+            {"median_sample_ms": 33.0, "domText": "aaaaa", "runtimeText": ""},
+        )
+
+
+def test_a_completed_predecessor_is_returned_unchanged() -> None:
+    # Expected green in both directions: a no-regression guard, so the four above are known to be
+    # rejecting the failure rather than rejecting every shape of proof.
+    good = {"openMs": 100.0, "closeMs": 40.0, "itemsWhileOpen": 5}
+    assert PROBE.checked("menu", good) is good
+    assert PROBE.checked("jump", {"landedAt": 0, "travelledPx": 19000}) is not None
+    assert PROBE.checked("reopen", {"ms": 500.0, "closedMs": 30.0, "before": 20, "after": 20})
+
+
+def test_the_probe_fails_an_arm_whose_thread_shrank_between_repetitions() -> None:
+    # `delete` and `delete_reopen_keystroke` remove a message from the runtime's repository on
+    # every pass, and the fixture is whole cycles of one message per kind, so repetitions 2 to 4
+    # scroll progressively smaller threads missing different content kinds -- against a `nothing`
+    # control that still holds the whole fixture.
+    assert PROBE.fixture_drift([20, 19, 18, 17]) is not None
+    assert "was not restored" in PROBE.fixture_drift([20, 19, 18, 17])
+
+
+def test_a_probe_arm_whose_thread_held_still_is_not_a_failure() -> None:
+    # Expected green in both directions.
+    assert PROBE.fixture_drift([20, 20, 20, 20]) is None
+    assert PROBE.fixture_drift([]) is None
