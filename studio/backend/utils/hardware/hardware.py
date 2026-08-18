@@ -1227,7 +1227,6 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     if IS_ROCM and len(props_list) >= 2:
         try:
             from core.training.worker import _rocm_classify_unified_memory
-
             unified_flags = [
                 props is not None and bool(_rocm_classify_unified_memory(props)[1])
                 for _, _, props in props_list
@@ -1246,7 +1245,6 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                 integrated = False
                 try:
                     from core.training.worker import _rocm_classify_unified_memory
-
                     integrated = bool(_rocm_classify_unified_memory(props)[1])
                 except Exception:
                     pass
@@ -1256,9 +1254,7 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
                     except Exception as e:
                         # Keep the carve-out rather than dropping the device: an
                         # understated total still beats no device at all.
-                        logger.debug(
-                            "ROCm APU driver total failed for ordinal %d: %s", ordinal, e
-                        )
+                        logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
             devices.append(
                 {
                     "index": phys_idx,
