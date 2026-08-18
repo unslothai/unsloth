@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import routes.inference as routes_module
+from core.inference.api_monitor import api_monitor
 from auth.authentication import get_current_subject
 from routes.inference import router
 from utils.api_errors import install_api_error_handlers
@@ -169,3 +170,63 @@ def test_the_studio_json_route_also_forwards_the_request(monkeypatch):
     assert resp.status_code == 200
     assert calls[0]["raw"] == b"RIFFfake"
     assert calls[0]["request"] is not None
+
+
+# ── verbose_json ────────────────────────────────────────────────────────
+
+
+def test_verbose_json_carries_language_and_duration(monkeypatch):
+    cli, calls = _make_client(monkeypatch)
+    resp = _post(cli, data = {"response_format": "verbose_json"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "task": "transcribe",
+        "language": "en",
+        "duration": 1.2,
+        "text": "hello sloth",
+    }
+
+
+def test_verbose_json_language_is_null_when_none_was_requested(monkeypatch):
+    async def _no_language(raw):
+        return {"text": "hola", "language": None, "duration": 2.0, "model": "small"}
+
+    cli, calls = _make_client(monkeypatch, transcribe = _no_language)
+    resp = _post(cli, data = {"response_format": "verbose_json"})
+    assert resp.json()["language"] is None
+
+
+def test_subtitle_formats_are_still_400(monkeypatch):
+    # srt/vtt need per-segment timing the sidecar does not report yet.
+    cli, calls = _make_client(monkeypatch)
+    for fmt in ("srt", "vtt"):
+        assert _post(cli, data = {"response_format": fmt}).status_code == 400
+
+
+# ── API monitor ─────────────────────────────────────────────────────────
+
+
+def test_transcription_opens_a_monitor_row(monkeypatch):
+    cli, calls = _make_client(monkeypatch)
+    api_monitor.clear()
+    assert _post(cli, filename = "meeting.wav").status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "/v1/audio/transcriptions"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["prompt_preview"] == "meeting.wav"
+    assert rows[0]["reply_preview"] == "hello sloth"
+    assert rows[0]["model"] == "small"
+
+
+def test_sidecar_failure_records_an_error_row(monkeypatch):
+    async def _boom(raw):
+        raise HTTPException(status_code = 409, detail = "Model is busy.")
+
+    cli, calls = _make_client(monkeypatch, transcribe = _boom)
+    api_monitor.clear()
+    assert _post(cli).status_code == 409
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "Model is busy."

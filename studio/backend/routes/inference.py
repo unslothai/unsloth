@@ -36,7 +36,7 @@ import contextvars
 import threading
 import weakref
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import fields as dataclass_fields, replace
 
 
@@ -4180,6 +4180,39 @@ def _monitor_active_model() -> Optional[str]:
     if backend is None:
         return None
     return public_model_id(backend.active_model_name) or backend.active_model_name
+
+
+@asynccontextmanager
+async def _monitored_media_request(
+    request: Request, *, model: Optional[str], prompt: str, subject: Optional[str]
+):
+    """Give the image/audio routes the API monitor row the text routes already open."""
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            via_api_key = _request_used_api_key(request),
+            model = model or "",
+            prompt = prompt,
+            subject = subject,
+        )
+    try:
+        yield monitor_id
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except HTTPException as exc:
+        # The route's own message ("No model loaded."), not the llama-server mapping.
+        detail = exc.detail
+        if isinstance(detail, dict):
+            detail = (detail.get("error") or {}).get("message") or str(detail)
+        api_monitor.fail(monitor_id, str(detail))
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    api_monitor.finish(monitor_id)
 
 
 def _validate_native_gguf_companion(
@@ -11048,12 +11081,16 @@ async def openai_audio_speech(
         messages = [{"role": "user", "content": body.input}],
         max_tokens = AUDIO_GENERATION_MAX_TOKENS,
     )
-    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
-        body.input, payload, request, current_subject
-    )
-    await asyncio.to_thread(
-        _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
-    )
+    async with _monitored_media_request(
+        request, model = body.model, prompt = body.input, subject = current_subject
+    ) as monitor_id:
+        wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+            body.input, payload, request, current_subject
+        )
+        api_monitor.relabel(monitor_id, model_name)
+        await asyncio.to_thread(
+            _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
+        )
     return Response(content = wav_bytes, media_type = "audio/wav")
 
 
@@ -11070,29 +11107,53 @@ async def openai_audio_transcriptions(
     """OpenAI-compatible speech-to-text (POST /v1/audio/transcriptions).
 
     ``model`` maps to a sidecar model id, with ``whisper-1`` or nothing selecting the
-    default. ``response_format`` supports ``json`` and ``text``."""
+    default. ``response_format`` supports ``json``, ``text`` and ``verbose_json``."""
     fmt = (response_format or "json").strip().lower()
-    if fmt not in ("json", "text"):
+    if fmt not in ("json", "text", "verbose_json"):
         raise HTTPException(
             status_code = 400,
-            detail = f"Unsupported response_format '{response_format}'. Use 'json' or 'text'.",
+            detail = (
+                f"Unsupported response_format '{response_format}'. "
+                "Use 'json', 'text' or 'verbose_json'."
+            ),
         )
     # UploadFile spools to disk, but an unbounded read materializes the whole upload in
     # memory before the shared size check. One byte past the limit is enough to reject it.
     raw = await file.read(_MAX_AUDIO_RAW_BYTES + 1)
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
-    result = await _transcribe_audio_result(
-        raw,
-        sidecar_model,
-        language,
-        fast = False,
-        engine = _stt_engine_for_model(sidecar_model),
-        request = request,
-    )
+    async with _monitored_media_request(
+        request,
+        model = sidecar_model or "whisper-1",
+        prompt = file.filename or "audio",
+        subject = current_subject,
+    ) as monitor_id:
+        result = await _transcribe_audio_result(
+            raw,
+            sidecar_model,
+            language,
+            fast = False,
+            engine = _stt_engine_for_model(sidecar_model),
+            request = request,
+        )
+        text = str(result.get("text", ""))
+        api_monitor.relabel(monitor_id, str(result.get("model") or ""))
+        api_monitor.set_reply(monitor_id, text)
+
     if fmt == "text":
-        return PlainTextResponse(content = str(result.get("text", "")))
-    return JSONResponse(content = {"text": result.get("text", "")})
+        return PlainTextResponse(content = text)
+    if fmt == "verbose_json":
+        return JSONResponse(
+            content = {
+                "task": "transcribe",
+                # Whisper's own detection is not surfaced by the sidecar, so this
+                # echoes the requested language and is null when none was given.
+                "language": result.get("language"),
+                "duration": result.get("duration"),
+                "text": text,
+            }
+        )
+    return JSONResponse(content = {"text": text})
 
 
 # =====================================================================
@@ -24304,6 +24365,20 @@ async def openai_image_generations(
 
     With media auto-switch on, ``model`` names the image model to serve on and is loaded
     when it is not the resident one; with it off ``model`` stays informational."""
+    async with _monitored_media_request(
+        request, model = body.model, prompt = body.prompt, subject = current_subject
+    ) as monitor_id:
+        return await _generate_openai_images(body, request, current_subject, hf_token, monitor_id)
+
+
+# Split from the route so the monitor row can wrap the whole handler without reindenting it.
+async def _generate_openai_images(
+    body: ImageGenerationRequest,
+    request: Request,
+    current_subject: str,
+    hf_token: Optional[str],
+    monitor_id: Optional[str],
+):
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import default_generation_params
@@ -24383,6 +24458,7 @@ async def openai_image_generations(
         logger.error("openai_images.generate_failed: %s", exc)
         raise HTTPException(status_code = 500, detail = "Image generation failed.")
 
+    api_monitor.relabel(monitor_id, str(result.get("repo_id") or ""))
     created = int(time.time())
     want_b64 = body.response_format == "b64_json"
     # Persist each image with its full recipe, like /images/generate, so url links resolve and images show in the gallery.

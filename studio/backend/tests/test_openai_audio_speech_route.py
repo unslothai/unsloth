@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 import core.inference.audio_gallery as gallery_module
+from core.inference.api_monitor import api_monitor
 import routes.inference as routes_module
 from auth.authentication import get_current_subject
 from routes.inference import router
@@ -310,3 +311,41 @@ def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
 
     # And CJK, which already worked, is unchanged.
     assert estimate("你好世界" * 50) >= 200
+
+
+# ── API monitor ─────────────────────────────────────────────────────────
+
+
+def test_speech_opens_a_monitor_row(monkeypatch):
+    cli, calls, saved = _make_client(monkeypatch)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hello sloth"}).status_code == 200
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["endpoint"] == "/v1/audio/speech"
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["prompt_preview"] == "hello sloth"
+    # Relabelled to the loaded TTS model, not the informational body.model.
+    assert rows[0]["model"] == "unsloth/orpheus-3b-0.1-ft"
+
+
+def test_tts_failure_records_an_error_row(monkeypatch):
+    async def _boom(text):
+        raise HTTPException(status_code = 400, detail = "No model loaded.")
+
+    cli, calls, saved = _make_client(monkeypatch, generate = _boom)
+    api_monitor.clear()
+    assert cli.post("/v1/audio/speech", json = {"input": "hi"}).status_code == 400
+    rows = api_monitor.snapshot(include_details = False)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "error"
+    assert rows[0]["error"] == "No model loaded."
+
+
+def test_rejected_response_format_records_nothing(monkeypatch):
+    # Refused before any work, so it is not traffic the monitor should show.
+    cli, calls, saved = _make_client(monkeypatch)
+    api_monitor.clear()
+    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
+    assert resp.status_code == 400
+    assert api_monitor.snapshot(include_details = False) == []
