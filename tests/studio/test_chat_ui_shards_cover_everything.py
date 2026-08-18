@@ -121,3 +121,32 @@ def test_no_shard_is_left_with_nothing_to_do():
         f"tests nothing is a green tick that means nothing; remove it from the matrix or "
         f"give it work."
     )
+
+
+def test_each_shard_uploads_under_its_own_artifact_name():
+    """Four cells cannot upload one artifact name.
+
+    Artifacts are immutable within a workflow run, so the first shard to finish creates
+    the name and the other three fail on the conflict. The upload step carries
+    `if: always()` and no `continue-on-error`, so that failure is the job's: a UI run
+    where every test passed goes red, on three cells out of four, for a reason that has
+    nothing to do with the UI.
+
+    Asserted for any matrix job in this workflow rather than for this one by name, since
+    the next job to be sharded inherits the same trap.
+    """
+    document = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    for job_name, job in document["jobs"].items():
+        dimensions = (job.get("strategy") or {}).get("matrix") or {}
+        if not dimensions:
+            continue
+        for step in job.get("steps", []):
+            if "upload-artifact" not in str(step.get("uses", "")):
+                continue
+            name = str((step.get("with") or {}).get("name", ""))
+            assert any(f"matrix.{key}" in name for key in dimensions), (
+                f"{job_name} runs a matrix over {sorted(dimensions)} but uploads its "
+                f"artifacts as {name!r}, the same name in every cell. All but the first "
+                f"cell fails on the conflict, and the step runs with if: always(), so a "
+                f"green test run reports red."
+            )

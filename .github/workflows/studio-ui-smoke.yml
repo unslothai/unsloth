@@ -501,7 +501,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: studio-ui-smoke-artifacts
+          # Per shard: artifacts are immutable within a run, so four cells uploading one
+          # name means the first wins and the other three fail the step. It carries
+          # if: always() and no continue-on-error, so that would turn passing UI runs red.
+          name: studio-ui-smoke-artifacts-${{ matrix.shard }}
           path: |
             logs/studio.log
             logs/studio_extra.log

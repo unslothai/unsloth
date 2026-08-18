@@ -92,3 +92,11 @@ jobs:
       # filter in the repo matches. Filesystem reads, seconds.
       - name: The OS smoke legs still share one script
         run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q
+
+      # Same reason once more, and the sharpest instance of it. This one reads
+      # studio-ui-smoke.yml to check every Playwright script still lands on some shard,
+      # so the edit it exists to catch is by definition a workflow-only edit. Backend
+      # CI's paths filter does not match one, and the UI smoke job it guards is the very
+      # thing that would silently stop running, so it cannot be the one to notice.
+      - name: Every Chat UI script still belongs to a shard
+        run: python3 -m pytest tests/studio/test_chat_ui_shards_cover_everything.py -q
