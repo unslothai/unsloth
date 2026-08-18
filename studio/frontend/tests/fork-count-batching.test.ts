@@ -163,3 +163,37 @@ test("the badge no longer owns a listener or a per-message request", () => {
   assert.match(thread, /const useThreadForkCounts[\s\S]*?subscribeForkCounts\(remoteId,/);
   assert.match(thread, /^ {2}useThreadForkCounts\(\);$/m);
 });
+
+test("a continuous stream costs one refresh, not one per debounce window", async (t) => {
+  // The burst case above fires every event inside a single window, where a leading-edge
+  // throttle and a trailing-edge debounce are indistinguishable. Streaming is the case that
+  // separates them: the event arrives per chunk, so chunks keep landing after the window has
+  // already expired. A throttle re-arms and fetches again; a debounce keeps pushing the
+  // deadline out and fetches once, when the reply stops. Fork counts cannot change while the
+  // model is generating, so every mid-stream fetch is a wasted whole-thread request.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore();
+  const unsubscribe = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+  assert.equal(requests.length, 1, "the initial subscribe fetches once");
+
+  const gap = Math.floor(store.FORK_COUNT_REFRESH_DEBOUNCE_MS / 2);
+  for (let chunk = 0; chunk < 20; chunk++) {
+    fireHistoryUpdated();
+    mock.timers.tick(gap);
+    await flush();
+  }
+  assert.equal(
+    requests.length,
+    1,
+    `a 20 chunk stream refetched ${requests.length - 1} time(s) mid-stream; ` +
+      "the timer is being left to expire instead of rescheduled",
+  );
+
+  mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  await flush();
+  assert.equal(requests.length, 2, "the quiet window after the stream refreshes exactly once");
+
+  unsubscribe();
+});

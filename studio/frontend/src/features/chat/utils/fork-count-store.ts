@@ -44,7 +44,12 @@ async function refresh(threadId: string): Promise<void> {
 }
 
 function onHistoryUpdated(): void {
-  if (pendingRefresh) return;
+  // Clear and reschedule, as the sidebar refresh does. Returning while a timer exists would
+  // make this a leading-edge throttle: streaming fires this event per chunk, so the timer
+  // would expire mid-stream and the next chunk would start another window, costing one
+  // whole-thread fetch every FORK_COUNT_REFRESH_DEBOUNCE_MS for as long as the reply runs.
+  // Fork counts cannot change during generation, so every one of those is wasted.
+  if (pendingRefresh) clearTimeout(pendingRefresh);
   pendingRefresh = setTimeout(() => {
     pendingRefresh = null;
     for (const threadId of entries.keys()) void refresh(threadId);
