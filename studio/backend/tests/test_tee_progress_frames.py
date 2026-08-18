@@ -10,6 +10,7 @@ swallow a partial traceback or a prompt.
 """
 
 import io
+import json
 
 from run import _TeeStream
 
@@ -66,9 +67,27 @@ def test_several_bars_in_one_chunk_collapse_per_line():
 
 
 def test_unterminated_prompt_after_a_bar_is_not_withheld():
-    # "Start Unsloth Studio now? [Y/n]: " never gets a newline; it must still reach the file.
+    # "Start Unsloth Studio now? [Y/n]: " never gets a newline; it must still reach the file,
+    # and on its own line rather than glued to the frame that was being held.
     log, _console = _tee(["\rbar 40%", "Start Unsloth Studio now? [Y/n]: "])
-    assert log.endswith("Start Unsloth Studio now? [Y/n]: ")
+    assert log == "bar 40%\nStart Unsloth Studio now? [Y/n]: "
+
+
+def test_record_after_a_held_frame_stays_parseable():
+    # The reason the frame is closed off rather than prefixed: a structlog record arriving
+    # while a bar is mid-redraw must still be one JSON object on one line.
+    log, _console = _tee(["\rLoading weights:  47%", '{"event": "model_loaded"}\n'])
+    lines = log.splitlines()
+    assert lines == ["Loading weights:  47%", '{"event": "model_loaded"}']
+    json.loads(lines[-1])
+
+
+def test_close_lands_a_frame_nothing_came_back_to_supersede():
+    log, console = _Sink(), _Sink()
+    stream = _TeeStream(console, log)
+    stream.write("\rbar 90%")
+    stream.close()
+    assert log.text == "bar 90%\n"
 
 
 def test_hang_mid_bar_keeps_the_real_partial_line():
