@@ -184,11 +184,18 @@ def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
     # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
     # harness measures.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
-    assert '{"count":0}' in page, (
-        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
-        "count undefined and renders a badge on every assistant message"
+    # Pin the fork-count entry to its own body rather than scanning the whole file: other
+    # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
+    # would fail on them and tell us nothing about this one.
+    forks = next(
+        (line for line in page.splitlines() if "forks$/" in line),
+        "",
     )
-    assert '"{}"' not in page, "the fork-count stub is answering with an empty object again"
+    assert forks, "the fork-count endpoint is no longer in the stub allowlist"
+    assert '{"count":0}' in forks, (
+        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
+        f"count undefined and renders a badge on every assistant message. Got: {forks.strip()!r}"
+    )
 
 
 def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
@@ -203,3 +210,24 @@ def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
     assert (
         "forks$/" in page or "/forks" in page
     ), "the fetch stub must match the fork-count endpoint specifically"
+
+
+def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
+    # A blanket `/api/` match answers every request the measured interactions make before Playwright
+    # emits it, so `stray_api_requests` stays at zero and the fan-out this harness exists to detect
+    # is invisible to it. Narrowing it is what revealed the project-list and knowledge-base GETs on
+    # reopen, and the delete's own three-request sync.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert 'url.includes("/api/")' not in page, "the fetch stub is matching every /api/ request again"
+    assert "STUBBED_API" in page, "the fetch stub must answer from an explicit allowlist"
+
+
+def test_every_stubbed_endpoint_is_reported() -> None:
+    # Answering a request inside the page removes its round trip from the timings, which is the
+    # point, but it must not remove the request from the record. An endpoint that is answered and
+    # not counted is one nobody can see the cost of later.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
+    harness = source("playwright_heavy_thread.py")
+    assert "stubbed_api_requests" in harness, "the harness must read the stubbed-request record"
+    assert '"stubbed api requests"' in harness, "the stubbed-request count must reach the table"

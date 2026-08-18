@@ -1003,6 +1003,10 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Cumulative over seeding and every action: a liveness check, not attributable to any one.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
+        # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden:
+        # these cost no round trip, but they are real requests the app makes and the number
+        # should not vanish just because the harness declines to pay for them.
+        result["stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
         result["console_warnings"] = len(console_warnings)
         result["first_console_warning"] = console_warnings[0] if console_warnings else "-"
     finally:
@@ -1090,6 +1094,7 @@ TABLE_ROWS = (
     ("seed console warnings", lambda r: r["seed_console_warnings"]),
     ("first seed warning", lambda r: r["first_seed_warning"]),
     ("action api requests", lambda r: r["stray_api_requests"]),
+    ("stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
     ("action console warnings", lambda r: r["console_warnings"]),
     ("first action warning", lambda r: r["first_console_warning"]),
     ("messages rendered", lambda r: r["counts"]["messages"]),

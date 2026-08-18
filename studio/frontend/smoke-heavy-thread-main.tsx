@@ -67,25 +67,53 @@ import "./src/index.css";
 // here, before anything mounts, keeps that off the wire entirely; answering them from the
 // Playwright side instead would put a round trip to another process inside a timed region, once
 // per assistant message.
-// Only the fork-count endpoint. A blanket `/api/` match would resolve any other request the
-// measured interactions make before Playwright ever emitted it, so `stray_api_requests` would
-// stay at zero and the fan-out this harness exists to detect would be invisible to it.
-const FORK_COUNT_URL = /\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/;
+// An explicit allowlist, never a blanket `/api/` match. A blanket match resolves EVERY request the
+// measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and
+// the fan-out this harness exists to detect becomes invisible to it. Narrowing it is what made the
+// two entries below visible in the first place.
+//
+// Each entry answers a request the harness itself provokes, with the body that endpoint really
+// returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the
+// network and trips the stray counter, which is the point.
+const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
+  // One GET per assistant message: the synthetic `__LOCALID_...` remoteId is truthy, so the badge
+  // really does ask. `{ count: 0 }`, not `{}`: getForkCount returns `data.count`, and
+  // `undefined <= 0` is false, so an empty body renders a badge reading "undefined forks" on every
+  // assistant message and adds DOM in proportion to thread size, the axis being measured.
+  [/\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/, '{"count":0}'],
+  // The delete action's own persistence. deleteThreadMessage syncs the exported repository
+  // whenever remoteId is truthy, which the synthetic id always is, so this is the fixture
+  // maintaining itself rather than app fan-out. Left on the wire it is 3 round trips inside the
+  // delete measurement, and it fails the run's own stray check.
+  [/\/api\/chat\/threads\/[^/]+\/messages$/, '{"messages":[]}'],
+  [/\/api\/chat\/threads\/[^/]+$/, "{}"],
+  // App fan-out, NOT fixture upkeep: re-opening a thread asks for the project list and the
+  // knowledge bases. Stubbed so a dev-server round trip does not land inside the reopen window,
+  // which would be measuring the network rather than the render. They are recorded in
+  // `__stubbedApi` and printed as "stubbed api requests" rather than being silently swallowed,
+  // because two whole-endpoint GETs per reopen is a real cost and should stay visible.
+  [/\/api\/chat\/projects(\?|$)/, '{"projects":[]}'],
+  [/\/api\/rag\/knowledge-bases(\?|$)/, '{"knowledge_bases":[]}'],
+];
+
+const stubbedApiCalls: string[] = [];
+(window as unknown as { __stubbedApi: string[] }).__stubbedApi = stubbedApiCalls;
 
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url =
     typeof input === "string" ? input : ((input as Request).url ?? String(input));
-  if (FORK_COUNT_URL.test(url)) {
-    // `{ count: 0 }`, not `{}`. getForkCount returns `data.count`, and `undefined <= 0` is false,
-    // so an empty body renders a badge reading "undefined forks" on EVERY assistant message and
-    // adds DOM in proportion to thread size, which is the axis being measured.
-    return Promise.resolve(
-      new Response('{"count":0}', {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  for (const [pattern, body] of STUBBED_API) {
+    if (pattern.test(url)) {
+      // Recorded, not silently swallowed, so a run can still show what was answered locally.
+      stubbedApiCalls.push(url);
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }
   }
   return realFetch(input, init);
 };
