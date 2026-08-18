@@ -97,7 +97,40 @@ def _backend_supports_tools(backend) -> bool:
         return False
 
 
-def _can_reset_epoch(thread_id, supports_tools: bool) -> bool:
+def _memory_tool_withheld(thread_id, tools) -> bool:
+    """Whether this request carries no `search_conversation` although its thread has one.
+
+    The tool-loop paths know their own catalogue, so they can answer the question the
+    process policy cannot: will THIS request be able to reach the archive. `/v1/messages`
+    is the case that matters -- `_select_anthropic_server_tools` never adds
+    `search_conversation`, so an Anthropic-compatible request carrying a Studio
+    `thread_id` would otherwise reset an epoch behind a tool that is absent on every turn,
+    which is the one outcome checkpoint compaction must never produce.
+
+    Gated on the thread ALREADY having an archive, and that gate is load-bearing rather
+    than an optimisation: the archive is written during the first compaction, so on the
+    turn that resets for the first time the tool legitimately does not exist yet and its
+    absence says nothing. Refusing there would mean no thread could ever start an epoch.
+    """
+    if not thread_id:
+        return False
+    try:
+        from core.rag import conversation_archive
+
+        if not conversation_archive.has_archive(thread_id):
+            return False
+    except Exception:  # noqa: BLE001 -- unknown archive state is "do not refuse"
+        return False
+    names = set()
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = (function or {}).get("name") if isinstance(function, dict) else None
+        if name:
+            names.add(name)
+    return "search_conversation" not in names
+
+
+def _can_reset_epoch(thread_id, supports_tools: bool, *, tools_withheld: bool = False) -> bool:
     """Whether this request may compact by RESETTING rather than trimming.
 
     Two refusals, both about not lying to the user:
@@ -110,6 +143,16 @@ def _can_reset_epoch(thread_id, supports_tools: bool) -> bool:
       a process whose operator turned the tool loop off.
     """
     if not thread_id or not supports_tools:
+        return False
+    if tools_withheld:
+        # The REQUEST withdrew the tool loop, which the process policy below cannot see.
+        # `tool_choice: "none"` is the OpenAI way to say "answer, do not call anything",
+        # and Studio honours it by suppressing the loop AND by excluding this request from
+        # the checkpoint repair that would otherwise re-admit `search_conversation` alone
+        # (`openai_chat_completions`). A caller that sets it once usually sets it on every
+        # turn, so resetting here puts the epoch behind a tool that never arrives on this
+        # request or the next, while the carried-forward header tells the model to search
+        # for what was dropped. Same refusal as the process policy, one scope down.
         return False
     try:
         from state.tool_policy import get_tool_policy
@@ -20168,6 +20211,7 @@ class LlamaCppBackend:
         perf_callback: Optional[Callable[[dict], None]] = None,
         context_overflow: Optional[str] = None,
         thread_id: Optional[str] = None,
+        tools_withheld: bool = False,
         _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -20251,7 +20295,10 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
+                    can_reset = _can_reset_epoch(
+                        thread_id, _backend_supports_tools(self),
+                        tools_withheld = tools_withheld,
+                    ),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -20474,6 +20521,9 @@ class LlamaCppBackend:
                     # archived nowhere and no reserve or boundary applies, on the one path
                     # that deliberately compacts again.
                     thread_id = thread_id,
+                    # The retry refits, so it re-asks the reset question and must be told
+                    # the same thing about this request's tools as the first attempt was.
+                    tools_withheld = tools_withheld,
                     _allow_respawn_retry = False,
                 )
                 return
@@ -20873,7 +20923,10 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
-                        can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
+                        can_reset = _can_reset_epoch(
+                            thread_id, _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
                             0
@@ -21025,7 +21078,10 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
-                        can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
+                        can_reset = _can_reset_epoch(
+                            thread_id, _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                     )
                     if truncation and truncation["fits"]:
                         # Archive only: this refit runs against a smaller replacement
@@ -22298,7 +22354,10 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
+                    can_reset = _can_reset_epoch(
+                            thread_id, _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
@@ -22416,7 +22475,10 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
-                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
+                    can_reset = _can_reset_epoch(
+                            thread_id, _backend_supports_tools(self),
+                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                        ),
                 )
                 if truncation and truncation["fits"]:
                     # Archive only, for the same reason as the iteration refit above.

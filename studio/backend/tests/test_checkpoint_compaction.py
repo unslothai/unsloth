@@ -455,3 +455,101 @@ def test_a_healthy_archive_still_starts_an_epoch(monkeypatch):
 
     assert truncation["checkpoint"] is True
     assert truncation["checkpoint_started"] is True
+
+
+def test_only_a_checkpoint_fitted_request_is_told_the_conversation_was_reset():
+    """The checkpoint half of the nudge describes THIS request's fit, not the policy.
+
+    `fit_checkpoint_context` is reached from one place, `llama_cpp._fit_context`, so a
+    safetensors request never resets the epoch and never grows a carried_forward block --
+    but it shares `_apply_compaction_nudge`, and reading the process-wide policy there told
+    such a model that everything before a block it does not have was removed and that
+    recall had already run for it. Both statements are false, and the second one is the
+    expensive kind of false: it tells the model not to call search_conversation on the very
+    turn the text claims retrieval already covered.
+    """
+    import routes.inference as routes_mod
+
+    tools = [{"function": {"name": "search_conversation"}}]
+    assert routes_mod._checkpoint_needs_search() is True
+
+    # The safetensors call site, verbatim: no claim of a reset.
+    rolling = routes_mod._apply_compaction_nudge("base.", tools)
+    assert "carried_forward" not in rolling
+    assert routes_mod._CHECKPOINT_SESSION_NUDGE not in rolling
+    assert routes_mod._COMPACTED_SESSION_NUDGE in rolling
+
+    # The llama.cpp call site, which really does fit through `_fit_context`.
+    reset = routes_mod._apply_compaction_nudge("base.", tools, checkpoint_fitted = True)
+    assert routes_mod._CHECKPOINT_SESSION_NUDGE in reset
+
+
+def test_a_request_that_withdrew_the_tool_loop_never_resets(monkeypatch):
+    """The process policy is not the only way `search_conversation` fails to arrive.
+
+    `tool_choice: "none"` is the OpenAI way of saying "answer, do not call anything", and
+    Studio honours it twice over: the tool loop is suppressed, and the request is excluded
+    from the checkpoint repair that otherwise re-admits search_conversation alone even with
+    the user's tools off (`_client_disabled_tool_calls` at both gates). A caller that sets
+    it sets it every turn, so a reset here hides the dropped turns behind a tool that never
+    arrives, while the carried-forward header tells the model to go and search for them.
+    Same refusal as `--disable-tools`, one scope down: the request, not the process.
+    """
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
+    monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+
+    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+
+
+def test_the_gguf_route_tells_the_gate_when_tool_choice_none_withdrew_the_loop():
+    """The gate is only as good as its caller, so pin the wiring too: the plain GGUF
+    generator takes the flag, forwards it to its own respawn retry (which refits, and so
+    re-asks the reset question), and the route feeds it `_client_disabled_tool_calls`."""
+    import inspect
+
+    from core.inference import llama_cpp
+    import routes.inference as routes_mod
+
+    assert "tools_withheld" in inspect.signature(
+        llama_cpp.LlamaCppBackend.generate_chat_completion
+    ).parameters
+    body = inspect.getsource(llama_cpp.LlamaCppBackend.generate_chat_completion)
+    assert body.count("tools_withheld = tools_withheld") == 2
+
+    route = inspect.getsource(routes_mod.openai_chat_completions)
+    assert "tools_withheld = _client_disabled_tool_calls" in route
+
+
+def test_a_tool_loop_request_whose_catalogue_lacks_the_memory_tool_never_resets(monkeypatch):
+    """`/v1/messages` is the live case: `_select_anthropic_server_tools` never adds
+    `search_conversation`, so an Anthropic-compatible request carrying a Studio thread_id
+    would reset an epoch behind a tool absent on every turn."""
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: True)
+
+    search = [{"type": "function", "function": {"name": "search_conversation"}}]
+    other = [{"type": "function", "function": {"name": "bash"}}]
+
+    assert llama_cpp._memory_tool_withheld("thread-1", other) is True
+    assert llama_cpp._memory_tool_withheld("thread-1", search + other) is False
+    assert llama_cpp._memory_tool_withheld("thread-1", []) is True
+    # No thread is the API-only case, which cannot reset for other reasons.
+    assert llama_cpp._memory_tool_withheld(None, other) is False
+
+
+def test_the_first_compaction_is_not_refused_for_lacking_a_tool_that_cannot_exist_yet(monkeypatch):
+    """The archive is written DURING the first compaction, so on the turn that resets for
+    the first time `search_conversation` legitimately is not in the catalogue yet. Reading
+    its absence as a refusal there would mean no thread could ever start an epoch."""
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr("core.rag.conversation_archive.has_archive", lambda thread_id: False)
+
+    assert llama_cpp._memory_tool_withheld("thread-1", [
+        {"type": "function", "function": {"name": "bash"}},
+    ]) is False

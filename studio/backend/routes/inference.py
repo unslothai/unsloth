@@ -3516,16 +3516,26 @@ def _checkpoint_needs_search() -> bool:
         return False
 
 
-def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
+def _apply_compaction_nudge(
+    nudge: str, tools: list[dict], *, checkpoint_fitted: bool = False
+) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
     Gated on the tool rather than separate state, so it appears exactly when there is an
-    archive to search and stays a no-op for chats that never compacted."""
+    archive to search and stays a no-op for chats that never compacted.
+
+    `checkpoint_fitted` is the CALLER's answer to "does this request go through
+    `_fit_context`, which can reset the epoch", not the process-wide policy. Only the
+    llama.cpp path fits that way; the safetensors path below never calls
+    `fit_checkpoint_context`, so reading the global policy told a safetensors model that
+    everything before a carried_forward block had been removed and that recall had already
+    run, on a request where neither happened and no such block exists. Defaults to False so
+    a new call site has to claim the reset rather than inherit it."""
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
     text = _COMPACTED_SESSION_NUDGE
-    if _checkpoint_needs_search():
+    if checkpoint_fitted and _checkpoint_needs_search():
         text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
         return text
@@ -13981,7 +13991,11 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
-            _nudge = _apply_compaction_nudge(_nudge, tools_to_use)
+            # This path fits through `_fit_context`, which is the only fit that can reset
+            # the epoch, so the checkpoint half of the nudge is true here.
+            _nudge = _apply_compaction_nudge(
+                _nudge, tools_to_use, checkpoint_fitted = True
+            )
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -14746,6 +14760,11 @@ async def openai_chat_completions(
                 perf_callback = _gguf_perf_callback,
                 context_overflow = _rolling_context_policy(payload),
                 thread_id = payload.thread_id,
+                # `tool_choice: "none"` suppresses the tool loop for this request AND is
+                # excluded from the checkpoint repair above, so search_conversation is not
+                # offered now and will not be on the next identically configured turn. The
+                # epoch gate cannot see that from the process policy alone, so tell it.
+                tools_withheld = _client_disabled_tool_calls,
             )
 
         _gguf_sentinel = object()
@@ -15542,6 +15561,8 @@ async def openai_chat_completions(
 
         # RAG nudge, mirroring the GGUF path.
         _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
+        # No `checkpoint_fitted`: this path never calls `fit_checkpoint_context`, so there
+        # is no reset and no carried_forward block to describe.
         _sf_nudge = _apply_compaction_nudge(_sf_nudge, _sf_tools_to_use)
 
         _sf_system_prompt = system_prompt
