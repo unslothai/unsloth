@@ -526,4 +526,11 @@ def test_path_resolution_and_process_identity_no_longer_need_the_compiler():
     )
     assert "ReparsePoint" in sweep
     reparse_branch = sweep.index("ReparsePoint")
-    assert "-Recurse" not in sweep[reparse_branch : sweep.index("continue", reparse_branch)]
+    branch = sweep[reparse_branch : sweep.index("continue", reparse_branch)]
+    assert "-Recurse" not in branch
+    # Remove-Item without -Recurse is not the answer either: on 5.1 it reports the
+    # junction target's contents and refuses as "directory not empty", so the link
+    # is never reclaimed. Observed on windows-latest, hence pinned here.
+    assert "Remove-Item" not in branch
+    assert "[System.IO.Directory]::Delete(" in branch
+    assert ", $false)" in branch

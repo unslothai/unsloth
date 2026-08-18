@@ -367,12 +367,16 @@ function Install-UnslothStudio {
             $cutoff = (Get-Date).AddDays(-1)
             foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
                 if ($stale.LastWriteTime -ge $cutoff) { continue }
-                # Windows PowerShell 5.1's Remove-Item -Recurse walks THROUGH a
-                # junction and deletes what it points at. Nothing this script
-                # created here is a reparse point, so anything that is gets the
-                # link itself removed and its target left alone.
+                # Nothing this script creates here is a reparse point, so anything
+                # that is gets the link itself removed and its target left alone.
+                # Remove-Item is no use for that on Windows PowerShell 5.1: with
+                # -Recurse it can walk THROUGH the junction and delete what it
+                # points at, and without -Recurse it reports the target's contents
+                # and refuses as "directory not empty", so the link would never be
+                # reclaimed. Directory.Delete with recursive:$false removes the
+                # reparse point itself and never follows it.
                 if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-                    Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
+                    try { [System.IO.Directory]::Delete($stale.FullName, $false) } catch {}
                     continue
                 }
                 Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
