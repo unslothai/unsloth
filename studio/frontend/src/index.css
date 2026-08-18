@@ -1003,6 +1003,28 @@ html[data-chat-font] .aui-root {
 		outline-offset: -1px;
 	}
 
+	/* The backward-traversal reveal sentinel in thread.tsx is a real tab stop, so it needs a
+	   real focus indicator. The rule above is scoped to :where(div, main, ...) and never
+	   matched a span, so focus visibly disappeared for one stop before the next Shift+Tab
+	   reached the action bar, which is a focus-visible failure rather than a cosmetic one.
+
+	   The element stays 0x0 and the ring is drawn by outline-offset. Outlines do not take part
+	   in layout, so the indicator appears without shifting the message the way giving the span
+	   dimensions on focus would. Nothing is drawn at rest, and :focus-visible means a mouse
+	   click never draws it either. */
+	.aui-assistant-reveal-sentinel {
+		display: inline-block;
+		width: 0;
+		height: 0;
+		vertical-align: middle;
+	}
+
+	.aui-assistant-reveal-sentinel:focus-visible {
+		outline: 1px solid var(--ring-soft);
+		outline-offset: 6px;
+		border-radius: 2px;
+	}
+
 	/* Number fields use the shared grey stepper instead of native spinners. */
 	input[type="number"] {
 		appearance: textfield;
