@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from core.inference.message_content import message_text_with_pastes
@@ -75,6 +75,17 @@ class CreateResearchRun(BaseModel):
     budgets: dict[str, int] | None = None
     websitePolicy: dict[str, list[str]] | None = None
     instructions: str | None = Field(default = None, max_length = 32_000)
+
+    @field_validator("budgets", mode = "before")
+    @classmethod
+    def _reject_boolean_budgets(cls, value: Any) -> Any:
+        # bool is an int subclass, so False would coerce to the 0 "unlimited" sentinel and
+        # silently drop a deadline. Reject it here: by the time the field is typed it is 0.
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if isinstance(item, bool):
+                    raise ValueError(f"{key} must be an integer, not a boolean")
+        return value
 
 
 class ResearchPlanStep(BaseModel):

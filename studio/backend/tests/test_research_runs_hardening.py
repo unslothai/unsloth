@@ -416,6 +416,15 @@ def _make_payload(**overrides) -> CreateResearchRun:
     return CreateResearchRun(**payload)
 
 
+def test_budgets_reject_a_boolean_instead_of_reading_it_as_unlimited():
+    # bool subclasses int, so False would land on the 0 sentinel and drop the deadline.
+    with pytest.raises(Exception, match = "not a boolean"):
+        _make_payload(budgets = {"modelTimeoutSeconds": False})
+    assert _make_payload(budgets = {"modelTimeoutSeconds": 0}).budgets == {
+        "modelTimeoutSeconds": 0,
+    }
+
+
 def test_sanitize_config_rejects_nested_inference_credential():
     payload = _make_payload(inferenceRequest = {"model": {"api_key": "sk-should-not-persist"}})
     with pytest.raises(Exception):
