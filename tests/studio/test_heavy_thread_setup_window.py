@@ -285,3 +285,18 @@ def test_one_bad_repetition_among_good_ones_is_rejected():
     actions["jump"]["bottom_per_repetition"] = [8000, 8000, 8000]
     failures = HARNESS.action_failures("t", actions, sibling.COUNTS, sibling.VIEWPORT)
     assert any("above the bottom" in f and "repetition 2" in f for f in failures), failures
+
+
+def test_a_short_per_repetition_list_does_not_silently_skip_repetitions():
+    """`zip` truncates to the shorter list. If one of the two per-repetition lists is missing
+    entries, the repetitions past that point would go unchecked and the check would quietly stop
+    checking, which is the failure this whole section exists to prevent."""
+    import test_heavy_thread_repetition_rejection as sibling
+
+    actions = sibling.clean_actions()
+    actions["jump"]["startedFrom_per_repetition"] = [8000, 8000, 8000]
+    actions["jump"]["bottom_per_repetition"] = [8000]
+    failures = HARNESS.action_failures("t", actions, sibling.COUNTS, sibling.VIEWPORT)
+    assert any("repetition 3" in f for f in failures), (
+        f"repetition 3 was never examined at all: {failures}"
+    )

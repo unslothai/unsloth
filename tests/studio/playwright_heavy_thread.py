@@ -2364,6 +2364,12 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
         # every other check here passes while a shorter gesture goes into the median.
         starts = jumped.get("startedFrom_per_repetition", [jumped.get("startedFrom")])
         bottoms = jumped.get("bottom_per_repetition", [jumped.get("bottom")])
+        # zip() would silently truncate to the shorter list and leave the remaining repetitions
+        # unchecked, which is the same "the check quietly stopped checking" failure this whole
+        # section exists to prevent. Pad instead, so a missing entry reads as unverifiable.
+        width = max(len(starts), len(bottoms))
+        starts = list(starts) + [None] * (width - len(starts))
+        bottoms = list(bottoms) + [None] * (width - len(bottoms))
         for index, (started, bottom) in enumerate(zip(starts, bottoms)):
             shortfall = jump_anchor_shortfall(started, bottom)
             if shortfall:
