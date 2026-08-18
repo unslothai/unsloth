@@ -6278,6 +6278,34 @@ class ExternalProviderClient:
         response.raise_for_status()
         return response.json()
 
+    async def create_speech(
+        self,
+        text: str,
+        model: str,
+        voice: Optional[str] = None,
+        response_format: str = "wav",
+        speed: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """POST /audio/speech (OpenAI CreateSpeech). Returns (audio_bytes, media_type)."""
+        body: dict[str, Any] = {
+            "model": model,
+            "input": text,
+            "response_format": response_format,
+        }
+        if voice:
+            body["voice"] = voice
+        if speed is not None:
+            body["speed"] = speed
+        response = await _http_client.post(
+            f"{self.base_url}/audio/speech",
+            headers = self._auth_headers(),
+            json = body,
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        media_type = (response.headers.get("content-type") or "").split(";")[0].strip()
+        return response.content, media_type or f"audio/{response_format}"
+
     async def list_models(self) -> list[dict[str, Any]]:
         """GET /models to discover available models.
 

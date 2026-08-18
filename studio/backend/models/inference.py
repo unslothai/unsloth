@@ -3572,6 +3572,11 @@ class AudioSpeechRequest(BaseModel):
         "wav", description = "Output container. Only 'wav' is supported."
     )
     speed: Optional[float] = Field(None, description = "Speech rate (accepted, unused).")
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, synthesis is proxied to that "
+        "provider's /audio/speech and model/voice/speed are forwarded as sent.",
+    )
 
     @field_validator("response_format", mode = "before")
     @classmethod

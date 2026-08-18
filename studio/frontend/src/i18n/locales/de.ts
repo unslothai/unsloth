@@ -366,6 +366,16 @@ export const de = {
           "Verwendet das geladene Audiomodell (z. B. Orpheus)",
         engineSystem: "Systemstimmen",
         engineStudio: "TTS-Modell laden",
+        engineCustom: "Eigener Endpunkt",
+        engineCustomDescription:
+          "Ein OpenAI-kompatibler TTS-Server aus deinen Verbindungen (z. B. Kokoro)",
+        connectionLabel: "Verbindung",
+        connectionDescription:
+          "Einen OpenAI-kompatiblen Server im Tab „Verbindungen“ hinzufügen",
+        connectionPlaceholder: "Verbindung auswählen",
+        customModelLabel: "Modell",
+        customVoiceDescription:
+          "Stimmenname, den der Endpunkt erwartet (optional)",
         modelLabel: "TTS-Modell",
         modelDescription:
           "Laden Sie ein Audiomodell über die Modellauswahl (z. B. Orpheus TTS)",

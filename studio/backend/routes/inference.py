@@ -11017,6 +11017,62 @@ async def generate_audio(
     )
 
 
+async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
+    """Proxy CreateSpeech to a saved connection's /audio/speech, so read-aloud can use a
+    remote TTS server (e.g. Kokoro) without occupying the local model slot."""
+    config = providers_db.get_provider(body.provider_id)
+    if config is None:
+        raise HTTPException(
+            status_code = 404, detail = f"Provider config not found: {body.provider_id}"
+        )
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
+        )
+    if not body.model:
+        raise HTTPException(
+            status_code = 400, detail = "model is required when using an external TTS connection."
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    # Validate the proxy destination before the API key is decrypted, so a
+    # refused target never sees a credential.
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    api_key = resolve_provider_api_key_or_400(
+        body.provider_id, None, allow_saved_key = not _request_has_api_key(request)
+    )
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+    )
+    try:
+        audio_bytes, media_type = await client.create_speech(
+            text = body.input,
+            model = body.model,
+            voice = body.voice,
+            response_format = (body.response_format or "wav").strip().lower(),
+            speed = body.speed,
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"TTS endpoint returned HTTP {exc.response.status_code}: "
+                f"{exc.response.text[:300]}"
+            ),
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}"
+        )
+    return Response(content = audio_bytes, media_type = media_type)
+
+
 # openai-compatible speech api: the router's dual mount also answers /v1/audio/speech
 @router.post("/audio/speech")
 async def openai_audio_speech(
@@ -11026,9 +11082,13 @@ async def openai_audio_speech(
 ) -> Response:
     """OpenAI-compatible text-to-speech (POST /v1/audio/speech).
 
-    ``model`` is informational (the loaded audio model is used); ``voice`` and ``speed``
-    are ignored. Only WAV exists, so another ``response_format`` is a 400 rather than a
+    With ``provider_id`` set, the request is proxied to that saved connection's
+    /audio/speech and model/voice/speed are forwarded. Otherwise the loaded audio
+    model is used: ``model`` is informational, ``voice`` and ``speed`` are ignored,
+    and only WAV exists, so another ``response_format`` is a 400 rather than a
     silent container mismatch."""
+    if body.provider_id:
+        return await _external_tts_speech(body, request)
     fmt = (body.response_format or "wav").strip().lower()
     if fmt != "wav":
         raise HTTPException(

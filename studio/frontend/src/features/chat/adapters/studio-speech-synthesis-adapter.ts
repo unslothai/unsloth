@@ -251,7 +251,48 @@ export async function generateStudioTtsAudio(
   return `data:audio/wav;base64,${data.audio.data}`;
 }
 
-function speakWithStudioModel(
+/** Generate speech via a saved connection's OpenAI-compatible /audio/speech
+ * endpoint; returns an object URL (callers release it via releaseTtsAudioUrl). */
+export async function generateCustomTtsAudio(
+  text: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const { ttsProviderId, ttsProviderModel, ttsProviderVoice } =
+    useVoiceSettingsStore.getState();
+  const model = ttsProviderModel.trim();
+  const voice = ttsProviderVoice.trim();
+  if (!ttsProviderId || !model) {
+    throw new Error(
+      "Custom TTS is not configured. Pick a connection and model in Settings → Voice.",
+    );
+  }
+  const response = await authFetch("/api/inference/audio/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      input: text,
+      provider_id: ttsProviderId,
+      model,
+      ...(voice ? { voice } : {}),
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
+/** Release a URL returned by the generate helpers (data URLs need nothing). */
+export function releaseTtsAudioUrl(url: string): void {
+  if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+function speakWithBackendAudio(
+  generate: (text: string, signal?: AbortSignal) => Promise<string>,
   text: string,
   handleEnd: (
     reason: "finished" | "error" | "cancelled",
@@ -262,6 +303,7 @@ function speakWithStudioModel(
   const { ttsRate, ttsVolume } = useVoiceSettingsStore.getState();
   const controller = new AbortController();
   let audio: HTMLAudioElement | null = null;
+  let audioUrl: string | null = null;
   let cancelled = false;
 
   // Release the element and its multi-MB WAV data URL as soon as playback ends.
@@ -271,12 +313,20 @@ function speakWithStudioModel(
       audio.removeAttribute("src");
       audio = null;
     }
+    if (audioUrl) {
+      releaseTtsAudioUrl(audioUrl);
+      audioUrl = null;
+    }
   };
 
   void (async () => {
     try {
-      const url = await generateStudioTtsAudio(text, controller.signal);
-      if (cancelled) return;
+      const url = await generate(text, controller.signal);
+      if (cancelled) {
+        releaseTtsAudioUrl(url);
+        return;
+      }
+      audioUrl = url;
       audio = new Audio(url);
       audio.playbackRate = ttsRate;
       audio.volume = ttsVolume;
@@ -315,7 +365,8 @@ function speakWithStudioModel(
 
 /**
  * Text-to-speech for assistant messages. Reads Voice settings at speak time.
- * Engines: "system" (speechSynthesis) or "studio" (loaded TTS audio model).
+ * Engines: "system" (speechSynthesis), "studio" (loaded TTS audio model), or
+ * "custom" (a saved connection's OpenAI-compatible /audio/speech endpoint).
  */
 export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
   /** Web Speech synthesis, used by the "system" engine. */
@@ -385,10 +436,12 @@ export class StudioSpeechSynthesisAdapter implements SpeechSynthesisAdapter {
     // Fall back to the backend model when the runtime lacks Web Speech
     // synthesis (e.g. an audio-only WebView), so read-aloud still works.
     if (
-      ttsEngine === "studio" ||
+      ttsEngine !== "system" ||
       !StudioSpeechSynthesisAdapter.systemVoicesSupported()
     ) {
-      const session = speakWithStudioModel(text, handleEnd, () => {
+      const generate =
+        ttsEngine === "custom" ? generateCustomTtsAudio : generateStudioTtsAudio;
+      const session = speakWithBackendAudio(generate, text, handleEnd, () => {
         if (res.status.type === "ended") return;
         // Notify subscribers of the async starting -> running transition;
         // the adapter contract drives UI state off these subscribe callbacks.
