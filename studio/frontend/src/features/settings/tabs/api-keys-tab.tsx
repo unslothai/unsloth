@@ -32,7 +32,10 @@ export function ApiKeysTab() {
   const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
   const [revoking, setRevoking] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
-  const [keylessScope, setKeylessScope] = useState<KeylessApiAccessScope>("off");
+  const [keyless, setKeyless] = useState<{
+    scope: KeylessApiAccessScope;
+    tools: boolean;
+  }>({ scope: "off", tools: false });
   const reduced = useReducedMotion();
   const transition = reduced
     ? { duration: 0 }
@@ -176,13 +179,17 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
-      <KeylessApiAccessSection onScopeChange={setKeylessScope} />
+      <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
       <RemoteAccessSection />
 
       <ModelAutoSwitchSection />
 
-      <UsageExamples apiKey={revealed} keylessScope={keylessScope} />
+      <UsageExamples
+        apiKey={revealed}
+        keylessScope={keyless.scope}
+        keylessTools={keyless.tools}
+      />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

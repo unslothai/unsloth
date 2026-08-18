@@ -313,9 +313,11 @@ for await (const chunk of response) {
 }`;
 }
 
+// every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
   key: string,
+  toolsKey: string,
   model: string,
   os: Os,
 ): Record<ExampleType, string> {
@@ -324,12 +326,12 @@ function buildSnippets(
     curl: curl(base, key, model, "plain"),
     python: pythonSnippet(base, key, model, "plain"),
     javascript: javascriptSnippet(base, key, model, "plain"),
-    curlTools: curl(base, key, model, "tools"),
-    pythonTools: pythonSnippet(base, key, model, "tools"),
-    javascriptTools: javascriptSnippet(base, key, model, "tools"),
-    curlAdvanced: curl(base, key, model, "advanced"),
-    pythonAdvanced: pythonSnippet(base, key, model, "advanced"),
-    javascriptAdvanced: javascriptSnippet(base, key, model, "advanced"),
+    curlTools: curl(base, toolsKey, model, "tools"),
+    pythonTools: pythonSnippet(base, toolsKey, model, "tools"),
+    javascriptTools: javascriptSnippet(base, toolsKey, model, "tools"),
+    curlAdvanced: curl(base, toolsKey, model, "advanced"),
+    pythonAdvanced: pythonSnippet(base, toolsKey, model, "advanced"),
+    javascriptAdvanced: javascriptSnippet(base, toolsKey, model, "advanced"),
   };
 }
 
@@ -512,11 +514,14 @@ function HighlightedCode({
 
 export function UsageExamples({
   apiKey,
-  keylessScope,
+  keylessScope = "off",
+  keylessTools = false,
 }: {
   apiKey?: string | null;
   /** which routes keyless api access serves, so a placeholder is only used where it works */
   keylessScope?: KeylessApiAccessScope;
+  /** whether a keyless caller may drive the server-side tool loop */
+  keylessTools?: boolean;
 }) {
   const t = useT();
   const deviceType = usePlatformStore((s) => s.deviceType);
@@ -656,14 +661,18 @@ export function UsageExamples({
   const model = useExampleModelName();
   // a dummy key is accepted under keyless access, so the snippet runs without creating one
   const key = apiKey || (keylessScope !== "off" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // a keyless caller gets no tools until the admin grants them, so this names a real key
+  const toolsKey =
+    apiKey ||
+    (keylessScope !== "off" && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
   // the agent reaches past /v1, so only the full scope lets it run without a real key
   const agentKey =
     apiKey || (keylessScope === "full" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
-    () => (model ? buildSnippets(base, key, model, os) : null),
-    [base, key, model, os],
+    () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
+    [base, key, toolsKey, model, os],
   );
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(

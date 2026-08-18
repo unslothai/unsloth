@@ -51,10 +51,13 @@ const CONFIRM_COPY: Record<
 };
 
 export function KeylessApiAccessSection({
-  onScopeChange,
+  onSettingsChange,
 }: {
   /** fires on load and after every save, so the usage examples can follow */
-  onScopeChange?: (scope: KeylessApiAccessScope) => void;
+  onSettingsChange?: (settings: {
+    scope: KeylessApiAccessScope;
+    tools: boolean;
+  }) => void;
 }) {
   const [settings, setSettings] = useState<KeylessApiAccessSettings | null>(
     null,
@@ -70,7 +73,7 @@ export function KeylessApiAccessSection({
         if (!cancelled) {
           setSettings(next);
           setError(null);
-          onScopeChange?.(next.scope);
+          onSettingsChange?.({ scope: next.scope, tools: next.tools });
         }
       })
       .catch((cause: unknown) => {
@@ -85,7 +88,7 @@ export function KeylessApiAccessSection({
     return () => {
       cancelled = true;
     };
-  }, [onScopeChange]);
+  }, [onSettingsChange]);
 
   const save = async (next: KeylessApiAccessScope, tools?: boolean) => {
     setSaving(true);
@@ -93,7 +96,7 @@ export function KeylessApiAccessSection({
     try {
       const saved = await updateKeylessApiAccess(next, tools);
       setSettings(saved);
-      onScopeChange?.(saved.scope);
+      onSettingsChange?.({ scope: saved.scope, tools: saved.tools });
     } catch (cause: unknown) {
       setError(
         cause instanceof Error
