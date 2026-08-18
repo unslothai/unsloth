@@ -4,7 +4,12 @@
 import type { ChatModelSummary } from "../types/runtime";
 
 import type { MmprojFallbackReason } from "../types/api";
-import { isTextOnlyMmprojFallback } from "./mmproj-fallback";
+// Extension required: this is a VALUE import, so it has to resolve at runtime, and
+// the suite runs under node --experimental-strip-types rather than through Vite.
+// The two imports above are `import type` and erase before that matters. Without it
+// every test that statically imports this module dies on ERR_MODULE_NOT_FOUND, which
+// is how it reaches tests that have nothing to do with projectors.
+import { isTextOnlyMmprojFallback } from "./mmproj-fallback.ts";
 
 function textOnlyMmprojUnavailableReason(
   activeModel: ChatModelSummary | undefined,
