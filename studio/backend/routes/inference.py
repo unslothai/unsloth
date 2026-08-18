@@ -13940,11 +13940,20 @@ async def openai_chat_completions(
         # `supports_tools`: a template that cannot render one tool must not be told it has
         # a memory, which is also why such a model never gets checkpoint mode in the first
         # place (`_can_reset_epoch`).
+        # Gated on the request's own overflow policy as well as the process one: every
+        # checkpoint fit sits behind `context_overflow == "truncate_oldest"`, so a request
+        # that did not ask for truncation evicts nothing, cannot reset, and has no dropped
+        # turns to go back for. Re-admitting the tool there overrode the caller's
+        # `enable_tools = false` for a repair that could not happen -- the loop ran, the
+        # model was told its older turns had been removed, and an n > 1 or non-streaming
+        # ask/auto request that used to be served was rejected by the tool-path guards
+        # below. Same condition the compaction nudge on this path already reads.
         if (
             not use_tools
             and not _client_disabled_tool_calls
             and _cli_policy is not False
             and llama_backend.supports_tools
+            and _rolling_context_policy(payload) is not None
             and _checkpoint_needs_search()
             and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
         ):

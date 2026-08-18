@@ -237,8 +237,20 @@ def _fit_context(messages, **kwargs):
             # briefly unhappy, so "transient" is not a safe assumption. Replaying keeps the
             # block; only starting a NEW epoch is refused, which is the half that would
             # promise a searchable history that is not being written.
+            #
+            # `searchable` goes with it, and that is the half a reset alone does not cover.
+            # The write that makes an epoch searchable runs AFTER this fit and swallows its
+            # own failure, so the flag read here is the verdict on the LAST write, never
+            # this one: the first failure commits a block that says the dropped turns "can
+            # be retrieved with the search_conversation tool" while nothing was indexed.
+            # Nothing later took that sentence back either, because only `can_reset` was
+            # downgraded, so the same claim was replayed on every turn afterwards. Once the
+            # flag is set the block says the turns are stored but not retrievable now,
+            # which is true whether the embedder is briefly unhappy or permanently down,
+            # and the tool is still offered so a recovered archive is not walled off.
+            degraded = _archive_is_degraded()
             fitted, truncation = checkpoint.fit_checkpoint_context(
-                messages, can_reset = not _archive_is_degraded(), **kwargs
+                messages, can_reset = not degraded, searchable = not degraded, **kwargs
             )
             # `can_reset = False` has no phase two, so once the replayed boundary stops
             # being enough it refuses. Measured: a threadless request went from

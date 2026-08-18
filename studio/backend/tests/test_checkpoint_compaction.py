@@ -704,3 +704,87 @@ def test_a_block_never_promises_a_tool_the_request_will_not_be_given():
     assert "search_conversation" not in withheld
     assert "cannot retrieve it on this turn" in withheld
     assert INSTRUCTION in withheld
+
+
+def test_the_loop_is_only_reopened_for_a_request_that_can_actually_compact():
+    """The checkpoint repair overrides the caller's `enable_tools = false`, so it must fire
+    only where the reset it repairs can happen.
+
+    Every checkpoint fit sits behind `context_overflow == "truncate_oldest"` (three sites in
+    `llama_cpp.py`), which is exactly `_rolling_context_policy`. Without it nothing is
+    evicted, no epoch is reset and there are no dropped turns to go back for -- yet the gate
+    read only the PROCESS policy, which is `checkpoint` by default, so any tools-off request
+    carrying a thread that had ever been archived opened the loop, was handed
+    `search_conversation` alone, executed it unprompted (it is always-safe) and was told its
+    older turns had been removed. The compaction nudge on this same path already reads the
+    request's policy for the same reason.
+    """
+    import inspect
+
+    import routes.inference as routes_mod
+
+    route = inspect.getsource(routes_mod.openai_chat_completions)
+    gate = route.split("if (\n            not use_tools", 1)[1].split("use_tools = True", 1)[0]
+    assert "_checkpoint_needs_search()" in gate
+    assert "_thread_has_conversation_archive" in gate
+    assert "_rolling_context_policy(payload) is not None" in gate
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        (None, None),
+        ("error", None),
+        ("truncate_middle", None),
+        ("truncate_oldest", "truncate_oldest"),
+    ],
+)
+def test_only_truncate_oldest_is_a_policy_that_can_reset(requested, expected, monkeypatch):
+    """The three values the API accepts, plus unset. Only one of them reaches a fit that
+    can compact, which is what the loop gate and the nudge both key off."""
+    import types
+
+    import routes.inference as routes_mod
+
+    monkeypatch.delenv("UNSLOTH_CONTEXT_OVERFLOW", raising = False)
+    payload = types.SimpleNamespace(context_overflow = requested)
+
+    assert routes_mod._rolling_context_policy(payload) == expected
+
+
+def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_nothing(
+    monkeypatch,
+):
+    """`degraded()` is the verdict on the last write, and the write runs AFTER the fit.
+
+    `enabled()` only asks whether sqlite-vec loaded and `can_archive()` only whether the
+    thread is persisted, so on a machine whose embedder cannot start both keep saying yes
+    and the first compaction commits a reset before anything is indexed. `archive_turns`
+    then swallows its failure and sets the flag. Every turn after that replays the epoch,
+    and while the reset was correctly downgraded the block still carried the sentence that
+    says the dropped turns can be retrieved with `search_conversation` -- a lookup that
+    returns nothing, repeated for the life of the thread. The tool stays on the catalogue,
+    so a recovered archive is not walled off; only the promise goes.
+    """
+    from core.inference import llama_cpp
+
+    messages = _thread() + [{"role": "user", "content": "continue"}]
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
+    fitted, truncation = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 18,
+    )
+    assert truncation["fits"] is True
+    assert truncation["carried_forward_chars"] > 0
+    assert checkpoint._NOT_SEARCHABLE in fitted[0]["content"]
+    assert checkpoint._SEARCHABLE not in fitted[0]["content"]
+
+    # A healthy archive is unchanged: the turns really are retrievable, so say so.
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    healthy, started = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 0,
+    )
+    assert started["checkpoint_started"] is True
+    assert checkpoint._SEARCHABLE in healthy[0]["content"]
