@@ -218,7 +218,9 @@ def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
     # is invisible to it. Narrowing it is what revealed the project-list and knowledge-base GETs on
     # reopen, and the delete's own three-request sync.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
-    assert 'url.includes("/api/")' not in page, "the fetch stub is matching every /api/ request again"
+    assert (
+        'url.includes("/api/")' not in page
+    ), "the fetch stub is matching every /api/ request again"
     assert "STUBBED_API" in page, "the fetch stub must answer from an explicit allowlist"
 
 
