@@ -121,3 +121,25 @@ test("a sub-floor finite timeout is refused on every frontend path", () => {
   assert.equal(sanitizeBoundedNumber(5, bounds), undefined);
   assert.equal(sanitizeBoundedNumber(10, bounds), 10);
 });
+
+// The max attribute does not stop a typed value from reaching the save handler, so the
+// handler clamps. Falling through to the default instead would hand someone asking for a
+// long run the short one they were trying to get away from.
+test("an over-cap typed value saves as the cap, not as the default", () => {
+  const store = useChatRuntimeStore.getState();
+  const maxMinutes = Math.floor(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60);
+
+  // What the dialog's save handler computes for a typed 1000000 minutes.
+  const saved = Math.min(1000000, maxMinutes) * 60;
+  assert.equal(saved, MAX_RESEARCH_MODEL_TIMEOUT_SECONDS);
+
+  store.setResearchModelTimeoutSeconds(saved);
+  assert.equal(
+    useChatRuntimeStore.getState().researchModelTimeoutSeconds,
+    MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  );
+  assert.notEqual(
+    useChatRuntimeStore.getState().researchModelTimeoutSeconds,
+    DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  );
+});

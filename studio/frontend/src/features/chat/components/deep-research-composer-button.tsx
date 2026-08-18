@@ -307,11 +307,14 @@ function DeepResearchWebsiteAccessContent({
           onClick={() => {
             setPolicy(draft);
             const minutes = Number(timeoutMinutes);
+            // The max attribute does not stop a typed value from reaching here, and letting
+            // an over-cap one fall through to the default would quietly hand someone asking
+            // for a long run the 15 minute one they were trying to get away from.
             setModelTimeoutSeconds(
               unlimited
                 ? 0
                 : Number.isSafeInteger(minutes) && minutes >= 1
-                  ? minutes * 60
+                  ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
                   : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
             );
             onClose();
