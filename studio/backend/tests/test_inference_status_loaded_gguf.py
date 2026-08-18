@@ -217,7 +217,6 @@ def test_status_publishes_an_explicit_text_only_mmproj_fallback(status_route):
     assert status.mmproj_fallback_reason == "projector_startup_failure"
 
 
-
 def test_the_diffusion_runner_reports_none(status_route):
     # It appends none of them, so publishing a list would describe a command that
     # does not exist.

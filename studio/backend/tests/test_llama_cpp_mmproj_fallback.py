@@ -581,9 +581,7 @@ class TestRetryContract:
         # OOM remains excluded from the ambiguous signal-only diagnosis, but
         # has its own recovery: keep --mmproj and move that projector to CPU.
         assert _signal_crash(-6) is True
-        signal_only = _detect(_OOM_OUT) or (
-            _signal_crash(-6) and not _nonproj(_OOM_OUT)
-        )
+        signal_only = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
         assert signal_only is False
         assert _gpu_memory_failure(_OOM_OUT) is True
         assert "--mmproj" in _mmproj_cpu(_VISION_CMD, {})

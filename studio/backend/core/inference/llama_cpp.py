@@ -12314,16 +12314,12 @@ class LlamaCppBackend:
         if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
             return None
         placements = [
-            _flag(arg)
-            for arg in args
-            if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
+            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
         ]
         if placements and placements[-1] == "--no-mmproj-offload":
             return None
         if not placements:
-            env_value = str(
-                (env or {}).get("LLAMA_ARG_MMPROJ_OFFLOAD") or ""
-            ).strip().lower()
+            env_value = str((env or {}).get("LLAMA_ARG_MMPROJ_OFFLOAD") or "").strip().lower()
             if env_value in ("0", "false", "off", "no"):
                 return None
         return args + ["--no-mmproj-offload"]
