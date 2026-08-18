@@ -13402,6 +13402,10 @@ async def openai_chat_completions(
         api_monitor.finish(tts_monitor_id)
         return response
 
+    # Above the backend branch, because audio input returns from inside it and must
+    # read the same normalized sequences the text paths do.
+    normalized_stop = _normalize_stop_sequences(payload.stop)
+
     if using_gguf:
         # Advertised repo id after an auto-switch load, else a clean public id,
         # never the absolute .gguf path.
@@ -13505,6 +13509,7 @@ async def openai_chat_completions(
                     use_adapter = payload.use_adapter,
                     cancel_event = cancel_event,
                     stats_holder = _audio_stats_holder,
+                    stop = normalized_stop,
                 )
 
             if payload.stream:
@@ -13689,8 +13694,6 @@ async def openai_chat_completions(
     # carry `tool_calls` (content=None) — both of which are valid in
     # multi-turn client-side tool loops.
     effective_max_tokens = _effective_openai_max_tokens(payload)
-
-    normalized_stop = _normalize_stop_sequences(payload.stop)
 
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
@@ -15508,6 +15511,7 @@ async def openai_chat_completions(
                 seed = payload.seed,
                 frequency_penalty = payload.frequency_penalty,
                 logit_bias = payload.logit_bias,
+                stop = normalized_stop,
                 cancel_event = cancel_event,
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
@@ -15872,6 +15876,7 @@ async def openai_chat_completions(
         seed = payload.seed,
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
+        stop = normalized_stop,
     )
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.

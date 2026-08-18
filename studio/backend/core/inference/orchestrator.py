@@ -747,6 +747,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -767,6 +768,8 @@ class InferenceOrchestrator:
         }
         if seed is not None:
             cmd["seed"] = seed
+        if stop:
+            cmd["stop"] = stop
         # Only forward template kwargs the caller set, for older worker compat.
         if use_adapter is not None:
             cmd["use_adapter"] = use_adapter
@@ -989,6 +992,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Dispatched generation — sends command without holding _gen_lock.
 
@@ -1048,6 +1052,7 @@ class InferenceOrchestrator:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            stop = stop,
             use_adapter = use_adapter,
             tools = tools,
             enable_thinking = enable_thinking,
@@ -1724,6 +1729,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response, streaming tokens from subprocess.
 
@@ -1759,6 +1765,7 @@ class InferenceOrchestrator:
             seed = seed,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            stop = stop,
         )
 
     def generate_chat_completion_with_tools(
@@ -1792,6 +1799,7 @@ class InferenceOrchestrator:
         presence_penalty: float = 0.0,
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
         **_unused,
@@ -1836,6 +1844,7 @@ class InferenceOrchestrator:
                 seed = seed,
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
+                stop = stop,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -1962,6 +1971,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         frequency_penalty: float = 0.0,
         logit_bias: Optional[dict] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic — sends command to subprocess, yields tokens.
 
@@ -2013,6 +2023,7 @@ class InferenceOrchestrator:
                 presence_penalty = presence_penalty,
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
+                stop = stop,
                 use_adapter = use_adapter,
                 tools = tools,
                 enable_thinking = enable_thinking,
@@ -2326,6 +2337,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
         """Audio input generation (e.g. Gemma 3n) — streams text tokens."""
         yield from self._generate_audio_input_inner(
@@ -2342,6 +2354,7 @@ class InferenceOrchestrator:
             use_adapter = use_adapter,
             cancel_event = cancel_event,
             stats_holder = stats_holder,
+            stop = stop,
         )
 
     def _generate_audio_input_inner(
@@ -2359,6 +2372,7 @@ class InferenceOrchestrator:
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
         stats_holder: Optional[dict] = None,
+        stop = None,
     ) -> Generator[str, None, None]:
         """Shared inner logic for audio input generation (Whisper + ASR).
 
@@ -2407,6 +2421,8 @@ class InferenceOrchestrator:
             # As in the text path: key stays absent unless the caller selected one.
             if use_adapter is not None:
                 cmd["use_adapter"] = use_adapter
+            if stop:
+                cmd["stop"] = stop
 
             # Same shared-queue hazard as _generate_inner: see _direct_reader.
             read_one, drain, release_mailbox = self._direct_reader(request_id)

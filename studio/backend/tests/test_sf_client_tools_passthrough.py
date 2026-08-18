@@ -485,6 +485,16 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     assert finishes == ["tool_calls"]
 
 
+def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
+    """An empty stop sequence is dropped rather than forwarded: it would match at
+    position 0 and end every turn before its first token."""
+    backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
+    payload = _request(stop = ["END", ""])
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
+    assert backend.calls[0]["stop"] == ["END"]
+    assert body["choices"][0]["message"]["content"] == "hi"
+
+
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):
     # A stream cancelled via the registry ("Stop") must NOT promote the
     # buffered-but-unclosed tool markup at finalize, else it executes a tool
