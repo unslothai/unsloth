@@ -1598,10 +1598,7 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
     ),
 )
 def test_supervisor_planning_and_research_are_durable_with_mocked_io(
-    research_home,
-    monkeypatch,
-    initial_synthesis,
-    recovery_in_reasoning,
+    research_home, monkeypatch, initial_synthesis, recovery_in_reasoning
 ):
     from core import research_runs as worker
 
