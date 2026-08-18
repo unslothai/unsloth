@@ -5,6 +5,11 @@ import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
+export type MmprojFallbackReason =
+  | "cpu_offload"
+  | "projector_incompatible"
+  | "projector_startup_failure";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -41,6 +46,9 @@ export interface LoadModelRequest {
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
+
+  /** Start a fresh runtime even when the active settings already match. */
+  force_reload?: boolean;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.
@@ -247,6 +255,8 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How Studio recovered after a multimodal projector failed at startup. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -336,6 +346,8 @@ export interface InferenceStatusResponse {
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How the active GGUF recovered after a multimodal projector startup failure. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
@@ -383,6 +395,22 @@ export interface InferenceStatusResponse {
    */
   spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
+  /** Only for a binary stand-down: whether a different llama-server is installed now. */
+  spec_fallback_binary_changed?: boolean | null;
+  /** The capability probe has started answering since a launch it degraded. */
+  spec_probe_retry_pending?: boolean | null;
+  /** A DFlash sidecar fetch failed retryably, which records no fallback reason. */
+  spec_dflash_retry_pending?: boolean | null;
+  /** The DSpark drafter is absent for good, not transiently unfetchable. */
+  spec_dspark_sidecar_absent?: boolean | null;
+  /** The architecture gate normalized a tensor-parallel request to layer mode. */
+  tensor_parallel_dropped_by_arch_gate?: boolean | null;
+  /** A virtualised Metal device: every GGUF request is rewritten to the CPU pin. */
+  gpu_placement_paravirtual?: boolean | null;
+  /** The post-launch audio probe did not finish; only a load retries it. */
+  audio_probe_pending?: boolean | null;
+  /** A diffusion launch right now would honour --ngl. */
+  diffusion_split_supported?: boolean | null;
 }
 
 export interface ApiMonitorEntry {

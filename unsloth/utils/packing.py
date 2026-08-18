@@ -169,10 +169,14 @@ def enable_sample_packing(
                     if isinstance(ids, Iterable):
                         seq_lengths.append(len(ids))
             if seq_lengths:
-                # Boundary labels are NOT masked here: unsloth_zoo's
+                # Boundary labels are NOT masked here. unsloth_zoo's
                 # _unsloth_get_batch_samples counts num_items_in_batch off this batch and
-                # already subtracts the N-1 boundary targets, so masking here would deduct
-                # twice on TRL < 0.24 (no pre-masking). The guard runs in the forward.
+                # discounts the N-1 boundary targets itself, idempotently: it zeroes those
+                # slots rather than subtracting a constant, so the count is unaffected by
+                # upstream masking (TRL >= 0.24's labels[position_ids == 0] = -100,
+                # completion-only masking, assistant_masks). Masking here would be harmless
+                # to the count; labels are left alone because the guard that needs these
+                # positions runs in the forward, off packed_seq_lengths.
                 batch["packed_seq_lengths"] = torch.tensor(seq_lengths, dtype = torch.int32)
                 if "attention_mask" in batch:
                     batch.pop("attention_mask")
@@ -216,7 +220,8 @@ def enable_padding_free_metadata(model, trainer):
         batch = original_torch_call(examples)
         if seq_lengths:
             # Labels left alone for the same reason as enable_sample_packing:
-            # num_items_in_batch is counted off this batch.
+            # num_items_in_batch is counted off this batch, and the zoo's discount of the
+            # boundary targets is idempotent, so masked slots do not change the count.
             batch["packed_seq_lengths"] = torch.tensor(
                 seq_lengths,
                 dtype = torch.int32,
