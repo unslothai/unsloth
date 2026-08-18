@@ -206,12 +206,35 @@ jobs:
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        timeout-minutes: 18
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium firefox webkit
+            set -- install-deps chromium firefox webkit
           else
-            python -m playwright install --with-deps chromium firefox webkit
+            set -- install --with-deps chromium firefox webkit
           fi
+          for attempt in 1 2; do
+            if timeout 480 python -m playwright "$@"; then
+              exit 0
+            fi
+            echo "::warning::playwright install attempt ${attempt} did not finish within 8 minutes; retrying"
+            sleep 15
+          done
+          echo "::error::playwright browser install did not finish in two 8-minute attempts"
+          exit 1
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
@@ -646,12 +669,35 @@ jobs:
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        timeout-minutes: 18
         run: |
           if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
-            python -m playwright install-deps chromium firefox webkit
+            set -- install-deps chromium firefox webkit
           else
-            python -m playwright install --with-deps chromium firefox webkit
+            set -- install --with-deps chromium firefox webkit
           fi
+          for attempt in 1 2; do
+            if timeout 480 python -m playwright "$@"; then
+              exit 0
+            fi
+            echo "::warning::playwright install attempt ${attempt} did not finish within 8 minutes; retrying"
+            sleep 15
+          done
+          echo "::error::playwright browser install did not finish in two 8-minute attempts"
+          exit 1
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
