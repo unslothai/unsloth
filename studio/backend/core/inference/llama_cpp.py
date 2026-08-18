@@ -11786,8 +11786,8 @@ class LlamaCppBackend:
         if _rocm_miss:
             _miss_obj, _miss_sym = _rocm_miss
             return (
-                f"llama-server could not start: bundled {os.path.basename(_miss_obj)} "
-                f"looked up {_miss_sym} in a different ROCm than it was built "
+                f"llama-server could not start: bundled {_short(os.path.basename(_miss_obj))} "
+                f"looked up {_short(_miss_sym)} in a different ROCm than it was built "
                 "against. That is a HIP/ROCR version mix, not a missing "
                 "binary and not out of VRAM. Try the Vulkan backend, or "
                 f"{LlamaCppBackend._runtime_remedy(binary)}."

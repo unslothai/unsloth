@@ -555,6 +555,17 @@ class TestBundledHipRocrMismatch:
         # The field log's symbol is not this crash; do not name it.
         assert "hsa_amd_queue_create" not in msg
 
+    def test_an_oversized_loader_token_is_bounded_in_the_message(self):
+        # Both captures are runs of non-whitespace straight from the child, and
+        # _drain_stdout keeps an unterminated line whole.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: {'s' * 8192}"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "HIP/ROCR" in msg
+        assert len(msg) < 1000
+
     def test_a_path_component_does_not_stand_in_for_the_object(self):
         out = (
             "llama-server: symbol lookup error: "
