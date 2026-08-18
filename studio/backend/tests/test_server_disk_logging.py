@@ -174,6 +174,6 @@ class TestSetupServerDiskLogging:
             "run_server must install the tee, then configure structlog, then log; "
             f"got tee@{tee_idx} setup@{setup_idx} first-log@{first_log_idx}"
         )
-        assert "LogConfig.setup_logging(" not in src[:body], (
-            "configuring structlog at import time pins it to the pre-tee sys.stdout"
-        )
+        assert (
+            "LogConfig.setup_logging(" not in src[:body]
+        ), "configuring structlog at import time pins it to the pre-tee sys.stdout"
