@@ -242,6 +242,60 @@ def test_no_job_uses_setup_pythons_built_in_pip_cache():
     )
 
 
+def _pip_cache_users():
+    """Every job that touches either half of the pip-cache action pair, discovered."""
+    return {
+        (name, jid)
+        for name, jid, job in _jobs()
+        for step in job.get("steps") or []
+        if "pip-cache-restore" in str(step.get("uses", ""))
+        or "pip-cache-save" in str(step.get("uses", ""))
+    }
+
+
+def test_only_the_allowlisted_jobs_use_the_pip_cache_actions():
+    """The allowlist has to be enforced against what the workflows DO, not iterated over.
+
+    Every other check in this file is parametrized over PIP_CACHE_JOBS, which means a new
+    job that adds the restore/save pair is simply never visited: it gets a ~700MB entry
+    with no scoping check, no wiring check and no justification, and this file stays green.
+
+    That hole opened when the built-in `cache: 'pip'` went away. The previous guard
+    discovered claimants by scanning for setup-python's `cache:` key, so replacing that
+    mechanism removed the discovery along with it, leaving nine hardcoded names and nothing
+    watching for a tenth.
+    """
+    extra = _pip_cache_users() - PIP_CACHE_JOBS
+    assert not extra, (
+        f"these jobs use the pip cache without being listed in PIP_CACHE_JOBS: "
+        f"{sorted(extra)}. Every entry competes for the shared 50 GiB budget, so a job "
+        f"earns one by installing a torch/transformers-class dependency set where the "
+        f"download dominates. Add it to the allowlist with that justification, or drop the "
+        f"cache."
+    )
+
+
+def test_every_pip_cache_user_actually_installs_something_heavy():
+    """The allowlist records a judgement; this checks the judgement still matches the job.
+
+    A job whose heavy install is later moved elsewhere keeps its cache entry, and nothing
+    else in this file would notice: the name stays in the list and every parametrized check
+    still passes.
+    """
+    thin = []
+    for name, jid in sorted(_pip_cache_users()):
+        job = dict(_workflows())[name]["jobs"][jid]
+        body = "\n".join(
+            str(step.get("run", "")) + str(step.get("with", "")) for step in job.get("steps") or []
+        )
+        if not HEAVY.search(body):
+            thin.append(f"{name}:{jid}")
+    assert not thin, (
+        f"these jobs hold a pip cache but no longer install anything that justifies it: "
+        f"{thin}"
+    )
+
+
 def _pip_cache_steps(name, jid):
     """(restore step, save step) for a job, either of which may be None."""
     job = dict(_workflows())[name]["jobs"][jid]
