@@ -180,16 +180,16 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
     "         that stays open across lines */",
     "      const total = items.reduce((sum, item) => sum + item.n, 0);",
     "      console.log(`total ${total}`);",
-    "    <\/script>",
+    "    </script>",
     "    <style>",
     "      .card { color: #333; /* comment",
     "         spanning lines */ }",
-    "    <\/style>",
-    "  <\/section>",
+    "    </style>",
+    "  </section>",
   ].join("\n");
   let source = "<!doctype html>\n<html>\n<body>\n";
   for (let i = 0; i < 12; i += 1) source += `${chunk}\n`;
-  source += "<\/body>\n<\/html>\n";
+  source += "</body>\n</html>\n";
   assert.ok(source.length > 4_000, "fixture must clear MIN_INCREMENTAL_CHARS");
 
   const highlighter = await createHighlighter({
