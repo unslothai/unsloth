@@ -4543,8 +4543,6 @@ def test_a_weight_map_naming_a_path_outside_the_snapshot_is_refused(tmp_path):
         json.dumps({"weight_map": {"mtp.fc.weight": "model.safetensors"}})
     )
     assert spec._tensor_sizes(snapshot, ("mtp.",)) == {"mtp.fc.weight": 8}
-
-
 @pytest.mark.parametrize(
     "runtime_ready,enabled,memory,reason",
     [
@@ -4899,4 +4897,193 @@ def test_the_scanner_offers_the_checked_out_revision_first(monkeypatch, tmp_path
     assert order[0] == "mmm"
     # The rest are reverse-sorted, so the ordering is total rather than partly incidental.
     assert order[1:] == ["zzz", "aaa"]
+# fmt: on
+
+
+# fmt: off
+def _seed_env(monkeypatch, *, native_head = False, cached = (),):
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
+    monkeypatch.setattr(spec, "native_mtp_tensors_present", lambda _s, _c: native_head)
+    monkeypatch.setattr(spec, "native_mtp_evidence", lambda _s, _c: None)
+    monkeypatch.setattr(spec, "_active_cached_drafter_configs", lambda: iter(cached))
+    monkeypatch.setattr(
+        spec, "mlx_speculative_runtime_capabilities",
+        lambda: {"common": True, "methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True),
+                 "reason": None},
+    )
+    return spec
+
+
+def test_a_target_with_its_own_head_is_not_told_to_download_another(monkeypatch):
+    # Why the index records this flag: a companion that exists only to give a target a head is
+    # a multi-gigabyte download for a target that already has one.
+    spec = _seed_env(monkeypatch)
+    seed = next(s for s in spec._RECOMMENDATIONS if s.requires_missing_native_mtp)
+
+    def offered(native_head):
+        rows = spec._recommended_candidate_rows(
+            seed.repo_id, _MTP_TARGET, {"methods": {}, "reason": None}, frozenset(), native_head
+        )
+        return [r.fields["repo_id"] for r in rows]
+
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+
+    assert seed.repo_id in offered(False)
+    assert seed.repo_id not in offered(True)
+
+
+def test_suppression_reads_the_head_itself_not_whether_this_runtime_can_drive_it(monkeypatch):
+    # Two facts on purpose: keying suppression on the offered built-in row would recommend the
+    # companion, on any runtime missing the splitter, to a target that already has a head.
+    spec = _seed_env(monkeypatch, native_head = True)
+    # The head is present but cannot be driven here, so no built-in row is emitted.
+    monkeypatch.setattr(spec, "native_mtp_evidence", lambda _s, _c: None)
+    seed = next(s for s in spec._RECOMMENDATIONS if s.requires_missing_native_mtp)
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+
+    offered = [c["repo_id"] for c in spec.mlx_speculative_options("org/target")["candidates"]]
+    assert spec.BUILTIN_MTP_ID not in offered
+    assert seed.repo_id not in offered
+
+
+def test_a_targets_own_head_is_offered_ahead_of_anything_downloadable(monkeypatch):
+    # Order is what the picker shows first, so a target that can draft for itself must not
+    # lead with a download.
+    spec = _seed_env(monkeypatch)
+    monkeypatch.setattr(spec, "native_mtp_evidence",
+                        lambda _s, _c: SimpleNamespace(weight_bytes = 1))
+    seed = next(s for s in spec._RECOMMENDATIONS if not s.requires_missing_native_mtp)
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+
+    offered = [c["repo_id"] for c in spec.mlx_speculative_options("org/target")["candidates"]]
+    assert offered[0] == spec.BUILTIN_MTP_ID and len(offered) > 1
+
+
+def test_every_suppressible_recommendation_has_a_detector_for_its_family():
+    # A seed suppressed by a native head is only suppressible if some handler can find that
+    # head; without one the flag reads False forever and the companion is offered for nothing.
+    from core.inference import mlx_speculative as spec
+    families_with_detection = set(spec._HANDLERS)
+    for seed in spec._RECOMMENDATIONS:
+        if not seed.requires_missing_native_mtp:
+            continue
+        families = {
+            signature[0]
+            for signature, keys in spec._RECOMMENDATION_TARGET_SHAPES.items()
+            if seed.target_key in keys
+        }
+        assert families, f"{seed.repo_id} names a target family the shape table does not"
+        assert families <= families_with_detection, (
+            f"{seed.repo_id} is suppressed by a head that {families - families_with_detection} "
+            "has no detector for"
+        )
+
+
+@pytest.mark.parametrize(
+    "key_matches,owner_allowed,owner,offered",
+    [
+        (True, True, "seed", True),
+        # A repository that merely shares a family name cannot pull in a recommendation.
+        (False, True, "seed", False),
+        # Nor can one whose owner the target does not vouch for.
+        (True, False, "seed", False),
+        (True, True, "someone-else", False),
+    ],
+)
+def test_a_recommendation_needs_the_family_and_the_owner_to_agree(
+    monkeypatch, key_matches, owner_allowed, owner, offered
+):
+    spec = _seed_env(monkeypatch)
+    seed = next(s for s in spec._RECOMMENDATIONS if s.target_owner is not None)
+
+    monkeypatch.setattr(spec, "_recommendation_target_key",
+                        lambda *_a: seed.target_key if key_matches else "other-family")
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: owner_allowed)
+    monkeypatch.setattr(spec, "_target_repository_owner",
+                        lambda _t: seed.target_owner if owner == "seed" else owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+
+    rows = list(spec._recommended_candidate_rows(
+        "org/target", _MTP_TARGET, {"methods": {}, "reason": None}, frozenset(), False
+    ))
+    assert (seed.repo_id in [r.fields["repo_id"] for r in rows]) is offered
+
+
+def test_every_source_describes_a_candidate_with_the_same_fields(monkeypatch):
+    # One repository reached by two sources: the later row replaces the earlier wholesale, which
+    # is safe only while the sources agree on the field set.
+    from core.inference import mlx_speculative as spec
+
+    caps = {"methods": dict.fromkeys(spec.MLX_SPECULATIVE_METHODS, True), "reason": None}
+    seed = next(s for s in spec._RECOMMENDATIONS if s.method == "mtp")
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *_a: True)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
+    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: True)
+    monkeypatch.setattr(spec, "native_mtp_evidence",
+                        lambda _s, _c: SimpleNamespace(weight_bytes = 1))
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
+    monkeypatch.setattr(
+        spec, "_active_cached_drafter_configs",
+        lambda: iter([(seed.repo_id, {"model_type": "x"}, Path("/nowhere"), 4096)]),
+    )
+    args = ("org/target", _MTP_TARGET, caps, frozenset({"mtp"}))
+    fields = [
+        set(next(iter(spec._recommended_candidate_rows(*args, False))).fields),
+        set(next(iter(spec._cached_candidate_rows(*args))).fields),
+        set(next(iter(spec._builtin_candidate_rows(*args))).fields),
+    ]
+    assert fields[0] == fields[1] == fields[2]
+
+
+def test_a_downloaded_drafter_replaces_the_recommendation_that_named_it(monkeypatch):
+    # The same repository reached two ways is one candidate, and it keeps the standing the
+    # index gave it while reporting the cache's view of it.
+    seed = None
+    from core.inference import mlx_speculative as spec
+
+    seed = next(s for s in spec._RECOMMENDATIONS if s.method == "mtp")
+    cached = [(seed.repo_id.upper(), {"model_type": "gemma4_assistant"}, Path("/nowhere"), 4096)]
+    spec = _seed_env(monkeypatch, cached = cached)
+
+    monkeypatch.setattr(spec, "_recommendation_target_key", lambda *_a: seed.target_key)
+    monkeypatch.setattr(spec, "_recommendation_target_owner_allowed", lambda *_a: True)
+    monkeypatch.setattr(spec, "_target_repository_owner", lambda _t: seed.target_owner)
+    monkeypatch.setattr(spec, "_target_method_contract_available", lambda *_a: True)
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *_a: True)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
+    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: True)
+
+    rows = [c for c in spec.mlx_speculative_options("org/target")["candidates"]
+            if c["repo_id"].casefold() == seed.repo_id.casefold()]
+    # One row, not two: the cached spelling differs in case and must still collapse.
+    assert len(rows) == 1
+    assert rows[0]["source"] == "cached" and rows[0]["downloaded"] is True
+    assert rows[0]["recommended"] is True
+    # Replaced wholesale, so the seed's own size does not linger on the cached row.
+    assert rows[0]["approximate_size_bytes"] == 4096
 # fmt: on

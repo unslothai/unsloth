@@ -52,6 +52,211 @@ _RECOMMENDATION_TARGET_SHAPES = {
 }
 
 
+@dataclass(frozen = True)
+class _RecommendationSeed:
+    target_key: str
+    method: str
+    repo_id: str
+    label: str
+    approximate_size_bytes: int
+    verifier_id: Optional[str] = None
+    target_owner: Optional[str] = None
+    requires_missing_native_mtp: bool = False
+
+
+_RECOMMENDATIONS = (
+    _RecommendationSeed(
+        "qwen3.5-4b",
+        "mtp",
+        "mlx-community/Qwen3.5-4B-MTP-bf16",
+        "Qwen 3.5 4B MTP",
+        241_200_628,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-4b",
+        "dflash",
+        "z-lab/Qwen3.5-4B-DFlash",
+        "Qwen 3.5 4B DFlash",
+        1_268_859_081,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-9b",
+        "mtp",
+        "mlx-community/Qwen3.5-9B-MTP-bf16",
+        "Qwen 3.5 9B MTP",
+        486_582_779,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-9b",
+        "dflash",
+        "z-lab/Qwen3.5-9B-DFlash",
+        "Qwen 3.5 9B DFlash",
+        2_583_816_465,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-27b",
+        "dflash",
+        "z-lab/Qwen3.5-27B-DFlash",
+        "Qwen 3.5 27B DFlash",
+        4_257_372_459,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-35b-a3b",
+        "dflash",
+        "z-lab/Qwen3.5-35B-A3B-DFlash",
+        "Qwen 3.5 35B-A3B DFlash",
+        771_819_674,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-122b-a10b",
+        "dflash",
+        "z-lab/Qwen3.5-122B-A10B-DFlash",
+        "Qwen 3.5 122B-A10B DFlash",
+        1_547_794_655,
+    ),
+    _RecommendationSeed(
+        "qwen3.5-397b-a17b",
+        "dflash",
+        "z-lab/Qwen3.5-397B-A17B-DFlash",
+        "Qwen 3.5 397B-A17B DFlash",
+        2_583_816_472,
+    ),
+    _RecommendationSeed(
+        "qwen3.6-27b",
+        "mtp",
+        "mlx-community/Qwen3.6-27B-MTP-bf16",
+        "Qwen 3.6 27B MTP",
+        849_400_337,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "qwen3.6-27b",
+        "dflash",
+        "z-lab/Qwen3.6-27B-DFlash",
+        "Qwen 3.6 27B DFlash",
+        3_460_432_504,
+    ),
+    _RecommendationSeed(
+        "qwen3.6-35b-a3b",
+        "mtp",
+        "mlx-community/Qwen3.6-35B-A3B-MTP-bf16",
+        "Qwen 3.6 35B-A3B MTP",
+        1_689_283_752,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "qwen3.6-35b-a3b",
+        "dflash",
+        "z-lab/Qwen3.6-35B-A3B-DFlash",
+        "Qwen 3.6 35B-A3B DFlash",
+        771_819_674,
+    ),
+    _RecommendationSeed(
+        "qwen3.8-27b",
+        "mtp",
+        "mlx-community/Qwen3.8-27B-MTP-bf16",
+        "Qwen 3.8 27B MTP",
+        849_400_335,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+    _RecommendationSeed(
+        "gemma4-e2b",
+        "mtp",
+        "google/gemma-4-E2B-it-assistant",
+        "Gemma 4 E2B MTP assistant",
+        157_565_344,
+    ),
+    _RecommendationSeed(
+        "gemma4-e4b",
+        "mtp",
+        "google/gemma-4-E4B-it-assistant",
+        "Gemma 4 E4B MTP assistant",
+        159_138_208,
+    ),
+    _RecommendationSeed(
+        "gemma4-12b",
+        "mtp",
+        "google/gemma-4-12B-it-assistant",
+        "Gemma 4 12B MTP assistant",
+        845_719_296,
+    ),
+    _RecommendationSeed(
+        "gemma4-12b",
+        "dflash",
+        "z-lab/gemma4-12B-it-DFlash",
+        "Gemma 4 12B DFlash",
+        1_455_000_120,
+    ),
+    _RecommendationSeed(
+        "gemma4-26b-a4b",
+        "mtp",
+        "google/gemma-4-26B-A4B-it-assistant",
+        "Gemma 4 26B-A4B MTP assistant",
+        839_427_840,
+    ),
+    _RecommendationSeed(
+        "gemma4-26b-a4b",
+        "dflash",
+        "z-lab/gemma-4-26B-A4B-it-DFlash",
+        "Gemma 4 26B-A4B DFlash",
+        859_384_328,
+    ),
+    _RecommendationSeed(
+        "gemma4-26b-a4b",
+        "eagle3",
+        "RedHatAI/gemma-4-26B-A4B-it-speculator.eagle3",
+        "Gemma 4 26B-A4B EAGLE-3",
+        1_855_768_160,
+        "google/gemma-4-26b-a4b-it",
+    ),
+    _RecommendationSeed(
+        "gemma4-31b",
+        "mtp",
+        "google/gemma-4-31B-it-assistant",
+        "Gemma 4 31B MTP assistant",
+        939_042_560,
+    ),
+    _RecommendationSeed(
+        "gemma4-31b",
+        "dflash",
+        "z-lab/gemma-4-31B-it-DFlash",
+        "Gemma 4 31B DFlash",
+        3_071_941_240,
+    ),
+    _RecommendationSeed(
+        "gemma4-31b",
+        "eagle3",
+        "RedHatAI/gemma-4-31B-it-speculator.eagle3",
+        "Gemma 4 31B EAGLE-3",
+        4_470_642_280,
+        "google/gemma-4-31b-it",
+    ),
+    _RecommendationSeed(
+        "muse-glimmer-30b",
+        "dflash",
+        "meta-models/Muse-Glimmer-30B-assistant",
+        "Muse Glimmer 30B DFlash assistant",
+        5_111_976_608,
+    ),
+    _RecommendationSeed(
+        "deepseek-v4-flash",
+        "mtp",
+        "mlx-community/DeepSeek-V4-Flash-MTP-bf16",
+        "DeepSeek V4 Flash MTP",
+        3_598_959_572,
+        target_owner = "mlx-community",
+        requires_missing_native_mtp = True,
+    ),
+)
+
+
 def mlx_speculative_refusal_text(reason: str) -> str:
     """The sentence for a refusal, as an error detail. Unknown reasons read generically."""
     return MLX_SPECULATIVE_REFUSALS.get(reason, MLX_SPECULATIVE_GENERIC_REFUSAL)
@@ -1337,6 +1542,34 @@ def mlx_target_snapshot_path(target_id: str) -> Path:
     return snapshot
 
 
+def mlx_speculative_snapshot_path(
+    repo_id: str,
+    target_id: Optional[str] = None,
+    method: Optional[str] = None,
+) -> Path:
+    """The cached snapshot for ``repo_id`` that fits ``target_id``.
+
+    With a target named this requires a fit rather than preferring one: a repository
+    present in more than one revision resolves to the revision that matches, and one with
+    no matching revision raises, so a stale snapshot cannot be handed to the worker.
+    """
+    target_config = _read_config(target_id) if target_id else None
+    _config, snapshot = _fitting_cached_revision(repo_id, target_id, target_config, method)
+    if snapshot is not None:
+        return snapshot
+    if target_config is not None:
+        raise FileNotFoundError(f"No compatible MLX speculative checkpoint: {repo_id}")
+    config_path = _cached_config_path(repo_id)
+    if config_path is None or not _snapshot_complete_at(config_path.parent):
+        raise FileNotFoundError(f"Incomplete MLX speculative checkpoint: {repo_id}")
+    return config_path.parent
+
+
+def native_mtp_tensors_present(snapshot: Path, config: dict[str, Any]) -> bool:
+    """Return whether the target carries a complete native head, independent of runtime support."""
+    return _native_mtp_evidence(snapshot, config, _handler_definition(config)) is not None
+
+
 def _builtin_candidate_rows(target_id, target_config, caps, enabled):
     """A row for the target's own MTP head, when it carries a complete one.
 
@@ -1387,6 +1620,71 @@ def _builtin_candidate_rows(target_id, target_config, caps, enabled):
         },
         reason,
     )
+
+
+def _recommended_candidate_rows(target_id, target_config, caps, enabled, native_head):
+    """Rows for drafters worth downloading for this target, from a curated index.
+
+    A checkpoint is proposed only for the target family it was built for, and only
+    from an owner the target itself vouches for, so a recommendation cannot be
+    steered by an unrelated repository that merely shares a name.
+    """
+    target_key = _recommendation_target_key(target_id, target_config)
+    for seed in _RECOMMENDATIONS:
+        if target_key != seed.target_key or not _recommendation_target_owner_allowed(
+            target_id, target_key
+        ):
+            continue
+        if (
+            seed.target_owner is not None
+            and _target_repository_owner(target_id) != seed.target_owner
+        ):
+            continue
+        if target_config is not None and not _target_method_contract_available(
+            seed.method, target_config
+        ):
+            continue
+        # A target that already carries a head needs no companion for the same job.
+        if seed.requires_missing_native_mtp and native_head:
+            continue
+
+        target_matches = target_config is not None and (
+            seed.verifier_id is None
+            or _verifier_matches_target(seed.verifier_id, target_id, target_config) is True
+        )
+        upstream_ready = bool(caps["methods"].get(seed.method))
+        locally_ready = seed.method in enabled
+        estimated_memory_bytes = _snapshot_weight_bytes(target_id) + seed.approximate_size_bytes
+        if target_config is None:
+            reason = "target_config_unavailable"
+        elif not target_matches:
+            reason = "checkpoint_config_mismatch"
+        elif not upstream_ready:
+            reason = caps["reason"] or "method_runtime_unavailable"
+        elif not locally_ready:
+            reason = "method_not_integrated"
+        else:
+            reason = "checkpoint_not_downloaded"
+        yield _CandidateRow(
+            seed.repo_id.casefold(),
+            _UNVERIFIED,
+            {
+                "method": seed.method,
+                "repo_id": seed.repo_id,
+                "label": seed.label,
+                "source": "recommended",
+                "recommended": True,
+                "approximate_size_bytes": seed.approximate_size_bytes,
+                "estimated_memory_bytes": estimated_memory_bytes,
+                "materialization_bytes": 0,
+                "downloaded": False,
+                "compatible": target_matches,
+                "runtime_supported": upstream_ready,
+                "integration_ready": locally_ready,
+                "loadable": False,
+            },
+            reason,
+        )
 
 
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
@@ -1468,7 +1766,24 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     rows = []
     if target_config is not None:
         args = (target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS)
-        rows = itertools.chain(_builtin_candidate_rows(*args), _cached_candidate_rows(*args))
+        # A head the target already carries suppresses the companions that exist to
+        # supply one. It is read from the checkpoint itself, independently of whether
+        # this runtime could drive it, so a runtime without speculative support does not
+        # turn into a recommendation to download what the target already has.
+        # A target that is not on disk cannot be inspected for a head, which is not an
+        # error here: it simply means nothing is suppressed.
+        native_head = False
+        try:
+            snapshot = mlx_target_snapshot_path(target_id)
+            if snapshot is not None:
+                native_head = native_mtp_tensors_present(snapshot, target_config)
+        except (OSError, RuntimeError, ValueError):
+            native_head = False
+        rows = itertools.chain(
+            _builtin_candidate_rows(*args),
+            _recommended_candidate_rows(*args, native_head),
+            _cached_candidate_rows(*args),
+        )
     return {
         "target_model": _public_target_model_id(target_id),
         "experimental": True,
