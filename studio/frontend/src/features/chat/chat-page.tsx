@@ -2112,6 +2112,25 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
+  // A chat opened as ?new=<nonce> has no thread in the URL, and it keeps none after
+  // the first send, so the model notice never saw the row that send created: switching
+  // model in a chat you just started offered nothing until you navigated away and
+  // reopened it. The store does learn the id -- runtime-provider publishes it once the
+  // visible thread is the one being persisted -- but it still holds the PREVIOUS chat's
+  // id for the first render, until ThreadNewChatSwitch blanks it in an effect. Handing
+  // that over would put the previous chat's notice on this one. So latch on having seen
+  // it blanked for this nonce; before the first send there is nothing to offer anyway.
+  const newChatBlankedRef = useRef<string | null>(null);
+  if (
+    search.new &&
+    (activeThreadId === null || isAssistantLocalThreadId(activeThreadId))
+  ) {
+    newChatBlankedRef.current = search.new;
+  }
+  const newChatThreadId =
+    search.new && newChatBlankedRef.current === search.new
+      ? persistedActiveThreadId
+      : null;
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -3693,7 +3712,7 @@ export function ChatPage({
 
         {view.mode === "single" && (
           <ChatModelNotice
-            threadId={view.threadId}
+            threadId={view.threadId ?? newChatThreadId ?? undefined}
             checkpoint={inferenceParams.checkpoint}
             selectableModelIds={selectableModelIds}
             onSwitch={handleCheckpointChange}

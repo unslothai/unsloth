@@ -226,3 +226,21 @@ test("the sidebar label cannot collide with the spinner or the unread dot", () =
   assert.match(label.slice(0, 400), /max-w-\[45%\]/);
   assert.match(label.slice(0, 400), /compareModelDisplayName\(item\.modelId\)/);
 });
+
+test("a chat started as New Chat gets the notice once its row exists", () => {
+  // ?new=<nonce> carries no thread in the URL and keeps none after the first send, so
+  // the notice saw nothing until the chat was reopened. The store's id is only this
+  // chat's after ThreadNewChatSwitch has blanked the previous one, hence the latch.
+  const gate = slice(page, "const newChatBlankedRef", "const newChatThreadId =");
+  assert.match(gate, /activeThreadId === null \|\| isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(gate, /newChatBlankedRef\.current = search\.new;/);
+
+  const derived = slice(page, "const newChatThreadId =", "\n  const");
+  assert.match(derived, /newChatBlankedRef\.current === search\.new/);
+  // The latched id is only ever the persisted one, so an unsent chat still offers nothing.
+  assert.match(derived, /\? persistedActiveThreadId/);
+  assert.match(derived, /: null/);
+
+  const notice = slice(page, "<ChatModelNotice", "/>");
+  assert.match(notice, /threadId=\{view\.threadId \?\? newChatThreadId \?\? undefined\}/);
+});
