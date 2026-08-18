@@ -878,7 +878,10 @@ class _ReadTimeoutResponse:
     ("lines", "expected"),
     (
         ((), research_runs.ModelFirstOutputTimeout),
-        (('data: {"choices": [{"delta": {"content": "hi"}}]}',), research_runs.ModelOutputIdleTimeout),
+        (
+            ('data: {"choices": [{"delta": {"content": "hi"}}]}',),
+            research_runs.ModelOutputIdleTimeout,
+        ),
     ),
 )
 def test_a_bare_read_timeout_is_reported_as_a_named_stall(monkeypatch, lines, expected):
