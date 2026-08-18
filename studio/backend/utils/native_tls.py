@@ -21,9 +21,9 @@ Studio user gains a package for a proxy they do not have; see the README there.
 Every consumer appends that directory to ``sys.path`` and imports the top-level
 name, which keeps a truststore the user installed themselves in front of ours.
 
-Defaults mirror install.sh: on for macOS and Windows, opt-in on Linux via
-``UNSLOTH_STUDIO_NATIVE_TLS=1`` (distro OpenSSL configurations vary), opt-out
-anywhere with ``0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep
+Default-on everywhere (Linux included since #9218: AppImage/.deb desktop
+launches cannot set the opt-in env var), opt-out anywhere with
+``UNSLOTH_STUDIO_NATIVE_TLS=0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep
 working, but become additive rather than exclusive, since truststore keeps the
 OS anchors alongside them; ``0`` is the way back to a bundle being the only
 trust root.
@@ -43,7 +43,7 @@ import sys
 from pathlib import Path
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
-_DEFAULT_ON_PLATFORMS = ("darwin", "win32")
+_DEFAULT_ON_PLATFORMS = ("darwin", "win32", "linux")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
 
