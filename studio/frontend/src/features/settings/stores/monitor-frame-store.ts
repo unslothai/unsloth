@@ -509,16 +509,23 @@ export function useStackGeometry(): StackPlacement {
       // Flush the restore under the suppression, or putting `transition` back
       // hands the pending max-height change to a transition after all.
       void node.scrollHeight;
-      // Taken here, with the real cap back on and the layout just flushed, so it
-      // describes the box the reader has rather than either probe above. Read
-      // every time this runs, never latched: the observers below watch the rail
-      // AND every descendant, and a placement change moves the rail's own border
-      // box, so a cap that grows to fit clears this on the same pass that applied
-      // it. That is what the derived value was protecting against, and it is
-      // still true when the reading is refreshed rather than remembered.
-      const overflows = node.scrollHeight > node.clientHeight;
-      setDomOverflowing((current) => (current === overflows ? current : overflows));
       node.style.transition = eased;
+      // Taken here, with the real cap back on and the layout already flushed by
+      // the line above, so it describes the box the reader has rather than
+      // either probe. After the `transition` restore, not between it and the
+      // flush: the cap change is already committed under the suppression, and
+      // `transition` is not itself a transitionable property, so no reflow this
+      // read forces can hand that cap to an animation.
+      //
+      // Read every time this runs, never latched: the observers below watch the
+      // rail AND every descendant, and a placement change moves the rail's own
+      // border box, so a cap that grows to fit clears this on the same pass that
+      // applied it. That is what the derived value was protecting against, and
+      // it is still true when the reading is refreshed rather than remembered.
+      const overflows = node.scrollHeight > node.clientHeight;
+      setDomOverflowing((current) =>
+        current === overflows ? current : overflows,
+      );
       setNeededRoom((current) => (current === natural ? current : natural));
       setFloorRoom((current) => (current === floor ? current : floor));
       // How much of the stack, measured up from the corner, the reader cannot
