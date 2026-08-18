@@ -418,6 +418,29 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
     return row["id"] if row else None
 
 
+def documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
+    """Every live copy of this text in the scope, oldest first.
+
+    The archive can legitimately hold more than one: a user who says the same thing twice
+    in one conversation said it twice, and the second time is often the one that matters.
+    Ordered so the nth copy lines up with the nth occurrence in the transcript.
+    """
+    rows = conn.execute(
+        "SELECT id, archive_ordinal, embedding_model, created_at FROM documents "
+        "WHERE scope=? AND sha256=? AND status!='failed' AND linked_folder_id IS NULL "
+        "ORDER BY COALESCE(archive_ordinal, -1), created_at",
+        (scope, sha256),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_archive_ordinal(conn: sqlite3.Connection, document_id: str, ordinal: int) -> None:
+    """Re-stamp one document's position. Used to migrate rows numbered by archive time."""
+    conn.execute(
+        "UPDATE documents SET archive_ordinal=? WHERE id=?", (int(ordinal), document_id)
+    )
+
+
 def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, stored_path FROM documents WHERE scope=? AND sha256=? AND status='failed' "

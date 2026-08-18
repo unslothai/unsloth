@@ -275,6 +275,9 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
 
     model = config.effective_embedding_model()
     scope = store.conversation_archive_scope(thread_id)
+    # Conversation order, read once from the persisted thread. See `_transcript_positions`
+    # for why it cannot be the order these turns reach the archive.
+    positions = _transcript_positions(thread_id)
     written = 0
     conn = None
     try:
@@ -293,7 +296,10 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             if not text:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-            if _archived_under(conn, scope, digest, expected_identity):
+            seats = _occurrences(positions, group)
+            if _archived_under(
+                conn, scope, digest, expected_identity, occurrences = len(seats) or 1
+            ):
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -302,7 +308,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 count = count,
             )
             if chunks:
-                pending.append((group, digest, chunks))
+                pending.append((group, digest, chunks, seats))
         if not pending:
             return 0
 
@@ -314,7 +320,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             normalize = True,
         )
         offset = 0
-        for group, digest, chunks in pending:
+        for group, digest, chunks, seats in pending:
             group_vectors = vectors[offset : offset + len(chunks)]
             offset += len(chunks)
             roles = " + ".join(
@@ -334,10 +340,25 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             except Exception:
                 # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
-            stale = _stale_document(conn, scope, digest, identity)
+            copies = store.documents_by_hash(conn, scope, digest)
+            stale = _stale_document(
+                conn, scope, digest, identity, occurrences = len(seats) or 1
+            )
             if stale is _ARCHIVED:
+                # Already indexed, but possibly under an archive-time number, or under no
+                # number at all if it predates the column. Re-stamp it to where the
+                # transcript says it was said, so an archive written by an earlier build
+                # converges on conversation order at the next compaction instead of
+                # keeping an order that was never true. Nothing is duplicated: this is an
+                # UPDATE on the copy that already exists.
+                for seat, copy in zip(seats, copies):
+                    if copy.get("archive_ordinal") != seat:
+                        try:
+                            store.set_archive_ordinal(conn, copy["id"], seat)
+                        except Exception:  # noqa: BLE001 -- ordering is not worth a chat
+                            logger.debug("conversation_archive.restamp_failed", exc_info = True)
                 if _write_lock:
-                    conn.rollback()
+                    conn.commit()
                 continue
             ordinal = None
             archived_at = None
@@ -369,7 +390,14 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 archived_at = previous.get("created_at")
                 store.delete_document(conn, stale, commit = False)
             else:
-                ordinal = store.next_archive_ordinal(conn, scope)
+                # The nth copy of a repeated turn takes the nth occurrence's position, so
+                # a verbatim repeat lands where it was actually said rather than behind
+                # the first time it was said.
+                ordinal = (
+                    seats[len(copies)]
+                    if seats and len(copies) < len(seats)
+                    else store.next_archive_ordinal(conn, scope)
+                )
             document_id = store.create_document(
                 conn,
                 scope = scope,
@@ -448,27 +476,90 @@ def degraded() -> bool:
 _ARCHIVED = "archived"
 
 
-def _stale_document(conn, scope: str, digest: str, identity: str):
+def _transcript_positions(thread_id: str) -> Optional[list[str]]:
+    """The thread's saved messages as normalised probe text, in the order they were said.
+
+    The ordinal has to come from the CONVERSATION, not from the moment a turn happened to
+    be archived. Eviction is not strictly oldest-first: `truncate_oldest_messages` always
+    protects the newest user group, so an agent turn's tool groups are evicted while the
+    user message that opened them is held, and a pinned instruction is evicted only once
+    it stops being pinned. Numbering by archive time then records the genuinely oldest
+    turn as the newest, and `format_conversation_recall` states outright that the higher
+    number "was said later and supersedes the earlier one". Measured before this: a
+    standing instruction archived second came back as turn 3 of 3, presented to the model
+    as superseding the two turns that actually followed it.
+
+    Read from the persisted transcript rather than the request, because four of the five
+    archive call sites pass the tool loop's already-fitted messages, whose indices shift
+    as earlier groups drop out. `studio_db` holds the whole thread and is never truncated.
+    """
+    try:
+        from core.inference.context_window import group_turns
+        from storage import studio_db
+        messages = studio_db.list_chat_messages(thread_id)
+    except Exception:
+        return None
+    if not messages:
+        return None
+    # Grouped with the evictor's own grouper, so a position is a TURN's index and not a
+    # message's: the ordinal is compared against other turns, and `archive_messages`
+    # already records how many messages a turn holds.
+    wire = [
+        {"role": message.get("role"), "content": message.get("content"),
+         "tool_calls": message.get("tool_calls")}
+        for message in messages
+    ]
+    return [_normalise(_probe_text(group[0])) for group in group_turns(wire) if group]
+
+
+def _occurrences(positions: Optional[list[str]], group: list[dict]) -> list[int]:
+    """Where this turn sits in the transcript, every time it was said.
+
+    Located by its FIRST message, which is the turn's own opening line. A list rather
+    than one index because a conversation may legitimately contain the same turn twice,
+    and the later occurrence is usually the one that matters -- "set X to 1", "set X to
+    2", "set X to 1" ends with X at 1.
+    """
+    if not positions or not group:
+        return []
+    head = _normalise(_probe_text(group[0]))
+    if not head:
+        return []
+    return [index for index, text in enumerate(positions) if text == head]
+
+
+def _stale_document(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1):
     """The document id to replace, ``_ARCHIVED`` to skip, or None to write a new one.
 
-    Hash alone is not enough. Dense search only reads documents whose recorded embedder
-    matches the query's, so a turn archived under the previous model stays hashed-and-
-    skipped while being invisible to every paraphrased search. Ingestion re-indexes in
-    that case; so does this.
+    Hash alone is not enough, twice over.
+
+    Dense search only reads documents whose recorded embedder matches the query's, so a
+    turn archived under the previous model stays hashed-and-skipped while being invisible
+    to every paraphrased search. Ingestion re-indexes in that case; so does this.
+
+    And a hash is not an identity when a user repeats themselves. ``occurrences`` is how
+    many times this exact turn appears in the transcript, so a copy is only "already
+    archived" once every occurrence has one. Without it the third turn of "set X to 1",
+    "set X to 2", "set X to 1" was dropped on the floor: never indexed, so no query could
+    reach it, and the recall then handed the model the superseded value under a header
+    saying the higher turn number supersedes the lower. Measured: 3 turns in, 2 documents
+    stored, and the block asserted X was 2.
     """
-    existing = store.document_by_hash(conn, scope, digest)
-    if existing is None:
+    copies = store.documents_by_hash(conn, scope, digest)
+    if not copies:
         return None
-    document = store.get_document(conn, existing)
-    recorded = (document or {}).get("embedding_model")
-    if config.embedding_identity_matches(recorded, identity):
-        return _ARCHIVED
-    return existing
+    for copy in copies:
+        if not config.embedding_identity_matches(copy.get("embedding_model"), identity):
+            # Re-index the stale copy before considering writing a new one.
+            return copy["id"]
+    return _ARCHIVED if len(copies) >= max(1, occurrences) else None
 
 
-def _archived_under(conn, scope: str, digest: str, identity: str) -> bool:
+def _archived_under(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1) -> bool:
     """Cheap pre-check before the chunking and embedding pass."""
-    return _stale_document(conn, scope, digest, identity) is _ARCHIVED
+    return (
+        _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
+    )
 
 
 def has_archive(thread_id: str) -> bool:

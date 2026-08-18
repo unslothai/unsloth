@@ -100,10 +100,17 @@ def test_evicted_turns_are_archived_under_the_conversation_scope(conn):
 
 
 def test_re_archiving_the_same_turns_writes_nothing(conn):
-    """The same turns are evicted again on every later request, so repeats must be free."""
+    """The same turns are evicted again on every later request, so repeats must be free.
+
+    `persist = False` on the repeat because that is what the scenario actually is: the
+    transcript is written once and the SAME turns are handed to the archive again on the
+    next request. Appending them to the thread a second time would describe a different
+    situation, a user who said the same thing twice, which is now a real distinction:
+    ordinals come from the transcript, and a genuine repeat is stored as its own turn.
+    """
     turn = _turn("what is a duck", "a waterfowl")
     first = _archive(turn)
-    second = _archive(turn)
+    second = _archive(turn, persist = False)
 
     scope = store.conversation_archive_scope(THREAD)
     assert (first, second) == (1, 0)
@@ -1875,7 +1882,10 @@ def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn,
             "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY created_at", (scope,)
         ).fetchall()
     ]
-    assert ordinals == [None, 0]
+    # 1, not 0: the ordinal is the turn's POSITION in the conversation, and the newest
+    # question is its second turn. The old allocator said 0 here only because it counted
+    # from MAX over a column holding one NULL, which is the numbering this replaced.
+    assert ordinals == [None, 1]
     text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
     assert text.index("oldest statement") < text.index("newest statement")
 
@@ -2224,3 +2234,66 @@ def test_turning_the_query_focus_off_restores_the_old_order_on_a_tied_archive(co
     assert found is not None
     returned = [value for value in values if value in found[0]]
     assert returned == values[:4], f"the knob did not restore the previous selection: {returned}"
+
+
+def test_a_turn_repeated_later_is_archived_again_at_its_own_position(conn):
+    """Saying the same thing twice is two turns, and the second one is usually the point.
+
+    The archive is idempotent by content hash, which is what makes re-archiving an
+    eviction free, but hash alone treated a genuine repeat as a duplicate: "set X to 1",
+    "set X to 2", "set X to 1" stored TWO documents for three turns, and the third turn,
+    the one holding the current value, was never indexed at all, so no query could reach
+    it. The recall then quoted turns 1 and 2 under a header stating that the higher turn
+    number was said later and supersedes the earlier one, which told the model X was 2.
+    """
+    written = [
+        _archive(_turn("set ZQXVARA123 to 1", "ok")),
+        _archive(_turn("set ZQXVARA123 to 2", "ok")),
+        _archive(_turn("set ZQXVARA123 to 1", "ok")),
+    ]
+
+    assert written == [1, 1, 1]
+    scope = store.conversation_archive_scope(THREAD)
+    assert len(store.list_documents(conn, scope)) == 3
+    found = conversation_archive.recall(THREAD, "ZQXVARA123", top_k = 4)
+    assert found is not None
+    turns = [source.get("turn") for source in found[1]]
+    # Rendered oldest first, and the repeat is LAST, which is what makes the supersedes
+    # rule in the header true.
+    assert turns == sorted(turns)
+    assert "set ZQXVARA123 to 1" in found[1][-1]["text"]
+
+
+def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn):
+    """Eviction is not strictly oldest-first, so archive time is not conversation order.
+
+    `truncate_oldest_messages` always protects the newest user group, and a pinned
+    instruction is held until it stops being pinned, so a LATER turn is routinely archived
+    before an EARLIER one. Numbering by arrival recorded the oldest turn as the newest,
+    and `format_conversation_recall` says outright that the higher number was said later
+    and supersedes the earlier one, so the block asserted the reverse of what happened.
+    """
+    conversation = (
+        _turn("the standing instruction about pelicans", "Understood.")
+        + _turn("the middle turn about pelicans", "Noted.")
+        + _turn("the final turn about pelicans", "Noted again.")
+    )
+    _save_thread(THREAD, conversation)
+
+    # Archived out of order: the later turns first, the instruction only afterwards.
+    conversation_archive.archive_turns(THREAD, conversation[2:6])
+    conversation_archive.archive_turns(THREAD, conversation[0:2])
+
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+    assert ordinals == [0, 1, 2]
+    found = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
+    assert found is not None
+    text = found[0]
+    assert text.index("standing instruction") < text.index("middle turn") < text.index("final turn")
