@@ -2135,8 +2135,7 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
 
     assert not floating, (
         "these packages carry digest-pinned baseline entries but float in requirements, "
-        "so the security audit goes red whenever upstream publishes: "
-        + "; ".join(floating)
+        "so the security audit goes red whenever upstream publishes: " + "; ".join(floating)
     )
     gaps = {
         pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
