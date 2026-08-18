@@ -1387,9 +1387,8 @@ def test_provisional_tool_provenance_stamps_mcp_display_name(tmp_path, monkeypat
 
 
 def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch):
-    """The display name is presentation only. Routing, approvals and replay all
-    key off mcp__<serverId>__<tool>, so it must survive a server whose display
-    name would otherwise be substituted into the name."""
+    """Routing, approvals and replay all key off mcp__<serverId>__<tool>, so the
+    display name must stay presentation only."""
     _reset_db(tmp_path, monkeypatch)
     mcp_servers_db.create_server(id = "srv1", display_name = "GitHub", url = "https://a/m")
     from core.inference.tool_loop_controller import (
