@@ -695,6 +695,9 @@ export async function startJob(
         kind: req.kind,
         transport: started,
         attached: result.attached === true,
+        // A cancel can land while this start is in flight, and the reissue
+        // above is the giveaway. Do not promise a download that is stopping.
+        live: result.state === "running" && !rt.cancelRequested,
         shown: xetNoticesShown(),
       })
     ) {

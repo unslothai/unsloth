@@ -31,6 +31,7 @@ const XET_MODEL = {
   kind: "model",
   transport: "xet",
   attached: false,
+  live: true,
 } as const;
 
 test("the notice is for Xet model downloads and nothing else", () => {
@@ -46,6 +47,13 @@ test("attaching to someone else's job shows nothing", () => {
   // The backend accepts the start and reports that job's transport, but this
   // client began no transfer, so it must not spend one of the three either.
   assert.ok(!shouldShowXetNotice({ ...XET_MODEL, attached: true, shown: 0 }));
+});
+
+test("a start that is already stopping shows nothing", () => {
+  // Cancelling while the start POST is in flight still returns an accepted
+  // start. Promising a running download there would be a lie, and it would
+  // spend one of the three on it.
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, live: false, shown: 0 }));
 });
 
 test("it stops after the first three", () => {
