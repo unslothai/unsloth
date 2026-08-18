@@ -2050,11 +2050,29 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     assert "scan stalled" in captured.err
 
 
+def _tomllib():
+    """`tomllib` is stdlib only on 3.11+ (PEP 680); below that, the tomli backport.
+
+    pyproject's requires-python is >=3.9 and testpaths is ["tests/security"], so a bare
+    `pytest` from the repo root collects this file on 3.9 and 3.10, where a plain
+    `import tomllib` is a ModuleNotFoundError rather than a test result. tomli is already
+    a declared dependency there (extras-no-deps.txt pins it for python_version < "3.11"),
+    and this is the same shape the rest of the suite already uses -- see
+    tests/python/test_windows_xformers_wheel_match.py and
+    tests/studio/install/test_install_node_prebuilt_logic.py.
+    """
+    if sys.version_info >= (3, 11):
+        import tomllib
+
+        return tomllib
+    return pytest.importorskip("tomli")
+
+
 def _supported_python_versions(root):
     """Every `python_version` marker value pyproject's requires-python admits."""
     import re
-    import tomllib
 
+    tomllib = _tomllib()
     with open(root / "pyproject.toml", "rb") as fh:
         spec = tomllib.load(fh)["project"]["requires-python"]
     lo = re.search(r">=\s*3\.(\d+)", spec)
@@ -2073,8 +2091,7 @@ def _audited_requirements(root):
     copied through a `git+` filter. Reading only the second half is how a pinned
     package declared in pyproject goes unchecked.
     """
-    import tomllib
-
+    tomllib = _tomllib()
     for req in sorted((root / "studio" / "backend" / "requirements").glob("*.txt")):
         for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
             spec = raw.split("#", 1)[0].strip()
@@ -2198,3 +2215,50 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
         "installing there resolves to nothing at all: "
         + "; ".join(f"{pkg} uncovered on {', '.join(missing)}" for pkg, missing in gaps.items())
     )
+
+
+def test_the_toml_helpers_run_without_stdlib_tomllib(monkeypatch):
+    """The helpers above must work on 3.9/3.10, where `tomllib` does not exist.
+
+    pyproject declares requires-python >=3.9 and testpaths ["tests/security"], so a bare
+    `pytest` from the repo root runs this module on 3.9 and 3.10. `tomllib` landed in 3.11
+    (PEP 680), so an unguarded `import tomllib` there is a collection-time
+    ModuleNotFoundError, not a verdict.
+
+    Simulated rather than skipped: the interpreter running the suite is whatever CI picked
+    (3.12 today), so the below-3.11 branch is only ever reached by making the version look
+    old AND taking `tomllib` away. Doing only the second is not the same thing -- the
+    guard reads sys.version_info, not the module table.
+
+    The backport is supplied rather than required. `tests-security` installs only pytest
+    and PyYAML, so a test that leaned on a real `tomli` being importable would
+    `importorskip` its way to green there and never once execute the branch it exists to
+    cover. Registering the stdlib parser under the name the fallback looks for keeps this
+    load-bearing on every interpreter and in CI, while still proving the fallback is what
+    gets consulted, because `import tomllib` is made to fail for the duration.
+    """
+    import builtins
+    import importlib
+
+    # Read the REAL version before it is patched, and take whichever parser this
+    # interpreter genuinely has. On 3.11+ that is stdlib tomllib, which is always
+    # there, so the branch runs in CI; on a real 3.9/3.10 it is the tomli the
+    # requirements already pin, and only a machine missing both ever skips.
+    parser = (
+        importlib.import_module("tomllib")
+        if sys.version_info >= (3, 11)
+        else pytest.importorskip("tomli")
+    )
+    monkeypatch.setattr(sys, "version_info", (3, 10, 0, "final", 0))
+    monkeypatch.setitem(sys.modules, "tomli", parser)
+    real_import = builtins.__import__
+
+    def without_tomllib(name, *args, **kwargs):
+        if name == "tomllib":
+            raise ModuleNotFoundError("No module named 'tomllib'", name = "tomllib")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_tomllib)
+
+    assert _supported_python_versions(REPO_ROOT)[0] == "3.9"
+    assert any(source == "pyproject.toml" for source, _ in _audited_requirements(REPO_ROOT))
