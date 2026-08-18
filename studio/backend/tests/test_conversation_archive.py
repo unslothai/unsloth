@@ -1858,8 +1858,9 @@ def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkey
     assert text.index("ALPHAHEAD") < text.index("OMEGATAIL")
 
 
-def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_said(tmp_path,
-                                                                                   monkeypatch):
+def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_said(
+    tmp_path, monkeypatch
+):
     """Every pre-ordinal row has `turn` None, so ordering them only by chunk index leaves
     them in whatever order the two queries happened to return them: the anchor's hits
     first, then the follow-up's. `_conversation_order` breaks exactly this tie with
@@ -1893,9 +1894,14 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
     from core.rag import tool
 
     rows = {
-        "c1": {"document_id": "d1", "filename": "chat", "text": "hello",
-               "archive_ordinal": None, "chunk_index": 2,
-               "created_at": "2026-01-01T00:00:00Z"},
+        "c1": {
+            "document_id": "d1",
+            "filename": "chat",
+            "text": "hello",
+            "archive_ordinal": None,
+            "chunk_index": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+        },
     }
     hits = [SimpleNamespace(chunk_id = "c1", score = 0.5)]
 
