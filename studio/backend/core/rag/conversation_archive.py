@@ -805,15 +805,21 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     archive. The merged list is what the caller's widening loop measures, so a
     conjunction returning few rows cannot be mistaken for "nothing left to widen into".
     """
-    expressions = (store.conversation_match_queries(query)
-                   if config.CONVERSATION_QUERY_FOCUS else [None])
+    expressions = (
+        store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
+    )
     hits: list = []
     seen: set = set()
     for expression in expressions:
         if len(hits) >= fetch:
             break
         for hit in retrieval.retrieve_hybrid(
-            conn, scope, query, k = fetch, model_name = model, mode = "lexical",
+            conn,
+            scope,
+            query,
+            k = fetch,
+            model_name = model,
+            mode = "lexical",
             lexical_query = expression,
         ):
             if hit.chunk_id not in seen:
@@ -897,8 +903,7 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            merged.sort(key = lambda source: (source.get("turn") is None,
-                                              source.get("turn") or 0))
+            merged.sort(key = lambda source: (source.get("turn") is None, source.get("turn") or 0))
             kept = merged[:limit]
             return tool.render_conversation_sources(kept), kept
         kept = merged[:limit]

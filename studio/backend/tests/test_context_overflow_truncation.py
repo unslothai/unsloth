@@ -1022,10 +1022,12 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
 # to go. These cover the pin that holds it, and the bounds that stop the pin itself
 # becoming the problem.
 
+
 def _instruction(text = None):
     return {
         "role": "user",
-        "content": text or (
+        "content": text
+        or (
             "Standing instruction for the rest of this task: always report results as a "
             "markdown table, and end every reply with STATUS::ZQXVARA123-ALPHA."
         ),
@@ -1040,8 +1042,7 @@ def _filler_turns(count, chars = 800):
     out = []
     for index in range(count):
         out.append({"role": "user", "content": nudges[index % len(nudges)]})
-        out.append({"role": "assistant",
-                    "content": f"Section {index}. " + "x" * chars})
+        out.append({"role": "assistant", "content": f"Section {index}. " + "x" * chars})
     return out
 
 
@@ -1051,22 +1052,24 @@ def test_a_governing_instruction_survives_filler_turns():
 
     instruction = _instruction()
     messages = (
-        [{"role": "system", "content": "you are helpful"}, instruction,
-         {"role": "assistant", "content": "Understood."}]
+        [
+            {"role": "system", "content": "you are helpful"},
+            instruction,
+            {"role": "assistant", "content": "Understood."},
+        ]
         + _filler_turns(6)
         + [{"role": "user", "content": "continue"}]
     )
 
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
-    kept, dropped = truncate_oldest_messages(
-        messages, 0.3, protected_message_ids = pinned
-    )
+    kept, dropped = truncate_oldest_messages(messages, 0.3, protected_message_ids = pinned)
 
     assert any(message is instruction for message in kept)
     assert dropped >= 2
     # And with the knob at its shipped default the behaviour is exactly today's.
     kept_today, _ = truncate_oldest_messages(
-        messages, 0.3,
+        messages,
+        0.3,
         protected_message_ids = instruction_pin.pinned_instruction_ids(messages, groups = 0),
     )
     assert not any(message is instruction for message in kept_today)
@@ -1078,8 +1081,7 @@ def test_a_pinned_instruction_cannot_starve_the_window():
     from core.inference import instruction_pin
 
     # ~890 tokens each, so any one of them fits under the 1024 ceiling and no two do.
-    big = [_instruction("Please " + "consider this requirement carefully. " * 95)
-           for _ in range(3)]
+    big = [_instruction("Please " + "consider this requirement carefully. " * 95) for _ in range(3)]
     messages = []
     for instruction in big:
         messages += [instruction, {"role": "assistant", "content": "ok"}]
@@ -1101,9 +1103,14 @@ def test_later_long_user_turns_crowd_out_an_older_instruction():
     instruction = _instruction()
     messages = [instruction, {"role": "assistant", "content": "Understood."}]
     for index in range(3):
-        messages += [{"role": "user", "content": f"Now review section {index} of the "
-                                                 f"report and summarise it. " + "x" * 400},
-                     {"role": "assistant", "content": f"Section {index} reviewed."}]
+        messages += [
+            {
+                "role": "user",
+                "content": f"Now review section {index} of the "
+                f"report and summarise it. " + "x" * 400,
+            },
+            {"role": "assistant", "content": f"Section {index} reviewed."},
+        ]
     messages += [{"role": "user", "content": "continue"}]
 
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096)
@@ -1115,7 +1122,7 @@ def test_later_long_user_turns_crowd_out_an_older_instruction():
 
 
 def test_a_short_follow_up_is_never_pinned():
-    """"pin the last N user turns" would pin the nudge and leave the instruction."""
+    """ "pin the last N user turns" would pin the nudge and leave the instruction."""
     from core.inference import instruction_pin
 
     instruction = _instruction()
@@ -1136,10 +1143,13 @@ def test_an_upload_is_never_treated_as_filler():
     """A one-word message with an image attached is a request, not a nudge."""
     from core.inference import instruction_pin
 
-    message = {"role": "user", "content": [
-        {"type": "text", "text": "this"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-    ]}
+    message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }
 
     assert instruction_pin.is_substantive(message)
 

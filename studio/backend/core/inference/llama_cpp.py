@@ -83,7 +83,12 @@ from core.inference.llama_server_args import (
 )
 
 
-def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
+def _fit_with_instruction_pins(
+    messages,
+    *,
+    anchor_ids = None,
+    **kwargs,
+):
     """`fit_rolling_context`, plus the user's standing instructions held back from eviction.
 
     Applied through the existing `protected_message_ids` seam rather than by changing the
@@ -104,7 +109,6 @@ def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
     anchors = set(anchor_ids or ())
     try:
         from core.inference import instruction_pin
-
         pins = instruction_pin.pinned_instruction_ids(
             messages,
             prompt_target = prompt_budget(
@@ -117,9 +121,7 @@ def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
     if pins and truncation and not truncation.get("fits"):
-        return fit_rolling_context(
-            messages, protected_message_ids = anchors or None, **kwargs
-        )
+        return fit_rolling_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
 

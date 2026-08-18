@@ -43,9 +43,7 @@ CONVERSATION_QUERY_FOCUS = os.environ.get("RAG_CONVERSATION_QUERY_FOCUS", "1") =
 # says a later turn supersedes an earlier one. "relevance" restores the previous
 # rendering byte for byte. Presentation only: neither setting changes which turns are
 # selected, which is what keeps "what did I originally say" working.
-CONVERSATION_RECALL_ORDER = os.environ.get(
-    "RAG_CONVERSATION_RECALL_ORDER", "chronological"
-)
+CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chronological")
 
 UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
 # Reject uploads larger than this, so one pathological file can't drive unbounded parse

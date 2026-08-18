@@ -51,12 +51,42 @@ PIN_MAX_FRACTION = float(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_FRACTION", 
 # A pure REJECT list: it can only stop something being treated as an instruction, never
 # promote one. Deleting it changes nothing except which side of the line a long-winded
 # "okay, please keep going with that" falls on.
-_CONTINUATIONS = frozenset({
-    "continue", "continue please", "carry on", "go on", "go ahead", "keep going",
-    "proceed", "next", "more", "yes", "y", "yeah", "yep", "ok", "okay", "k", "sure",
-    "no", "n", "nope", "thanks", "thank you", "ta", "done", "good", "great", "fine",
-    "please continue", "please carry on", "resume", "and", "then",
-})
+_CONTINUATIONS = frozenset(
+    {
+        "continue",
+        "continue please",
+        "carry on",
+        "go on",
+        "go ahead",
+        "keep going",
+        "proceed",
+        "next",
+        "more",
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "ok",
+        "okay",
+        "k",
+        "sure",
+        "no",
+        "n",
+        "nope",
+        "thanks",
+        "thank you",
+        "ta",
+        "done",
+        "good",
+        "great",
+        "fine",
+        "please continue",
+        "please carry on",
+        "resume",
+        "and",
+        "then",
+    }
+)
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—]+")
 
 
@@ -80,8 +110,7 @@ def _has_non_text_part(message: dict) -> bool:
     if not isinstance(content, list):
         return False
     return any(
-        isinstance(part, dict) and part.get("type") not in (None, "text")
-        for part in content
+        isinstance(part, dict) and part.get("type") not in (None, "text") for part in content
     )
 
 
@@ -98,9 +127,12 @@ def is_substantive(message: dict, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> 
     return normalised not in _CONTINUATIONS
 
 
-def last_substantive_instruction(messages: list[dict], *,
-                                 min_chars: int = INSTRUCTION_MIN_CHARS,
-                                 skip_latest: bool = True) -> str | None:
+def last_substantive_instruction(
+    messages: list[dict],
+    *,
+    min_chars: int = INSTRUCTION_MIN_CHARS,
+    skip_latest: bool = True,
+) -> str | None:
     """The most recent real instruction, for use as a recall query.
 
     ``skip_latest`` skips the newest user message, which is the one that was too thin to
@@ -130,10 +162,14 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
     return normalised in _CONTINUATIONS or len(normalised.split()) <= 2
 
 
-def pinned_instruction_ids(messages: list[dict], *, groups: int = PIN_GROUPS,
-                           min_chars: int = INSTRUCTION_MIN_CHARS,
-                           max_tokens: int = PIN_MAX_TOKENS,
-                           prompt_target: int | None = None) -> set[int]:
+def pinned_instruction_ids(
+    messages: list[dict],
+    *,
+    groups: int = PIN_GROUPS,
+    min_chars: int = INSTRUCTION_MIN_CHARS,
+    max_tokens: int = PIN_MAX_TOKENS,
+    prompt_target: int | None = None,
+) -> set[int]:
     """`id()`s of the messages in the most recent instruction groups worth protecting.
 
     Bounded twice over. At most ``groups`` of them, and never more than ``max_tokens``
@@ -159,8 +195,11 @@ def pinned_instruction_ids(messages: list[dict], *, groups: int = PIN_GROUPS,
     # would be worse than pointless: the inline recall path REPLACES that message with a
     # new dict, so its id would go stale and silently protect nothing.
     newest_user = next(
-        (index for index in range(len(turns) - 1, -1, -1)
-         if any(m.get("role") == "user" for m in turns[index])),
+        (
+            index
+            for index in range(len(turns) - 1, -1, -1)
+            if any(m.get("role") == "user" for m in turns[index])
+        ),
         None,
     )
 

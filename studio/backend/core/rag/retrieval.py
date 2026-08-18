@@ -131,8 +131,7 @@ def retrieve_hybrid(
         return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":
         return retrieve_dense(conn, scope, query, k, model_name = model_name)
-    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL,
-                               match_query = lexical_query)
+    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL, match_query = lexical_query)
     dense = retrieve_dense(conn, scope, query, config.TOP_K_DENSE, model_name = model_name)
     return _rrf([lexical, dense], config.RRF_K, k)
 

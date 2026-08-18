@@ -10050,16 +10050,16 @@ def build_conversation_recall(
     anchor = None
     try:
         from core.inference import instruction_pin
-
         if instruction_pin.is_thin_query(query):
-            anchor = instruction_pin.last_substantive_instruction(
-                branch_messages or conversation
-            )
+            anchor = instruction_pin.last_substantive_instruction(branch_messages or conversation)
     except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
         anchor = None
     try:
         found = conversation_archive.recall(
-            thread_id, query, top_k = top_k, branch_messages = branch_messages,
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
             extra_queries = [anchor] if anchor else None,
         )
     except Exception:

@@ -1310,23 +1310,32 @@ def _instructed_thread(thread_id = THREAD):
         )
     ]
     studio_db.upsert_chat_thread(
-        {"id": thread_id, "title": "t", "modelType": "base", "modelId": "local-model",
-         "createdAt": 1}
+        {
+            "id": thread_id,
+            "title": "t",
+            "modelType": "base",
+            "modelId": "local-model",
+            "createdAt": 1,
+        }
     )
     for index, message in enumerate(turns):
         studio_db.upsert_chat_message(
-            {"id": f"{thread_id}-ins-{index}", "threadId": thread_id,
-             "role": message["role"],
-             "content": [{"type": "text", "text": message["content"]}],
-             "createdAt": index + 2}
+            {
+                "id": f"{thread_id}-ins-{index}",
+                "threadId": thread_id,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
         )
     conversation_archive.archive_turns(thread_id, turns)
     return turns
 
 
-def test_an_anaphoric_latest_message_recalls_the_governing_instruction(rag_home, rag_conn,
-                                                                       stub_embeddings):
-    """"continue" is what the user types, and what the archive gets searched for.
+def test_an_anaphoric_latest_message_recalls_the_governing_instruction(
+    rag_home, rag_conn, stub_embeddings
+):
+    """ "continue" is what the user types, and what the archive gets searched for.
 
     Pre-fix the query is the word "continue", which appears in no archived turn, so the
     recall returns nothing at all on precisely the turn that needed it. That is not a
@@ -1343,9 +1352,9 @@ def test_an_anaphoric_latest_message_recalls_the_governing_instruction(rag_home,
     assert "markdown table" in built["prefix"]
 
 
-def test_a_substantive_latest_message_still_drives_the_query_alone(rag_home, rag_conn,
-                                                                   stub_embeddings,
-                                                                   monkeypatch):
+def test_a_substantive_latest_message_still_drives_the_query_alone(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
     """The common path must be untouched: a real question is its own best query."""
     turns = _instructed_thread()
     branch = turns + [{"role": "user", "content": "What did section 3 of the report say?"}]
@@ -1365,21 +1374,25 @@ def test_a_substantive_latest_message_still_drives_the_query_alone(rag_home, rag
     assert seen["extra"] is None
 
 
-def test_no_earlier_instruction_means_no_second_query(rag_home, rag_conn, stub_embeddings,
-                                                      monkeypatch):
+def test_no_earlier_instruction_means_no_second_query(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
     """A thread of nothing but filler must behave exactly as it does today."""
     from storage import studio_db
 
     studio_db.upsert_chat_thread(
-        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model",
-         "createdAt": 1}
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
     )
     turns = [{"role": "user", "content": "ok"}, {"role": "assistant", "content": "sure"}]
     for index, message in enumerate(turns):
         studio_db.upsert_chat_message(
-            {"id": f"{THREAD}-f{index}", "threadId": THREAD, "role": message["role"],
-             "content": [{"type": "text", "text": message["content"]}],
-             "createdAt": index + 2}
+            {
+                "id": f"{THREAD}-f{index}",
+                "threadId": THREAD,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
         )
     conversation_archive.archive_turns(THREAD, turns)
     seen = {}
@@ -1392,8 +1405,11 @@ def test_no_earlier_instruction_means_no_second_query(rag_home, rag_conn, stub_e
 
     monkeypatch.setattr(conversation_archive, "recall", recording)
     tools_mod.build_conversation_recall(
-        turns + [{"role": "user", "content": "continue"}], THREAD, style = "inline",
-        top_k = 4, branch_messages = turns + [{"role": "user", "content": "continue"}],
+        turns + [{"role": "user", "content": "continue"}],
+        THREAD,
+        style = "inline",
+        top_k = 4,
+        branch_messages = turns + [{"role": "user", "content": "continue"}],
     )
 
     assert seen["extra"] is None
@@ -1416,17 +1432,19 @@ def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(ar
     # out and the block ends up with a single passage.
     for index, message in enumerate(extra):
         studio_db.upsert_chat_message(
-            {"id": f"{THREAD}-otter-{index}", "threadId": THREAD, "role": message["role"],
-             "content": [{"type": "text", "text": message["content"]}],
-             "createdAt": index + 20}
+            {
+                "id": f"{THREAD}-otter-{index}",
+                "threadId": THREAD,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 20,
+            }
         )
     conversation_archive.archive_turns(THREAD, extra)
     conversation = _conversation()
 
-    inline = tools_mod.build_conversation_recall(conversation, THREAD, style = "inline",
-                                                 top_k = 4)
-    tool_style = tools_mod.build_conversation_recall(conversation, THREAD, style = "tool",
-                                                     top_k = 4)
+    inline = tools_mod.build_conversation_recall(conversation, THREAD, style = "inline", top_k = 4)
+    tool_style = tools_mod.build_conversation_recall(conversation, THREAD, style = "tool", top_k = 4)
 
     assert "supersedes" in inline["prefix"] and "oldest first" in inline["prefix"]
     tool_result = [m for m in tool_style["messages"] if m.get("role") == "tool"][0]
@@ -1438,8 +1456,7 @@ def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(ar
 def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
     """One passage cannot be in an order, and the backoff's last rung is where room is
     tightest -- so the header must not be spent there."""
-    built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "inline",
-                                                top_k = 1)
+    built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "inline", top_k = 1)
 
     assert built is not None
     assert "supersedes" not in built["prefix"]

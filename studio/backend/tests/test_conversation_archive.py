@@ -187,8 +187,9 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
     ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")
-        return real_hybrid(conn_, scope, query, k = k, model_name = model_name, mode = mode,
-                           lexical_query = lexical_query)
+        return real_hybrid(
+            conn_, scope, query, k = k, model_name = model_name, mode = mode, lexical_query = lexical_query
+        )
 
     monkeypatch.setattr(retrieval, "retrieve_hybrid", only_lexical_works)
     found = conversation_archive.recall(THREAD, "sourdough")
@@ -1438,19 +1439,27 @@ VARIABLE = "ZQXVARA123"
 # the variable and cancelled the very effect under test -- the tests passed against the
 # unfixed build.
 _DISTRACTORS = [
-    ("What is a good default value for a retry budget?",
-     "Three attempts with backoff is a common default."),
+    (
+        "What is a good default value for a retry budget?",
+        "Three attempts with backoff is a common default.",
+    ),
     ("Change the log level to debug for now.", "Log level is debug."),
     ("Remind me to update the deployment notes later.", "I will remind you."),
-    ("Is it better to set a timeout per request or per session?",
-     "Per request is usually safer."),
-    ("Correction to my earlier note about the changelog wording.",
-     "Noted, the changelog wording is corrected."),
+    ("Is it better to set a timeout per request or per session?", "Per request is usually safer."),
+    (
+        "Correction to my earlier note about the changelog wording.",
+        "Noted, the changelog wording is corrected.",
+    ),
     ("Which branch should the release notes land on?", "The release branch."),
 ]
 
 
-def _revisions(count, thread_id = THREAD, *, distractors = 3):
+def _revisions(
+    count,
+    thread_id = THREAD,
+    *,
+    distractors = 3,
+):
     """A variable assigned, then revised, with filler that shares the vocabulary.
 
     Values are fixed rather than random so a failure is reproducible, and the filler never
@@ -1459,8 +1468,9 @@ def _revisions(count, thread_id = THREAD, *, distractors = 3):
     values = [f"10000{index}" for index in range(count)]
     filler = 0
     for value in values:
-        _archive(_turn(f"Set {VARIABLE} to {value}.", f"Understood. {VARIABLE} is {value}."),
-                 thread_id)
+        _archive(
+            _turn(f"Set {VARIABLE} to {value}.", f"Understood. {VARIABLE} is {value}."), thread_id
+        )
         for _ in range(distractors):
             question, answer = _DISTRACTORS[filler % len(_DISTRACTORS)]
             filler += 1
@@ -1509,8 +1519,12 @@ def test_the_questions_filler_cannot_outrank_the_subject(conn):
     """One slot, and it must go to the turn about the thing asked about."""
     for index in range(6):
         _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
-    _archive(_turn("What is a good default value for a retry budget?",
-                   "Three attempts with backoff is a common default value."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
 
     found = conversation_archive.recall(
         THREAD, f"What is the current value of {VARIABLE}?", top_k = 1
@@ -1536,8 +1550,9 @@ def test_the_archive_query_requires_the_rare_token_and_drops_filler():
 
 def test_recalled_turns_are_presented_oldest_first(conn):
     """The model answers with the last assignment it reads, so the order IS the answer."""
-    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
-                   "Understood."))
+    _archive(
+        _turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40, "Understood.")
+    )
     _archive(_turn(f"{VARIABLE} 222222", "Understood."))
 
     found = conversation_archive.recall(
@@ -1575,14 +1590,17 @@ def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
     first = _turn("the oldest turn", "a")
     _archive(first)
     _archive(_turn("a later turn", "b"))
-    monkeypatch.setattr(embeddings, "encode_with_identity",
-                        lambda texts, **kwargs: ([[0.5] * 8 for _ in texts], "other-model"))
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: ([[0.5] * 8 for _ in texts], "other-model"),
+    )
     _archive(first)
 
     scope = store.conversation_archive_scope(THREAD)
     rows = conn.execute(
-        "SELECT filename, archive_ordinal FROM documents WHERE scope=? "
-        "ORDER BY archive_ordinal", (scope,),
+        "SELECT filename, archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+        (scope,),
     ).fetchall()
     assert [row["archive_ordinal"] for row in rows] == [0, 1]
 
@@ -1603,7 +1621,7 @@ def test_an_archive_written_before_ordinals_still_recalls_in_order(conn):
     assert found is not None
     text, _sources = found
     assert text.index("older") < text.index("newer")
-    assert 'turn="1"' not in text          # the NULL one claims no position
+    assert 'turn="1"' not in text  # the NULL one claims no position
     assert 'turn="2"' in text
 
 
@@ -1628,8 +1646,9 @@ def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
 
     monkeypatch.setattr(config, "CONVERSATION_QUERY_FOCUS", False)
     monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
-    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
-                   "Understood."))
+    _archive(
+        _turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40, "Understood.")
+    )
     _archive(_turn(f"{VARIABLE} 222222", "Understood."))
 
     found = conversation_archive.recall(

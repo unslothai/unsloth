@@ -76,12 +76,14 @@ def _match_query(query: str) -> str:
 # Function words only, and a closed list rather than anything corpus-derived, so the
 # behaviour is reviewable and identical on every install. Nothing here can carry the
 # subject of a question.
-_ARCHIVE_STOPWORDS = frozenset("""
+_ARCHIVE_STOPWORDS = frozenset(
+    """
 a about all am an and any are as at be been being but by can could did do does doing
 for from get give had has have how i if in into is it its just let me my no not now of
 on or please should so tell that the their them then there these they this those to us
 was we were what when where which who why will with would you your
-""".split())
+""".split()
+)
 
 # Identifier-ish: a token mixing letters and digits (ZQXVARA123, 9134), one containing an
 # underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
@@ -430,8 +432,14 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
-def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int,
-                   *, match_query: str | None = None):
+def search_lexical(
+    conn: sqlite3.Connection,
+    scope,
+    query: str,
+    k: int,
+    *,
+    match_query: str | None = None,
+):
     """BM25 lexical search over one scope or several. Returns
     [(chunk_id, score)], higher = better.
 
