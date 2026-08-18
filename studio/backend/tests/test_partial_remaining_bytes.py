@@ -170,3 +170,61 @@ def test_a_local_row_is_not_capped_by_the_shards_it_already_has(blobs, state):
 
     # 2 GB on disk, so the local row advertises 2 GB, but 4 GB is still to fetch.
     assert variant_remaining_bytes_from_state("Org/Model", "Q4_K_M", None) == 4 * GB
+
+
+# --------------------------------------------------------------------------------------------
+# A partial is measured by the bytes really on disk, and one shard is credited once however
+# many repo directories the cache holds for the same repo. Both were observed against real
+# caches: an interrupted hf_transfer download and two real `hf_hub_download` calls that spelled
+# one repo id in two casings.
+# --------------------------------------------------------------------------------------------
+
+
+MB = 1024**2
+
+
+def _sparse(path: Path, written: int, logical: int) -> Path:
+    """A real sparse file: *written* bytes allocated, *logical* bytes reported."""
+    with path.open("wb") as handle:
+        handle.write(b"\xa5" * written)
+        handle.truncate(logical)
+    return path
+
+
+def test_a_sparse_partial_is_priced_by_the_bytes_it_actually_holds(blobs):
+    """hf_transfer's parallel Range writer leaves a partial whose st_size runs ahead of what has
+    been written. Crediting the logical size understated the transfer by the whole gap, and once
+    st_size reached the declared size the card read "0 B left" for a file barely started."""
+    from filelock import FileLock
+
+    plan = plan_from_expected_files(
+        "Q4_K_M",
+        [ExpectedFile(path = "model-Q4_K_M.gguf", size = 64 * MB, sha256 = SHARD_A)],
+    )
+    partial = _sparse(blobs / f"{SHARD_A}.deadbeef{hf_cache_state.INCOMPLETE_SUFFIX}", 4 * MB, 64 * MB)
+    assert partial.stat().st_size == 64 * MB
+    assert partial.stat().st_blocks * 512 < 8 * MB
+
+    # Held lock: the one state in which a partial no later attempt could reopen still counts,
+    # because a live writer is finishing it. That is exactly when it is sparsest.
+    lock_path = blobs.parent.parent / ".locks" / blobs.parent.name / f"{SHARD_A}.lock"
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
+    with FileLock(str(lock_path), timeout = 5):
+        remaining = variant_remaining_bytes("Org/Model", plan)
+
+    assert remaining is not None
+    assert remaining >= 64 * MB - 8 * MB, "credited the sparse file's logical size, not its bytes"
+
+
+def test_one_shard_in_two_case_variant_repo_dirs_is_credited_once(blobs, monkeypatch):
+    """The Hub resolves repo ids case-insensitively and huggingface_hub keeps the caller's
+    casing in the folder name, so a case-sensitive filesystem holds models--Org--Model beside
+    models--org--model. Summing the directories counted one shard twice and clamped a variant
+    still missing a whole shard to "0 B left"."""
+    root = blobs.parent.parent
+    twin = root / "models--org--model" / "blobs"
+    twin.mkdir(parents = True)
+    _write(blobs / SHARD_A, 2 * GB)
+    _write(twin / SHARD_A, 2 * GB)
+
+    assert variant_remaining_bytes("Org/Model", _split_plan()) == 2 * GB
