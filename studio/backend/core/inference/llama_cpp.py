@@ -186,6 +186,8 @@ class GgufLoadIntent:
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
+    force_reload: bool = False
+
     cpu_fallback: bool = False
 
     def __post_init__(self):
@@ -3672,6 +3674,10 @@ class LlamaCppBackend:
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
+
+        # How a requested multimodal projector recovered at startup. `cpu_offload`
+        # keeps vision; the other values accompany a deliberate text-only retry.
+        self._mmproj_fallback_reason: Optional[str] = None
         # Whether THIS load ran against a probe that did not answer, rather than one
         # that answered "no". An inconclusive probe reports every capability absent, so it
         # silently degrades speculative decoding, the DSpark sidecar and the --kv-unified
@@ -3977,6 +3983,11 @@ class LlamaCppBackend:
     def spec_fallback_reason(self) -> Optional[str]:
         """Why MTP was disabled on the last MTP-requesting load, else None."""
         return self._spec_fallback_reason
+
+    @property
+    def mmproj_fallback_reason(self) -> Optional[str]:
+        """How the active model recovered from an mmproj startup failure, else None."""
+        return self._mmproj_fallback_reason
 
     def _binary_changed_since_launch(self) -> bool:
         """Whether a different llama-server is installed than the live one was launched
@@ -4474,6 +4485,9 @@ class LlamaCppBackend:
         self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
         """Whether active runtime settings satisfy one resolved caller intent."""
+
+        if intent.force_reload:
+            return False
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -12288,6 +12302,66 @@ class LlamaCppBackend:
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
     @staticmethod
+    def _with_mmproj_offload_disabled(
+        cmd: Sequence[str], env: Optional[Mapping[str, str]] = None
+    ) -> Optional[List[str]]:
+        """Return a vision-preserving retry with the projector pinned to CPU.
+
+        llama.cpp's boolean placement flags are last-wins, so the recovery pin
+        must follow pass-through arguments that may have enabled GPU offload.
+        None means no projector is present or it already runs on CPU.
+        """
+        args = [str(arg) for arg in cmd]
+
+        def _flag(token: str) -> str:
+            return token.split("=", 1)[0].replace("_", "-").lower()
+
+        if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
+            return None
+        placements = [
+            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
+        ]
+        if placements and placements[-1] == "--no-mmproj-offload":
+            return None
+        if not placements:
+            env_value = str((env or {}).get("LLAMA_ARG_MMPROJ_OFFLOAD") or "").strip().lower()
+            if env_value in ("0", "false", "off", "no"):
+                return None
+        return args + ["--no-mmproj-offload"]
+
+    @staticmethod
+    def _is_gpu_memory_start_failure(output: str) -> bool:
+        """Whether startup output ties allocation pressure to a GPU backend."""
+        lines = (output or "").lower().splitlines()
+        allocation_markers = (
+            "out of memory",
+            "failed to allocate",
+            "cudamalloc failed",
+            "hiperroroutofmemory",
+            "vk_error_out_of_device_memory",
+        )
+        gpu_markers = (
+            "cuda",
+            "hiperror",
+            "hipmalloc",
+            "ggml_backend_hip",
+            "rocm",
+            "vulkan",
+            "vk_",
+            "metal",
+            "sycl",
+            "oneapi",
+            "musa",
+            "gpu",
+            "device memory",
+        )
+        return any(
+            any(marker in line for marker in allocation_markers)
+            and any(marker in line for marker in gpu_markers)
+            for line in lines
+        )
+
+    @staticmethod
     def _is_projector_incompatibility(output: str) -> bool:
         """True when llama-server aborted because it cannot load the model's
         vision/audio projector (mmproj), typically an installed llama.cpp
@@ -13686,6 +13760,8 @@ class LlamaCppBackend:
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
+
+                self._mmproj_fallback_reason = None
             # Both describe the process just killed, so they are reset HERE rather than
             # where the binary is resolved: everything above can bail with the old server
             # still running (a stand-down, a non-chat refusal, a cancel), and resetting on
@@ -17757,8 +17833,9 @@ class LlamaCppBackend:
                             )
                             extra_args = _fb_stripped_extras
 
-                # A too-old llama.cpp can reject a model's --mmproj projector
-                # (format message or a bare SIGSEGV); retry once text-only.
+                # Keep a multimodal model multimodal when only its GPU projector
+                # placement fails. llama.cpp owns mmproj offload separately from
+                # --gpu-layers, so retry it on CPU before removing --mmproj.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
@@ -17767,75 +17844,148 @@ class LlamaCppBackend:
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     _projector_msg = self._is_projector_incompatibility(out)
+                    _projector_memory = self._is_gpu_memory_start_failure(out)
                     _signal_mmproj_guess = self._is_signal_crash(
                         _crash_rc
                     ) and not self._output_has_nonprojector_diagnostic(out)
                     if (
                         launched_with_mmproj
                         and not _load_cancelled()
-                        and (_projector_msg or _signal_mmproj_guess)
+                        and (_projector_msg or _projector_memory or _signal_mmproj_guess)
                     ):
-                        _vision_cpu_replay_cmd = list(_last_spawn_cmd)
-                        if _projector_msg:
-                            logger.warning(
-                                "llama-server could not load this model's vision "
-                                "projector (--mmproj). The installed llama.cpp build is "
-                                "likely too old for it. Loading text-only for this "
-                                "session; run 'unsloth studio update' to enable vision."
+                        _vision_gpu_cmd = list(_last_spawn_cmd)
+                        _cpu_projector_cmd = None
+                        if not _projector_msg and _paravirtual_mmproj_pinnable(server_caps):
+                            _cpu_projector_cmd = self._with_mmproj_offload_disabled(
+                                _vision_gpu_cmd, env
                             )
-                        else:
+
+                        if _cpu_projector_cmd is not None:
                             logger.warning(
-                                "llama-server crashed while loading this model's vision "
-                                "projector (--mmproj). Retrying text-only for this "
-                                "session; if this persists, run 'unsloth studio update' "
-                                "or check GPU/driver logs."
+                                "llama-server failed while loading this model's GPU "
+                                "vision projector (--mmproj); retrying with the "
+                                "projector on CPU to preserve image input."
                             )
-                        cmd = self._strip_mmproj_args(_last_spawn_cmd)
-                        # This retry bypasses _spawn_and_wait, so refresh the
-                        # launched-argv snapshot itself -- the zero-offload
-                        # classification below must not see the stripped --mmproj.
-                        _last_spawn_cmd = list(cmd)
-                        self._is_vision = False
-                        self._mmproj_has_audio = False
-                        self._start_llama_process(cmd, env)
-                        if not self._wait_for_health(timeout = 600.0):
-                            # Read the exit code before _kill_process() clears it, so
-                            # an OS-killed text-only retry still gets the OOM message.
-                            _retry_rc = self._process.poll() if self._process is not None else None
-                            self._kill_process()
-                            # A text-only signal crash is independent evidence of a GPU
-                            # startup fault. Keep a confirmed bad projector out of the
-                            # replay; a guessed one still gets a CPU try with vision.
-                            if self._is_signal_crash(_retry_rc):
-                                _cpu_replay_cmd = (
-                                    _last_spawn_cmd if _projector_msg else _vision_cpu_replay_cmd
+                            cmd = _cpu_projector_cmd
+                            healthy = _spawn_and_wait(cmd, label = "-mmproj-cpu")
+                            if healthy:
+                                self._mmproj_fallback_reason = "cpu_offload"
+                                logger.warning(
+                                    "Vision projector loaded on CPU after GPU startup "
+                                    "failed; image input remains available for this session."
                                 )
-                                if _try_auto_vulkan_cpu_fallback(
-                                    _cpu_replay_cmd,
-                                    _retry_rc,
-                                ):
-                                    healthy = True
-                                else:
+                            else:
+                                _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
+                                _cpu_projector_rc = (
+                                    self._process.poll() if self._process is not None else None
+                                )
+                                self._kill_process()
+                                if _load_cancelled():
+                                    return False
+                                if self._is_projector_incompatibility(_cpu_projector_out):
+                                    _projector_msg = True
+                                elif self._is_gpu_memory_start_failure(_cpu_projector_out):
+                                    # The projector was already off the GPU, so removing it
+                                    # cannot repair this allocation failure; keep the real error.
                                     _raise_terminal_load_failure(
-                                        self._gpu_init_crash_message(binary)
+                                        self._classify_llama_start_failure(
+                                            _cpu_projector_out,
+                                            gguf_path,
+                                            self._model_identifier,
+                                            _cpu_projector_rc,
+                                            binary,
+                                            self._llama_log_path,
+                                            (self._api_key,),
+                                            self._extra_args,
+                                        )
                                     )
-                            if not healthy:
-                                _retry_detail = self._classify_llama_start_failure(
-                                    "\n".join(self._stdout_lines[-50:]),
+                        elif _projector_memory and _paravirtual_mmproj_pinnable(server_caps):
+                            # An env/argv pin already put mmproj on CPU. Text-only
+                            # cannot free additional GPU memory, so surface the OOM.
+                            _raise_terminal_load_failure(
+                                self._classify_llama_start_failure(
+                                    out,
                                     gguf_path,
                                     self._model_identifier,
-                                    _retry_rc,
+                                    _crash_rc,
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
                                     self._extra_args,
                                 )
-                                _raise_terminal_load_failure(
-                                    self._mmproj_retry_failure_message(
-                                        projector_confirmed = _projector_msg,
-                                        detail = _retry_detail,
-                                    )
+                            )
+
+                        if not healthy:
+                            if _projector_msg:
+                                logger.warning(
+                                    "llama-server could not load this model's vision "
+                                    "projector (--mmproj). The installed llama.cpp build is "
+                                    "likely too old for it. Loading text-only for this "
+                                    "session; run 'unsloth studio update' to enable vision."
                                 )
+                                self._mmproj_fallback_reason = "projector_incompatible"
+                            else:
+                                logger.warning(
+                                    "llama-server could not start with this model's vision "
+                                    "projector (--mmproj), including the CPU-projector "
+                                    "recovery when available. Retrying text-only for this "
+                                    "session; check memory, GPU/driver logs, or update Studio."
+                                )
+                                self._mmproj_fallback_reason = "projector_startup_failure"
+                            cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            # This retry bypasses _spawn_and_wait, so refresh the
+                            # launched-argv snapshot itself -- the zero-offload
+                            # classification below must not see the stripped --mmproj.
+                            _last_spawn_cmd = list(cmd)
+                            self._is_vision = False
+                            self._mmproj_has_audio = False
+                            self._start_llama_process(cmd, env)
+                            if self._wait_for_health(timeout = 600.0):
+                                healthy = True
+                            else:
+                                # Read the exit code before _kill_process() clears it, so
+                                # an OS-killed text-only retry still gets the OOM message.
+                                _retry_rc = (
+                                    self._process.poll() if self._process is not None else None
+                                )
+                                self._kill_process()
+                                # A text-only signal crash is independent evidence of a GPU
+                                # startup fault. Keep a confirmed bad projector out of the
+                                # replay; a guessed one still gets a CPU try with vision.
+                                if self._is_signal_crash(_retry_rc):
+                                    _cpu_replay_cmd = (
+                                        _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
+                                    )
+                                    if _try_auto_vulkan_cpu_fallback(
+                                        _cpu_replay_cmd,
+                                        _retry_rc,
+                                    ):
+                                        healthy = True
+                                        # A whole-runtime CPU replay with the original
+                                        # vision argv supersedes the text-only diagnosis.
+                                        if not _projector_msg:
+                                            self._mmproj_fallback_reason = None
+                                    else:
+                                        _raise_terminal_load_failure(
+                                            self._gpu_init_crash_message(binary)
+                                        )
+                                if not healthy:
+                                    _retry_detail = self._classify_llama_start_failure(
+                                        "\n".join(self._stdout_lines[-50:]),
+                                        gguf_path,
+                                        self._model_identifier,
+                                        _retry_rc,
+                                        binary,
+                                        self._llama_log_path,
+                                        (self._api_key,),
+                                        self._extra_args,
+                                    )
+                                    _raise_terminal_load_failure(
+                                        self._mmproj_retry_failure_message(
+                                            projector_confirmed = _projector_msg,
+                                            detail = _retry_detail,
+                                        )
+                                    )
                     else:
                         # Try the drafter launch first, non-terminally: a build that
                         # can neither pin one to CPU nor start with it still recovers
@@ -18781,6 +18931,8 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
+
+            self._mmproj_fallback_reason = None
             self._capability_probe_inconclusive = False
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
