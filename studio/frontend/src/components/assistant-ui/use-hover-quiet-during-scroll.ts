@@ -21,6 +21,23 @@ import { useEffect } from "react";
  * no long tasks at all, which is the gesture's own 20-step floor. So each boundary crossing costs
  * about 90ms of main-thread work on a thread that size.
  *
+ * THOSE NUMBERS DESCRIBE A CPU ABOUT 4x SLOWER THAN THE HOST THAT MEASURED THEM
+ *
+ * Stated because re-running the same harness, the same arm and the same 20-step gesture on an
+ * IDLE host does not reproduce them, and a reader who checks would otherwise conclude the
+ * measurement was wrong. Base against this branch, medians of 5 interleaved repetitions per cell,
+ * varying nothing but `Emulation.setCPUThrottlingRate`:
+ *
+ *     rate   base                                    this branch
+ *     1x      667.2ms,  0 frames >33ms,  0 long tasks  666.6ms, 0, 0
+ *     2x      949.8ms,  8 frames >33ms,  3 long tasks  699.8ms, 1, 0
+ *     4x     1537.5ms, 12 frames >33ms, 11 long tasks  733.4ms, 1, 1
+ *
+ * The gutter arm, which generates no boundary events, is flat across all three rates on both
+ * trees, so what the rate changes is the price of a boundary event and not the gesture. At 1x the
+ * base is already inside frame budget and there is no win to measure; the numbers above are the
+ * case for this hook on a busy machine or a slow laptop, not a claim about every host.
+ *
  * WHY THE COST IS NOT LOCAL, AND WHY THE OBVIOUS FIX MAKES IT WORSE
  *
  * The write is per-message but the notification is not: its cost scales with how many subscribed
