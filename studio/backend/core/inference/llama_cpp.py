@@ -1035,6 +1035,10 @@ _TOOL_TEMPLATE_MARKERS = (
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
 # actually understands.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+_MUSE_GLIMMER_REASONING_STRENGTHS = ("low", "medium", "high", "xhigh")
+_MUSE_GLIMMER_MODEL_RE = re.compile(
+    r"(?:^|[\\/_-])muse[-_]?glimmer(?:$|[\\/_:.-])", re.IGNORECASE
+)
 
 
 def _extract_reasoning_effort_levels(chat_template: str) -> list:
@@ -1113,6 +1117,23 @@ def detect_reasoning_flags(
         logger.info(
             f"{prefix}model supports reasoning "
             f"(enable_thinking + reasoning_effort: {effort_levels})"
+        )
+    elif (
+        "reasoning_strength" in tpl
+        and (
+            _MUSE_GLIMMER_MODEL_RE.search(model_identifier or "")
+            or "Reasoning strength" in tpl
+        )
+    ):
+        # Muse Glimmer is an always-thinking model with a named strength dial.
+        # Its template consumes ``reasoning_strength`` rather than the public
+        # OpenAI-style ``reasoning_effort`` field used by the Studio UI/API.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "reasoning_effort"
+        flags["reasoning_effort_levels"] = list(_MUSE_GLIMMER_REASONING_STRENGTHS)
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(reasoning_strength: {flags['reasoning_effort_levels']})"
         )
     elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
@@ -4241,6 +4262,10 @@ class LlamaCppBackend:
             # the template's default effort (max) in place.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
+            if (getattr(self, "_architecture", None) or "").replace("_", "-").lower() == (
+                "muse-glimmer"
+            ):
+                return {"reasoning_strength": "high" if enable_thinking else "low"}
             return _coerce_reasoning_effort(
                 getattr(self, "_architecture", None),
                 {"reasoning_effort": "high" if enable_thinking else "low"},
@@ -4281,12 +4306,30 @@ class LlamaCppBackend:
                 if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
-                if reasoning_effort in ("none", "low", "medium", "high"):
-                    kwargs["reasoning_effort"] = reasoning_effort
-                elif reasoning_effort == "minimal":
-                    kwargs["reasoning_effort"] = "low"
-                elif enable_thinking is not None:
-                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+                is_muse_glimmer = (
+                    (getattr(self, "_architecture", None) or "")
+                    .replace("_", "-")
+                    .lower()
+                    == "muse-glimmer"
+                )
+                if is_muse_glimmer:
+                    # Muse cannot turn reasoning off. Map the public effort
+                    # control to its template's four trained strength values.
+                    if reasoning_effort in _MUSE_GLIMMER_REASONING_STRENGTHS:
+                        kwargs["reasoning_strength"] = reasoning_effort
+                    elif reasoning_effort in ("none", "minimal"):
+                        kwargs["reasoning_strength"] = "low"
+                    elif enable_thinking is not None:
+                        kwargs["reasoning_strength"] = (
+                            "high" if enable_thinking else "low"
+                        )
+                else:
+                    if reasoning_effort in ("none", "low", "medium", "high"):
+                        kwargs["reasoning_effort"] = reasoning_effort
+                    elif reasoning_effort == "minimal":
+                        kwargs["reasoning_effort"] = "low"
+                    elif enable_thinking is not None:
+                        kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
             else:
                 if enable_thinking is not None:
                     kwargs["enable_thinking"] = enable_thinking

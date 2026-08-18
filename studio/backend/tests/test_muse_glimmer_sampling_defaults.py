@@ -29,6 +29,14 @@ if str(_backend_root) not in sys.path:
 
 EXPECTED = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0}
 
+MUSE_GLIMMER_TEMPLATE = """
+{%- macro render_reasoning() -%}
+  {%- set rs = reasoning_strength if reasoning_strength is defined and reasoning_strength else 'high' -%}
+  {{- 'Reasoning strength: ' + rs + '.' -}}
+{%- endmacro -%}
+{%- if message.reasoning_content is defined -%}{{- message.reasoning_content -}}{%- endif -%}
+"""
+
 # Every shape an id reaches load_inference_config as. The snapshot path is not
 # hypothetical: _repo_gguf_load_id publishes a snapshot filesystem path as the
 # load_id for a GGUF repo in a non-active cache root.
@@ -92,3 +100,60 @@ def test_unrelated_families_are_untouched():
     assert _resolve("unsloth/Llama-4-Scout-17B-16E-Instruct")["top_k"] == -1
     assert _resolve("unsloth/Qwen3-8B")["temperature"] == 0.6
     assert _resolve("unsloth/Kimi-K3-GGUF")["temperature"] == 1.0
+
+
+@pytest.mark.parametrize(
+    "model_id", ["meta-models/Muse-Glimmer-30B", "/models/renamed-model.gguf"]
+)
+def test_reasoning_strength_template_exposes_exact_published_ladder(model_id):
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    flags = detect_reasoning_flags(MUSE_GLIMMER_TEMPLATE, model_id)
+    assert flags["supports_reasoning"] is True
+    assert flags["reasoning_style"] == "reasoning_effort"
+    assert flags["reasoning_always_on"] is False
+    assert flags["reasoning_effort_levels"] == ["low", "medium", "high", "xhigh"]
+
+
+def test_gguf_request_maps_effort_to_reasoning_strength():
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._supports_reasoning = True
+    backend._reasoning_style = "reasoning_effort"
+    backend._reasoning_always_on = False
+    backend._reasoning_effort_levels = ["low", "medium", "high", "xhigh"]
+    backend._supports_preserve_thinking = False
+    backend._architecture = "muse-glimmer"
+
+    assert backend._request_reasoning_kwargs(None, "xhigh") == {
+        "reasoning_strength": "xhigh"
+    }
+    assert backend._request_reasoning_kwargs(False, "none") == {
+        "reasoning_strength": "low"
+    }
+
+
+class _MuseTemplateTokenizer:
+    chat_template = MUSE_GLIMMER_TEMPLATE
+
+    def __init__(self):
+        self.render_kwargs = None
+
+    def apply_chat_template(self, messages, *, tokenize = False, **kwargs):
+        self.render_kwargs = kwargs
+        return "rendered"
+
+
+def test_safetensors_render_maps_effort_to_reasoning_strength():
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    tokenizer = _MuseTemplateTokenizer()
+    result = apply_chat_template_for_generation(
+        tokenizer,
+        [{"role": "user", "content": "hi"}],
+        reasoning_effort = "medium",
+    )
+    assert result == "rendered"
+    assert tokenizer.render_kwargs["reasoning_strength"] == "medium"
+    assert "reasoning_effort" not in tokenizer.render_kwargs

@@ -2489,10 +2489,29 @@ def apply_chat_template_for_generation(
         _markup = markup_for_tokenizer(tokenizer, tools)
     messages = neutralize_control_markup_in_messages(messages, None, _markup)
     reasoning_kwargs: dict = {}
-    if enable_thinking is not None:
-        reasoning_kwargs["enable_thinking"] = enable_thinking
-    if reasoning_effort is not None:
-        reasoning_kwargs["reasoning_effort"] = reasoning_effort
+    active_templates = tuple(
+        template
+        for obj in _tokenizer_objects(tokenizer)
+        for template in _selected_chat_template_strings(obj, tools)
+    )
+    uses_reasoning_strength = any(
+        "reasoning_strength" in template for template in active_templates
+    )
+    if uses_reasoning_strength:
+        # Muse Glimmer names the same user-facing concept differently and has
+        # no true off mode. Keep the public API stable while rendering the
+        # template variable it actually consumes.
+        if reasoning_effort in ("low", "medium", "high", "xhigh"):
+            reasoning_kwargs["reasoning_strength"] = reasoning_effort
+        elif reasoning_effort in ("none", "minimal"):
+            reasoning_kwargs["reasoning_strength"] = "low"
+        elif enable_thinking is not None:
+            reasoning_kwargs["reasoning_strength"] = "high" if enable_thinking else "low"
+    else:
+        if enable_thinking is not None:
+            reasoning_kwargs["enable_thinking"] = enable_thinking
+        if reasoning_effort is not None:
+            reasoning_kwargs["reasoning_effort"] = reasoning_effort
     if preserve_thinking is not None:
         reasoning_kwargs["preserve_thinking"] = preserve_thinking
 

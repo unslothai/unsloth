@@ -41,6 +41,10 @@ _SELF_HOSTED_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
 _QWEN38_MODEL_RE = re.compile(r"(?:^|[\/_-])qwen-?3\.8(?:$|[\/:_-])", re.IGNORECASE)
+_MUSE_GLIMMER_MODEL_RE = re.compile(
+    r"(?:^|[\\/_-])muse[-_]?glimmer(?:$|[\\/_:.-])", re.IGNORECASE
+)
+_MUSE_GLIMMER_REASONING_STRENGTHS = frozenset({"low", "medium", "high", "xhigh"})
 _LMSTUDIO_QWEN38_REASONING_TOKENS = {
     "low": 4_096,
     "medium": 16_384,
@@ -1180,13 +1184,29 @@ class ExternalProviderClient:
                     # template, while this prevents "low" from running until
                     # the model's much larger default budget.
                     body["reasoning_tokens"] = reasoning_tokens
-            if self.provider_type == "llama_cpp":
+            is_muse_glimmer = bool(_MUSE_GLIMMER_MODEL_RE.search(model))
+            if self.provider_type == "llama_cpp" or (
+                is_muse_glimmer and self.provider_type in {"custom", "vllm"}
+            ):
                 # llama.cpp currently applies non-"none" levels only when they
-                # are supplied to the model's Jinja template explicitly.
+                # are supplied to the model's Jinja template explicitly. Muse
+                # Glimmer uses reasoning_strength; vLLM/custom self-hosted
+                # connections need that same request-level template override.
                 tpl_kw = body.get("chat_template_kwargs")
                 if not isinstance(tpl_kw, dict):
                     tpl_kw = {}
-                tpl_kw["reasoning_effort"] = reasoning_effort
+                if is_muse_glimmer:
+                    strength = (
+                        reasoning_effort
+                        if reasoning_effort in _MUSE_GLIMMER_REASONING_STRENGTHS
+                        else "low"
+                        if reasoning_effort in {"none", "minimal"}
+                        else None
+                    )
+                    if strength is not None:
+                        tpl_kw["reasoning_strength"] = strength
+                else:
+                    tpl_kw["reasoning_effort"] = reasoning_effort
                 body["chat_template_kwargs"] = tpl_kw
 
         # OpenRouter's unified `reasoning` field gates per-model thinking.

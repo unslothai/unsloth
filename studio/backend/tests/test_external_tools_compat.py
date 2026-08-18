@@ -405,6 +405,59 @@ def test_lmstudio_reasoning_budget_is_not_guessed_for_other_models(monkeypatch):
     assert "reasoning_tokens" not in captured["body"]
 
 
+@pytest.mark.parametrize("provider_type", ["custom", "llama_cpp", "vllm"])
+def test_muse_glimmer_effort_reaches_reasoning_strength_template_kwarg(
+    monkeypatch, provider_type
+):
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = provider_type,
+            base_url = "http://local.example/v1",
+            api_key = "",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "meta-models/Muse-Glimmer-30B",
+                reasoning_effort = "xhigh",
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning_effort"] == "xhigh"
+    assert captured["body"]["chat_template_kwargs"] == {
+        "reasoning_strength": "xhigh"
+    }
+
+
+def test_lmstudio_muse_glimmer_forwards_openai_reasoning_effort(monkeypatch):
+    captured: dict = {}
+    _mock_http_client(monkeypatch, _capturing_handler(captured))
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "lmstudio",
+            base_url = "http://localhost:1234/v1",
+            api_key = "",
+        )
+        await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "muse-glimmer-30b",
+                reasoning_effort = "high",
+            )
+        )
+        await client.close()
+
+    _drive(run())
+    assert captured["body"]["reasoning_effort"] == "high"
+    assert "chat_template_kwargs" not in captured["body"]
+
+
 # ── 5. response_format reaches the native provider shapes ────────────
 
 

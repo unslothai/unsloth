@@ -185,6 +185,29 @@ test("Qwen3.8 self-hosted models expose their exact reasoning ladder", () => {
   }
 });
 
+test("Muse Glimmer self-hosted models expose controllable always-on reasoning", () => {
+  for (const provider of ["custom", "llama_cpp", "lmstudio", "vllm"]) {
+    for (const model of [
+      "meta-models/Muse-Glimmer-30B",
+      "unsloth/Muse-Glimmer-30B-GGUF:UD-Q4_K_XL",
+    ]) {
+      const caps = getExternalReasoningCapabilities(provider, model);
+      assert.equal(caps.supportsReasoning, true, `${provider}: ${model}`);
+      assert.equal(
+        caps.reasoningStyle,
+        "reasoning_effort",
+        `${provider}: ${model}`,
+      );
+      assert.equal(caps.supportsReasoningOff, false, `${provider}: ${model}`);
+      assert.deepEqual(
+        [...caps.reasoningEffortLevels],
+        ["low", "medium", "high", "xhigh"],
+        `${provider}: ${model}`,
+      );
+    }
+  }
+});
+
 test("LM Studio is a dedicated remote-catalog connection", () => {
   const preset = CUSTOM_PROVIDER_PRESETS.find(
     (candidate) => candidate.providerType === "lmstudio",
