@@ -40,6 +40,12 @@ import {
   Streamdown,
   type StreamdownProps,
 } from "streamdown";
+import {
+  BlockWindowDocument,
+  useBlockWindowMarker,
+  useBlockWindowMounted,
+  useBlockWindowPaneActive,
+} from "./block-window-context";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -410,6 +416,47 @@ function StreamdownBlockContent(props: BlockProps) {
   return <Block {...blockProps} />;
 }
 const StreamdownBlock = memo(StreamdownBlockContent);
+
+/**
+ * The block component used while a reasoning pane streams: the same block, behind the pane's
+ * just-in-time window.
+ *
+ * A withheld block returns null and costs nothing but this function, so the heavy component above
+ * -- with its store subscription, its plugin filtering and its Shiki highlighting -- is never
+ * instantiated for a block that is not in the window. The source string handed to Streamdown is
+ * untouched; Streamdown still splits the whole document and still calls this for every index.
+ *
+ * The slot element is `display: contents` (see src/index.css) so it generates no box and margin
+ * collapsing between adjacent markdown blocks is unaffected. Its `firstElementChild` is the
+ * block's marker for geometry. Block 0 is not wrapped: nothing needs its offset, and leaving it
+ * bare keeps Streamdown's own first-child margin rule on the element it was written for.
+ */
+function WindowedStreamdownBlockContent(props: BlockProps) {
+  const mounted = useBlockWindowMounted(props.index, props.content);
+  if (!mounted) {
+    return null;
+  }
+  // Block 0 is never given a slot: nothing needs its offset, since that is 0 by definition, and
+  // leaving it bare keeps Streamdown's own `[&>*:first-child]:mt-0` on the element it was
+  // written for.
+  if (props.index === 0) {
+    return <StreamdownBlock {...props} />;
+  }
+  return <MarkedStreamdownBlock {...props} />;
+}
+
+/** A mounted block plus the slot element the window measures it by. */
+function MarkedStreamdownBlock(props: BlockProps) {
+  const attachMarker = useBlockWindowMarker(props.index);
+  return (
+    <div data-aui-block-slot="" ref={attachMarker}>
+      <StreamdownBlock {...props} />
+    </div>
+  );
+}
+
+const WindowedStreamdownBlock = memo(WindowedStreamdownBlockContent);
+
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
@@ -507,6 +554,10 @@ const MarkdownTextImpl = () => {
     ? incrementalCache.update(processedText)
     : null;
 
+  // Only a streaming reasoning pane supplies a window. Everywhere else this is false and the
+  // block component, and therefore the whole tree below, is exactly what it is today.
+  const windowed = useBlockWindowPaneActive();
+
   const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
     return <AudioPlayer src={audioMatch[1]} />;
@@ -517,6 +568,7 @@ const MarkdownTextImpl = () => {
       value={messageHasRenderableRenderHtmlTool}
     >
       <div data-status={status.type} className="min-w-0 max-w-full">
+        <BlockWindowDocument>
         <Streamdown
           key={`${messageId}:${incrementalCache.renderGeneration}`}
           mode="streaming"
@@ -529,10 +581,11 @@ const MarkdownTextImpl = () => {
           urlTransform={safeMarkdownUrl}
           controls={STREAMDOWN_CONTROLS}
           shikiTheme={STREAMDOWN_SHIKI_THEME}
-          BlockComponent={StreamdownBlock}
+          BlockComponent={windowed ? WindowedStreamdownBlock : StreamdownBlock}
         >
           {incrementalRender?.markdown ?? processedText}
         </Streamdown>
+        </BlockWindowDocument>
       </div>
     </RenderHtmlToolPresenceContext.Provider>
   );

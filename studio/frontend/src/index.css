@@ -2389,6 +2389,42 @@ html[data-chat-font] .aui-root {
 		}
 	}
 
+	/* The streaming reasoning pane renders only a window of Markdown blocks and wraps each mounted
+	   one in a slot element so it has something to measure (components/assistant-ui/block-window-context.tsx).
+	   `display: contents` means the slot generates no box, so margin collapsing between adjacent
+	   markdown blocks is unaffected -- but it also means the slot cannot CARRY a margin, and
+	   Streamdown spaces its blocks with three rules that all select the container's DIRECT
+	   children, which the slot has become:
+
+	       space-y-4                 :where(& > :not(:last-child)) { margin-block-end: 1rem }
+	       [&>*:first-child]:mt-0
+	       [&>*:last-child]:mb-0
+
+	   So they are restated one level down. The first is wrapped in :where() to keep Tailwind's
+	   zero specificity, which is what lets a block's own margin utility (h2's mb-2) beat it, as it
+	   does today. The other two are not, because the rules they stand in for carry class
+	   specificity and beat those utilities today. Block index 0 is never wrapped, so the plain
+	   first-child rule still applies to it directly.
+
+	   Verified rather than reasoned about: rendering seven documents twice in Chromium, once
+	   plain and once wrapped, every element's position and the pane's scrollHeight are identical
+	   with these rules and differ without them. */
+	:where([data-aui-block-slot]) {
+		display: contents;
+	}
+
+	:where([data-aui-block-slot]) > * {
+		margin-block-end: 1rem;
+	}
+
+	[data-aui-block-slot]:first-child > *:first-child {
+		margin-block-start: 0;
+	}
+
+	[data-aui-block-slot]:not(:has(~ [data-aui-block-slot] > *)) > *:last-child {
+		margin-block-end: 0;
+	}
+
 	[data-streamdown="unordered-list"] {
 		list-style-type: disc;
 		list-style-position: outside;

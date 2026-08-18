@@ -5,6 +5,8 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
+import { PANE_BOTTOM_THRESHOLD_PX } from "@/components/assistant-ui/block-window";
+import { BlockWindowPaneProvider } from "@/components/assistant-ui/block-window-context";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import {
   Collapsible,
@@ -41,7 +43,6 @@ import {
   useState,
 } from "react";
 const ANIMATION_DURATION = 200;
-const AUTO_SCROLL_THRESHOLD_PX = 24;
 
 export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
@@ -211,7 +212,7 @@ function ReasoningText({
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       if (
         detachedFromBottomRef.current &&
-        distanceFromBottom <= AUTO_SCROLL_THRESHOLD_PX
+        distanceFromBottom <= PANE_BOTTOM_THRESHOLD_PX
       ) {
         detachedFromBottomRef.current = false;
       }
@@ -250,6 +251,12 @@ function ReasoningText({
     <div
       ref={scrollRef}
       data-slot="reasoning-text"
+      // Scroll anchoring is switched off rather than depended on. The block window compensates
+      // the scroll position itself, explicitly, in the layout effect that drops the blocks:
+      // Playwright's WebKit implements `overflow-anchor` and real Safari does not, so leaving it
+      // on would let the sanctioned test proxy show anchoring working while the WebKitGTK embed
+      // that ships in Tauri drifted.
+      style={{ overflowAnchor: "none" }}
       className={cn(
         "aui-reasoning-text relative z-0 overflow-y-auto pt-2 pb-0 pl-0 leading-relaxed",
         streaming ? "max-h-64" : "",
@@ -266,7 +273,9 @@ function ReasoningText({
       )}
       {...props}
     >
-      {children}
+      <BlockWindowPaneProvider paneRef={scrollRef} enabled={Boolean(streaming)}>
+        {children}
+      </BlockWindowPaneProvider>
     </div>
   );
 }
