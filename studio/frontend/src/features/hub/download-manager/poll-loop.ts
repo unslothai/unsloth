@@ -69,7 +69,7 @@ import {
   XET_NOTICE_DESCRIPTION_CLASS,
   XET_NOTICE_DURATION_MS,
   XET_NOTICE_TITLE,
-  recordXetNoticeShown,
+  reserveXetNotice,
   shouldShowXetNotice,
   xetNoticesShown,
 } from "./xet-progress-notice";
@@ -701,11 +701,15 @@ export async function startJob(
         shown: xetNoticesShown(),
       })
     ) {
-      recordXetNoticeShown();
-      toast.info(XET_NOTICE_TITLE, {
-        description: XET_NOTICE_DESCRIPTION,
-        duration: XET_NOTICE_DURATION_MS,
-        classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
+      // Reserving is async (a cross-tab lock), and nothing below waits on a
+      // toast, so let the download get on with it.
+      void reserveXetNotice().then((reserved) => {
+        if (!reserved) return;
+        toast.info(XET_NOTICE_TITLE, {
+          description: XET_NOTICE_DESCRIPTION,
+          duration: XET_NOTICE_DURATION_MS,
+          classNames: { description: XET_NOTICE_DESCRIPTION_CLASS },
+        });
       });
     }
     // An adopted job can already have fallen back from Xet to HTTP, which

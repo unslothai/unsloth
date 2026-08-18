@@ -58,6 +58,28 @@ export function recordXetNoticeShown(): void {
   }
 }
 
+/** Take one of the three, or report that none are left.
+ *
+ * localStorage has no compare-and-set, so two tabs starting a download at the
+ * same moment can both read the same count and both show the toast. Web Locks
+ * are cross-tab, so the read and the write happen as one. Browsers without
+ * them fall back to the plain check, which is the race above and still bounded
+ * at one extra toast. */
+export async function reserveXetNotice(): Promise<boolean> {
+  const take = () => {
+    if (xetNoticesShown() >= XET_NOTICE_LIMIT) return false;
+    recordXetNoticeShown();
+    return true;
+  };
+  const locks = globalThis.navigator?.locks;
+  if (!locks) return take();
+  try {
+    return await locks.request(XET_NOTICE_STORAGE_KEY, take);
+  } catch {
+    return take();
+  }
+}
+
 /** Only the transport that behaves this way, and only while it is news.
  *
  * A start that attached to a job another tab or client already owns is
