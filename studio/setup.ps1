@@ -21,53 +21,6 @@
 
 $ErrorActionPreference = "Stop"
 
-# ── Opt-in phase timing (UNSLOTH_INSTALL_TIMING=1) ────────────────────────────
-# This installer is the single largest step in every Windows CI job -- 260-291s,
-# against 88s for the same install on Linux -- and until this existed there was no
-# way to tell which phase spent it. There are no timestamps anywhere in the output
-# and the only Stopwatch in this file is inside the llama.cpp source-build branch,
-# which CI never takes. Guessing was actively risky: `unsloth studio update` on an
-# already-complete install costs 297s, MORE than the 281s full install it follows,
-# which is the opposite of what a download-bound install would do.
-#
-# Off unless explicitly enabled, so ordinary users see byte-identical output. Set,
-# every `step` / `substep` line is prefixed with seconds since the script started,
-# which turns any install log into a phase breakdown. Started here rather than next
-# to the print helpers so it covers the work that happens before them.
-#
-# `[bool]` on its own is not enough: in PowerShell every non-empty string is true,
-# so UNSLOTH_INSTALL_TIMING=0 would enable it.
-$script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
-# Continue the OUTER installer's clock when there is one. install.ps1 does the uv
-# bootstrap and the whole Unsloth dependency install before it hands off to this
-# script, so a stopwatch started here reads 0.0s at a point that is already minutes
-# into the run, and the two halves of one install log would each count from their own
-# zero. install.ps1 publishes its start as UTC ticks; anything else (unset, or junk
-# inherited from an outer process) falls back to starting the clock here.
-$script:StudioTimingSw = $null
-# Only when timing is ON, and only for a tick count that is actually a DateTime. A bare
-# TryParse is not enough: it accepts -1 and 9223372036854775807, which parse as [long]
-# but are outside DateTime's range, and the constructor then THROWS. Under this script's
-# $ErrorActionPreference = "Stop" that turns junk inherited from an outer process into a
-# fatal installer startup error, which is the opposite of the documented fallback, and it
-# would have happened even with the feature disabled.
-if ($script:StudioTimingEnabled -and $env:UNSLOTH_INSTALL_TIMING_T0) {
-    [long]$_t0 = 0
-    if ([long]::TryParse($env:UNSLOTH_INSTALL_TIMING_T0, [ref]$_t0) -and
-        $_t0 -ge [System.DateTime]::MinValue.Ticks -and
-        $_t0 -le [System.DateTime]::MaxValue.Ticks) {
-        $_elapsed = [System.DateTime]::UtcNow - [System.DateTime]::new($_t0, [System.DateTimeKind]::Utc)
-        if ($_elapsed.Ticks -ge 0) {
-            $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
-            $script:StudioTimingOffset = $_elapsed
-        }
-    }
-}
-if (-not $script:StudioTimingSw) { $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew() }
-if (-not (Test-Path Variable:script:StudioTimingOffset)) {
-    $script:StudioTimingOffset = [System.TimeSpan]::Zero
-}
-
 # This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
 # below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
 # instead of the link: the VC++ runtime (24.4 MB, Ensure-VCRedist) took 38.18s with the bar on
@@ -1801,17 +1754,6 @@ function step {
         [Parameter(Mandatory = $true)][string]$Value,
         [string]$Color = "Green"
     )
-    # Prefix the VALUE rather than each sink below, so all four output paths (mirror, VT,
-    # plain, and the colourless fallback) carry the timing without touching any of their
-    # formatting. Inline rather than a helper call, and Test-Path-guarded: this function is
-    # dot-sourced ON ITS OWN by tests/python/test_windows_setup_output_encoding.py, where
-    # neither a helper nor the $script: state above exists, and reading an unset $script:
-    # variable under a caller's Set-StrictMode is fatal rather than empty.
-    if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-        $_e = $script:StudioTimingSw.Elapsed
-        if (Test-Path Variable:script:StudioTimingOffset) { $_e = $_e + $script:StudioTimingOffset }
-        $Value = ("[{0,7:N1}s] " -f $_e.TotalSeconds) + $Value
-    }
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     # Exactly one sink: the console handle when redirected, Write-Host (the only
     # one that colorizes) when interactive.
@@ -1850,13 +1792,6 @@ function substep {
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = "DarkGray"
     )
-    # Same reasoning as `step` above: prefix once, before the sinks diverge, inline and
-    # guarded so this function still runs when dot-sourced on its own.
-    if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-        $_e = $script:StudioTimingSw.Elapsed
-        if (Test-Path Variable:script:StudioTimingOffset) { $_e = $_e + $script:StudioTimingOffset }
-        $Message = ("[{0,7:N1}s] " -f $_e.TotalSeconds) + $Message
-    }
     # Exactly one sink, as in `step` above.
     if ($script:StudioStdoutRedirected) {
         Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)

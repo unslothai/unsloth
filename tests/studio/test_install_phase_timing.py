@@ -1,95 +1,278 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`UNSLOTH_INSTALL_TIMING` prefixes installer output with elapsed seconds, and only then.
+"""CI prefixes installer output with elapsed seconds, without touching the installers.
 
-`Install Unsloth (--local, --no-torch)` is the largest step in every Windows CI job: 260s of
-Windows API CI's 374s, 291s of Windows UI CI's 715s, 281s of Windows Update CI's 794s. The
-same install on Linux is 88s. Across the ~11 Windows cells a commit triggers, that is roughly
-50 minutes of Windows runner time per commit spent installing the same thing.
+`Install Unsloth (--local, --no-torch)` is the largest step in most jobs that run it:
+260-291s of a Windows job, ~90s median on Linux across 40 jobs. Which phase spends it was,
+until this filter existed, unknowable from a CI log -- neither `install.sh` nor
+`studio/setup.ps1` emits a timestamp anywhere. Guessing has been actively misleading:
+`unsloth studio update --local` over an already-complete install costs 297s, MORE than the
+281s full install it follows, which is the opposite of what a download-bound install does.
 
-Which phase spends it was, until this switch existed, unknowable from a CI log: neither
-`studio/setup.ps1` nor `studio/setup.sh` emits a timestamp anywhere, and the one Stopwatch in
-setup.ps1 sits inside the llama.cpp source-build branch that CI never takes. Guessing would
-have been actively misleading -- `unsloth studio update` over an already-complete install
-costs 297s, MORE than the 281s full install it follows, which is the opposite of what a
-download-bound install does.
+The timing is a **display filter on a stream CI already pipes**, not a feature of the
+installers. That distinction is the whole design and it is what these tests guard:
 
-Two things have to hold, and the first is the one that would annoy real users rather than
-break CI, so it is asserted rather than trusted:
+  * `install.sh`, `install.ps1`, `studio/setup.sh` and `studio/setup.ps1` are user-facing
+    and are not modified. No environment variable, no switch, no truthiness rule, and no
+    way for a real user's install to behave differently from a CI one.
+  * The filter sits **downstream of the log write**. `logs/install.log` keeps byte-for-byte
+    what the installer produced, so the ~30 places that read or grep that artifact are
+    unaffected -- including `interrupted-install-ci.yml:185`, which matches
+    `^\\[TAURI:STEP\\]` anchored at line start and would silently stop matching if a prefix
+    reached the file.
 
-  * OFF by default. In PowerShell every non-empty string is truthy, so a bare
-    `[bool]$env:UNSLOTH_INSTALL_TIMING` treats "0" as enabled; in bash an unquoted default
-    does the same. Both halves must reject "" and "0" explicitly.
-  * The Windows install steps must actually request it, or the breakdown never appears in the
-    logs that motivated the switch.
+Both properties fail SILENTLY when broken -- a reordered pipeline still goes green, and an
+installer edit still installs -- so they are asserted rather than reviewed.
 """
 
+import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-SETUP_PS1 = REPO / "studio" / "setup.ps1"
-SETUP_SH = REPO / "studio" / "setup.sh"
-INSTALL_PS1 = REPO / "install.ps1"
-INSTALL_SH = REPO / "install.sh"
 WORKFLOWS = REPO / ".github" / "workflows"
+ACTION = REPO / ".github" / "actions" / "install-unsloth-local" / "action.yml"
 
-ENV_VAR = "UNSLOTH_INSTALL_TIMING"
+# The four scripts this feature deliberately does not touch.
+INSTALLERS = (
+    REPO / "install.sh",
+    REPO / "install.ps1",
+    REPO / "studio" / "setup.sh",
+    REPO / "studio" / "setup.ps1",
+)
+
+# Markers of the two filter dialects, each paired with the log-writing stage that must
+# come before it in the same pipeline.
+POSIX_FILTER = 'printf \'[%4ds] %s\\n\' "$SECONDS"'
+PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
-def test_the_powershell_half_rejects_zero_rather_than_treating_it_as_truthy():
-    src = SETUP_PS1.read_text(encoding = "utf-8")
-    line = next(
-        (l for l in src.splitlines() if "StudioTimingEnabled" in l and "=" in l and "if" not in l),
+# --------------------------------------------------------------------------------------
+# The installers stay out of it
+# --------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("script", INSTALLERS, ids = lambda p: p.name)
+def test_the_installers_carry_no_timing_machinery(script):
+    """The first cut of this feature put the clock inside the installers. It should not.
+
+    That version needed a `UNSLOTH_INSTALL_TIMING` switch, an off-by-default rule that
+    differs between PowerShell (every non-empty string is truthy, so "0" enabled it) and
+    bash, and a `UNSLOTH_INSTALL_TIMING_T0` epoch handed from the outer installer to the
+    inner one -- which then had to be bounds-checked, because a parseable but out-of-range
+    long crashes `[System.DateTime]::new(ticks)` and a non-numeric value aborts POSIX
+    `$(( ))` under `set -u`. None of that exists now, and this test is what keeps it from
+    coming back one convenience at a time.
+    """
+    src = script.read_text(encoding = "utf-8")
+    assert "UNSLOTH_INSTALL_TIMING" not in src, (
+        f"{script.name} interprets UNSLOTH_INSTALL_TIMING. The install timing is a CI-side "
+        f"display filter over a stream that is already piped; putting it back inside the "
+        f"installer re-adds a user-facing switch, a shell-specific truthiness rule and a "
+        f"cross-process epoch handoff, for output CI can prefix for free."
+    )
+
+
+# --------------------------------------------------------------------------------------
+# Where the filter is, and what has to come before it
+# --------------------------------------------------------------------------------------
+
+
+def _run_bodies():
+    """Every `run:` body in the workflows and in the composite action, with its origin."""
+    paths = sorted(WORKFLOWS.glob("*.yml")) + [ACTION]
+    for path in paths:
+        doc = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        if not isinstance(doc, dict):
+            continue
+        if path == ACTION:
+            groups = [("runs", (doc.get("runs") or {}).get("steps") or [])]
+        else:
+            groups = [
+                (jid, job.get("steps") or [])
+                for jid, job in (doc.get("jobs") or {}).items()
+                if isinstance(job, dict)
+            ]
+        for jid, steps in groups:
+            for step in steps:
+                if isinstance(step, dict) and step.get("run"):
+                    yield path, jid, step.get("name") or "<unnamed>", str(step["run"])
+
+
+def _prefixing_bodies():
+    for path, jid, name, run in _run_bodies():
+        if POSIX_FILTER in run or PWSH_FILTER in run:
+            yield path, jid, name, run
+
+
+def test_the_filter_is_actually_wired_somewhere():
+    """A scan that found nothing would pass every check below on an empty set."""
+    bodies = list(_prefixing_bodies())
+    assert len(bodies) >= 7, (
+        f"only {len(bodies)} steps prefix installer output with elapsed seconds. Expected "
+        f"the composite POSIX action, five Windows install.ps1 pipelines and the two "
+        f"`unsloth studio update` steps."
+    )
+
+
+def test_every_windows_install_pipeline_is_timed():
+    """Five steps run install.ps1 directly; a sixth added later must not be missed."""
+    untimed = [
+        f"{path.name}:{jid}:{name}"
+        for path, jid, name, run in _run_bodies()
+        if "install.ps1 --local --no-torch" in run and PWSH_FILTER not in run
+    ]
+    assert not untimed, (
+        f"these Windows install steps produce no phase breakdown, so their 260-291s stays "
+        f"unattributable: {untimed}"
+    )
+
+
+def test_the_posix_install_action_is_timed():
+    run = next(
+        (r for p, _, _, r in _run_bodies() if p == ACTION and "install.sh" in r),
         None,
     )
-    assert line, "setup.ps1 no longer sets $script:StudioTimingEnabled"
-    assert f"$env:{ENV_VAR} -ne '0'" in line, (
-        f'the guard against a truthy "0" is gone from: {line.strip()!r}. PowerShell treats '
-        f"every non-empty string as true, so {ENV_VAR}=0 would switch timing ON."
+    assert run, "the install-unsloth-local action no longer runs install.sh"
+    assert POSIX_FILTER in run, (
+        "the shared POSIX install action no longer prefixes elapsed seconds. It is the one "
+        "definition behind 40 jobs, so the breakdown disappears from all of them at once."
     )
 
 
-def _sh_function(name: str) -> str:
-    """The body of a shell function in setup.sh, as text."""
-    src = SETUP_SH.read_text(encoding = "utf-8")
-    start = src.index(f"\n{name}() {{")
-    depth, i = 0, start
-    while True:
-        if src[i] == "{":
-            depth += 1
-        elif src[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return src[start : i + 1]
-        i += 1
+def _code_only(run: str) -> str:
+    """``run`` with whole-line ``#`` comments dropped.
+
+    Load-bearing for the ordering checks below, not tidiness. These steps carry a comment
+    block that explains the design by NAMING the stages -- "Tee-Object writes
+    logs/install.log upstream of this filter" -- so an ordering check over the raw body
+    finds `Tee-Object` in the prose long before the pipeline and reports correct order no
+    matter how the pipeline is actually written. Verified: without this the pwsh
+    reorder-mutation goes green.
+
+    Whole-line comments only, which is what these bodies use; `#` inside the format
+    strings would otherwise be at risk, and neither dialect needs one here.
+    """
+    return "\n".join(l for l in run.splitlines() if not l.lstrip().startswith("#"))
 
 
-@pytest.mark.parametrize("fn", ["step", "substep"])
-def test_the_bash_half_rejects_zero_and_empty(fn):
-    body = _sh_function(fn)
-    assert re.search(
-        r'""\|0\)', body
-    ), f'setup.sh\'s {fn}() no longer treats "" and 0 as off:\n{body}'
+@pytest.mark.parametrize(
+    "marker,writer",
+    [(POSIX_FILTER, "tee "), (PWSH_FILTER, "Tee-Object")],
+    ids = ["posix", "pwsh"],
+)
+def test_the_prefix_is_applied_after_the_log_is_written(marker, writer):
+    """Reordering to `| prefix | tee` is a one-character-class edit and stays green.
+
+    It would put the prefix into `logs/install.log`, which roughly 30 steps read. Most
+    grep it for substrings and would survive, but `interrupted-install-ci.yml:185` matches
+    `^\\[TAURI:STEP\\]` anchored at line start: every line would gain a `[  12s] ` prefix,
+    the grep would match nothing, and the step asserts on what it found. That is a silent
+    false pass in a workflow this PR does not otherwise touch.
+    """
+    for path, jid, name, body in _prefixing_bodies():
+        run = _code_only(body)
+        if marker not in run:
+            continue
+        assert writer in run, (
+            f"{path.name}:{jid}:{name} prefixes elapsed seconds but never writes the "
+            f"unprefixed stream to a log at all"
+        )
+        assert run.index(writer) < run.index(marker), (
+            f"{path.name}:{jid}:{name} applies the elapsed prefix BEFORE {writer.strip()}, "
+            f"so the prefix lands in the log artifact rather than only in the step log. "
+            f"Roughly 30 steps read those logs, and interrupted-install-ci.yml anchors a "
+            f"pattern at line start against one of them."
+        )
+
+
+def test_the_powershell_clock_is_started_before_it_is_read():
+    """`$sw` is an ordinary variable, and PowerShell does not require it to exist.
+
+    Without `Set-StrictMode` an undefined `$sw` is `$null`, so `$sw.Elapsed.TotalSeconds`
+    yields nothing and `-f` renders an empty field. The step log then shows `[    s] ` on
+    every line: no error, no failure, and a breakdown that reads as a formatting quirk
+    rather than as a broken measurement. Deleting the declaration is exactly the kind of
+    edit a later cleanup makes.
+    """
+    for path, jid, name, body in _prefixing_bodies():
+        run = _code_only(body)
+        if PWSH_FILTER not in run:
+            continue
+        assert "Stopwatch]::StartNew()" in run, (
+            f"{path.name}:{jid}:{name} reads $sw.Elapsed without starting a Stopwatch, so "
+            f"every elapsed field renders empty and the step still passes"
+        )
+        assert run.index("Stopwatch]::StartNew()") < run.index(PWSH_FILTER), (
+            f"{path.name}:{jid}:{name} starts its Stopwatch after the pipeline that reads "
+            f"it"
+        )
+
+
+def test_a_failing_install_still_fails_its_step():
+    """Adding pipeline stages is exactly how a `tee` idiom loses its exit status."""
+    for path, jid, name, run in _prefixing_bodies():
+        if POSIX_FILTER in run:
+            assert "set -o pipefail" in run, (
+                f"{path.name}:{jid}:{name} pipes the installer through two stages without "
+                f"pipefail, so the step reports the status of the prefix loop -- always 0 "
+                f"-- and a failed install passes"
+            )
+        if PWSH_FILTER in run:
+            # The comparison, not the bare variable name: `$child` already ends with
+            # `exit $LASTEXITCODE`, so a substring test for the name alone stays green
+            # after the outer check is deleted. Confirmed by mutation.
+            assert re.search(r"\$LASTEXITCODE\s+-ne\s+0", run), (
+                f"{path.name}:{jid}:{name} no longer throws on a non-zero $LASTEXITCODE "
+                f"after the pipeline. PowerShell does not fail a step for a native "
+                f"command's exit code, so a failing install.ps1 leaves the step green."
+            )
+
+
+def test_the_posix_filter_does_not_swallow_the_last_line():
+    """`while read` drops a final line with no trailing newline, and that is often the error.
+
+    Cheap to get wrong, invisible when wrong: the install still fails on its exit status,
+    but the message explaining why is the line that disappeared.
+    """
+    for path, jid, name, run in _prefixing_bodies():
+        if POSIX_FILTER not in run:
+            continue
+        assert '|| [ -n "$line" ]' in run, (
+            f"{path.name}:{jid}:{name} reads with a bare `while IFS= read -r line`, which "
+            f"discards output that ends without a newline"
+        )
+
+
+# --------------------------------------------------------------------------------------
+# Run the real filters, rather than only reading them
+# --------------------------------------------------------------------------------------
+
+
+def _posix_filter_body() -> str:
+    """The POSIX pipeline as the composite action actually declares it.
+
+    Extracted rather than restated so this exercises the shipped text: a copy in the test
+    would keep passing after the action was broken.
+    """
+    run = next(r for p, _, _, r in _run_bodies() if p == ACTION and "install.sh" in r)
+    return run
 
 
 def _bash_runs_posix_scripts() -> bool:
-    """Whether `bash` here is a real POSIX shell, rather than Windows' WSL launcher.
+    """Whether `bash` here is a real POSIX shell rather than Windows' WSL launcher.
 
     On a windows-latest runner `bash` resolves to the WSL stub, which ignores the script
-    entirely and exits 1 with a UTF-16 "no distributions installed, use `wsl --install`"
-    message on stdout. That is not a finding about setup.sh, so these two tests skip there
-    rather than failing: the cross-platform parity job runs this file on Windows too, and
-    setup.sh is not the installer Windows uses.
-
-    Probed rather than keyed off sys.platform, so a Windows box that does have a working
-    git-bash still runs them.
+    and exits 1 with a UTF-16 "no distributions installed" message. That is not a finding
+    about the filter, so the executing tests skip there. Probed rather than keyed off
+    sys.platform, so a Windows box with a working git-bash still runs them.
     """
     try:
         probe = subprocess.run(
@@ -104,297 +287,118 @@ BASH_OK = _bash_runs_posix_scripts()
 
 
 def test_the_bash_probe_still_finds_bash_where_bash_exists():
-    """A skip condition that silently became always-true would disable the two tests below.
-
-    setup.sh is the installer for Linux and macOS, so on those platforms the probe failing
-    means the probe is broken, not that the environment lacks a shell.
-    """
+    """A skip condition that quietly became always-true would disable the tests below."""
     if sys.platform.startswith("win"):
         pytest.skip("Windows has no POSIX bash by default; that is the case being skipped")
     assert BASH_OK, (
-        "the POSIX-bash probe failed on a platform that ships bash, so the two tests that "
-        "actually execute setup.sh's print helpers are being skipped everywhere"
+        "the POSIX-bash probe failed on a platform that ships bash, so the tests that "
+        "actually execute the shipped filter are being skipped everywhere"
     )
 
 
-@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
-@pytest.mark.parametrize("fn", ["step", "substep"])
-def test_the_bash_helpers_are_silent_by_default_and_prefix_when_asked(fn):
-    """Run the real function. A text check alone would not catch a broken printf."""
-    script = "C_DIM= C_OK= C_RST= C_WARN=\n" + _sh_function(fn) + f'\n{fn} "lbl" "msg"\n'
-    base = {"PATH": "/usr/bin:/bin"}
+def _run_posix_filter(tmp_path, fake_installer: str):
+    """Run the action's real pipeline with install.sh swapped for a fake, and report both.
 
-    for env in (base, {**base, ENV_VAR: "0"}, {**base, ENV_VAR: ""}):
-        r = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
-        assert r.returncode == 0, r.stderr
-        assert "s] " not in r.stdout, f"timing leaked into default output: {r.stdout!r}"
-
-    on = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True, env = {**base, ENV_VAR: "1"}
-    )
-    assert on.returncode == 0, on.stderr
-    assert re.search(
-        r"\[ *\d+s\] ", on.stdout
-    ), f"{ENV_VAR}=1 produced no elapsed prefix: {on.stdout!r}"
-
-
-def test_both_print_helpers_carry_the_prefix():
-    """Prefixing one sink and not the other would time half the install."""
-    src = SETUP_PS1.read_text(encoding = "utf-8")
-    for fn, var in (("function step {", "$Value"), ("function substep {", "$Message")):
-        block = src[src.index(fn) :][:1600]
-        assert (
-            "Variable:script:StudioTimingEnabled" in block
-        ), f"{fn.strip()} no longer consults the timing switch"
-        assert (
-            f'{var} = ("[{{0,7:N1}}s] "' in block
-        ), f"{fn.strip()} does not prefix {var} with the elapsed time"
-    for fn in ("step", "substep"):
-        assert "SECONDS" in _sh_function(fn), f"setup.sh {fn}() carries no timing"
-
-
-def test_the_print_helpers_call_nothing_defined_elsewhere_in_the_file():
-    """They are dot-sourced ON THEIR OWN, so a call out of them is a crash, not a warning.
-
-    tests/python/test_windows_setup_output_encoding.py builds a probe script containing only
-    Get-StudioAnsi, Write-StudioLine, Write-StudioStdoutMirror, step and substep, and runs it.
-    A first cut of this feature had `step` call a `Get-StudioElapsedPrefix` helper defined at
-    the top of setup.ps1; the probe then died with "The term 'Get-StudioElapsedPrefix' is not
-    recognized" and took 12 tests with it. The timing logic is inline for that reason, and
-    reads its state through Test-Path so an unset $script: variable is empty rather than
-    fatal under a caller's Set-StrictMode.
+    Returns (returncode, stdout, log_bytes). The fake writes a phase line, sleeps, writes
+    a second, then a final line with no trailing newline.
     """
-    src = SETUP_PS1.read_text(encoding = "utf-8")
-    allowed = {
-        "Get-StudioAnsi",
-        "Write-StudioLine",
-        "Write-StudioStdoutMirror",
-        "Write-Host",
-        "Test-Path",
-    }
-    for fn in ("function step {", "function substep {"):
-        block = src[src.index(fn) :]
-        block = block[: block.index("\n}\n") + 3]
-        # Comments out: the block explains itself by NAMING the cmdlets it must not call.
-        block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
-        called = set(re.findall(r"\b([A-Z][a-z]+-[A-Za-z]+)\b", block))
-        stray = called - allowed
-        assert not stray, (
-            f"{fn.strip()} calls {sorted(stray)}, which the encoding probe does not "
-            f"dot-source alongside it. Inline it instead."
-        )
-
-
-def _windows_steps(pattern: str):
-    """(workflow, job id, job, step) for every Windows step whose `run` matches."""
-    for f in sorted(WORKFLOWS.glob("studio-windows-*.yml")):
-        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
-        for jid, job in (doc.get("jobs") or {}).items():
-            if not isinstance(job, dict):
-                continue
-            for step in job.get("steps") or []:
-                if re.search(pattern, str(step.get("run", ""))):
-                    yield f.name, jid, job, step
-
-
-def _timing_enabled(job: dict, step: dict) -> bool:
-    """Job-scope env is inherited by every step, so either level counts."""
-    for scope in (step, job):
-        if (scope.get("env") or {}).get(ENV_VAR) in ("1", 1):
-            return True
-    return False
-
-
-def test_every_windows_install_step_asks_for_the_breakdown():
-    steps = list(_windows_steps(r"install\.ps1 --local --no-torch"))
-    assert steps, "no Windows step runs install.ps1 --local --no-torch any more"
-    missing = [f"{name}:{jid}" for name, jid, job, step in steps if not _timing_enabled(job, step)]
-    assert not missing, (
-        f"these Windows install steps do not set {ENV_VAR}, so their logs stay unreadable "
-        f"about where the 260-291s goes: {missing}"
-    )
-
-
-def test_the_update_invocations_ask_for_it_too():
-    """The 297s no-op update is the anomaly that motivated the switch.
-
-    `unsloth studio update --local` over an already-complete install cost MORE than the
-    281s full install it followed. A variable scoped to the install step alone left that
-    number exactly as unexplained as before, since the update steps declare their own env.
-    """
-    steps = list(_windows_steps(r"unsloth studio update"))
-    assert steps, "no Windows step runs `unsloth studio update` any more"
-    missing = [
-        f"{name}:{jid}: {step.get('name')}"
-        for name, jid, job, step in steps
-        if not _timing_enabled(job, step)
-    ]
-    assert not missing, (
-        f"these update steps produce no phase breakdown: {missing}. Setting {ENV_VAR} at "
-        f"job scope covers them and any step added later."
-    )
-
-
-def test_the_outer_installer_is_timed_as_well_as_the_child():
-    """install.ps1 is what CI runs; setup.ps1 is only the second half of it.
-
-    The uv bootstrap and the whole Unsloth dependency install happen in install.ps1
-    before it hands off, so instrumenting only studio/setup.ps1 leaves the larger half of
-    the 260-291s unattributed.
-    """
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert "StudioTimingEnabled" in src, (
-        "install.ps1 carries no phase timing, so the outer half of the Windows install is "
-        "invisible in the log and the child's clock restarts at the handoff"
-    )
-    assert (
-        f"$env:{ENV_VAR} -ne '0'" in src
-    ), f'install.ps1\'s timing switch lost its guard against a truthy "0"'
-    for fn in ("function step {", "function substep {"):
-        block = src[src.index(fn) :][:2000]
-        assert (
-            "Variable:script:StudioTimingEnabled" in block
-        ), f"install.ps1's {fn.strip()} does not consult the timing switch"
-
-
-def test_the_child_continues_the_parent_clock_rather_than_restarting_it():
-    """Two halves each counting from their own zero cannot be read as one timeline."""
-    outer = INSTALL_PS1.read_text(encoding = "utf-8")
-    inner = SETUP_PS1.read_text(encoding = "utf-8")
-    handoff = f"{ENV_VAR}_T0"
-    assert f"$env:{handoff} =" in outer, (
-        f"install.ps1 no longer publishes {handoff}, so setup.ps1 restarts the clock at the "
-        f"handoff and its numbers no longer line up with the outer installer's"
-    )
-    assert (
-        f"$env:{handoff}" in inner
-    ), f"setup.ps1 ignores {handoff}, so it counts from its own zero"
-    assert "TryParse" in inner, (
-        "setup.ps1 no longer parses the handoff defensively; junk inherited from an outer "
-        "process must fall back to starting the clock locally, not crash the installer"
-    )
-
-
-@pytest.mark.parametrize("script", [SETUP_PS1, SETUP_SH])
-def test_timing_is_never_enabled_unconditionally(script):
-    """The switch must stay a switch. Hardcoding it on changes what every user sees."""
-    # Comments out: both files name the variable in prose, and `#` starts a comment in
-    # PowerShell and bash alike.
-    code = "\n".join(
-        l for l in script.read_text(encoding = "utf-8").splitlines() if not l.lstrip().startswith("#")
-    )
-    for bad in (f'{ENV_VAR}="1"', f"{ENV_VAR}='1'", f"{ENV_VAR}=1"):
-        assert bad not in code, f"{script.name} sets {ENV_VAR} itself: {bad}"
-
-
-def test_the_tick_handoff_is_bounds_checked_not_just_parsed():
-    """TryParse accepts values DateTime's constructor rejects, and it throws.
-
-    -1 and 9223372036854775807 both parse as [long] and are outside DateTime's range, so
-    `[System.DateTime]::new($ticks, ...)` raises. Under this script's
-    $ErrorActionPreference = "Stop" that is a fatal installer startup error caused by junk
-    inherited from an outer process, which is the exact opposite of the documented
-    fall-back-to-a-local-clock behaviour. It also has to be gated on the feature being ON,
-    or a disabled switch still crashes.
-    """
-    src = SETUP_PS1.read_text(encoding = "utf-8")
-    block = src[src.index("StudioTimingSw = $null") :][:1400]
-    for bound in ("MinValue.Ticks", "MaxValue.Ticks"):
-        assert bound in block, (
-            f"setup.ps1 no longer bounds-checks the handoff against DateTime.{bound}, so a "
-            f"numeric but out-of-range UNSLOTH_INSTALL_TIMING_T0 throws instead of falling back"
-        )
-    assert "$script:StudioTimingEnabled -and $env:UNSLOTH_INSTALL_TIMING_T0" in block, (
-        "the handoff is parsed even when timing is disabled, so inherited junk can fail an "
-        "install that never asked for timing"
-    )
-
-
-def test_the_outer_installer_never_leaks_the_origin_into_the_callers_session():
-    """`irm ... | iex` runs in the CALLER's process, so what it sets there outlives it.
-
-    A leftover origin makes the next install in that session, and any later
-    `unsloth studio update`, report seconds since the FIRST install.
-
-    Restoring in a finally is not enough on its own: this function has several early
-    returns above the handoff (the install-lock failure, and the "another install is
-    already running" path), and they exit before any try begins. So the variable must not
-    be written at the top of the function at all. It is set beside the other handoff
-    variables immediately before the child launch and restored in the finally that already
-    covers them, which is the one region an early return cannot skip.
-    """
-    src = INSTALL_PS1.read_text(encoding = "utf-8")
-    lines = src.splitlines()
-    assigns = [i for i, l in enumerate(lines) if "$env:UNSLOTH_INSTALL_TIMING_T0 =" in l]
-    assert assigns, "install.ps1 never sets the origin, so the child cannot continue the clock"
-    siblings = next(i for i, l in enumerate(lines) if "$previousUnslothStudioHome =" in l)
-    early = [i + 1 for i in assigns if i < siblings]
-    assert not early, (
-        f"install.ps1 writes the origin at line(s) {early}, above the handoff block at line "
-        f"{siblings + 1}. Every early return between the two leaks it into the caller's "
-        f"environment, where it outlives the install."
-    )
-    tail = src[src.index("Invoke-ManagedUnslothCli") :]
-    assert (
-        "Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0" in tail
-    ), "with no previous value the variable must be REMOVED after the handoff, not left set"
-
-
-@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
-@pytest.mark.parametrize("script", ["install.sh", "studio/setup.sh"])
-@pytest.mark.parametrize("value", ["junk", "1;rm", "-5", "9999999999999999999999", ""])
-def test_a_hostile_inherited_origin_never_breaks_a_posix_install(script, value):
-    """$(( )) evaluates a bare word as a VARIABLE NAME, and `set -u` then aborts.
-
-    An inherited UNSLOTH_INSTALL_TIMING_T0=junk killed the installer outright with
-    "junk: unbound variable", and "1;rm" was an arithmetic syntax error, so an unrelated
-    outer process could stop an install that merely asked for timing. Anything that is not
-    a plain non-negative integer, or that yields a negative elapsed, falls back to the
-    local clock. Run rather than read: a text check would miss exactly this shape.
-    """
-    body = _sh_function_of(REPO / script, "step")
-    prog = "set -euo pipefail\nC_DIM= C_OK= C_RST= C_WARN=\n" + body + "\nstep lbl msg\n"
-    r = subprocess.run(
-        ["bash", "-c", prog],
+    body = _posix_filter_body()
+    log = tmp_path / "install.log"
+    script = body.replace("bash install.sh --local --no-torch", fake_installer)
+    script = script.replace("logs/install.log", str(log))
+    script = script.replace("mkdir -p logs", ":")
+    proc = subprocess.run(
+        ["bash", "-c", script],
         capture_output = True,
         text = True,
-        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1", f"{ENV_VAR}_T0": value},
+        cwd = tmp_path,
+        env = {**os.environ, "SECONDS": ""},
     )
-    assert r.returncode == 0, f"{script} aborted on {ENV_VAR}_T0={value!r}: {r.stderr.strip()}"
-    assert re.search(
-        r"\[\d+s\] ", r.stdout
-    ), f"{script} produced no usable prefix for {ENV_VAR}_T0={value!r}: {r.stdout!r}"
+    return proc.returncode, proc.stdout, (log.read_bytes() if log.exists() else None)
 
 
-def test_the_posix_installer_is_timed_on_the_same_terms_as_the_windows_one():
-    """install.sh is the Linux and macOS entry point and has the same shape as install.ps1.
+@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+def test_the_shipped_posix_filter_leaves_the_log_byte_identical(tmp_path):
+    """The load-bearing claim of the whole design, executed rather than argued."""
+    payload = 'printf "phase one\\nphase two\\nno trailing newline"'
+    rc, stdout, log = _run_posix_filter(tmp_path, f"bash -c '{payload}'")
+    assert rc == 0, stdout
+    assert log == b"phase one\nphase two\nno trailing newline", (
+        f"the artifact is not what the installer wrote: {log!r}. Every reader of "
+        f"logs/install.log depends on this."
+    )
+    assert re.search(r"\[ *\d+s\] phase one", stdout), f"no elapsed prefix on stdout: {stdout!r}"
+    assert "no trailing newline" in stdout, (
+        f"the final unterminated line never reached the step log: {stdout!r}"
+    )
 
-    It bootstraps uv and installs the dependencies before launching studio/setup.sh, so
-    timing only the child leaves the same gap on POSIX that it did on Windows, and the
-    cross-platform parity this repo asserts elsewhere would be a claim the log contradicts.
+
+@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+def test_the_shipped_posix_filter_propagates_a_failed_install(tmp_path):
+    """Two extra pipeline stages between the installer and the step's status."""
+    rc, stdout, _ = _run_posix_filter(tmp_path, "bash -c 'echo boom; exit 7'")
+    assert rc == 7, (
+        f"a failing install exited {rc} through the filter, not 7. The step would pass on "
+        f"a broken install.\n{stdout}"
+    )
+
+
+@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp_path):
+    """`[   0s]` on every line would look exactly like a working feature in a CI log."""
+    rc, stdout, _ = _run_posix_filter(
+        tmp_path, "bash -c 'echo first; sleep 2; echo second'"
+    )
+    assert rc == 0, stdout
+    seconds = [int(m) for m in re.findall(r"\[ *(\d+)s\]", stdout)]
+    assert len(seconds) >= 2, f"expected a prefix per line, got {stdout!r}"
+    assert seconds[-1] > seconds[0], (
+        f"the elapsed prefix never advanced across a 2s gap ({seconds}), so it is not "
+        f"measuring anything and the breakdown it exists to give is fiction"
+    )
+
+
+PWSH = None
+for _candidate in ("pwsh", "powershell"):
+    try:
+        if subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode == 0:
+            PWSH = _candidate
+            break
+    except (OSError, subprocess.SubprocessError):
+        continue
+
+
+@pytest.mark.skipif(PWSH is None, reason = "no PowerShell on this platform")
+def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
+    """Same two claims for the Windows dialect, which is where the 291s actually is.
+
+    `Tee-Object` and `ForEach-Object` sit between the native command and the
+    `$LASTEXITCODE` check; that variable surviving two extra pipeline stages is an
+    assumption worth executing rather than believing.
     """
-    src = INSTALL_SH.read_text(encoding = "utf-8")
-    assert ENV_VAR in src, "install.sh carries no phase timing, so its own phases are invisible"
-    assert f"{ENV_VAR}_T0" in src, (
-        "install.sh does not publish a shared origin, so studio/setup.sh restarts the clock "
-        "at the handoff"
+    log = tmp_path / "install.log"
+    script = textwrap.dedent(
+        f"""
+        $child = 'Write-Host "phase one"; Start-Sleep 2; Write-Host "phase two"; exit 7'
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        {PWSH} -NoProfile -Command $child 2>&1 |
+          Tee-Object -FilePath '{log.as_posix()}' |
+          ForEach-Object {{ '[{{0,4:N0}}s] {{1}}' -f $sw.Elapsed.TotalSeconds, $_ }}
+        Write-Output "RC=$LASTEXITCODE"
+        """
     )
-    for fn in ("step", "substep"):
-        body = _sh_function_of(INSTALL_SH, fn)
-        assert ENV_VAR in body, f"install.sh {fn}() emits no timing"
-    child = SETUP_SH.read_text(encoding = "utf-8")
-    assert f"{ENV_VAR}_T0" in child, "studio/setup.sh ignores the origin install.sh publishes"
-
-
-def _sh_function_of(path, name: str) -> str:
-    src = path.read_text(encoding = "utf-8")
-    start = src.index(f"\n{name}() ")
-    depth, i = 0, src.index("{", start)
-    while True:
-        if src[i] == "{":
-            depth += 1
-        elif src[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return src[start : i + 1]
-        i += 1
+    proc = subprocess.run(
+        [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True
+    )
+    assert "RC=7" in proc.stdout, (
+        f"$LASTEXITCODE did not survive the added pipeline stages, so a failing "
+        f"install.ps1 would leave its step green:\n{proc.stdout}\n{proc.stderr}"
+    )
+    contents = log.read_text(encoding = "utf-8")
+    assert "phase one" in contents and "s]" not in contents, (
+        f"the elapsed prefix leaked into logs/install.log: {contents!r}"
+    )
+    seconds = [int(m) for m in re.findall(r"\[ *(\d+)s\]", proc.stdout)]
+    assert seconds and seconds[-1] > seconds[0], (
+        f"the PowerShell prefix did not advance across a 2s gap ({seconds})"
+    )

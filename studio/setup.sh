@@ -65,37 +65,8 @@ fi
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
 # Usage: substep <message> [color]         (color defaults to C_DIM)
-# Opt-in phase timing, the bash half of the same switch studio/setup.ps1 carries.
-# Off unless UNSLOTH_INSTALL_TIMING is set to something other than 0, so ordinary
-# output is unchanged. It exists so the same install can be compared across
-# platforms: the identical install is 88s on Linux and 260-291s on Windows, and
-# nothing in either log said which phase accounts for the difference.
-# $SECONDS is a bash builtin counting since shell start, so no subprocess per line.
-# Inlined into both helpers rather than factored out: setup.ps1's equivalents are
-# dot-sourced on their own by tests/python/test_windows_setup_output_encoding.py, and
-# keeping the two sides symmetrical means neither grows a dependency the other lacks.
-step() {
-    local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
-    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
-        ""|*[!0-9]* ) ;;
-        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
-            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
-    esac
-    _t="[${_e}s] " ;; esac
-    printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$_t" "$2"
-}
-substep() {
-    local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
-    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
-        ""|*[!0-9]* ) ;;
-        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
-            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
-    esac
-    _t="[${_e}s] " ;; esac
-    printf "  %-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$_t" "$1"
-}
+step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
+substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 setup_fail() {
     local exit_code=$1

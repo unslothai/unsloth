@@ -15,35 +15,6 @@
 function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
 
-    # Same opt-in phase timing as studio/setup.ps1 (see the note there). It has to start
-    # HERE, not only in the child: `install.ps1 --local --no-torch` is what Windows CI
-    # actually runs, and the uv bootstrap plus the whole Unsloth dependency install happen
-    # in this script before it hands off around the Invoke-ManagedUnslothCli call. Timing
-    # only the child would leave the larger half of the 260-291s unattributed and restart
-    # the clock at the handoff, which is precisely the question the switch exists to answer.
-    #
-    # The start is published to the child as UTC ticks so its numbers continue this clock
-    # instead of counting from their own zero. `[bool]` alone is not enough: in PowerShell
-    # every non-empty string is true, so UNSLOTH_INSTALL_TIMING=0 would enable it.
-    $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
-    $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
-    # Computed here, but NOT written to the environment here. The documented
-    # `irm ... | iex` entry point runs in the CALLER's process, so anything set on
-    # $env: outlives this install: the next run in that session would inherit the old
-    # origin and a later `unsloth studio update` would too, both then reporting seconds
-    # since the FIRST install. Writing it at the top also leaks on every early return
-    # above the handoff, of which there are several (the install-lock failures, and the
-    # "another install is already running" path), all of which exit before any finally.
-    #
-    # Only the CHILD needs it, so it is exported next to the other handoff variables
-    # immediately before the handoff and restored in the finally that already covers
-    # them. Nothing between here and there can leave it behind.
-    $script:StudioTimingT0 = if ($env:UNSLOTH_INSTALL_TIMING_T0) {
-        $env:UNSLOTH_INSTALL_TIMING_T0
-    } else {
-        [System.DateTime]::UtcNow.Ticks.ToString()
-    }
-
     # The user's PowerShell profile has already run by the time this does, and the documented
     # piped web entry point documented in the README has no script file to re-launch
     # with -NoProfile, so each way a profile can reach in here is cut individually below.
@@ -830,15 +801,6 @@ public static class UnslothStudioFinalPathV2
             [Parameter(Mandatory = $true)][string]$Value,
             [string]$Color = "Green"
         )
-        # Prefix the VALUE, before the sinks diverge, so both branches carry the timing
-        # without touching their formatting. Inline and Test-Path-guarded rather than a
-        # helper call: this function is sliced out and run ON ITS OWN by
-        # tests/python/test_windows_setup_output_encoding.py, where neither a helper nor
-        # the $script: state above exists, and reading an unset $script: variable under a
-        # caller's Set-StrictMode is fatal rather than empty.
-        if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-            $Value = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Value
-        }
         if ($script:StudioVtOk -and -not $env:NO_COLOR) {
             $dim = Get-StudioAnsi Dim
             $rst = Get-StudioAnsi Reset
@@ -873,10 +835,6 @@ public static class UnslothStudioFinalPathV2
             [Parameter(Mandatory = $true)][string]$Message,
             [string]$Color = "DarkGray"
         )
-        # Same reasoning as `step` above: prefix once, inline, guarded.
-        if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
-            $Message = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Message
-        }
         if ($script:StudioVtOk -and -not $env:NO_COLOR) {
             $msgCol = switch ($Color) {
                 'Yellow' { (Get-StudioAnsi Warn) }
@@ -5447,12 +5405,6 @@ exit 0
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
     $previousTauriMode = $env:UNSLOTH_TAURI_MODE
     $hadPreviousTauriMode = ($null -ne $previousTauriMode)
-    # The child continues this installer's clock rather than starting its own.
-    $previousInstallTimingT0 = $env:UNSLOTH_INSTALL_TIMING_T0
-    $hadPreviousInstallTimingT0 = ($null -ne $previousInstallTimingT0)
-    if ($script:StudioTimingEnabled) {
-        $env:UNSLOTH_INSTALL_TIMING_T0 = $script:StudioTimingT0
-    }
     $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
     if ($StudioRedirectMode -eq 'env') {
         $env:UNSLOTH_STUDIO_HOME = $StudioHome
@@ -5510,11 +5462,6 @@ exit 0
         Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
-        if ($hadPreviousInstallTimingT0) {
-            $env:UNSLOTH_INSTALL_TIMING_T0 = $previousInstallTimingT0
-        } else {
-            Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0 -ErrorAction SilentlyContinue
-        }
         if ($hadPreviousUnslothStudioHome) {
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
         } else {
