@@ -2066,3 +2066,58 @@ def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
         "emitted first"
     )
     assert values[0] in text, "the oldest revision must not be dropped either"
+
+
+def test_an_overlapping_anchor_query_does_not_shrink_the_recall(conn):
+    """Two queries must never return LESS than either of them alone.
+
+    The anchor is a second query drawn from the same thread as the first, so overlap is
+    the normal case, not the corner. Each query's slice was cut to its share BEFORE the
+    dedup, so every chunk they agreed on consumed a slot and left it empty: measured on
+    six turns matching both queries at top_k 4, each query alone returned 4 sources and
+    the pair returned 2, with four eligible chunks sitting unread. Adding the anchor
+    that exists to RESCUE a thin message made the recall smaller than not adding it.
+    """
+    for index in range(6):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+
+    alone = conversation_archive.recall(THREAD, "pelican", top_k = 4)
+    merged = conversation_archive.recall(
+        THREAD, "pelican", top_k = 4, extra_queries = ["statement"]
+    )
+
+    assert alone is not None and merged is not None
+    assert len(alone[1]) == 4
+    assert len(merged[1]) == 4, (
+        f"the anchor cost slots to its overlap with the latest query: {len(merged[1])} of 4"
+    )
+
+
+def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
+    """Capitals only mean "identifier" where there is lower case to contrast with.
+
+    In a line with no lower case at all the rule fires on every word, so the focused pass
+    ORs in "what" and "the" and filters nothing, leaving the permissive BM25 ranking to
+    hand the slot to whatever filler shares a content word. Measured on the same fixture
+    as `test_the_questions_filler_cannot_outrank_the_subject`, at top_k 1: typed normally
+    the slot went to the variable, shouted it went to the retry-budget turn.
+    """
+    for index in range(6):
+        _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
+    question = f"What is the current value of {VARIABLE}?"
+
+    assert store.conversation_match_queries(question.upper()) == (
+        store.conversation_match_queries(question)
+    )
+    found = conversation_archive.recall(THREAD, question.upper(), top_k = 1)
+
+    assert found is not None
+    assert VARIABLE.lower() in found[0].lower(), (
+        "the shouted question filtered nothing and spent its only slot on filler"
+    )

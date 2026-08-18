@@ -1027,12 +1027,25 @@ def recall(
             room = limit - len(merged) if index == len(queries) - 1 else share
             if room <= 0:
                 break
-            found = recall(thread_id, one, top_k = room, branch_messages = branch_messages)
+            # Over-fetched by what is already held, because the cut used to happen BEFORE
+            # the dedup: two queries drawn from the same thread overlap by construction,
+            # so every shared chunk cost a slot that was then never refilled. Measured on
+            # six turns matching both queries at top_k 4, either query alone returned 4
+            # and the pair returned 2, with four eligible chunks left unread. Adding the
+            # anchor made the recall smaller than not adding it.
+            found = recall(
+                thread_id, one, top_k = room + len(seen_ids), branch_messages = branch_messages
+            )
             if not found:
                 continue
-            for source in found[1]:
-                if source["chunkId"] in seen_ids:
-                    continue
+            fresh = [source for source in found[1] if source["chunkId"] not in seen_ids]
+            # Re-sorted by score because the inner call orders its OWN slice
+            # chronologically, so a widened fetch arrives oldest-first and taking the head
+            # of it would spend the refilled slots on the oldest turns. That is the exact
+            # failure `_ends_first_within_ties` exists to prevent, reintroduced one level
+            # up. The block is re-ordered chronologically below either way.
+            fresh.sort(key = lambda source: -(source.get("score") or 0.0))
+            for source in fresh[:room]:
                 seen_ids.add(source["chunkId"])
                 merged.append(source)
         if not merged:

@@ -150,7 +150,16 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    raw_tokens = frozenset(_TOKEN.findall(query))
+    # The capitals rule needs CONTRAST to mean anything. In a line with no lower case at
+    # all, every word passes it, so the filter ORs in "what" and "the" and stops filtering
+    # anything: measured, "WHAT IS THE CURRENT VALUE OF ZQXVARA123?" produced
+    # '"what" OR "the" OR "current" OR "value" OR "zqxvara123"' where the same question in
+    # ordinary case produced '"zqxvara123"', and at top_k 1 the single slot went to a turn
+    # about a retry budget instead of the variable. Shape still decides, so ZQXVARA123 is
+    # an identifier either way; only the shouted-prose case changes, and a pure-letter
+    # name in a shouted question falls back to the permissive pass exactly as the
+    # lower-case spelling of that question already does.
+    raw_tokens = frozenset() if query == query.upper() else frozenset(_TOKEN.findall(query))
     identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
     permissive = " OR ".join(f'"{t}"' for t in content)
