@@ -14,6 +14,7 @@ CDP counter and the Long Tasks API are Chromium-only, and the failure mode is si
 as "no measurement". So no growth axis and no pass/fail decision may rest on one.
 """
 
+import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +22,7 @@ STUDIO_TESTS = ROOT / "tests" / "studio"
 FRONTEND = ROOT / "studio" / "frontend"
 
 HARNESS = "playwright_heavy_thread.py"
+PROBE = "scroll_predecessor_probe.py"
 # Recorded by the harness, produced only by Chromium. None of these may decide anything.
 CHROMIUM_ONLY = (
     "layout_count",
@@ -184,6 +186,93 @@ def test_the_smoke_page_exposes_every_count_the_fixture_gate_needs() -> None:
         key = line.strip().split(":")[0]
         if key.isidentifier():
             assert f"{key}:" in counts, key
+
+
+def test_the_recorder_retires_the_callbacks_of_a_finished_run() -> None:
+    # `end()` clears `running`, which does NOT unschedule the frame callback and the 1ms timer
+    # that are already queued. Actions run back to back, so the next `begin()` can set `running`
+    # to true again before those callbacks fire; they then push into the arrays the new run just
+    # emptied and re-schedule themselves, and the new action is recorded by two loops at once.
+    # Measured on Chromium with this recorder alone on a blank page, five back-to-back 300ms
+    # runs: stall_ticks 78, 152, 226, 300, 374 without the token and 77, 78, 77, 78, 78 with it.
+    # `longest_stall_ms` and `frames_over_33` are growth axes, so this lands in the verdict.
+    recorder = section(source(HARNESS), "const recorder = {", "window.__hv = recorder;")
+    assert "generation: 0," in recorder
+    guard = "if (!this.running || this.generation !== generation) return;"
+    assert recorder.count(guard) == 2, "both the frame loop and the stall loop need the guard"
+    # The old form re-schedules from inside a callback that has already written its sample.
+    assert "if (this.running) nativeRaf(frame);" not in recorder
+    assert "if (this.running) setTimeout(stall, 1);" not in recorder
+
+
+def test_the_probe_enables_the_cdp_performance_domain() -> None:
+    # `Performance.getMetrics` on a session that never had `Performance.enable` sent returns an
+    # EMPTY metric list rather than an error (measured on this tree: 0 metrics without, 36 with).
+    # `cdp_counters` then reports None for every counter and the probe's table prints 0.0 in the
+    # task, layout and style columns, which reads as an arm that did no main-thread work.
+    assert 'cdp.send("Performance.enable")' in source(PROBE)
+
+
+def probe_tree() -> ast.Module:
+    return ast.parse(source(PROBE))
+
+
+def test_every_predecessor_the_probe_defines_is_registered() -> None:
+    # An unregistered `before_*` helper is a predecessor the file claims to test and never runs,
+    # and `PROBE_ARMS=<its name>` then filtered the sweep to zero arms.
+    tree = probe_tree()
+    defined = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("before_")
+    }
+    registered = set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(getattr(t, "id", None) == "ARMS" for t in node.targets):
+            continue
+        for arm in node.value.elts:
+            for element in arm.elts:
+                if isinstance(element, ast.Name):
+                    registered.add(element.id)
+    assert registered, "ARMS did not parse"
+    assert defined == registered, f"never runs: {sorted(defined - registered)}"
+
+
+def test_the_probe_fails_when_an_arm_fails() -> None:
+    # Every arm can throw and be recorded as `failed` while the process still exits 0, so a run
+    # that produced no comparison at all is indistinguishable from a successful experiment.
+    tree = probe_tree()
+    main = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    codes = {
+        node.value.value
+        for node in ast.walk(main)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
+    }
+    assert 1 in codes, "main() never returns a failure code"
+    assert 'info(f"FAILED arms: ' in source(PROBE)
+
+
+def test_the_probe_rejects_an_arm_name_it_does_not_have() -> None:
+    # PROBE_ARMS=<typo> used to trim the sweep to nothing and print an empty table under a zero
+    # exit code.
+    assert "PROBE_ARMS names no such arm" in source(PROBE)
+
+
+def test_the_probe_verifies_the_pointer_before_publishing_a_gutter_arm() -> None:
+    # The scroller fills the viewport in this fixture, so "the pointer is outside the scroller"
+    # is unsatisfiable and the predicate that demanded it rejected every candidate, left the
+    # mouse on an unverified corner and published the two control arms anyway. The scroller
+    # element ITSELF is the stable hit-test target the arms are named for.
+    probe = source(PROBE)
+    park = section(probe, "def park_pointer_in_gutter(", "def before_hover_then_gutter(")
+    assert "el === v || !v.contains(el)" in park
+    assert '"pointer_stable": True' in park
+    # And no verified point at all must fail the arm rather than time it.
+    assert "raise RuntimeError(" in park
 
 
 def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:

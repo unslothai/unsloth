@@ -396,20 +396,34 @@ RECORDER_INIT = """
 
   const recorder = {
     running: false,
+    // Clearing `running` does not unschedule the frame callback and the timer that are ALREADY
+    // queued, and actions run back to back: `end()` returns, a handful of CDP round trips later
+    // the next `begin()` sets `running` back to true, and only then do the previous run's
+    // callbacks fire. They then push into the arrays the new run just emptied and re-schedule
+    // themselves, so the next action is recorded by two loops at once. Measured on Chromium with
+    // this recorder alone on a blank page, five back-to-back 300ms runs: stall_ticks 78, 152,
+    // 226, 300, 374 without a generation token against 77, 78, 77, 78, 78 with one -- one extra
+    // live loop per run. Every count the recorder returns is inflated, and the first
+    // delta of a resumed loop spans the gap between the two runs, which lands in the new run's
+    // worst_frame_ms and longest_stall_ms. A generation token retires a run's callbacks for good.
+    generation: 0,
     frames: [],
     stalls: [],
     startedAt: 0,
     begin() {
       this.running = true;
+      this.generation += 1;
+      const generation = this.generation;
       this.frames = [];
       this.stalls = [];
       this.startedAt = performance.now();
       let lastFrame = performance.now();
       const frame = () => {
+        if (!this.running || this.generation !== generation) return;
         const now = performance.now();
         this.frames.push(now - lastFrame);
         lastFrame = now;
-        if (this.running) nativeRaf(frame);
+        nativeRaf(frame);
       };
       nativeRaf(frame);
       // 1ms setTimeout, not a MessageChannel ping-pong. Measured: the MessageChannel version
@@ -418,10 +432,11 @@ RECORDER_INIT = """
       // resolution, which is far below any stall a user can feel.
       let lastStall = performance.now();
       const stall = () => {
+        if (!this.running || this.generation !== generation) return;
         const now = performance.now();
         this.stalls.push(now - lastStall);
         lastStall = now;
-        if (this.running) setTimeout(stall, 1);
+        setTimeout(stall, 1);
       };
       setTimeout(stall, 1);
     },

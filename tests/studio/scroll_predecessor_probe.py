@@ -162,14 +162,34 @@ def park_pointer_in_gutter(page) -> dict:
             """([x, y]) => {
                 const v = window.__heavyThread.viewport();
                 const el = document.elementFromPoint(x, y);
-                return { outside: Boolean(el) && !v.contains(el) && el !== v,
-                         tag: el ? el.tagName.toLowerCase() : null };
+                if (!el) return { stable: false, outside: false, tag: null };
+                // The scroller ITSELF is the stable hit, and is the one this function is named
+                // for: a point that lands on the viewport element rather than on any message
+                // inside it keeps the same hit-test target while content moves under the cursor,
+                // which is the variable under test. Demanding a point OUTSIDE the scroller can
+                // never be satisfied in this fixture -- the docstring above says so -- so the
+                // old predicate rejected every candidate, returned `pointer_outside: False` with
+                // the mouse left on an unverified corner, and both control arms published
+                // timings anyway.
+                return { stable: el === v || !v.contains(el),
+                         outside: !v.contains(el),
+                         tag: el.tagName.toLowerCase() };
             }""",
             [round(x), round(y)],
         )
-        if ok["outside"]:
-            return {"parked_at": [round(x), round(y)], "pointer_outside": True, "under": ok["tag"]}
-    return {"parked_at": None, "pointer_outside": False}
+        if ok["stable"]:
+            return {
+                "parked_at": [round(x), round(y)],
+                "pointer_stable": True,
+                "pointer_outside": ok["outside"],
+                "under": ok["tag"],
+            }
+    # No verified point means the arm's premise does not hold on this page, and a timing published
+    # under the label "pointer parked on the gutter" would then be a second copy of the arm it is
+    # supposed to contrast with. Fail the arm instead; `main` records it as failed and exits 1.
+    raise RuntimeError(
+        "no stable pointer position found: every candidate hit content inside the scroller"
+    )
 
 
 def before_hover_then_gutter(page):
@@ -223,6 +243,10 @@ def before_menu_keystroke(page):
 ARMS = [
     ("nothing", before_nothing, "control: the harness's repetition one"),
     ("keystroke", before_keystroke, "5 characters into the composer, then scroll"),
+    # The docstring's list of predecessors is the harness's own action order, so every one of them
+    # has to be reachable from the default sweep. `before_jump` and `before_delete` were written
+    # and then never registered, which left the file measuring five of the seven it claims.
+    ("jump", before_jump, "jump to the top of the thread, then scroll"),
     (
         "hover_only",
         before_hover_only,
@@ -239,11 +263,17 @@ ARMS = [
         "hover a message, then park the pointer on the gutter, then scroll",
     ),
     ("menu", before_menu, "open and close the message action menu, then scroll"),
+    ("delete", before_delete, "delete the last assistant message, then scroll"),
     ("reopen", before_reopen, "leave and re-enter the thread, then scroll"),
     (
         "delete_reopen_keystroke",
         before_delete_reopen_keystroke,
         "the harness's real repetition-two predecessor set",
+    ),
+    (
+        "menu_keystroke",
+        before_menu_keystroke,
+        "open and close the menu, then type into the composer, then scroll",
     ),
 ]
 
@@ -256,6 +286,13 @@ def main() -> int:
     arms = ARMS
     if wanted:
         keep = {a.strip() for a in wanted.split(",")}
+        # A name that is not an arm used to filter the sweep down to nothing and then report a
+        # successful run with an empty table, which is the worst answer a probe can give.
+        unknown = sorted(keep - {a[0] for a in ARMS})
+        if unknown:
+            info(f"PROBE_ARMS names no such arm: {', '.join(unknown)}")
+            info(f"known arms: {', '.join(a[0] for a in ARMS)}")
+            return 2
         arms = [a for a in ARMS if a[0] in keep]
         results["arms_requested"] = sorted(keep)
     vite = None
@@ -282,6 +319,14 @@ def main() -> int:
                 ctx.add_init_script(RECORDER_INIT)
                 page = ctx.new_page()
                 cdp = ctx.new_cdp_session(page)
+                # The main harness does this too, and it is not optional: Performance.getMetrics
+                # on a session whose Performance domain was never enabled returns an EMPTY metric
+                # list rather than an error. `hv.run_action` then hands two empty dicts to
+                # `cdp_counters`, every counter comes back None, and the table below prints
+                # `(r["task_ms"] or 0)` -- a 0.0 in the task, layout and style columns that reads
+                # as "this arm did no main-thread work". Measured on this tree, Chromium 1234:
+                # getMetrics without enable returns 0 metrics, with enable 36.
+                cdp.send("Performance.enable")
                 try:
                     page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
                     page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 180_000)
@@ -374,7 +419,7 @@ def main() -> int:
                     ctx.close()
             browser.close()
         out = OUT / f"{LABEL}.json"
-        out.write_text(json.dumps(results, indent = 2))
+        out.write_text(json.dumps(results, indent = 2), encoding = "utf-8")
         info(f"wrote {out}")
         info("")
         info(
@@ -391,6 +436,17 @@ def main() -> int:
                 f"{(r['long_task_ms'] or 0):>8.0f}{(r['task_ms'] or 0):>9.1f}"
                 f"{(r['layout_ms'] or 0):>8.1f}{(r['recalc_style_ms'] or 0):>8.1f}"
             )
+        # The JSON above is written either way, because a partial experiment is still evidence.
+        # The EXIT CODE is not: an arm that threw produced no comparison, and a run where every
+        # arm threw produced nothing at all. Reporting that as success is how a broken experiment
+        # gets quoted as a result.
+        failed = sorted(n for n, r in results["arms"].items() if "failed" in r)
+        if failed:
+            info(f"FAILED arms: {', '.join(failed)}")
+            return 1
+        if not results["arms"]:
+            info("no arms ran")
+            return 1
     finally:
         if vite is not None:
             stop_process(vite)
