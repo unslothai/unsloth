@@ -18,13 +18,13 @@ ENTRY = ROOT / "studio" / "frontend" / "smoke-heavy-thread-main.tsx"
 
 
 def entry() -> str:
-    return ENTRY.read_text(encoding="utf-8")
+    return ENTRY.read_text(encoding = "utf-8")
 
 
 def test_the_compact_tail_seed_keeps_its_name_and_arity() -> None:
-    assert "seedCompactTail(targetChars: number, tailMessages: number)" in entry(), (
-        "#9058's probe calls seedCompactTail(chars, tailMessages) by name"
-    )
+    assert (
+        "seedCompactTail(targetChars: number, tailMessages: number)" in entry()
+    ), "#9058's probe calls seedCompactTail(chars, tailMessages) by name"
 
 
 def test_the_compact_tail_seed_reuses_the_ordinary_fixture_builder() -> None:
@@ -32,7 +32,7 @@ def test_the_compact_tail_seed_reuses_the_ordinary_fixture_builder() -> None:
     # Measured: seedCompactTail(25000, 16) reports 36 messages against seed(25000)'s 20, a tail
     # of exactly 16, with every other count unchanged.
     body = entry()
-    tail = body[body.index("seedCompactTail("):body.index("gapMetrics()")]
+    tail = body[body.index("seedCompactTail(") : body.index("gapMetrics()")]
     assert "buildThread(targetChars)" in tail, (
         "seedCompactTail must build the heavy part with buildThread(targetChars), or its counts "
         "stop matching seed(targetChars) and #9058's numbers stop being comparable"
@@ -41,7 +41,7 @@ def test_the_compact_tail_seed_reuses_the_ordinary_fixture_builder() -> None:
 
 def test_gap_metrics_keeps_every_key_the_probe_reads() -> None:
     body = entry()
-    gap = body[body.index("gapMetrics()"):]
+    gap = body[body.index("gapMetrics()") :]
     gap = gap[: gap.index("\n      },")]
     for key in (
         "ok",
@@ -58,9 +58,9 @@ def test_gap_metrics_keeps_every_key_the_probe_reads() -> None:
         # `key:` or the shorthand `key,` / `key\n`. Checking only for `key:` would have failed
         # on `clientHeight`, which is returned shorthand, so the guard would have been red
         # against correct code.
-        assert re.search(rf"\b{key}\s*[:,\n]", gap), (
-            f"gapMetrics no longer reports {key}, which #9058's probe reads"
-        )
+        assert re.search(
+            rf"\b{key}\s*[:,\n]", gap
+        ), f"gapMetrics no longer reports {key}, which #9058's probe reads"
 
 
 def test_the_gap_below_is_measured_against_the_viewport_edge() -> None:
@@ -68,7 +68,7 @@ def test_the_gap_below_is_measured_against_the_viewport_edge() -> None:
     # the gap it always was and the caller subtracts spacerHeight to get the part the mount
     # window owns. Measured with a 16 message tail: spacerHeight 165, gapBottom 199.
     body = entry()
-    gap = body[body.index("gapMetrics()"):]
+    gap = body[body.index("gapMetrics()") :]
     gap = gap[: gap.index("\n      },")]
     assert "box.bottom - last.bottom" in gap, (
         "gapBottom must be measured from the viewport's bottom edge, or #9058's numbers stop "
