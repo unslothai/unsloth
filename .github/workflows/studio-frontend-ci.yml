@@ -26,6 +26,9 @@ on:
       - 'studio/frontend/src/lib/menu-dismiss.ts'
       - 'studio/frontend/src/lib/menu-dismiss-guard.tsx'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
+
+      - 'tests/studio/playwright_stream_pacing.py'
+      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
       - 'tests/studio/test_heavy_thread_harness_contract.py'
@@ -214,6 +217,16 @@ jobs:
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
+      - name: Browser smoke for chat stream pacing
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+        run: python3 tests/studio/playwright_stream_pacing.py
 
       - name: Build
         run: npm run build
