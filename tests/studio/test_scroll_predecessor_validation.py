@@ -125,12 +125,12 @@ def test_the_probe_and_the_harness_share_one_definition_of_a_completed_gesture()
     """Two copies of this threshold is exactly how the probe came to accept any travel above zero
     while the harness required 90% of the requested distance."""
     source = Path(PROBE.__file__).read_text(encoding = "utf-8")
-    assert "hv.scroll_travel_shortfall(" in source, (
-        "the probe judges scroll completion on its own terms again"
-    )
-    assert "hv.jump_anchor_shortfall(" in source, (
-        "the probe judges the jump anchor on its own terms again"
-    )
+    assert (
+        "hv.scroll_travel_shortfall(" in source
+    ), "the probe judges scroll completion on its own terms again"
+    assert (
+        "hv.jump_anchor_shortfall(" in source
+    ), "the probe judges the jump anchor on its own terms again"
     assert PROBE.hv.SCROLL_TRAVEL_TOLERANCE == 0.9
     assert PROBE.hv.JUMP_ANCHOR_TOLERANCE_PX == 2
 
