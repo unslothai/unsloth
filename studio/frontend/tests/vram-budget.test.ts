@@ -522,7 +522,12 @@ test("a superseded read is refused, not handed back to the caller", () => {
   // "no usable answer", which every caller treats as keep what you have.
   const flat = client.replace(/\s+/g, " ");
   assert.match(flat, /throw new Error\("superseded"\); \}/);
-  assert.match(flat, /try \{ return await inFlightVramBudget; \} catch \{/);
+  // The binding is optional: one caller inspects the error to tell an absent route from
+  // a failed read, and the contract for everyone else is still null.
+  assert.match(
+    flat,
+    /try \{ return await inFlightVramBudget; \} catch( \(error\))? \{/,
+  );
   const row = vramBudgetRowSource().replace(/\s+/g, " ");
   assert.match(row, /if \(cancelled \|\| !loaded\) \{ return; \}/);
 });
