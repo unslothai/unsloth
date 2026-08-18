@@ -106,6 +106,10 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     length, which a pasted log turns into a multi-second stall on the request that
     compacts the thread (48 KB of pasted text measured at 4.6s, 96 KB at 17.7s, against
     2.3ms for the same text through `_match_query`).
+
+    The capitals rule needs CONTRAST, not just capitals: in a line with no lower case
+    anywhere every word satisfies it and the filter stops filtering. The caller passes an
+    empty ``raw_tokens`` for such a line, so shape alone decides there.
     """
     if "_" in token:
         return True
