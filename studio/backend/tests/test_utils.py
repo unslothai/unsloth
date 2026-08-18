@@ -522,6 +522,7 @@ class TestIsTlsVerificationError:
 
     def test_wrapped_two_cause_hops(self):
         import ssl
+
         inner = ssl.SSLCertVerificationError(1, "certificate verify failed")
         mid = ConnectionError("transport")
         mid.__cause__ = inner
@@ -531,6 +532,7 @@ class TestIsTlsVerificationError:
 
     def test_context_chain(self):
         import ssl
+
         inner = ssl.SSLCertVerificationError(1, "certificate verify failed")
         outer = RuntimeError("Connection failed")
         outer.__context__ = inner
