@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import ValidationError
 
 from auth.authentication import get_current_subject
+from hub.dependencies import get_hf_token
 from loggers import get_logger
 from models.inference import (
     DiffusionDownloadPlanResponse,
@@ -57,6 +58,20 @@ def _training_is_active() -> bool:
     """The non-raising half of the load guard, for callers that must not take the GPU."""
     from routes.inference import _training_is_active as _images_training_is_active
     return _images_training_is_active()
+
+
+def _derived_h3_task(gguf_filename: Optional[str], kind: str) -> Optional[str]:
+    """The MiniMax-H3 partition a GGUF load resolves to from its filename, else None."""
+    if kind != "gguf" or not gguf_filename:
+        return None
+    try:
+        from core.inference.video_minimax_h3 import h3_transformer_task
+        from pathlib import Path as _Path
+
+        name = _Path(gguf_filename).name.lower()
+        return h3_transformer_task(name) if name.startswith("minimax_h3_") else None
+    except Exception:  # noqa: BLE001 -- a probe failure must not fail the load
+        return None
 
 
 def _guard_video_load_against_training() -> None:
@@ -191,12 +206,28 @@ async def video_download_plan(
 async def load_video_model(
     request: VideoLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    return await load_video_model_gated(request, current_subject, user_initiated = True)
+
+
+async def load_video_model_gated(
+    request: VideoLoadRequest,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
+    """Everything ``POST /video/load`` does, plus who asked for it.
+
+    Media auto-switch awaits this rather than the route so the idle unload can tell an
+    API-loaded pipeline from one the user picked on the Video page.
+    """
     from core.inference.diffusion import resolve_local_single_file
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
     )
     from core.inference.gpu_arbiter import VIDEO, acquire_for, release
+    from core.inference.media_keepwarm import note_load_origin
+    from hub.utils.gguf import extract_quant_token
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -258,6 +289,9 @@ async def load_video_model(
             # Kicks the (slow) load onto a background thread and returns at once; begin_load itself validates network-free.
             return backend.begin_load(
                 request.model_path,
+                # a load nobody asked for may not reach the hub: the switch verified locality
+                # from the outside, and this makes that promise the loader's own rule
+                local_files_only = not user_initiated,
                 gguf_filename = request.gguf_filename,
                 base_repo = request.base_repo,
                 family_override = request.family_override,
@@ -289,6 +323,16 @@ async def load_video_model(
         else:
             await asyncio.to_thread(release, VIDEO)
             status_dict = await asyncio.to_thread(_begin_load)
+        # Keyed to the target: this load can still fail with the previous model resident, and
+        # its origin must not be read off that model.
+        note_load_origin(
+            VIDEO,
+            request.model_path,
+            extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
+            # Derived when the caller left it unset, since that is what the backend publishes.
+            request.h3_task or _derived_h3_task(request.gguf_filename, kind),
+            user_action = user_initiated,
+        )
         return VideoStatusResponse(**status_dict)
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -305,19 +349,84 @@ async def video_load_progress(current_subject: str = Depends(get_current_subject
 
 @router.post("/video/generate", response_model = VideoGenerateResponse)
 async def generate_video(
-    request: VideoGenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: VideoGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """Start a generation job and return at once (the begin_load pattern): a clip
     takes minutes, and secure mode's tunnel caps the origin response window near
     100 seconds, so the response must not span the generation. The worker runs the
     generate + gallery-persist pipeline; the terminal outcome (completed with the
-    saved record / failed with a client-safe error) arrives via generate-progress."""
+    saved record / failed with a client-safe error) arrives via generate-progress.
+
+    With media auto-switch on, ``model`` names the video model to generate on and is loaded
+    when it is not the resident one."""
+    from core.inference.gpu_arbiter import VIDEO
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
     from core.inference.video import get_video_backend
     from core.inference.video_families import (
         VIDEO_GENERATION_BUSY_MSG,
         VIDEO_NOT_LOADED_MSG,
         VideoShapeError,
     )
+
+    def _refuse_unservable_request(pick) -> None:
+        """Judge the request against the family being switched TO, before it evicts anything.
+
+        begin_generate judges it against the loaded family under the lock, which is what makes
+        the answer race-proof, but by then a request no model could have served has already cost
+        the resident pipeline and a multi-minute load. The same rules, applied to the target's
+        family and MiniMax-H3 partition, both of which the pick already determines.
+        """
+        from core.inference.media_model_index import expected_partition
+        from core.inference.video import _detect_load_family, resolve_video_model_kind
+        from core.inference.video_minimax_h3 import is_h3_native
+        from core.inference.video_families import (
+            validate_video_flow_controls,
+            validate_video_keyframe_conditioning,
+            validate_video_reference_conditioning,
+            validate_video_request_shape,
+        )
+
+        fam = _detect_load_family(pick.model_path, pick.gguf_filename, None)
+        if fam is None:
+            return
+        validate_video_request_shape(fam, request.width, request.height, request.num_frames)
+        h3_task = expected_partition(pick)
+        validate_video_keyframe_conditioning(
+            fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
+        )
+        # the engine is only knowable up front where the pick decides it, as an h3 gguf does
+        kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
+        engine = "sd_cpp" if is_h3_native(fam, kind) else None
+        validate_video_reference_conditioning(
+            fam,
+            h3_task,
+            has_references = bool(
+                request.reference_images or request.reference_videos or request.reference_audios
+            ),
+            reference_image_size = request.reference_image_size,
+            engine = engine,
+        )
+        validate_video_flow_controls(
+            fam, request.flow_shift, request.audio_flow_shift, engine = engine
+        )
+
+    # Before the backend is resolved: the requested model may be the one this brings up.
+    try:
+        await maybe_auto_switch_media_model(
+            request.model,
+            owner = VIDEO,
+            current_subject = current_subject,
+            openai_errors = False,
+            hf_token = hf_token,
+            before_switch = _refuse_unservable_request,
+        )
+    except VideoShapeError as exc:
+        raise HTTPException(status_code = 422, detail = str(exc))
+    except ValueError as exc:
+        # the conditioning rules, which begin_generate reports the same way below
+        raise HTTPException(status_code = 400, detail = str(exc))
 
     backend = get_video_backend()
     # The request bounds on VideoGenerateRequest are a coarse outer guard; the real rule is the LOADED
