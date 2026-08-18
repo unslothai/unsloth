@@ -32,6 +32,9 @@
     "src",
     "smoke-ansi-main.tsx",
     "smoke-autoscroll-main.tsx",
-    "smoke-research-main.tsx"
+    "smoke-research-main.tsx",
+    "smoke-heavy-thread-main.tsx",
+    "smoke-settings-main.tsx",
+    "smoke-stream-pacing-main.tsx"
   ]
 }

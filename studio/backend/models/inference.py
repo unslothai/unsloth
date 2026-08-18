@@ -35,6 +35,11 @@ class LoadRequest(BaseModel):
         pattern = r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
         description = "Opaque client attempt ID for scoped in-flight cancellation",
     )
+
+    force_reload: bool = Field(
+        False,
+        description = "Start a fresh runtime even when the active settings already match",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -806,6 +811,18 @@ class _InferenceRuntimeFields(BaseModel):
             "Why an automatic GGUF load was downgraded to CPU. "
             "'vulkan_startup_crash' means a managed, auto-selected Vulkan launch "
             "hard-crashed and the same launch became healthy with GPU devices disabled."
+        ),
+    )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
         ),
     )
     n_cpu_moe: int = Field(

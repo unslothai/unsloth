@@ -80,6 +80,7 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Search:** Use private and unlimited web search, deep research, and RAG.
 * **Hardware:** Supports CPU, Apple, NVIDIA, AMD, Intel, and multi GPU setups.
 * **Remote Access:** Serve your local models remotely through secure [Cloudflare](https://unsloth.ai/docs/basics/how-to-serve-local-llms-anywhere-secure-remote-access-with-cloudflare-and-unsloth) HTTPS.
+* **Connect:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api). Also connect your ChatGPT/Codex subscription and [cloud providers](https://unsloth.ai/docs/integrations/connections)
 
 
 ### Train & Deploy
@@ -87,8 +88,7 @@ Unsloth lets you run, train, and deploy AI models locally, with support for all 
 * **Complete support:** Supports [reinforcement learning](https://unsloth.ai/docs/get-started/reinforcement-learning-rl-guide), LoRA, QLoRA, full fine tuning, pretraining, RL, GRPO, DPO, and FP8.
 * **Export & Deploy:** [Export](https://unsloth.ai/docs/new/studio/export) or Deploy models with including [GGUF](https://unsloth.ai/docs/basics/inference-and-deployment/saving-to-gguf), NVFP4, FP8 and more formats.
 * **Datasets:** Build datasets from PDFs, CSVs, DOCX files, and more with [Data Recipes](https://unsloth.ai/docs/new/studio/data-recipe).
-* **OpenAI Compatible API:** Serve models through an [OpenAI compatible API](https://unsloth.ai/docs/basics/api) and also connect to [cloud providers](https://unsloth.ai/docs/integrations/connections)
-
+  
 ## 🚀 Unsloth Start
 
 [Unsloth Start](https://unsloth.ai/docs/integrations/unsloth-start) connects [Claude Code](https://unsloth.ai/docs/basics/claude-code), [Codex](https://unsloth.ai/docs/basics/codex) and other agents to local models with one command.
@@ -198,7 +198,7 @@ Re-running the current installer replaces a previously selected bundle when the 
 ```bash
 unsloth studio -p 8888
 ```
-For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL). By default, Unsloth is accessible only locally.
+For LAN or cloud access, add `-H 0.0.0.0` (raw port only; add `--cloudflare` for a public URL), or turn it on later in Settings > API keys > LAN access. By default, Unsloth is accessible only locally.
 
 To reach Unsloth over HTTPS, use `unsloth studio --secure`. Unsloth stays bound to localhost and is reached only through a free Cloudflare tunnel, which publishes it at a public `https://*.trycloudflare.com` URL (it fails closed if the tunnel can't start, so the raw port is never exposed). This makes Unsloth reachable from the internet, so anyone with the link and API key can use it and run code: keep your API key private (see Remote access below).
 
@@ -337,6 +337,8 @@ unsloth studio --secure -p 8888
 ```bash
 unsloth studio -H 0.0.0.0 -p 8888
 ```
+- Settings > API keys > **LAN access**: put Unsloth on the local network from the UI, without relaunching. It adds a listener on this machine's own addresses at the same port and shows each `http://<address>:<port>`, with a QR code to open the first on a phone; Stop returns it to loopback only, and **Start automatically** turns it on at every launch. Blocked until the admin password has been changed.
+
 The Cloudflare tunnel is **off by default**: `-H 0.0.0.0` exposes the raw port only, not a public internet URL. Pair the wildcard bind with `--cloudflare` (`unsloth studio -H 0.0.0.0 --cloudflare`) to also publish a public `https://*.trycloudflare.com` link, or prefer `--secure` (above), which keeps the raw port private. `--cloudflare` has no effect on a loopback bind.
 
 On a wildcard bind Unsloth works out the address to share by asking `ifconfig.me` for the public IP, then asks `check-host.net` whether that port is reachable so it can tell you if a firewall is in the way. Both contact a third party. Set `UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK=1` to skip them; the banner then shows the LAN address and no reachability line.

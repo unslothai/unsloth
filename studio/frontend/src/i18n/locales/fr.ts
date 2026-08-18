@@ -186,6 +186,8 @@ export const fr = {
       closeAriaLabel: "Fermer les paramètres",
       searchPlaceholder: "Rechercher dans les paramètres…",
       searchNoResults: "Aucun paramètre trouvé.",
+      panelFailed: "Cette section n'a pas pu être chargée.",
+      panelReload: "Recharger",
     },
     tabs: {
       general: "Général",
@@ -1146,6 +1148,9 @@ export const fr = {
       archivedVideos: "Vidéos archivées",
       archivedVideosDescription: "Consultez et gérez les vidéos que vous avez archivées.",
       manageAction: "Gérer",
+      manageChats: "Gérer les discussions",
+      manageChatsDescription:
+        "Sélectionnez plusieurs discussions pour les déplacer, les épingler, les archiver, les exporter ou les supprimer.",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",
       exportedOneArchivedChat: "1 discussion archivée a été exportée",
