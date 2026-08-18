@@ -23,7 +23,7 @@ import pytest
 
 from core.inference.llama_cpp import LlamaCppBackend
 
-# platform.system() / sys.platform pair per simulated host.
+# sys.platform / platform.system() pair per simulated host.
 _OS_CELLS = {
     "windows": ("win32", "Windows"),
     "linux": ("linux", "Linux"),

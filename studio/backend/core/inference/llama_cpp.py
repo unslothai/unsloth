@@ -6166,10 +6166,8 @@ class LlamaCppBackend:
                 return {}
             allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
             if allowed is not None and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
-                # Numeric CUDA visibility entries are ordinals in CUDA's configured
-                # order, while nvidia-smi reports physical indices in PCI-bus order.
-                # Without the shared ordering they cannot be mapped safely, so keep
-                # the compatibility gate's documented fail-open behavior.
+                # Numeric mask entries are CUDA ordinals; nvidia-smi reports PCI
+                # physical indices. Without a shared order, fail open.
                 return {}
             caps = {}
             for line in result.stdout.strip().splitlines():
@@ -6206,8 +6204,7 @@ class LlamaCppBackend:
         cost a one-time JIT, not a launch. The installer's exact-membership check
         is a different question -- which bundle is BEST to install -- not whether
         the installed one can run."""
-        # Resolved once so the marker read and the remedy below describe the same
-        # binary.
+        # Resolved once so the marker read and the remedy name the same binary.
         binary = binary or cls._find_llama_server_binary()
         supported = cls._installed_llama_cuda_sms(binary)
         if supported is None:
@@ -6217,9 +6214,8 @@ class LlamaCppBackend:
         if not caps or any(sm >= oldest for sm in caps.values()):
             return None
         present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
-        # The remedy has to follow the binary's provenance: the updater cannot
-        # replace a pinned LLAMA_SERVER_PATH or a llama-server found on PATH, so
-        # telling its owner to update would loop them through the same gate.
+        # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
+        # found on PATH, so the remedy follows the binary's provenance.
         return (
             f"The installed llama.cpp build only has GPU code for sm_{oldest} and "
             f"newer, but {present} -- it was likely installed on a machine with a "
@@ -16896,19 +16892,14 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
-                # The CUDA SM gate belongs here, where the child's GPU visibility is
-                # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so the
-                # child enumerates no device, loads no kernel image, and the
-                # deterministic abort the gate exists to pre-empt cannot happen --
-                # refusing those loads breaks a launch that runs. Deciding it from the
-                # request instead (zero_vram_chat_load) over-refused: the UI's default
-                # speculative "auto" usually resolves to a drafterless mode, a
-                # projector pinned to the CPU with --no-mmproj-offload holds no VRAM,
-                # and a drafter pinned with --spec-draft-ngl 0 / --spec-draft-device
-                # cpu is likewise CPU-only, yet all three read as GPU-bearing there --
-                # only the resolved argv knows which. Still before every spawn below,
-                # and outside the fit's try/except, so the refusal cannot be swallowed
-                # into the --fit on fallback.
+                # The CUDA SM gate goes here, where the child's GPU visibility is
+                # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
+                # kernel image loads and the abort this pre-empts cannot happen.
+                # Deciding it from the request over-refused -- speculative "auto", a
+                # --no-mmproj-offload projector and a --spec-draft-ngl 0 drafter all
+                # read as GPU-bearing there, only the resolved argv knows. Still
+                # before every spawn below and outside the fit's try/except, so the
+                # refusal cannot be swallowed into the --fit on fallback.
                 if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
                     _sm_gate = self._cuda_sm_gate_error(binary)
                     if _sm_gate:
