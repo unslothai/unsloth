@@ -18,7 +18,7 @@ import {
   type SpecialLanguage,
 } from "shiki";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
-import { createTokenCache } from "./code-token-cache";
+import { createTokenCache } from "./code-token-cache.ts";
 
 // Common fence tags shiki doesn't expose as aliases.
 // Keys: lower-cased input; values: canonical shiki language ids.
