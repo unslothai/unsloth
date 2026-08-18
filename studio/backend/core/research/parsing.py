@@ -21,7 +21,10 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
-_MARKDOWN_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# A fence can open inside a list item or a block quote, where the container marker sits before
+# it ("- ```"). Without the prefix the open is missed, the lines inside are read as ordinary
+# text, and a marker quoted in that block is taken for the real boundary.
+_MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
 
 
 def _validate_agent_action(

@@ -928,6 +928,29 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             "## Zusammenfassung\nBericht",
             id = "backticked-marker",
         ),
+        # A fence opened inside a list item or a quote was missed, so the marker quoted
+        # in it read as ordinary text and published the private lines that followed.
+        pytest.param(
+            "Analysis.\n\n- ```\n  <!-- UNSLOTH_FINAL_REPORT -->\n  Private tail\n",
+            None,
+            id = "fence-nested-in-a-list",
+        ),
+        pytest.param(
+            "Analysis.\n\n1. ```\n   <!-- UNSLOTH_FINAL_REPORT -->\n   Private tail\n",
+            None,
+            id = "fence-nested-in-a-numbered-list",
+        ),
+        pytest.param(
+            "Analysis.\n\n> ```\n> <!-- UNSLOTH_FINAL_REPORT -->\n> Private tail\n",
+            None,
+            id = "fence-nested-in-a-quote",
+        ),
+        # A list that never opens a fence must still leave a later marker usable.
+        pytest.param(
+            "- item one\n- item two\n<!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
+            "# Report\nBody",
+            id = "list-without-a-fence",
+        ),
         # splitlines also breaks on these, and rstrip("\r\n") leaves them on the line, so
         # without a full strip the boundary is missed and the preamble ships instead.
         pytest.param(
