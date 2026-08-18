@@ -1383,6 +1383,7 @@ def test_the_axis_action_lookup_only_matches_real_actions() -> None:
     assert HARNESS.axis_action("paint floor spread ms") is None
     assert HARNESS.axis_action("pages seeded") is None
 
+
 def test_merge_seeds_records_the_floor_of_every_isolated_page() -> None:
     """Without this, the per-action floor fix is inert and nobody notices.
 

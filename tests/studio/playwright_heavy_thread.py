@@ -2338,7 +2338,11 @@ def action_floor(row: dict, action: str | None) -> float:
 
 
 def growth(
-    cells: dict, pick, floored, sizes: list[int], action: str | None = None
+    cells: dict,
+    pick,
+    floored,
+    sizes: list[int],
+    action: str | None = None,
 ) -> tuple[float | None, float | None]:
     """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
 

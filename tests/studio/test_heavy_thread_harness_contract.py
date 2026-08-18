@@ -175,9 +175,9 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
         "action_floor no longer consults the per-action floors, so every action is back on the "
         "merged median"
     )
-    assert 'row.get("paint_floor_ms", 0)' in floor_fn, (
-        "action_floor has no median fallback, so axes that are not per-action lose their floor"
-    )
+    assert (
+        'row.get("paint_floor_ms", 0)' in floor_fn
+    ), "action_floor has no median fallback, so axes that are not per-action lose their floor"
 
 
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:

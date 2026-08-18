@@ -483,6 +483,7 @@ def test_the_frontend_job_has_room_for_every_page_the_smoke_seeds() -> None:
         f"sizes) but allows only {timeout} minutes for that plus six later browser smokes"
     )
 
+
 def test_the_probe_waits_for_panes_that_actually_appear() -> None:
     """`collapsibleOutputs >= n` is true before expandTools() runs, so it is not a wait at all.
 
@@ -499,9 +500,9 @@ def test_the_probe_waits_for_panes_that_actually_appear() -> None:
     # Comments are stripped first: this file explains WHY collapsibleOutputs is wrong, and a
     # naive substring check would fire on that explanation instead of on the code.
     code = "\n".join(re.sub(r"#.*$", "", ln) for ln in expand.split("\n"))
-    assert "collapsibleOutputs" not in code, (
-        "expand() still gates on collapsibleOutputs, which is already satisfied by closed cards"
-    )
+    assert (
+        "collapsibleOutputs" not in code
+    ), "expand() still gates on collapsibleOutputs, which is already satisfied by closed cards"
     assert "EXPANDED_PANES_GATE_JS" in expand, (
         "expand() must use the harness's own codeExecutionPanes gate, so the probe and the "
         "harness cannot drift apart on what counts as expanded"
@@ -518,7 +519,7 @@ def test_the_shared_pane_gate_reads_the_counter_that_starts_at_zero() -> None:
 
     gate = re.search(r'EXPANDED_PANES_GATE_JS = "([^"]+)"', HARNESS_SOURCE)
     assert gate, "EXPANDED_PANES_GATE_JS is no longer a simple string literal in the harness"
-    assert "codeExecutionPanes" in gate.group(1), (
-        f"the shared gate does not read codeExecutionPanes: {gate.group(1)!r}"
-    )
+    assert "codeExecutionPanes" in gate.group(
+        1
+    ), f"the shared gate does not read codeExecutionPanes: {gate.group(1)!r}"
     assert "collapsibleOutputs" not in gate.group(1)
