@@ -1067,9 +1067,8 @@ export function ChatSettingsPanel({
                       Context length exceeds what fits in unified memory (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
                       and the rest of the system share one pool here, so there
-                      is nothing to offload to and the load is refused. Lower
-                      the context, leave it on Auto, or set the KV cache to
-                      q8_0.
+                      is nothing to offload to. Lower the context, leave it on
+                      Auto, or set the KV cache to q8_0.
                     </>
                   ) : (
                     <>

@@ -7264,12 +7264,28 @@ class LlamaCppBackend:
 
         The Metal branch of the placement code already works out the largest context
         that fits, but only Auto was ever moved to it: an explicit request was passed
-        through verbatim on the theory that "--fit on" is a backstop. It is not one
-        here. --fit flexes -ngl to spill layers to the host, and on unified memory the
-        host is the same pool, so the spill frees nothing. The launch over-commits, and
-        because a Mac has nothing to fall back on it takes the system down with a kernel
-        panic rather than returning an out-of-memory error the way a discrete GPU does
-        (r/unsloth, M1 Max 32 GB, Qwen3.8-27B-UD-Q4_K_XL at a hand-set context).
+        through verbatim, on the theory that "--fit on" is a backstop.
+
+        It is a backstop, just not a trustworthy one here, for two reasons that compound.
+        llama.cpp will reduce an explicit context (common.h: fit_params_min_ctx defaults
+        to 4096, and only "-c 0" raises it to UINT32_MAX to disable reduction outright),
+        but it decides from the free memory ggml-metal reports, which comes off the
+        device's recommendedMaxWorkingSetSize. That is a property of the machine, not of
+        the moment: it does not know about Studio's own resident gigabyte or two, about
+        whatever else the user has open, or about the iogpu wired limit that is the
+        figure actually being blown. _apple_metal_memory_budget_bytes exists because of
+        exactly that gap, and takes min(device ceiling, psutil available) instead.
+
+        So when llama.cpp's estimate comes out optimistic it leaves the request alone,
+        and the launch over-commits wired memory. Wired pages are not reclaimable, so
+        Jetsam cannot step in the way it would for an ordinary process: the driver
+        faults and the machine panics, rather than the load failing the way it would on
+        a discrete GPU (r/unsloth, M1 Max 32 GB, Qwen3.8-27B-UD-Q4_K_XL, panicked twice
+        on a hand-set context, and never on Auto).
+
+        Refusing rather than silently clamping to the ceiling is deliberate: the number
+        the user typed is the number they get told about, and a context that quietly
+        became a quarter of what was asked for is its own support thread.
 
         Unlike ``_apu_ram_shortfall_message`` this prices the context, not just the
         weights. That helper leaves KV out because context auto-reduces on its path, so
@@ -15571,10 +15587,11 @@ class LlamaCppBackend:
                         # No GPU on Metal: the branches above are skipped and the context
                         # stays at native, over-committing unified memory (#5118, #6529).
                         # Cap with the same fit math; Auto shrinks to the cap, and an
-                        # explicit request above it is refused rather than launched. --fit
-                        # is no backstop on this path: it spills layers to the host, which
-                        # is the same pool, so the over-commit survives it and takes the
-                        # machine down. See _metal_context_overcommit_message.
+                        # explicit request above it is refused rather than launched.
+                        # "--fit on" stays as a backstop, but not one this can lean on:
+                        # llama.cpp sizes its reduction from ggml-metal's free-memory
+                        # report, which knows nothing about Studio's own footprint or the
+                        # wired limit. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         # Only a ceiling backed by a real KV estimate may refuse; the 4096
                         # fallback below is a guess and would block working loads.
@@ -15624,12 +15641,25 @@ class LlamaCppBackend:
                             max_available_ctx = min(4096, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
-                        elif _apple_measured_ceiling is not None and not _caller_owns_budget:
+                        elif (
+                            _apple_measured_ceiling is not None
+                            and not _caller_owns_budget
+                            and not _paravirtual_cpu_forced
+                        ):
                             # Exempt for the reason the other two Metal guards are: a
                             # manual load with a fixed layer count is the user taking the
                             # memory budget over, and it is read off the request so the
                             # paravirtual CPU pin (which rewrites Auto to manual/0) cannot
                             # make a plain Auto load look caller-owned.
+                            #
+                            # The virtualised device is exempt for the opposite reason:
+                            # that pin puts the whole load on CPU behind --device none, so
+                            # it allocates no Metal memory at all and this budget is the
+                            # wrong yardstick for it. Refusing there would break loads
+                            # that work today on a Mac VM, and the message would describe
+                            # a GPU the launch never touches. What an oversized CPU load
+                            # does risk is host RAM, which _host_offload_shortfall_message
+                            # already covers, priced against the pool it really draws on.
                             _metal_ctx_refusal = self._metal_context_overcommit_message(
                                 effective_ctx,
                                 _apple_measured_ceiling,

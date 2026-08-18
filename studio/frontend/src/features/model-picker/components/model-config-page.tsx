@@ -2325,7 +2325,7 @@ export function ModelConfigPage({
                         Exceeds what fits in unified memory (
                         {loadedMaxContextLength.toLocaleString()} tokens). The
                         GPU and the rest of the system share one pool here, so
-                        there is nothing to offload to and the load is refused.
+                        there is nothing to offload to.
                       </>
                     ) : (
                       <>

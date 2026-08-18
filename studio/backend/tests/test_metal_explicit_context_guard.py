@@ -4,12 +4,16 @@
 """A hand-set context above what unified memory holds must be refused, not launched.
 
 The Metal branch of load_model already works out the largest context that fits, but
-only Auto was ever moved to it: an explicit request was passed through verbatim on the
-theory that "--fit on" is a backstop. It is not one here. --fit flexes -ngl to spill
-layers to the host, and on unified memory the host is the same pool, so the spill frees
-nothing and the launch over-commits. A discrete GPU answers that with an out-of-memory
-error; a Mac has nothing to fall back on and panics the whole machine, which is what an
-M1 Max 32 GB hit on Qwen3.8-27B-UD-Q4_K_XL as soon as the context was set by hand.
+only Auto was ever moved to it: an explicit request was passed through verbatim, on the
+theory that "--fit on" is a backstop. It is one, but not a trustworthy one here.
+llama.cpp will reduce an explicit context (fit_params_min_ctx defaults to 4096; only
+"-c 0" disables the reduction), but it decides from ggml-metal's free-memory report,
+which comes off the device's recommendedMaxWorkingSetSize and knows nothing about
+Studio's own resident gigabyte or two, other running apps, or the iogpu wired limit
+that is the figure actually being blown. When that estimate is optimistic the request
+stands and the launch over-commits wired memory, which Jetsam cannot reclaim, so the
+machine panics instead of the load failing. An M1 Max 32 GB hit exactly that on
+Qwen3.8-27B-UD-Q4_K_XL, twice, as soon as the context was set by hand.
 
 So the ceiling the branch computes now gates the explicit request too, and the refusal
 names it. Two things it deliberately does not do: refuse against the 4096 fallback the
@@ -106,19 +110,29 @@ def _launch(
     gpu_memory_mode = "auto",
     gpu_layers = -1,
     extra_args = None,
+    paravirtual = False,
+    cache_type_kv = None,
+    backend = None,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
     The KV estimate is a flat 1 KiB per token and the compute buffer is zeroed, so the
     footprint check the branch runs before trusting its own ceiling passes on the tiny
     stub GGUF and the ceiling under test is the one the fit returns.
+
+    Returns the launch capture ({"cmd": argv}, empty when nothing launched). Pass
+    ``backend`` to drive a second load through the same instance, which is the only way
+    to observe what a refusal does to state a previous load left behind.
     """
     monkeypatch.setattr(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
         staticmethod(lambda: 9 * 1024**3 if metal else 0),
     )
-    backend = LlamaCppBackend()
+    if paravirtual:
+        import core.inference.llama_cpp as _llama_cpp
+        monkeypatch.setattr(_llama_cpp, "_metal_device_is_paravirtual", lambda: True)
+    backend = backend if backend is not None else LlamaCppBackend()
     backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
@@ -166,8 +180,10 @@ def _launch(
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 extra_args = extra_args,
+                cache_type_kv = cache_type_kv,
             )
         )
+    captured["backend"] = backend
     return captured
 
 
@@ -283,3 +299,152 @@ def test_the_refusal_is_raised_outside_the_placement_handler():
     raised = src.find("raise RuntimeError(_metal_ctx_refusal)")
     assert assigned != -1 and handler != -1 and raised != -1
     assert assigned < handler < raised
+
+
+class TestAVirtualisedMetalDevice:
+    """A Mac VM runs GGUF entirely on CPU, so this budget is the wrong yardstick.
+
+    The paravirtual pin rewrites every placement to manual/0 and launches behind
+    --device none, because offloaded layers on a virtualised Metal device produce
+    corrupt output. Nothing is allocated on the GPU, so refusing against a GPU
+    working-set budget would break loads that work today on a Mac VM (and on the
+    macOS GitHub Actions runners, which report exactly this device), and the message
+    would describe hardware the launch never touches. Host RAM is the real limit
+    there, and _host_offload_shortfall_message already prices that.
+
+    Caught by the pre-merge OS x GPU simulation, not by review: the exemption reads
+    _paravirtual_cpu_forced, which is set from the hardware, while the neighbouring
+    _caller_owns_budget is read off the REQUEST and so stays False for the Auto load
+    the pin rewrote.
+    """
+
+    def test_it_is_not_refused(self, tmp_path, monkeypatch):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 32768, paravirtual = True)["cmd"]
+        assert _ctx_values(cmd)[-1] == "32768"
+
+    def test_a_physical_mac_in_the_same_shape_is_still_refused(self, tmp_path, monkeypatch):
+        """Pins that the exemption is the virtualised device, not the CPU placement
+        it happens to produce."""
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, paravirtual = False)
+
+    def test_auto_is_still_capped_there(self, tmp_path, monkeypatch):
+        """The exemption is from the refusal only. Auto still shrinks to the ceiling,
+        which is what keeps a virtualised Mac off its native context."""
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, paravirtual = True)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(CEILING)
+
+
+class TestTheMessageSurvivesTheRoute:
+    """load_model raises; the route rewrites the text twice before the user reads it.
+
+    It is caught by the broad handler in _load_model_impl, which redacts native paths
+    and then runs _maybe_unsupported_message over the result, exactly as the existing
+    APU and host-offload refusals are. Both rewrites have to leave this message alone
+    or the user is told something false about a fixable mistake.
+    """
+
+    def _message(self, tmp_path, monkeypatch) -> str:
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 32768)
+        return str(excinfo.value)
+
+    def test_it_is_not_relabelled_as_an_unsupported_model(self, tmp_path, monkeypatch):
+        """_maybe_unsupported_message rewrites any error carrying one of these into
+        "This model is not supported yet. Try a different model.", which would send
+        the user off to change models over a context they can simply lower.
+
+        Read out of the route source rather than imported: the phrase list is the
+        contract, and importing routes.inference would drag FastAPI into a test that
+        only needs four strings.
+        """
+        import ast
+        import re
+
+        route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+        hints = ast.literal_eval(
+            re.search(r"_NOT_SUPPORTED_HINTS = (\(.*?\))", route_src, re.S).group(1)
+        )
+        # The list is only a contract if it is the real one.
+        assert "is not supported" in hints
+        message = self._message(tmp_path, monkeypatch).lower()
+        assert [h for h in hints if h.lower() in message] == []
+
+    def test_it_carries_nothing_for_the_path_redactor_to_eat(self, tmp_path, monkeypatch):
+        """redact_native_paths replaces any leased path with <native_path>. A message
+        with no path in it cannot be cut in half by that."""
+        message = self._message(tmp_path, monkeypatch)
+        assert "/" not in message.replace("q8_0", "")
+
+    def test_it_is_a_single_line_of_plain_text(self, tmp_path, monkeypatch):
+        """The route prefixes it ("Failed to load model: ...") and the UI renders the
+        detail as one string."""
+        message = self._message(tmp_path, monkeypatch)
+        assert "\n" not in message
+
+
+class TestWhatARefusedReloadCosts:
+    """A refused reload ends with no model loaded, and that is the existing contract.
+
+    load_model kills the resident server in its Phase 1, long before the placement
+    block that computes the ceiling. Every refusal raised from that block behaves this
+    way already: the APU RAM shortfall, the unpinnable Vulkan ordinal. Refusing earlier
+    would mean re-deriving the fit outside the one place that owns it, which is the
+    drift _apu_ram_shortfall_message explicitly avoids.
+
+    So this is pinned rather than fixed, and it is still the better end state: before
+    this guard the same click took the whole machine down. The recovery path is what
+    has to work, and the next test covers it.
+    """
+
+    def test_the_refused_reload_leaves_nothing_running(self, tmp_path, monkeypatch):
+        # is_active, not is_loaded: this asks whether a child process exists, and
+        # health is a separate signal the stubbed launch does not model.
+        backend = _launch(tmp_path, monkeypatch, n_ctx = 4096)["backend"]
+        assert backend.is_active
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, backend = backend)
+        assert not backend.is_active
+
+    def test_a_smaller_retry_after_a_refusal_succeeds(self, tmp_path, monkeypatch):
+        """Nothing about the refusal is sticky: no half-written request state, and no
+        dedupe that would read the retry as already loaded."""
+        backend = LlamaCppBackend()
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 32768, backend = backend)
+        assert not backend.is_active
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 4096, backend = backend)["cmd"]
+        assert _ctx_values(cmd)[-1] == "4096"
+
+
+class TestTheContextCanArriveByAnotherDoor:
+    """requested_ctx folds in a -c from extra args, so every spelling is covered.
+
+    Worth pinning: if the guard read intent.n_ctx directly it would sit one text box
+    away from being bypassed, and the pass-through spelling is the one a user reaches
+    for after being refused.
+    """
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            ("-c", "32768"),
+            ("--ctx-size", "32768"),
+            ("--ctx-size=32768",),
+        ],
+    )
+    def test_a_pass_through_context_is_refused_too(self, tmp_path, monkeypatch, extra):
+        with pytest.raises(RuntimeError, match = "unified"):
+            _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = list(extra))
+
+    def test_a_pass_through_context_under_the_ceiling_still_launches(
+        self, tmp_path, monkeypatch
+    ):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "4096"])["cmd"]
+        assert _ctx_values(cmd)[-1] == "4096"
+
+    def test_a_zero_pass_through_is_floored_not_refused(self, tmp_path, monkeypatch):
+        """"-c 0" is read as non-explicit and handled by the existing floor (#5118),
+        so it must not turn into a refusal."""
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "0"])["cmd"]
+        assert _ctx_values(cmd) and _ctx_values(cmd)[-1] != "0"
