@@ -19,6 +19,7 @@ from auth import storage
 from auth.authentication import (
     KEYLESS_FALLBACK_SCHEME,
     KEYLESS_SCHEME,
+    admitted_without_credential,
     admitted_without_session,
     authenticated_via_api_key,
     create_access_token,
@@ -261,6 +262,33 @@ def test_the_middleware_leaves_a_signed_in_session_alone():
     assert asgi_request_is_keyless(scope) is False
 
 
+def test_the_middleware_leaves_a_working_api_key_alone():
+    """An existing API client authenticates as itself, so it keeps the tools it had."""
+    seed_user()
+    set_keyless_api_access("inference")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is False
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_the_middleware_sees_an_unusable_key_as_keyless(expired):
+    """A revoked or expired key falls through to the admin, so the tool grant applies."""
+    seed_user()
+    set_keyless_api_access("inference")
+    raw, row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME,
+        name = "stale",
+        expires_at = (
+            (datetime.now(timezone.utc) - timedelta(days = 1)).isoformat() if expired else None
+        ),
+    )
+    if not expired:
+        storage.revoke_api_key(storage.DEFAULT_ADMIN_USERNAME, row["id"])
+    assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is True
+
+
 def test_the_middleware_is_inert_when_access_is_off():
     seed_user()
     assert asgi_request_is_keyless(asgi_scope()) is False
@@ -456,6 +484,73 @@ def test_a_pending_password_change_is_still_enforced(monkeypatch):
     with pytest.raises(HTTPException) as excinfo:
         subject_of(request_for())
     assert excinfo.value.status_code == 403
+
+
+def test_a_working_key_was_not_admitted_by_the_setting():
+    """The narrower predicate the credential-minting guard reads."""
+    seed_user()
+    set_keyless_api_access("full")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    key_request = request_for(headers = {"Authorization": f"Bearer {raw}"})
+    assert admitted_without_credential(resolve(key_request)) is False
+    assert admitted_without_credential(resolve(request_for())) is True
+    assert admitted_without_credential(
+        resolve(request_for(headers = {"Authorization": "Bearer ollama"}))
+    ) is True
+
+
+# --- credentials the setting must not be able to mint -------------------------
+
+
+def api_key_client():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routes import auth as auth_routes
+
+    app = FastAPI()
+    app.include_router(auth_routes.router, prefix = "/api/auth")
+    return TestClient(app)
+
+
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer ollama"}])
+def test_a_keyless_caller_cannot_mint_an_api_key(headers):
+    """A minted key outlives the setting, so switching keyless off would not undo it."""
+    seed_user()
+    set_keyless_api_access("full")
+    response = api_key_client().post(
+        "/api/auth/api-keys", json = {"name": "minted"}, headers = headers
+    )
+    assert response.status_code == 403
+    assert storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME) == []
+
+
+def test_a_working_key_can_still_mint_one_while_keyless_is_on():
+    seed_user()
+    set_keyless_api_access("full")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    response = api_key_client().post(
+        "/api/auth/api-keys",
+        json = {"name": "second"},
+        headers = {"Authorization": f"Bearer {raw}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["key"].startswith(storage.API_KEY_PREFIX)
+
+
+def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
+    seed_user()
+    set_keyless_api_access("full")
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+    response = api_key_client().post(
+        "/api/auth/api-keys",
+        json = {"name": "from-the-ui"},
+        headers = {"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
 
 
 def test_the_openapi_security_scheme_name_is_unchanged():

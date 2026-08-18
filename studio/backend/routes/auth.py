@@ -33,6 +33,7 @@ from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
     authenticated_via_desktop_jwt,
+    authenticated_without_credential,
     create_access_token,
     create_refresh_token,
     get_current_credential,
@@ -691,9 +692,18 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
-    payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
+    payload: CreateApiKeyRequest,
+    credential: tuple = Depends(get_current_credential),
+    no_credential: bool = Depends(authenticated_without_credential),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
+    # a key minted here keeps working after keyless API access is switched off, so a
+    # caller the setting admitted must not be able to mint one and outlive it
+    if no_credential:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "API keys can only be created from the Unsloth UI or with an existing API key.",
+        )
     current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:

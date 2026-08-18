@@ -18,6 +18,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    validate_api_key,
     validate_api_key_with_credential,
     verify_refresh_token,
 )
@@ -59,6 +60,33 @@ def _names_a_session(token: str) -> bool:
 def bearer_names_a_session(token: str) -> bool:
     """Public form of the session check, for callers that only have the raw token."""
     return _names_a_session(token)
+
+
+def bearer_is_valid_api_key(token: str) -> bool:
+    """Whether this bearer is an sk-unsloth key this install still accepts.
+
+    Such a key authenticates as itself even while keyless API access is on, so the
+    callers below must not treat it as a credential the setting had to stand in for.
+    """
+    return token.startswith(API_KEY_PREFIX) and validate_api_key(token) is not None
+
+
+def admitted_without_credential(
+    credentials: Optional[HTTPAuthorizationCredentials],
+) -> bool:
+    """True when the keyless setting alone let this caller in.
+
+    Narrower than ``is_keyless``, which also covers a working API key that happened
+    to arrive while the setting was on. Routes whose effect outlives the setting need
+    this stricter form: turning keyless access back off has to undo what it allowed.
+    """
+    if credentials is None:
+        return False
+    if credentials.scheme == KEYLESS_SCHEME:
+        return True
+    if credentials.scheme != KEYLESS_FALLBACK_SCHEME:
+        return False
+    return not bearer_is_valid_api_key(credentials.credentials)
 
 
 def admitted_without_session(request: Any) -> bool:
@@ -265,6 +293,13 @@ async def authenticated_via_api_key(
     if is_keyless(credentials):
         return True
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+
+
+async def authenticated_without_credential(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> bool:
+    """Dependency form of ``admitted_without_credential``."""
+    return admitted_without_credential(credentials)
 
 
 def require_ui_session_for_local_commands(via_api_key: bool) -> None:

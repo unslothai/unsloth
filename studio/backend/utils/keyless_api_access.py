@@ -212,10 +212,12 @@ class KeylessToolPolicyMiddleware:
 
 
 def asgi_request_is_keyless(asgi_scope) -> bool:
-    """Whether an ASGI request would be admitted with no Studio sign-in.
+    """Whether this ASGI request is admitted by the setting rather than by a credential.
 
-    Middleware-side twin of ``auth.authentication.admitted_without_session``, reading
-    the raw scope because it runs before the request object exists.
+    Middleware-side twin of ``auth.authentication.admitted_without_credential``, reading
+    the raw scope because it runs before the request object exists. A Studio session and
+    a working API key both authenticate as themselves, so neither is keyless: applying
+    the tool restriction to an existing API client would take away tools it already had.
     """
     access = get_keyless_api_access_scope()
     if access == KEYLESS_SCOPE_OFF:
@@ -228,7 +230,8 @@ def asgi_request_is_keyless(asgi_scope) -> bool:
         parts = bytes(value).split(b" ", 1)
         if len(parts) != 2 or parts[0].lower() != b"bearer" or not parts[1].strip():
             return True
-        from auth.authentication import bearer_names_a_session
+        from auth.authentication import bearer_is_valid_api_key, bearer_names_a_session
 
-        return not bearer_names_a_session(parts[1].strip().decode("utf-8", "replace"))
+        token = parts[1].strip().decode("utf-8", "replace")
+        return not (bearer_names_a_session(token) or bearer_is_valid_api_key(token))
     return True
