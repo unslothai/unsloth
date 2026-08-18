@@ -24,6 +24,7 @@ sys.modules[SPEC.name] = INSTALL_LLAMA_PREBUILT
 SPEC.loader.exec_module(INSTALL_LLAMA_PREBUILT)
 
 PrebuiltFallback = INSTALL_LLAMA_PREBUILT.PrebuiltFallback
+BusyInstallConflict = INSTALL_LLAMA_PREBUILT.BusyInstallConflict
 binary_env = INSTALL_LLAMA_PREBUILT.binary_env
 is_secret_env_name = INSTALL_LLAMA_PREBUILT.is_secret_env_name
 scrub_env = INSTALL_LLAMA_PREBUILT.scrub_env
@@ -834,6 +835,70 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert "cleaning staging, install, and rollback paths before source build fallback" in output
     assert "removing failed install path" in output
     assert "removing rollback path" in output
+
+
+def test_activate_install_tree_keeps_existing_install_when_aside_move_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def cross_device_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", cross_device_replace)
+
+    with pytest.raises(
+        PrebuiltFallback,
+        match = "could not be moved aside; previous install left in place",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
+
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "existing install could not be moved aside; leaving it in place" in output
+
+
+def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def busy_replace(src, dst):
+        if Path(src) == install_dir:
+            raise OSError(errno.EBUSY, "Device or resource busy")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", busy_replace)
+
+    with pytest.raises(
+        BusyInstallConflict,
+        match = "appears to still be in use; previous install left in place",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
+    assert not staging_dir.exists()
+    assert not (tmp_path / ".staging").exists()
 
 
 def test_activate_staged_dir_copies_when_replace_hits_busy_lock(

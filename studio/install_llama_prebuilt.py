@@ -4273,11 +4273,15 @@ def activate_staged_dir(staging_dir: Path, dst: Path) -> None:
 def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) -> None:
     rollback_dir: Path | None = None
     failed_dir: Path | None = None
+    had_existing = False
+    moved_aside = False
     try:
         if install_dir.exists():
+            had_existing = True
             rollback_dir = unique_install_side_path(install_dir, "rollback")
             log(f"moving existing install to rollback path {rollback_dir}")
             os.replace(install_dir, rollback_dir)
+            moved_aside = True
             log(f"moved existing install to rollback path {rollback_dir.name}")
 
         log(f"activating staged install {staging_dir} -> {install_dir}")
@@ -4288,6 +4292,21 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
         log(f"activated install tree confirmed at {install_dir}")
     except Exception as exc:
         log(f"activation failed for staged install: {exc}")
+        if had_existing and not moved_aside:
+            # The aside-move never happened, so install_dir still holds the
+            # working install; it must not be moved or cleaned up.
+            log("existing install could not be moved aside; leaving it in place")
+            if is_busy_lock_error(exc):
+                raise BusyInstallConflict(
+                    "staged prebuilt validation passed but the existing install could not be "
+                    "moved aside because llama.cpp appears to still be in use; previous install "
+                    f"left in place ({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+                ) from exc
+            raise PrebuiltFallback(
+                "staged prebuilt validation passed but the existing install could not be "
+                "moved aside; previous install left in place "
+                f"({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
+            ) from exc
         try:
             if install_dir.exists():
                 failed_dir = unique_install_side_path(install_dir, "failed")
