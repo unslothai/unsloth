@@ -842,6 +842,7 @@ def _above_floor(hits: list, min_dense_score: float) -> list:
         return hits
     return [hit for hit in hits if hit.dense_score is None or hit.dense_score >= min_dense_score]
 
+
 def _ends_first_within_ties(conn, hits: list) -> list:
     """Reorder each run of EQUAL lexical scores as newest, oldest, next-newest, ...
 

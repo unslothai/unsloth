@@ -2089,6 +2089,7 @@ def test_a_floor_nothing_clears_still_returns_nothing(conn, monkeypatch):
     # And the tool-initiated path is untouched by the floor.
     assert conversation_archive.recall(THREAD, "pelican", top_k = 4) is not None
 
+
 def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
     """A tie in the score is not an order, and truncating it silently picked the past.
 

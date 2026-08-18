@@ -674,9 +674,9 @@ def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
     evicted = [
         message for message in branch if id(message) not in kept_ids and message["role"] != "system"
     ]
-    assert any("Section 7" in str(message["content"]) for message in evicted), (
-        "the reset must have dropped turns after the pinned one for this test to mean anything"
-    )
+    assert any(
+        "Section 7" in str(message["content"]) for message in evicted
+    ), "the reset must have dropped turns after the pinned one for this test to mean anything"
     boundary = _branch_boundary(fitted, branch)
 
     # The next turn of the SAME epoch: one reply, one follow-up, same boundary replayed.
