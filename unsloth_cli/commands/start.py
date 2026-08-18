@@ -3518,6 +3518,15 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    if os.name == "nt":
+        exec_path = Path(executable)
+        if not exec_path.suffix:
+            for ext in (".cmd", ".CMD", ".bat", ".BAT", ".exe", ".EXE"):
+                candidate = exec_path.with_suffix(ext)
+                if candidate.is_file():
+                    executable = str(candidate)
+                    break
+
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match
