@@ -239,6 +239,90 @@ def test_inventory_is_empty_without_torch(monkeypatch):
     assert hw._torch_get_device_inventory([0]) == []
 
 
+# ========== ROCm hybrid host (discrete + integrated) ==========
+
+_GB = 1024**3
+
+
+def _rocm_inventory_mod(devices):
+    """Fake torch module for inventory tests.
+
+    ``devices`` is a list of
+    ``(name, total_memory, is_integrated, gcn_arch_name, gtt_total)`` tuples:
+    ``total_memory`` is the driver's dedicated total (the carve-out on an
+    integrated part) and ``gtt_total`` is what ``mem_get_info`` reports for the
+    same device (the GTT/shared pool on an APU)."""
+    mod = types.SimpleNamespace()
+    mod.get_device_properties = lambda o: types.SimpleNamespace(
+        name = devices[o][0],
+        total_memory = devices[o][1],
+        is_integrated = devices[o][2],
+        gcnArchName = devices[o][3],
+    )
+    mod.mem_get_info = lambda o: (devices[o][4] - (1 << 30), devices[o][4])
+    return mod
+
+
+def _rocm_test_env(monkeypatch, devices):
+    """Point the inventory helper at a fake ROCm torch: hip 6.2 (so discrete
+    carve-out classification is authoritative) with the given device list."""
+    torch_mod = types.SimpleNamespace()
+    torch_mod.version = types.SimpleNamespace(hip = "6.2.0")
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
+    monkeypatch.setattr(hw, "IS_ROCM", True)
+    mod = _rocm_inventory_mod(devices)
+    monkeypatch.setattr(hw, "_torch_get_device_module", lambda: (mod, "cuda"))
+    return mod
+
+
+def test_inventory_hybrid_rocm_keeps_igpu_carve_out(monkeypatch):
+    # Desktop dGPU + iGPU (unslothai/unsloth#8942): the integrated member's
+    # GTT/shared pool is not its real VRAM. Reporting it as capacity showed the
+    # iGPU with overinflated VRAM; the fix keeps the dedicated carve-out on a
+    # hybrid host while the discrete card is unchanged.
+    devices = [
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
+        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1150", 24 * _GB),
+    ]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in inventory] == [16.0, 0.5]
+    assert [d["name"] for d in inventory] == ["AMD Radeon RX 9070 XT", "AMD Radeon Graphics"]
+
+
+def test_inventory_hybrid_rocm_igpu_first_ordinal(monkeypatch):
+    # Same host, iGPU enumerated first: the hybrid guard must not depend on which
+    # ordinal the integrated part lands on.
+    devices = [
+        ("AMD Radeon Graphics", int(0.5 * _GB), 1, "gfx1150", 24 * _GB),
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
+    ]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in inventory] == [0.5, 16.0]
+
+
+def test_inventory_apu_only_still_reports_gtt_pool(monkeypatch):
+    # A unified-only APU host (e.g. Strix Halo) must keep today's behaviour: the
+    # carve-out understates what the model can actually use, so the GTT total
+    # stays the reported capacity.
+    devices = [("AMD Radeon 8060S", 8 * _GB, 1, "gfx1151", 128 * _GB)]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0])
+    assert inventory[0]["total_gb"] == 128.0
+
+
+def test_inventory_discrete_rocm_set_untouched(monkeypatch):
+    # Two discrete cards: nothing unified, no correction, driver totals stand.
+    devices = [
+        ("AMD Radeon RX 9070 XT", 16 * _GB, 0, "gfx1201", 16 * _GB),
+        ("AMD Radeon RX 7900 XTX", 24 * _GB, 0, "gfx1100", 24 * _GB),
+    ]
+    _rocm_test_env(monkeypatch, devices)
+    inventory = hw._torch_get_device_inventory([0, 1])
+    assert [d["total_gb"] for d in inventory] == [16.0, 24.0]
+
+
 def test_visibility_endpoint_uses_inventory_not_occupancy(monkeypatch):
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
     monkeypatch.setattr(hw, "IS_ROCM", True)  # skips the nvidia-smi shortcut

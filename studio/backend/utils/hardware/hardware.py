@@ -1207,19 +1207,58 @@ def _torch_get_device_inventory(device_indices: list[int]) -> list[Dict[str, Any
     if mod is None:
         return []
 
-    devices = []
+    # Fetch every device's props once: on a hybrid ROCm host (integrated + discrete
+    # visible together, e.g. a desktop Radeon dGPU beside a Ryzen iGPU) the
+    # integrated member's GTT/shared pool is NOT its real VRAM. The carve-out→GTT
+    # correction below exists so unified-only APU hosts budget their whole pool;
+    # applying it to the iGPU of a hybrid host reports a system-RAM share as the
+    # card's capacity (unslothai/unsloth#8942). Skip the correction for the
+    # integrated member of a hybrid set; every other case keeps today's behaviour.
+    props_list: list[tuple[int, int, Any]] = []
     for ordinal, phys_idx in enumerate(device_indices):
         try:
             # torch ordinals are 0-based relative to CUDA_VISIBLE_DEVICES.
-            props = mod.get_device_properties(ordinal)
+            props_list.append((ordinal, phys_idx, mod.get_device_properties(ordinal)))
+        except Exception as e:
+            logger.debug("torch inventory probe failed for ordinal %d: %s", ordinal, e)
+            props_list.append((ordinal, phys_idx, None))
+
+    hybrid_rocm = False
+    if IS_ROCM and len(props_list) >= 2:
+        try:
+            from core.training.worker import _rocm_classify_unified_memory
+
+            unified_flags = [
+                props is not None and bool(_rocm_classify_unified_memory(props)[1])
+                for _, _, props in props_list
+            ]
+            hybrid_rocm = any(unified_flags) and not all(unified_flags)
+        except Exception as e:
+            logger.debug("ROCm hybrid-set classification failed: %s", e)
+
+    devices = []
+    for ordinal, phys_idx, props in props_list:
+        if props is None:
+            continue
+        try:
             total_bytes = props.total_memory
             if _rocm_props_total_is_carve_out(props) and hasattr(mod, "mem_get_info"):
+                integrated = False
                 try:
-                    total_bytes = mod.mem_get_info(ordinal)[1]
-                except Exception as e:
-                    # Keep the carve-out rather than dropping the device: an
-                    # understated total still beats no device at all.
-                    logger.debug("ROCm APU driver total failed for ordinal %d: %s", ordinal, e)
+                    from core.training.worker import _rocm_classify_unified_memory
+
+                    integrated = bool(_rocm_classify_unified_memory(props)[1])
+                except Exception:
+                    pass
+                if not (hybrid_rocm and integrated):
+                    try:
+                        total_bytes = mod.mem_get_info(ordinal)[1]
+                    except Exception as e:
+                        # Keep the carve-out rather than dropping the device: an
+                        # understated total still beats no device at all.
+                        logger.debug(
+                            "ROCm APU driver total failed for ordinal %d: %s", ordinal, e
+                        )
             devices.append(
                 {
                     "index": phys_idx,
