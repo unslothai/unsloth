@@ -58,11 +58,11 @@ on:
         default: 'main'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -138,14 +138,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Without this, setup-python's default glob resolves to the repo's only
-          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
-          # nothing to do with what this job installs. Every job in the repo therefore
-          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
-          # and the install still downloaded the whole tree. Key on what this job actually
-          # reads instead.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -2271,6 +2269,14 @@ jobs:
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
   llama-cpp-smoke:
     # Standalone llama.cpp build + smoke. Earlier this lived inside every
     # consolidated matrix cell and re-cmake'd llama.cpp ~5 min per cell --
@@ -2300,14 +2306,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Without this, setup-python's default glob resolves to the repo's only
-          # requirements.txt, unsloth/kernels/moe/requirements.txt: five lines that have
-          # nothing to do with what this job installs. Every job in the repo therefore
-          # shared one cache slot keyed on an unrelated file, so a "hit" restored a few MB
-          # and the install still downloaded the whole tree. Key on what this job actually
-          # reads instead.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
 
@@ -2505,3 +2509,12 @@ jobs:
               f"and llama-quantize at {quantizer}."
           )
           PY
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
