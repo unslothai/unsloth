@@ -46,7 +46,11 @@ def _tool(name: str) -> dict:
     }
 
 
-def _delta(fragment: str = "", arguments: str = "", call_id: str = "c1") -> str:
+def _delta(
+    fragment: str = "",
+    arguments: str = "",
+    call_id: str = "c1",
+) -> str:
     function: dict = {}
     if fragment:
         function["name"] = fragment
@@ -109,7 +113,6 @@ def named(monkeypatch):
 
 def _run(transport, tools):
     import asyncio
-
     async def _collect():
         out: list[str] = []
         agen = stream_with_studio_tools(
