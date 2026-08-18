@@ -5406,7 +5406,8 @@ class DiffusionBackend:
         strength: Optional[float] = None,
         # Upscale (hires fix): factor > 1 with an init image enlarges then re-denoises at low strength.
         upscale: Optional[float] = None,
-        # Reference (FLUX.2): additional reference images beyond init_image (a list). Ignored elsewhere.
+        # Additional images beyond init_image (a list): FLUX.2 reference conditioning, or extra
+        # source images for an edit-family model (e.g. Qwen-Image-Edit-Plus, FLUX Kontext). Ignored elsewhere.
         reference_images: Optional[list[str]] = None,
         # LoRA (id, weight) pairs; loaded non-fused and activated for this generation. None/empty clears.
         loras: Optional[list[tuple[str, float]]] = None,
@@ -5483,7 +5484,9 @@ class DiffusionBackend:
                         raise ValueError("upscale requires an input image (init_image).")
                     if reference_images:
                         raise ValueError("reference_images require an input image (init_image).")
-                if reference_images and not getattr(state.family, "reference", False):
+                if reference_images and not (
+                    getattr(state.family, "reference", False) or getattr(state.family, "edit", False)
+                ):
                     raise ValueError(
                         f"Reference images are not supported for the '{state.family.name}' "
                         "model family."
@@ -5502,6 +5505,10 @@ class DiffusionBackend:
                         )
                     workflow = "edit"
                     init_pil = decode_b64_image(init_image, mode = "RGB")
+                    # Additional edit-reference images (e.g. Qwen-Image-Edit-Plus, FLUX Kontext multi-image); capped to bound VRAM.
+                    ref_extra = [
+                        decode_b64_image(x, mode = "RGB") for x in (reference_images or [])[:3]
+                    ]
                 elif mask_image is not None and init_image is not None:
                     workflow = "inpaint"
                     pipe = self._workflow_pipe(state, state.family.inpaint_pipeline_class, workflow)

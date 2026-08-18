@@ -1577,6 +1577,52 @@ def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path
         backend.generate(prompt = "make it night", steps = 8)
 
 
+def test_edit_family_supports_multiple_images(fake_runtime, tmp_path):
+    """An instruction-editing family accepts extra source images via ``reference_images``
+    (e.g. Qwen-Image-Edit-Plus, FLUX Kontext multi-image editing) and passes the primary
+    image plus every extra as a list to the pipeline's ``image`` kwarg."""
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "Qwen/Qwen-Image-Edit-2511",
+        family_override = "qwen-image-edit",
+    )
+    loaded_pipe = backend._state.pipe
+
+    backend.generate(
+        prompt = "combine these into one scene",
+        steps = 8,
+        guidance = 4.0,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        reference_images = [_tiny_png_b64(), _tiny_png_b64()],
+    )
+    img_arg = loaded_pipe.last_kwargs["image"]
+    assert isinstance(img_arg, list) and len(img_arg) == 3  # primary + 2 extras
+
+    # More than 3 extras is silently capped, same as the reference workflow.
+    backend.generate(
+        prompt = "combine these into one scene",
+        steps = 8,
+        guidance = 4.0,
+        seed = 1,
+        init_image = _tiny_png_b64(),
+        reference_images = [_tiny_png_b64()] * 5,
+    )
+    img_arg = loaded_pipe.last_kwargs["image"]
+    assert isinstance(img_arg, list) and len(img_arg) == 4  # primary + capped 3 extras
+
+    # reference_images still requires an init_image, same as every other conditioned workflow.
+    with pytest.raises(ValueError, match = "reference_images"):
+        backend.generate(
+            prompt = "combine these into one scene",
+            steps = 8,
+            reference_images = [_tiny_png_b64()],
+        )
+
+
 def test_load_pipeline_kind_uses_from_pretrained(fake_runtime):
     """A full-pipeline (no single-file) load on an unsloth/* repo builds the pipe with
     pipeline_cls.from_pretrained(repo_id) -- NO single-file transformer build, NO GGUF
