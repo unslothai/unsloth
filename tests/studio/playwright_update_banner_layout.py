@@ -433,7 +433,37 @@ MEASURE = """
     // on which platform it is or on whether the rail happens to be scrolling.
     railGutterPx: rail ? Math.round(rail.offsetWidth - rail.clientWidth) : null,
     cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
+    // The same card, measured off the LAYOUT box instead of the painted one.
+    // offsetWidth is the border box with no transform applied (CSSOM-View), so
+    // it answers the scrollbar question the assertion below is actually asking
+    // and cannot be moved by the card's enter animation. `cardWidth` stays,
+    // reported alongside, because the gap between the two is the diagnosis.
+    cardLayoutWidth: card ? card.offsetWidth : null,
     railPointerEvents: rail ? getComputedStyle(rail).pointerEvents : null,
+    // Everything needed to say WHY a card came out narrow, reported with the
+    // failure instead of being guessed at afterwards from two numbers. A card
+    // that lost width to a scrollbar and a card that lost it to an unfinished
+    // transform read identically as `cardWidth`, and the engine that reports
+    // offsetWidth === clientWidth while still taking the width out of the
+    // content box (Playwright WebKit on Linux) makes railGutterPx no help on
+    // its own. `borderBox` is the layout width with no transform applied.
+    widthWhy: card && rail ? {
+      transform: getComputedStyle(card).transform,
+      borderBox: card.offsetWidth,
+      cssWidth: getComputedStyle(card).width,
+      maxWidth: getComputedStyle(card).maxWidth,
+      innerWidth: innerWidth,
+      docClientWidth: document.documentElement.clientWidth,
+      railOffsetW: rail.offsetWidth,
+      railClientW: rail.clientWidth,
+      railContentW: rail.clientWidth
+        - parseFloat(getComputedStyle(rail).paddingLeft || '0')
+        - parseFloat(getComputedStyle(rail).paddingRight || '0'),
+      railScrollH: rail.scrollHeight,
+      railClientH: rail.clientHeight,
+      railMaxHeight: getComputedStyle(rail).maxHeight,
+      kids: [...rail.children].map((c) => Math.round(c.getBoundingClientRect().height)),
+    } : null,
     // What a click on the rail's own gutter lands on when it is click-through.
     gutterIsRail: rail ? (() => {
       const r = rail.getBoundingClientRect();
@@ -548,21 +578,32 @@ def measure(page, label: str) -> dict:
             reached and not seen["offscreen"],
             f"{name}={seen}",
         )
-    if facts["cardWidth"] is not None:
+    if facts["cardLayoutWidth"] is not None:
         # 448px is the card's max width and 2rem the viewport inset it keeps.
         want = min(448, view["width"] - 32)
+        # Asked of the layout box, not the painted one. A scrollbar that takes
+        # its width out of the rail's content box shrinks the card's layout
+        # width, which is the whole subject here; the card's enter animation
+        # (opacity 0, y 12, scale .96 -- see components/*/update-banner.tsx)
+        # shrinks only the painted one, and measuring that raced the animation
+        # rather than the scrollbar. 448 * 0.96 = 430.08, which is exactly the
+        # 430 this reported on the WebKit leg while its own borderBox read 448
+        # and railGutter read 0.
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
-            abs(facts["cardWidth"] - want) <= 1,
-            f"cardWidth={facts['cardWidth']} want={want} "
-            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']}",
+            abs(facts["cardLayoutWidth"] - want) <= 1,
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardPaintedWidth={facts['cardWidth']} "
+            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
         check(
             f"{label}: the rail takes pointer input exactly when it scrolls",
             facts["railPointerEvents"] == ("auto" if scrolls else "none"),
-            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']}",
+            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
         # Click-through is what pointer-events-none is for, and the gutter is
         # the widest part of the rail that no card covers.
