@@ -98,4 +98,20 @@ test("attachment and send gates forward projector fallback state", () => {
     sendGate,
     /mmprojFallbackReason:\s*runtime\.mmprojFallbackReason/,
   );
+  const compareLoadState = sourceBetween(
+    "../src/features/chat/shared-composer.tsx",
+    "useChatRuntimeStore.setState({",
+    "activeNativePathToken: null,",
+  );
+  assert.match(
+    compareLoadState,
+    /mmprojFallbackReason:\s*resp\.mmproj_fallback_reason\s*\?\?\s*null/,
+  );
+
+  const interactiveLoad = sourceBetween(
+    "../src/features/chat/hooks/use-chat-model-runtime.ts",
+    "loadResponse = await loadModel({",
+    "cpuFallbackReason = loadResponse.cpu_fallback_reason",
+  );
+  assert.match(interactiveLoad, /force_reload:\s*forceReload/);
 });

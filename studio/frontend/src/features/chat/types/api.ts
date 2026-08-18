@@ -46,6 +46,9 @@ export interface LoadModelRequest {
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
+
+  /** Start a fresh runtime even when the active settings already match. */
+  force_reload?: boolean;
   /**
      * Stop any chats still generating instead of getting a 409: a load replaces the single
      * llama-server they all decode on. Set only after the user confirms.

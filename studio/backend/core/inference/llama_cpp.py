@@ -186,6 +186,8 @@ class GgufLoadIntent:
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
+    force_reload: bool = False
+
     cpu_fallback: bool = False
 
     def __post_init__(self):
@@ -4483,6 +4485,9 @@ class LlamaCppBackend:
         self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
         """Whether active runtime settings satisfy one resolved caller intent."""
+
+        if intent.force_reload:
+            return False
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -12327,7 +12332,7 @@ class LlamaCppBackend:
     @staticmethod
     def _is_gpu_memory_start_failure(output: str) -> bool:
         """Whether startup output ties allocation pressure to a GPU backend."""
-        text = (output or "").lower()
+        lines = (output or "").lower().splitlines()
         allocation_markers = (
             "out of memory",
             "failed to allocate",
@@ -12335,25 +12340,25 @@ class LlamaCppBackend:
             "hiperroroutofmemory",
             "vk_error_out_of_device_memory",
         )
-        if not any(marker in text for marker in allocation_markers):
-            return False
+        gpu_markers = (
+            "cuda",
+            "hiperror",
+            "hipmalloc",
+            "ggml_backend_hip",
+            "rocm",
+            "vulkan",
+            "vk_",
+            "metal",
+            "sycl",
+            "oneapi",
+            "musa",
+            "gpu",
+            "device memory",
+        )
         return any(
-            marker in text
-            for marker in (
-                "cuda",
-                "hiperror",
-                "hipmalloc",
-                "ggml_backend_hip",
-                "rocm",
-                "vulkan",
-                "vk_",
-                "metal",
-                "sycl",
-                "oneapi",
-                "musa",
-                "gpu",
-                "device memory",
-            )
+            any(marker in line for marker in allocation_markers)
+            and any(marker in line for marker in gpu_markers)
+            for line in lines
         )
 
     @staticmethod

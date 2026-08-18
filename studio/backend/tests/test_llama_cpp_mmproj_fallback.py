@@ -34,7 +34,7 @@ sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
 
-from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend  # noqa: E402
 
 _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
@@ -204,9 +204,39 @@ class TestGpuMemoryStartFailure:
     def test_host_allocation_errors_do_not_match(self, out):
         assert _gpu_memory_failure(out) is False
 
+    def test_unrelated_gpu_banner_does_not_reclassify_host_oom(self):
+        out = "ggml_cuda_init: found 1 CUDA device\nstd::bad_alloc: out of memory"
+        assert _gpu_memory_failure(out) is False
+
     @pytest.mark.parametrize("out", [_BAD_ARCH_OUT, _PORT_OUT, _MISSING_OUT, ""])
     def test_unrelated_startup_errors_do_not_match(self, out):
         assert _gpu_memory_failure(out) is False
+
+
+class TestMmprojExplicitReload:
+    @staticmethod
+    def _backend() -> LlamaCppBackend:
+        backend = LlamaCppBackend()
+        backend._requested_n_ctx = 8192
+        backend._requested_spec_mode = "auto"
+        return backend
+
+    @staticmethod
+    def _intent(*, force_reload: bool = False) -> GgufLoadIntent:
+        return GgufLoadIntent(
+            model_identifier = "owner/vision-model",
+            n_ctx = 8192,
+            speculative_type = "auto",
+            force_reload = force_reload,
+        )
+
+    def test_normal_duplicate_still_matches(self):
+        backend = self._backend()
+        assert backend._runtime_matches_intent(self._intent(), None) is True
+
+    def test_explicit_reload_bypasses_runtime_deduplication(self):
+        backend = self._backend()
+        assert backend._runtime_matches_intent(self._intent(force_reload = True), None) is False
 
 
 class TestStripMmprojArgs:
