@@ -452,6 +452,70 @@ def degraded() -> bool:
 _ARCHIVED = "archived"
 
 
+def _as_wire(messages: list[dict]) -> list[dict]:
+    """Persisted chat rows in the shape the inference layer sends them.
+
+    The store keeps a tool call as a ``tool-call`` CONTENT PART carrying its own result,
+    while the wire form is three messages: the assistant's `tool_calls`, a `tool` result,
+    then the assistant's reply. Nothing put them back, and everything here reads the
+    persisted rows as if they were wire messages, so an agent turn was invisible twice
+    over. `group_turns` splits on `tool_calls`, which a persisted row never has, so the
+    whole exchange folded into the preceding user group and the evicted tool group found
+    no position of its own -- measured, seats came back empty and the exchange took
+    MAX + 1, the number its own opening question already had. And `_live_transcript`
+    probes these rows in the same shape, so the branch check compared a call/result/reply
+    render against a row reading call/reply/result: measured, the archived agent turn
+    failed the live-branch filter and NO query could return it, on every tool-using turn.
+
+    The result is stripped from the call part and carried by the `tool` message instead,
+    so `_probe_text` renders each piece exactly once and in the order `render_turn` wrote
+    it. Only the id goes into `tool_calls`: the arguments stay on the content part, where
+    `_probe_text` already offers both JSON spellings, and `_is_injected` still sees the id
+    it filters our own injections by.
+    """
+    wire: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        parts = content if isinstance(content, list) else None
+        calls = [
+            part
+            for part in (parts or [])
+            if isinstance(part, dict) and part.get("type") == "tool-call"
+        ]
+        if not calls:
+            wire.append({
+                "role": message.get("role"),
+                "content": content,
+                "tool_calls": message.get("tool_calls"),
+            })
+            continue
+        rest = [
+            part
+            for part in parts
+            if not (isinstance(part, dict) and part.get("type") == "tool-call")
+        ]
+        wire.append({
+            "role": message.get("role"),
+            "content": [
+                {key: value for key, value in call.items() if key != "result"}
+                for call in calls
+            ],
+            "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
+        })
+        for call in calls:
+            result = call.get("result")
+            if result in (None, "", {}, []):
+                continue
+            wire.append({
+                "role": "tool",
+                "tool_call_id": call.get("toolCallId"),
+                "content": result if isinstance(result, str) else json.dumps(result),
+            })
+        if rest:
+            wire.append({"role": message.get("role"), "content": rest})
+    return wire
+
+
 def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     """The thread's saved messages as normalised probe text, in the order they were said.
 
@@ -480,14 +544,7 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # Grouped with the evictor's own grouper, so a position is a TURN's index and not a
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
-    wire = [
-        {
-            "role": message.get("role"),
-            "content": message.get("content"),
-            "tool_calls": message.get("tool_calls"),
-        }
-        for message in messages
-    ]
+    wire = _as_wire(messages)
     return [
         [_normalise(_probe_text(message)) for message in group]
         for group in group_turns(wire)
@@ -520,10 +577,27 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     texts = [_normalise(_probe_text(message)) for message in group]
     if not texts or not texts[0]:
         return []
+    calls = [bool(message.get("tool_calls")) for message in group]
+
+    def _same(stored: str, live: str, is_call: bool) -> bool:
+        # A tool call is compared as needle in haystack, never for equality. The store
+        # keeps the arguments as an OBJECT and the request carries the model's raw string,
+        # so `_probe_text` offers both JSON spellings for the stored copy and exactly one
+        # for the live one. Those two can only ever meet this way. Every other message is
+        # compared exactly.
+        if is_call:
+            return bool(live) and live in stored
+        return stored == live
+
     return [
         index
         for index, position in enumerate(positions)
-        if position and position[: len(texts)] == texts[: len(position)]
+        if position
+        and len(position) >= 1
+        and all(
+            _same(stored, live, is_call)
+            for stored, live, is_call in zip(position, texts, calls)
+        )
     ]
 
 
@@ -656,7 +730,10 @@ def _live_transcript(thread_id: str) -> Optional[list[str]]:
         return None
     if not messages:
         return None
-    texts = [_normalise(_probe_text(message)) for message in messages]
+    # Through the same reconstruction: a persisted tool call read as ONE message renders
+    # its pieces in a different order from the archived copy, and the branch check matches
+    # in order, so every archived agent turn failed it and became unrecallable.
+    texts = [_normalise(_probe_text(message)) for message in _as_wire(messages)]
     return [text for text in texts if text] or None
 
 
