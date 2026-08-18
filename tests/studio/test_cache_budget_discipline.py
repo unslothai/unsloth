@@ -241,3 +241,44 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
         "produced the payload succeeded, so a partial download can be stored under an "
         "immutable key and served to every later run:\n  " + "\n  ".join(offenders)
     )
+
+
+def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
+    """setup-python FAILS the job when the path matches nothing; it does not skip the cache.
+
+    "Error: No file in <workspace> matched to [...], make sure you have checked out the
+    target repository" -- actions/setup-python#807 is an open request to downgrade that to
+    a warning, so today it is fatal. Three jobs here check the repo out under `unsloth/`
+    (notebooks-ci api-introspect, version-compat-ci zoo-imports-under-spoof and
+    grpo-fake-run) because they need a second repo beside it. A key written as if the
+    checkout were at the workspace root therefore does not merely miss the cache, it stops
+    the job before it installs anything.
+
+    Scoping the keys is what introduced this, which is why it is asserted rather than
+    remembered: the failure is loud, but only once it reaches CI.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        checkout_dirs = [
+            str((s.get("with") or {}).get("path")).rstrip("/")
+            for s in steps
+            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
+        ]
+        if not checkout_dirs:
+            continue  # checked out at the workspace root, so a root-relative path is right
+        for step in steps:
+            with_ = step.get("with") or {}
+            if "setup-python" not in str(step.get("uses", "")):
+                continue
+            for line in str(with_.get("cache-dependency-path") or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if not any(line.startswith(d + "/") for d in checkout_dirs):
+                    offenders.append(f"{name}:{jid}: {line!r} (checkouts: {checkout_dirs})")
+    assert not offenders, (
+        "these cache-dependency-path entries are workspace-root-relative in a job that "
+        "checks the repo out into a subdirectory, so setup-python matches no file and "
+        "fails the job:\n  " + "\n  ".join(offenders)
+    )

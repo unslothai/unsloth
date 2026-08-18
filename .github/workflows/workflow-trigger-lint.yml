@@ -127,3 +127,13 @@ jobs:
       # exists to reject.
       - name: The host-offload opt-out is still macOS-only
         run: python3 -m pytest tests/studio/test_mac_host_offload_optin.py -q
+
+      # Same reason again. This guard reads every workflow's cache steps, so the change
+      # that breaks it -- reintroducing an unscoped pip cache, saving on a PR ref, or
+      # pointing a cache-dependency-path at a path the job never checked out -- is by
+      # definition a workflow-only edit. Repo tests (CPU) does collect the file, but
+      # studio-backend-ci.yml's paths filter does not match a workflow-only PR, so that
+      # job never starts for the change this exists to reject. Collection is not coverage
+      # if nothing triggers the workflow that collects it.
+      - name: Cache discipline still holds across the workflows
+        run: python3 -m pytest tests/studio/test_cache_budget_discipline.py -q

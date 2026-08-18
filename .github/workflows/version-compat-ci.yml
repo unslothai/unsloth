@@ -244,8 +244,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # Nested: this job checks the repo out under `unsloth/`, so the workflow
+          # file is at unsloth/.github/... . setup-python FAILS the job outright
+          # when cache-dependency-path matches nothing ("No file in ... matched"),
+          # rather than skipping the cache.
           cache-dependency-path: |
-            .github/workflows/version-compat-ci.yml
+            unsloth/.github/workflows/version-compat-ci.yml
       - name: Install CPU torch + supported pkg pins
         run: |
           python -m pip install --upgrade pip
@@ -333,8 +337,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # Nested: this job checks the repo out under `unsloth/`, so the workflow
+          # file is at unsloth/.github/... . setup-python FAILS the job outright
+          # when cache-dependency-path matches nothing ("No file in ... matched"),
+          # rather than skipping the cache.
           cache-dependency-path: |
-            .github/workflows/version-compat-ci.yml
+            unsloth/.github/workflows/version-compat-ci.yml
       - name: Install CPU torch + ecosystem + TRL latest
         run: |
           python -m pip install --upgrade pip
