@@ -38,13 +38,18 @@ const MIRRORED_ENUM_VALUES = {
   Record<keyof PersistedChatSettings, readonly string[]>
 >;
 
+// One year, the ceiling ChatSettingsPayload and the research run route both
+// enforce. A larger value would be dropped from the patch here and then
+// rejected when the run starts, so it is bounded where it is set instead.
+export const MAX_RESEARCH_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600;
+
 // Bounds match the ge/le the backend payload enforces on the same fields.
 const MIRRORED_NUMBER_BOUNDS = {
   ragTopK: { min: 1, max: 50, integer: true },
   ragAutoInjectMinScore: { min: 0, max: 1, integer: false },
   researchModelTimeoutSeconds: {
     min: 0,
-    max: Number.MAX_SAFE_INTEGER,
+    max: MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
     integer: true,
   },
 } as const satisfies Partial<

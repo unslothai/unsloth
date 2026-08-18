@@ -21,7 +21,13 @@ import {
   DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { MAX_RESEARCH_MODEL_TIMEOUT_SECONDS } from "../utils/mirrored-chat-settings";
 import type { ResearchWebsitePolicy } from "../types/research";
+
+// The field is in minutes; its ceiling is the seconds cap the backend enforces.
+const MAX_RESEARCH_MODEL_TIMEOUT_MINUTES = Math.floor(
+  MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60,
+);
 
 function normalizeDomain(raw: string): string | null {
   const value = raw.trim();
@@ -260,6 +266,7 @@ function DeepResearchWebsiteAccessContent({
             <Input
               type="number"
               min="1"
+              max={MAX_RESEARCH_MODEL_TIMEOUT_MINUTES}
               step="1"
               value={timeoutMinutes}
               disabled={unlimited}

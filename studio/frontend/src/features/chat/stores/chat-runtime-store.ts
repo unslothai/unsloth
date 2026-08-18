@@ -57,6 +57,7 @@ import {
 } from "../utils/chat-settings-storage";
 import {
   loadShadowOwnsMirroredSetting,
+  MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
@@ -172,13 +173,24 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
 };
 export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
 
+/** 0 (unlimited) or a finite budget the settings patch and the run route both
+ * accept. An over-cap value would be dropped from the patch and would 400 the
+ * run, so it is refused here and the default stands in. */
+function isSupportedResearchModelTimeout(value: number): boolean {
+  return (
+    Number.isSafeInteger(value) &&
+    value >= 0 &&
+    value <= MAX_RESEARCH_MODEL_TIMEOUT_SECONDS
+  );
+}
+
 function loadResearchModelTimeoutSeconds(): number {
   if (typeof window === "undefined") return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
   try {
     const raw = window.localStorage.getItem(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY);
     if (raw === null) return DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
     const value = Number(raw);
-    return Number.isSafeInteger(value) && value >= 0
+    return isSupportedResearchModelTimeout(value)
       ? value
       : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
   } catch {
@@ -4291,11 +4303,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setResearchModelTimeoutSeconds: (researchModelTimeoutSeconds) =>
     set((state) => {
-      const seconds =
-        Number.isSafeInteger(researchModelTimeoutSeconds) &&
-        researchModelTimeoutSeconds >= 0
-          ? researchModelTimeoutSeconds
-          : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
+      const seconds = isSupportedResearchModelTimeout(
+        researchModelTimeoutSeconds,
+      )
+        ? researchModelTimeoutSeconds
+        : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS;
       persistSetting(CHAT_DEEP_RESEARCH_MODEL_TIMEOUT_KEY, String(seconds));
       return {
         researchModelTimeoutSeconds: seconds,
