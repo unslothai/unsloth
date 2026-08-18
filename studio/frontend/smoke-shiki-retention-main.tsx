@@ -320,6 +320,96 @@ async function rawEntries(
   return landed;
 }
 
+
+// Frame recorder. Retained heap is not a user-facing number on its own, so the driver also asks
+// whether a big retained heap actually costs frames.
+//
+// Two independent clocks, because either alone can lie. requestAnimationFrame stops being
+// scheduled at all when the compositor decides nothing is on screen, which would read as "no
+// dropped frames" rather than "no measurement"; a 1 ms setTimeout keeps ticking regardless, and
+// the gap between its ticks IS the block, because the main thread cannot answer the timer while
+// it is busy. The setTimeout clamp is about 4 ms, far below anything a user notices.
+type FrameReport = {
+  frames: number;
+  durationMs: number;
+  fps: number;
+  medianFrameMs: number;
+  p95FrameMs: number;
+  worstFrameMs: number;
+  framesOver33ms: number;
+  longestStallMs: number;
+};
+
+const frameState = {
+  running: false,
+  rafTimes: [] as number[],
+  timerGaps: [] as number[],
+  startedAt: 0,
+  rafHandle: 0,
+  timerHandle: 0 as ReturnType<typeof setTimeout> | 0,
+  lastTimerTick: 0,
+};
+
+const percentile = (sorted: number[], q: number): number => {
+  if (sorted.length === 0) return 0;
+  const index = Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1)));
+  return sorted[index];
+};
+
+const framesStart = () => {
+  frameState.running = true;
+  frameState.rafTimes = [];
+  frameState.timerGaps = [];
+  frameState.startedAt = performance.now();
+  frameState.lastTimerTick = frameState.startedAt;
+  const onFrame = (now: number) => {
+    if (!frameState.running) return;
+    frameState.rafTimes.push(now);
+    frameState.rafHandle = requestAnimationFrame(onFrame);
+  };
+  frameState.rafHandle = requestAnimationFrame(onFrame);
+  const onTick = () => {
+    if (!frameState.running) return;
+    const now = performance.now();
+    frameState.timerGaps.push(now - frameState.lastTimerTick);
+    frameState.lastTimerTick = now;
+    frameState.timerHandle = setTimeout(onTick, 1);
+  };
+  frameState.timerHandle = setTimeout(onTick, 1);
+};
+
+const framesStop = (): FrameReport => {
+  frameState.running = false;
+  cancelAnimationFrame(frameState.rafHandle);
+  if (frameState.timerHandle) clearTimeout(frameState.timerHandle);
+  const durationMs = performance.now() - frameState.startedAt;
+  const intervals: number[] = [];
+  for (let i = 1; i < frameState.rafTimes.length; i += 1) {
+    intervals.push(frameState.rafTimes[i] - frameState.rafTimes[i - 1]);
+  }
+  const sorted = [...intervals].sort((a, b) => a - b);
+  return {
+    frames: frameState.rafTimes.length,
+    durationMs,
+    fps: durationMs > 0 ? (frameState.rafTimes.length * 1000) / durationMs : 0,
+    medianFrameMs: percentile(sorted, 0.5),
+    p95FrameMs: percentile(sorted, 0.95),
+    worstFrameMs: sorted.length > 0 ? sorted[sorted.length - 1] : 0,
+    framesOver33ms: intervals.filter((ms) => ms > 33).length,
+    longestStallMs: frameState.timerGaps.reduce((a, b) => Math.max(a, b), 0),
+  };
+};
+
+// Calibration for the recorder itself. A frame recorder that cannot see a block it was told about
+// is not a frame recorder, so the driver blocks the main thread for a known number of milliseconds
+// inside a recording window and refuses to report anything if that block does not show up.
+const blockFor = (ms: number): void => {
+  const until = performance.now() + ms;
+  while (performance.now() < until) {
+    // Busy on purpose: a sleep would yield the main thread, which is the opposite of the point.
+  }
+};
+
 declare global {
   interface Window {
     __sd: {
@@ -338,6 +428,9 @@ declare global {
         entries: number,
       ) => Promise<number>;
       teardown: () => Promise<void>;
+      framesStart: () => void;
+      framesStop: () => FrameReport;
+      blockFor: (ms: number) => void;
       ready: boolean;
     };
   }
@@ -376,5 +469,8 @@ window.__sd = {
   teardown: async () => {
     await unmount();
   },
+  framesStart,
+  framesStop,
+  blockFor,
   ready: true,
 };
