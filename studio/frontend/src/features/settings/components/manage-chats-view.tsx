@@ -29,6 +29,8 @@ import {
   exportBulkConversationsMerged,
   exportBulkConversationsSeparate,
   moveChatItemToProject,
+  rangeBetween,
+  useChatPreferencesStore,
   useChatProjects,
   useChatRuntimeStore,
   useChatSidebarItems,
@@ -79,12 +81,15 @@ export function ManageChatsView() {
   });
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
   const setPinned = usePinnedChatsStore((s) => s.setPinned);
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(MANAGE_PAGE_SIZE);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [busy, setBusy] = useState(false);
-  const lastToggledIndex = useRef<number | null>(null);
+  const lastToggledId = useRef<string | null>(null);
 
   const visible = items.slice(0, visibleCount);
   const selectedItems = items.filter((item) => selectedIds.has(item.id));
@@ -97,27 +102,37 @@ export function ManageChatsView() {
   const projectNames = new Map(projects.map((p) => [p.id, p.name]));
 
   function toggleRow(index: number, shiftKey: boolean) {
-    const target = !selectedIds.has(visible[index].id);
-    const last = lastToggledIndex.current;
-    const anchor =
-      shiftKey && last !== null && last < visible.length ? last : index;
-    const [from, to] = [Math.min(anchor, index), Math.max(anchor, index)];
+    const rowId = visible[index].id;
+    const target = !selectedIds.has(rowId);
+    const anchorId = lastToggledId.current;
+    // Anchor on the chat id, as the sidebar does, not on the row index: the
+    // list re-sorts by updatedAt on every history update, so an index saved on
+    // the first click can address a different chat by the time the shift-click
+    // lands, and the range would archive or delete rows the user never picked.
+    const ids =
+      shiftKey && anchorId !== null
+        ? rangeBetween(
+            visible.map((item) => item.id),
+            anchorId,
+            rowId,
+          )
+        : [rowId];
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      for (let i = from; i <= to; i++) {
-        if (target) next.add(visible[i].id);
-        else next.delete(visible[i].id);
+      for (const id of ids) {
+        if (target) next.add(id);
+        else next.delete(id);
       }
       return next;
     });
-    lastToggledIndex.current = index;
+    lastToggledId.current = rowId;
   }
 
   function toggleAllVisible() {
     setSelectedIds(
       allVisibleSelected ? new Set() : new Set(visible.map((item) => item.id)),
     );
-    lastToggledIndex.current = null;
+    lastToggledId.current = null;
   }
 
   function openChat(item: SidebarItem) {
@@ -161,7 +176,13 @@ export function ManageChatsView() {
 
   const handleDelete = () =>
     run(
-      () => deleteChatItems(selectedItems, openChatId, resetView),
+      () =>
+        // Same preference the sidebar delete honours: with "Always delete
+        // files" on, a bulk delete must take the sandboxes too, or every
+        // selected chat leaves a folder with no card left to reach it from.
+        deleteChatItems(selectedItems, openChatId, resetView, {
+          deleteFiles: alwaysDeleteChatFiles,
+        }),
       `Deleted ${chatCount(selectedCount)}`,
       "Failed to delete chats",
     );
