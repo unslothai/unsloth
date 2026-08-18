@@ -9258,9 +9258,8 @@ _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 def _mcp_tool_model_visible(tool: dict) -> bool:
     """False for MCP Apps tools marked app-only (_meta.ui.visibility without
     "model"): those exist for a server-rendered widget to call, not the LLM."""
-    # Check both spellings: the SDK's model_dump() gives "meta", the wire gives
-    # "_meta". Taking the first non-empty one would let a meta carrying
-    # unrelated keys mask an app-only visibility declared in the other.
+    # Both spellings: model_dump() gives "meta", the wire gives "_meta". Taking
+    # only the first non-empty one lets unrelated keys mask the other's visibility.
     for key in ("meta", "_meta"):
         meta = tool.get(key)
         if not isinstance(meta, dict):
@@ -9268,8 +9267,7 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
         ui = meta.get("ui")
         visibility = ui.get("visibility") if isinstance(ui, dict) else None
         if visibility is None:
-            # Not a spec shape; the spec only deprecates flat "ui/resourceUri".
-            # Tolerated because some SDKs flatten _meta the same way.
+            # Tolerated, not spec: the spec only deprecates flat "ui/resourceUri".
             visibility = meta.get("ui/visibility")
         if isinstance(visibility, (list, tuple)):
             return "model" in visibility
@@ -9312,9 +9310,8 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    # mcp<2 model_dump()s this as "inputSchema", 2.x as
-                    # "input_schema". Accept both so a bump cannot silently strip
-                    # every tool's arguments.
+                    # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both
+                    # so a bump cannot silently strip every tool's arguments.
                     "parameters": tool.get("inputSchema")
                     or tool.get("input_schema")
                     or {"type": "object", "properties": {}},

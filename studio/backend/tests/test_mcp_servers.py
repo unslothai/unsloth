@@ -216,7 +216,7 @@ def test_mcp_specs_read_visibility_from_either_meta_spelling():
     [
         (["model"], True),
         (["app"], False),
-        ([], False),  # spec leaves this undefined; "visible to nobody" reads as hidden
+        ([], False),  # undefined by the spec; "visible to nobody" reads as hidden
         ("model", True),  # not a list: unrecognised shape stays visible
         (None, True),
         (["Model"], False),  # spec values are lowercase
@@ -232,8 +232,8 @@ def test_mcp_specs_visibility_shapes(visibility, visible):
 
 @pytest.mark.parametrize("schema_key", ["inputSchema", "input_schema"])
 def test_mcp_specs_keep_the_tool_arguments(schema_key):
-    """mcp<2 dumps the schema as "inputSchema", 2.x as "input_schema". Reading
-    one spelling only would leave every tool argument-less after a bump."""
+    """Reading one spelling only would leave every tool argument-less after an
+    mcp 2.x bump."""
     from core.inference.tools import _mcp_specs_for_server
 
     schema = {"type": "object", "properties": {"q": {"type": "string"}}}
