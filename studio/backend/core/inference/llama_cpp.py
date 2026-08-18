@@ -83,6 +83,62 @@ from core.inference.llama_server_args import (
 )
 
 
+def _backend_supports_tools(backend) -> bool:
+    """`backend.supports_tools`, or False if asking is not safe.
+
+    The property reads load-time state that a backend part way through construction or
+    teardown may not have yet, and a context-policy probe has no business raising on the
+    chat path. Measured: it raised AttributeError on a backend built without the diffusion
+    flag, which turned a policy question into a failed request.
+    """
+    try:
+        return bool(backend.supports_tools)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _can_reset_epoch(thread_id, supports_tools: bool) -> bool:
+    """Whether this request may compact by RESETTING rather than trimming.
+
+    Two refusals, both about not lying to the user:
+
+    * the dropped turns must end up in the archive, or the reset makes them unreachable
+      while the notice says they are searchable. Incognito, API-only and threadless
+      requests archive nothing, so they keep the rolling window.
+    * the model must be able to receive `search_conversation` at all. A template that
+      cannot render tools would be offered a memory it can never reach.
+    """
+    if not thread_id or not supports_tools:
+        return False
+    try:
+        from core.rag import conversation_archive
+
+        return bool(conversation_archive.enabled() and conversation_archive.can_archive(thread_id))
+    except Exception:  # noqa: BLE001 -- an unavailable archive is a "no", never an error
+        return False
+
+
+def _fit_context(messages, **kwargs):
+    """The context policy in one place, so the five call sites do not each pick one.
+
+    Checkpoint mode resets the epoch; rolling mode is the previous behaviour and stays
+    reachable through `UNSLOTH_CONTEXT_POLICY=rolling`, both as the A/B arm for the
+    evidence campaign and as the escape hatch if a template family misbehaves. A request
+    that may not reset (see `_can_reset_epoch`) silently keeps rolling, which is why the
+    two fits share a signature.
+    """
+    can_reset = bool(kwargs.pop("can_reset", False))
+    try:
+        from core.inference import checkpoint
+
+        if can_reset and checkpoint.enabled():
+            return checkpoint.fit_checkpoint_context(messages, can_reset = True, **kwargs)
+    except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
+        logger.warning("Checkpoint fit failed; falling back to the rolling window",
+                       exc_info = True)
+    return fit_rolling_context(messages, **kwargs)
+
+
 def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
     """`fit_rolling_context`, plus the user's standing instructions held back from eviction.
 
@@ -113,11 +169,11 @@ def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
-    fitted, truncation = fit_rolling_context(
+    fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
     if pins and truncation and not truncation.get("fits"):
-        return fit_rolling_context(
+        return _fit_context(
             messages, protected_message_ids = anchors or None, **kwargs
         )
     return fitted, truncation
@@ -736,6 +792,7 @@ def _archive_and_recall(
     thread_id: Optional[str],
     style: str,
     recall_done: bool,
+    force_recall: bool = True,
     recall_budget_tokens: int = 0,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
     branch_messages: Optional[list[dict]] = None,
@@ -767,6 +824,14 @@ def _archive_and_recall(
         counts = {"archived_messages": archived}
 
         if recall_done:
+            result["counts"] = counts
+            return result
+        if not force_recall:
+            # Checkpoint mode, and this is not the first turn of the epoch. Archiving still
+            # happened above -- it must, or the epoch stops being searchable -- but the
+            # automatic lookup fires once, on the turn that reset the conversation. After
+            # that the model has `search_conversation` and decides for itself, which is the
+            # difference between priming a habit and answering every question twice.
             result["counts"] = counts
             return result
 
@@ -20137,6 +20202,7 @@ class LlamaCppBackend:
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
                 )
                 if truncation and truncation["fits"]:
                     # Inline, not a forged tool exchange: this path sends no tools array,
@@ -20147,6 +20213,10 @@ class LlamaCppBackend:
                         branch_messages = _before_fit,
                         thread_id = thread_id,
                         style = "inline",
+                        # Checkpoint mode fires the automatic lookup once, on the turn that reset
+                        # the conversation. Rolling mode has no such key and keeps today's
+                        # behaviour, which is to recall on every turn that evicted anything.
+                        force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = False,
                         recall_budget_tokens = max(
                             0,
@@ -20754,6 +20824,7 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
                         sticky_dropped = (
                             0
@@ -20783,6 +20854,10 @@ class LlamaCppBackend:
                             style = (
                                 "tool" if "search_conversation" in _enabled_tool_names else "inline"
                             ),
+                            # Checkpoint mode fires the automatic lookup once, on the turn that reset
+                            # the conversation. Rolling mode has no such key and keeps today's
+                            # behaviour, which is to recall on every turn that evicted anything.
+                            force_recall = bool(truncation.get("checkpoint_started", True)),
                             recall_done = _conversation_recall_done,
                             recall_budget_tokens = max(
                                 0,
@@ -20901,6 +20976,7 @@ class LlamaCppBackend:
                         ),
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
                     )
                     if truncation and truncation["fits"]:
                         # Archive only: this refit runs against a smaller replacement
@@ -22173,6 +22249,7 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
@@ -22191,6 +22268,10 @@ class LlamaCppBackend:
                         # with no tools array, so a forged tool role has no catalogue to
                         # match and breaks strict templates.
                         style = "inline",
+                        # Checkpoint mode fires the automatic lookup once, on the turn that reset
+                        # the conversation. Rolling mode has no such key and keeps today's
+                        # behaviour, which is to recall on every turn that evicted anything.
+                        force_recall = bool(truncation.get("checkpoint_started", True)),
                         recall_done = _conversation_recall_done,
                         recall_budget_tokens = max(
                             0,
@@ -22286,6 +22367,7 @@ class LlamaCppBackend:
                     ),
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    can_reset = _can_reset_epoch(thread_id, _backend_supports_tools(self)),
                 )
                 if truncation and truncation["fits"]:
                     # Archive only, for the same reason as the iteration refit above.

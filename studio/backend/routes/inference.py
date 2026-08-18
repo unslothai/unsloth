@@ -3394,8 +3394,16 @@ async def _select_request_tools(
     # is added on that condition rather than requested.
     has_archive = _thread_has_conversation_archive(getattr(payload, "thread_id", None))
     tools = [t for t in tools if t["function"]["name"] != "search_conversation"]
-    if has_archive and tools_on:
+    if has_archive and (tools_on or _checkpoint_needs_search()):
         tools = tools + [t for t in ALL_TOOLS if t["function"]["name"] == "search_conversation"]
+        if not tools_on:
+            # Checkpoint compaction resets the conversation, so search_conversation stops
+            # being an enhancement and becomes the only route back to what was dropped. It
+            # is admitted even with the user's tools off, and ALONE: a model that meets a
+            # large catalogue at a compaction boundary has been observed calling a tool
+            # name it guessed rather than the one that exists, and a one-tool surface
+            # removes the guess. Read-only and always-safe, so it prompts for nothing.
+            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     # Built-ins only, so this runs before the MCP append: an MCP tool's
     # description is the server's to write, and Full access says nothing about
     # how that server runs.
@@ -3413,6 +3421,31 @@ _COMPACTED_SESSION_NUDGE = (
     "answering. Never tell the user you have no record of an earlier turn, and never "
     "assume the conversation began where your visible context begins."
 )
+# Said only under checkpoint compaction, where the reset is total rather than gradual: the
+# automatic retrieval runs on the turn that reset the conversation and NOT on the ones
+# after it, so from the model's side the difference between "I was shown this" and "I must
+# go and look" is the difference between a right answer and an invented one.
+_CHECKPOINT_SESSION_NUDGE = (
+    "The conversation was reset to free space: everything before the carried_forward "
+    "block is gone from your context, and only that block was kept. It is a lossy record "
+    "of the user's earlier instructions, not the conversation itself. Earlier turns are "
+    "retrieved for you automatically on the turn immediately after a reset; on every "
+    "later turn you must call search_conversation yourself to see them."
+)
+
+
+def _checkpoint_needs_search() -> bool:
+    """Whether the context policy makes search_conversation load-bearing rather than extra.
+
+    Read at call time, not import time, so a test or an operator flipping
+    UNSLOTH_CONTEXT_POLICY does not need a restart to take effect.
+    """
+    try:
+        from core.inference import checkpoint
+
+        return checkpoint.enabled()
+    except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
+        return False
 
 
 def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
@@ -3423,9 +3456,12 @@ def _apply_compaction_nudge(nudge: str, tools: list[dict]) -> str:
     tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
     if "search_conversation" not in tool_names:
         return nudge
+    text = _COMPACTED_SESSION_NUDGE
+    if _checkpoint_needs_search():
+        text = text + " " + _CHECKPOINT_SESSION_NUDGE
     if not nudge:
-        return _COMPACTED_SESSION_NUDGE
-    return nudge + " " + _COMPACTED_SESSION_NUDGE
+        return text
+    return nudge + " " + text
 
 
 def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
@@ -13811,6 +13847,21 @@ async def openai_chat_completions(
             and _cli_policy is not False
         )
         use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
+        # Under checkpoint compaction a compacted thread opens the tool loop even with the
+        # user's tools off, because search_conversation is then the only way back to what
+        # the reset dropped, and `_select_request_tools` admits it alone. Still gated on
+        # `supports_tools`: a template that cannot render one tool must not be told it has
+        # a memory, which is also why such a model never gets checkpoint mode in the first
+        # place (`_can_reset_epoch`).
+        if (
+            not use_tools
+            and not _client_disabled_tool_calls
+            and _cli_policy is not False
+            and llama_backend.supports_tools
+            and _checkpoint_needs_search()
+            and _thread_has_conversation_archive(getattr(payload, "thread_id", None))
+        ):
+            use_tools = True
 
         if use_tools:
             tools_to_use = await _select_request_tools(

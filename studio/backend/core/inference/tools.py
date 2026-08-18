@@ -10048,19 +10048,32 @@ def build_conversation_recall(
     # model wrote the query, and overriding it would be answering a different question
     # from the one it asked.
     anchor = None
+    thin = False
     try:
         from core.inference import instruction_pin
 
-        if instruction_pin.is_thin_query(query):
+        thin = instruction_pin.is_thin_query(query)
+        if thin:
             anchor = instruction_pin.last_substantive_instruction(
                 branch_messages or conversation
             )
     except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
         anchor = None
+        thin = False
+    if thin and not anchor:
+        # A nudge with nothing behind it. Searching the archive for the word "continue"
+        # returns whatever happens to share its stopwords, and under checkpoint compaction
+        # that block is also the model's FIRST sight of the search tool -- priming it with
+        # a meaningless query teaches the wrong lookup. Skip; the tool stays available.
+        logger.info("Conversation recall skipped: the latest message is a nudge with no "
+                    "earlier instruction to search for instead")
+        return None
     try:
         found = conversation_archive.recall(
             thread_id, query, top_k = top_k, branch_messages = branch_messages,
             extra_queries = [anchor] if anchor else None,
+            # This is the automatic lookup, so it is the one the quality floor applies to.
+            forced = True,
         )
     except Exception:
         logger.warning("Conversation recall failed", exc_info = True)

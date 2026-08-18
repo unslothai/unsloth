@@ -848,6 +848,7 @@ def recall(
     top_k: Optional[int] = None,
     branch_messages: Optional[list[dict]] = None,
     extra_queries: Optional[list[str]] = None,
+    forced: bool = False,
 ) -> Optional[tuple[str, list[dict]]]:
     """Most relevant archived turns for ``query``, rendered like any other RAG hit.
 
@@ -867,6 +868,9 @@ def recall(
     query = (query or "").strip()
     if not thread_id or not query or not enabled():
         return None
+    min_dense_score = (
+        config.CONVERSATION_FORCED_MIN_SCORE if forced else 0.0
+    )
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
@@ -886,7 +890,8 @@ def recall(
             room = limit - len(merged) if index == len(queries) - 1 else share
             if room <= 0:
                 break
-            found = recall(thread_id, one, top_k = room, branch_messages = branch_messages)
+            found = recall(thread_id, one, top_k = room,
+                           branch_messages = branch_messages, forced = forced)
             if not found:
                 continue
             for source in found[1]:
@@ -949,6 +954,24 @@ def recall(
             fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
         if not hits:
             return None
+        if min_dense_score > 0:
+            # The FORCED path only. An automatic lookup that returns whatever happens to
+            # share a stopword with the question is worse than none under checkpoint
+            # compaction, because that block is also the model's first sight of the search
+            # tool. Lexical-only hits are kept: they matched real tokens, and gating them
+            # on a similarity they never carried would delete the exact-identifier hits
+            # this archive is best at. A model that wanted more can still search.
+            strong = [
+                hit for hit in hits
+                if hit.dense_score is None or hit.dense_score >= min_dense_score
+            ]
+            if not strong:
+                logger.info(
+                    "conversation_archive.recall_below_floor thread_id=%s floor=%.2f",
+                    thread_id, min_dense_score,
+                )
+                return None
+            hits = strong
         if config.CONVERSATION_RECALL_ORDER == "chronological":
             # AFTER the top-k slice, never before. Sorting first would make the slice take
             # the OLDEST turns rather than the most relevant ones, which is a different

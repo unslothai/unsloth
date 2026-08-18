@@ -728,6 +728,7 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -759,6 +760,7 @@ def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monke
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         return ("earlier turn", [{"id": "1"}])
@@ -952,6 +954,7 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -999,6 +1002,7 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
         top_k = None,
         branch_messages = None,
         extra_queries = None,
+        forced = False,
     ):
         seen["query"] = query
         return ("earlier turn", [{"id": "1"}])
@@ -1391,12 +1395,18 @@ def test_no_earlier_instruction_means_no_second_query(rag_home, rag_conn, stub_e
         return real(thread_id, query, **kwargs)
 
     monkeypatch.setattr(conversation_archive, "recall", recording)
-    tools_mod.build_conversation_recall(
+    block = tools_mod.build_conversation_recall(
         turns + [{"role": "user", "content": "continue"}], THREAD, style = "inline",
         top_k = 4, branch_messages = turns + [{"role": "user", "content": "continue"}],
     )
 
-    assert seen["extra"] is None
+    # The archive is not searched AT ALL. A nudge with no earlier instruction behind it
+    # has nothing to search for, and under checkpoint compaction the automatic block is
+    # also the model's first sight of the search tool, so priming it with a query for the
+    # word "continue" teaches the wrong lookup. Previously this searched for the nudge and
+    # asserted only that no second query was added.
+    assert block is None
+    assert seen == {}
 
 
 def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(archived):
