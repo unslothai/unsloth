@@ -7252,6 +7252,69 @@ class LlamaCppBackend:
             "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
         )
 
+    METAL_CTX_OVERCOMMIT_ENV = "UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT"
+
+    @staticmethod
+    def _metal_context_overcommit_message(
+        requested_ctx: int,
+        max_available_ctx: int,
+        cache_type_kv: Optional[str] = None,
+    ) -> Optional[str]:
+        """Refusal when a hand-set context exceeds what unified memory holds (else None).
+
+        The Metal branch of the placement code already works out the largest context
+        that fits, but only Auto was ever moved to it: an explicit request was passed
+        through verbatim on the theory that "--fit on" is a backstop. It is not one
+        here. --fit flexes -ngl to spill layers to the host, and on unified memory the
+        host is the same pool, so the spill frees nothing. The launch over-commits, and
+        because a Mac has nothing to fall back on it takes the system down with a kernel
+        panic rather than returning an out-of-memory error the way a discrete GPU does
+        (r/unsloth, M1 Max 32 GB, Qwen3.8-27B-UD-Q4_K_XL at a hand-set context).
+
+        Unlike ``_apu_ram_shortfall_message`` this prices the context, not just the
+        weights. That helper leaves KV out because context auto-reduces on its path, so
+        counting it would refuse loads that would have succeeded. On this path the
+        explicit request is exactly what does not auto-reduce, so the KV and compute
+        buffers it implies are the bytes that do the damage.
+
+        Callers pass a ceiling they measured with a real KV estimate. The 4096 floor the
+        branch falls back to when KV cannot be sized is a guess, not a measurement, and
+        refusing against it would block contexts that load fine today.
+
+        UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT=1 abstains, matching the host-offload opt-out,
+        though the failure mode it re-enables is the whole machine rather than one app.
+        """
+        if requested_ctx <= 0 or max_available_ctx <= 0:
+            return None
+        if requested_ctx <= max_available_ctx:
+            return None
+        # the user's own opt-out, so read the real environment, not the curated child env
+        if os.environ.get(LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV, "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            logger.info(
+                "%s set: launching at a context unified memory is not sized for.",
+                LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV,
+            )
+            return None
+        kv_hint = (
+            " Setting the KV cache to q8_0 roughly halves what the context costs."
+            if (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
+            else ""
+        )
+        return (
+            f"A context of {requested_ctx:,} tokens does not fit in this Mac's unified "
+            f"memory with this model. The largest that fits is {max_available_ctx:,} "
+            "tokens. The GPU and the rest of the system share one pool here, so there is "
+            "nothing to offload to, and the load would bring the machine down instead of "
+            f"reporting an error. Lower the context to {max_available_ctx:,} or less, "
+            "leave it on Auto, or use a more quantized GGUF."
+            f"{kv_hint} Set "
+            f"{LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV}=1 to load it anyway."
+        )
+
     # Skip the wait when the last kill is older than this; the driver has
     # already reclaimed the prior process's allocations.
     _VRAM_SETTLE_WINDOW_S: float = 15.0
@@ -13341,7 +13404,7 @@ class LlamaCppBackend:
 
             # Read before the pin below rewrites every placement, Auto included, to
             # manual/0. Owning the memory budget is a property of what was asked for,
-            # and the two Metal context guards further down skip themselves on it.
+            # and the three Metal context guards further down skip themselves on it.
             _caller_owns_budget = gpu_memory_mode == "manual" and gpu_layers >= 0
 
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
@@ -14225,6 +14288,12 @@ class LlamaCppBackend:
                 # Auto dropped the drafter because only the target fit. Bound before the
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
+                # Metal unified-memory refusal for a hand-set context, raised AFTER this
+                # block rather than inside it: the `except Exception` below turns any raise
+                # into "GPU selection failed" and then restores the original request, which
+                # is the very over-commit being refused. Carrying the message out survives
+                # that arm, and the ceiling it names was measured before the throw.
+                _metal_ctx_refusal: Optional[str] = None
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -15501,9 +15570,15 @@ class LlamaCppBackend:
                     elif _apple_budget_mib > 0 and effective_ctx > 0:
                         # No GPU on Metal: the branches above are skipped and the context
                         # stays at native, over-committing unified memory (#5118, #6529).
-                        # Cap with the same fit math (--fit on stays as a backstop); only
-                        # auto context shrinks, explicit is honored.
+                        # Cap with the same fit math; Auto shrinks to the cap, and an
+                        # explicit request above it is refused rather than launched. --fit
+                        # is no backstop on this path: it spills layers to the host, which
+                        # is the same pool, so the over-commit survives it and takes the
+                        # machine down. See _metal_context_overcommit_message.
                         native_ctx_for_cap = self._context_length or effective_ctx
+                        # Only a ceiling backed by a real KV estimate may refuse; the 4096
+                        # fallback below is a guess and would block working loads.
+                        _apple_measured_ceiling: Optional[int] = None
                         # Reserve the flat MTP fraction up front like the discrete
                         # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
                         # can't over-commit. No-op when MTP is off; exclusive with the
@@ -15534,17 +15609,32 @@ class LlamaCppBackend:
                             ) / (1024 * 1024)
                             # Fit returns the request unchanged when it fits OR weights
                             # exceed budget; only the latter over-commits, so floor to 4096.
-                            max_available_ctx = (
-                                cap
-                                if _cap_footprint_mib <= _apple_fit_budget_mib
-                                else min(4096, native_ctx_for_cap)
-                            )
+                            if _cap_footprint_mib <= _apple_fit_budget_mib:
+                                max_available_ctx = cap
+                                _apple_measured_ceiling = cap
+                            else:
+                                # Weights alone exceed the budget, so the fit returned the
+                                # request untouched and no context is really available.
+                                # Floor for the UI, but do not refuse against a number the
+                                # fit never vouched for.
+                                max_available_ctx = min(4096, native_ctx_for_cap)
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
                             # and floor to 4096 rather than launch at native and over-commit.
                             max_available_ctx = min(4096, native_ctx_for_cap)
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
+                        elif _apple_measured_ceiling is not None and not _caller_owns_budget:
+                            # Exempt for the reason the other two Metal guards are: a
+                            # manual load with a fixed layer count is the user taking the
+                            # memory budget over, and it is read off the request so the
+                            # paravirtual CPU pin (which rewrites Auto to manual/0) cannot
+                            # make a plain Auto load look caller-owned.
+                            _metal_ctx_refusal = self._metal_context_overcommit_message(
+                                effective_ctx,
+                                _apple_measured_ceiling,
+                                cache_type_kv,
+                            )
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server
@@ -15643,6 +15733,13 @@ class LlamaCppBackend:
                     _placement_verdict_partial = False
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
+
+                # A hand-set context unified memory cannot hold. Raised here so the
+                # handler above cannot turn it back into the launch it refuses, and
+                # ahead of the Vulkan and APU checks because those describe hardware
+                # this branch has already established is not present.
+                if _metal_ctx_refusal:
+                    raise RuntimeError(_metal_ctx_refusal)
 
                 # An unenumerated explicit Vulkan ordinal can't be pinned; fail loudly
                 # instead of fitting onto an unselected device. Clear the raw selection

@@ -1062,9 +1062,22 @@ export function ChatSettingsPanel({
               )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
-                  Context length exceeds the estimated VRAM capacity (
+                  {platformDeviceType === "mac" ? (
+                    <>
+                      Context length exceeds what fits in unified memory (
+                      {ggufMaxContextLength?.toLocaleString()} tokens). The GPU
+                      and the rest of the system share one pool here, so there
+                      is nothing to offload to and the load is refused. Lower
+                      the context, leave it on Auto, or set the KV cache to
+                      q8_0.
+                    </>
+                  ) : (
+                    <>
+                      Context length exceeds the estimated VRAM capacity (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
+                    </>
+                  )}
                 </p>
               )}
             </div>

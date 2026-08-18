@@ -2320,9 +2320,20 @@ export function ModelConfigPage({
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
                   <p className="text-ui-11 text-amber-500">
-                    Exceeds estimated VRAM capacity (
-                    {loadedMaxContextLength.toLocaleString()} tokens). The model
-                    may use system RAM.
+                    {platformDeviceType === "mac" ? (
+                      <>
+                        Exceeds what fits in unified memory (
+                        {loadedMaxContextLength.toLocaleString()} tokens). The
+                        GPU and the rest of the system share one pool here, so
+                        there is nothing to offload to and the load is refused.
+                      </>
+                    ) : (
+                      <>
+                        Exceeds estimated VRAM capacity (
+                        {loadedMaxContextLength.toLocaleString()} tokens). The
+                        model may use system RAM.
+                      </>
+                    )}
                   </p>
                 )}
             </div>
