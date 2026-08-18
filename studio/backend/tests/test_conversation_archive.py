@@ -2119,3 +2119,57 @@ def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
     assert (
         VARIABLE.lower() in found[0].lower()
     ), "the shouted question filtered nothing and spent its only slot on filler"
+
+
+def test_a_numeric_subject_is_still_an_identifier_when_the_question_is_shouted(conn):
+    """Making the capitals rule need contrast must not cost numbers their shape.
+
+    A purely numeric subject qualified only through the capitals rule, because "9134"
+    upper-cased is itself, and the shape rule demanded a letter as well. So in a shouted
+    question it stopped being an identifier altogether, the focused pass was dropped, and
+    measured at top_k 1 the slot went to a turn about a retry budget rather than the
+    number asked about. Shape is now "contains a digit", which for any ordinary-case
+    query is the answer the capitals rule already gave.
+    """
+    for index in range(6):
+        _archive(_turn(f"Set 9134 to 42{index}.", f"Understood. 9134 is 42{index}."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
+    question = "What is the current value of 9134?"
+
+    assert store.conversation_match_queries(question)[0] == '"9134"'
+    assert store.conversation_match_queries(question.upper())[0] == '"9134"'
+    found = conversation_archive.recall(THREAD, question.upper(), top_k = 1)
+
+    assert found is not None
+    assert "9134" in found[0]
+
+
+def test_turning_the_query_focus_off_restores_the_old_order_on_a_tied_archive(conn, monkeypatch):
+    """The rollback knob says the candidate set is identical to before, so it must be.
+
+    The tie-break reorders CANDIDATES, which is selection, not presentation, so leaving it
+    outside the knob meant an operator who turned the feature off still got the new
+    behaviour out of an archive whose scores are tied. Measured before this gate: the
+    knobs-off recall returned the both-ends set rather than the four the previous build
+    returned.
+    """
+    from core.rag import config
+
+    monkeypatch.setattr(config, "CONVERSATION_QUERY_FOCUS", False)
+    monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
+    values = _revisions(8, distractors = 0)
+
+    found = conversation_archive.recall(
+        THREAD, f"what is the current value of {VARIABLE}", top_k = 4
+    )
+
+    assert found is not None
+    returned = [value for value in values if value in found[0]]
+    assert returned == values[:4], (
+        f"the knob did not restore the previous selection: {returned}"
+    )

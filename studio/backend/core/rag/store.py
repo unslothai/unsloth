@@ -92,10 +92,18 @@ was we were what when where which who why will with would you your
 """.split()
 )
 
-# Identifier-ish: a token mixing letters and digits (ZQXVARA123, 9134), one containing an
+# Identifier-ish: a token CONTAINING a digit (ZQXVARA123, 9134), one containing an
 # underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
 # or an "OK". These are the tokens a person uses when they mean one specific thing.
-_HAS_LETTER_AND_DIGIT = re.compile(r"(?=.*[^\W\d_])(?=.*\d)", re.UNICODE)
+#
+# Containing, not mixing. A purely numeric subject ("what is the current value of 9134")
+# used to qualify only through the capitals rule, since "9134".upper() is itself, so
+# requiring a letter as well left it with no shape at all once that rule was made to
+# need contrast. In a shouted question it then stopped being an identifier, the focused
+# pass was dropped, and the single slot went to a turn about a retry budget instead of
+# the number asked about. For any ordinary-case query this is the same answer the
+# capitals rule already gave, so nothing else moves.
+_HAS_DIGIT = re.compile(r"\d", re.UNICODE)
 
 
 def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
@@ -113,7 +121,7 @@ def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
     """
     if "_" in token:
         return True
-    if _HAS_LETTER_AND_DIGIT.match(token):
+    if _HAS_DIGIT.search(token):
         return True
     return len(token) >= 3 and token.upper() in raw_tokens
 

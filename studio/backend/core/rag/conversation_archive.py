@@ -836,6 +836,12 @@ def _ends_first_within_ties(conn, hits: list) -> list:
     actually separated. Ordering is `_conversation_order`, so legacy NULL ordinals still
     count as oldest.
     """
+    if not config.CONVERSATION_QUERY_FOCUS:
+        # The rollback knob promises the candidate set is "identical to before", and this
+        # reorders candidates, so it is selection and belongs behind that knob rather than
+        # behind the presentation one. Without this an operator who turned the feature off
+        # still got the new order out of a tied archive.
+        return hits
     if len(hits) < 2:
         return hits
     if len({hit.lexical_score for hit in hits}) == len(hits):
