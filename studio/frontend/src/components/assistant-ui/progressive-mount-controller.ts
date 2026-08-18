@@ -42,10 +42,33 @@ export type MountWindow = { start: number } | null;
 export const MIN_PROGRESSIVE_MESSAGES = 40;
 
 /**
- * Messages in the first commit. One viewport of the #9016 fixture is under two messages, so this
- * is roughly eight viewports of overscan. It is deliberately generous: the floor measurement used
- * 20 messages and read 438ms, so the first commit is bounded by that either way, and a window
- * that undershoots what the user can actually see would paint a gap.
+ * Messages in the first commit.
+ *
+ * A window that undershoots what the user can see paints a gap, so the number that matters is
+ * not how many viewports of the #9016 fixture 16 rows cover -- that fixture's messages are
+ * large, and any answer it gives is flattering -- but how tall 16 of the SHORTEST rows this app
+ * can produce are. A one-word message is 103px in this thread: a bubble, or a body plus an
+ * action bar, plus the row's own margins. Sixteen of them are 1639px, and with the viewport's
+ * own 48px top inset and 165px bottom spacer that fills every viewport up to 1890px of
+ * clientHeight.
+ *
+ * Measured rather than derived, on a 144-message thread whose last 24 messages are one-word
+ * replies, three rounds a point, Chromium 151 / Firefox / WebKit: at 900, 1080, 1440, 1800, 1840
+ * and 1860px of clientHeight the empty band below the last row on the first painted commit is
+ * exactly the band a settled thread has, so 0px of it belongs to this window. The first row is
+ * on screen at 133 to 315ms depending on engine.
+ *
+ * Above 1890px it does undershoot, and that is left rather than fixed. At 1900px the band is
+ * 10px, at 2000px 110px and at 2160px 270px, on screen for 287 to 499ms until the first widening
+ * chunk closes it, and nothing is unreachable while it is there. Deriving the window from
+ * clientHeight instead would have to guess how many rows fill it before it has mounted any, and
+ * the comparison that decides it is the merge base: the same fixture at 2160px paints NOTHING
+ * for 1318ms and then the whole thread at once. 270px of white for a third of a second, at a
+ * viewport height that needs a 4K panel in portrait or a zoomed-out window, against 1.3s of an
+ * empty screen at every height. 16 is also what LibreChat#14901 ships for the same job.
+ *
+ * The floor measurement used 20 messages and read 438ms, so the first commit is bounded by that
+ * either way. tests/studio/probe_compact_tail_gap.py is the probe.
  */
 export const INITIAL_MESSAGES = 16;
 
