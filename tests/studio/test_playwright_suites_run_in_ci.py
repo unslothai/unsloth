@@ -14,6 +14,7 @@ failure: the list of what CI runs drifting behind the directory it runs from.
 """
 
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 
 import yaml
@@ -32,6 +33,13 @@ NOT_IN_CI = {
     # through huggingface_hub; the UI workflows deliberately boot API-only with
     # one 254 MiB GGUF and no network model resolution.
     "playwright_train_pickers.py",
+    # A measurement harness rather than a gate: it prints the per-N cost table #8977
+    # was sized from and deliberately sets no budget, and the sizes that make the
+    # curve mean anything (to 500 messages under 6x CPU throttling) cost tens of
+    # minutes. Run by hand when that curve needs re-measuring. The part of it that
+    # can go wrong silently, the verdict in harness_failures, is driven without a
+    # browser by test_autoscroll_harness_contract.py, which CI does run.
+    "playwright_thread_weight.py",
 }
 
 
@@ -209,6 +217,35 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     assert "chromium" not in disabled and "webkit" not in disabled
 
 
+def test_no_build_gate_sits_behind_a_browser_smoke():
+    """A smoke failure must not decide whether the build gates report.
+
+    Every step carries an implicit `if: success()`, so a job stops at its first failing
+    step and skips the rest. The ANSI smoke is intermittently red, and while it ran ahead
+    of them the build and the three bundle assertions never reported at all on those runs.
+    The smokes each start their own vite dev server and read nothing out of `dist/`, so
+    they belong last. Asserted by step index, since the ordering is the whole guarantee.
+    """
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    names = [str(step.get("name", "")) for step in document["jobs"]["build"]["steps"]]
+    gates = [
+        "Build",
+        "Built bundle must not contain Unsloth's unstable_Provider call site",
+        "Bundle size budget (75 MB)",
+        "Startup bundle budget",
+    ]
+    missing = [gate for gate in gates if gate not in names]
+    assert not missing, f"renamed or deleted build gates: {missing}; update this list"
+    first_smoke = min(index for index, name in enumerate(names) if name.startswith("Browser smoke"))
+    late = [gate for gate in gates if names.index(gate) > first_smoke]
+    assert not late, (
+        f"{late} run after {names[first_smoke]!r}, so a red browser smoke skips them and the "
+        f"checks that decide whether the app ships never report. Move them above the smokes."
+    )
+
+
 def test_the_scan_reads_the_workflows_it_claims_to():
     """A scan that read nothing would pass both checks above on anything."""
     assert len(DRIVERS) > 10, f"only found {len(DRIVERS)} drivers; the glob is wrong"
@@ -224,4 +261,72 @@ def test_the_scan_reads_the_workflows_it_claims_to():
     assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
         "the composite action's own contents are not in the text, so a driver launched "
         "from inside one would read as an orphan"
+    )
+
+
+def test_every_smoke_report_is_covered_by_the_failure_upload():
+    """A smoke that fails must have its own diagnostic in the artifact.
+
+    The upload runs `if: failure()`, so the ONE report worth having is the one the
+    smoke that just failed wrote. Four of the five write `logs/playwright-<name>`;
+    the settings smoke writes a JSON report under its own name, so a bare
+    `logs/playwright-*` path uploaded every report except that one.
+    """
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
+    patterns = [line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()]
+
+    # Every logs/ path the smokes CI runs actually write, read from their source.
+    run = " ".join(str(s.get("run", "")) for s in steps)
+    smokes = [d for d in DRIVERS if d.name in run]
+    assert len(smokes) >= 5, f"expected the browser smokes to be wired up, found {len(smokes)}"
+
+    uncovered = []
+    for driver in smokes:
+        text = driver.read_text(encoding = "utf-8")
+        for out in sorted(set(re.findall(r'"(logs/[^"]+)"', text))):
+            stem = out.split("%")[0].split("{")[0]
+            if not any(fnmatch(stem, p) or stem.startswith(p.rstrip("*")) for p in patterns):
+                uncovered.append(f"{driver.name} -> {out}")
+    assert not uncovered, (
+        f"these smoke reports are not in the failure upload: {uncovered}; a failing smoke "
+        f"would upload every report except its own. Upload patterns: {patterns}"
+    )
+
+
+def test_a_continue_on_error_smoke_can_still_upload_its_report():
+    """`failure()` cannot see a smoke that is allowed to fail.
+
+    `continue-on-error: true` rewrites a step's CONCLUSION to success while leaving its
+    OUTCOME as failure, so a bare `if: failure()` upload is skipped on exactly the runs
+    where the non-blocking smoke is the only thing that failed, which is when its report
+    is the whole point. Each such smoke must be named in the upload condition.
+    """
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
+    condition = str(upload.get("if", ""))
+
+    lenient = [
+        s
+        for s in steps
+        if s.get("continue-on-error") and str(s.get("name", "")).startswith("Browser smoke")
+    ]
+    assert lenient, "expected at least one continue-on-error browser smoke; did one get renamed?"
+
+    unseen = []
+    for step in lenient:
+        step_id = step.get("id")
+        if not step_id:
+            unseen.append(f"{step['name']!r} has no id, so the upload cannot reference it")
+        elif f"steps.{step_id}.outcome" not in condition:
+            unseen.append(f"{step['name']!r} (id {step_id}) is not in the upload condition")
+    assert not unseen, (
+        f"{unseen}; a continue-on-error smoke that fails alone leaves conclusion=success, so "
+        f"`{condition}` skips the upload and its report is lost."
     )
