@@ -389,7 +389,9 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
 
 
 def variant_remaining_bytes(
-    repo_id: str, requirement, repo_cache_dir: Optional[Path] = None
+    repo_id: str,
+    requirement,
+    repo_cache_dir: Optional[Path] = None,
 ) -> Optional[int]:
     """Bytes a resume of this variant still has to fetch, or None when unknown.
 
