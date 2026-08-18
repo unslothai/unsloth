@@ -94,6 +94,85 @@ def _jobs():
                 yield name, jid, job
 
 
+def _or_alternatives(expr: str) -> list[str]:
+    """``expr`` split on its TOP-LEVEL ``||``, ignoring ``||`` inside parens or quotes."""
+    parts, depth, quote, buf, i = [], 0, "", [], 0
+    while i < len(expr):
+        ch = expr[i]
+        if quote:
+            if ch == quote:
+                quote = ""
+            buf.append(ch)
+        elif ch in "'\"":
+            quote = ch
+            buf.append(ch)
+        elif ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth -= 1
+            buf.append(ch)
+        elif ch == "|" and depth == 0 and expr[i : i + 2] == "||":
+            parts.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        else:
+            buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
+# A POSITIVE equality against main, in either quote style. `!=` must not match: an
+# expression restricting a save to everything EXCEPT main is the exact inversion of the
+# rule, and a substring search for "refs/heads/main" accepts it.
+_MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
+
+
+def _restricted_to_main(expr: str) -> bool:
+    """Whether ``expr`` can only be true on ``refs/heads/main``.
+
+    Every alternative of a top-level `||` has to carry the main check, because `||` is how
+    a condition GAINS refs: `github.ref == 'refs/heads/main' || github.event_name ==
+    'pull_request'` mentions main and runs on every PR. Requiring the check in each
+    alternative is conservative -- it rejects some conditions that happen to be safe -- and
+    that is the right direction for a guard whose failure mode is a silently refilled cache.
+
+    Structural rather than a substring test because three shapes all contain the literal
+    "refs/heads/main" while permitting PR saves: a `!=` comparison, an `||` that admits
+    another event, and the check appearing only inside one branch of one.
+    """
+    alternatives = _or_alternatives(expr)
+    return bool(expr.strip()) and all(_MAIN_ONLY.search(a) for a in alternatives)
+
+
+@pytest.mark.parametrize(
+    "expr,restricted",
+    [
+        ("always() && github.ref == 'refs/heads/main'", True),
+        ('always() && github.ref == "refs/heads/main"', True),
+        ("github.ref == 'refs/heads/main' && steps.x.outcome == 'success'", True),
+        # The three shapes a substring test accepts and should not.
+        ("github.ref != 'refs/heads/main'", False),
+        ("github.ref == 'refs/heads/main' || github.event_name == 'pull_request'", False),
+        ("(github.ref == 'refs/heads/main' && always()) || github.event_name == 'push'", False),
+        # Both alternatives restricted is still restricted.
+        (
+            "(github.ref == 'refs/heads/main' && always()) || "
+            "(github.ref == 'refs/heads/main' && failure())",
+            True,
+        ),
+        # A `||` inside a string or parenthesised sub-expression is not a top-level split.
+        ("github.ref == 'refs/heads/main' && contains(x, 'a||b')", True),
+        ("", False),
+    ],
+)
+def test_the_main_only_expression_check_reads_the_expression(expr, restricted):
+    """The guard below is only as good as this predicate, so the predicate is tested too."""
+    assert _restricted_to_main(expr) is restricted, expr
+
+
 def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     offenders = []
     for name, jid, job in _jobs():
@@ -113,7 +192,7 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
             saves = "/restore@" not in uses  # read-write and /save@ both write
             if not saves:
                 continue
-            if "refs/heads/main" not in str(step.get("if", "")):
+            if not _restricted_to_main(str(step.get("if", ""))):
                 offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
     assert not offenders, (
         "these steps save a cache on whatever ref they run on, so every PR writes its own "
@@ -274,17 +353,33 @@ def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
 
     Scoping the keys is what introduced this, which is why it is asserted rather than
     remembered: the failure is loud, but only once it reaches CI.
+
+    Each entry is resolved against the checkout it belongs to and then globbed, rather than
+    prefix-matched. A prefix check calls `unsloth/.github/workflows/typo.yml` correct
+    because it starts with `unsloth/`, and a job checked out at the workspace root was
+    skipped entirely, so a misspelling there was never examined at all. Both fail the job
+    exactly as hard as the wrong prefix does.
     """
     offenders = []
     for name, jid, job in _jobs():
         steps = job.get("steps") or []
-        checkout_dirs = [
-            str((s.get("with") or {}).get("path")).rstrip("/")
-            for s in steps
-            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
-        ]
-        if not checkout_dirs:
-            continue  # checked out at the workspace root, so a root-relative path is right
+        # Where THIS repo lands, which is not the same question as "is there a `path:`".
+        # notebooks-ci api-introspect checks out two repositories side by side, and a path
+        # under the OTHER one cannot be resolved against this tree at all, so it is skipped
+        # rather than reported. A checkout with no `repository:` is this repo by definition.
+        own_prefixes, foreign_prefixes = [], []
+        for s in steps:
+            if "actions/checkout" not in str(s.get("uses", "")):
+                continue
+            with_ = s.get("with") or {}
+            prefix = str(with_.get("path") or "").strip("/")
+            repo = str(with_.get("repository") or "")
+            (foreign_prefixes if repo and not repo.endswith("/unsloth") else own_prefixes).append(
+                prefix
+            )
+        if not own_prefixes:
+            own_prefixes = [""]
+
         for step in steps:
             with_ = step.get("with") or {}
             if "setup-python" not in str(step.get("uses", "")):
@@ -293,12 +388,33 @@ def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
                 line = line.strip()
                 if not line:
                     continue
-                if not any(line.startswith(d + "/") for d in checkout_dirs):
-                    offenders.append(f"{name}:{jid}: {line!r} (checkouts: {checkout_dirs})")
+                if any(p and line.startswith(p + "/") for p in foreign_prefixes):
+                    continue
+                # The prefix has to match a checkout of this repo, AND what remains has to
+                # resolve to a file that exists. Checking only the prefix accepted
+                # `unsloth/.github/workflows/typo.yml`, which fails the job just as hard.
+                relative = None
+                for prefix in sorted(own_prefixes, key = len, reverse = True):
+                    if not prefix:
+                        relative = line
+                        break
+                    if line.startswith(prefix + "/"):
+                        relative = line[len(prefix) + 1 :]
+                        break
+                if relative is None:
+                    offenders.append(
+                        f"{name}:{jid}: {line!r} is workspace-root-relative, but this job "
+                        f"checks the repo out under {own_prefixes}"
+                    )
+                    continue
+                if not list(REPO.glob(relative)):
+                    offenders.append(
+                        f"{name}:{jid}: {line!r} matches no file in the repo "
+                        f"(resolved to {relative!r})"
+                    )
     assert not offenders, (
-        "these cache-dependency-path entries are workspace-root-relative in a job that "
-        "checks the repo out into a subdirectory, so setup-python matches no file and "
-        "fails the job:\n  " + "\n  ".join(offenders)
+        "setup-python fails a job outright when cache-dependency-path matches nothing, so "
+        "each of these stops its job before it installs anything:\n  " + "\n  ".join(offenders)
     )
 
 
