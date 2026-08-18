@@ -77,6 +77,7 @@ import {
 } from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { MenuDismissGuard } from "@/lib/menu-dismiss-guard";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
@@ -1663,7 +1664,7 @@ function ProjectLanding({
                             formatProjectChatDate(item.createdAt)}
                         </span>
                       </button>
-                      <DropdownMenu>
+                      <DropdownMenu modal={false}>
                         <DropdownMenuTrigger asChild>
                           <button
                             type="button"
@@ -1684,6 +1685,7 @@ function ProjectLanding({
                           sideOffset={4}
                           className="unsloth-plus-menu menu-flat-destructive w-56"
                         >
+                          <MenuDismissGuard />
                           <DropdownMenuItem onSelect={() => openRename(item)}>
                             <HugeiconsIcon
                               icon={Edit03Icon}

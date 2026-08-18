@@ -2232,7 +2232,7 @@ export function AppSidebar() {
     includeOrganize?: boolean;
   }) {
     return (
-      <DropdownMenu>
+      <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
@@ -2248,6 +2248,7 @@ export function AppSidebar() {
           sideOffset={2}
           className="unsloth-plus-menu w-56"
         >
+          <MenuDismissGuard />
           {options.includeOrganize && (
             <>
               <DropdownMenuLabel>
@@ -2576,7 +2577,7 @@ export function AppSidebar() {
                 </span>
               </button>
             )}
-            <DropdownMenu>
+            <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
@@ -2595,6 +2596,7 @@ export function AppSidebar() {
                 sideOffset={0}
                 className="unsloth-plus-menu menu-flat-destructive w-56"
               >
+                <MenuDismissGuard />
                 <DropdownMenuItem onSelect={() => openRenameChat(item)}>
                   <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
                   <span>Rename</span>
