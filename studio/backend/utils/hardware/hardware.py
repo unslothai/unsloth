@@ -2694,7 +2694,12 @@ def _get_parent_visible_gpu_spec() -> Dict[str, Any]:
     )
     if _is_rocm_spec:
         hip_vis = os.environ.get("HIP_VISIBLE_DEVICES")
-        rocr_vis = os.environ.get("ROCR_VISIBLE_DEVICES")
+        # ROCR_VISIBLE_DEVICES is Linux-only: Windows HIP has no ROCr layer, so a
+        # stray value there masks nothing and must not be read as the
+        # ordinal->physical map -- doing so renames one card by another card's id.
+        # Mirrors LlamaCppBackend._active_gpu_visibility_mask, and the child pin
+        # never writes ROCR on Windows either.
+        rocr_vis = None if sys.platform == "win32" else os.environ.get("ROCR_VISIBLE_DEVICES")
         if hip_vis is not None:
             cuda_visible = hip_vis
         elif rocr_vis is not None:
@@ -3226,10 +3231,10 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
     for exactly this problem, so it must keep working. Same rule the llama.cpp
     arch gate follows (#7624).
 
-    Fails open (empty set) on every uncertainty: a non-ROCm host, an unreadable
-    or non-concrete arch list, a UUID/MIG mask whose ordinals cannot be named
-    back to physical ids, a device whose arch cannot be read, and a filter that
-    would drop every device it could read. Never raises.
+    Fails open (empty set) on every uncertainty: a non-ROCm host, an arch list
+    that is unreadable or carries any non-concrete token, a UUID/MIG mask whose
+    ordinals cannot be named back to physical ids, a device whose arch cannot be
+    read, and a filter that would drop every device it could read. Never raises.
     """
     try:
         import torch
@@ -3242,16 +3247,29 @@ def rocm_gpu_ids_without_torch_kernels() -> set[int]:
         if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
             return set()
 
-        supported = {
+        tokens = [
             token
             for token in (
                 str(arch).split(":")[0].strip().lower()
                 for arch in (torch.cuda.get_arch_list() or ())
             )
-            if _CONCRETE_GFX_ARCH.match(token)
-        }
-        if not supported:
+            if token
+        ]
+        # Exact-set membership against what the device reports, so the list only
+        # means anything while EVERY token is concrete. A generic code object
+        # (gfx11-generic) covers devices no exact token names, so keeping the
+        # concrete subset and calling it the whole coverage would drop a card the
+        # build does run. Unknown coverage fails open, all or nothing, same rule as
+        # the llama.cpp gate's mapped_targets read (#7624).
+        unknown = sorted(t for t in tokens if not _CONCRETE_GFX_ARCH.match(t))
+        if unknown:
+            # debug, not warning: a generic target is normal on ROCm 6.4+ wheels,
+            # and this runs per VRAM estimate as well as per launch.
+            logger.debug("torch arch list carries non-concrete tokens %s; not gating", unknown)
             return set()
+        if not tokens:
+            return set()
+        supported = set(tokens)
 
         # Physical ids behind the active mask; None means UUID/MIG entries, where
         # an ordinal cannot be named back to a device, so nothing may be pinned.

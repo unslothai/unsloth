@@ -200,6 +200,27 @@ class TestFailsOpen:
         _install(monkeypatch, _fake_torch([_props("gfx1101")], arch_list = arch_list))
         assert rocm_gpu_ids_without_torch_kernels() == set()
 
+    @pytest.mark.parametrize(
+        "arch_list",
+        [
+            ["gfx1100", "gfx11-generic"],
+            ["gfx11-generic", "gfx1100"],
+            ["gfx900", "gfx110X", "gfx1100"],
+        ],
+        ids = ["generic_last", "generic_first", "family_label_between"],
+    )
+    def test_one_non_concrete_token_disables_the_whole_list(self, monkeypatch, no_mask, arch_list):
+        # ROCm 6.4+ ships generic code objects alongside concrete ones, and a
+        # generic target covers devices no exact token names. Keeping the concrete
+        # subset and calling it the build's whole coverage marks gfx1101 uncovered
+        # here and drops a card the wheel does run, so the list is unknown as a
+        # whole. Same all-or-nothing rule as the llama.cpp gate (#7624).
+        _install(
+            monkeypatch,
+            _fake_torch([_props("gfx1100"), _props("gfx1101")], arch_list = arch_list),
+        )
+        assert rocm_gpu_ids_without_torch_kernels() == set()
+
     def test_a_device_with_no_readable_arch_is_kept(self, monkeypatch, no_mask):
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("")]))
         assert rocm_gpu_ids_without_torch_kernels() == set()
@@ -231,6 +252,34 @@ class TestIdSpace:
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
         # Ordinal 1 is physical 3 here, not 1.
         _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert rocm_gpu_ids_without_torch_kernels() == {3}
+
+    def _rocr_only(self, monkeypatch, platform):
+        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr("utils.hardware.hardware.IS_ROCM", True)
+        monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 2)
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2,3")
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+
+    def test_a_rocr_mask_maps_the_ordinals_on_linux(self, monkeypatch):
+        # ROCr is the layer that actually masks here, so ordinal 1 is physical 3.
+        self._rocr_only(monkeypatch, "linux")
+        assert rocm_gpu_ids_without_torch_kernels() == {3}
+
+    def test_windows_ignores_a_stray_rocr_mask(self, monkeypatch):
+        # Windows HIP has no ROCr layer, so this mask hides nothing and torch still
+        # enumerates both physical cards. Reading it as the ordinal->physical map
+        # would drop the iGPU under GPU 3's name: the uncovered card stays in the
+        # selection and a card that does not exist gets excluded instead.
+        self._rocr_only(monkeypatch, "win32")
+        assert rocm_gpu_ids_without_torch_kernels() == {1}
+
+    def test_windows_still_honours_a_hip_mask(self, monkeypatch):
+        # HIP_VISIBLE_DEVICES is the Windows mask, so the mapping stands there.
+        self._rocr_only(monkeypatch, "win32")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
         assert rocm_gpu_ids_without_torch_kernels() == {3}
 
 
