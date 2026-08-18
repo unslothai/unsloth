@@ -230,3 +230,67 @@ def test_a_partial_and_its_own_directorys_marker_still_resume(split_cache):
     _partial(second, LEGACY_PARTIAL)
 
     assert partial_resume_available("model", "Org/Model", "Q4_K_M") is True
+
+
+# --------------------------------------------------------------------------------------------
+# A row is not always displayed from the active cache. local_inventory enumerates remembered
+# ("previous HF cache") and custom roots too, and hands each row's own directory down. That
+# root holds its own partials and its own manifest scope (state_dir keys manifests by a
+# per-cache digest), so the resume verdict has to be asked of it and not of the active root.
+# --------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def two_roots(monkeypatch, tmp_path):
+    """The active hub cache plus a remembered one, both holding the same repo."""
+    active = tmp_path / "hub"
+    previous = tmp_path / "old" / "hub"
+    for root in (active, previous):
+        (root / "models--Org--Model" / "blobs").mkdir(parents = True)
+    monkeypatch.setenv("HF_HUB_CACHE", str(active))
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(hf_cache_state, "hf_partials_are_resumable", lambda: True)
+    for module in (download_registry, hf_cache_state):
+        monkeypatch.setattr(
+            module,
+            "hf_cache_root",
+            lambda root = None, **_kw: Path(root) if root is not None else active,
+            raising = False,
+        )
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [active, previous])
+    return active / "models--Org--Model", previous / "models--Org--Model"
+
+
+def _record_in(entry: Path, transport: str, variant, blob: str = BLOB):
+    download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        variant,
+        [ExpectedFile(path = f"model-{variant or 'main'}.gguf", size = 4096, sha256 = blob)],
+        transport,
+        hub_cache = entry.parent,
+    )
+    download_registry._write_marker(entry, transport, variant)
+
+
+def test_another_roots_partial_does_not_vouch_for_this_row(two_roots):
+    """The displayed row lives in the remembered cache and its partial is nonce-named, so
+    nothing can reopen it. The active root's legacy partial for the same repo must not be
+    what turns this row into "Resume with HTTP to keep the progress you already have"."""
+    active, previous = two_roots
+    _record_in(active, "http", None)
+    _partial(active, LEGACY_PARTIAL)
+    _record_in(previous, "http", None)
+    _partial(previous, NONCE_PARTIAL)
+
+    assert partial_resume_available("model", "Org/Model", None, previous) is False
+
+
+def test_a_remembered_roots_own_partial_still_resumes(two_roots):
+    """And the other direction: the row's bytes are reopenable and its manifest lives in that
+    root's scope, so the verdict may not be lost just because the active root is empty."""
+    active, previous = two_roots
+    _record_in(previous, "http", "Q4_K_M")
+    _partial(previous, LEGACY_PARTIAL)
+
+    assert partial_resume_available("model", "Org/Model", "Q4_K_M", previous) is True

@@ -986,6 +986,8 @@ def is_resumable_partial(
     repo_type: str,
     repo_id: str,
     variant: Optional[str] = None,
+    *,
+    root: Optional[Path] = None,
 ) -> bool:
     """True only when a partial exists AND something can still resume from it.
 
@@ -1003,11 +1005,17 @@ def is_resumable_partial(
     shared companion (mmproj, MTP drafter) answers to ``.transport.companion``. With a
     ``variant`` the manifest says which hashes are which; a blob in neither set, and a variant
     with no manifest, back nothing rather than an unscoped yes.
+
+    ``root`` is the hub cache the row being judged was found in. A row can come from a
+    remembered, legacy or custom cache, and that root holds both its own partials and its own
+    manifest scope (state is keyed by a per-cache digest), so leaving it out asked the ACTIVE
+    root about a directory it does not contain. ``None`` keeps the active root, for callers
+    that have no particular row in hand.
     """
     main, companion = (
-        _manifest_hash_split(repo_type, repo_id, variant) if variant else (set(), set())
+        _manifest_hash_split(repo_type, repo_id, variant, root = root) if variant else (set(), set())
     )
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         resumable = _resumable_blob_hashes(entry)
         if not resumable:
             continue
@@ -1038,14 +1046,14 @@ def _resumable_blob_hashes(entry: Path) -> set[str]:
 
 
 def _manifest_hash_split(
-    repo_type: str, repo_id: str, variant: Optional[str]
+    repo_type: str, repo_id: str, variant: Optional[str], *, root: Optional[Path] = None
 ) -> tuple[set[str], set[str]]:
     """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker
     splits them when it asks for a purge. Empty pair when either step cannot answer, which
     reads as "no resume to promise"."""
     from hub.utils import download_manifest
 
-    manifest = download_manifest.read_manifest(repo_type, repo_id, variant)
+    manifest = download_manifest.read_manifest(repo_type, repo_id, variant, hub_cache = root)
     if manifest is None or not manifest.expected_files or not variant:
         return set(), set()
     try:

@@ -2009,4 +2009,12 @@ def partial_resume_available(
 
     if partial_transport_for(repo_type, repo_id, variant, repo_cache_dir) != "http":
         return False
-    return download_registry.is_resumable_partial(repo_type, repo_id, variant)
+    # Same root the transport was read from. A row can be displayed from a remembered, legacy
+    # or custom cache, and both halves have to answer about THAT directory: the active root
+    # neither holds its partials nor shares its manifest scope.
+    return download_registry.is_resumable_partial(
+        repo_type,
+        repo_id,
+        variant,
+        root = _hub_cache_for_repo_dir(repo_cache_dir),
+    )
