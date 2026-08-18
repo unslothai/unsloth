@@ -981,7 +981,11 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
 # axis: 0 at 25K and 1 at 100K could carry the entire verdict while every latency axis was flat.
 
 
-def counter_cells(small, large, sizes = (25000, 300000)) -> dict:
+def counter_cells(
+    small,
+    large,
+    sizes = (25000, 300000),
+) -> dict:
     return {
         "engines": ["chromium"],
         "sizes": list(sizes),
