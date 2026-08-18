@@ -28,8 +28,9 @@ from utils.utils import is_tls_verification_error
 
 def _verify_error() -> ssl.SSLCertVerificationError:
     return ssl.SSLCertVerificationError(
-        1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get "
-        "local issuer certificate (_ssl.c:1032)"
+        1,
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get "
+        "local issuer certificate (_ssl.c:1032)",
     )
 
 
