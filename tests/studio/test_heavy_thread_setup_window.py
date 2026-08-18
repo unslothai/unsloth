@@ -297,6 +297,6 @@ def test_a_short_per_repetition_list_does_not_silently_skip_repetitions():
     actions["jump"]["startedFrom_per_repetition"] = [8000, 8000, 8000]
     actions["jump"]["bottom_per_repetition"] = [8000]
     failures = HARNESS.action_failures("t", actions, sibling.COUNTS, sibling.VIEWPORT)
-    assert any("repetition 3" in f for f in failures), (
-        f"repetition 3 was never examined at all: {failures}"
-    )
+    assert any(
+        "repetition 3" in f for f in failures
+    ), f"repetition 3 was never examined at all: {failures}"
