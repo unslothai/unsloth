@@ -1055,7 +1055,11 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
 # noisy 5ms at the largest size read as a rise of 5 and discriminated.
 
 
-def timing_cells(small, large, sizes = (25000, 300000)) -> dict:
+def timing_cells(
+    small,
+    large,
+    sizes = (25000, 300000),
+) -> dict:
     return {
         "engines": ["chromium"],
         "sizes": list(sizes),
@@ -1099,9 +1103,9 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
     zero-based axis, so the set is pinned against the axis list itself."""
     assert HARNESS.COUNTER_AXES, "no axis is classified as a counter any more"
     names = {name for name, _pick, _floored in HARNESS.GROWTH_AXES}
-    assert HARNESS.COUNTER_AXES <= names, (
-        f"COUNTER_AXES names axes that do not exist: {HARNESS.COUNTER_AXES - names}"
-    )
+    assert (
+        HARNESS.COUNTER_AXES <= names
+    ), f"COUNTER_AXES names axes that do not exist: {HARNESS.COUNTER_AXES - names}"
     # Stated exactly rather than pattern-matched. My first attempt keyed on the name not ending
     # in "ms", which is wrong: the counter axis is called "frames over 33ms" and legitimately
     # does. Naming the whole set is the point of classifying it explicitly in the first place.
@@ -1109,9 +1113,9 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
         f"{action} frames over 33ms" for action in HARNESS.ACTIONS
     ), HARNESS.COUNTER_AXES
     timings = names - HARNESS.COUNTER_AXES
-    assert "scroll longest stall ms" in timings and "menu wall ms" in timings, (
-        f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
-    )
+    assert (
+        "scroll longest stall ms" in timings and "menu wall ms" in timings
+    ), f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
 
 
 if __name__ == "__main__":
