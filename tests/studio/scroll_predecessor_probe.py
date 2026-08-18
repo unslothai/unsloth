@@ -396,10 +396,13 @@ def before_delete(page):
 # put a two-minute idle gap before each affected scroll, so those arms were not measuring the
 # immediate-predecessor sequence they claim to.
 def before_reopen(page):
-    out = checked("reopen", page.evaluate(
-        hv.REOPEN_JS,
-        [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
-    ))
+    out = checked(
+        "reopen",
+        page.evaluate(
+            hv.REOPEN_JS,
+            [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
+        ),
+    )
     settled(page)
     expand(page)
     return out
@@ -413,10 +416,13 @@ def before_delete_reopen_keystroke(page):
     """
     hover_last(page)
     deleted = checked("delete", page.evaluate(hv.DELETE_JS, SETTLE))
-    reopened = checked("reopen", page.evaluate(
-        hv.REOPEN_JS,
-        [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
-    ))
+    reopened = checked(
+        "reopen",
+        page.evaluate(
+            hv.REOPEN_JS,
+            [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
+        ),
+    )
     settled(page)
     expand(page)
     typed = checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))

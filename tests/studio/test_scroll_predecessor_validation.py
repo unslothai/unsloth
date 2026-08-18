@@ -326,6 +326,7 @@ def test_the_boundary_counter_is_armed_after_the_anchor() -> None:
     ]
     assert not stray, f"the counter is still armed before the anchor as well: {stray}"
 
+
 def test_the_probe_passes_reopen_every_argument_it_destructures() -> None:
     """A short argument list to REOPEN_JS is silent: the missing ones read as undefined.
 
