@@ -5,19 +5,14 @@
 ``test_gpu_arch_gate_os_matrix_7624.py`` for the ROCm arch gate.
 
 The gate refuses a launch only when every visible GPU is OLDER than the oldest
-arch the installed CUDA bundle was compiled for. It must be *inert* everywhere
-else, and "inert" is what matching output alone cannot show: a gate that ran and
-passed returns None exactly like one that never ran. So the marker reader and
-the nvidia-smi probe are spied and asserted un-called on the cells that must not
-reach them.
+arch the bundle was compiled for, and must be inert everywhere else. Output
+alone cannot show that: a gate that ran and passed returns None exactly like one
+that never ran, so the marker reader and the nvidia-smi probe are spied and
+asserted un-called on the cells that must not reach them.
 
-Matrix: [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]. Only the NVIDIA
-cells may consult the marker; macOS has no CUDA at all, and on an AMD or CPU-only
-host nvidia-smi is absent so the probe yields nothing and the gate opens.
-
-No NVIDIA GPU is required: nvidia-smi, the install marker and the visibility
-masks are faked in the shapes the installer really writes (``supported_sms`` as
-sorted digit strings, ``compute_cap`` as "8.6" in a CSV row).
+Matrix: [Windows, Linux, WSL, macOS] x [NVIDIA, AMD, CPU-only]. No NVIDIA GPU is
+needed; nvidia-smi, the marker and the masks are faked in the shapes the
+installer writes (digit-string ``supported_sms``, ``compute_cap`` as "8.6").
 """
 
 from __future__ import annotations
@@ -38,7 +33,7 @@ _OS_CELLS = {
 OS_KEYS = list(_OS_CELLS)
 VENDORS = ["nvidia", "amd", "cpu"]
 
-# What the published CUDA manifests declare, as the installer writes them.
+# As the installer writes them.
 CUDA12_OLDER = ["75", "80", "86", "89"]
 CUDA13_NEWER = ["100", "120"]
 
@@ -58,7 +53,7 @@ def _no_smi(cmd, **kwargs):
 
 @pytest.fixture
 def marker_spy(monkeypatch):
-    """Records every install-marker read so a cell can assert it never happened."""
+    """Records marker reads so a cell can assert it never happened."""
     calls: list = []
     from utils import llama_cpp_freshness as freshness
 
@@ -85,15 +80,15 @@ def smi_spy(monkeypatch):
 
 @pytest.fixture(autouse = True)
 def _no_inherited_visibility(monkeypatch):
-    """A CI box that pins CUDA_VISIBLE_DEVICES for its own GPUs would otherwise
-    silently mask rows out of every fake nvidia-smi table below."""
+    """A box pinning CUDA_VISIBLE_DEVICES would otherwise mask rows out of
+    every fake nvidia-smi table below."""
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
     monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
 
 
 @pytest.fixture
 def host(monkeypatch):
-    """Applies one OS cell; returns a setter so a test can pick the vendor."""
+    """Applies one OS cell."""
 
     def _apply(os_key: str):
         sys_platform, system = _OS_CELLS[os_key]
@@ -127,8 +122,8 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     @pytest.mark.parametrize("os_key", OS_KEYS)
     @pytest.mark.parametrize("vendor", VENDORS)
     def test_only_an_nvidia_host_can_be_refused(self, os_key, vendor, monkeypatch, host):
-        """A non-NVIDIA host has no nvidia-smi, so coverage is unknowable and the
-        gate opens no matter what the marker claims."""
+        """No nvidia-smi means unknowable coverage, so the gate opens whatever
+        the marker claims."""
         host(os_key)
         rows = "0, 7.5\n" if vendor == "nvidia" else None
         error = _gate(monkeypatch, sms = frozenset({86, 89}), caps_rows = rows)
@@ -142,8 +137,8 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
     def test_an_unmarked_install_never_probes_the_gpu(
         self, os_key, vendor, monkeypatch, host, marker_spy, smi_spy
     ):
-        """No marker means unknown coverage, which must short-circuit BEFORE
-        shelling out to nvidia-smi on every load."""
+        """Unknown coverage must short-circuit before shelling out to
+        nvidia-smi on every load."""
         host(os_key)
         monkeypatch.setattr(
             LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
@@ -154,9 +149,8 @@ class TestTheGateAcrossTheOsAndVendorMatrix:
 
     @pytest.mark.parametrize("os_key", OS_KEYS)
     def test_a_non_cuda_bundle_is_inert(self, os_key, monkeypatch, host):
-        """Vulkan/CPU/ROCm bundles declare no supported_sms, so the gate is a
-        no-op there. This is the invariant that lets the call site skip an
-        explicit is_vulkan_backend guard."""
+        """Vulkan/CPU/ROCm bundles declare no supported_sms. That invariant is
+        why the call site needs no explicit is_vulkan_backend guard."""
         host(os_key)
         assert _gate(monkeypatch, sms = None, caps_rows = "0, 7.5\n") is None
 
@@ -175,8 +169,8 @@ class TestTheSmFloorDecision:
         ],
     )
     def test_floor_not_exact_membership(self, sms, cap, refused, monkeypatch):
-        """Only the too-old direction is broken; an exact-SM test would refuse
-        working installs (the legacy sm_50-61 PTX bundle drives an sm_86 host)."""
+        """Only the too-old direction is broken: an exact-SM test would refuse
+        the legacy sm_50-61 PTX bundle that drives an sm_86 host fine."""
         error = _gate(monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n")
         assert bool(error) is refused, error
 
@@ -205,9 +199,8 @@ class TestTheSmFloorDecision:
 
 
 class TestVisibilityMasks:
-    """CUDA_VISIBLE_DEVICES entries are ordinals in CUDA's configured order while
-    nvidia-smi reports physical PCI indices, so the gate only trusts the mask
-    when both agree on ordering."""
+    """Mask entries are ordinals in CUDA's order while nvidia-smi reports
+    physical PCI indices, so the mask is trusted only when both agree."""
 
     def test_a_numeric_mask_hiding_the_old_card_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -238,10 +231,9 @@ class TestVisibilityMasks:
         ],
     )
     def test_a_uuid_or_mig_mask_is_ignored_and_the_whole_host_is_judged(self, mask, monkeypatch):
-        """These name no physical index we can map back, so the mask is dropped
-        and every enumerated card is weighed. That errs toward launching (one
-        covered card anywhere opens the gate) and only refuses when nothing on
-        the host could run, which stays true whichever instance is selected."""
+        """Neither names a physical index we can map back, so the mask is
+        dropped and every card is weighed. That errs toward launching and only
+        refuses when nothing on the host could run, whichever instance wins."""
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
@@ -262,8 +254,8 @@ class TestMarkerParsing:
 
     @pytest.mark.parametrize("raw", [["86"], [86], [" 86 "], ["75", "86"]])
     def test_the_installer_string_format_round_trips(self, raw, monkeypatch):
-        """The installer writes sorted digit STRINGS; the reader must accept
-        exactly that, plus the ints an older marker may hold."""
+        """The installer writes sorted digit strings; the reader must take
+        those plus the ints an older marker may hold."""
         from utils import llama_cpp_freshness as freshness
 
         monkeypatch.setattr(freshness, "read_install_marker", lambda b: {"supported_sms": raw})

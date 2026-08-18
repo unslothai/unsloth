@@ -5062,10 +5062,9 @@ def test_the_validator_stubs_still_model_the_real_signature(name):
 
 
 def test_supported_sms_stays_out_of_the_install_fingerprint():
-    """The CUDA analog of the mapped_targets fingerprint guard. supported_sms is
-    recorded for the runtime gate and backfilled onto existing markers, which only
-    works while it is NOT hashed: if it entered the payload, every install made
-    before the field existed would compare stale and reinstall on upgrade."""
+    """The CUDA analog of the mapped_targets fingerprint guard. Backfilling
+    supported_sms onto existing markers only works while it is not hashed: in
+    the payload, every install predating the field reinstalls on upgrade."""
     base = dict(
         repo = "unslothai/llama.cpp",
         tag = "b9001",
@@ -5110,9 +5109,9 @@ def test_supported_sms_stays_out_of_the_install_fingerprint():
     [("linux-vulkan", "vulkan"), ("linux-cpu", "cpu"), ("linux-rocm", "rocm")],
 )
 def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kind, runtime_line):
-    """The runtime gate has no is_vulkan_backend guard: it stays inert on those
-    hosts only because a non-CUDA bundle records an empty list, which the reader
-    treats as unknown coverage. Pin that invariant at the writing end."""
+    """The runtime gate has no is_vulkan_backend guard; it stays inert there
+    only because a non-CUDA bundle records an empty list, which reads as unknown
+    coverage. Pin that at the writing end."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     choice = _cuda_choice(install_kind = install_kind, runtime_line = runtime_line, supported_sms = None)
