@@ -1144,9 +1144,9 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
     # reading they have already moved is what refuses the fourth.
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promised)
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promised, 4 * _GB))
-    assert shim.free_ram_pressure_reason() is not None, (
-        "three allocated downloads left too little RAM for a fourth on Xet"
-    )
+    assert (
+        shim.free_ram_pressure_reason() is not None
+    ), "three allocated downloads left too little RAM for a fourth on Xet"
 
 
 def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, monkeypatch):
@@ -1185,9 +1185,9 @@ def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, 
     # for the next download stays on Xet.
     monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promise, 4 * _GB))
     monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
-    assert shim.free_ram_pressure_reason() is None, (
-        "the next Auto download was demoted to HTTP over RAM its sibling never took"
-    )
+    assert (
+        shim.free_ram_pressure_reason() is None
+    ), "the next Auto download was demoted to HTTP over RAM its sibling never took"
 
 
 def test_the_ledger_reads_a_real_workers_rss(clean_ledger):
