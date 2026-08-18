@@ -224,9 +224,9 @@ def test_the_verdict_rejects_a_scroll_whose_pointer_was_off_content_in_one_repet
     ]
     actions = clean_actions()
     actions["scroll"] = HARNESS.summarise({"scroll": rows})["scroll"]
-    assert any("with the pointer off message content on repetition(s) [2]" in f for f in failures(
-        actions
-    )), failures(actions)
+    assert any(
+        "with the pointer off message content on repetition(s) [2]" in f for f in failures(actions)
+    ), failures(actions)
 
 
 def test_the_verdict_rejects_an_action_that_never_settled() -> None:
