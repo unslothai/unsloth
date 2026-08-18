@@ -1210,21 +1210,49 @@ def test_a_pin_is_charged_for_everything_it_holds():
     }
 
 
-def test_a_pin_is_charged_for_the_tool_exchange_it_holds():
-    """A user-headed group is evicted together with the tool groups that trail it, so
-    those are held by the pin too and have to be counted with it."""
+def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
+    """A trailing tool exchange is its own group, and `truncate_oldest_messages` skips a
+    protected group BEFORE the `starts_user_turn` expansion, so that group stays an
+    independent eviction unit and goes while the pinned instruction stays. Charging it to
+    the pin would let one ordinary file read cost a one-line instruction its pin over
+    tokens the pin never keeps -- and an agent run is exactly where the filler follow-up
+    the pin exists for appears."""
     from core.inference import instruction_pin
+    from core.inference.context_window import truncate_oldest_messages
 
     instruction = _instruction()
+    tool_call = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "c1", "function": {"name": "read", "arguments": "{}"}}],
+    }
+    tool_result = {"role": "tool", "tool_call_id": "c1", "content": "y " * 40000}
     messages = [
+        {"role": "system", "content": "you are helpful"},
         instruction,
-        {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [{"id": "c1", "function": {"name": "read", "arguments": "{}"}}],
-        },
-        {"role": "tool", "tool_call_id": "c1", "content": "y " * 40000},
+        tool_call,
+        tool_result,
         {"role": "user", "content": "continue"},
     ]
 
-    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
+    assert pinned == {id(instruction)}
+
+    # And the 20k tokens it was being charged for are evicted anyway, with the pin on.
+    kept, dropped = truncate_oldest_messages(messages, 0.01, protected_message_ids = pinned)
+    assert any(message is instruction for message in kept)
+    assert not any(message is tool_call for message in kept)
+    assert not any(message is tool_result for message in kept)
+    assert dropped == 2
+
+    # The reply that shares the instruction's own group is still charged, so the ceiling
+    # keeps working on the thing it does hold.
+    with_reply = [
+        {"role": "system", "content": "you are helpful"},
+        instruction,
+        {"role": "assistant", "content": "x " * 40000},
+        {"role": "user", "content": "continue"},
+    ]
+    assert (
+        instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()
+    )

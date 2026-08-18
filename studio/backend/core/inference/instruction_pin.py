@@ -204,20 +204,22 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
 def _protected_cost(turns: list[list[dict]], index: int) -> int:
     """What pinning the head of ``turns[index]`` actually costs the window.
 
-    `truncate_oldest_messages` protects by GROUP, not by message, and it evicts a
-    user-headed group together with the tool groups that trail it. So pinning a
-    one-line instruction also holds its reply and its whole tool exchange, and charging
-    only the instruction let a pin exceed the ceiling by an arbitrary amount: measured at
-    28 tokens charged against 20037 actually held. The budget has to count what is
-    really kept, or it is not a budget.
+    `truncate_oldest_messages` protects by GROUP, not by message, and `group_turns` puts
+    an assistant reply that carries no tool calls in the SAME group as the user message it
+    answers. So pinning a one-line instruction also holds that reply, and charging only the
+    instruction let a pin exceed the ceiling by an arbitrary amount: measured at 28 tokens
+    charged against 20037 actually held. The budget has to count what is really kept, or it
+    is not a budget.
+
+    It must not count more than that either. A trailing tool exchange is NOT held: an
+    assistant message with tool calls opens its own group, and `truncate_oldest_messages`
+    skips a protected group BEFORE the `starts_user_turn` expansion that would otherwise
+    absorb the groups behind it, so that tool group stays its own eviction unit and is
+    evicted independently of the pin. Charging it would let one large tool result cost a
+    small instruction its pin over tokens the pin never keeps -- which is the case the pin
+    exists for, since an agent run is exactly where the filler follow-up appears.
     """
-    total = estimate_messages_tokens(turns[index])
-    if turns[index][0].get("role") == "user":
-        for following in turns[index + 1 :]:
-            if following[0].get("role") in ("system", "developer", "user"):
-                break
-            total += estimate_messages_tokens(following)
-    return total
+    return estimate_messages_tokens(turns[index])
 
 
 def pinned_instruction_ids(
@@ -232,8 +234,9 @@ def pinned_instruction_ids(
 
     Bounded twice over. At most ``groups`` of them, and never more than ``max_tokens``
     summed across everything the pin actually holds: only the USER message is named, but
-    the window protects by group, so the reply and any trailing tool exchange are held
-    with it and are charged with it (see `_protected_cost`). Anything larger
+    the window protects by group, so the reply in that group is held with it and is charged
+    with it -- and a trailing tool exchange, which is its own group and stays independently
+    evictable, is not (see `_protected_cost`). Anything larger
     than the ceiling is not pinned AT ALL rather than partially: the single enormous
     instruction is precisely the thing that could starve the window, so it is the thing
     excluded.
