@@ -161,26 +161,53 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
         (REPO / ".github" / "workflows" / "studio-ui-smoke.yml").read_text(encoding = "utf-8")
     )
     job = document["jobs"]["ui-indicator"]
-    # Uncommented for the same reason the repo-wide scan is: commenting a line out is how
-    # an invocation gets disabled, and a raw substring test reads `# bash ...engine` as
-    # coverage. Reported on this PR: all three could be commented out with this green.
+    # Two narrowings, each closing a way this check could pass on nothing:
+    #
+    #   uncommented -- commenting a line out is how an invocation gets disabled, and a raw
+    #     substring test reads `# bash ...engine` as coverage. Reported on the PR that added
+    #     this: all three could be commented out with this green.
+    #   only the steps that invoke the helper -- scanning every run in the job would read
+    #     `playwright install --with-deps chromium firefox webkit` as coverage, and that
+    #     step names all three engines whether or not any of them is ever driven.
     runs = _uncommented(
-        "\n".join(str(step.get("run", "")) for step in job["steps"] if isinstance(step, dict))
+        "\n".join(
+            str(step.get("run", ""))
+            for step in job["steps"]
+            if isinstance(step, dict)
+            and "run-studio-indicator-browser.sh" in str(step.get("run", ""))
+        )
     )
+    # Matched as "the helper is invoked, and each engine is named as a bare argument to
+    # it", not as the literal `...sh 18899 <engine>` this once was. The engines now run
+    # concurrently from a loop over "<port> <engine>" pairs, each with its own port, so the
+    # old form no longer appears anywhere even though all three still run.
+    #
+    # The property being guarded is unchanged, and is the one that matters: the Mac and
+    # Windows UI workflows name the same helper, so dropping an engine HERE is invisible to
+    # the repo-wide scan above. What the relaxation gives up is the port literal, which
+    # this check was never really about; test_indicator_browsers_run_in_parallel.py asserts
+    # the ports are distinct, which is the property the number was standing in for.
+    assert (
+        "run-studio-indicator-browser.sh" in runs
+    ), "the ui-indicator job no longer invokes the cross-browser indicator helper at all"
     missing = [
         engine
         for engine in ("chromium", "firefox", "webkit")
-        if f"run-studio-indicator-browser.sh 18899 {engine}" not in runs
+        if not re.search(rf"(?<![\w-]){re.escape(engine)}(?![\w-])", runs)
     ]
     assert not missing, (
         f"the ui-indicator job no longer drives {missing}. That is the cross-browser "
         f"coverage this job was split out to keep, and the repo-wide check above cannot "
         f"see it go: the Mac and Windows workflows name the same helper."
     )
-    # And the disabled form of each of those lines does not read as coverage, or the
-    # check above passes on three commented-out commands.
-    disabled = _uncommented("\n".join(f"# bash x.sh 18899 {e}" for e in ("chromium", "webkit")))
-    assert "18899 chromium" not in disabled and "18899 webkit" not in disabled
+    # And the disabled form does not read as coverage, or the check above passes on
+    # commented-out commands.
+    disabled = _uncommented(
+        "\n".join(
+            f"# bash run-studio-indicator-browser.sh 18899 {e}" for e in ("chromium", "webkit")
+        )
+    )
+    assert "chromium" not in disabled and "webkit" not in disabled
 
 
 def test_no_build_gate_sits_behind_a_browser_smoke():
