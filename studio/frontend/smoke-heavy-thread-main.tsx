@@ -67,17 +67,53 @@ import "./src/index.css";
 // here, before anything mounts, keeps that off the wire entirely; answering them from the
 // Playwright side instead would put a round trip to another process inside a timed region, once
 // per assistant message.
+// An explicit allowlist, never a blanket `/api/` match. A blanket match resolves EVERY request the
+// measured interactions make before Playwright emits it, so `stray_api_requests` stays at zero and
+// the fan-out this harness exists to detect becomes invisible to it. Narrowing it is what made the
+// two entries below visible in the first place.
+//
+// Each entry answers a request the harness itself provokes, with the body that endpoint really
+// returns, so no round trip lands inside a timed region. Anything NOT listed here goes to the
+// network and trips the stray counter, which is the point.
+const STUBBED_API: ReadonlyArray<readonly [RegExp, string]> = [
+  // One GET per assistant message: the synthetic `__LOCALID_...` remoteId is truthy, so the badge
+  // really does ask. `{ count: 0 }`, not `{}`: getForkCount returns `data.count`, and
+  // `undefined <= 0` is false, so an empty body renders a badge reading "undefined forks" on every
+  // assistant message and adds DOM in proportion to thread size, the axis being measured.
+  [/\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/, '{"count":0}'],
+  // The delete action's own persistence. deleteThreadMessage syncs the exported repository
+  // whenever remoteId is truthy, which the synthetic id always is, so this is the fixture
+  // maintaining itself rather than app fan-out. Left on the wire it is 3 round trips inside the
+  // delete measurement, and it fails the run's own stray check.
+  [/\/api\/chat\/threads\/[^/]+\/messages$/, '{"messages":[]}'],
+  [/\/api\/chat\/threads\/[^/]+$/, "{}"],
+  // App fan-out, NOT fixture upkeep: re-opening a thread asks for the project list and the
+  // knowledge bases. Stubbed so a dev-server round trip does not land inside the reopen window,
+  // which would be measuring the network rather than the render. They are recorded in
+  // `__stubbedApi` and printed as "stubbed api requests" rather than being silently swallowed,
+  // because two whole-endpoint GETs per reopen is a real cost and should stay visible.
+  [/\/api\/chat\/projects(\?|$)/, '{"projects":[]}'],
+  [/\/api\/rag\/knowledge-bases(\?|$)/, '{"knowledge_bases":[]}'],
+];
+
+const stubbedApiCalls: string[] = [];
+(window as unknown as { __stubbedApi: string[] }).__stubbedApi = stubbedApiCalls;
+
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url =
     typeof input === "string" ? input : ((input as Request).url ?? String(input));
-  if (url.includes("/api/")) {
-    return Promise.resolve(
-      new Response("{}", {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  for (const [pattern, body] of STUBBED_API) {
+    if (pattern.test(url)) {
+      // Recorded, not silently swallowed, so a run can still show what was answered locally.
+      stubbedApiCalls.push(url);
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }
   }
   return realFetch(input, init);
 };
@@ -618,6 +654,63 @@ function HeavyThreadApi({
         return built.plan;
       },
       /**
+       * Like seed(), then N one-word messages after it. Used by the viewport-gap measurement in
+       * #9058: the tail makes the first mount commit land entirely on compact rows, which is the
+       * worst case for a fixed-size initial window.
+       *
+       * It REPLACES rather than appends, and the heavy part is the same buildThread() call seed()
+       * makes, so every census count for `targetChars` is identical to seed(targetChars). The only
+       * difference is the tail, which is text parts only: no fences, images or tool calls.
+       */
+      seedCompactTail(targetChars: number, tailMessages: number): Plan {
+        const built = buildThread(targetChars);
+        const messages = built.messages.slice();
+        const SHORT = ["ok", "thanks", "yes", "got it", "sure", "nice"];
+        for (let i = 0; i < tailMessages; i += 1) {
+          messages.push({
+            role: i % 2 === 0 ? "user" : "assistant",
+            content: [textPart(SHORT[i % SHORT.length])],
+          });
+        }
+        seeded.current = messages;
+        aui.thread().import(ExportedMessageRepository.fromArray(messages));
+        return { ...built.plan, messages: messages.length };
+      },
+      /**
+       * The empty band below the last mounted row, in px.
+       *
+       * gapBottom is measured against the viewport's BOTTOM EDGE, not against scrollHeight, so the
+       * viewport's own bottom spacer counts as the gap it always was and the caller subtracts
+       * spacerHeight to get the part the mount window is responsible for. Computed any other way
+       * the numbers stop being comparable across sizes.
+       */
+      gapMetrics(): Record<string, number> {
+        const element = api.viewport();
+        if (!element) return { ok: 0 };
+        const clientHeight = element.clientHeight;
+        const rows = Array.from(element.querySelectorAll<HTMLElement>("[data-role]"));
+        if (rows.length === 0) return { ok: 0, mountedRows: 0, clientHeight };
+        const box = element.getBoundingClientRect();
+        const first = rows[0].getBoundingClientRect();
+        const last = rows[rows.length - 1].getBoundingClientRect();
+        const spacer = element.querySelector<HTMLElement>(
+          ':scope > [aria-hidden="true"].shrink-0',
+        );
+        const scrollHeight = element.scrollHeight;
+        return {
+          ok: 1,
+          mountedRows: rows.length,
+          clientHeight,
+          scrollHeight,
+          scrollTop: Math.round(element.scrollTop),
+          maxScrollTop: Math.round(scrollHeight - clientHeight),
+          mountedHeight: Math.round(last.bottom - first.top),
+          gapTop: Math.round(first.top - box.top),
+          gapBottom: Math.round(box.bottom - last.bottom),
+          spacerHeight: spacer ? Math.round(spacer.getBoundingClientRect().height) : 0,
+        };
+      },
+      /**
        * Put the seeded thread back, and answer with how many messages that is.
        *
        * Deleting a message is destructive to the REPOSITORY, not to the view, so neither
@@ -683,8 +776,11 @@ function HeavyThreadApi({
           codeBlocks: document.querySelectorAll("pre").length,
           highlightedTokens: document.querySelectorAll("pre code span").length,
           toolParts: document.querySelectorAll(".aui-tool-fallback-root").length,
-          // Radix mounts collapsible content only while it is open, so this counts the panes a
-          // user can actually see rather than the cards that could produce one.
+          // The collapsible CONTENT ELEMENT, which Radix keeps in the tree for its collapse
+          // animation. It is present whether the card is open or shut, so it counts cards, not
+          // visible panes: measured at 25000 chars it reads 2 with every card closed and 2 again
+          // after expandTools(). Do NOT gate a wait on this; such a gate is satisfied by a thread
+          // of closed cards and cannot fail. Use codeExecutionPanes, which is 0 then 2.
           collapsibleOutputs: document.querySelectorAll(
             '[data-slot="tool-fallback-content"]',
           ).length,

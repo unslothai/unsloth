@@ -161,7 +161,7 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
     # regression sit under the discrimination threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    assert 'value -= row["paint_floor_ms"]' in section(text, "def growth(", "def report_growth")
+    assert 'value -= count * row["paint_floor_ms"]' in section(text, "def growth(", "def report_growth")
 
 
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
@@ -198,11 +198,27 @@ def test_the_recorder_retires_the_callbacks_of_a_finished_run() -> None:
     # `longest_stall_ms` and `frames_over_33` are growth axes, so this lands in the verdict.
     recorder = section(source(HARNESS), "const recorder = {", "window.__hv = recorder;")
     assert "generation: 0," in recorder
-    guard = "if (!this.running || this.generation !== generation) return;"
+    # #9016's recorder writes the guard as `generation !== this.generation`, and drops the
+    # `!this.running` half because retiring the generation in end() already stops the loop.
+    # Same property, checked against the form that is actually in the tree.
+    guard = "if (generation !== this.generation) return;"
     assert recorder.count(guard) == 2, "both the frame loop and the stall loop need the guard"
-    # The old form re-schedules from inside a callback that has already written its sample.
-    assert "if (this.running) nativeRaf(frame);" not in recorder
-    assert "if (this.running) setTimeout(stall, 1);" not in recorder
+    # The property, asserted as an ORDER rather than as the absence of a string.
+    #
+    # The defect is a callback belonging to a retired generation writing its sample anyway. What
+    # prevents it is the guard running BEFORE the push, which is what this checks. The earlier
+    # version of this assertion instead required `if (this.running) nativeRaf(frame);` to be
+    # absent, and #9016's recorder keeps that at the RESCHEDULE as a second cheap check while
+    # guarding the top of the callback properly. So the old assertion failed against correct
+    # code, which is worse than not checking at all.
+    for loop, sample in (("frame", "this.frames.push("), ("stall", "this.stalls.push(")):
+        body = recorder[recorder.index(f"const {loop} = () => {{") :]
+        body = body[: body.index("};")]
+        assert guard in body, f"the {loop} loop has no generation guard: {body}"
+        assert body.index(guard) < body.index(sample), (
+            f"the {loop} loop writes its sample before checking the generation, so a callback "
+            f"from a retired run still lands in the next run's array: {body}"
+        )
 
 
 def pointer_precondition() -> str:
@@ -462,3 +478,61 @@ def test_the_verdict_reads_every_numeric_proof_per_repetition() -> None:
     for key in ("scrolledPx", "landedAt", "travelledPx", "itemsWhileOpen", "before", "after"):
         assert f'"{key}"' in proofs, key
         assert f'"{key}_per_repetition"' in decision, key
+
+
+def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
+    # `getForkCount` returns `data.count`, and the badge's guard is `count <= 0`. `undefined <= 0`
+    # is false, so a `{}` body renders a badge reading "undefined forks from this message" on every
+    # assistant message. Measured at 25000 chars: 10 badges and 4031 DOM nodes with `{}`, 0 badges
+    # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
+    # harness measures.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    # Pin the fork-count entry to its own body rather than scanning the whole file: other
+    # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
+    # would fail on them and tell us nothing about this one.
+    forks = next(
+        (line for line in page.splitlines() if "forks$/" in line),
+        "",
+    )
+    assert forks, "the fork-count endpoint is no longer in the stub allowlist"
+    assert '{"count":0}' in forks, (
+        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
+        f"count undefined and renders a badge on every assistant message. Got: {forks.strip()!r}"
+    )
+
+
+def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
+    # A blanket `/api/` match resolves any other request a measured interaction makes before
+    # Playwright emits it, so `measure_cell`'s listener never increments `stray_api_requests` and
+    # the API fan-out this harness claims to detect cannot reach it.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert 'url.includes("/api/")' not in page, (
+        "the fetch stub is matching every /api/ request again, which hides stray requests from "
+        "the harness's own stray_api_requests counter"
+    )
+    assert (
+        "forks$/" in page or "/forks" in page
+    ), "the fetch stub must match the fork-count endpoint specifically"
+
+
+def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
+    # A blanket `/api/` match answers every request the measured interactions make before Playwright
+    # emits it, so `stray_api_requests` stays at zero and the fan-out this harness exists to detect
+    # is invisible to it. Narrowing it is what revealed the project-list and knowledge-base GETs on
+    # reopen, and the delete's own three-request sync.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert (
+        'url.includes("/api/")' not in page
+    ), "the fetch stub is matching every /api/ request again"
+    assert "STUBBED_API" in page, "the fetch stub must answer from an explicit allowlist"
+
+
+def test_every_stubbed_endpoint_is_reported() -> None:
+    # Answering a request inside the page removes its round trip from the timings, which is the
+    # point, but it must not remove the request from the record. An endpoint that is answered and
+    # not counted is one nobody can see the cost of later.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
+    harness = source("playwright_heavy_thread.py")
+    assert "stubbed_api_requests" in harness, "the harness must read the stubbed-request record"
+    assert '"stubbed api requests"' in harness, "the stubbed-request count must reach the table"

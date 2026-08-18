@@ -32,6 +32,8 @@ on:
       - 'tests/studio/test_heavy_thread_repetition_rejection.py'
       - 'tests/studio/test_heavy_thread_setup_window.py'
       - 'tests/studio/test_scroll_predecessor_validation.py'
+      - 'tests/studio/test_heavy_thread_gap_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
@@ -182,7 +184,9 @@ jobs:
             tests/studio/test_heavy_thread_harness_contract.py \
             tests/studio/test_heavy_thread_repetition_rejection.py \
             tests/studio/test_heavy_thread_setup_window.py \
-            tests/studio/test_scroll_predecessor_validation.py -q
+            tests/studio/test_scroll_predecessor_validation.py \
+            tests/studio/test_heavy_thread_measurement_integrity.py \
+            tests/studio/test_heavy_thread_gap_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}

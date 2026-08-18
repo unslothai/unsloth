@@ -65,4 +65,28 @@ runs:
       run: |
         mkdir -p logs
         set -o pipefail
-        bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+        # Elapsed-seconds prefix, added to the STEP LOG only.
+        #
+        # This is the largest step in most jobs that run it -- ~90s median on Linux,
+        # 268-292s on Windows, ~118s on macOS, across 40 jobs -- and its output carries
+        # no timestamps anywhere, so which phase spends that time cannot be read off a
+        # CI log. Guessing has already been misleading: a no-op `unsloth studio update`
+        # over a complete install costs MORE than the full install it follows, which is
+        # the opposite of what a download-bound install does.
+        #
+        # Done here rather than in install.sh on purpose. install.sh, install.ps1 and
+        # studio/setup.* are user-facing scripts and stay untouched; this is a display
+        # filter over a stream CI already pipes, so it adds no switch to maintain, no
+        # environment variable for the installers to interpret, and nothing that can
+        # behave differently for a real user than it does here.
+        #
+        # Downstream of `tee` deliberately: logs/install.log keeps byte-for-byte what
+        # install.sh wrote, so the ~30 places that read or grep that artifact see no
+        # change at all. $SECONDS is the step's own clock and survives into the pipeline
+        # subshell. The `|| [ -n "$line" ]` tail emits a final unterminated line, which
+        # a bare `read` loop would swallow.
+        bash install.sh --local --no-torch 2>&1 \
+          | tee logs/install.log \
+          | while IFS= read -r line || [ -n "$line" ]; do
+              printf '[%4ds] %s\n' "$SECONDS" "$line"
+            done

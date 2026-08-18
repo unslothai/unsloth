@@ -118,3 +118,21 @@ jobs:
       # thing that would silently stop running, so it cannot be the one to notice.
       - name: Every Chat UI script still belongs to a shard
         run: python3 -m pytest tests/studio/test_chat_ui_shards_cover_everything.py -q
+
+      # Same reason, and it is the whole point of this one. The guard exists to reject a
+      # PR that removes UNSLOTH_ALLOW_HOST_OFFLOAD from the macOS GGUF job, or adds it to
+      # the Linux or Windows one. Such a PR edits a workflow and nothing else, which
+      # Backend CI's paths filter (studio/**, tests/**, its own YAML) does not match, so
+      # the assertion protecting the guard was never collected for the exact change it
+      # exists to reject.
+      - name: The host-offload opt-out is still macOS-only
+        run: python3 -m pytest tests/studio/test_mac_host_offload_optin.py -q
+
+      # Same reason again, and this one guards THIS kind of file specifically. The test
+      # asserts that no macOS workflow has an unfiltered push trigger, and that each
+      # trigger lists the helpers its workflow executes. Every way it can regress is a
+      # workflow-only edit, which no other job's paths filter matches, so without this
+      # step the guard would first be collected by Backend CI's unfiltered push -- after
+      # the change had already merged.
+      - name: macOS workflows still do not run on every commit
+        run: python3 -m pytest tests/studio/test_macos_slots_per_commit.py -q
