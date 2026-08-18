@@ -368,6 +368,7 @@ def test_the_predecessor_probe_itself_triggers_the_workflow() -> None:
         "change to the probe alone does not run the contract tests that validate it"
     )
 
+
 def test_no_generated_runtime_database_is_tracked() -> None:
     """A test run writes .studio-test-root/studio.db, and `git add -A` then commits it.
 
@@ -391,6 +392,7 @@ def test_no_generated_runtime_database_is_tracked() -> None:
         f"generated runtime database files are tracked: {found}. They are written by test runs, "
         f"so committing one dirties every later checkout and risks capturing local data."
     )
+
 
 def test_the_measured_census_is_read_after_the_predecessor_runs() -> None:
     """Read before `before(page)` and the destructive arms record a thread they did not scroll.
@@ -425,9 +427,9 @@ def test_the_destructive_arms_are_reported_as_not_comparable() -> None:
             "delete": {"scrolled_messages": [19, 19, 19]},
         }
     )
-    assert any("delete" in f for f in flagged), (
-        f"an arm that scrolled 19 messages against the control's 20 was not reported: {flagged}"
-    )
+    assert any(
+        "delete" in f for f in flagged
+    ), f"an arm that scrolled 19 messages against the control's 20 was not reported: {flagged}"
 
     # ACCEPTANCE CONTROL. Without this the rule above is satisfied by flagging every arm.
     quiet = PROBE.measured_fixture_mismatch(
@@ -441,13 +443,14 @@ def test_the_destructive_arms_are_reported_as_not_comparable() -> None:
 
 def test_the_mismatch_is_published_in_the_json() -> None:
     """Computing it and printing it is not enough: the JSON is what gets read later."""
-    assert 'results["measured_fixture_mismatch"] = measured_fixture_mismatch(' in SOURCE, (
-        "the mismatch is never stored on results, so it cannot reach the JSON"
-    )
+    assert (
+        'results["measured_fixture_mismatch"] = measured_fixture_mismatch(' in SOURCE
+    ), "the mismatch is never stored on results, so it cannot reach the JSON"
     write = SOURCE.index("out.write_text(json.dumps(results")
-    assert SOURCE.index('results["measured_fixture_mismatch"] =') < write, (
-        "the mismatch is computed after the JSON is written, so the file never carries it"
-    )
+    assert (
+        SOURCE.index('results["measured_fixture_mismatch"] =') < write
+    ), "the mismatch is computed after the JSON is written, so the file never carries it"
+
 
 def test_the_frontend_job_has_room_for_every_page_the_smoke_seeds() -> None:
     """Seeds went from 2 to 14 in this job without the timeout moving.
@@ -462,9 +465,9 @@ def test_the_frontend_job_has_room_for_every_page_the_smoke_seeds() -> None:
 
     wf = (WORKDIR / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
     build = wf[wf.index("  build:") : wf.index("  windows:")]
-    assert "SMOKE_HEAVY_TABLES" not in build, (
-        "CI now pins the table set, so re-derive the seed count below before trusting this guard"
-    )
+    assert (
+        "SMOKE_HEAVY_TABLES" not in build
+    ), "CI now pins the table set, so re-derive the seed count below before trusting this guard"
     sizes = re.search(r"SMOKE_HEAVY_CHARS: '([^']+)'", build)
     assert sizes, "the heavy-thread step no longer pins its sizes"
     n_sizes = len([c for c in sizes.group(1).split(",") if c.strip()])

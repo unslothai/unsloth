@@ -512,7 +512,9 @@ def measured_fixture_mismatch(arms: dict) -> list[str]:
     """
     control = arms.get("nothing", {}).get("scrolled_messages") or []
     if not control:
-        return ["the `nothing` control published no measured message count, so nothing can be compared to it"]
+        return [
+            "the `nothing` control published no measured message count, so nothing can be compared to it"
+        ]
     expected = control[0]
     out = []
     for name, arm in arms.items():
