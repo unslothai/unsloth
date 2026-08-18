@@ -1091,8 +1091,10 @@ export function ChatSettingsPanel({
               first={!hasModelContent && !modelConfig}
             >
               <div className="flex flex-col gap-3 pt-1">
-                {/* This one menu stays MODAL. It is the only one of the twelve that does, and it is
-                not a perf judgement, it is that non-modal breaks it outright.
+                {/* This menu stays MODAL, and so does the permission dropdown further down this
+                same panel (permission-mode-select.tsx). They are the two of the twelve that do,
+                and they are the two that render beside a ParamSlider. For this one it is not
+                even a slider judgement to begin with: non-modal breaks it outright.
 
                 Its trigger is `asChild` over a plain div inside an InputGroup, and
                 InputGroupAddon's onClick focuses the sibling input for anything that is not a
@@ -1111,8 +1113,9 @@ export function ChatSettingsPanel({
                 every point is either the input, whose own onPointerDown stopPropagation means the
                 menu never opens, or the addon, which opens it and then closes it.
 
-                Staying modal also removes the one reachable case of a dismissing press committing
-                a value on pointerdown. This menu is as wide as the settings column and grows
+                Staying modal also removes one of the two reachable cases of a dismissing press
+                committing a value on pointerdown; the permission dropdown in the Tools section
+                below is the other. This menu is as wide as the settings column and grows
                 36-38 px per saved preset, so at eight presets its bottom edge sits 1 px above the
                 Temperature slider track, and Radix Slider commits on pointerdown. With the shield
                 back, that press lands on the shield as it always did.
