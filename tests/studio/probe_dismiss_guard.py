@@ -35,8 +35,18 @@ The guard must swallow too little nowhere:
                  release does not clear, so the click still fires; Blink and WebKit gate it on the
                  shared `:active` state, which the release does clear, so no click is ever
                  dispatched and the case cannot fail there however broken the guard is.
+  dismiss_then_  click the button to dismiss, then press Space, the key a reader uses to scroll.
+    space        No click is involved for the guard to swallow: the press it DID swallow left the
+                 button focused, and a focused button activates on Space. Discriminates on
+                 chromium, firefox and webkit. The modal shape cannot reach it, because with
+                 `pointer-events: none` on the body the press lands on `HTML` and focus never
+                 moves off `BODY`.
 
 and too much nowhere:
+
+  dismiss_on_    dismiss the menu by clicking INTO the composer, then type. Releasing the focus a
+    composer     swallowed press took must not take the caret with it. Discriminates against a
+                 guard that blurs unconditionally.
 
   select         a click INSIDE the menu must still reach its item.
   second_click   dismiss on neutral ground, then click again. Exactly one click is the menu's.
@@ -257,6 +267,41 @@ async def one_case(page, case: str) -> dict:
         await page.mouse.up()
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
+    elif case == "dismiss_then_space":
+        # Dismiss the menu with an ordinary click on the unconfirmed "Delete message" button, which
+        # the guard swallows, and then press Space -- the key a reader uses to scroll a thread. The
+        # press that was thrown away still FOCUSED that button, so the keystroke activates it. The
+        # modal shield never left this behind: with `pointer-events: none` on the body the press
+        # landed on `HTML` and the button was never focused.
+        await page.mouse.click(x, y)
+        await page.wait_for_timeout(300)
+        await page.keyboard.press("Space")
+    elif case == "dismiss_on_composer":
+        # The other half of releasing the focus a swallowed press took: dismissing a menu by
+        # clicking INTO the composer must leave the caret there, or the guard has answered one
+        # unasked-for effect with another. Typing is the only honest test of that.
+        spot = await page.evaluate(
+            "() => { const c = window.__heavyThread.composer(); if (!c) return null;"
+            "const r = c.getBoundingClientRect();"
+            "return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }"
+        )
+        if not spot:
+            return {"case": case, "error": "no composer"}
+        await page.mouse.click(spot["x"], spot["y"])
+        await page.wait_for_timeout(300)
+        await page.keyboard.type("zz")
+        await page.wait_for_timeout(400)
+        after = await page.evaluate(FACTS_JS)
+        typed = await page.evaluate(
+            "() => { const c = window.__heavyThread.composer(); return c ? c.value : ''; }"
+        )
+        return {
+            "case": case,
+            "composerText": typed[-8:],
+            "menuClosed": not after["menuOpen"],
+            "lostComposerFocus": not typed.endswith("zz"),
+            "deleted": after["assistantMessages"] < before["assistantMessages"],
+        }
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case == "select":
@@ -408,7 +453,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,dismiss_then_space,dismiss_on_composer,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
@@ -446,6 +491,7 @@ def main() -> int:
         if c.get("swallowedSelection")
         or c.get("swallowedSecondClick")
         or c.get("swallowedLaterClick")
+        or c.get("lostComposerFocus")
     ]
     if over:
         print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}", flush = True)

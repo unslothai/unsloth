@@ -186,6 +186,30 @@ function startGrace(): void {
   graceTimer = window.setTimeout(disarm, CLICK_GRACE_MS);
 }
 
+/** Anything the user types into. Dismissing a menu by clicking into it must leave the caret. */
+const TEXT_ENTRY = "input,textarea,select";
+
+function releaseFocusTakenByTheSwallowedPress(event: Event): void {
+  // Throwing the click away is only half of undoing the press. The press also FOCUSED what it
+  // landed on, and a focused button is one Space away from firing: measured on chromium, firefox
+  // and webkit, click the unconfirmed "Delete message" button to dismiss the menu, then press
+  // Space -- the key a reader uses to scroll -- and the message is gone, with no click involved
+  // for the guard to swallow. The modal shield never left this behind, because with
+  // `pointer-events: none` on the body the press landed on `HTML` and the button was never
+  // focused: measured on the pre-PR shape, `document.activeElement` stays `BODY` throughout.
+  //
+  // Blur rather than restore: what was focused when the guard armed is the menu content, and the
+  // dismissal has already unmounted it. Body is where the modal shape left focus anyway.
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement)) return;
+  if (active.isContentEditable || active.matches(TEXT_ENTRY)) return;
+  // Only focus the swallowed press itself moved. Anything else is the app's own, and taking it
+  // would be a second unasked-for effect in place of the first.
+  if (!(event.target instanceof Node)) return;
+  if (!active.contains(event.target)) return;
+  active.blur();
+}
+
 function swallowClick(event: Event): void {
   const keyboardGenerated = (event as MouseEvent).detail === 0;
   if (keyboardOnly) {
@@ -225,6 +249,7 @@ function swallowClick(event: Event): void {
   disarm();
   event.stopPropagation();
   event.preventDefault();
+  releaseFocusTakenByTheSwallowedPress(event);
   if (!touch) return;
   // On touch, Radix's dismissal is a `once` CLICK listener on `document` in the bubble phase,
   // and the `stopPropagation` above is what it would otherwise have been woken by. Measured:
