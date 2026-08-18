@@ -2189,9 +2189,7 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
         "publishes: " + "; ".join(floating)
     )
     gaps = {
-        pkg: sorted(
-            set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1])
-        )
+        pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
         for pkg in sorted(present)
     }
     gaps = {pkg: missing for pkg, missing in gaps.items() if missing}
