@@ -126,7 +126,7 @@ jobs:
       # model files it holds. hf-download-with-retry.sh already sets
       # HF_XET_CHUNK_CACHE_SIZE_BYTES=0, so this mainly covers the downloads
       # Unsloth itself makes at load time, which do not go through that script.
-      HF_XET_CACHE: ${{ runner.temp }}/xet-scratch
+      HF_XET_CACHE: ${{ github.workspace }}/xet-scratch
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
