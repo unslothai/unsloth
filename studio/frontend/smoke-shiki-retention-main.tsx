@@ -48,15 +48,22 @@ const code: HighlightPlugin = {
   ...productionCode,
   highlight: (opts: HighlightArgs[0], callback?: HighlightArgs[1]) => {
     counters.dispatches += 1;
-    let settled = false;
+    // Per-call bookkeeping, and asymmetric on purpose. Studio's throttle answers a call
+    // synchronously with reused tokens AND ALSO stores its callback for a later trailing
+    // dispatch, so a callback can land for a call that never went asynchronous. Decrementing on
+    // every callback drives the counter negative and the page never reads as settled.
+    const state = { counted: false, done: false };
     const result = productionCode.highlight(opts, (value) => {
-      if (!settled) {
-        settled = true;
+      if (state.counted && !state.done) {
+        state.done = true;
         counters.pending -= 1;
       }
       callback?.(value);
     });
-    if (result === null && !settled) counters.pending += 1;
+    if (result === null && !state.done) {
+      state.counted = true;
+      counters.pending += 1;
+    }
     return result;
   },
 };
