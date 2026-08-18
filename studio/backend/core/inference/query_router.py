@@ -29,7 +29,9 @@ try:
     _raw_logger = get_logger(__name__)
 except Exception:  # pragma: no cover - fallback for standalone testing
     import logging
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    logging.basicConfig(
+        level = logging.INFO, format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    )
     _raw_logger = logging.getLogger("query_router")
 
 
@@ -48,7 +50,7 @@ except Exception:  # pragma: no cover - optional dependency
     _ENC = None
 
 # Log module import status
-_log_event("query_router_module_loaded", domains_count=38, status="ready")
+_log_event("query_router_module_loaded", domains_count = 38, status = "ready")
 
 
 # ============================================================================
@@ -111,211 +113,673 @@ class KeywordTrie:
 # ROUTE DECISION CONTRACT
 # ============================================================================
 
-@dataclass(frozen=True)
+
+@dataclass(frozen = True)
 class RouteDecision:
     needs_search: bool
-    domains: List[str] = field(default_factory=list)
+    domains: List[str] = field(default_factory = list)
     confidence: float = 0.0
     reason: str = ""
     augmented_query: str = ""  # Contextualized query for LLM system prompt
-    search_query: str = ""     # Sanitized, entity-focused query for search engines
+    search_query: str = ""  # Sanitized, entity-focused query for search engines
     temporal_anchor: str = ""  # ISO-8601 UTC timestamp metadata
-    elapsed_ms: float = 0.0    # Routing gate latency metric
+    elapsed_ms: float = 0.0  # Routing gate latency metric
 
 
 # ============================================================================
 # DOMAIN REGISTRY — 38 PRODUCTION DOMAINS
 # ============================================================================
 
+
 class DomainRegistry:
     """Keyword vocabulary + temporal/factual heuristics, boundary-safe."""
 
     DOMAIN_KEYWORDS: Dict[str, frozenset] = {
         # ---- Technology --------------------------------------------------
-        "space": frozenset([
-            "satellite", "orbit", "nasa", "spacex", "rocket", "launch", "mars", "moon",
-            "iss", "space station", "astronaut", "cosmonaut", "mission", "galaxy",
-            "planet", "asteroid", "comet", "nebula", "telescope", "hubble",
-            "james webb", "webb telescope", "artemis", "starship", "exoplanet",
-        ]),
-        "telecom": frozenset([
-            "5g", "6g", "lte", "spectrum", "carrier", "bandwidth", "frequency", "gsm",
-            "cdma", "voip", "sip", "latency", "throughput", "antenna", "cell tower",
-            "signal", "roaming", "fiber optic", "broadband", "esim",
-        ]),
-        "ai_ml": frozenset([
-            "neural network", "deep learning", "machine learning", "transformer", "llm",
-            "large language model", "gpt", "claude", "gemini", "bert", "attention",
-            "backpropagation", "gradient descent", "optimizer", "pytorch", "tensorflow",
-            "jax", "fine-tune", "fine tuning", "lora", "quantization", "inference",
-            "embedding", "diffusion model", "agentic", "rag", "retrieval augmented",
-            "reinforcement learning", "rlhf", "benchmark", "vllm",
-        ]),
-        "cloud": frozenset([
-            "aws", "azure", "gcp", "google cloud", "cloud computing", "kubernetes",
-            "docker", "container", "microservice", "serverless", "lambda function",
-            "ec2", "s3 bucket", "terraform", "helm chart", "load balancer",
-        ]),
-        "cybersecurity": frozenset([
-            "vulnerability", "exploit", "cve", "malware", "ransomware", "phishing",
-            "firewall", "encryption", "tls", "ssl", "certificate", "authentication",
-            "authorization", "zero-day", "breach", "penetration test", "owasp", "ddos",
-        ]),
-        "devops": frozenset([
-            "ci/cd", "pipeline", "github actions", "gitlab ci", "jenkins", "observability",
-            "opentelemetry", "prometheus", "grafana", "terraform", "ansible", "helm",
-            "zero-downtime", "rollback", "canary deployment", "blue-green",
-        ]),
-        "hardware": frozenset([
-            "gpu", "cpu", "nvidia", "amd", "intel", "chip", "semiconductor", "processor",
-            "motherboard", "ram", "vram", "tpu", "asic", "silicon", "fab", "tsmc",
-            "blackwell", "h100", "b200",
-        ]),
-        "software_release": frozenset([
-            "version", "changelog", "release notes", "beta release", "patch notes",
-            "update", "sdk", "api version", "deprecated", "breaking change", "roadmap",
-        ]),
-        "crypto_web3": frozenset([
-            "bitcoin", "ethereum", "blockchain", "web3", "nft", "defi", "smart contract",
-            "wallet", "token", "staking", "mining rig", "solana", "stablecoin", "crypto etf",
-        ]),
-        "biotech": frozenset([
-            "biotech", "gene therapy", "crispr", "genome sequencing", "clinical trial",
-            "fda approval", "biomarker", "bioreactor", "synthetic biology",
-        ]),
-        "robotics": frozenset([
-            "robot", "robotics", "actuator", "servo motor", "humanoid robot",
-            "autonomous drone", "manipulator arm", "slam navigation", "figure ai",
-        ]),
-
+        "space": frozenset(
+            [
+                "satellite",
+                "orbit",
+                "nasa",
+                "spacex",
+                "rocket",
+                "launch",
+                "mars",
+                "moon",
+                "iss",
+                "space station",
+                "astronaut",
+                "cosmonaut",
+                "mission",
+                "galaxy",
+                "planet",
+                "asteroid",
+                "comet",
+                "nebula",
+                "telescope",
+                "hubble",
+                "james webb",
+                "webb telescope",
+                "artemis",
+                "starship",
+                "exoplanet",
+            ]
+        ),
+        "telecom": frozenset(
+            [
+                "5g",
+                "6g",
+                "lte",
+                "spectrum",
+                "carrier",
+                "bandwidth",
+                "frequency",
+                "gsm",
+                "cdma",
+                "voip",
+                "sip",
+                "latency",
+                "throughput",
+                "antenna",
+                "cell tower",
+                "signal",
+                "roaming",
+                "fiber optic",
+                "broadband",
+                "esim",
+            ]
+        ),
+        "ai_ml": frozenset(
+            [
+                "neural network",
+                "deep learning",
+                "machine learning",
+                "transformer",
+                "llm",
+                "large language model",
+                "gpt",
+                "claude",
+                "gemini",
+                "bert",
+                "attention",
+                "backpropagation",
+                "gradient descent",
+                "optimizer",
+                "pytorch",
+                "tensorflow",
+                "jax",
+                "fine-tune",
+                "fine tuning",
+                "lora",
+                "quantization",
+                "inference",
+                "embedding",
+                "diffusion model",
+                "agentic",
+                "rag",
+                "retrieval augmented",
+                "reinforcement learning",
+                "rlhf",
+                "benchmark",
+                "vllm",
+            ]
+        ),
+        "cloud": frozenset(
+            [
+                "aws",
+                "azure",
+                "gcp",
+                "google cloud",
+                "cloud computing",
+                "kubernetes",
+                "docker",
+                "container",
+                "microservice",
+                "serverless",
+                "lambda function",
+                "ec2",
+                "s3 bucket",
+                "terraform",
+                "helm chart",
+                "load balancer",
+            ]
+        ),
+        "cybersecurity": frozenset(
+            [
+                "vulnerability",
+                "exploit",
+                "cve",
+                "malware",
+                "ransomware",
+                "phishing",
+                "firewall",
+                "encryption",
+                "tls",
+                "ssl",
+                "certificate",
+                "authentication",
+                "authorization",
+                "zero-day",
+                "breach",
+                "penetration test",
+                "owasp",
+                "ddos",
+            ]
+        ),
+        "devops": frozenset(
+            [
+                "ci/cd",
+                "pipeline",
+                "github actions",
+                "gitlab ci",
+                "jenkins",
+                "observability",
+                "opentelemetry",
+                "prometheus",
+                "grafana",
+                "terraform",
+                "ansible",
+                "helm",
+                "zero-downtime",
+                "rollback",
+                "canary deployment",
+                "blue-green",
+            ]
+        ),
+        "hardware": frozenset(
+            [
+                "gpu",
+                "cpu",
+                "nvidia",
+                "amd",
+                "intel",
+                "chip",
+                "semiconductor",
+                "processor",
+                "motherboard",
+                "ram",
+                "vram",
+                "tpu",
+                "asic",
+                "silicon",
+                "fab",
+                "tsmc",
+                "blackwell",
+                "h100",
+                "b200",
+            ]
+        ),
+        "software_release": frozenset(
+            [
+                "version",
+                "changelog",
+                "release notes",
+                "beta release",
+                "patch notes",
+                "update",
+                "sdk",
+                "api version",
+                "deprecated",
+                "breaking change",
+                "roadmap",
+            ]
+        ),
+        "crypto_web3": frozenset(
+            [
+                "bitcoin",
+                "ethereum",
+                "blockchain",
+                "web3",
+                "nft",
+                "defi",
+                "smart contract",
+                "wallet",
+                "token",
+                "staking",
+                "mining rig",
+                "solana",
+                "stablecoin",
+                "crypto etf",
+            ]
+        ),
+        "biotech": frozenset(
+            [
+                "biotech",
+                "gene therapy",
+                "crispr",
+                "genome sequencing",
+                "clinical trial",
+                "fda approval",
+                "biomarker",
+                "bioreactor",
+                "synthetic biology",
+            ]
+        ),
+        "robotics": frozenset(
+            [
+                "robot",
+                "robotics",
+                "actuator",
+                "servo motor",
+                "humanoid robot",
+                "autonomous drone",
+                "manipulator arm",
+                "slam navigation",
+                "figure ai",
+            ]
+        ),
         # ---- Science --------------------------------------------------
-        "medical": frozenset([
-            "clinical", "patient", "disease", "treatment", "drug", "trial", "symptom",
-            "diagnosis", "therapy", "vaccine", "virus", "bacteria", "infection", "immune",
-            "surgery", "hospital", "outbreak", "pandemic", "epidemiology",
-        ]),
-        "biology": frozenset([
-            "gene", "dna", "rna", "protein", "cell", "mutation", "evolution", "species",
-            "ecosystem", "biodiversity", "genome", "crispr", "enzyme", "microbiome",
-        ]),
-        "physics": frozenset([
-            "quantum", "particle", "atom", "electron", "photon", "relativity", "gravity",
-            "black hole", "neutron", "proton", "nuclear", "fission", "fusion", "boson",
-            "quantum computing", "superconductor", "cern",
-        ]),
-        "chemistry": frozenset([
-            "molecule", "compound", "chemical reaction", "catalyst", "polymer", "acid",
-            "base", "ph level", "oxidation", "reduction", "chemical bond", "valence",
-            "isotope",
-        ]),
-        "climate": frozenset([
-            "climate change", "global warming", "carbon emission", "greenhouse gas",
-            "sea level", "arctic ice", "antarctic", "glacier", "extreme weather",
-            "cop summit", "net zero", "carbon capture",
-        ]),
-        "weather": frozenset([
-            "weather forecast", "hurricane", "typhoon", "tornado", "storm", "rainfall",
-            "heatwave", "cold front", "blizzard", "monsoon", "wildfire",
-        ]),
-
+        "medical": frozenset(
+            [
+                "clinical",
+                "patient",
+                "disease",
+                "treatment",
+                "drug",
+                "trial",
+                "symptom",
+                "diagnosis",
+                "therapy",
+                "vaccine",
+                "virus",
+                "bacteria",
+                "infection",
+                "immune",
+                "surgery",
+                "hospital",
+                "outbreak",
+                "pandemic",
+                "epidemiology",
+            ]
+        ),
+        "biology": frozenset(
+            [
+                "gene",
+                "dna",
+                "rna",
+                "protein",
+                "cell",
+                "mutation",
+                "evolution",
+                "species",
+                "ecosystem",
+                "biodiversity",
+                "genome",
+                "crispr",
+                "enzyme",
+                "microbiome",
+            ]
+        ),
+        "physics": frozenset(
+            [
+                "quantum",
+                "particle",
+                "atom",
+                "electron",
+                "photon",
+                "relativity",
+                "gravity",
+                "black hole",
+                "neutron",
+                "proton",
+                "nuclear",
+                "fission",
+                "fusion",
+                "boson",
+                "quantum computing",
+                "superconductor",
+                "cern",
+            ]
+        ),
+        "chemistry": frozenset(
+            [
+                "molecule",
+                "compound",
+                "chemical reaction",
+                "catalyst",
+                "polymer",
+                "acid",
+                "base",
+                "ph level",
+                "oxidation",
+                "reduction",
+                "chemical bond",
+                "valence",
+                "isotope",
+            ]
+        ),
+        "climate": frozenset(
+            [
+                "climate change",
+                "global warming",
+                "carbon emission",
+                "greenhouse gas",
+                "sea level",
+                "arctic ice",
+                "antarctic",
+                "glacier",
+                "extreme weather",
+                "cop summit",
+                "net zero",
+                "carbon capture",
+            ]
+        ),
+        "weather": frozenset(
+            [
+                "weather forecast",
+                "hurricane",
+                "typhoon",
+                "tornado",
+                "storm",
+                "rainfall",
+                "heatwave",
+                "cold front",
+                "blizzard",
+                "monsoon",
+                "wildfire",
+            ]
+        ),
         # ---- Business / Finance --------------------------------------------------
-        "finance": frozenset([
-            "stock market", "investment", "dividend", "portfolio", "trading",
-            "interest rate", "inflation", "gdp", "recession", "earnings report",
-            "ipo", "merger", "acquisition", "hedge fund", "bond yield", "s&p 500", "nasdaq",
-        ]),
-        "legal": frozenset([
-            "lawsuit", "legislation", "regulation", "compliance", "patent", "trademark",
-            "copyright", "contract dispute", "liability", "litigation", "antitrust",
-            "sec filing", "supreme court",
-        ]),
-        "real_estate": frozenset([
-            "property market", "housing market", "mortgage rate", "rent price", "lease",
-            "apartment", "condo", "zoning", "appraisal", "realtor", "mls listing",
-        ]),
-        "startups_vc": frozenset([
-            "startup", "venture capital", "seed round", "series a", "series b",
-            "valuation", "unicorn", "cap table", "pitch deck", "accelerator", "y combinator",
-        ]),
-        "labor_economy": frozenset([
-            "unemployment rate", "job market", "layoffs", "hiring freeze", "labor union",
-            "minimum wage", "gig economy", "remote work policy",
-        ]),
-
+        "finance": frozenset(
+            [
+                "stock market",
+                "investment",
+                "dividend",
+                "portfolio",
+                "trading",
+                "interest rate",
+                "inflation",
+                "gdp",
+                "recession",
+                "earnings report",
+                "ipo",
+                "merger",
+                "acquisition",
+                "hedge fund",
+                "bond yield",
+                "s&p 500",
+                "nasdaq",
+            ]
+        ),
+        "legal": frozenset(
+            [
+                "lawsuit",
+                "legislation",
+                "regulation",
+                "compliance",
+                "patent",
+                "trademark",
+                "copyright",
+                "contract dispute",
+                "liability",
+                "litigation",
+                "antitrust",
+                "sec filing",
+                "supreme court",
+            ]
+        ),
+        "real_estate": frozenset(
+            [
+                "property market",
+                "housing market",
+                "mortgage rate",
+                "rent price",
+                "lease",
+                "apartment",
+                "condo",
+                "zoning",
+                "appraisal",
+                "realtor",
+                "mls listing",
+            ]
+        ),
+        "startups_vc": frozenset(
+            [
+                "startup",
+                "venture capital",
+                "seed round",
+                "series a",
+                "series b",
+                "valuation",
+                "unicorn",
+                "cap table",
+                "pitch deck",
+                "accelerator",
+                "y combinator",
+            ]
+        ),
+        "labor_economy": frozenset(
+            [
+                "unemployment rate",
+                "job market",
+                "layoffs",
+                "hiring freeze",
+                "labor union",
+                "minimum wage",
+                "gig economy",
+                "remote work policy",
+            ]
+        ),
         # ---- Media / Entertainment / Culture --------------------------------------------------
-        "sports": frozenset([
-            "nfl", "nba", "mlb", "nhl", "fifa", "premier league", "olympics",
-            "championship", "tournament", "final score", "playoffs", "world cup",
-            "transfer window",
-        ]),
-        "entertainment": frozenset([
-            "movie", "film", "actor", "actress", "director", "netflix", "hbo", "disney",
-            "box office", "premiere", "oscar", "grammy", "album release", "concert tour",
-            "streaming series",
-        ]),
-        "gaming": frozenset([
-            "video game", "playstation", "xbox", "nintendo", "steam", "esports",
-            "multiplayer", "mmo", "rpg", "fps game", "release date", "patch notes",
-            "game update", "dlc",
-        ]),
-        "music": frozenset([
-            "album", "single release", "billboard chart", "spotify", "tour dates",
-            "record label", "music festival",
-        ]),
-        "fashion": frozenset([
-            "fashion week", "runway", "designer collection", "haute couture",
-            "streetwear", "ethnic wear", "saree", "kurta", "lehenga", "sneaker drop",
-            "collab collection", "capsule collection", "trend forecast",
-        ]),
-
+        "sports": frozenset(
+            [
+                "nfl",
+                "nba",
+                "mlb",
+                "nhl",
+                "fifa",
+                "premier league",
+                "olympics",
+                "championship",
+                "tournament",
+                "final score",
+                "playoffs",
+                "world cup",
+                "transfer window",
+            ]
+        ),
+        "entertainment": frozenset(
+            [
+                "movie",
+                "film",
+                "actor",
+                "actress",
+                "director",
+                "netflix",
+                "hbo",
+                "disney",
+                "box office",
+                "premiere",
+                "oscar",
+                "grammy",
+                "album release",
+                "concert tour",
+                "streaming series",
+            ]
+        ),
+        "gaming": frozenset(
+            [
+                "video game",
+                "playstation",
+                "xbox",
+                "nintendo",
+                "steam",
+                "esports",
+                "multiplayer",
+                "mmo",
+                "rpg",
+                "fps game",
+                "release date",
+                "patch notes",
+                "game update",
+                "dlc",
+            ]
+        ),
+        "music": frozenset(
+            [
+                "album",
+                "single release",
+                "billboard chart",
+                "spotify",
+                "tour dates",
+                "record label",
+                "music festival",
+            ]
+        ),
+        "fashion": frozenset(
+            [
+                "fashion week",
+                "runway",
+                "designer collection",
+                "haute couture",
+                "streetwear",
+                "ethnic wear",
+                "saree",
+                "kurta",
+                "lehenga",
+                "sneaker drop",
+                "collab collection",
+                "capsule collection",
+                "trend forecast",
+            ]
+        ),
         # ---- Academic / Education --------------------------------------------------
-        "academic": frozenset([
-            "arxiv", "research paper", "peer review", "journal publication", "doi",
-            "citation count", "hypothesis", "methodology", "findings",
-        ]),
-        "education": frozenset([
-            "school district", "university admission", "college", "curriculum",
-            "tuition", "scholarship", "graduation", "exam results", "enrollment",
-        ]),
-
+        "academic": frozenset(
+            [
+                "arxiv",
+                "research paper",
+                "peer review",
+                "journal publication",
+                "doi",
+                "citation count",
+                "hypothesis",
+                "methodology",
+                "findings",
+            ]
+        ),
+        "education": frozenset(
+            [
+                "school district",
+                "university admission",
+                "college",
+                "curriculum",
+                "tuition",
+                "scholarship",
+                "graduation",
+                "exam results",
+                "enrollment",
+            ]
+        ),
         # ---- Government / Policy --------------------------------------------------
-        "politics": frozenset([
-            "election", "congress", "senate", "president", "legislation", "bill",
-            "policy", "campaign", "debate", "poll numbers", "cabinet reshuffle",
-        ]),
-        "international": frozenset([
-            "united nations", "nato", "european union", "treaty", "diplomacy",
-            "sanctions", "trade deal", "tariff", "immigration policy", "refugee",
-            "summit meeting", "geopolitics",
-        ]),
-        "military_defense": frozenset([
-            "military", "defense budget", "airstrike", "ceasefire", "troop deployment",
-            "missile test", "arms deal",
-        ]),
-
+        "politics": frozenset(
+            [
+                "election",
+                "congress",
+                "senate",
+                "president",
+                "legislation",
+                "bill",
+                "policy",
+                "campaign",
+                "debate",
+                "poll numbers",
+                "cabinet reshuffle",
+            ]
+        ),
+        "international": frozenset(
+            [
+                "united nations",
+                "nato",
+                "european union",
+                "treaty",
+                "diplomacy",
+                "sanctions",
+                "trade deal",
+                "tariff",
+                "immigration policy",
+                "refugee",
+                "summit meeting",
+                "geopolitics",
+            ]
+        ),
+        "military_defense": frozenset(
+            [
+                "military",
+                "defense budget",
+                "airstrike",
+                "ceasefire",
+                "troop deployment",
+                "missile test",
+                "arms deal",
+            ]
+        ),
         # ---- Industry --------------------------------------------------
-        "automotive": frozenset([
-            "electric vehicle", "tesla", "self-driving", "autonomous driving",
-            "car recall", "engine specs", "battery range", "car manufacturer", "waymo", "byd",
-        ]),
-        "aviation": frozenset([
-            "airline", "flight delay", "boeing", "airbus", "faa", "airport",
-            "flight route", "jet engine",
-        ]),
-        "energy": frozenset([
-            "solar power", "wind farm", "nuclear plant", "fossil fuel", "oil price",
-            "natural gas", "renewable energy", "power grid", "battery storage",
-            "hydrogen fuel",
-        ]),
-        "agriculture": frozenset([
-            "crop yield", "farming", "livestock", "organic farming", "pesticide",
-            "fertilizer", "harvest season", "irrigation", "drought conditions",
-            "food security",
-        ]),
-        "retail_ecommerce": frozenset([
-            "e-commerce", "online retailer", "supply chain", "inventory", "black friday",
-            "product launch", "amazon warehouse", "shipping delay",
-        ]),
+        "automotive": frozenset(
+            [
+                "electric vehicle",
+                "tesla",
+                "self-driving",
+                "autonomous driving",
+                "car recall",
+                "engine specs",
+                "battery range",
+                "car manufacturer",
+                "waymo",
+                "byd",
+            ]
+        ),
+        "aviation": frozenset(
+            [
+                "airline",
+                "flight delay",
+                "boeing",
+                "airbus",
+                "faa",
+                "airport",
+                "flight route",
+                "jet engine",
+            ]
+        ),
+        "energy": frozenset(
+            [
+                "solar power",
+                "wind farm",
+                "nuclear plant",
+                "fossil fuel",
+                "oil price",
+                "natural gas",
+                "renewable energy",
+                "power grid",
+                "battery storage",
+                "hydrogen fuel",
+            ]
+        ),
+        "agriculture": frozenset(
+            [
+                "crop yield",
+                "farming",
+                "livestock",
+                "organic farming",
+                "pesticide",
+                "fertilizer",
+                "harvest season",
+                "irrigation",
+                "drought conditions",
+                "food security",
+            ]
+        ),
+        "retail_ecommerce": frozenset(
+            [
+                "e-commerce",
+                "online retailer",
+                "supply chain",
+                "inventory",
+                "black friday",
+                "product launch",
+                "amazon warehouse",
+                "shipping delay",
+            ]
+        ),
     }
 
     _TEMPORAL_RE = re.compile(
@@ -389,6 +853,7 @@ class DomainRegistry:
 # TEMPORAL CONTEXT INJECTOR
 # ============================================================================
 
+
 class TemporalContextInjector:
     def __init__(self, registry: DomainRegistry) -> None:
         self._registry = registry
@@ -410,6 +875,7 @@ class TemporalContextInjector:
 # OPTIONAL SEMANTIC FALLBACK
 # ============================================================================
 
+
 class SemanticFallback:
     def __init__(
         self,
@@ -420,8 +886,7 @@ class SemanticFallback:
         self._embed_fn = embed_fn
         self._threshold = threshold
         self._route_vectors: Dict[str, List[Sequence[float]]] = {
-            route: [embed_fn(ex) for ex in examples]
-            for route, examples in routes.items()
+            route: [embed_fn(ex) for ex in examples] for route, examples in routes.items()
         }
 
     @staticmethod
@@ -450,6 +915,7 @@ class SemanticFallback:
 # QUERY ROUTER — PRE-CHECK GATE
 # ============================================================================
 
+
 class QueryRouter:
     DOMAIN_ONLY_THRESHOLD: float = 0.35
 
@@ -462,7 +928,9 @@ class QueryRouter:
         self.temporal = TemporalContextInjector(self.registry)
         self.semantic_fallback = semantic_fallback
         self.ambiguous_band = ambiguous_band
-        _log_event("query_router_initialized", registered_domains=len(self.registry.DOMAIN_KEYWORDS))
+        _log_event(
+            "query_router_initialized", registered_domains = len(self.registry.DOMAIN_KEYWORDS)
+        )
 
     def classify(self, query: str) -> RouteDecision:
         t0 = time.perf_counter()
@@ -470,32 +938,38 @@ class QueryRouter:
 
         if not clean_query:
             decision = RouteDecision(
-                needs_search=False, domains=[], confidence=1.0,
-                reason="empty_query", search_query="", augmented_query="",
-                elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 3),
+                needs_search = False,
+                domains = [],
+                confidence = 1.0,
+                reason = "empty_query",
+                search_query = "",
+                augmented_query = "",
+                elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 3),
             )
-            _log_event("query_router_decision", query="<empty>", needs_search=False, reason="empty_query")
+            _log_event(
+                "query_router_decision", query = "<empty>", needs_search = False, reason = "empty_query"
+            )
             return decision
 
         if self.registry.should_skip(clean_query):
             elapsed = (time.perf_counter() - t0) * 1000.0
             decision = RouteDecision(
-                needs_search=False,
-                domains=[],
-                confidence=1.0,
-                reason="skip_pattern",
-                search_query=clean_query,
-                augmented_query=clean_query,
-                elapsed_ms=round(elapsed, 3),
+                needs_search = False,
+                domains = [],
+                confidence = 1.0,
+                reason = "skip_pattern",
+                search_query = clean_query,
+                augmented_query = clean_query,
+                elapsed_ms = round(elapsed, 3),
             )
             _log_event(
                 "query_router_decision",
-                query=clean_query[:60],
-                needs_search=False,
-                reason="skip_pattern",
-                confidence=1.0,
-                domains=[],
-                elapsed_ms=decision.elapsed_ms,
+                query = clean_query[:60],
+                needs_search = False,
+                reason = "skip_pattern",
+                confidence = 1.0,
+                domains = [],
+                elapsed_ms = decision.elapsed_ms,
             )
             return decision
 
@@ -543,24 +1017,24 @@ class QueryRouter:
         elapsed = (time.perf_counter() - t0) * 1000.0
 
         decision = RouteDecision(
-            needs_search=needs_search,
-            domains=matched_domains,
-            confidence=round(confidence, 3),
-            reason=reason,
-            search_query=clean_query,
-            augmented_query=augmented if needs_search else clean_query,
-            temporal_anchor=iso_stamp if needs_search else "",
-            elapsed_ms=round(elapsed, 3),
+            needs_search = needs_search,
+            domains = matched_domains,
+            confidence = round(confidence, 3),
+            reason = reason,
+            search_query = clean_query,
+            augmented_query = augmented if needs_search else clean_query,
+            temporal_anchor = iso_stamp if needs_search else "",
+            elapsed_ms = round(elapsed, 3),
         )
 
         _log_event(
             "query_router_decision",
-            query=clean_query[:60],
-            needs_search=decision.needs_search,
-            reason=decision.reason,
-            confidence=decision.confidence,
-            domains=decision.domains,
-            elapsed_ms=decision.elapsed_ms,
+            query = clean_query[:60],
+            needs_search = decision.needs_search,
+            reason = decision.reason,
+            confidence = decision.confidence,
+            domains = decision.domains,
+            elapsed_ms = decision.elapsed_ms,
         )
 
         return decision
@@ -570,8 +1044,13 @@ class QueryRouter:
 # PRODUCTION TOKEN BUDGET MANAGER
 # ============================================================================
 
+
 class TokenBudgetManager:
-    def __init__(self, context_length: int = 16384, safety_margin: float = 0.85) -> None:
+    def __init__(
+        self,
+        context_length: int = 16384,
+        safety_margin: float = 0.85,
+    ) -> None:
         self.context_length = context_length
         self.max_tokens = int(context_length * safety_margin)
         self.estimated_result_tokens = 2000
@@ -589,7 +1068,9 @@ class TokenBudgetManager:
                 for tc in msg["tool_calls"]:
                     fn = tc.get("function", {})
                     fn_str = str(fn.get("name", "")) + str(fn.get("arguments", ""))
-                    total_tokens += len(_ENC.encode(fn_str)) if _ENC is not None else (len(fn_str) // 4 + 1)
+                    total_tokens += (
+                        len(_ENC.encode(fn_str)) if _ENC is not None else (len(fn_str) // 4 + 1)
+                    )
                     total_tokens += 6
         return total_tokens
 
@@ -598,7 +1079,9 @@ class TokenBudgetManager:
         return (current + self.estimated_result_tokens) <= self.max_tokens
 
     def trim_to_budget(
-        self, messages: Sequence[Dict[str, Any]], target_tokens: Optional[int] = None
+        self,
+        messages: Sequence[Dict[str, Any]],
+        target_tokens: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         target = target_tokens or self.max_tokens
         out: List[Dict[str, Any]] = [dict(m) for m in messages]
@@ -621,16 +1104,18 @@ class TokenBudgetManager:
 
         _log_event(
             "token_budget_trimmed",
-            initial_tokens=self.estimate_tokens(messages),
-            final_tokens=current_tokens,
-            trimmed_tools=trimmed_count,
-            target_budget=target,
+            initial_tokens = self.estimate_tokens(messages),
+            final_tokens = current_tokens,
+            trimmed_tools = trimmed_count,
+            target_budget = target,
         )
 
         return out
 
     def trim_old_results(
-        self, messages: Sequence[Dict[str, Any]], keep: int = 5
+        self,
+        messages: Sequence[Dict[str, Any]],
+        keep: int = 5,
     ) -> List[Dict[str, Any]]:
         out = [dict(m) for m in messages]
         tool_indices = [i for i, m in enumerate(out) if m.get("role") == "tool"]
@@ -653,12 +1138,13 @@ class TokenBudgetManager:
 # SINGLETON FACTORIES
 # ============================================================================
 
-@lru_cache(maxsize=1)
+
+@lru_cache(maxsize = 1)
 def get_router() -> QueryRouter:
     return QueryRouter()
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize = 8)
 def get_budget_manager(context_length: int = 16384) -> TokenBudgetManager:
     return TokenBudgetManager(context_length)
 
@@ -671,13 +1157,14 @@ def create_router_and_budget(context_length: int = 16384) -> Tuple[QueryRouter, 
 # INLINE TEST SUITE & EVALUATION RUNNER
 # ============================================================================
 
+
 def run_evaluation_suite() -> None:
     print("=" * 80)
     print("RUNNING QUERY ROUTER & TOKEN BUDGET PRODUCTION EVALUATION SUITE")
     print("=" * 80)
 
     router = get_router()
-    budget_mgr = TokenBudgetManager(context_length=4096, safety_margin=0.80)
+    budget_mgr = TokenBudgetManager(context_length = 4096, safety_margin = 0.80)
 
     # 1. Greeting Bypass Regression Test
     d1 = router.classify("Hello, who is the CEO of Nvidia?")
@@ -686,7 +1173,9 @@ def run_evaluation_suite() -> None:
     print("[PASS] Greeting Bypass Test ('Hello, who is the CEO of Nvidia?')")
 
     # 2. Trie Punctuation & Hyphenation Keyword Matching
-    d2 = router.classify("What are the best CI/CD pipeline strategies for zero-downtime deployments?")
+    d2 = router.classify(
+        "What are the best CI/CD pipeline strategies for zero-downtime deployments?"
+    )
     assert "devops" in d2.domains, f"Failed hyphen/slash keyword matching: {d2.domains}"
     print("[PASS] Trie Punctuation Invariant ('ci/cd', 'zero-downtime')")
 
@@ -695,12 +1184,16 @@ def run_evaluation_suite() -> None:
     assert d3_snow.needs_search is False, f"Collision: 'now' matched inside 'snow': {d3_snow}"
 
     d3_gas = router.classify("The backup generator gas offline switch is stuck")
-    assert d3_gas.needs_search is False, f"Collision: 'as of' matched inside 'gas offline': {d3_gas}"
+    assert (
+        d3_gas.needs_search is False
+    ), f"Collision: 'as of' matched inside 'gas offline': {d3_gas}"
     print("[PASS] Word Boundary Traps ('snow' != 'now', 'gas offline' != 'as of')")
 
     # 4. Genuine Factual Search
     d3_howmuch = router.classify("How much snow fell on the mountain peak?")
-    assert d3_howmuch.needs_search is True, f"'how much' should trigger factual_indicator: {d3_howmuch}"
+    assert (
+        d3_howmuch.needs_search is True
+    ), f"'how much' should trigger factual_indicator: {d3_howmuch}"
     print("[PASS] Genuine Factual Trigger ('how much snow' correctly searches)")
 
     # 5. Full Skip Anchors
@@ -719,13 +1212,13 @@ def run_evaluation_suite() -> None:
         return [0.33, 0.33, 0.33]
 
     semantic_router = QueryRouter(
-        semantic_fallback=SemanticFallback(
-            embed_fn=mock_embed,
-            routes={
+        semantic_fallback = SemanticFallback(
+            embed_fn = mock_embed,
+            routes = {
                 "search": ["quantum breakthrough news"],
                 "no_search": ["invert a binary tree implementation"],
             },
-            threshold=0.70,
+            threshold = 0.70,
         )
     )
 
@@ -741,16 +1234,24 @@ def run_evaluation_suite() -> None:
     messages = [
         {"role": "system", "content": "You are an agent."},
         {"role": "user", "content": "Query 1"},
-        {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "run_sql", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"function": {"name": "run_sql", "arguments": "{}"}}],
+        },
         {"role": "tool", "tool_call_id": "call_1", "content": large_payload},
         {"role": "assistant", "content": "Step 1 complete."},
         {"role": "user", "content": "Query 2"},
-        {"role": "assistant", "content": None, "tool_calls": [{"function": {"name": "run_sql_2", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"function": {"name": "run_sql_2", "arguments": "{}"}}],
+        },
         {"role": "tool", "tool_call_id": "call_2", "content": large_payload},
         {"role": "assistant", "content": "Final analysis ready."},
     ]
 
-    trimmed = budget_mgr.trim_to_budget(messages, target_tokens=1500)
+    trimmed = budget_mgr.trim_to_budget(messages, target_tokens = 1500)
     assert budget_mgr.estimate_tokens(trimmed) <= 1500
     assert trimmed[3]["content"] == "[Content trimmed to preserve context budget]"
     assert trimmed[3]["tool_call_id"] == "call_1"
