@@ -15,9 +15,14 @@ import { fileURLToPath } from "node:url";
 
 register("./helpers/tauri-core-resolver.mjs", import.meta.url);
 
-const MODULE = fileURLToPath(
-  new URL("../src/features/settings/api/microphone-permission.ts", import.meta.url),
-);
+// A file:// URL, not a native path. `import()` takes a URL or a relative specifier, and
+// on Windows fileURLToPath gives a "D:\..." path, which the default ESM loader rejects
+// with ERR_UNSUPPORTED_ESM_URL_SCHEME. The "?bust=N" suffix below also only means
+// anything on a URL, and tauri-core-resolver.mjs reads it back off the parent URL.
+const MODULE = new URL(
+  "../src/features/settings/api/microphone-permission.ts",
+  import.meta.url,
+).href;
 
 const VOICE_TAB = readFileSync(
   fileURLToPath(new URL("../src/features/settings/tabs/voice-tab.tsx", import.meta.url)),
