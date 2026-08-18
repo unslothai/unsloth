@@ -14,6 +14,7 @@ import type { PersistedChatSettings } from "../src/features/chat/api/chat-settin
 import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
+  normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../src/features/chat/utils/mirrored-chat-settings.ts";
 
@@ -129,4 +130,25 @@ test("a record holding only mirrored settings is not empty", () => {
   assert.equal(hasNoMirroredSettings({ autoTitle: true }), true);
   assert.equal(hasNoMirroredSettings({ ragTopK: 5 }), false);
   assert.equal(hasNoMirroredSettings({ toolsEnabled: false }), false);
+});
+
+// Pinned here rather than through the UI: only the first browser to hydrate resolves the level
+// from storage, so the mapping can be exercised exactly once per installation.
+test("a legacy confirm toggle maps onto the permission level", () => {
+  assert.equal(normalizeStoredPermissionMode(null, true), "ask");
+  assert.equal(normalizeStoredPermissionMode(null, false), "off");
+  assert.equal(normalizeStoredPermissionMode(null, null), "auto");
+});
+
+test("a stored permission level wins over the legacy toggle", () => {
+  assert.equal(normalizeStoredPermissionMode("off", true), "off");
+  assert.equal(normalizeStoredPermissionMode("auto", true), "auto");
+  assert.equal(normalizeStoredPermissionMode("ask", false), "ask");
+});
+
+// "full" is never stored, so reading one back must not restore the sandbox bypass.
+test("an unstorable or unknown level falls through to the derivation", () => {
+  assert.equal(normalizeStoredPermissionMode("full", null), "auto");
+  assert.equal(normalizeStoredPermissionMode("full", true), "ask");
+  assert.equal(normalizeStoredPermissionMode("nonsense", false), "off");
 });

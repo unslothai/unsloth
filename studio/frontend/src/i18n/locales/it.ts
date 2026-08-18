@@ -61,6 +61,8 @@ export const it = {
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
+      showMore: "Mostra altro",
+      showLess: "Mostra meno",
       settings: "Impostazioni",
       api: "API",
       lightMode: "Tema chiaro",
@@ -74,6 +76,44 @@ export const it = {
       title: "Pagina non trovata",
       description: "{path} non esiste.",
       backToChat: "Torna alla chat",
+    },
+    selection: {
+      pinProjects: "Fissa i progetti",
+      unpinProjects: "Rimuovi i progetti fissati",
+      deleteProjects: "Elimina i progetti",
+      deleteProjectsTitle: "Elimina i progetti",
+      deleteProjectsDescription:
+        "Eliminare {count} progetti? Le loro chat vengono eliminate definitivamente.",
+      deleteProjectsFilesDescription:
+        "La cartella dello spazio di lavoro di ogni progetto viene rimossa dal disco.",
+      countSelected: "{count} selezionate",
+      pinChats: "Fissa le chat",
+      unpinChats: "Rimuovi le chat fissate",
+      archiveChats: "Archivia le chat",
+      markUnread: "Segna come non letta",
+      deleteChats: "Elimina le chat",
+      deleteTitle: "Elimina le chat",
+      deleteDescription: "Eliminare {count} chat? L'operazione non è reversibile.",
+      deleteFilesDescription:
+        "La cartella sandbox di ogni chat viene rimossa dal disco. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
+      deleteFilesLabel: "Elimina i file e la cartella sandbox",
+      deleteChatFilesDescription:
+        "La cartella sandbox di questa chat viene rimossa dal disco. I file scritti all'interno di un progetto restano nello spazio di lavoro del progetto.",
+    },
+    organize: {
+      sidebarHeading: "Organizza la barra laterale",
+      byProject: "Per progetto",
+      inOneList: "In un solo elenco",
+      sortChatsBy: "Ordina le chat per",
+      sortPinnedBy: "Ordina i fissati per",
+      priority: "Priorità",
+      lastUpdated: "Ultimo aggiornamento",
+      manualOrder: "Ordine manuale",
+      moveUp: "Sposta su",
+      moveDown: "Sposta giù",
+      organizeChats: "Organizza le chat",
+      organizeProjects: "Organizza i progetti",
+      sortPinnedChats: "Ordina le chat fissate",
     },
     dialog: {
       deleteChat: {
@@ -110,6 +150,8 @@ export const it = {
       closeAriaLabel: "Chiudi le impostazioni",
       searchPlaceholder: "Cerca nelle impostazioni…",
       searchNoResults: "Nessuna impostazione trovata.",
+      panelFailed: "Non è stato possibile caricare questa sezione.",
+      panelReload: "Ricarica",
     },
     tabs: {
       general: "Generali",
@@ -259,6 +301,8 @@ export const it = {
         allowMicrophone: "Consenti l'accesso al microfono",
         micAccessBlocked:
           "L'accesso al microfono è stato bloccato. Consenti l'accesso al microfono per questa pagina di Unsloth, poi riprova.",
+        micAccessBlockedDesktop:
+          "L'accesso al microfono è stato bloccato. Riprova e scegli Consenti, oppure abilita il microfono nelle impostazioni di privacy del sistema.",
         micAccessUnsupported:
           "L'accesso al microfono non è supportato in questo browser o contesto.",
         systemDefault: "Predefinito di sistema",
@@ -417,6 +461,9 @@ export const it = {
           "Libera la VRAM dopo il numero indicato di secondi di inattività. 0 mantiene il modello in memoria; il minimo è 60.",
         idleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico",
+        mediaEnable: "Cambia modello di immagini e video in base alla richiesta",
+        mediaEnableDescription:
+          "Carica un modello di immagini o video già scaricato indicato in una richiesta API prima di generare. È un'impostazione a sé: quella sopra riguarda solo il modello di chat. Disattivato per impostazione predefinita.",
         mediaIdleUnload:
           "Scaricamento automatico dalla memoria per inattività di immagini e video",
         mediaIdleUnloadDescription:
@@ -424,7 +471,7 @@ export const it = {
         mediaIdleSecondsAriaLabel:
           "Secondi di inattività prima dello scaricamento automatico di immagini e video",
         mediaIdlePaused:
-          "In pausa finché «Mantieni il modello nella memoria della GPU» o «Scarica solo i modelli caricati dall'API» è attivo.",
+          "In pausa finché «Mantieni il modello nella memoria della GPU» è attivo.",
         idleNeedsEnable:
           "Attiva prima «Cambia modello in base alla richiesta».",
         idleActiveViaEnv: "Attivo tramite UNSLOTH_MODEL_IDLE_TTL.",
@@ -979,6 +1026,9 @@ export const it = {
       },
     },
     chat: {
+      projectsSection: "Mostra la sezione Progetti",
+      projectsSectionDescription:
+        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",
@@ -1001,12 +1051,21 @@ export const it = {
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
       },
+      pastedTextThreshold: "Condensa incolla lunghi",
+      pastedTextThresholdDescription: "Il testo incollato più lungo di questo valore diventa un allegato .txt invece di riempire il campo del messaggio.",
+      pastedTextThresholdOff: "Disattivato",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
       modelDisclaimer: "Mostra l'avviso sul modello",
       modelDisclaimerDescription:
         "Mostra «Gli LLM possono commettere errori» sotto il campo della chat.",
+      projectAttachments: "Condividi i file nel progetto",
+      projectAttachmentsDescription:
+        "Impostazione predefinita per i file allegati in una chat che appartiene a un progetto: indicizzarli per l'intero progetto in modo che ogni chat possa usarli. Ogni chat puo cambiarlo dal menu degli allegati.",
+      rememberParamsPerModel: "Ricorda le impostazioni per modello",
+      rememberParamsPerModelDescription:
+        "Cambiando modello vengono ripristinati temperatura, prompt e le altre impostazioni usate l'ultima volta con quel modello. Disattivato, resta un unico set di impostazioni per tutti i modelli.",
       thinking: {
         collapseByDefault: "Comprimi il ragionamento per impostazione predefinita",
         collapseByDefaultDescription:
@@ -1098,6 +1157,9 @@ export const it = {
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
       manageAction: "Gestisci",
+      manageChats: "Gestisci chat",
+      manageChatsDescription:
+        "Seleziona più chat da spostare, fissare, archiviare, esportare o eliminare.",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
       exportedOneArchivedChat: "1 chat archiviata esportata",
@@ -1121,6 +1183,9 @@ export const it = {
       confirmBeforeDeleting: "Chiedi conferma prima di eliminare",
       confirmBeforeDeletingDescription:
         "Richiedi una conferma prima di eliminare una chat. Disattiva l'opzione per eliminarla subito.",
+      alwaysDeleteFiles: "Elimina sempre i file",
+      alwaysDeleteFilesDescription:
+        "L'eliminazione di una chat rimuove dal disco anche la sua cartella sandbox. I file scritti dentro un progetto restano nello spazio di lavoro di quel progetto.",
       filesSection: "File",
       uploadedFiles: "File caricati",
       uploadedFilesDescription:

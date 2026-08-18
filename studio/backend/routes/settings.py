@@ -2,8 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import functools
+import hashlib
 import re
 import threading
+import time
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
@@ -66,6 +68,7 @@ from utils.openai_auto_switch_settings import (
     BATCH_SIZE_MIN,
     DEFAULT_AUTO_UNLOAD_API_ONLY,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
+    DEFAULT_MEDIA_AUTO_SWITCH_ENABLED,
     DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -76,6 +79,7 @@ from utils.openai_auto_switch_settings import (
     get_auto_unload_api_only,
     get_auto_unload_idle_seconds,
     get_auto_unload_keep_kv,
+    get_media_auto_switch_enabled,
     get_media_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
@@ -92,6 +96,12 @@ from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
+)
+from utils.lan_access_settings import (
+    lan_access_status,
+    set_lan_access_auto_start,
+    start_lan_access,
+    stop_lan_access,
 )
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
@@ -625,6 +635,8 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_api_only: Optional[bool] = None
     # The image/video TTL is its own setting, not a share of the chat one.
     media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
+    # And so is image/video auto-switch, for the same reason.
+    media_auto_switch_model: Optional[bool] = None
 
 
 class OpenAIAutoSwitchResponse(BaseModel):
@@ -644,6 +656,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     # (residency, or API-loaded only) is holding the image/video unload off.
     media_auto_unload_idle_seconds: int = DEFAULT_MEDIA_AUTO_UNLOAD_IDLE_SECONDS
     media_idle_unload_active: bool = False
+    # When true, a media request may load the image or video model it names.
+    media_auto_switch_model: bool = DEFAULT_MEDIA_AUTO_SWITCH_ENABLED
 
 
 # A quant suffix, as modelOverrideKey builds it. Matched against the loader's quant pattern,
@@ -653,6 +667,9 @@ _MAX_VARIANT_SUFFIX_LEN = 64
 # A local id is a path plus an optional quant suffix, and LoadRequest.model_path is unbounded.
 # A limit under PATH_MAX would 422 the server sync while the local save succeeded.
 MAX_MODEL_OVERRIDE_KEY_LEN = 4096 + 1 + _MAX_VARIANT_SUFFIX_LEN
+
+# GgufVariantDetail.quant may be a path-qualified variant key, not just a quant suffix.
+MAX_GGUF_VARIANT_KEY_LEN = 4096
 
 # A list longer than MAX_GPU_ID cannot name a device the normalizer would store, so bound it
 # here and reject an oversized array at the boundary instead of walking it.
@@ -979,6 +996,109 @@ def update_model_memory(
     return _model_memory_response()
 
 
+LAST_LOCAL_MODEL_SETTING_KEY = "last_local_model_load"
+_LAST_LOCAL_MODEL_LOCK = threading.Lock()
+
+
+def _last_local_model_key(subject: str) -> str:
+    """Per-subject key: one shared row would hand user B user A's last model."""
+    subject = (subject or "").strip()
+    if not subject:
+        return LAST_LOCAL_MODEL_SETTING_KEY
+    # Hashed so an arbitrary subject cannot collide with another key.
+    digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
+    return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
+
+
+def _read_last_local_model(subject: str) -> "dict | None":
+    """The subject's record, falling back to the pre-scoping shared row so an
+    upgrade keeps the model the install already remembered."""
+    from storage.studio_db import get_app_setting
+
+    stored = get_app_setting(_last_local_model_key(subject), None)
+    if not isinstance(stored, dict):
+        stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
+    return stored if isinstance(stored, dict) else None
+
+
+# Clients stamp loads, so cap how far ahead of server time a client clock may claim.
+_LAST_LOCAL_MODEL_CLOCK_SLACK_MS = 5 * 60 * 1000
+
+
+class LastLocalModelPayload(BaseModel):
+    id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    kind: Literal["gguf", "model"]
+    gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
+    # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
+    loaded_at: Optional[int] = Field(default = None, ge = 0)
+    # The client clock when the request was sent: the skew (server_now - client_now)
+    # translates loaded_at into the server frame. Never persisted.
+    client_now: Optional[int] = Field(default = None, ge = 0)
+
+
+class LastLocalModelResponse(BaseModel):
+    id: Optional[str] = None
+    kind: Optional[Literal["gguf", "model"]] = None
+    gguf_variant: Optional[str] = None
+    loaded_at: Optional[int] = None
+    # Lets the client translate loaded_at back into its own clock frame.
+    server_now: Optional[int] = None
+
+
+@router.get("/last-local-model", response_model = LastLocalModelResponse)
+def get_last_local_model(
+    current_subject: str = Depends(get_current_subject),
+) -> LastLocalModelResponse:
+    stored = _read_last_local_model(current_subject)
+    _now = int(time.time() * 1000)
+    if stored is None:
+        return LastLocalModelResponse(server_now = _now)
+    try:
+        payload = LastLocalModelPayload(**stored)
+    except Exception:
+        return LastLocalModelResponse(server_now = _now)
+    return LastLocalModelResponse(**payload.model_dump(exclude = {"client_now"}), server_now = _now)
+
+
+@router.put("/last-local-model", response_model = LastLocalModelResponse)
+def update_last_local_model(
+    payload: LastLocalModelPayload, current_subject: str = Depends(get_current_subject)
+) -> LastLocalModelResponse:
+    from storage.studio_db import upsert_app_settings
+
+    # loaded_at orders stamped writes so a delayed older PUT cannot overwrite a newer
+    # load; the stored record is returned. Unstamped writes stay last-write-wins.
+    _server_now = int(time.time() * 1000)
+    _key = _last_local_model_key(current_subject)
+    with _LAST_LOCAL_MODEL_LOCK:
+        if payload.loaded_at is not None:
+            if payload.client_now is not None:
+                # Into the server frame: fresh loads land near now, re-issued shadows stay old.
+                _shifted = payload.loaded_at + (_server_now - payload.client_now)
+                payload = payload.model_copy(update = {"loaded_at": max(0, _shifted)})
+            _cap = _server_now + _LAST_LOCAL_MODEL_CLOCK_SLACK_MS
+            if payload.loaded_at > _cap:
+                payload = payload.model_copy(update = {"loaded_at": _cap})
+            stored = _read_last_local_model(current_subject)
+            if stored is not None:
+                try:
+                    current = LastLocalModelPayload(**stored)
+                except Exception:
+                    current = None
+                if (
+                    current is not None
+                    and current.loaded_at is not None
+                    and payload.loaded_at < current.loaded_at
+                ):
+                    return LastLocalModelResponse(
+                        **current.model_dump(exclude = {"client_now"}), server_now = _server_now
+                    )
+        upsert_app_settings({_key: payload.model_dump(exclude = {"client_now"})})
+    return LastLocalModelResponse(
+        **payload.model_dump(exclude = {"client_now"}), server_now = _server_now
+    )
+
+
 @router.get("/vram-budget", response_model = VramBudgetResponse)
 def get_vram_budget(current_subject: str = Depends(get_current_subject)) -> VramBudgetResponse:
     return _vram_budget_response()
@@ -1027,6 +1147,7 @@ def get_openai_auto_switch(
         auto_unload_api_only = get_auto_unload_api_only(),
         media_auto_unload_idle_seconds = get_stored_media_auto_unload_idle_seconds(),
         media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = get_media_auto_switch_enabled(),
     )
 
 
@@ -1042,6 +1163,7 @@ def update_openai_auto_switch(
             auto_download,
             api_only,
             media_idle_seconds,
+            media_auto_switch,
         ) = set_openai_auto_switch(
             payload.enabled,
             payload.auto_unload_idle_seconds,
@@ -1049,6 +1171,7 @@ def update_openai_auto_switch(
             payload.auto_download_model,
             payload.auto_unload_api_only,
             payload.media_auto_unload_idle_seconds,
+            payload.media_auto_switch_model,
         )
     except ValueError as exc:
         raise log_and_http_error(
@@ -1073,6 +1196,7 @@ def update_openai_auto_switch(
         auto_unload_api_only = api_only,
         media_auto_unload_idle_seconds = media_idle_seconds,
         media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
+        media_auto_switch_model = media_auto_switch,
     )
 
 
@@ -1791,6 +1915,82 @@ def update_remote_access_auto_start(
     return _remote_access_response(request)
 
 
+class LanAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class LanAccessResponse(BaseModel):
+    state: Literal["off", "online", "error"]
+    urls: list[str] = []
+    public_urls: list[str] = []
+    error: Optional[str] = None
+    auto_start: bool
+    managed_by: Optional[Literal["launch", "settings"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    serves_web_ui: bool = True
+
+
+def _lan_access_response(request: Request) -> LanAccessResponse:
+    return LanAccessResponse(**lan_access_status(request.app))
+
+
+@router.get("/lan-access", response_model = LanAccessResponse)
+def get_lan_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    return _lan_access_response(request)
+
+
+@router.post("/lan-access/start", response_model = LanAccessResponse)
+def start_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**start_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/lan-access/stop", response_model = LanAccessResponse)
+def stop_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**stop_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+def update_lan_access_auto_start(
+    request: Request,
+    payload: LanAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
+
+
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
 def get_preview_sharing(
     current_subject: str = Depends(get_current_subject),
@@ -1937,7 +2137,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
     "images": True,
-    "video": False,
+    "video": True,
     "audio": False,
     "train": True,
     "recipes": False,

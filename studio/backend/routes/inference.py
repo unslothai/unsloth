@@ -2481,6 +2481,15 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // randomUUID is unavailable in this opaque HTTP context. The strict CSP
+        // forbids crypto-boot.js, so install the same fallback inline.
+        const installRandomUUIDFallback = () => {
+          if (!window.crypto || typeof crypto.randomUUID === "function") return;
+          const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+          crypto.randomUUID = () =>
+            "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+              (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+        };
         // Stamp the load this frame was served for. A report still in flight
         // when the canvas is swapped would otherwise be read as the new one's.
         const loadVersion = new URLSearchParams(location.search).get("v") || "";
@@ -2501,6 +2510,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
+        // Survives the document.open() in render(), so once is enough.
+        installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
@@ -6992,6 +7003,139 @@ class _LoadPlacement(NamedTuple):
     diffusion_kind: Optional[bool]
 
 
+def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
+    """``spec_binary_fallback_can_retry``, for the status poll.
+
+    Only the two binary stand-downs can be repaired by an identical reload, so a client
+    that reloads for any ``binary_*`` reason prompts to stop running chats for a load
+    that would dedupe. Answered only for those reasons: this is polled from first paint,
+    and neither the binary lookup nor the capability probe has business running on every
+    poll of a healthy runtime.
+
+    The whole predicate, not just its revision half. ``binary_no_mtp`` also asks whether
+    the replacement advertises what the drafter kind needs, and a replacement that still
+    lacks it never repairs: the live process keeps its launch revision, so a half answer
+    would prompt on every later re-pick and never stop. The probe caches on the binary's
+    revision, and this route already relies on that elsewhere.
+    """
+    if getattr(llama_backend, "spec_fallback_reason", None) not in (
+        "binary_no_mtp",
+        "binary_outdated",
+    ):
+        return None
+    try:
+        return bool(llama_backend.spec_binary_fallback_can_retry())
+    except Exception:
+        return None
+
+
+def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether the capability probe has started answering since a degraded launch.
+
+    Mirrors the ``_capability_probe_inconclusive`` arm of ``_runtime_matches_intent``,
+    which rejects an identical load once the probe turns conclusive so the degraded
+    runtime is re-derived. No speculative mode gates it, and it records the conclusive
+    probe and clears, so it is one reload rather than a loop. Probing is cheap here:
+    ``probe_server_capabilities`` caches on the binary's revision and this route already
+    calls it.
+    """
+    if not getattr(llama_backend, "_capability_probe_inconclusive", False):
+        return False
+    if getattr(llama_backend, "_is_diffusion", False):
+        return False
+    try:
+        return not llama_backend.probe_server_capabilities().get("mtp_probe_inconclusive")
+    except Exception:
+        return None
+
+
+def _diffusion_split_supported(llama_backend) -> Optional[bool]:
+    """Whether a diffusion launch right now would honour --ngl.
+
+    Only meaningful for a resident diffusion runner. ``_runtime_matches_intent`` rejects
+    an otherwise identical request once this turns true and the live gpu_layers differs
+    from the requested NGL, so the split an older shim dropped can finally be applied.
+    A client comparing only the retained request would skip that load.
+    """
+    if not getattr(llama_backend, "_is_diffusion", False):
+        return None
+    try:
+        return bool(llama_backend.diffusion_split_supported())
+    except Exception:
+        return None
+
+
+def _audio_probe_pending(llama_backend) -> bool:
+    """Whether the post-launch audio probe still has to be retried.
+
+    ``_reuse_loaded_gguf`` refuses the route's own already-loaded answer while this is
+    true, so ``load_model`` reaches its fast path and re-probes there. A client that
+    skips /load skips the retry with it, and nothing else re-probes, so the model's
+    audio capabilities would stay undetected for as long as the server runs.
+    """
+    return not getattr(llama_backend, "_audio_probed", True)
+
+
+def _gpu_placement_paravirtual() -> Optional[bool]:
+    """Whether every GGUF request on this host is rewritten to the CPU pin.
+
+    ``paravirtual_normalized_request`` maps any placement to manual / zero layers / no
+    split / no MoE on a virtualised Metal device, and ``adopt_load_intent_if_matched``
+    applies it before comparing, so placement cannot distinguish two requests here at
+    all. A client comparing the raw values sees its Auto pick against a manual status and
+    reloads on every re-pick. The detector is lru_cached, so this costs one probe per
+    process and nothing after.
+    """
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+        return bool(_metal_device_is_paravirtual())
+    except Exception:
+        return None
+
+
+def _arch_gate_dropped_tensor_parallel(llama_backend) -> Optional[bool]:
+    """Whether the GPU architecture gate normalized a tensor-parallel request away.
+
+    ``_runtime_matches_intent`` accepts the same true request against the resulting
+    layer-mode runtime, since that runtime IS the request as the gate rewrote it. Status
+    reports the mode that launched, so a client comparing it raw prompts to stop running
+    chats on every re-pick of a model whose split was gated off.
+    """
+    try:
+        return bool(llama_backend._arch_gate_dropped_tensor_parallel)
+    except Exception:
+        return None
+
+
+def _spec_dspark_sidecar_absent(llama_backend) -> Optional[bool]:
+    """Whether the DSpark drafter is missing permanently rather than transiently.
+
+    The ``drafter_not_found`` arm of ``_runtime_matches_intent`` reloads so the next
+    Apply retries the fetch, but excludes an absent DSpark sidecar: that is the permanent
+    state of every repo but one, and retrying it would relaunch an identical server
+    forever. A client reading only the reason cannot tell the two apart and prompts to
+    stop running chats for a load that dedupes.
+    """
+    try:
+        return bool(llama_backend._dspark_sidecar_absent)
+    except Exception:
+        return None
+
+
+def _spec_dflash_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether a DFlash sidecar fetch failed in a way the next identical load retries.
+
+    Under Auto a failed fetch records no ``spec_fallback_reason``, so a client reading
+    only that adopts a runtime the backend would have rebuilt. Set only for retryable
+    failures: a repo publishing no sidecar is ``_dflash_sidecar_absent``'s business.
+    Applies to the Auto and DFlash modes, as the arm does.
+    """
+    try:
+        return bool(llama_backend._dflash_retry_needed)
+    except Exception:
+        return None
+
+
 class _NoParallelRequest:
     """A stand-in for a load that named no slot count, for reading the default."""
 
@@ -7095,6 +7239,7 @@ def _resolve_gguf_load_intent(
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
+            verified_gguf = getattr(config, "gguf_verified", None),
         )
     else:
         if native_grant_backed:
@@ -8496,6 +8641,13 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
+            # same reason: the host-RAM guard reads the finished argv, so it answers too late
+            _host_offload = await asyncio.to_thread(
+                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            )
+            if _host_offload:
+                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
+                raise HTTPException(status_code = 400, detail = _host_offload)
 
         if chat_load_needs_gpu:
             await asyncio.to_thread(
@@ -10505,6 +10657,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
+                spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
+                spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
+                spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
+                spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
+                gpu_placement_paravirtual = _gpu_placement_paravirtual(),
+                audio_probe_pending = _audio_probe_pending(llama_backend),
+                diffusion_split_supported = _diffusion_split_supported(llama_backend),
+                tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
+                    llama_backend
+                ),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -11303,7 +11465,12 @@ async def stt_unload(
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines, model)
+    # expected_model by keyword: _stt_lifecycle returns the orchestrator's
+    # unload_stt_model when a backend is resident and stt_registry.unload when one
+    # is not, and only the former takes it positionally. Registry-side it sits
+    # behind a `*`, so passing it positionally raised TypeError, which is the
+    # state a fresh process is in before anything has loaded.
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines, expected_model = model)
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -17682,6 +17849,24 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     return _with_system(messages)
 
 
+def _responses_text_format(text: Any) -> Optional[dict]:
+    """Responses ``text.format`` -> Chat Completions ``response_format``.
+
+    ``{"type": "text"}`` and a verbosity-only ``text`` carry no constraint -> None.
+    """
+    fmt = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(fmt, dict):
+        return None
+    if fmt.get("type") == "json_object":
+        return {"type": "json_object"}
+    if fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        return None
+    json_schema = {"name": str(fmt.get("name") or "response"), "schema": fmt["schema"]}
+    if fmt.get("strict") is not None:
+        json_schema["strict"] = bool(fmt["strict"])
+    return {"type": "json_schema", "json_schema": json_schema}
+
+
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
@@ -17753,6 +17938,11 @@ def _build_chat_request(
                 chat_kwargs["reasoning_effort"] = "none"
             elif effort != "none":
                 chat_kwargs["reasoning_effort"] = effort
+
+    response_format = _responses_text_format(payload.text)
+    if response_format is not None:
+        # Lands in model_extra, where _extract_response_format reads it.
+        chat_kwargs["response_format"] = response_format
 
     return ChatCompletionRequest(**chat_kwargs)
 
@@ -23343,6 +23533,20 @@ def _assert_native_precision_unset(
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    return await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+
+
+async def load_diffusion_model_gated(
+    request: DiffusionLoadRequest,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
+    """Everything ``POST /images/load`` does, plus who asked for it.
+
+    Media auto-switch awaits this rather than the route so the idle unload can tell an
+    API-loaded pipeline from one the user picked on the Images page.
+    """
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -23361,6 +23565,8 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
+    from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -23487,6 +23693,9 @@ async def load_diffusion_model(
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
+                # a load nobody asked for may not reach the hub: the switch verified locality
+                # from the outside, and this is what makes that promise the loader's own rule
+                local_files_only = not user_initiated,
                 gguf_filename = request.gguf_filename,
                 base_repo = request.base_repo,
                 family_override = request.family_override,
@@ -23525,6 +23734,14 @@ async def load_diffusion_model(
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
             status_dict = await asyncio.to_thread(_begin_load)
+        # Keyed to the target: this load can still fail with the previous model resident, and
+        # its origin must not be read off that model.
+        note_media_load_origin(
+            DIFFUSION,
+            request.model_path,
+            extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
+            user_action = user_initiated,
+        )
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -24077,15 +24294,21 @@ async def openai_image_generations(
     body: ImageGenerationRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """OpenAI-compatible text-to-image (POST /v1/images/generations).
 
     Generates ``n`` images from ``prompt`` on the loaded diffusion model and
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
-    and guidance have no OpenAI knob, so they default per loaded model."""
+    and guidance have no OpenAI knob, so they default per loaded model.
+
+    With media auto-switch on, ``model`` names the image model to serve on and is loaded
+    when it is not the resident one; with it off ``model`` stays informational."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import default_generation_params
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
     if body.stream:
         raise HTTPException(
@@ -24100,6 +24323,15 @@ async def openai_image_generations(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
+
+    # Before the loaded check: the requested model may be the one this brings up.
+    await maybe_auto_switch_media_model(
+        body.model,
+        owner = DIFFUSION,
+        current_subject = current_subject,
+        openai_errors = True,
+        hf_token = hf_token,
+    )
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()

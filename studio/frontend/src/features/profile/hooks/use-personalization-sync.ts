@@ -39,7 +39,9 @@ const PUSH_DEBOUNCE_MS = 800;
 // locale). Version 1 always serialized the resolved locale, so its "en" is
 // usually the old default rather than an explicit pick.
 // Version 3 migrates untouched sidebar layouts to keep Video under More.
-const PERSONALIZATION_VERSION = 3;
+// Version 4 pins Video under Images. Without this bump a synced profile
+// rehydrates its stored layout over the local migration.
+const PERSONALIZATION_VERSION = 4;
 
 type ProfileSnapshot = {
   displayName: string;
