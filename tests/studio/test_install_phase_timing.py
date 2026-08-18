@@ -50,7 +50,7 @@ INSTALLERS = (
 
 # Markers of the two filter dialects, each paired with the log-writing stage that must
 # come before it in the same pipeline.
-POSIX_FILTER = 'printf \'[%4ds] %s\\n\' "$SECONDS"'
+POSIX_FILTER = "printf '[%4ds] %s\\n' \"$SECONDS\""
 PWSH_FILTER = "$sw.Elapsed.TotalSeconds"
 
 
@@ -211,8 +211,7 @@ def test_the_powershell_clock_is_started_before_it_is_read():
             f"every elapsed field renders empty and the step still passes"
         )
         assert run.index("Stopwatch]::StartNew()") < run.index(PWSH_FILTER), (
-            f"{path.name}:{jid}:{name} starts its Stopwatch after the pipeline that reads "
-            f"it"
+            f"{path.name}:{jid}:{name} starts its Stopwatch after the pipeline that reads " f"it"
         )
 
 
@@ -328,9 +327,9 @@ def test_the_shipped_posix_filter_leaves_the_log_byte_identical(tmp_path):
         f"logs/install.log depends on this."
     )
     assert re.search(r"\[ *\d+s\] phase one", stdout), f"no elapsed prefix on stdout: {stdout!r}"
-    assert "no trailing newline" in stdout, (
-        f"the final unterminated line never reached the step log: {stdout!r}"
-    )
+    assert (
+        "no trailing newline" in stdout
+    ), f"the final unterminated line never reached the step log: {stdout!r}"
 
 
 @pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
@@ -346,9 +345,7 @@ def test_the_shipped_posix_filter_propagates_a_failed_install(tmp_path):
 @pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
 def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp_path):
     """`[   0s]` on every line would look exactly like a working feature in a CI log."""
-    rc, stdout, _ = _run_posix_filter(
-        tmp_path, "bash -c 'echo first; sleep 2; echo second'"
-    )
+    rc, stdout, _ = _run_posix_filter(tmp_path, "bash -c 'echo first; sleep 2; echo second'")
     assert rc == 0, stdout
     seconds = [int(m) for m in re.findall(r"\[ *(\d+)s\]", stdout)]
     assert len(seconds) >= 2, f"expected a prefix per line, got {stdout!r}"
@@ -361,7 +358,10 @@ def test_the_elapsed_prefix_tracks_real_time_rather_than_printing_a_constant(tmp
 PWSH = None
 for _candidate in ("pwsh", "powershell"):
     try:
-        if subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode == 0:
+        if (
+            subprocess.run([_candidate, "-NoProfile", "-Command", "exit 0"], timeout = 60).returncode
+            == 0
+        ):
             PWSH = _candidate
             break
     except (OSError, subprocess.SubprocessError):
@@ -387,18 +387,16 @@ def test_the_pwsh_filter_keeps_the_log_clean_and_the_exit_code_intact(tmp_path):
         Write-Output "RC=$LASTEXITCODE"
         """
     )
-    proc = subprocess.run(
-        [PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True
-    )
+    proc = subprocess.run([PWSH, "-NoProfile", "-Command", script], capture_output = True, text = True)
     assert "RC=7" in proc.stdout, (
         f"$LASTEXITCODE did not survive the added pipeline stages, so a failing "
         f"install.ps1 would leave its step green:\n{proc.stdout}\n{proc.stderr}"
     )
     contents = log.read_text(encoding = "utf-8")
-    assert "phase one" in contents and "s]" not in contents, (
-        f"the elapsed prefix leaked into logs/install.log: {contents!r}"
-    )
+    assert (
+        "phase one" in contents and "s]" not in contents
+    ), f"the elapsed prefix leaked into logs/install.log: {contents!r}"
     seconds = [int(m) for m in re.findall(r"\[ *(\d+)s\]", proc.stdout)]
-    assert seconds and seconds[-1] > seconds[0], (
-        f"the PowerShell prefix did not advance across a 2s gap ({seconds})"
-    )
+    assert (
+        seconds and seconds[-1] > seconds[0]
+    ), f"the PowerShell prefix did not advance across a 2s gap ({seconds})"
