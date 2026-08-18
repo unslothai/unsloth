@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   PROMPT_QUEUE_DRAG_TYPE,
   hasPendingPromptQueueStart,
+  isAttachmentQueueable,
   isPromptQueueChord,
   isPromptQueueDragTypes,
   pastedTextQueueKey,
@@ -164,4 +165,52 @@ test("a null thread does not collide with a named one", () => {
     pastedTextQueueKey(null, "notes", []),
     pastedTextQueueKey("t1", "notes", []),
   );
+});
+
+test("a ready non-text attachment can be queued without composer text", () => {
+  assert.equal(
+    isAttachmentQueueable({
+      hasAttachments: true,
+      attachmentsAreAllPastedText: false,
+      hasPendingAudio: false,
+      isComposing: false,
+      hasPendingAttachments: false,
+      hasMaterializingImageAttachments: false,
+      hasMaterializingAudioAttachments: false,
+      disabled: false,
+      overlay: false,
+    }),
+    true,
+  );
+});
+
+test("attachment queueing stays disabled until the attachment is ready", () => {
+  const base = {
+    hasAttachments: true,
+    attachmentsAreAllPastedText: false,
+    hasPendingAudio: false,
+    isComposing: false,
+    hasPendingAttachments: false,
+    hasMaterializingImageAttachments: false,
+    hasMaterializingAudioAttachments: false,
+    disabled: false,
+    overlay: false,
+  };
+
+  for (const field of [
+    "hasPendingAttachments",
+    "hasMaterializingImageAttachments",
+    "hasMaterializingAudioAttachments",
+    "hasPendingAudio",
+    "isComposing",
+    "disabled",
+    "overlay",
+    "attachmentsAreAllPastedText",
+  ] as const) {
+    assert.equal(
+      isAttachmentQueueable({ ...base, [field]: true }),
+      false,
+      `${field} must block attachment queueing`,
+    );
+  }
 });
