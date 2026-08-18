@@ -814,9 +814,65 @@ def _conversation_order(row) -> tuple:
     return (1, int(ordinal), created, index)
 
 
+def _ends_first_within_ties(conn, hits: list) -> list:
+    """Reorder each run of EQUAL lexical scores as newest, oldest, next-newest, ...
+
+    A tie is not an order. FTS5 floors the IDF of a term appearing in more than half the
+    index at 1e-6, so in a per-thread archive every turn naming the subject of the
+    conversation can score identically -- measured at ONE distinct bm25 across eight
+    revisions of the same variable. The candidate list then arrives in rowid order, the
+    caller truncates it at `top_k`, and the slots go to the OLDEST turns purely because
+    SQLite emitted them first: the current value never reached the model, while
+    `format_conversation_recall` told it a later turn supersedes an earlier one. A stale
+    answer presented as the authoritative one is worse than a miss.
+
+    Newest-first outright is the obvious fix and it is wrong: measured, it fails BOTH
+    `test_asking_what_it_was_originally_still_returns_the_first_assignment` -- the guard
+    against a fix that just returns the latest thing it can find -- and the tie test
+    below it. Both ends is what keeps "what is it now" and "what was it originally"
+    answerable out of the same tied run.
+
+    Only WITHIN a run of equal scores, so nothing ever moves past a chunk the ranking pass
+    actually separated. Ordering is `_conversation_order`, so legacy NULL ordinals still
+    count as oldest.
+    """
+    if len(hits) < 2:
+        return hits
+    if len({hit.lexical_score for hit in hits}) == len(hits):
+        # Nothing tied: skip the row fetch entirely, which is the common case.
+        return hits
+    try:
+        rows = store.chunks_by_id(conn, [hit.chunk_id for hit in hits])
+    except Exception:  # noqa: BLE001 -- ordering must never break a recall
+        return hits
+    ordered: list = []
+    run: list = []
+
+    def _flush():
+        if not run:
+            return
+        by_time = sorted(run, key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
+        while by_time:
+            ordered.append(by_time.pop())
+            if by_time:
+                ordered.append(by_time.pop(0))
+
+    for hit in hits:
+        if run and run[-1].lexical_score != hit.lexical_score:
+            _flush()
+            run = []
+        run.append(hit)
+    _flush()
+    return ordered
+
+
 def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> list:
-    return retrieval.retrieve_hybrid(
-        conn, scope, query, k = k, model_name = model, mode = "lexical", lexical_query = expression
+    return _ends_first_within_ties(
+        conn,
+        retrieval.retrieve_hybrid(
+            conn, scope, query, k = k, model_name = model, mode = "lexical",
+            lexical_query = expression,
+        ),
     )
 
 

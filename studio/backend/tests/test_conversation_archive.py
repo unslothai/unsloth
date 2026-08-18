@@ -2033,3 +2033,38 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
     assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
     assert sources[0]["chunkIndex"] == 2
     assert sources[0]["turn"] is None
+
+
+def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
+    """A tie in the score is not an order, and truncating it silently picked the past.
+
+    FTS5 floors the IDF of a term that appears in more than half the index at 1e-6, and in
+    a per-thread archive the identifier the whole conversation is about is exactly such a
+    term. When the revisions share nothing else with the question, every one of them comes
+    back with the SAME bm25, so `hits[:limit]` kept whichever rows SQLite happened to emit
+    first, which is the oldest. Measured on eight revisions at top_k 4: one distinct score
+    across all eight, and the recall returned revisions 1 to 4 with the current value
+    absent.
+
+    That is worse than a miss. `format_conversation_recall` tells the model that a later
+    turn supersedes an earlier one, so the stale value is handed over as the authoritative
+    one.
+
+    Taking from both ends of an equal-score run is what keeps this test and the
+    original-assignment guard true at the same time: preferring the newest outright fails
+    that guard, which exists precisely to stop a fix that just returns the latest thing it
+    can find.
+    """
+    values = _revisions(8)
+
+    found = conversation_archive.recall(
+        THREAD, f"what is the current value of {VARIABLE}", top_k = 4
+    )
+
+    assert found is not None
+    text, _sources = found
+    assert values[-1] in text, (
+        "the newest revision was dropped by a tie-break that prefers whatever the index "
+        "emitted first"
+    )
+    assert values[0] in text, "the oldest revision must not be dropped either"
