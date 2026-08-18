@@ -190,7 +190,9 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured_operation_ids: list[str | None] = []
 
     def clear_with_ids(
-        thread_ids = (), operation_id = None, include_chat_generation_runs = False
+        thread_ids = (),
+        operation_id = None,
+        include_chat_generation_runs = False,
     ):
         captured.extend(thread_ids)
         captured_operation_ids.append(operation_id)

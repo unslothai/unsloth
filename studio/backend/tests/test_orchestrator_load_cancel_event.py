@@ -21,14 +21,20 @@ def test_safetensors_load_event_interrupts_worker_wait(monkeypatch):
     monkeypatch.setattr("utils.transformers_version.needs_transformers_5", lambda _model: False)
     monkeypatch.setattr("utils.transformers_version.sidecar_swap_kind", lambda: None)
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: spawned["value"])
-    monkeypatch.setattr(orchestrator, "_spawn_subprocess", lambda _config: spawned.__setitem__("value", True))
+    monkeypatch.setattr(
+        orchestrator, "_spawn_subprocess", lambda _config: spawned.__setitem__("value", True)
+    )
     monkeypatch.setattr(orchestrator, "_read_resp", lambda timeout = 1: time.sleep(timeout) or None)
-    monkeypatch.setattr(orchestrator, "_shutdown_subprocess", lambda timeout = 5: shutdowns.append(timeout) or True)
+    monkeypatch.setattr(
+        orchestrator, "_shutdown_subprocess", lambda timeout = 5: shutdowns.append(timeout) or True
+    )
     timer = threading.Timer(0.05, cancel_event.set)
     timer.start()
     try:
         started = time.monotonic()
-        loaded = orchestrator.load_model(SimpleNamespace(identifier = "local.safetensors"), load_cancel_event = cancel_event)
+        loaded = orchestrator.load_model(
+            SimpleNamespace(identifier = "local.safetensors"), load_cancel_event = cancel_event
+        )
     finally:
         timer.cancel()
     assert loaded is False

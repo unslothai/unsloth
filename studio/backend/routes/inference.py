@@ -1130,19 +1130,9 @@ def _stats_finish_reason(
     return default
 
 
-def _safetensors_finish_reason(
-    stats,
-    payload,
-    *,
-    is_mlx: bool,
-    durable_run: bool,
-) -> str:
+def _safetensors_finish_reason(stats, payload, *, is_mlx: bool, durable_run: bool) -> str:
     """Normalize MLX's stop-at-cap only for server-owned Studio runs."""
-    token_budget = (
-        _effective_openai_max_tokens(payload)
-        if is_mlx and durable_run
-        else None
-    )
+    token_budget = _effective_openai_max_tokens(payload) if is_mlx and durable_run else None
     return _stats_finish_reason(stats, token_budget = token_budget)
 
 

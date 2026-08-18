@@ -3190,9 +3190,9 @@ def test_a_chat_started_during_the_clear_is_cancelled_too():
 
     source = inspect.getsource(chat_history.clear_history)
     assert "late" in source
-    assert source.index("cleared, cleared_runs, cleared_chat_runs = clear_chat_history(") < source.index(
-        "_cancel_active_generations(late)"
-    )
+    assert source.index(
+        "cleared, cleared_runs, cleared_chat_runs = clear_chat_history("
+    ) < source.index("_cancel_active_generations(late)")
     assert source.index("_cancel_active_generations(late)") < source.index("_remove_sandboxes(")
 
 

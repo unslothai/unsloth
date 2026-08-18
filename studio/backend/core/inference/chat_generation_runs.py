@@ -37,20 +37,14 @@ class _SSEDecoder:
         while "\n\n" in self.buffer:
             block, self.buffer = self.buffer.split("\n\n", 1)
             data = "\n".join(
-                line[5:].lstrip()
-                for line in block.splitlines()
-                if line.startswith("data:")
+                line[5:].lstrip() for line in block.splitlines() if line.startswith("data:")
             )
             if data:
                 values.append(data)
         return values
 
 
-def _background_request(
-    app: Any,
-    run_id: str,
-    cancel_event: threading.Event,
-) -> Request:
+def _background_request(app: Any, run_id: str, cancel_event: threading.Event) -> Request:
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -153,8 +147,10 @@ class ChatGenerationSupervisor:
         thread_id: str | None = None,
         model: str | None = None,
     ) -> None:
-        if self._stopping or run_id in self._tasks or not self._ensure_reservation(
-            run_id, thread_id = thread_id, model = model
+        if (
+            self._stopping
+            or run_id in self._tasks
+            or not self._ensure_reservation(run_id, thread_id = thread_id, model = model)
         ):
             return
         cancel_event = self._cancel_events[run_id]

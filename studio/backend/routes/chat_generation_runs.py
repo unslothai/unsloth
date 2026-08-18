@@ -243,17 +243,13 @@ async def create_chat_generation_run(
 
 @router.get("/active")
 def active_chat_generation_runs(
-    thread_id: str = Query(alias = "threadId"),
-    current_subject: str = Depends(get_current_subject),
+    thread_id: str = Query(alias = "threadId"), current_subject: str = Depends(get_current_subject)
 ):
     return {"runs": db.list_active(current_subject, thread_id)}
 
 
 @router.get("/{run_id}")
-def get_chat_generation_run(
-    run_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+def get_chat_generation_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     return _require_run(run_id, current_subject)
 
 

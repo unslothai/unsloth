@@ -2758,9 +2758,7 @@ _GENERATION_STATUS_RANK = {"queued": 0, "running": 1, "cancelling": 2}
 
 
 def _safe_generation_assistant_update(
-    conn: sqlite3.Connection,
-    thread_id: str,
-    message: dict,
+    conn: sqlite3.Connection, thread_id: str, message: dict
 ) -> bool:
     """Allow only monotonic writes to the assistant row owned by one run."""
     row = conn.execute(
@@ -2831,9 +2829,15 @@ def _safe_generation_assistant_update(
                 return False
         if incoming.get("incomplete") != stored.get("incomplete"):
             return False
-    if run_status in _GENERATION_ACTIVE_STATUSES and incoming_status in _GENERATION_TERMINAL_STATUSES:
+    if (
+        run_status in _GENERATION_ACTIVE_STATUSES
+        and incoming_status in _GENERATION_TERMINAL_STATUSES
+    ):
         return False
-    if incoming.get("generationSettled") is True and run_status not in _GENERATION_TERMINAL_STATUSES:
+    if (
+        incoming.get("generationSettled") is True
+        and run_status not in _GENERATION_TERMINAL_STATUSES
+    ):
         return False
     if incoming.get("generationSettled") is True and incoming_seq != int(row["last_event_seq"]):
         return False
@@ -2874,9 +2878,7 @@ def _guard_server_managed_messages(
             and message_id not in generation
             and _research_message_would_change(conn, thread_id, message, pruned)
         ):
-            raise ChatMessageProtectedError(
-                "server-managed generation messages cannot be edited"
-            )
+            raise ChatMessageProtectedError("server-managed generation messages cannot be edited")
 
 
 _CONTENT_PART_ID_PREFIX = "content-part-sha256-"
@@ -3441,8 +3443,7 @@ def _detach_research_message_json(
         and any(key in custom for key in _SERVER_MANAGED_LINK_KEYS)
         or isinstance(content, list)
         and any(
-            isinstance(part, dict)
-            and any(key in part for key in _SERVER_MANAGED_LINK_KEYS)
+            isinstance(part, dict) and any(key in part for key in _SERVER_MANAGED_LINK_KEYS)
             for part in content
         )
     )
@@ -3451,27 +3452,19 @@ def _detach_research_message_json(
 
     if isinstance(content, list):
         content = [
-            {
-                key: value
-                for key, value in part.items()
-                if key not in _SERVER_MANAGED_LINK_KEYS
-            }
+            {key: value for key, value in part.items() if key not in _SERVER_MANAGED_LINK_KEYS}
             if isinstance(part, dict)
             else part
             for part in content
         ]
     if isinstance(metadata, dict):
         metadata = {
-            key: value
-            for key, value in metadata.items()
-            if key not in _SERVER_MANAGED_LINK_KEYS
+            key: value for key, value in metadata.items() if key not in _SERVER_MANAGED_LINK_KEYS
         }
         custom = metadata.get("custom")
         if isinstance(custom, dict):
             metadata["custom"] = {
-                key: value
-                for key, value in custom.items()
-                if key not in _SERVER_MANAGED_LINK_KEYS
+                key: value for key, value in custom.items() if key not in _SERVER_MANAGED_LINK_KEYS
             }
     return (
         json.dumps(content, ensure_ascii = False),

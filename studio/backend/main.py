@@ -662,7 +662,6 @@ async def lifespan(app: FastAPI):
 
     try:
         from storage.chat_generation_runs_db import reconcile_orphaned_runs
-
         reconciled_chat_runs = reconcile_orphaned_runs()
         if reconciled_chat_runs:
             _lifespan_log.warning(

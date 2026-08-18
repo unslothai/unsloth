@@ -87,9 +87,7 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _append_events_locked(
-    conn: sqlite3.Connection,
-    run_id: str,
-    events: Iterable[tuple[str, dict[str, Any]]],
+    conn: sqlite3.Connection, run_id: str, events: Iterable[tuple[str, dict[str, Any]]]
 ) -> list[int]:
     row = conn.execute(
         "SELECT last_event_seq FROM chat_generation_runs WHERE id=?",
@@ -190,7 +188,10 @@ def create_run(
             (run_id,),
         ).fetchone()
         if existing is not None:
-            if existing["owner_subject"] != owner_subject or existing["request_hash"] != request_hash:
+            if (
+                existing["owner_subject"] != owner_subject
+                or existing["request_hash"] != request_hash
+            ):
                 raise ChatGenerationConflictError("Run ID is already bound to another request")
             conn.commit()
             return _run_from_row(existing), False
@@ -347,8 +348,7 @@ def get_worker_token(run_id: str) -> str | None:
 
 
 def get_worker_run(
-    run_id: str,
-    worker_token: str | None = None,
+    run_id: str, worker_token: str | None = None
 ) -> tuple[dict[str, Any], str, str] | None:
     """Return one fenced producer snapshot and its owner from the same row read."""
     conn = get_connection()
@@ -386,9 +386,7 @@ def list_active(owner_subject: str, thread_id: str) -> list[dict[str, Any]]:
 
 
 def append_events(
-    run_id: str,
-    worker_token: str,
-    events: Iterable[tuple[str, dict[str, Any]]],
+    run_id: str, worker_token: str, events: Iterable[tuple[str, dict[str, Any]]]
 ) -> list[int]:
     batch = list(events)
     if not batch:
@@ -557,7 +555,11 @@ def finish_run(
         conn.close()
 
 
-def list_events(run_id: str, after: int = 0, limit: int = 1000) -> list[dict[str, Any]]:
+def list_events(
+    run_id: str,
+    after: int = 0,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -579,7 +581,11 @@ def list_events(run_id: str, after: int = 0, limit: int = 1000) -> list[dict[str
         conn.close()
 
 
-def wait_for_events(run_id: str, after: int = 0, timeout: float = 15) -> list[dict[str, Any]]:
+def wait_for_events(
+    run_id: str,
+    after: int = 0,
+    timeout: float = 15,
+) -> list[dict[str, Any]]:
     events = list_events(run_id, after)
     if events:
         return events
