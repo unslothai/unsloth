@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 
-from core.inference.context_window import estimate_message_tokens, group_turns
+from core.inference.context_window import estimate_messages_tokens, group_turns
 
 # 80 characters. Objective, and there is no way to trip it accidentally in either
 # direction that a reasonable person would argue with: someone who typed a paragraph
@@ -162,6 +162,25 @@ def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
     return normalised in _CONTINUATIONS or len(normalised.split()) <= 2
 
 
+def _protected_cost(turns: list[list[dict]], index: int) -> int:
+    """What pinning the head of ``turns[index]`` actually costs the window.
+
+    `truncate_oldest_messages` protects by GROUP, not by message, and it evicts a
+    user-headed group together with the tool groups that trail it. So pinning a
+    one-line instruction also holds its reply and its whole tool exchange, and charging
+    only the instruction let a pin exceed the ceiling by an arbitrary amount: measured at
+    28 tokens charged against 20037 actually held. The budget has to count what is
+    really kept, or it is not a budget.
+    """
+    total = estimate_messages_tokens(turns[index])
+    if turns[index][0].get("role") == "user":
+        for following in turns[index + 1 :]:
+            if following[0].get("role") in ("system", "developer", "user"):
+                break
+            total += estimate_messages_tokens(following)
+    return total
+
+
 def pinned_instruction_ids(
     messages: list[dict],
     *,
@@ -173,8 +192,9 @@ def pinned_instruction_ids(
     """`id()`s of the messages in the most recent instruction groups worth protecting.
 
     Bounded twice over. At most ``groups`` of them, and never more than ``max_tokens``
-    summed across the pinned USER messages -- their replies are not pinned, because the
-    instruction is the thing that has to survive, not the answer to it. Anything larger
+    summed across everything the pin actually holds: only the USER message is named, but
+    the window protects by group, so the reply and any trailing tool exchange are held
+    with it and are charged with it (see `_protected_cost`). Anything larger
     than the ceiling is not pinned AT ALL rather than partially: the single enormous
     instruction is precisely the thing that could starve the window, so it is the thing
     excluded.
@@ -215,7 +235,7 @@ def pinned_instruction_ids(
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             continue
-        cost = estimate_message_tokens(head)
+        cost = _protected_cost(turns, index)
         if spent + cost > ceiling:
             continue
         pinned.add(id(head))

@@ -334,10 +334,15 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # The turn KEEPS its position. Re-embedding walks the whole archive, so
                 # taking a fresh ordinal here would renumber an entire conversation into
                 # the order its vectors were rebuilt, which is not an order at all.
+                #
+                # NULL for a turn archived before the column existed, and it stays NULL:
+                # allocating a fresh ordinal for one of those would move the oldest turn
+                # in the conversation behind every numbered turn, and the chronological
+                # renderer would then present it as the LATER, superseding statement.
                 previous = store.get_document(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
                 store.delete_document(conn, stale, commit = False)
-            if ordinal is None:
+            else:
                 ordinal = store.next_archive_ordinal(conn, scope)
             document_id = store.create_document(
                 conn,
@@ -794,39 +799,67 @@ def _conversation_order(row) -> tuple:
     return (1, int(ordinal), created, index)
 
 
-def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
-    """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest.
+def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> list:
+    return retrieval.retrieve_hybrid(
+        conn, scope, query, k = k, model_name = model, mode = "lexical", lexical_query = expression
+    )
 
-    The lexical pass runs TWICE when the question contains an identifier: once requiring
-    all of them, then once over the content words to top up. Requiring them first is what
-    stops an incidental word in the question outranking the subject of the whole
-    conversation (see `store.conversation_match_queries`); running the permissive pass
-    afterwards is what stops a conjunction that matches nothing from reading as an empty
-    archive. The merged list is what the caller's widening loop measures, so a
-    conjunction returning few rows cannot be mistaken for "nothing left to widen into".
+
+def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
+    """Archive lexical candidates: the identifiers FILTER, the content words RANK.
+
+    The conjunctive pass cannot also do the ranking. FTS5 floors the BM25 IDF of a term
+    that appears in more than half of the index at 1e-6 (`ext/fts5/fts5_aux.c`: "if
+    (N < 2*nHit), the IDF is negative. Which is undesirable. So the minimum allowable IDF
+    is (1e-6)"), and in a per-thread archive the identifier the whole conversation is
+    about is exactly such a term. Its hits therefore come back in an order that carries
+    no information, so cutting that pass off at ``fetch`` drops turns effectively at
+    random -- measured on a 20-turn archive naming one variable, the turn stating its
+    current value fell outside the 16 candidates and the recall answered with the four
+    oldest turns instead.
+
+    So the conjunction decides WHICH chunks are eligible, over a wide window, and the
+    content-word pass decides the order among them. Chunks the ranking pass never saw
+    keep their place behind the ones it did, and chunks that match only the content words
+    stay last, which is what keeps every slot on the subject of the question.
     """
     expressions = (
         store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
     )
+    if len(expressions) < 2:
+        return _lexical_pass(
+            conn, scope, query, model, fetch, expressions[0] if expressions else None
+        )
+    strict = _lexical_pass(conn, scope, query, model, _BRANCH_FILTER_MAX_CANDIDATES, expressions[0])
+    loose = _lexical_pass(conn, scope, query, model, fetch, expressions[-1])
+    strict_ids = {hit.chunk_id for hit in strict}
+    ranked = [hit for hit in loose if hit.chunk_id in strict_ids]
+    already = {hit.chunk_id for hit in ranked}
+    ranked += [hit for hit in strict if hit.chunk_id not in already]
+    ranked += [hit for hit in loose if hit.chunk_id not in strict_ids]
+    return ranked
+
+
+def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
+    """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest.
+
+    The lexical pass runs TWICE when the question contains an identifier: once requiring
+    all of them, then once over the content words. Requiring them is what stops an
+    incidental word in the question outranking the subject of the whole conversation (see
+    `store.conversation_match_queries`); running the permissive pass as well is what
+    orders the survivors and what stops a conjunction that matches nothing from reading
+    as an empty archive (see `_focused_lexical`). The merged list is what the caller's
+    widening loop measures, so a conjunction returning few rows cannot be mistaken for
+    "nothing left to widen into".
+    """
     hits: list = []
     seen: set = set()
-    for expression in expressions:
+    for hit in _focused_lexical(conn, scope, query, model, fetch):
+        if hit.chunk_id not in seen:
+            hits.append(hit)
+            seen.add(hit.chunk_id)
         if len(hits) >= fetch:
             break
-        for hit in retrieval.retrieve_hybrid(
-            conn,
-            scope,
-            query,
-            k = fetch,
-            model_name = model,
-            mode = "lexical",
-            lexical_query = expression,
-        ):
-            if hit.chunk_id not in seen:
-                hits.append(hit)
-                seen.add(hit.chunk_id)
-            if len(hits) >= fetch:
-                break
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
@@ -903,7 +936,20 @@ def recall(
         if not merged:
             return None
         if config.CONVERSATION_RECALL_ORDER == "chronological":
-            merged.sort(key = lambda source: (source.get("turn") is None, source.get("turn") or 0))
+            # The same key `_conversation_order` uses on the single-query path, so the
+            # two agree: a turn with no ordinal predates the column and therefore every
+            # numbered turn, and `chunkIndex` keeps one long turn's pieces in the order
+            # they were written rather than in the order the two queries happened to
+            # return them. Python's sort is stable, so equal keys would otherwise leave
+            # the anchor's later chunk quoted ahead of the follow-up's chunk 0, under a
+            # header that promises oldest first.
+            merged.sort(
+                key = lambda source: (
+                    source.get("turn") is not None,
+                    source.get("turn") or 0,
+                    source.get("chunkIndex") or 0,
+                )
+            )
             kept = merged[:limit]
             return tool.render_conversation_sources(kept), kept
         kept = merged[:limit]

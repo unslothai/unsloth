@@ -1163,3 +1163,48 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     # Short, but it names the thing it wants: replacing this with an older instruction
     # would answer a question the user did not ask.
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
+
+
+def test_a_pin_is_charged_for_everything_it_holds():
+    """`truncate_oldest_messages` protects by GROUP, so the reply rides along with the
+    instruction. Charging only the instruction let a 28-token pin hold 20037 tokens, past
+    both the ceiling and the prompt-fraction cap, and `_fit_with_instruction_pins` then
+    dropped every pin on the retry -- losing the instruction the pin exists to keep."""
+    from core.inference import instruction_pin
+
+    instruction = _instruction()
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        instruction,
+        {"role": "assistant", "content": "x " * 40000},
+        {"role": "user", "content": "continue"},
+    ]
+
+    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
+
+    # And the same instruction with a reply the budget can afford is still pinned.
+    modest = list(messages)
+    modest[2] = {"role": "assistant", "content": "Understood."}
+    assert instruction_pin.pinned_instruction_ids(modest, groups = 2, max_tokens = 1024) == {
+        id(instruction)
+    }
+
+
+def test_a_pin_is_charged_for_the_tool_exchange_it_holds():
+    """A user-headed group is evicted together with the tool groups that trail it, so
+    those are held by the pin too and have to be counted with it."""
+    from core.inference import instruction_pin
+
+    instruction = _instruction()
+    messages = [
+        instruction,
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "c1", "function": {"name": "read", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "y " * 40000},
+        {"role": "user", "content": "continue"},
+    ]
+
+    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()

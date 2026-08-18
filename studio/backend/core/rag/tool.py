@@ -147,6 +147,9 @@ def format_conversation_recall(rows, hits) -> tuple[str, list[dict]]:
                 "page": None,
                 "text": text,
                 "turn": int(ordinal) + 1 if ordinal is not None else None,
+                # Carried so a merge of two searches can put one long turn's pieces back
+                # in the order they were written; nothing renders it.
+                "chunkIndex": _row_value(r, "chunk_index"),
                 "score": round(float(h.score), 4) if h.score is not None else None,
             }
         )

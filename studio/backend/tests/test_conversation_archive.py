@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.rag import conversation_archive, retrieval, store  # noqa: E402
+from core.rag import config, conversation_archive, retrieval, store  # noqa: E402
 from storage import rag_db  # noqa: E402
 
 THREAD = "thread-abc"
@@ -1587,15 +1587,23 @@ def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
     entire conversation into the order its vectors were rebuilt."""
     from core.rag import embeddings
 
-    first = _turn("the oldest turn", "a")
-    _archive(first)
-    _archive(_turn("a later turn", "b"))
+    # `embedding_identity` too, not only the encode: `archive_turns` short-circuits on
+    # the EXPECTED identity before it embeds anything, so patching the encode alone
+    # leaves the re-embed path unreached and this test passing on any implementation.
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
     monkeypatch.setattr(
         embeddings,
         "encode_with_identity",
-        lambda texts, **kwargs: ([[0.5] * 8 for _ in texts], "other-model"),
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
     )
-    _archive(first)
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    first = _turn("the oldest turn", "a")
+    assert _archive([dict(message) for message in first]) == 1
+    assert _archive(_turn("a later turn", "b")) == 1
+    identity["name"] = "st:model-b"
+    assert _archive([dict(message) for message in first]) == 1
 
     scope = store.conversation_archive_scope(THREAD)
     rows = conn.execute(
@@ -1663,3 +1671,126 @@ def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
     assert "turn=" not in text
     assert "supersedes" not in text
     assert "oldest first" not in text
+
+
+def test_a_ubiquitous_identifier_cannot_crowd_out_the_newest_revision(conn):
+    """The conjunctive pass FILTERS; it must not also rank, and must not fill `fetch`.
+
+    FTS5 floors the BM25 IDF of a term present in more than half the index at 1e-6, so in
+    an archive that is all about one variable the identifier orders nothing. Cutting that
+    pass off at `fetch` therefore dropped the turn stating the current value and answered
+    with the four oldest turns instead -- worse than the OR query it replaced.
+    """
+    for index in range(19):
+        _archive(
+            _turn(
+                f"lets discuss {VARIABLE} aspect number {index}",
+                f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 991234"))
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}?")
+
+    assert found is not None
+    text, _sources = found
+    assert "991234" in text
+
+
+def test_the_archive_query_keeps_the_negation_that_carries_the_question(conn):
+    """ "What did I say NOT to delete" is only that question while `not` survives."""
+    assert '"not"' in store.conversation_match_queries("What did I say not to delete?")[0]
+
+    _archive(_turn("Please do not delete the staging bucket, ever.", "Understood."))
+    for question, answer in (
+        ("delete the old build artifacts in dist", "Removed the dist folder."),
+        ("can you delete the unused import in main.py", "Import removed."),
+        ("delete the stale feature branch", "Branch deleted."),
+        ("I want you to delete the temp uploads folder", "Temp uploads cleared."),
+        ("delete every log older than a week", "Old logs cleared."),
+        ("please delete the duplicated test file", "Duplicate test removed."),
+        ("delete the leftover docker volumes", "Volumes pruned."),
+        ("delete the commented out block in config", "Block removed."),
+    ):
+        _archive(_turn(question, answer))
+
+    found = conversation_archive.recall(THREAD, "What did I say not to delete?", top_k = 4)
+
+    assert found is not None
+    assert "staging bucket" in found[0]
+
+
+def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn, monkeypatch):
+    """A NULL ordinal predates the column. Allocating one on re-embed would move the
+    conversation's OLDEST turn behind every numbered one, and the renderer would then
+    read it as the later, superseding statement."""
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    oldest = _turn("the pelican turn", "the oldest statement about pelicans")
+    assert _archive([dict(message) for message in oldest]) == 1
+    scope = store.conversation_archive_scope(THREAD)
+    # What an upgraded database looks like: written before the column, never backfilled.
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    assert _archive(_turn("newest pelican question", "the newest statement about pelicans")) == 1
+
+    identity["name"] = "st:model-b"
+    assert _archive([dict(message) for message in oldest]) == 1
+
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY created_at", (scope,)
+        ).fetchall()
+    ]
+    assert ordinals == [0, None]
+    text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
+    assert text.index("oldest statement") < text.index("newest statement")
+
+
+def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
+    """The merge key has to agree with `_conversation_order`, or the merged block
+    contradicts its own "oldest first" header on an upgraded archive."""
+    _archive(_turn("the pelican turn", "OLDLEGACY statement about pelicans"))
+    _archive(_turn("more pelican talk", "NEWNUMBERED statement about pelicans"))
+    scope = store.conversation_archive_scope(THREAD)
+    oldest = conn.execute(
+        "SELECT id FROM documents WHERE scope=? ORDER BY created_at", (scope,)
+    ).fetchone()["id"]
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE id=?", (oldest,))
+    conn.commit()
+
+    merged = conversation_archive.recall(THREAD, "pelican", top_k = 4, extra_queries = ["statement"])
+
+    assert merged is not None
+    text, _sources = merged
+    assert text.index("OLDLEGACY") < text.index("NEWNUMBERED")
+
+
+def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkeypatch):
+    """Both queries hit the same long turn, so every source carries the same `turn` and a
+    stable sort would quote it in query order -- tail first."""
+    monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    body = (
+        "ALPHAHEAD the opening of the turn "
+        + " ".join(f"w{index}" for index in range(25))
+        + " OMEGATAIL the closing of the turn "
+        + " ".join(f"z{index}" for index in range(25))
+    )
+    _archive(_turn("a very long turn", body))
+
+    merged = conversation_archive.recall(THREAD, "ALPHAHEAD", top_k = 2, extra_queries = ["OMEGATAIL"])
+
+    assert merged is not None
+    text, _sources = merged
+    assert text.index("ALPHAHEAD") < text.index("OMEGATAIL")

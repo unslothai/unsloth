@@ -76,10 +76,17 @@ def _match_query(query: str) -> str:
 # Function words only, and a closed list rather than anything corpus-derived, so the
 # behaviour is reviewable and identical on every install. Nothing here can carry the
 # subject of a question.
+#
+# `no` and `not` are deliberately NOT here. They are function words, but they are the
+# only words that carry the difference in "what did I say not to delete?", and dropping
+# them leaves `say` and `delete` -- terms a long archive has in most of its turns, whose
+# BM25 IDF FTS5 then floors at 1e-6, so they order nothing. Keeping the negation costs
+# nothing where it is common (the same floor applies to it) and is the whole query where
+# it is rare.
 _ARCHIVE_STOPWORDS = frozenset(
     """
 a about all am an and any are as at be been being but by can could did do does doing
-for from get give had has have how i if in into is it its just let me my no not now of
+for from get give had has have how i if in into is it its just let me my now of
 on or please should so tell that the their them then there these they this those to us
 was we were what when where which who why will with would you your
 """.split()
