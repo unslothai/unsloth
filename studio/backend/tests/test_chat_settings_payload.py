@@ -150,6 +150,8 @@ def test_unset_fields_stay_out_of_the_merge():
         {"researchModelTimeoutSeconds": 9},
         {"researchModelTimeoutSeconds": -1},
         {"researchModelTimeoutSeconds": 365 * 24 * 3600 + 1},
+        # bool subclasses int, so False would persist as the 0 "unlimited" sentinel.
+        {"researchModelTimeoutSeconds": False},
         {"unknownSetting": True},
     ],
 )

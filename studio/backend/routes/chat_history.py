@@ -458,6 +458,15 @@ class ChatSettingsPayload(BaseModel):
     showAllQuantizations: Optional[bool] = None
     fitOnDeviceOnly: Optional[bool] = None
 
+    @field_validator("researchModelTimeoutSeconds", mode = "before")
+    @classmethod
+    def _not_a_boolean(cls, value: Any) -> Any:
+        # bool subclasses int, so False coerces to the 0 sentinel and would persist as
+        # unlimited for every later run. The run route rejects booleans for the same reason.
+        if isinstance(value, bool):
+            raise ValueError("researchModelTimeoutSeconds must be an integer, not a boolean")
+        return value
+
     @field_validator("researchModelTimeoutSeconds")
     @classmethod
     def _run_route_accepts_it(cls, value: Optional[int]) -> Optional[int]:

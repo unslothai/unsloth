@@ -243,6 +243,9 @@ function DeepResearchWebsiteAccessContent({
       ),
     ),
   );
+  // The API accepts second-level values the minutes field cannot spell, so saving an
+  // untouched control must replay the stored seconds rather than the rounded minutes.
+  const [timeoutEdited, setTimeoutEdited] = useState(false);
 
   return (
     <DialogContent className="sm:max-w-lg">
@@ -272,7 +275,10 @@ function DeepResearchWebsiteAccessContent({
               step="1"
               value={timeoutMinutes}
               disabled={unlimited}
-              onChange={(event) => setTimeoutMinutes(event.target.value)}
+              onChange={(event) => {
+                setTimeoutEdited(true);
+                setTimeoutMinutes(event.target.value);
+              }}
               aria-label="Deep Research time per model request in minutes"
               className="w-28"
             />
@@ -282,7 +288,10 @@ function DeepResearchWebsiteAccessContent({
             <Button
               type="button"
               variant="outline"
-              onClick={() => setUnlimited((value) => !value)}
+              onClick={() => {
+                setTimeoutEdited(true);
+                setUnlimited((value) => !value);
+              }}
             >
               {unlimited ? "Use a limit" : "No limit"}
             </Button>
@@ -314,9 +323,11 @@ function DeepResearchWebsiteAccessContent({
             setModelTimeoutSeconds(
               unlimited
                 ? 0
-                : Number.isSafeInteger(minutes) && minutes >= 1
-                  ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
-                  : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+                : !timeoutEdited
+                  ? modelTimeoutSeconds
+                  : Number.isSafeInteger(minutes) && minutes >= 1
+                    ? Math.min(minutes, MAX_RESEARCH_MODEL_TIMEOUT_MINUTES) * 60
+                    : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
             );
             onClose();
           }}
