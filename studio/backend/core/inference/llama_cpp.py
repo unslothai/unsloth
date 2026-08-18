@@ -15181,6 +15181,46 @@ class LlamaCppBackend:
                         # --split-mode) so the layer launch re-emits them.
                         _restore_after_tensor_downgrade()
 
+                    # Normalize the speculative reserve BEFORE anything prices it.
+                    # _mtp_bytes reads mtp_overhead_fn at call time, so leaving this
+                    # until after the probes below charged the projector probe the full
+                    # GPU-drafter footprint for a drafter pinned to the CPU (-ngld 0),
+                    # which allocates none of it: the probe then answers "does not fit",
+                    # pins the projector, and costs ~8.8x on every image encode for
+                    # memory nothing was holding. _draft_cpu_no_embedded is settled well
+                    # above, and every input this needs with it, so there is nothing to
+                    # wait for.
+                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
+                        # Nothing speculative is GPU-resident: the drafter that launches
+                        # is the separate CPU-offloaded one, and any embedded head it
+                        # displaced does not run. The flat fraction below is gated on
+                        # this; the byte-accurate callback was not, so the fit went on
+                        # charging VRAM no drafter allocates.
+                        # One term survives: a Hybrid Mamba target keeps its own
+                        # recurrent rollback snapshots for verification, and those sit
+                        # in the TARGET context, so pinning the drafter to the CPU does
+                        # not move them. Charge those alone rather than nothing. Flat in
+                        # ctx, the state being per-slot rather than per-token -- hence
+                        # the same _np/_n_ubatch keywords the replaced callback takes,
+                        # so _mtp_bytes can still re-price each slot candidate.
+                        def _cpu_draft_target_state(
+                            _ctx: int,
+                            _np: int = n_parallel,
+                            _n_ubatch: Optional[int] = _effective_ubatch,
+                            _n: int = _mtp_eff_n_max,
+                            _rollback: bool = _target_rollback,
+                        ) -> int:
+                            if not _rollback or _n <= 0:
+                                return 0
+                            return self._mamba_recurrent_state_bytes(_np) * _n
+
+                        mtp_overhead_fn = (
+                            _cpu_draft_target_state
+                            if _cpu_draft_target_state(effective_ctx) > 0
+                            else None
+                        )
+                        _mtp_kv_unsized = False
+
                     # Vision projector placement, the FIRST thing given up when the
                     # load does not fit. The projector holds VRAM that would otherwise
                     # hold model layers: it runs once per image, layers run once per
@@ -15634,36 +15674,6 @@ class LlamaCppBackend:
                                 _probe_have / 1024,
                             )
 
-                    if _draft_cpu_no_embedded and mtp_overhead_fn is not None:
-                        # Nothing speculative is GPU-resident: the drafter that launches
-                        # is the separate CPU-offloaded one, and any embedded head it
-                        # displaced does not run. The flat fraction below is gated on
-                        # this; the byte-accurate callback was not, so the fit went on
-                        # charging VRAM no drafter allocates.
-                        # One term survives: a Hybrid Mamba target keeps its own
-                        # recurrent rollback snapshots for verification, and those sit
-                        # in the TARGET context, so pinning the drafter to the CPU does
-                        # not move them. Charge those alone rather than nothing. Flat in
-                        # ctx, the state being per-slot rather than per-token -- hence
-                        # the same _np/_n_ubatch keywords the replaced callback takes,
-                        # so _mtp_bytes can still re-price each slot candidate.
-                        def _cpu_draft_target_state(
-                            _ctx: int,
-                            _np: int = n_parallel,
-                            _n_ubatch: Optional[int] = _effective_ubatch,
-                            _n: int = _mtp_eff_n_max,
-                            _rollback: bool = _target_rollback,
-                        ) -> int:
-                            if not _rollback or _n <= 0:
-                                return 0
-                            return self._mamba_recurrent_state_bytes(_np) * _n
-
-                        mtp_overhead_fn = (
-                            _cpu_draft_target_state
-                            if _cpu_draft_target_state(effective_ctx) > 0
-                            else None
-                        )
-                        _mtp_kv_unsized = False
 
                     # Flat MTP reserve fraction: used only as the fallback when the
                     # byte-accurate mtp_overhead_fn can't size the draft KV (dims
