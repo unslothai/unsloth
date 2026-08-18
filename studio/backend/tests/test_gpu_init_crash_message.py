@@ -1574,6 +1574,9 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
 
     backend._llama_server_env_for_binary = _env_for_binary
     backend._prepare_cpu_fallback_launch = lambda *_a, **_kw: None
+    # Class-level and set by a successful bundle-only retry, so give every run a
+    # fresh one rather than leaking a correction into the next test.
+    monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", set())
 
     launches = []
 
@@ -1667,6 +1670,10 @@ class TestHipRocrRetryKeepsFitBudget:
         assert _fit_mode(launches[0][0]) == "off"
         assert _fit_mode(launches[1][0]) == "off"
         assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
+        # Proved on this host, so later children skip the prepend outright.
+        assert LlamaCppBackend._prefers_bundle_only_rocm(
+            str(llama_cpp._llama_lib_dir("/fake/llama-server"))
+        )
 
     def test_a_mix_the_retry_did_not_fix_does_not_spend_the_fit_slot(self, monkeypatch, tmp_path):
         # Bundle-only did not help, so the symbol is still missing. --fit cannot
@@ -1681,3 +1688,7 @@ class TestHipRocrRetryKeepsFitBudget:
         assert len(launches) == 2
         assert _fit_mode(launches[1][0]) == "off"
         assert "HIP/ROCR" in str(error)
+        # The retry did not fix it, so nothing was proved: do not latch.
+        assert not LlamaCppBackend._prefers_bundle_only_rocm(
+            str(llama_cpp._llama_lib_dir("/fake/llama-server"))
+        )

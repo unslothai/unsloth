@@ -166,6 +166,46 @@ class TestLinuxUnchanged:
         assert "/opt/rocm/lib" not in bundle_only["LD_LIBRARY_PATH"].split(":")
         assert bundle_only["LD_LIBRARY_PATH"].startswith(str(binary.parent))
 
+    def test_a_proved_bundle_only_host_stops_prepending_for_every_child(self, monkeypatch, binary):
+        # The retry fixes one launch. Without the latch the STT sidecar, which
+        # builds its env through this same helper, would keep crashing into the
+        # prepend that was already proved wrong on this host.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
+        monkeypatch.setattr(
+            llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", set())
+        before = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        assert before["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
+
+        LlamaCppBackend._remember_bundle_only_rocm(str(binary))
+
+        after = LlamaCppBackend._llama_server_env_for_binary(str(binary))
+        assert "/opt/rocm/lib" not in after["LD_LIBRARY_PATH"].split(":")
+        # The sidecar reaches the same helper, so it inherits the correction.
+        from core.inference.stt_mtmd_sidecar import _llama_server_child_env
+
+        sidecar = _llama_server_child_env(str(binary))
+        assert "/opt/rocm/lib" not in sidecar["LD_LIBRARY_PATH"].split(":")
+
+    def test_a_different_build_dir_still_gets_the_prepend(self, monkeypatch, binary, tmp_path):
+        # The proof is about one install tree, not about the host in general.
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
+        monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
+        monkeypatch.setattr(
+            llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: ["/opt/rocm/lib"]
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_bundle_only_rocm_dirs", set())
+        LlamaCppBackend._remember_bundle_only_rocm(str(binary))
+        other = tmp_path / "other" / "llama-server"
+        other.parent.mkdir(parents = True)
+        other.write_bytes(b"binary")
+        env = LlamaCppBackend._llama_server_env_for_binary(str(other))
+        assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
+
     def test_use_system_rocm_false_keeps_the_wsl_prepend(self, monkeypatch, binary):
         # librocdxg is a different mix (WSL). The native-Linux flag must not
         # drop it.

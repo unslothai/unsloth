@@ -7517,7 +7517,7 @@ class LlamaCppBackend:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
             # which can be incompatible with the host amdkfd driver (#7233).
-            if use_system_rocm:
+            if use_system_rocm and not LlamaCppBackend._prefers_bundle_only_rocm(binary_dir):
                 lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
             _arch = platform.machine()  # x86_64, aarch64, etc.
@@ -12386,6 +12386,22 @@ class LlamaCppBackend:
     # component (/opt/librocm-custom/...) cannot stand in for the object.
     _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
 
+    # Build dirs where a bundle-only launch has come up healthy after the mix
+    # crashed. Set only from that proof, so a host the prepend is right for can
+    # never land here. In-process: a ROCm or driver upgrade re-tests on restart.
+    _bundle_only_rocm_dirs: set[str] = set()
+    _bundle_only_rocm_lock = threading.Lock()
+
+    @staticmethod
+    def _remember_bundle_only_rocm(binary: str) -> None:
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            LlamaCppBackend._bundle_only_rocm_dirs.add(str(_llama_lib_dir(binary)))
+
+    @staticmethod
+    def _prefers_bundle_only_rocm(binary_dir: str) -> bool:
+        with LlamaCppBackend._bundle_only_rocm_lock:
+            return binary_dir in LlamaCppBackend._bundle_only_rocm_dirs
+
     @staticmethod
     def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
         """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
@@ -17081,6 +17097,10 @@ class LlamaCppBackend:
                         )
                         self._stdout_thread.start()
                         if self._wait_for_health(timeout = 600.0):
+                            if _did_rocm_retry:
+                                # Proved on this host: every later child skips the
+                                # prepend instead of crashing into it first.
+                                self._remember_bundle_only_rocm(binary)
                             return True
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
