@@ -52,7 +52,7 @@ def test_the_mac_gguf_job_opts_out_at_job_level():
     """
     jobs = _doc(MAC_GGUF)["jobs"]
     assert len(jobs) == 1, f"expected one bundled job in {MAC_GGUF}, got {list(jobs)}"
-    env = (next(iter(jobs.values())).get("env") or {})
+    env = next(iter(jobs.values())).get("env") or {}
     assert env.get(ENV_VAR) in TRUTHY, (
         f"{MAC_GGUF} no longer sets {ENV_VAR} at job level. Every phase there runs CPU-only "
         f"because the runner's Metal device is paravirtual, so the whole model sits in host "
@@ -99,6 +99,6 @@ def test_the_guard_still_has_its_own_tests():
     ]
     for path in owned:
         assert path.exists(), f"{path.name} is gone; the guard's coverage went with it"
-        assert ENV_VAR in path.read_text(encoding = "utf-8"), (
-            f"{path.name} no longer exercises {ENV_VAR}"
-        )
+        assert ENV_VAR in path.read_text(
+            encoding = "utf-8"
+        ), f"{path.name} no longer exercises {ENV_VAR}"
