@@ -1652,11 +1652,13 @@ class WhisperSttSidecar:
             stripped = text.strip() if text else ""
             if stripped:
                 parts.append(stripped)
-                segments.append({
-                    "start": start / _TARGET_SAMPLE_RATE,
-                    "end": min(start + window, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
-                    "text": stripped,
-                })
+                segments.append(
+                    {
+                        "start": start / _TARGET_SAMPLE_RATE,
+                        "end": min(start + window, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
+                        "text": stripped,
+                    }
+                )
         joined = " ".join(parts).strip()
         return joined, (segments or None)
 
