@@ -83,18 +83,19 @@ def test_the_override_shortens_the_wait_without_dropping_a_read(monkeypatch):
     target = type("T", (), {"device": "cuda", "backend": "cuda"})()
     dm.settled_snapshot_device_memory(target, attempts = 4, delay_s = 1.0)
 
-    assert len(reads) == 4, (
-        f"the override changed the number of reads, not just their spacing: {len(reads)}"
-    )
-    assert slept == [0.0, 0.0, 0.0], (
-        f"the override did not reach time.sleep; the loop asked for {slept}"
-    )
+    assert (
+        len(reads) == 4
+    ), f"the override changed the number of reads, not just their spacing: {len(reads)}"
+    assert slept == [
+        0.0,
+        0.0,
+        0.0,
+    ], f"the override did not reach time.sleep; the loop asked for {slept}"
 
 
 def test_the_backend_conftest_pins_the_override_for_the_whole_suite():
     """Set by conftest at import, so it holds for subprocess-spawning tests too."""
     import os
-
     assert os.environ.get("UNSLOTH_SETTLE_DELAY_S") == "0", (
         "the backend conftest no longer pins UNSLOTH_SETTLE_DELAY_S; the diffusion and "
         "video suites go back to paying a real second per retried VRAM read"
