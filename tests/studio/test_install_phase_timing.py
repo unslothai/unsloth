@@ -48,7 +48,7 @@ def test_the_powershell_half_rejects_zero_rather_than_treating_it_as_truthy():
     )
     assert line, "setup.ps1 no longer sets $script:StudioTimingEnabled"
     assert f"$env:{ENV_VAR} -ne '0'" in line, (
-        f"the guard against a truthy \"0\" is gone from: {line.strip()!r}. PowerShell treats "
+        f'the guard against a truthy "0" is gone from: {line.strip()!r}. PowerShell treats '
         f"every non-empty string as true, so {ENV_VAR}=0 would switch timing ON."
     )
 
@@ -56,43 +56,52 @@ def test_the_powershell_half_rejects_zero_rather_than_treating_it_as_truthy():
 def test_the_bash_half_rejects_zero_and_empty():
     src = SETUP_SH.read_text(encoding = "utf-8")
     assert "_unsloth_elapsed()" in src, "setup.sh no longer defines the timing helper"
-    body = src[src.index("_unsloth_elapsed()"):][:400]
-    assert re.search(r'""\|0\)\s*return', body), (
-        f"setup.sh's timing helper no longer returns early for \"\" and 0:\n{body[:200]}"
-    )
+    body = src[src.index("_unsloth_elapsed()") :][:400]
+    assert re.search(
+        r'""\|0\)\s*return', body
+    ), f'setup.sh\'s timing helper no longer returns early for "" and 0:\n{body[:200]}'
 
 
 def test_the_bash_helper_is_silent_by_default_and_prefixes_when_asked():
     """Run the real helper. A text check alone would not catch a broken printf."""
     body = SETUP_SH.read_text(encoding = "utf-8")
     start = body.index("_unsloth_elapsed()")
-    snippet = body[start:body.index("step()", start)]
+    snippet = body[start : body.index("step()", start)]
     script = snippet + '\nprintf "[%s]" "$(_unsloth_elapsed)"\n'
 
-    off = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
-                         env = {"PATH": "/usr/bin:/bin"})
+    off = subprocess.run(
+        ["bash", "-c", script], capture_output = True, text = True, env = {"PATH": "/usr/bin:/bin"}
+    )
     assert off.stdout == "[]", f"timing leaked into default output: {off.stdout!r}"
 
     for value in ("0", ""):
-        r = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
-                           env = {"PATH": "/usr/bin:/bin", ENV_VAR: value})
+        r = subprocess.run(
+            ["bash", "-c", script],
+            capture_output = True,
+            text = True,
+            env = {"PATH": "/usr/bin:/bin", ENV_VAR: value},
+        )
         assert r.stdout == "[]", f"{ENV_VAR}={value!r} enabled timing: {r.stdout!r}"
 
-    on = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
-                        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1"})
-    assert re.fullmatch(r"\[\[ *\d+s\] \]", on.stdout), (
-        f"{ENV_VAR}=1 did not produce an elapsed prefix: {on.stdout!r}"
+    on = subprocess.run(
+        ["bash", "-c", script],
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1"},
     )
+    assert re.fullmatch(
+        r"\[\[ *\d+s\] \]", on.stdout
+    ), f"{ENV_VAR}=1 did not produce an elapsed prefix: {on.stdout!r}"
 
 
 def test_both_print_helpers_carry_the_prefix():
     """Prefixing one sink and not the other would time half the install."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     for fn, var in (("function step {", "$Value"), ("function substep {", "$Message")):
-        block = src[src.index(fn):][:1200]
-        assert f"{var} = (Get-StudioElapsedPrefix) + {var}" in block, (
-            f"{fn.strip()} does not prefix {var} with the elapsed time"
-        )
+        block = src[src.index(fn) :][:1200]
+        assert (
+            f"{var} = (Get-StudioElapsedPrefix) + {var}" in block
+        ), f"{fn.strip()} does not prefix {var} with the elapsed time"
     sh = SETUP_SH.read_text(encoding = "utf-8")
     for fn in ("step()", "substep()"):
         line = next(l for l in sh.splitlines() if l.startswith(fn))
@@ -130,8 +139,7 @@ def test_timing_is_never_enabled_unconditionally(script):
     # Comments out: both files name the variable in prose, and `#` starts a comment in
     # PowerShell and bash alike.
     code = "\n".join(
-        l for l in script.read_text(encoding = "utf-8").splitlines()
-        if not l.lstrip().startswith("#")
+        l for l in script.read_text(encoding = "utf-8").splitlines() if not l.lstrip().startswith("#")
     )
     for bad in (f'{ENV_VAR}="1"', f"{ENV_VAR}='1'", f"{ENV_VAR}=1"):
         assert bad not in code, f"{script.name} sets {ENV_VAR} itself: {bad}"
