@@ -67,7 +67,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest only
         # The test fetches from raw.githubusercontent.com and greps
         # source. No pip install of vllm / torch / transformers is
@@ -94,7 +93,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
@@ -120,7 +118,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # packaging as well as pytest: the backfill suite loads unsloth/import_fixes.py by
       # file path, and that module imports packaging.version at the top. It pulls in
       # nothing heavier, which is why it can run in this dependency-free job at all.
@@ -149,7 +146,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
@@ -173,7 +169,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
@@ -197,7 +192,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest only
         run: |
           python -m pip install --upgrade pip
@@ -397,7 +391,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       - name: Install pytest
         run: pip install 'pytest>=8'
       - name: Run all version-compat suites in one process (no cache)
