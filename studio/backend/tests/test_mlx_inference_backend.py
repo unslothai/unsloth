@@ -4094,3 +4094,111 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     guard = body.index("async with mcp_server_snapshot_guard():")
     snapshot = body.index("asyncio.to_thread(cached_mcp_tools)")
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
+
+
+# fmt: off
+
+
+@pytest.mark.parametrize(
+    "target,public",
+    [
+        ("/Users/someone/models/gemma-4-E2B-it-qat-4bit", "gemma-4-E2B-it-qat-4bit"),
+        ("./private-checkpoint", "private-checkpoint"),
+        (".foo/bar", "bar"),
+        ("~nosuchuser1234/foo", "local-model"),
+        ("mlx-community/gemma-4-E2B-it-qat-4bit", "mlx-community/gemma-4-E2B-it-qat-4bit"),
+    ],
+)
+def test_mlx_speculative_options_never_publishes_a_local_path(monkeypatch, target, public):
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(
+        spec, "mlx_speculative_runtime_capabilities",
+        lambda: {"common": True, "methods": {"mtp": True}, "reason": None},
+    )
+    options = spec.mlx_speculative_options(target)
+    # A local checkpoint is named by its final component; the path is the user's.
+    assert options["target_model"] == public
+    assert options["experimental"] is True and options["candidates"] == []
+
+
+def _speculative_route_helpers():
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_active_generations import _route_gate, _stub_load_route
+
+    _route_gate()
+    import routes.inference as inf_mod
+
+    return inf_mod, _stub_load_route
+
+
+@pytest.mark.parametrize("door", ["load", "validate"])
+def test_an_unrunnable_speculative_method_is_refused_at_every_door(monkeypatch, door):
+    # The frontend validates before it loads, so a guard on /load alone lets a pick pass
+    # validation and stall. Idempotent here, so an inert guard answers 200 rather than raising.
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from core.inference.mlx_speculative import MLX_SPECULATIVE_REFUSALS
+    from models.inference import LoadRequest, ValidateModelRequest
+
+    tests_dir = str(Path(__file__).resolve().parent)
+    if tests_dir not in sys.path:
+        sys.path.insert(0, tests_dir)
+    from test_active_generations import _route_gate, _stub_load_route
+
+    _route_gate()
+    import routes.inference as inf_mod
+
+    if door == "load":
+        _stub_load_route(monkeypatch, active_model_name = "org/A")
+        handler, request = inf_mod.load_model, LoadRequest
+    else:
+        handler, request = inf_mod.validate_model, ValidateModelRequest
+
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(handler(
+            request(model_path = "org/A", mlx_speculative_mode = "mtp"), object(), "tester"
+        ))
+    assert refused.value.status_code == 400
+    assert refused.value.detail == MLX_SPECULATIVE_REFUSALS["method_not_integrated"]
+
+    if door == "load":
+        # Off is the same request without the unrunnable method, and is served.
+        assert asyncio.run(handler(
+            request(model_path = "org/A", mlx_speculative_mode = "off"), object(), "tester"
+        )) is not None
+
+
+def test_the_options_endpoint_is_registered_with_its_response_model():
+    # The endpoint is reachable only through this registration, so a changed path or a
+    # dropped response model would leave the contract unserved with nothing else failing.
+    from models.inference import MlxSpeculativeOptionsResponse
+
+    inf_mod, _ = _speculative_route_helpers()
+    options = [r for r in inf_mod.studio_router.routes if r.path == "/mlx-speculative/options"]
+    assert len(options) == 1
+    assert options[0].methods == {"GET"}
+    assert options[0].response_model is MlxSpeculativeOptionsResponse
+
+
+def test_every_refusal_reason_the_routes_can_raise_has_prose(monkeypatch):
+    # The routes subscript this table with whatever the reason function returns, so a
+    # reason added without an entry turns an intended 400 into a KeyError.
+    from core.inference import mlx_speculative as spec
+
+    # Pinned with nothing enabled so the refusals stay reachable as methods are joined
+    # to load paths; otherwise this empties, and fails, on exactly that change.
+    monkeypatch.setattr(spec, "ENABLED_MLX_SPECULATIVE_METHODS", frozenset())
+    reasons = {
+        spec.mlx_speculative_request_reason(mode)
+        for mode in spec.MLX_SPECULATIVE_MODES | {"off", "nonsense"}
+    } - {None}
+    assert reasons and reasons <= set(spec.MLX_SPECULATIVE_REFUSALS)
+    assert all(text.strip() for text in spec.MLX_SPECULATIVE_REFUSALS.values())
+
+
+# fmt: on

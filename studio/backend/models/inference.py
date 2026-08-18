@@ -32,6 +32,13 @@ from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
 
 
+# The method a load may ask for; ``auto`` lets the backend choose.
+MlxSpeculativeMode = Literal["off", "auto", "mtp", "dflash", "eagle3"]
+# The method a resolution can produce: ``auto`` has already been decided by the time it is
+# reported, so it is never an answer.
+MlxSpeculativeResolvedMode = Literal["off", "mtp", "dflash", "eagle3"]
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
@@ -110,6 +117,20 @@ class LoadRequest(BaseModel):
             "backends; a model whose cache layout cannot be quantized reports "
             "the reason instead of applying it."
         ),
+    )
+    mlx_speculative_mode: MlxSpeculativeMode = Field(
+        "off",
+        description = "Experimental speculative decoding method for MLX VLM models.",
+    )
+    mlx_draft_model: Optional[str] = Field(
+        None,
+        description = "Matching MLX drafter repository selected for speculative decoding.",
+    )
+    mlx_draft_block_size: Optional[int] = Field(
+        None,
+        ge = 2,
+        le = 16,
+        description = "Optional speculative draft block-size override for MLX.",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -462,6 +483,9 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = MAX_REQUESTABLE_CONTEXT)
     load_in_4bit: bool = Field(True)
     cache_type_kv: Optional[str] = Field(None)
+    mlx_speculative_mode: MlxSpeculativeMode = Field("off")
+    mlx_draft_model: Optional[str] = Field(None)
+    mlx_draft_block_size: Optional[int] = Field(None, ge = 2, le = 16)
     tensor_parallel: bool = Field(False)
     # Sized with, like the other intended load settings above: the follow-up /load
     # opens no projector when this is set, so a preflight that charges for one would
@@ -1160,6 +1184,27 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     is_mlx: bool = Field(False, description = "Whether the active model is served by the MLX backend")
+    mlx_speculative_mode: MlxSpeculativeResolvedMode = Field(
+        "off", description = "Speculative method actually owned by the active MLX worker."
+    )
+    mlx_speculative_mode_requested: MlxSpeculativeMode = Field(
+        "off", description = "MLX speculative decoding method the load asked for."
+    )
+    mlx_draft_model: Optional[str] = Field(
+        None, description = "Matching drafter actually owned by the active MLX worker."
+    )
+    mlx_draft_model_requested: Optional[str] = Field(
+        None, description = "Matching MLX drafter repository the load asked for."
+    )
+    mlx_draft_block_size: Optional[int] = Field(
+        None, description = "Block size the active MLX worker actually drafts at."
+    )
+    mlx_draft_block_size_requested: Optional[int] = Field(
+        None, description = "MLX speculative block-size override the load asked for."
+    )
+    mlx_speculative_reason: Optional[str] = Field(
+        None, description = "Stable reason why an MLX speculative request is unavailable."
+    )
     mlx_kv_bits: Optional[int] = Field(
         None, description = "MLX KV quantization bit width actually applied, if any"
     )
@@ -1392,6 +1437,31 @@ class LoadResponse(_InferenceRuntimeFields):
         "weights do not fit in free VRAM plus available system RAM, so llama.cpp pages "
         "them in from disk and generation will be slow. The model still loaded.",
     )
+
+
+class MlxSpeculativeCandidate(BaseModel):
+    method: Literal["mtp", "dflash", "eagle3"]
+    repo_id: str
+    label: str
+    source: Literal["builtin", "cached", "recommended"] = "recommended"
+    recommended: bool = False
+    approximate_size_bytes: int = Field(ge = 0)
+    estimated_memory_bytes: int = Field(ge = 0)
+    materialization_bytes: int = Field(ge = 0)
+    downloaded: bool
+    compatible: bool
+    runtime_supported: bool
+    integration_ready: bool
+    loadable: bool
+    reason: Optional[str] = None
+
+
+class MlxSpeculativeOptionsResponse(BaseModel):
+    target_model: str
+    experimental: bool = True
+    runtime_supported: bool
+    runtime_reason: Optional[str] = None
+    candidates: List[MlxSpeculativeCandidate] = Field(default_factory = list)
 
 
 class UnloadResponse(BaseModel):

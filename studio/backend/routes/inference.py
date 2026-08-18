@@ -2978,7 +2978,13 @@ async def _aiter_llama_stream_items(
         yield item
 
 
+from core.inference.mlx_speculative import (
+    mlx_speculative_refusal_text,
+    mlx_speculative_options,
+    mlx_speculative_request_reason,
+)
 from models.inference import (
+    MlxSpeculativeOptionsResponse,
     _InferenceRuntimeFields,
     LoadRequest,
     UnloadRequest,
@@ -6435,6 +6441,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     fields.update(
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
+        mlx_speculative_mode = "off",
+        mlx_speculative_mode_requested = "off",
+        mlx_draft_model = None,
+        mlx_draft_model_requested = None,
+        mlx_draft_block_size = None,
+        mlx_draft_block_size_requested = None,
+        mlx_speculative_reason = None,
         mlx_kv_bits = None,
         mlx_kv_bits_requested = None,
         mlx_kv_quant_eligibility = None,
@@ -13042,6 +13055,17 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
     return True
 
 
+@studio_router.get("/mlx-speculative/options", response_model = MlxSpeculativeOptionsResponse)
+async def get_mlx_speculative_options(
+    target_model: str = Query(..., min_length = 1),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Return the speculative drafters that can serve one MLX target."""
+    del current_subject
+    options = await asyncio.to_thread(mlx_speculative_options, target_model)
+    return MlxSpeculativeOptionsResponse.model_validate(options)
+
+
 class _ScopedLoadAttempt(NamedTuple):
     token: str
     request_id: Optional[str]
@@ -13466,6 +13490,14 @@ async def _load_model_impl(
                     llama_backend, native_grant_backed, llama_backend.model_identifier
                 ),
                 inference_identifier = model_identifier,
+            )
+
+        # Refuse an unrunnable speculative request before anything is torn down, so a
+        # rejected setting never costs the user the model they already had loaded.
+        _mlx_spec_reason = mlx_speculative_request_reason(request.mlx_speculative_mode)
+        if _mlx_spec_reason is not None:
+            raise HTTPException(
+                status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason)
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
@@ -14534,6 +14566,10 @@ async def validate_model(
         LlamaServerNotFoundError,
         _hf_offline_if_unreachable_for,
     )
+
+    _mlx_spec_reason = mlx_speculative_request_reason(request.mlx_speculative_mode)
+    if _mlx_spec_reason is not None:
+        raise HTTPException(status_code = 400, detail = mlx_speculative_refusal_text(_mlx_spec_reason))
 
     native_grant_backed = False
     model_log_label = request.model_path
