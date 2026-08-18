@@ -1694,9 +1694,7 @@ class SeededPage:
         # Answered locally by the page's allowlist rather than reaching the network. Recorded and
         # printed rather than silently swallowed: two whole-endpoint GETs per reopen is a real
         # cost and stays visible even though it is kept out of the timed region.
-        self.record["stubbed_api_requests"] = len(
-            self.page.evaluate("window.__stubbedApi || []")
-        )
+        self.record["stubbed_api_requests"] = len(self.page.evaluate("window.__stubbedApi || []"))
         self.record["seed_console_warnings"] = len(self.console_warnings)
         self.record["first_seed_warning"] = (
             self.console_warnings[0] if self.console_warnings else "-"
@@ -1729,9 +1727,7 @@ class SeededPage:
             self.console_warnings[0] if self.console_warnings else "-"
         )
         self.record["console_errors"] = len(self.console_errors)
-        self.record["first_console_error"] = (
-            self.console_errors[0] if self.console_errors else "-"
-        )
+        self.record["first_console_error"] = self.console_errors[0] if self.console_errors else "-"
         return self.record
 
     def close(self) -> None:

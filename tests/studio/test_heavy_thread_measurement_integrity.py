@@ -494,7 +494,9 @@ def test_one_repetition_that_never_opened_the_menu_poisons_the_median() -> None:
 def test_a_timing_that_was_null_in_every_repetition_is_still_reported() -> None:
     # Present-and-None, not absent: a key that is missing entirely makes the verdict raise
     # KeyError instead of naming the action that never happened.
-    summary = HARNESS.summarise({"menu": [menu_repetition(None)["menu"], menu_repetition(None)["menu"]]})
+    summary = HARNESS.summarise(
+        {"menu": [menu_repetition(None)["menu"], menu_repetition(None)["menu"]]}
+    )
     assert "openMs" in summary["menu"] and summary["menu"]["openMs"] is None, summary["menu"]
 
 

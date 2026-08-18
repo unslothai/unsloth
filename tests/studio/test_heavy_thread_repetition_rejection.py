@@ -162,11 +162,14 @@ def clean_actions() -> dict:
             bodyPointerEventsAfterClose = "auto",
         ),
         "delete": clean_action(ms = 120.0, before = 20, after = 19),
-        "reopen": clean_action(ms = 500.0, closedMs = 30.0, settleMs = 900.0,
-        # One double-rAF wait, the floor GROWTH_AXES subtracts from `reopen ms`.
-        paintWaits = 1,
-        closePaintWaits = 1,
-    ),
+        "reopen": clean_action(
+            ms = 500.0,
+            closedMs = 30.0,
+            settleMs = 900.0,
+            # One double-rAF wait, the floor GROWTH_AXES subtracts from `reopen ms`.
+            paintWaits = 1,
+            closePaintWaits = 1,
+        ),
     }
 
 

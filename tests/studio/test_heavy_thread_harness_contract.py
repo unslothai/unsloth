@@ -161,7 +161,9 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
     # regression sit under the discrimination threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    assert 'value -= count * row["paint_floor_ms"]' in section(text, "def growth(", "def report_growth")
+    assert 'value -= count * row["paint_floor_ms"]' in section(
+        text, "def growth(", "def report_growth"
+    )
 
 
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
