@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""`UNSLOTH_INSTALL_TIMING` prefixes installer output with elapsed seconds, and only then.
+
+`Install Unsloth (--local, --no-torch)` is the largest step in every Windows CI job: 260s of
+Windows API CI's 374s, 291s of Windows UI CI's 715s, 281s of Windows Update CI's 794s. The
+same install on Linux is 88s. Across the ~11 Windows cells a commit triggers, that is roughly
+50 minutes of Windows runner time per commit spent installing the same thing.
+
+Which phase spends it was, until this switch existed, unknowable from a CI log: neither
+`studio/setup.ps1` nor `studio/setup.sh` emits a timestamp anywhere, and the one Stopwatch in
+setup.ps1 sits inside the llama.cpp source-build branch that CI never takes. Guessing would
+have been actively misleading -- `unsloth studio update` over an already-complete install
+costs 297s, MORE than the 281s full install it follows, which is the opposite of what a
+download-bound install does.
+
+Two things have to hold, and the first is the one that would annoy real users rather than
+break CI, so it is asserted rather than trusted:
+
+  * OFF by default. In PowerShell every non-empty string is truthy, so a bare
+    `[bool]$env:UNSLOTH_INSTALL_TIMING` treats "0" as enabled; in bash an unquoted default
+    does the same. Both halves must reject "" and "0" explicitly.
+  * The Windows install steps must actually request it, or the breakdown never appears in the
+    logs that motivated the switch.
+"""
+
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+SETUP_PS1 = REPO / "studio" / "setup.ps1"
+SETUP_SH = REPO / "studio" / "setup.sh"
+WORKFLOWS = REPO / ".github" / "workflows"
+
+ENV_VAR = "UNSLOTH_INSTALL_TIMING"
+
+
+def test_the_powershell_half_rejects_zero_rather_than_treating_it_as_truthy():
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    line = next(
+        (l for l in src.splitlines() if "StudioTimingEnabled" in l and "=" in l and "if" not in l),
+        None,
+    )
+    assert line, "setup.ps1 no longer sets $script:StudioTimingEnabled"
+    assert f"$env:{ENV_VAR} -ne '0'" in line, (
+        f"the guard against a truthy \"0\" is gone from: {line.strip()!r}. PowerShell treats "
+        f"every non-empty string as true, so {ENV_VAR}=0 would switch timing ON."
+    )
+
+
+def test_the_bash_half_rejects_zero_and_empty():
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    assert "_unsloth_elapsed()" in src, "setup.sh no longer defines the timing helper"
+    body = src[src.index("_unsloth_elapsed()"):][:400]
+    assert re.search(r'""\|0\)\s*return', body), (
+        f"setup.sh's timing helper no longer returns early for \"\" and 0:\n{body[:200]}"
+    )
+
+
+def test_the_bash_helper_is_silent_by_default_and_prefixes_when_asked():
+    """Run the real helper. A text check alone would not catch a broken printf."""
+    body = SETUP_SH.read_text(encoding = "utf-8")
+    start = body.index("_unsloth_elapsed()")
+    snippet = body[start:body.index("step()", start)]
+    script = snippet + '\nprintf "[%s]" "$(_unsloth_elapsed)"\n'
+
+    off = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
+                         env = {"PATH": "/usr/bin:/bin"})
+    assert off.stdout == "[]", f"timing leaked into default output: {off.stdout!r}"
+
+    for value in ("0", ""):
+        r = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
+                           env = {"PATH": "/usr/bin:/bin", ENV_VAR: value})
+        assert r.stdout == "[]", f"{ENV_VAR}={value!r} enabled timing: {r.stdout!r}"
+
+    on = subprocess.run(["bash", "-c", script], capture_output = True, text = True,
+                        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1"})
+    assert re.fullmatch(r"\[\[ *\d+s\] \]", on.stdout), (
+        f"{ENV_VAR}=1 did not produce an elapsed prefix: {on.stdout!r}"
+    )
+
+
+def test_both_print_helpers_carry_the_prefix():
+    """Prefixing one sink and not the other would time half the install."""
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    for fn, var in (("function step {", "$Value"), ("function substep {", "$Message")):
+        block = src[src.index(fn):][:1200]
+        assert f"{var} = (Get-StudioElapsedPrefix) + {var}" in block, (
+            f"{fn.strip()} does not prefix {var} with the elapsed time"
+        )
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    for fn in ("step()", "substep()"):
+        line = next(l for l in sh.splitlines() if l.startswith(fn))
+        assert "_unsloth_elapsed" in line, f"{fn} in setup.sh carries no timing: {line!r}"
+
+
+def _windows_install_steps():
+    for f in sorted(WORKFLOWS.glob("studio-windows-*.yml")):
+        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
+        for jid, job in (doc.get("jobs") or {}).items():
+            if not isinstance(job, dict):
+                continue
+            for step in job.get("steps") or []:
+                if "install.ps1 --local --no-torch" in str(step.get("run", "")):
+                    yield f.name, jid, step
+
+
+def test_every_windows_install_step_asks_for_the_breakdown():
+    steps = list(_windows_install_steps())
+    assert steps, "no Windows step runs install.ps1 --local --no-torch any more"
+    missing = [
+        f"{name}:{jid}"
+        for name, jid, step in steps
+        if (step.get("env") or {}).get(ENV_VAR) not in ("1", 1)
+    ]
+    assert not missing, (
+        f"these Windows install steps do not set {ENV_VAR}, so their logs stay unreadable "
+        f"about where the 260-291s goes: {missing}"
+    )
+
+
+@pytest.mark.parametrize("script", [SETUP_PS1, SETUP_SH])
+def test_timing_is_never_enabled_unconditionally(script):
+    """The switch must stay a switch. Hardcoding it on changes what every user sees."""
+    # Comments out: both files name the variable in prose, and `#` starts a comment in
+    # PowerShell and bash alike.
+    code = "\n".join(
+        l for l in script.read_text(encoding = "utf-8").splitlines()
+        if not l.lstrip().startswith("#")
+    )
+    for bad in (f'{ENV_VAR}="1"', f"{ENV_VAR}='1'", f"{ENV_VAR}=1"):
+        assert bad not in code, f"{script.name} sets {ENV_VAR} itself: {bad}"

@@ -21,6 +21,30 @@
 
 $ErrorActionPreference = "Stop"
 
+# ── Opt-in phase timing (UNSLOTH_INSTALL_TIMING=1) ────────────────────────────
+# This installer is the single largest step in every Windows CI job -- 260-291s,
+# against 88s for the same install on Linux -- and until this existed there was no
+# way to tell which phase spent it. There are no timestamps anywhere in the output
+# and the only Stopwatch in this file is inside the llama.cpp source-build branch,
+# which CI never takes. Guessing was actively risky: `unsloth studio update` on an
+# already-complete install costs 297s, MORE than the 281s full install it follows,
+# which is the opposite of what a download-bound install would do.
+#
+# Off unless explicitly enabled, so ordinary users see byte-identical output. Set,
+# every `step` / `substep` line is prefixed with seconds since the script started,
+# which turns any install log into a phase breakdown. Started here rather than next
+# to the print helpers so it covers the work that happens before them.
+#
+# `[bool]` on its own is not enough: in PowerShell every non-empty string is true,
+# so UNSLOTH_INSTALL_TIMING=0 would enable it.
+$script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
+$script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Get-StudioElapsedPrefix {
+    if (-not $script:StudioTimingEnabled) { return "" }
+    return ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds)
+}
+
 # This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
 # below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
 # instead of the link: the VC++ runtime (24.4 MB, Ensure-VCRedist) took 38.18s with the bar on
@@ -1754,6 +1778,10 @@ function step {
         [Parameter(Mandatory = $true)][string]$Value,
         [string]$Color = "Green"
     )
+    # Prefix the VALUE rather than each sink below, so all four output paths (mirror,
+    # VT, plain, and the colourless fallback) carry the timing without touching any of
+    # their formatting. Returns "" unless UNSLOTH_INSTALL_TIMING is set.
+    $Value = (Get-StudioElapsedPrefix) + $Value
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     # Exactly one sink: the console handle when redirected, Write-Host (the only
     # one that colorizes) when interactive.
@@ -1792,6 +1820,8 @@ function substep {
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = "DarkGray"
     )
+    # Same reasoning as `step` above: prefix once, before the sinks diverge.
+    $Message = (Get-StudioElapsedPrefix) + $Message
     # Exactly one sink, as in `step` above.
     if ($script:StudioStdoutRedirected) {
         Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)

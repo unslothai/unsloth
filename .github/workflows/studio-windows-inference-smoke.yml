@@ -196,6 +196,11 @@ jobs:
         timeout-minutes: 25
         shell: pwsh
         env:
+          # Phase timing in the log. This install is the largest step in every
+          # Windows job (260-291s vs 88s for the same install on Linux) and the
+          # output carried no timestamps, so which phase spent it was unknowable
+          # from a CI log. Costs a few characters per line.
+          UNSLOTH_INSTALL_TIMING: '1'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -1501,6 +1506,11 @@ jobs:
       - name: Install Unsloth (--local, --no-torch) with no build tools present
         shell: pwsh
         env:
+          # Phase timing in the log. This install is the largest step in every
+          # Windows job (260-291s vs 88s for the same install on Linux) and the
+          # output carried no timestamps, so which phase spent it was unknowable
+          # from a CI log. Costs a few characters per line.
+          UNSLOTH_INSTALL_TIMING: '1'
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
