@@ -56,6 +56,9 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
+  // True when the start attached to a job another client had already begun,
+  // rather than starting one. Accepted either way.
+  attached?: boolean;
   // Present only when the start adopted a job another client had already
   // begun: the transport it is really running on.
   transport?: TransportMode | null;

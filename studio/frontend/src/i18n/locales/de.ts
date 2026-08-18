@@ -186,6 +186,8 @@ export const de = {
       closeAriaLabel: "Einstellungen schließen",
       searchPlaceholder: "Einstellungen durchsuchen…",
       searchNoResults: "Keine Einstellungen gefunden.",
+      panelFailed: "Dieser Bereich konnte nicht geladen werden.",
+      panelReload: "Neu laden",
     },
     tabs: {
       general: "Allgemein",
@@ -291,6 +293,8 @@ export const de = {
         allowMicrophone: "Mikrofonzugriff erlauben",
         micAccessBlocked:
           "Der Mikrofonzugriff wurde blockiert. Erlauben Sie den Mikrofonzugriff für diese Unsloth-Seite und versuchen Sie es erneut.",
+        micAccessBlockedDesktop:
+          "Der Mikrofonzugriff wurde blockiert. Versuchen Sie es erneut und wählen Sie Zulassen, oder aktivieren Sie das Mikrofon in den Datenschutzeinstellungen des Systems.",
         micAccessUnsupported:
           "Der Mikrofonzugriff wird in diesem Browser oder Kontext nicht unterstützt.",
         systemDefault: "Systemstandard",
@@ -1047,6 +1051,12 @@ export const de = {
       modelDisclaimer: "Modell-Hinweis anzeigen",
       modelDisclaimerDescription:
         "Zeigt „LLMs können Fehler machen“ unter dem Chatfeld an.",
+      projectAttachments: "Dateien projektweit teilen",
+      projectAttachmentsDescription:
+        "Standard für Dateien, die in einem Chat innerhalb eines Projekts angehängt werden: für das gesamte Projekt indizieren, damit jeder Chat darin sie nutzen kann. Jeder Chat kann dies im Anhangsmenü überschreiben.",
+      rememberParamsPerModel: "Einstellungen pro Modell merken",
+      rememberParamsPerModelDescription:
+        "Beim Modellwechsel werden Temperatur, Prompt und die weiteren Einstellungen wiederhergestellt, die Sie zuletzt mit diesem Modell verwendet haben. Aus: ein Satz Einstellungen für alle Modelle.",
       thinking: {
         collapseByDefault: "Denken standardmäßig einklappen",
         collapseByDefaultDescription:
@@ -1140,6 +1150,9 @@ export const de = {
       archivedVideos: "Archivierte Videos",
       archivedVideosDescription: "Videos anzeigen und verwalten, die du archiviert hast.",
       manageAction: "Verwalten",
+      manageChats: "Chats verwalten",
+      manageChatsDescription:
+        "Wählen Sie mehrere Chats aus, um sie zu verschieben, anzupinnen, zu archivieren, zu exportieren oder zu löschen.",
       exportArchivedChats: "Exportieren",
       exportingArchivedChats: "Wird exportiert...",
       exportedOneArchivedChat: "1 archivierter Chat exportiert",

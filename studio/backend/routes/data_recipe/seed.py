@@ -18,18 +18,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, UploadFile, File as FastAPIFile, Form
 
-try:
-    from data_designer_unstructured_seed.chunking import (
-        build_multi_file_preview_rows,
-        build_unstructured_preview_rows,
-        normalize_unstructured_text,
-        resolve_chunking,
-    )
-except ImportError:
-    build_multi_file_preview_rows = None
-    build_unstructured_preview_rows = None
-    normalize_unstructured_text = None
-    resolve_chunking = None
 from core.data_recipe.jsonable import to_preview_jsonable
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
@@ -52,6 +40,24 @@ from models.data_recipe import (
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Resolved on first use, not at module scope: the plugin package pulls the data
+# designer engine, pandas and pyarrow, delaying uvicorn binding the port.
+# False means "probed once, not installed", so callers still just see None.
+_CHUNKING: Any = None
+
+
+def _chunking() -> Any:
+    global _CHUNKING
+    if _CHUNKING is None:
+        try:
+            from data_designer_unstructured_seed import chunking
+        except ImportError:
+            _CHUNKING = False
+        else:
+            _CHUNKING = chunking
+    return _CHUNKING or None
+
 
 DATA_EXTS = (".parquet", ".jsonl", ".json", ".csv")
 DEFAULT_SPLIT = "train"
@@ -251,14 +257,15 @@ def _read_preview_rows_from_local_file(path: Path, preview_size: int) -> list[di
 def _read_preview_rows_from_unstructured_file(
     *, path: Path, preview_size: int, chunk_size: int | None, chunk_overlap: int | None
 ) -> list[dict[str, Any]]:
-    if resolve_chunking is None or build_unstructured_preview_rows is None:
+    chunking = _chunking()
+    if chunking is None:
         raise HTTPException(
             500,
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
         )
-    size, overlap = resolve_chunking(chunk_size, chunk_overlap)
+    size, overlap = chunking.resolve_chunking(chunk_size, chunk_overlap)
     try:
-        rows = build_unstructured_preview_rows(
+        rows = chunking.build_unstructured_preview_rows(
             source_path = path,
             preview_size = preview_size,
             chunk_size = size,
@@ -284,7 +291,8 @@ def _read_preview_rows_from_multi_files(
     chunk_size: int | None,
     chunk_overlap: int | None,
 ) -> list[dict[str, str]]:
-    if build_multi_file_preview_rows is None:
+    chunking = _chunking()
+    if chunking is None:
         raise HTTPException(
             500,
             "Unstructured seed support not available (missing data_designer_unstructured_seed)",
@@ -299,7 +307,7 @@ def _read_preview_rows_from_multi_files(
             raise HTTPException(404, f"Extracted text not found for file: {fname} (id: {fid})")
         file_entries.append((extracted, fname))
 
-    return build_multi_file_preview_rows(
+    return chunking.build_multi_file_preview_rows(
         file_entries = file_entries,
         preview_size = preview_size,
         chunk_size = chunk_size,
@@ -414,9 +422,10 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     else:
         raise ValueError(f"Unsupported file type: {ext}")
 
-    if normalize_unstructured_text is None:
+    chunking = _chunking()
+    if chunking is None:
         return raw
-    return normalize_unstructured_text(raw)
+    return chunking.normalize_unstructured_text(raw)
 
 
 def _get_block_total_size(block_dir: Path) -> int:
