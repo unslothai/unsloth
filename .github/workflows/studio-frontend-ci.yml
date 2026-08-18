@@ -255,7 +255,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          path: logs/playwright-*
+          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
+          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
+          # everything EXCEPT the report of the smoke that had just failed.
+          path: |
+            logs/playwright-*
+            logs/settings_tabs_report.json
+            logs/settings_tabs_blocked_report.json
           retention-days: 3
           if-no-files-found: ignore
 

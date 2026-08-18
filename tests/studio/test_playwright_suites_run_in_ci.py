@@ -14,6 +14,7 @@ failure: the list of what CI runs drifting behind the directory it runs from.
 """
 
 import re
+from fnmatch import fnmatch
 from pathlib import Path
 
 import yaml
@@ -226,4 +227,37 @@ def test_the_scan_reads_the_workflows_it_claims_to():
     assert "The POSIX `install.sh --local --no-torch` bootstrap" in text, (
         "the composite action's own contents are not in the text, so a driver launched "
         "from inside one would read as an orphan"
+    )
+
+
+def test_every_smoke_report_is_covered_by_the_failure_upload():
+    """A smoke that fails must have its own diagnostic in the artifact.
+
+    The upload runs `if: failure()`, so the ONE report worth having is the one the
+    smoke that just failed wrote. Four of the five write `logs/playwright-<name>`;
+    the settings smoke writes a JSON report under its own name, so a bare
+    `logs/playwright-*` path uploaded every report except that one.
+    """
+    workflow = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    steps = workflow["jobs"]["build"]["steps"]
+    upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
+    patterns = [line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()]
+
+    # Every logs/ path the smokes CI runs actually write, read from their source.
+    run = " ".join(str(s.get("run", "")) for s in steps)
+    smokes = [d for d in DRIVERS if d.name in run]
+    assert len(smokes) >= 5, f"expected the browser smokes to be wired up, found {len(smokes)}"
+
+    uncovered = []
+    for driver in smokes:
+        text = driver.read_text(encoding = "utf-8")
+        for out in sorted(set(re.findall(r'"(logs/[^"]+)"', text))):
+            stem = out.split("%")[0].split("{")[0]
+            if not any(fnmatch(stem, p) or stem.startswith(p.rstrip("*")) for p in patterns):
+                uncovered.append(f"{driver.name} -> {out}")
+    assert not uncovered, (
+        f"these smoke reports are not in the failure upload: {uncovered}; a failing smoke "
+        f"would upload every report except its own. Upload patterns: {patterns}"
     )
