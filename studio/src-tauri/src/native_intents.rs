@@ -817,7 +817,7 @@ mod tests {
         let Err(err) = read_attachment_payload(&entry) else {
             panic!("expected the read to be refused");
         };
-        assert!(err.contains("Only chat image and audio attachments"));
+        assert!(err.contains("Only chat image, audio and video attachments"));
         let _ = fs::remove_file(path);
     }
 
