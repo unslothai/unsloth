@@ -4999,6 +4999,7 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     assert len(provisional) == 1, events
     assert "mcp_server" not in provisional[0]["provenance"]
 
+
 def _tool_call_fragment(
     index: int,
     arguments: str,
