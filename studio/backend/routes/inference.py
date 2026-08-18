@@ -1275,6 +1275,7 @@ try:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
+        drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -1328,6 +1329,7 @@ except ImportError:
     )
     from core.inference.llama_server_args import (
         _effective_tensor_parallel,
+        drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
         parse_split_mode_override,
@@ -2192,6 +2194,7 @@ from models.inference import (
     LoadProgressResponse,
     UnloadResponse,
     InferenceStatusResponse,
+    LlamaFlagCatalogResponse,
     ChatCompletionRequest,
     ChatCountTokensRequest,
     ChatCompletionChunk,
@@ -2478,6 +2481,15 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           installStorageFallback("localStorage");
           installStorageFallback("sessionStorage");
         };
+        // randomUUID is unavailable in this opaque HTTP context. The strict CSP
+        // forbids crypto-boot.js, so install the same fallback inline.
+        const installRandomUUIDFallback = () => {
+          if (!window.crypto || typeof crypto.randomUUID === "function") return;
+          const randomByte = () => crypto.getRandomValues(new Uint8Array(1))[0];
+          crypto.randomUUID = () =>
+            "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
+              (+c ^ (randomByte() & (15 >> (+c / 4)))).toString(16));
+        };
         // Stamp the load this frame was served for. A report still in flight
         // when the canvas is swapped would otherwise be read as the new one's.
         const loadVersion = new URLSearchParams(location.search).get("v") || "";
@@ -2498,6 +2510,8 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.addEventListener("securitypolicyviolation", reportBlocked, true);
         };
         installStorageFallbacks();
+        // Survives the document.open() in render(), so once is enough.
+        installRandomUUIDFallback();
         window.addEventListener("message", (event) => {
           const data = event.data;
           if (!data || data.type !== "unsloth:artifact-html" || typeof data.html !== "string") return;
@@ -4391,6 +4405,27 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         parallel_slots = (
             None if llama_backend.is_diffusion else llama_backend.effective_parallel_slots
         ),
+        # What the load was INVOKED with, not the rewritten launch list: that is the
+        # list a client would have to resend to reproduce this server, and the one
+        # the rollback path needs. Empty reports as None, so "passed none" and
+        # "never set" read alike to a client that only ever resends a non-empty list.
+        # getattr, unlike the rest of this block: the drift check below is what turns
+        # a backend missing a runtime field into one clear error naming all of them,
+        # and reading the attribute here would pre-empt it with a bare AttributeError.
+        # An explicit [] is NOT None here. A rollback resends this field only when it
+        # has one, and omitting it is what makes /load inherit, so a model that was
+        # running with no extras would come back carrying the arguments of the load
+        # that just failed. None stays for "nothing was ever set", which is the only
+        # case where inheriting is the right answer.
+        requested_llama_extra_args = (
+            None
+            if llama_backend.is_diffusion
+            else (
+                None
+                if getattr(llama_backend, "requested_extra_args", None) is None
+                else list(llama_backend.requested_extra_args)
+            )
+        ),
     )
     unresolved = (
         set(_InferenceRuntimeFields.model_fields) - fields.keys() - {"requires_trust_remote_code"}
@@ -5687,23 +5722,15 @@ async def _maybe_auto_switch_model(
                         # cached repo has no path entry and resolves on the second try; an
                         # early build keyed a loose .gguf by its filename label, so
                         # "<path>:LABEL" is read too, after the bare path used today.
-                        file_variant = None
-                        if not variant and target_id.lower().endswith(".gguf"):
-                            from hub.utils.gguf import extract_quant_label
-                            file_variant = extract_quant_label(os.path.basename(target_id))
-                        override = {}
-                        for override_key in (
-                            f"{target_id}:{variant}" if variant else None,
-                            f"{override_id}:{variant}" if variant else None,
-                            target_id,
-                            f"{target_id}:{file_variant}" if file_variant else None,
-                            override_id,
-                        ):
-                            if not override_key:
-                                continue
-                            override = get_model_override(override_key)
-                            if override:
-                                break
+                        from utils.openai_auto_switch_settings import (
+                            resolve_override_for_load,
+                        )
+
+                        # The candidate order above, kept in one place so the panel
+                        # showing a user what a load will apply reads the same row.
+                        _override_key, override = resolve_override_for_load(
+                            target_id, override_id, variant
+                        )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
                         load_kwargs.update(
                             model_override_load_kwargs(
@@ -6660,6 +6687,121 @@ def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
     return None
 
 
+def _local_gguf_main_path(config: ModelConfig) -> Optional[str]:
+    """The main GGUF on this disk for a config, or None while it is not downloaded.
+
+    The header answers questions the load would otherwise only answer by failing
+    (diffusion, embedding), but only once the file is here: a repo that has not been
+    fetched yet has nothing to read, and the callers all fall back to what they did
+    before rather than reaching for the network on a request path.
+    """
+    main = getattr(config, "gguf_file", None)
+    if main and Path(main).is_file():
+        return str(main)
+    repo = getattr(config, "gguf_hf_repo", None)
+    variant = getattr(config, "gguf_variant", None)
+    if repo and variant:
+        from hub.utils.gguf import resolve_local_gguf_path
+        main = resolve_local_gguf_path(repo, variant)
+        if main and Path(main).is_file():
+            return str(main)
+    return None
+
+
+def _is_embedding_gguf(config: ModelConfig) -> bool:
+    """Whether this GGUF's pooling type makes llama-server launch with --embedding.
+
+    False whenever the header cannot be read, which keeps every caller doing what it
+    did before the check existed: this only ever relaxes a refusal, and relaxing one
+    on a guess is how a load reaches the abort the refusal exists to prevent.
+    """
+    try:
+        main = _local_gguf_main_path(config)
+        if not main:
+            return False
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(main)
+        return bool(probe.is_embedding_gguf)
+    except Exception as exc:
+        logger.debug("Could not identify embedding GGUF for the batch floor: %s", exc)
+        return False
+
+
+def _embedding_clamped_slots(
+    config: ModelConfig,
+    slots: int,
+    *,
+    extra_args: Optional[list[str]],
+    n_batch: Optional[int],
+    n_ubatch: Optional[int],
+    n_ctx: Optional[int],
+) -> int:
+    """Slots an embedding GGUF really serves, after the micro-batch clamp on load.
+
+    --embedding makes llama-server cap the batch at the micro-batch, and it aborts
+    when that is below the slot count, so load_model reduces the slots to it before
+    launching. The batch floor has to be judged against the reduced count or this
+    refuses a command the launcher would run: four slots with "-ub 2" and a
+    pass-through "--batch-size 2" launches at two slots, where two is the floor.
+
+    Only ever returns a count at or below the one asked for, and returns that one
+    unchanged for anything but a positively classified embedding GGUF.
+    """
+    if slots <= 1:
+        return max(1, slots)
+    if not _is_embedding_gguf(config):
+        return slots
+    from core.inference.llama_cpp import _emitted_n_batch, _extra_args_n_ubatch
+
+    effective_ubatch = _extra_args_n_ubatch(
+        extra_args,
+        n_ctx = n_ctx if n_ctx and n_ctx > 0 else None,
+        n_batch = _emitted_n_batch(n_batch, slots),
+        n_ubatch = n_ubatch,
+    )
+    if effective_ubatch is None or effective_ubatch >= slots:
+        return slots
+    # max(): a degenerate "-b 0" resolves to 0, and --parallel 0 is rejected at arg
+    # parse, which is the same floor load_model applies.
+    return max(1, effective_ubatch)  # allow-slot-clamp: mirrors the load_model clamp
+
+
+async def _batch_floor_survives_embedding_clamp(
+    config: ModelConfig,
+    extra_args: Optional[list[str]],
+    requested_slots: int,
+    request,
+    *,
+    diffusion_kind: Optional[bool] = None,
+) -> bool:
+    """Whether a batch the floor just refused is legal once the clamps are applied.
+
+    Both routes check the floor against the slots the launch serves, and for an
+    embedding GGUF that is smaller again than the kv-unified count: llama-server
+    caps the batch at the micro-batch under --embedding and aborts when that is
+    below the slots, so load_model reduces them first. Asked only after a refusal,
+    so the header read is paid on the way to a 400 rather than on every load.
+    """
+    from core.inference.llama_server_args import check_batch_floor
+
+    # Off the event loop: the classification reads the GGUF header from disk, and
+    # both routes reach this from an async handler serving download progress polls.
+    slots = await asyncio.to_thread(
+        _embedding_clamped_slots,
+        config,
+        _effective_parallel_slots(requested_slots, diffusion_kind = diffusion_kind),
+        extra_args = extra_args,
+        n_batch = getattr(request, "n_batch", None),
+        n_ubatch = getattr(request, "n_ubatch", None),
+        n_ctx = getattr(request, "max_seq_length", None),
+    )
+    try:
+        check_batch_floor(extra_args, slots)
+    except ValueError:
+        return False
+    return True
+
+
 def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     """Classify a GGUF as diffusion, normal, or unknown before loading."""
     identity = " ".join(
@@ -6669,16 +6811,10 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     name_says_diffusion = "diffusiongemma" in _re.sub(r"[^a-z0-9]+", "", identity)
 
     try:
-        main = getattr(config, "gguf_file", None)
-        if not (main and Path(main).is_file()):
-            repo = getattr(config, "gguf_hf_repo", None)
-            variant = getattr(config, "gguf_variant", None)
-            if repo and variant:
-                from hub.utils.gguf import resolve_local_gguf_path
-                main = resolve_local_gguf_path(repo, variant)
-        if main and Path(main).is_file():
+        main = _local_gguf_main_path(config)
+        if main:
             probe = LlamaCppBackend()
-            probe._read_gguf_metadata(str(main))
+            probe._read_gguf_metadata(main)
             if probe.is_diffusion:
                 return True
             if getattr(probe, "_architecture", None):
@@ -6867,11 +7003,174 @@ class _LoadPlacement(NamedTuple):
     diffusion_kind: Optional[bool]
 
 
+def _spec_fallback_binary_changed(llama_backend) -> Optional[bool]:
+    """``spec_binary_fallback_can_retry``, for the status poll.
+
+    Only the two binary stand-downs can be repaired by an identical reload, so a client
+    that reloads for any ``binary_*`` reason prompts to stop running chats for a load
+    that would dedupe. Answered only for those reasons: this is polled from first paint,
+    and neither the binary lookup nor the capability probe has business running on every
+    poll of a healthy runtime.
+
+    The whole predicate, not just its revision half. ``binary_no_mtp`` also asks whether
+    the replacement advertises what the drafter kind needs, and a replacement that still
+    lacks it never repairs: the live process keeps its launch revision, so a half answer
+    would prompt on every later re-pick and never stop. The probe caches on the binary's
+    revision, and this route already relies on that elsewhere.
+    """
+    if getattr(llama_backend, "spec_fallback_reason", None) not in (
+        "binary_no_mtp",
+        "binary_outdated",
+    ):
+        return None
+    try:
+        return bool(llama_backend.spec_binary_fallback_can_retry())
+    except Exception:
+        return None
+
+
+def _spec_probe_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether the capability probe has started answering since a degraded launch.
+
+    Mirrors the ``_capability_probe_inconclusive`` arm of ``_runtime_matches_intent``,
+    which rejects an identical load once the probe turns conclusive so the degraded
+    runtime is re-derived. No speculative mode gates it, and it records the conclusive
+    probe and clears, so it is one reload rather than a loop. Probing is cheap here:
+    ``probe_server_capabilities`` caches on the binary's revision and this route already
+    calls it.
+    """
+    if not getattr(llama_backend, "_capability_probe_inconclusive", False):
+        return False
+    if getattr(llama_backend, "_is_diffusion", False):
+        return False
+    try:
+        return not llama_backend.probe_server_capabilities().get("mtp_probe_inconclusive")
+    except Exception:
+        return None
+
+
+def _diffusion_split_supported(llama_backend) -> Optional[bool]:
+    """Whether a diffusion launch right now would honour --ngl.
+
+    Only meaningful for a resident diffusion runner. ``_runtime_matches_intent`` rejects
+    an otherwise identical request once this turns true and the live gpu_layers differs
+    from the requested NGL, so the split an older shim dropped can finally be applied.
+    A client comparing only the retained request would skip that load.
+    """
+    if not getattr(llama_backend, "_is_diffusion", False):
+        return None
+    try:
+        return bool(llama_backend.diffusion_split_supported())
+    except Exception:
+        return None
+
+
+def _audio_probe_pending(llama_backend) -> bool:
+    """Whether the post-launch audio probe still has to be retried.
+
+    ``_reuse_loaded_gguf`` refuses the route's own already-loaded answer while this is
+    true, so ``load_model`` reaches its fast path and re-probes there. A client that
+    skips /load skips the retry with it, and nothing else re-probes, so the model's
+    audio capabilities would stay undetected for as long as the server runs.
+    """
+    return not getattr(llama_backend, "_audio_probed", True)
+
+
+def _gpu_placement_paravirtual() -> Optional[bool]:
+    """Whether every GGUF request on this host is rewritten to the CPU pin.
+
+    ``paravirtual_normalized_request`` maps any placement to manual / zero layers / no
+    split / no MoE on a virtualised Metal device, and ``adopt_load_intent_if_matched``
+    applies it before comparing, so placement cannot distinguish two requests here at
+    all. A client comparing the raw values sees its Auto pick against a manual status and
+    reloads on every re-pick. The detector is lru_cached, so this costs one probe per
+    process and nothing after.
+    """
+    try:
+        from core.inference.llama_cpp import _metal_device_is_paravirtual
+        return bool(_metal_device_is_paravirtual())
+    except Exception:
+        return None
+
+
+def _arch_gate_dropped_tensor_parallel(llama_backend) -> Optional[bool]:
+    """Whether the GPU architecture gate normalized a tensor-parallel request away.
+
+    ``_runtime_matches_intent`` accepts the same true request against the resulting
+    layer-mode runtime, since that runtime IS the request as the gate rewrote it. Status
+    reports the mode that launched, so a client comparing it raw prompts to stop running
+    chats on every re-pick of a model whose split was gated off.
+    """
+    try:
+        return bool(llama_backend._arch_gate_dropped_tensor_parallel)
+    except Exception:
+        return None
+
+
+def _spec_dspark_sidecar_absent(llama_backend) -> Optional[bool]:
+    """Whether the DSpark drafter is missing permanently rather than transiently.
+
+    The ``drafter_not_found`` arm of ``_runtime_matches_intent`` reloads so the next
+    Apply retries the fetch, but excludes an absent DSpark sidecar: that is the permanent
+    state of every repo but one, and retrying it would relaunch an identical server
+    forever. A client reading only the reason cannot tell the two apart and prompts to
+    stop running chats for a load that dedupes.
+    """
+    try:
+        return bool(llama_backend._dspark_sidecar_absent)
+    except Exception:
+        return None
+
+
+def _spec_dflash_retry_pending(llama_backend) -> Optional[bool]:
+    """Whether a DFlash sidecar fetch failed in a way the next identical load retries.
+
+    Under Auto a failed fetch records no ``spec_fallback_reason``, so a client reading
+    only that adopts a runtime the backend would have rebuilt. Set only for retryable
+    failures: a repo publishing no sidecar is ``_dflash_sidecar_absent``'s business.
+    Applies to the Auto and DFlash modes, as the arm does.
+    """
+    try:
+        return bool(llama_backend._dflash_retry_needed)
+    except Exception:
+        return None
+
+
+class _NoParallelRequest:
+    """A stand-in for a load that named no slot count, for reading the default."""
+
+    n_parallel = None
+
+
 def _resolve_parallel_slots(request, fastapi_request: Optional[Request]) -> int:
     if request.n_parallel is not None:
         return request.n_parallel
     state = getattr(getattr(fastapi_request, "app", None), "state", None)
     return getattr(state, "llama_parallel_slots", 1)
+
+
+def _effective_parallel_slots(n_parallel: int, *, diffusion_kind: Optional[bool] = None) -> int:
+    """Slots the launch will actually serve, after the clamps load_model applies.
+
+    A build without --kv-unified splits the context window per slot, so load_model
+    falls back to one; the diffusion runner receives no --parallel at all. Anything
+    sized or refused against the asked-for count instead of this one is judging a
+    command that will not launch: the batch floor in particular would refuse
+    "--batch-size 2" against a four-slot default on a build that serves one.
+    """
+    if n_parallel <= 1:
+        return max(1, n_parallel)
+    if diffusion_kind is True:
+        return 1  # allow-slot-clamp: diffusion never receives --parallel
+    try:
+        caps = LlamaCppBackend.probe_server_capabilities()
+        if caps.get("found") and not caps.get("supports_kv_unified"):
+            return 1  # allow-slot-clamp: mirrors the load_model clamp
+    except Exception as exc:
+        # Unreadable capabilities are not a reason to refuse anything: keep the ask,
+        # which is what every other caller of the probe here does.
+        logger.warning("Could not probe llama-server slots: %s", exc)
+    return n_parallel
 
 
 async def _prepare_load_placement(
@@ -6940,6 +7239,7 @@ def _resolve_gguf_load_intent(
             hf_repo = config.gguf_hf_repo,
             hf_variant = config.gguf_variant,
             hf_token = request.hf_token,
+            verified_gguf = getattr(config, "gguf_verified", None),
         )
     else:
         if native_grant_backed:
@@ -7312,16 +7612,15 @@ def _resolve_inherited_extra_args(
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
         )
-        try:
-            extra_llama_args = validate_extra_args(stripped)
-        except ValueError:
-            # Shouldn't happen on already-validated args; degrade to
-            # no-extras rather than 400 if managed flags changed.
+        # Inherited, not sent: a flag denylisted since it was stored loses only
+        # itself. The previous behaviour dropped the whole list, so one name added
+        # to the denylist silently took every other flag with it.
+        extra_llama_args, _dropped = drop_managed_flags(stripped)
+        if _dropped:
             logger.warning(
-                "Stored llama_extra_args failed revalidation; loading without them: %s",
-                stripped,
+                "Stored llama_extra_args are no longer allowed; dropped %s",
+                ", ".join(_dropped),
             )
-            extra_llama_args = []
         else:
             if extra_llama_args:
                 logger.info(
@@ -8152,6 +8451,47 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        if placement.diffusion_kind is True and extra_llama_args:
+            # The visual runner builds its own command and appends none of these, so
+            # keeping them would record a load as running arguments the process never
+            # received, and the panel would then show and remember them. This is the
+            # authoritative classification: the caller only had staged metadata, which
+            # can be inconclusive for a GGUF it has not finished downloading.
+            logger.info(
+                "Dropping %d extra llama-server arg(s) for %s: the diffusion runner takes none.",
+                len(extra_llama_args),
+                model_log_label,
+            )
+            extra_llama_args = []
+        if config.is_gguf and extra_llama_args:
+            # After the slot count is known, because the floor depends on it. The
+            # editor draws the same line, but a CLI or API caller never sees it, and
+            # this is the one class of pass-through value that takes the server down
+            # during startup rather than being ignored: a 400 here beats a load that
+            # has already unloaded the previous model.
+            from core.inference.llama_server_args import check_batch_floor
+            try:
+                check_batch_floor(
+                    extra_llama_args,
+                    # The count that will launch, not the one asked for: a build
+                    # without --kv-unified serves one slot however many were
+                    # requested, and refusing a batch of 2 against it is a 400 on a
+                    # command that would have run.
+                    _effective_parallel_slots(_n_parallel, diffusion_kind = placement.diffusion_kind),
+                )
+            except ValueError as exc:
+                # An embedding GGUF comes down further still: --embedding caps the
+                # batch at the micro-batch, so load_model reduces the slots to it
+                # before launching. Read only now, because it costs a header read
+                # and it can only ever turn a refusal into an acceptance.
+                if not await _batch_floor_survives_embedding_clamp(
+                    config,
+                    extra_llama_args,
+                    _n_parallel,
+                    request,
+                    diffusion_kind = placement.diffusion_kind,
+                ):
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
         if config.is_gguf:
@@ -8301,6 +8641,13 @@ async def _load_model_impl(
             if _non_chat:
                 logger.error("Refusing non-chat GGUF before the GPU handoff: %s", _non_chat)
                 raise HTTPException(status_code = 400, detail = _non_chat)
+            # same reason: the host-RAM guard reads the finished argv, so it answers too late
+            _host_offload = await asyncio.to_thread(
+                llama_backend.host_offload_refusal_for_intent, gguf_intent
+            )
+            if _host_offload:
+                logger.error("Refusing an oversized GGUF before the GPU handoff: %s", _host_offload)
+                raise HTTPException(status_code = 400, detail = _host_offload)
 
         if chat_load_needs_gpu:
             await asyncio.to_thread(
@@ -8871,13 +9218,101 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # The caller's own list when it sent one, or the resolver hands back this
+        # fourth argument unchanged and a --ctx-size the load is about to use would
+        # be missing from the estimate that approves it.
         effective_extra_args = _resolve_inherited_extra_args(
-            request, config, model_identifier, None
+            request, config, model_identifier, getattr(request, "llama_extra_args", None)
         )
+
+        # The caller's list is judged BEFORE anything rewrites it, exactly as /load
+        # judges the explicit list it was sent. Translating first let a list /load
+        # refuses pass here: "--gpu-layers=20" was parsed into the first-class field
+        # and stripped, so validate_extra_args never saw the attached spelling
+        # llama.cpp has no such flag for, and the switch was approved for a load that
+        # answers 400. A malformed value ("-ngl bad") raised out of the parser here
+        # too, which is a 500 where the same list is a 400 on the load.
+        if config.is_gguf and effective_extra_args:
+            from core.inference.llama_server_args import validate_extra_args
+            try:
+                validate_extra_args(effective_extra_args)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+        # Manual mode owns the offload flags, and /load translates an explicit -ngl
+        # into the first-class field before it strips them. Doing that there and not
+        # here made the two disagree about what will actually run: a diffusion GGUF
+        # asked with gpu_layers 0 and "-ngl 20" was approved as a zero-layer load that
+        # cannot compete with training for VRAM, and then launched twenty layers on
+        # the GPU; the opposite pairing refused a load that only ever runs on the CPU.
+        # Same translation, same strip, so the guard below judges the same command.
+        # After the validation above, so nothing here parses a token the load refuses.
+        if getattr(request, "gpu_memory_mode", None) == "manual" and effective_extra_args:
+            from core.inference.llama_server_args import (
+                parse_gpu_layers_override,
+                strip_shadowing_flags,
+            )
+
+            _validate_ngl_override = parse_gpu_layers_override(effective_extra_args)
+            if _validate_ngl_override is not None:
+                request = request.model_copy(update = {"gpu_layers": _validate_ngl_override})
+            effective_extra_args = strip_shadowing_flags(
+                effective_extra_args,
+                strip_context = False,
+                strip_cache = False,
+                strip_spec = False,
+                strip_template = False,
+                strip_split_mode = False,
+                strip_tensor_split = _should_strip_tensor_split(request),
+                strip_offload = True,
+            )
 
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
+        if placement.diffusion_kind is True and effective_extra_args:
+            # Same drop as /load, and for the same reason: the diffusion runner appends
+            # none of these, so an estimate that reads a --ctx-size out of them approves
+            # a load against a command that will never carry it. The classification here
+            # is the authoritative one, so this can only be decided after placement.
+            logger.info(
+                "Ignoring %d extra llama-server arg(s) for %s: the diffusion runner takes none.",
+                len(effective_extra_args),
+                model_log_label,
+            )
+            effective_extra_args = []
+        if config.is_gguf and effective_extra_args:
+            # The same two checks /load runs, here because the picker treats a
+            # successful validate as permission to unload the model it is replacing.
+            # Without them a remembered list that this build no longer accepts (a
+            # flag denied since it was saved, a batch below the slot floor) passed
+            # the preflight, the running model went away, and /load then answered
+            # 400: a failed switch and a rollback instead of a refusal with nothing
+            # disturbed.
+            # Only the floor here: the list itself was judged above, before the manual
+            # translation could rewrite it, and re-validating the STRIPPED list would
+            # answer for a command neither route sends.
+            from core.inference.llama_server_args import check_batch_floor
+            _requested_slots = _resolve_parallel_slots(request, fastapi_request)
+            try:
+                check_batch_floor(
+                    effective_extra_args,
+                    _effective_parallel_slots(
+                        _requested_slots,
+                        diffusion_kind = placement.diffusion_kind,
+                    ),
+                )
+            except ValueError as exc:
+                # The same embedding clamp /load allows for, or this preflight
+                # refuses a command the load it gates would have launched.
+                if not await _batch_floor_survives_embedding_clamp(
+                    config,
+                    effective_extra_args,
+                    _requested_slots,
+                    request,
+                    diffusion_kind = placement.diffusion_kind,
+                ):
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
@@ -10038,6 +10473,124 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
     return supports_mtp, freshness
 
 
+def _parallel_slots_are_clamped() -> bool:
+    """Whether this build serves one slot whatever is asked for.
+
+    The published default is already effective, but an explicit Slots value is chosen
+    in the editor and never passes through here, so the editor cannot apply the clamp
+    without being told it exists: Slots 4 with "--batch-size 2" was refused there while
+    the backend, which clamps to one, accepts exactly that command. Asked of the same
+    helper the load uses, with a count above one, so the two can never drift.
+    """
+    return _effective_parallel_slots(2) == 1
+
+
+async def _effective_default_slots(fastapi_request) -> tuple[int, bool]:
+    """The default slot count a load would really serve, without blocking the loop.
+
+    _effective_parallel_slots asks the binary whether it supports --kv-unified, and on
+    a cold cache that is `llama-server --help` with a ten second timeout. Called inline
+    it stalled every other request on the first open of the panel after an update, and
+    on the managed-only answer too, which is the one path that exists to avoid waiting
+    for a probe. The settings read stays here: it is a row in SQLite, and a single slot
+    needs no probe to know it cannot be clamped below one.
+    """
+    requested = _resolve_parallel_slots(_NoParallelRequest(), fastapi_request)
+    if requested <= 1:
+        # One slot cannot be clamped below one, but whether this build clamps is still
+        # the editor's question: it sizes an EXPLICIT Slots value the user may raise
+        # without ever re-reading this route.
+        return requested, await asyncio.to_thread(_parallel_slots_are_clamped)
+    effective = await asyncio.to_thread(_effective_parallel_slots, requested)
+    return effective, effective == 1
+
+
+@router.get("/llama-flags", response_model = LlamaFlagCatalogResponse)
+async def get_llama_flags(
+    fastapi_request: Request = None,
+    managed_only: bool = False,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Flags the installed llama-server accepts, for the extra-arguments editor.
+
+    Cheap to call: ``probe_server_capabilities`` caches on the binary's revision, so
+    only the first call after an install or an update runs the 10s ``--help`` probe.
+    A failed probe answers ``probe_ok = false`` with no flags rather than erroring, so
+    the editor degrades to "cannot verify" instead of blocking every argument.
+
+    ``managed_only`` skips the probe entirely. The denylist is Unsloth's own and needs
+    no binary to read, while the caller that needs it most is the panel sanitizing a
+    stored list before it becomes an explicit request: making that wait on a cold
+    ``--help`` would leave a legacy flag in the request for as long as the probe runs.
+    """
+    from core.inference.llama_server_args import (
+        WINDOWS_COMMAND_LIMIT,
+        WINDOWS_COMMAND_RESERVE,
+        max_extra_args_bytes,
+        sorted_managed_flags,
+    )
+
+    _default_slots, _slots_clamped = await _effective_default_slots(fastapi_request)
+    # What this host refuses on size, so an editor draws the same line rather than
+    # letting a 25 KiB grammar through to a 400.
+    limits = {
+        "max_bytes": max_extra_args_bytes(),
+        "windows_command_budget": (
+            WINDOWS_COMMAND_LIMIT - WINDOWS_COMMAND_RESERVE if sys.platform == "win32" else 0
+        ),
+        # The slot count a load gets when it names none, read the same way the loader
+        # reads it. An editor cannot see this number, and llama-server aborts on a
+        # batch below the slots it serves, so without it a pass-through -b 2 looks
+        # fine here and takes down a launch that runs four slots.
+        # The effective count, after the clamps the launch applies: a build without
+        # --kv-unified serves one slot however many are configured, and an editor
+        # sizing its batch floor from the raw default would refuse a batch that runs.
+        "default_parallel_slots": _default_slots,
+        "parallel_slots_clamped": _slots_clamped,
+    }
+
+    if managed_only:
+        return LlamaFlagCatalogResponse(
+            flags = {},
+            managed = sorted_managed_flags(),
+            # No probe was attempted, so nothing here can say a flag is a typo.
+            probe_ok = False,
+            **limits,
+        )
+    try:
+        backend = get_llama_cpp_backend()
+        # Off the event loop: on a cold cache this runs `llama-server --help` with a
+        # 10s timeout, and the startup probes were moved to a thread for exactly that
+        # reason (test_startup_llama_probe_non_blocking). Awaiting it inline would
+        # stall every other request on the first open of the panel after an update.
+        capabilities = await asyncio.to_thread(type(backend).probe_server_capabilities)
+        flags = capabilities.get("flags") or {}
+        switch_flags = list(capabilities.get("switch_flags") or ())
+        # Three ways to be unverifiable, and the editor treats them alike: no binary
+        # (found=False), a --help that did not parse (empty catalogue), and a --help
+        # that exited nonzero after printing part of itself. The last one is why the
+        # probe's own result is read rather than inferred from a non-empty map: a
+        # partial catalogue would otherwise be published as the whole truth, and
+        # every flag past the failure point called a typo.
+        probe_ok = (
+            bool(capabilities.get("found"))
+            and bool(flags)
+            and bool(capabilities.get("help_probe_ok", True))
+        )
+    except Exception as exc:  # noqa: BLE001 -- an unverifiable flag is not a failed request
+        logger.debug(f"llama-server flag catalogue unavailable: {exc}")
+        flags = {}
+        switch_flags = []
+        probe_ok = False
+    return LlamaFlagCatalogResponse(
+        flags = {str(k): str(v) for k, v in flags.items()},
+        managed = sorted_managed_flags(),
+        switch_flags = [str(flag) for flag in switch_flags],
+        probe_ok = probe_ok,
+        **limits,
+    )
+
+
 @router.get("/status", response_model = InferenceStatusResponse)
 async def get_status(current_subject: str = Depends(get_current_subject)):
     """
@@ -10104,6 +10657,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
+                spec_fallback_binary_changed = _spec_fallback_binary_changed(llama_backend),
+                spec_probe_retry_pending = _spec_probe_retry_pending(llama_backend),
+                spec_dflash_retry_pending = _spec_dflash_retry_pending(llama_backend),
+                spec_dspark_sidecar_absent = _spec_dspark_sidecar_absent(llama_backend),
+                gpu_placement_paravirtual = _gpu_placement_paravirtual(),
+                audio_probe_pending = _audio_probe_pending(llama_backend),
+                diffusion_split_supported = _diffusion_split_supported(llama_backend),
+                tensor_parallel_dropped_by_arch_gate = _arch_gate_dropped_tensor_parallel(
+                    llama_backend
+                ),
                 spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
@@ -10902,7 +11465,12 @@ async def stt_unload(
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
     _, unload_stt = _stt_lifecycle()
-    failed: list[str] = await asyncio.to_thread(unload_stt, engines, model)
+    # expected_model by keyword: _stt_lifecycle returns the orchestrator's
+    # unload_stt_model when a backend is resident and stt_registry.unload when one
+    # is not, and only the former takes it positionally. Registry-side it sits
+    # behind a `*`, so passing it positionally raised TypeError, which is the
+    # state a fresh process is in before anything has loaded.
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines, expected_model = model)
     if failed:
         raise HTTPException(
             status_code = 500,
@@ -17281,6 +17849,24 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     return _with_system(messages)
 
 
+def _responses_text_format(text: Any) -> Optional[dict]:
+    """Responses ``text.format`` -> Chat Completions ``response_format``.
+
+    ``{"type": "text"}`` and a verbosity-only ``text`` carry no constraint -> None.
+    """
+    fmt = text.get("format") if isinstance(text, dict) else None
+    if not isinstance(fmt, dict):
+        return None
+    if fmt.get("type") == "json_object":
+        return {"type": "json_object"}
+    if fmt.get("type") != "json_schema" or not isinstance(fmt.get("schema"), dict):
+        return None
+    json_schema = {"name": str(fmt.get("name") or "response"), "schema": fmt["schema"]}
+    if fmt.get("strict") is not None:
+        json_schema["strict"] = bool(fmt["strict"])
+    return {"type": "json_schema", "json_schema": json_schema}
+
+
 def _build_chat_request(
     payload: ResponsesRequest, messages: list[ChatMessage], stream: bool
 ) -> ChatCompletionRequest:
@@ -17352,6 +17938,11 @@ def _build_chat_request(
                 chat_kwargs["reasoning_effort"] = "none"
             elif effort != "none":
                 chat_kwargs["reasoning_effort"] = effort
+
+    response_format = _responses_text_format(payload.text)
+    if response_format is not None:
+        # Lands in model_extra, where _extract_response_format reads it.
+        chat_kwargs["response_format"] = response_format
 
     return ChatCompletionRequest(**chat_kwargs)
 
@@ -22942,6 +23533,20 @@ def _assert_native_precision_unset(
 async def load_diffusion_model(
     request: DiffusionLoadRequest, current_subject: str = Depends(get_current_subject)
 ):
+    return await load_diffusion_model_gated(request, current_subject, user_initiated = True)
+
+
+async def load_diffusion_model_gated(
+    request: DiffusionLoadRequest,
+    current_subject: str,
+    *,
+    user_initiated: bool = False,
+):
+    """Everything ``POST /images/load`` does, plus who asked for it.
+
+    Media auto-switch awaits this rather than the route so the idle unload can tell an
+    API-loaded pipeline from one the user picked on the Images page.
+    """
     from core.inference.diffusion import (
         get_diffusion_backend,
         resolve_local_single_file,
@@ -22960,6 +23565,8 @@ async def load_diffusion_model(
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
+    from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
+    from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -23086,6 +23693,9 @@ async def load_diffusion_model(
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).
             return engine.begin_load(
                 request.model_path,
+                # a load nobody asked for may not reach the hub: the switch verified locality
+                # from the outside, and this is what makes that promise the loader's own rule
+                local_files_only = not user_initiated,
                 gguf_filename = request.gguf_filename,
                 base_repo = request.base_repo,
                 family_override = request.family_override,
@@ -23124,6 +23734,14 @@ async def load_diffusion_model(
             # A CPU-only native load never touches the GPU, but switching FROM a previous GPU load leaves DIFFUSION marked as owner, so release (owner-guarded).
             await asyncio.to_thread(release, DIFFUSION)
             status_dict = await asyncio.to_thread(_begin_load)
+        # Keyed to the target: this load can still fail with the previous model resident, and
+        # its origin must not be read off that model.
+        note_media_load_origin(
+            DIFFUSION,
+            request.model_path,
+            extract_quant_token(request.gguf_filename) if kind == "gguf" else None,
+            user_action = user_initiated,
+        )
         return DiffusionStatusResponse(**annotate_status(status_dict))
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
@@ -23676,15 +24294,21 @@ async def openai_image_generations(
     body: ImageGenerationRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
+    hf_token: Optional[str] = Depends(get_hf_token),
 ):
     """OpenAI-compatible text-to-image (POST /v1/images/generations).
 
     Generates ``n`` images from ``prompt`` on the loaded diffusion model and
     returns them as URLs (default) or base64 PNGs per ``response_format``. Steps
-    and guidance have no OpenAI knob, so they default per loaded model."""
+    and guidance have no OpenAI knob, so they default per loaded model.
+
+    With media auto-switch on, ``model`` names the image model to serve on and is loaded
+    when it is not the resident one; with it off ``model`` stays informational."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import default_generation_params
+    from core.inference.gpu_arbiter import DIFFUSION
+    from core.inference.media_auto_switch import maybe_auto_switch_media_model
 
     if body.stream:
         raise HTTPException(
@@ -23699,6 +24323,15 @@ async def openai_image_generations(
         raise HTTPException(
             status_code = 400, detail = openai_error_body(str(exc), status = 400, param = "size")
         )
+
+    # Before the loaded check: the requested model may be the one this brings up.
+    await maybe_auto_switch_media_model(
+        body.model,
+        owner = DIFFUSION,
+        current_subject = current_subject,
+        openai_errors = True,
+        hf_token = hf_token,
+    )
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
