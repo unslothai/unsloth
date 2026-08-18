@@ -50,6 +50,9 @@ export function useSourceDrop({
   disabledReason,
 }: SourceDropOptions): SourceDrop {
   const disabled = disabledReason !== undefined;
+  // A native drop registers its paths before upload() flips `uploading`, so
+  // that window needs its own flag or a second drop starts a second upload.
+  const registering = useRef(false);
   // Count enter/leave pairs: children fire dragleave on the parent.
   const dragDepth = useRef(0);
   const [dragging, setDragging] = useState(false);
@@ -72,10 +75,13 @@ export function useSourceDrop({
       );
       reportUnsupported(unsupported);
       if (supported.length === 0) return;
+      registering.current = true;
       // Per path, so one rejected file does not discard the rest of the drop.
       const settled = await Promise.allSettled(
         supported.map(registerNativeAttachmentPath),
-      );
+      ).finally(() => {
+        registering.current = false;
+      });
       const items = settled.flatMap((result) =>
         result.status === "fulfilled"
           ? [uploadItemFromIntent(result.value)]
@@ -94,10 +100,21 @@ export function useSourceDrop({
     [onItems, reportUnsupported],
   );
 
+  /** Why a drop cannot be taken right now, or undefined when it can. */
+  const refusal = useCallback(
+    () =>
+      disabledReason ??
+      (registering.current
+        ? "Still adding the last drop. Try again in a moment."
+        : undefined),
+    [disabledReason],
+  );
+
   const nativeDropTarget = useNativeDropTarget({
     onDrop: (paths) => {
-      if (disabled) {
-        toast.info(disabledReason);
+      const reason = refusal();
+      if (reason !== undefined) {
+        toast.info(reason);
         return;
       }
       void addNativePaths(paths);
@@ -133,8 +150,9 @@ export function useSourceDrop({
       event.preventDefault();
       endDrag();
       if (!isFileDrag(event)) return;
-      if (disabledReason !== undefined) {
-        toast.info(disabledReason);
+      const reason = refusal();
+      if (reason !== undefined) {
+        toast.info(reason);
         return;
       }
       const { supported, unsupported } = partitionSupported(
