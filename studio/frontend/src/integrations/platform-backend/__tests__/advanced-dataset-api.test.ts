@@ -224,6 +224,39 @@ describe("Rag Platform Phase 10 advanced dataset contracts", () => {
     );
   });
 
+  it("keeps flat Go metadata aliases API-only with exact source payloads", async () => {
+    await api.getLegacyDocumentMetadataSummaryCompatibility("dataset-1", [
+      "doc-1",
+    ]);
+    await api.setLegacyDocumentMetadataCompatibility("doc-1", {
+      department: "R&D",
+      priority: 2,
+      labels: ["public", 3],
+    });
+
+    expect(seen.slice(-2)).toEqual([
+      {
+        method: "POST",
+        path: "/api/v1/document/metadata/summary",
+        query: "",
+        body: { kb_id: "dataset-1", doc_ids: ["doc-1"] },
+      },
+      {
+        method: "POST",
+        path: "/api/v1/document/set_meta",
+        query: "",
+        body: {
+          doc_id: "doc-1",
+          meta: JSON.stringify({
+            department: "R&D",
+            priority: 2,
+            labels: ["public", 3],
+          }),
+        },
+      },
+    ]);
+  });
+
   it("uses exact tenant-owned global skill space/config/search/index contracts", async () => {
     platformTestServer.use(
       http.all("http://platform.test/api/v1/skills/*", async ({ request }) => {

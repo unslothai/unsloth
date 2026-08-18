@@ -95,10 +95,11 @@ the matching release tag.
 | Created | 2026-07-07T13:30:41Z |
 | Platform | `linux/amd64` (single-architecture manifest; no `arm64` variant is published) |
 | Owned alias | `rag-platform-backend:0.26.4` |
-| Derived image ID | `sha256:fe17fda6fb5a1e244fd9a081d44ae8b9e0af320403df15e71f2e55c509586f71` |
-| Go source tag | `v0.26.4` |
-| Go source commit | `cb93883f3f8c975eecb2fed81210effeb3bdb06f` |
-| Added runtime files | `/ragflow/bin/ragflow_server`, `/usr/local/bin/rag-platform-entrypoint` |
+| Phase 14 baseline image ID | `sha256:fe17fda6fb5a1e244fd9a081d44ae8b9e0af320403df15e71f2e55c509586f71` |
+| Python/base source tag | `v0.26.4` |
+| Python/base source commit | `cb93883f3f8c975eecb2fed81210effeb3bdb06f` |
+| Go/owned source | Clean protected `acrbaran/rag-backend` commit recorded by the image labels and release provenance |
+| Added runtime files | `/ragflow/bin/ragflow_server`, `/usr/local/bin/rag-platform-entrypoint`, `/usr/local/bin/rag-platform-readiness`, owned `/etc/nginx/proxy.conf` and `/etc/nginx/security-headers.conf`, owned frontend `/ragflow/web/dist` |
 | Removed image files | `/ragflow/conf/private.pem`, `/ragflow/conf/public.pem` |
 | Go profile | `CGO_ENABLED=0`, cross-compiled to `linux/amd64` |
 
@@ -118,12 +119,18 @@ Python API/ingestion service retains upstream's full native document parsing.
 The tokenizer fallback has a build-stage unit test; all four runtime services
 and the hybrid proxy are smoke-tested separately.
 
-`build-backend-image.sh` refuses a tag whose commit does not match the value
-above and uses a clean disposable archive, so uncommitted backend files cannot
-enter the image. The tag is pinned and never `:latest`, so a captured contract
-fixture always maps to one known source and base image. Runtime RSA material is
-generated on first start in the named `rag-platform-key-material` volume and is
-not present in either Git tree or any image layer.
+The Phase 15 image replaces the upstream web bundle with the independently
+built Rag Platform frontend and serves it from the same nginx origin as the
+hybrid API. The image label records the frontend Git revision; release CI
+publishes the image, SBOM and provenance evidence as one release set.
+
+`build-backend-image.sh` accepts only a clean backend commit that is on
+`origin/main` or tagged and uses a disposable Git archive, so uncommitted
+backend files cannot enter the image. The base image and owned alias are pinned
+and never `:latest`; the exact Go/frontend commits are recorded by image labels,
+SBOM and provenance. Runtime RSA material is generated on first start in the
+named `rag-platform-key-material` volume and is not present in either Git tree
+or any image layer.
 
 Inside the container, upstream paths (`/ragflow/...`), Python and Go
 import and package names, and upstream environment variable names are

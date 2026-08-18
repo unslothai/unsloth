@@ -41,7 +41,7 @@ services:
     # runtime image and adds the Go server compiled from the matching v0.26.4
     # source tag. Source commit, base digest, pure-Go profile and compatibility
     # adapters are recorded in THIRD_PARTY_NOTICES.md. The tag is never `latest`.
-    image: rag-platform-backend:0.26.4
+    image: ${RAG_PLATFORM_BACKEND_IMAGE:-rag-platform-backend:0.26.4}
     # The source image publishes a single-architecture manifest
     # (application/vnd.docker.distribution.manifest.v2+json, linux/amd64;
     # `docker manifest inspect` shows no arm64 variant). Without this key
@@ -119,6 +119,12 @@ services:
     networks:
       - ragflow
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rag-platform-readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -134,7 +140,7 @@ services:
   platform-backend-gpu:
     profiles:
       - platform-gpu
-    image: rag-platform-backend:0.26.4
+    image: ${RAG_PLATFORM_BACKEND_IMAGE:-rag-platform-backend:0.26.4}
     # Same single-architecture manifest as the CPU service above.
     platform: linux/amd64
     container_name: rag-platform-backend
@@ -169,6 +175,12 @@ services:
     networks:
       - ragflow
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/rag-platform-readiness"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     deploy:

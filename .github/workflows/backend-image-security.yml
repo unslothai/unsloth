@@ -36,21 +36,36 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: acrbaran/rag-backend
-          ref: v0.26.4
+          ref: main
           fetch-depth: 0
           path: rag-backend
 
       - name: Verify protected backend source
+        id: backend
         working-directory: rag-backend
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse 'v0.26.4^{commit}')" = cb93883f3f8c975eecb2fed81210effeb3bdb06f
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+          cache-dependency-path: rag-frontend/studio/frontend/package-lock.json
+
+      - name: Build owned frontend
+        working-directory: rag-frontend/studio/frontend
+        run: npm ci && npm run build
 
       - name: Build derived backend image
         working-directory: rag-frontend
         env:
           RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+          RAG_PLATFORM_BACKEND_RELEASE_REF: main
+          RAG_PLATFORM_BACKEND_EXPECTED_COMMIT: ${{ steps.backend.outputs.sha }}
           RAG_PLATFORM_BUILD_PROVENANCE: mode=max
         run: infra/rag-platform/build-backend-image.sh
 

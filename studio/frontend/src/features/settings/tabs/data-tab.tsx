@@ -41,6 +41,7 @@ import {
   useChatSidebarItems,
 } from "@/features/chat";
 import { useT } from "@/i18n";
+import { PlatformChatMigrationPanel } from "@/features/migration";
 
 import { isTauri } from "@/lib/api-base";
 import {
@@ -703,6 +704,10 @@ export function DataTab() {
           />
         </SettingsRow>
       </div>
+
+      <SettingsSection title="Migration ve güvenli export">
+        <PlatformChatMigrationPanel />
+      </SettingsSection>
 
       <SettingsSection title={t("settings.data.filesSection")}>
         <SettingsRow

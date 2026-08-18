@@ -1002,7 +1002,7 @@ export async function clearBackendChats(
   return Array.isArray(data?.sandboxes_kept) ? data.sandboxes_kept : [];
 }
 
-export async function buildBackendChatExport(): Promise<{
+export async function buildBackendChatExport(signal?: AbortSignal): Promise<{
   exportedAt: string;
   version: number;
   threadCount: number;
@@ -1010,7 +1010,7 @@ export async function buildBackendChatExport(): Promise<{
   threads: ThreadRecord[];
   messages: MessageRecord[];
 }> {
-  const response = await authFetch("/api/chat/export");
+  const response = await authFetch("/api/chat/export", { signal });
   return parseJsonOrThrow(response);
 }
 

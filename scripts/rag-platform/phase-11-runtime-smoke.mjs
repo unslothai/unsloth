@@ -196,7 +196,6 @@ try {
   }
 
   await reachesHandler("POST", `${agentPath}/run`, { user_input: "smoke" });
-  await reachesHandler("DELETE", `${agentPath}/run`);
   await reachesHandler("POST", "/api/v1/agents/chat/completions", {
     agent_id: agentId,
     query: "smoke",

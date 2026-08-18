@@ -46,10 +46,15 @@ node scripts/rag-platform/proxy-config.mjs
 node scripts/rag-platform/route-inventory.mjs --backend-ref <version>
 node scripts/rag-platform/coverage-matrix.mjs
 node scripts/rag-platform/contract-matrix.mjs
+node scripts/rag-platform/route-inventory-diff.mjs
+node scripts/rag-platform/backend-coverage-report.mjs
 node scripts/rag-platform/proxy-config.mjs --check
 node scripts/rag-platform/route-inventory.mjs --backend-ref <version> --check
 node scripts/rag-platform/coverage-matrix.mjs --check
 node scripts/rag-platform/contract-matrix.mjs --check
+node scripts/rag-platform/route-inventory-diff.mjs --check
+node scripts/rag-platform/backend-coverage-report.mjs --check
+node scripts/rag-platform/e2e-evidence.mjs
 ```
 
 Any route added, removed, made unreachable or left unclassified blocks the

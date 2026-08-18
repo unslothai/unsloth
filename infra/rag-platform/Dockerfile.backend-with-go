@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-# Build the Go server from the backend-authority commit plus the explicit Phase
-# 14 overlays assembled by the wrapper script. Native document parsing remains
-# in the Python service; the Go control plane is intentionally pure-Go.
+# Build the Go server from the protected backend-authority commit materialized
+# by the wrapper script. Native document parsing remains in the Python service;
+# the Go control plane is intentionally pure-Go.
 FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm AS go-builder
 
 ARG TARGETOS
@@ -37,6 +37,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Dockerfile's `COPY bin bin` intended to ship and the runtime key wrapper.
 FROM --platform=linux/amd64 infiniflow/ragflow:v0.26.4
 
+ARG RAG_PLATFORM_FRONTEND_COMMIT="unknown"
+ARG RAG_PLATFORM_BACKEND_COMMIT="unknown"
+
 COPY --from=go-builder /src/bin/ragflow_server /ragflow/bin/ragflow_server
 COPY --from=go-builder /src/api/db/services/file_commit_service.py \
   /ragflow/api/db/services/file_commit_service.py
@@ -45,15 +48,26 @@ COPY --from=go-builder /src/api/apps/restful_apis/aimlapi_api.py \
 COPY --from=go-builder /src/common/aimlapi_utils.py \
   /ragflow/common/aimlapi_utils.py
 COPY --from=rag-platform-assets backend-entrypoint.sh /usr/local/bin/rag-platform-entrypoint
+COPY --from=rag-platform-assets runtime-readiness.sh /usr/local/bin/rag-platform-readiness
+COPY --from=rag-platform-assets proxy.conf /etc/nginx/proxy.conf
+COPY --from=rag-platform-assets security-headers.conf /etc/nginx/security-headers.conf
+
+# Serve the owned frontend from the same nginx origin as /api/v1. Removing the
+# inherited bundle first prevents stale upstream chunks from surviving a hash
+# or filename change.
+RUN rm -rf /ragflow/web/dist
+COPY --from=rag-platform-frontend-dist . /ragflow/web/dist
 
 RUN rm -f /ragflow/conf/private.pem /ragflow/conf/public.pem \
-    && chmod 0755 /usr/local/bin/rag-platform-entrypoint
+    && chmod 0755 /usr/local/bin/rag-platform-entrypoint /usr/local/bin/rag-platform-readiness \
+    && test -s /ragflow/web/dist/index.html
 
 ENTRYPOINT ["/usr/local/bin/rag-platform-entrypoint"]
 
 LABEL org.opencontainers.image.title="Rag Platform backend" \
-      org.opencontainers.image.version="0.26.4-phase14" \
+      org.opencontainers.image.version="0.26.4-phase15" \
       org.opencontainers.image.base.name="infiniflow/ragflow:v0.26.4" \
-      org.opencontainers.image.revision="a0e091e75051f278ab21e7e1c2ce3d1fcccbd5a2" \
+      org.opencontainers.image.revision="${RAG_PLATFORM_BACKEND_COMMIT}" \
+      io.rag-platform.frontend.revision="${RAG_PLATFORM_FRONTEND_COMMIT}" \
       io.rag-platform.go-profile="pure-go" \
-      io.rag-platform.phase14-runtime-fix="tenant-rbac-public-token-rate-limit-ingestor-aimlapi"
+      io.rag-platform.release-profile="phase15-hardened-same-origin"

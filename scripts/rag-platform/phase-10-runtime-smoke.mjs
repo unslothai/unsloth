@@ -5,9 +5,10 @@
  *
  * Proves representative active metadata/tag/graph/artifact/ingestion/skill
  * handlers are registered (an authenticated business error is acceptable for a
- * deliberately nonexistent dataset), and proves forward-only Phase 10 routes
- * are absent from both nginx and their direct Python/Go ports. Credentials are
- * generated in memory and never printed or persisted.
+ * deliberately nonexistent dataset), and proves the owned current Go runtime
+ * serves Phase 10 routes while the Python-only navigation-search declaration
+ * remains explicitly absent. Credentials are generated in memory and never
+ * printed or persisted.
  */
 import { execFileSync } from "node:child_process";
 import { constants, publicEncrypt } from "node:crypto";
@@ -109,14 +110,14 @@ try {
   await registered("GET", "/api/v1/skills/spaces");
   await registered("POST", "/api/v1/skills/search", { space_id: "default", query: "", page: 1, page_size: 1 });
 
-  await absentEverywhere("GET", `/api/v1/datasets/${missing}/compilation/status`);
-  await absentEverywhere("GET", `/api/v1/datasets/${missing}/artifacts/topics`);
-  await absentEverywhere("GET", `/api/v1/datasets/${missing}/artifacts/structure`);
-  await absentEverywhere("GET", `/api/v1/datasets/${missing}/artifacts/alteration`);
-  await absentEverywhere("GET", `/api/v1/datasets/${missing}/navigation`);
+  await registered("GET", `/api/v1/datasets/${missing}/compilation/status`);
+  await registered("GET", `/api/v1/datasets/${missing}/artifacts/topics`);
+  await registered("GET", `/api/v1/datasets/${missing}/artifacts/structure`);
+  await registered("GET", `/api/v1/datasets/${missing}/artifacts/alteration`);
+  await registered("GET", `/api/v1/datasets/${missing}/navigation`);
   await absentEverywhere("GET", `/api/v1/datasets/${missing}/navigation/search?q=rag`);
 
-  console.log("Phase 10 authenticated hybrid/source-only runtime smoke: PASS");
+  console.log("Phase 10 authenticated hybrid/owned-Go runtime smoke: PASS");
 } finally {
   if (authorization)
     await authSuccess("POST", "/api/v1/auth/logout").catch(() => undefined);

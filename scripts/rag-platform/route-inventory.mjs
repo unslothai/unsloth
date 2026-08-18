@@ -60,6 +60,11 @@ const BACKEND_REF =
   backendRefIndex >= 0 && args[backendRefIndex + 1]
     ? args[backendRefIndex + 1]
     : process.env.RAG_PLATFORM_BACKEND_REF || DEFAULT_BACKEND_REF;
+const goRefIndex = args.indexOf("--go-ref");
+const GO_BACKEND_REF =
+  goRefIndex >= 0 && args[goRefIndex + 1]
+    ? args[goRefIndex + 1]
+    : process.env.RAG_PLATFORM_BACKEND_GO_REF || "worktree";
 
 if (!existsSync(BACKEND_REPO_ROOT)) {
   console.error(`backend path not found: ${BACKEND_REPO_ROOT}`);
@@ -99,6 +104,50 @@ if (BACKEND_REF !== "worktree") {
     rmSync(disposableBackendRoot, { recursive: true, force: true });
   });
 }
+
+const BASE_BACKEND_ROOT = BACKEND_ROOT;
+let GO_BACKEND_ROOT = BACKEND_REPO_ROOT;
+let GO_BACKEND_COMMIT = execFileSync(
+  "git",
+  ["-C", BACKEND_REPO_ROOT, "rev-parse", "HEAD"],
+  { encoding: "utf8" },
+).trim();
+let disposableGoBackendRoot;
+if (GO_BACKEND_REF !== "worktree") {
+  try {
+    GO_BACKEND_COMMIT = execFileSync(
+      "git",
+      ["-C", BACKEND_REPO_ROOT, "rev-parse", `${GO_BACKEND_REF}^{commit}`],
+      { encoding: "utf8" },
+    ).trim();
+    disposableGoBackendRoot = mkdtempSync(
+      join(tmpdir(), "rag-platform-go-route-inventory-"),
+    );
+    const archive = execFileSync(
+      "git",
+      ["-C", BACKEND_REPO_ROOT, "archive", "--format=tar", GO_BACKEND_REF],
+      { maxBuffer: 512 * 1024 * 1024 },
+    );
+    execFileSync("tar", ["-xf", "-", "-C", disposableGoBackendRoot], {
+      input: archive,
+      maxBuffer: 512 * 1024 * 1024,
+    });
+    GO_BACKEND_ROOT = disposableGoBackendRoot;
+  } catch (error) {
+    console.error(
+      `cannot materialize Go backend ref ${GO_BACKEND_REF}: ${error.message}`,
+    );
+    process.exit(2);
+  }
+  process.on("exit", () => {
+    rmSync(disposableGoBackendRoot, { recursive: true, force: true });
+  });
+}
+const GO_BACKEND_DIRTY =
+  GO_BACKEND_REF === "worktree" &&
+  execFileSync("git", ["-C", BACKEND_REPO_ROOT, "status", "--porcelain"], {
+    encoding: "utf8",
+  }).trim().length > 0;
 
 // ---------------------------------------------------------------------------
 // Service topology. Ports are the in-container listen ports, which are also the
@@ -736,23 +785,33 @@ function scanMcp() {
 // Assemble
 // ---------------------------------------------------------------------------
 
-const rawRoutes = [
+const pythonRuntimeRoutes = [
   ...scanPythonRestfulApis(),
   ...scanPythonBackwardCompat(),
   ...scanPythonAdmin(),
-  ...scanGoApi(),
-  ...scanGoAdmin(),
   ...scanMcp(),
 ];
+let runtimeGoRoutes;
+try {
+  BACKEND_ROOT = GO_BACKEND_ROOT;
+  runtimeGoRoutes = [...scanGoApi(), ...scanGoAdmin()].map((route) => ({
+    ...route,
+    source_scope: "owned-go-runtime",
+    source_commit: GO_BACKEND_COMMIT,
+    notes:
+      `${route.notes ? `${route.notes}; ` : ""}owned Go runtime from ` +
+      `${GO_BACKEND_REF}${GO_BACKEND_DIRTY ? " (dirty local smoke only)" : ""}`,
+  }));
+} finally {
+  BACKEND_ROOT = BASE_BACKEND_ROOT;
+}
+const rawRoutes = [...pythonRuntimeRoutes, ...runtimeGoRoutes];
 
 /**
- * The deployed contract is pinned to v0.26.4, but the local backend worktree is
- * also normative for forward source discovery. Enterprise auth declarations
- * added after the pinned ref must not disappear merely because the runtime
- * image cannot contain them. Parse the current worktree's EE router, keep only
- * method+paths absent from the pinned scan, and record them as source-only
- * runtime-disabled. Their handler bodies are verified as not-implemented stubs
- * rather than inferred from route names.
+ * Python/MCP runtime files come from the pinned base image while the owned Go
+ * executable is built from GO_BACKEND_REF. Keep current Python-only declarations
+ * visible when they are absent from the base image; current Go declarations are
+ * already present in rawRoutes and are therefore never misreported here.
  */
 function scanForwardAuthSourceOnly() {
   if (BACKEND_REF === "worktree") return { commit: BACKEND_COMMIT, routes: [] };
@@ -777,7 +836,7 @@ function scanForwardAuthSourceOnly() {
     { encoding: "utf8" },
   ).trim();
   const known = new Set(
-    rawRoutes.map((route) => `${route.method} ${route.path}`),
+    rawRoutes.map((route) => `${route.service} ${route.method} ${route.path}`),
   );
   const handlerLines = readFileSync(handlerPath, "utf8").split("\n");
   const routes = [];
@@ -790,7 +849,7 @@ function scanForwardAuthSourceOnly() {
       if (!match) return;
       const method = match[1];
       const path = `/api/v1${match[2]}`;
-      if (known.has(`${method} ${path}`)) return;
+      if (known.has(`go-api ${method} ${path}`)) return;
       const handler = match[3];
       const handlerStart = handlerLines.findIndex((candidate) =>
         new RegExp(`^func \\(h \\*UserHandler\\) ${handler}\\(`).test(
@@ -859,7 +918,7 @@ function scanForwardPipelineSourceOnly() {
     { encoding: "utf8" },
   ).trim();
   const known = new Set(
-    rawRoutes.map((route) => `${route.method} ${route.path}`),
+    rawRoutes.map((route) => `${route.service} ${route.method} ${route.path}`),
   );
   const handlerText = readFileSync(handlerPath, "utf8");
   const routes = [];
@@ -872,7 +931,7 @@ function scanForwardPipelineSourceOnly() {
       if (!match) return;
       const method = match[1];
       const path = `/api/v1${match[2]}`;
-      if (known.has(`${method} ${path}`)) return;
+      if (known.has(`go-api ${method} ${path}`)) return;
       const handler = match[3];
       if (
         !new RegExp(`func \\(h \\*PipelineHandler\\) ${handler}\\(`).test(
@@ -927,7 +986,7 @@ function scanForwardPhase10SourceOnly() {
     { encoding: "utf8" },
   ).trim();
   const known = new Set(
-    rawRoutes.map((route) => `${route.method} ${route.path}`),
+    rawRoutes.map((route) => `${route.service} ${route.method} ${route.path}`),
   );
   const deployedRoot = BACKEND_ROOT;
   let currentRoutes;
@@ -945,7 +1004,7 @@ function scanForwardPhase10SourceOnly() {
       .filter(
         (route) =>
           phase10Path.test(route.path) &&
-          !known.has(`${route.method} ${route.path}`),
+          !known.has(`${route.service} ${route.method} ${route.path}`),
       )
       .map((route) => {
         const base = {
@@ -1103,6 +1162,19 @@ const phase14RemovedPinnedRoutes = new Set([
   "POST /api/v1/tenant/insert_chunks_from_file",
   "POST /api/v1/tenant/insert_metadata_from_file",
 ]);
+const goFunctionalRuntimeDisabled = new Map([
+  ["GET /api/v1/auth/azure/callback", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/auth/azure/login", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/auth/icbc/callback", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/auth/oauth/callback", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/auth/oauth/github/callback", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/auth/oauth/lark/callback", "backend handler returns CodeNotImplemented"],
+  ["POST /api/v1/auth/register/captcha", "backend handler returns CodeNotImplemented"],
+  ["POST /api/v1/auth/register/otp", "backend handler returns CodeNotImplemented"],
+  ["POST /api/v1/auth/register/otp/verify", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/users/me/admin", "backend handler returns CodeNotImplemented"],
+  ["GET /api/v1/users/me/meta", "backend handler returns CodeNotImplemented"],
+]);
 const forwardSourceRoutes = [
   ...forwardAuthSource.routes,
   ...forwardPipelineSource.routes,
@@ -1137,6 +1209,16 @@ for (const route of rawRoutes) {
       runtime_disabled_reason:
         "removed from the normative backend router and absent from the owned Phase 14 Go binary; live hybrid/direct smoke returns HTTP 404; use the internal dev_ spelling",
       source_scope: "pinned-source-removed-by-phase14-overlay",
+    };
+  }
+  if (route.service === "go-api" && goFunctionalRuntimeDisabled.has(key)) {
+    entry = {
+      ...entry,
+      runtime_enabled: false,
+      runtime_disabled_reason:
+        `${goFunctionalRuntimeDisabled.get(key)}; route registration is present ` +
+        "but no supported user operation exists",
+      source_scope: "registered-functional-runtime-disabled",
     };
   }
   if (!byKey.has(key)) {
@@ -1240,8 +1322,10 @@ const inventory = {
       readEnvValue(join(BACKEND_ROOT, "docker", ".env"), "RAGFLOW_IMAGE") ||
       "unknown",
     api_version: "v1",
-    forward_source_commit:
-      forwardPhase10Source.commit || forwardAuthSource.commit,
+    go_source_ref: GO_BACKEND_REF,
+    go_source_commit: GO_BACKEND_COMMIT,
+    go_source_dirty: GO_BACKEND_DIRTY,
+    forward_source_commit: GO_BACKEND_COMMIT,
   },
   proxy: {
     scheme: PROXY_SCHEME,
@@ -1301,11 +1385,15 @@ function renderMarkdown(data) {
       `(\`${data.backend.source_commit}\`)`,
   );
   lines.push(
+    `- Owned Go source: \`${data.backend.go_source_ref}\` ` +
+      `(\`${data.backend.go_source_commit}\`; dirty: \`${data.backend.go_source_dirty}\`)`,
+  );
+  lines.push(
     `- Source image: \`${data.backend.source_image}\` (API version \`${data.backend.api_version}\`)`,
   );
   lines.push(
-    `- Forward source audit: backend worktree \`${data.backend.forward_source_commit}\`; ` +
-      `${data.totals.source_only_runtime_disabled} source-only runtime-disabled route(s)`,
+    `- Current Python source audit: backend worktree \`${data.backend.forward_source_commit}\`; ` +
+      `${data.totals.source_only_runtime_disabled} declaration(s) absent from the pinned Python base`,
   );
   lines.push(
     `- Active proxy scheme: \`${data.proxy.scheme}\` (from ${data.proxy.scheme_source})`,
@@ -1426,6 +1514,10 @@ function renderRuntimeDisabled(data) {
   );
   lines.push(`- Proxy config: \`${data.proxy.nginx_config}\``);
   lines.push(`- Source image: \`${data.backend.source_image}\``);
+  lines.push(
+    `- Owned Go source: \`${data.backend.go_source_ref}\` ` +
+      `(\`${data.backend.go_source_commit}\`; dirty: \`${data.backend.go_source_dirty}\`)`,
+  );
   lines.push("- Decision record: `docs/adr/0005-backend-proxy-scheme.md`");
   lines.push("");
   lines.push("## Totals");
@@ -1457,22 +1549,25 @@ function renderRuntimeDisabled(data) {
   if (data.totals.source_only_runtime_disabled > 0) {
     lines.push("");
     lines.push(
-      `${data.totals.source_only_runtime_disabled} route(s) are separate forward-source cases: ` +
-        `they are declared only at backend worktree \`${data.backend.forward_source_commit}\`, ` +
-        `and are absent from deployed \`${data.backend.source_ref}\`. Nine auth handlers return ` +
-        "`CodeNotImplemented`; the two pipeline catalog handlers and the Phase 10 dataset compilation/artifact/navigation/skill handlers are implemented but absent from the pinned runtime. " +
-        `${data.totals.phase14_source_only_runtime_disabled} Phase 14 Python alternate declarations remain worktree-only; ${data.totals.phase14_runtime_overlay} Phase 14 Go/AIMLAPI declarations are deployed through the owned runtime overlay. ` +
-        "Live hybrid smoke returns HTTP 404 for the pipeline list/detail and seven auth paths; " +
-        "GitHub and Lark callback URLs return 302 through the active parameterised callback. " +
-        `The auth UI uses live channels without a false captcha/OTP step, the pipeline selector shows an explicit runtime-disabled reason, and ${data.totals.phase10_source_only_runtime_disabled} Phase 10 source-only routes remain hidden from product actions until the runtime image is upgraded.`,
+      `${data.totals.source_only_runtime_disabled} route(s) are current Python declarations at ` +
+        `backend worktree \`${data.backend.forward_source_commit}\` that are absent from the pinned ` +
+        `\`${data.backend.source_ref}\` Python base. Most are disabled alternates whose concrete ` +
+        "method+path is served by the owned Go executable; those preserve capability and are listed " +
+        "separately below. Only declarations without a reachable equivalent contribute to the " +
+        "capability-lost table. Runtime smoke confirms the two Python-only navigation gaps return " +
+        "HTTP 404, while current Go pipeline, compilation, artifact, navigation and skill handlers " +
+        "are registered and reachable through the hybrid proxy.",
     );
   }
   lines.push("");
-  lines.push("## Phase 14 runtime overlay");
+  lines.push("## Owned Go runtime and selected Python overlay");
   lines.push("");
   lines.push(
-    `The owned image deploys ${data.totals.phase14_runtime_overlay} Phase 14 declarations from backend authority ${data.backend.forward_source_commit}. ` +
-      "The hybrid proxy selects their Go routes and the two Python AIMLAPI authorization routes. Go-internal developer import routes remain classified internal even when reachable; they are not browser actions.",
+    `The owned image builds every Go declaration from \`${data.backend.go_source_ref}\` at ` +
+      `\`${data.backend.go_source_commit}\`. It also overlays ${data.totals.phase14_runtime_overlay} ` +
+      "current Python AIMLAPI authorization declarations onto the pinned Python base. " +
+      "Go-internal developer import routes remain classified internal even when reachable; " +
+      "they are not browser actions.",
   );
   lines.push("");
   lines.push(
@@ -1485,7 +1580,7 @@ function renderRuntimeDisabled(data) {
   lines.push("");
   lines.push(
     "These two routes are reachable at the proxy and therefore are not included in the",
-    "runtime-disabled total above, but their active v0.26.4 handler contract cannot",
+    "runtime-disabled total above, but their active owned-Go handler contract cannot",
     "complete the user-facing browser operation. They are explicitly classified",
     "`runtime-disabled` in the endpoint coverage matrix rather than presented as empty UI.",
   );
@@ -1497,8 +1592,8 @@ function renderRuntimeDisabled(data) {
   lines.push(
     "| `GET /api/v1/documents` | `internal/router/router.go:291` binds the flat route to `ListDocuments`; `internal/handler/document.go:520` reads the absent `dataset_id` path param and runs dataset ownership against it. | Generated hybrid map sends GET `/api/v1/documents` to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. The authenticated handler is source-provably unable to supply a flat collection; the UI shows `runtime-disabled` and uses dataset-scoped listing. |",
     "| `GET /api/v1/documents/{id}` | `internal/handler/document.go:116-143` authenticates but discards the user and returns `GetDocumentByID` without `datasetService.Accessible`; neighboring PUT/DELETE handlers do perform that ownership check. | Generated hybrid map sends GET `/api/v1/documents/{id}` to Go `9384`. | The unsafe metadata read is not exposed in the frontend; the General documents tab shows a security-specific `runtime-disabled` notice while ownership-checked PUT/DELETE remain available. |",
-    "| `POST /api/v1/datasets/{id}/documents` (Go alternate) | Active Go v0.26.4 upload inserts the historical SQL document shape including `meta_fields`; the deployed DB/Python model uses the dedicated metadata service and has no such column. | Explicit generated runtime override sends the canonical upload to Python `9380`; Go remains a disabled alternate. | Live PDF/TXT/DOCX probe first failed on Go with MySQL 1054, then passed as a three-file upload on Python after nginx reload. |",
-    "| `POST /api/v1/datasets/{id}/documents/parse` (Go alternate) | Go v0.26.4 accepts legacy `{dataset_id, documents}` and publishes to its ingestor path, while the active parsing worker consumes Python task-executor jobs. | Explicit generated runtime override sends canonical `{document_ids}` parsing to Python `9380`; Go remains a disabled alternate. | Initial Go submission remained queued; the Python route produced observable progress and terminal 100% for PDF/TXT/DOCX. |",
+    "| `POST /api/v1/datasets/{id}/documents` (Go alternate) | The owned Go upload still inserts the historical SQL document shape including `meta_fields`; the deployed DB/Python model uses the dedicated metadata service and has no such column. | Explicit generated runtime override sends the canonical upload to Python `9380`; Go remains a disabled alternate. | Live PDF/TXT/DOCX probe first failed on Go with MySQL 1054, then passed as a three-file upload on Python after nginx reload. |",
+    "| `POST /api/v1/datasets/{id}/documents/parse` (Go alternate) | The owned Go route accepts legacy `{dataset_id, documents}` and publishes to its ingestor path, while the active parsing worker consumes Python task-executor jobs. | Explicit generated runtime override sends canonical `{document_ids}` parsing to Python `9380`; Go remains a disabled alternate. | Initial Go submission remained queued; the Python route produced observable progress and terminal 100% for PDF/TXT/DOCX. |",
   );
   lines.push(
     "| `GET /api/v1/datasets/ingestion/tasks` | `internal/handler/document.go:1460` calls `ShouldBindJSON` for `dataset_id` on GET and never reads the query string. Browser Fetch forbids GET request bodies. | Generated hybrid map sends the route to Go `9384`. | Authless live probe returns HTTP 401 from the Go session middleware, confirming target selection. Browser contract test uses no GET body; document polling plus Python `POST /datasets/{id}/documents/stop` is the safe product path. |",
@@ -1510,7 +1605,7 @@ function renderRuntimeDisabled(data) {
   lines.push("");
   lines.push(
     "The global skill routes are registered and selected by hybrid nginx, but the",
-    "deployed v0.26.4 data/search prerequisites are absent. They are classified",
+    "deployed database/search prerequisites are absent. They are classified",
     "`runtime-disabled` in the coverage matrix and render one explicit disabled",
     "notice; no create/update/delete/index action is offered.",
   );

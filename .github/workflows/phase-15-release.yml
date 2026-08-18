@@ -1,0 +1,227 @@
+name: Phase 15 production release
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      backend_ref:
+        description: Protected acrbaran/rag-backend commit or tag
+        required: true
+        default: main
+      public_url:
+        description: HTTPS canary URL served by the same-origin proxy
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  security-events: write
+
+jobs:
+  quality-contract-security:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: rag-frontend
+      - uses: actions/checkout@v6
+        with:
+          repository: acrbaran/rag-backend
+          ref: ${{ inputs.backend_ref || 'main' }}
+          fetch-depth: 0
+          path: rag-backend
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+          cache-dependency-path: rag-frontend/studio/frontend/package-lock.json
+      - name: Install
+        working-directory: rag-frontend/studio/frontend
+        run: npm ci
+      - name: Typecheck lint unit contract
+        working-directory: rag-frontend/studio/frontend
+        run: |
+          npm run typecheck
+          npm run lint:all
+          npm run i18n:check:strict
+          npm test -- --maxWorkers=2 --testTimeout=30000
+      - name: Dependency audit
+        working-directory: rag-frontend/studio/frontend
+        run: npm audit --audit-level=high
+      - name: Route coverage and E2E evidence gates
+        working-directory: rag-frontend
+        env:
+          RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+        run: |
+          node scripts/rag-platform/proxy-config.mjs --check
+          node scripts/rag-platform/route-inventory.mjs --backend ../rag-backend --check
+          node scripts/rag-platform/route-inventory-diff.mjs --check --reviewed
+          node scripts/rag-platform/coverage-matrix.mjs --check
+          node scripts/rag-platform/contract-matrix.mjs --check
+          node scripts/rag-platform/backend-coverage-report.mjs --check
+          node scripts/rag-platform/coverage-negative-test.mjs
+          node scripts/rag-platform/e2e-evidence.mjs
+          node scripts/rag-platform/release-security-gate.mjs
+          node scripts/rag-platform/secret-scan.mjs
+      - name: Production build and branding/performance gates
+        working-directory: rag-frontend/studio/frontend
+        run: npm run build
+      - name: Inspect production artifact
+        working-directory: rag-frontend
+        run: |
+          node scripts/rag-platform/branding-scan.mjs --build
+          node scripts/rag-platform/performance-gate.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phase-15-coverage-and-frontend
+          path: |
+            rag-frontend/docs/rag-platform/backend-coverage-report.md
+            rag-frontend/docs/rag-platform/faz-15-sonuc-raporu.md
+            rag-frontend/docs/rag-platform/route-inventory-phase15-diff.json
+            rag-frontend/docs/rag-platform/phase-15-e2e-evidence.json
+            rag-frontend/docs/rag-platform/runtime-disabled.md
+            rag-frontend/docs/rag-platform/version-compatibility.md
+            rag-frontend/docs/rag-platform/production-release-runbook.md
+            rag-frontend/studio/frontend/dist
+          if-no-files-found: error
+
+  image-security-provenance:
+    if: github.event_name == 'workflow_dispatch'
+    needs: quality-contract-security
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image_ref: ${{ steps.publish.outputs.ref }}
+      image_digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: rag-frontend
+      - uses: actions/checkout@v6
+        with:
+          repository: acrbaran/rag-backend
+          ref: ${{ inputs.backend_ref }}
+          fetch-depth: 0
+          path: rag-backend
+      - name: Resolve backend commit
+        id: backend-sha
+        working-directory: rag-backend
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.20.0
+          cache: npm
+          cache-dependency-path: rag-frontend/studio/frontend/package-lock.json
+      - working-directory: rag-frontend/studio/frontend
+        run: npm ci && npm run build
+      - name: Build from clean protected sources
+        working-directory: rag-frontend
+        env:
+          RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+          RAG_PLATFORM_BACKEND_RELEASE_REF: ${{ inputs.backend_ref }}
+          RAG_PLATFORM_BACKEND_EXPECTED_COMMIT: ${{ steps.backend-sha.outputs.sha }}
+          RAG_PLATFORM_BUILD_PROVENANCE: mode=max
+        run: infra/rag-platform/build-backend-image.sh
+      - uses: anchore/sbom-action@v0
+        with:
+          image: rag-platform-backend:0.26.4
+          artifact-name: rag-platform-backend.spdx.json
+          output-file: rag-platform-backend.spdx.json
+      - uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: rag-platform-backend:0.26.4
+          format: sarif
+          output: rag-platform-backend.trivy.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the scanned image by backend commit
+        id: publish
+        shell: bash
+        env:
+          BACKEND_SHA: ${{ steps.backend-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          IMAGE_REPOSITORY="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rag-platform-backend"
+          IMAGE_TAG="${BACKEND_SHA}"
+          docker tag rag-platform-backend:0.26.4 "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          docker push "${IMAGE_REPOSITORY}:${IMAGE_TAG}"
+          PUSHED_REF="$(docker image inspect "${IMAGE_REPOSITORY}:${IMAGE_TAG}" --format '{{index .RepoDigests 0}}')"
+          DIGEST="${PUSHED_REF#*@}"
+          test -n "${DIGEST}" && test "${DIGEST}" != "${PUSHED_REF}"
+          echo "repository=${IMAGE_REPOSITORY}" >> "$GITHUB_OUTPUT"
+          echo "ref=${IMAGE_REPOSITORY}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ steps.publish.outputs.repository }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: phase-15-image-security
+          path: |
+            rag-platform-backend.spdx.json
+            rag-platform-backend.trivy.sarif
+          if-no-files-found: error
+
+  runtime-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    needs: image-security-provenance
+    runs-on: [self-hosted, rag-platform-e2e]
+    environment: production-canary
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: rag-frontend
+      - uses: actions/checkout@v6
+        with:
+          repository: acrbaran/rag-backend
+          ref: ${{ inputs.backend_ref }}
+          fetch-depth: 0
+          path: rag-backend
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull and verify the scanned image digest
+        shell: bash
+        env:
+          RAG_PLATFORM_BACKEND_IMAGE: ${{ needs.image-security-provenance.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          docker pull "${RAG_PLATFORM_BACKEND_IMAGE}"
+          EXPECTED_BACKEND_SHA="$(git -C rag-backend rev-parse HEAD)"
+          IMAGE_BACKEND_SHA="$(docker image inspect "${RAG_PLATFORM_BACKEND_IMAGE}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
+          test "${IMAGE_BACKEND_SHA}" = "${EXPECTED_BACKEND_SHA}"
+      - name: Release and TLS policy
+        working-directory: rag-frontend
+        env:
+          RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+          RAG_PLATFORM_PUBLIC_URL: ${{ inputs.public_url }}
+        run: node scripts/rag-platform/release-security-gate.mjs --runtime
+      - name: Compose and full runtime E2E
+        working-directory: rag-frontend
+        env:
+          RAG_PLATFORM_BACKEND_DIR: ${{ github.workspace }}/rag-backend
+          RAG_PLATFORM_BACKEND_IMAGE: ${{ needs.image-security-provenance.outputs.image_ref }}
+        run: |
+          infra/rag-platform/platform-compose.sh --cpu config
+          infra/rag-platform/platform-compose.sh --cpu up -d --wait
+          node scripts/rag-platform/phase-15-runtime-smoke.mjs --release --full "${{ inputs.public_url }}"

@@ -78,6 +78,32 @@ export function getDatasetMetadataSummary(
   });
 }
 
+/** API-only compatibility alias. Product UI uses getDatasetMetadataSummary. */
+export function getLegacyDocumentMetadataSummaryCompatibility(
+  datasetId: string,
+  documentIds: string[] = [],
+  signal?: AbortSignal,
+): Promise<PlatformMetadataSummary> {
+  return platformRequest("/document/metadata/summary", {
+    method: "POST",
+    json: { kb_id: datasetId, doc_ids: documentIds },
+    signal,
+  });
+}
+
+/** API-only compatibility alias. Product UI uses dataset-scoped mutations. */
+export function setLegacyDocumentMetadataCompatibility(
+  documentId: string,
+  metadata: Record<string, string | number | Array<string | number>>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  return platformRequest("/document/set_meta", {
+    method: "POST",
+    json: { doc_id: documentId, meta: JSON.stringify(metadata) },
+    signal,
+  });
+}
+
 export function updateDocumentMetadataConfig(
   datasetId: string,
   documentId: string,

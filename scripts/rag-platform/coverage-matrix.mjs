@@ -844,6 +844,45 @@ function matches(rule, route, canonical) {
 function classifyRecord(route, canonical) {
   if (
     route.method === "GET" &&
+    ["/", "/healthz", "/live", "/api/v1/language"].includes(canonical)
+  ) {
+    return {
+      class: "api-only",
+      rule: "runtime-readiness-and-language-diagnostics",
+      consumer: "deployment-readiness",
+      justification:
+        "Runtime readiness/liveness or backend implementation-language diagnostic; it has no end-user mutation or product-screen contract and is covered by the Phase 15 four-service smoke.",
+    };
+  }
+  if (
+    route.method === "GET" &&
+    ["/api/v1/users/me/admin", "/api/v1/users/me/meta"].includes(canonical)
+  ) {
+    return {
+      class: "api-only",
+      rule: "registered-not-implemented-user-compatibility",
+      consumer: "compatibility-client",
+      justification:
+        "The current Go handler is a verified CodeNotImplemented stub. The product uses the implemented /users/me and role contracts and does not expose a false action.",
+    };
+  }
+  if (
+    route.method === "POST" &&
+    (canonical === "/api/v1/document/metadata/summary" ||
+      canonical === "/api/v1/document/set_meta")
+  ) {
+    return {
+      class: "api-only",
+      rule: "go-document-metadata-compatibility-alias",
+      consumer: "compatibility-client",
+      justification:
+        canonical.endsWith("/summary")
+          ? "Legacy flat POST metadata-summary contract. The product UI uses the dataset-scoped GET contract; this alias remains typed and contract-tested for compatibility clients."
+          : "Legacy single-document metadata mutation. The product UI uses the dataset-scoped PATCH/batch contracts; this alias remains typed and authorization-tested for compatibility clients.",
+    };
+  }
+  if (
+    route.method === "GET" &&
     (canonical === "/api/v1/admin/ping" ||
       canonical === "/api/v1/admin/logout")
   ) {
@@ -1158,8 +1197,6 @@ const GO_INTERNAL_ONLY = new Set([
   "DELETE /api/v1/tenant/chunk_store",
   "POST /api/v1/tenant/metadata_store",
   "DELETE /api/v1/tenant/metadata_store",
-  "POST /api/v1/tenant/insert_chunks_from_file",
-  "POST /api/v1/tenant/insert_metadata_from_file",
   "POST /api/v1/tenant/dev_insert_chunks_from_file",
   "POST /api/v1/tenant/dev_insert_metadata_from_file",
   "POST /api/v1/document/delete_meta",
@@ -1595,6 +1632,16 @@ const PHASE3_IMPLEMENTATION = {
     "Settings → Connections → configured provider → Model defaults; Chat → Select model → current chat default",
     "model-api.ts#getDefaultModels",
   ],
+  "GET /api/v1/pipelines": [
+    "implemented",
+    "Settings → Connections → Pipeline kataloğu; Dataset oluştur → Pipeline seç",
+    "model-api.ts#listPipelines",
+  ],
+  "GET /api/v1/pipelines/{p}": [
+    "implemented",
+    "Dataset oluştur → Pipeline seç → pipeline DSL yükle",
+    "model-api.ts#getPipelineDsl",
+  ],
   "PATCH /api/v1/models/default": [
     "implemented",
     "Settings → Connections → capability default; Chat → Select model → choose chat default",
@@ -1666,6 +1713,30 @@ const PHASE4_TEST_EVIDENCE = [
 ];
 
 Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
+  "go-admin|GET /": {
+    status: "contract-verified",
+    uiPath: "— (deployment diagnostic)",
+    typedService: null,
+    evidence: ["scripts/rag-platform/phase-15-runtime-smoke.mjs"],
+  },
+  "go-admin|GET /healthz": {
+    status: "contract-verified",
+    uiPath: "— (deployment readiness)",
+    typedService: null,
+    evidence: ["scripts/rag-platform/phase-15-runtime-smoke.mjs"],
+  },
+  "go-admin|GET /live": {
+    status: "contract-verified",
+    uiPath: "— (deployment liveness)",
+    typedService: null,
+    evidence: ["scripts/rag-platform/phase-15-runtime-smoke.mjs"],
+  },
+  "go-api|GET /api/v1/language": {
+    status: "contract-verified",
+    uiPath: "— (backend implementation-language diagnostic)",
+    typedService: null,
+    evidence: ["scripts/rag-platform/phase-15-runtime-smoke.mjs"],
+  },
   "python-api|GET /api/v1/datasets": {
     status: "implemented",
     uiPath:
@@ -1929,15 +2000,59 @@ Object.assign(PHASE_IMPLEMENTATION_EVIDENCE, {
   },
   "go-api|POST /api/v1/document/metadata/summary": {
     status: "contract-verified",
-    uiPath: "— (metadata belongs to Phase 10)",
-    typedService: null,
-    evidence: PHASE5_TEST_EVIDENCE,
+    uiPath: "— (API-only compatibility alias; canonical UI is Dataset → Metadata)",
+    typedService:
+      "src/integrations/platform-backend/advanced-dataset-api.ts#getLegacyDocumentMetadataSummaryCompatibility",
+    evidence: [
+      "src/integrations/platform-backend/__tests__/advanced-dataset-api.test.ts",
+      "src/features/documents/advanced-dataset/metadata-panel.test.tsx",
+      "docs/adr/0011-phase-10-advanced-dataset-runtime-boundary.md",
+    ],
   },
   "go-api|POST /api/v1/document/set_meta": {
     status: "contract-verified",
-    uiPath: "— (metadata belongs to Phase 10)",
-    typedService: null,
+    uiPath: "— (API-only compatibility alias; canonical UI is Dataset → Metadata)",
+    typedService:
+      "src/integrations/platform-backend/advanced-dataset-api.ts#setLegacyDocumentMetadataCompatibility",
+    evidence: [
+      "src/integrations/platform-backend/__tests__/advanced-dataset-api.test.ts",
+      "src/features/documents/advanced-dataset/metadata-panel.test.tsx",
+      "docs/adr/0011-phase-10-advanced-dataset-runtime-boundary.md",
+    ],
+  },
+  "go-api|DELETE /api/v1/datasets/{p}/documents": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → document selection → Sil → confirmation",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#deleteDatasetDocuments",
     evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|POST /api/v1/datasets/{p}/documents/stop": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → parsing document → Durdur",
+    typedService:
+      "src/integrations/platform-backend/document-api.ts#stopDatasetDocuments",
+    evidence: PHASE5_TEST_EVIDENCE,
+  },
+  "go-api|GET /api/v1/datasets/{p}/documents/{p}/structure/graph": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Dataset quality → document graph preview",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#getDocumentStructureGraph",
+    evidence: [
+      "src/integrations/platform-backend/__tests__/chunk-api.test.ts",
+      "src/features/documents/dataset-quality-workspace.test.tsx",
+    ],
+  },
+  "go-api|DELETE /api/v1/datasets/{p}/documents/{p}/structure/graph": {
+    status: "implemented",
+    uiPath: "Sidebar → Documents → Dataset quality → document graph → Sil",
+    typedService:
+      "src/integrations/platform-backend/chunk-api.ts#deleteDocumentStructureGraph",
+    evidence: [
+      "src/integrations/platform-backend/__tests__/chunk-api.test.ts",
+      "src/features/documents/dataset-quality-workspace.test.tsx",
+    ],
   },
   "python-api|GET /api/v1/document/download/{p}": {
     status: "contract-verified",

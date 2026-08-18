@@ -83,6 +83,7 @@ export default defineConfig(({ mode }) => {
       },
     },
     build: {
+      manifest: true,
       commonjsOptions: {
         include: [/node_modules/, /@dagrejs\/dagre/, /@dagrejs\/graphlib/],
       },

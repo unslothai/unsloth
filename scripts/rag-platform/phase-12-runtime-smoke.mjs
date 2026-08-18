@@ -164,7 +164,8 @@ try {
     credentials: oauthCredentials,
     redirect_uri: `${base}/connector-oauth/google-drive/callback`,
   }, { displayPath: "/api/v1/connectors/google/oauth/web/start?type=google-drive" });
-  await request("GET", "/connectors/google-drive/oauth/web/callback?state=invalid-phase12&error=access_denied", undefined, { authenticated: false, displayPath: "/connectors/google-drive/oauth/web/callback" });
+  await request("GET", "/connector-oauth/google-drive/callback?error=access_denied", undefined, { authenticated: false, displayPath: "/connector-oauth/google-drive/callback (frontend)" });
+  await request("GET", "/api/v1/connectors/google-drive/oauth/web/callback?state=invalid-phase12&error=access_denied", undefined, { authenticated: false, displayPath: "/api/v1/connectors/google-drive/oauth/web/callback" });
 
   const logResult = spawnSync("docker", ["logs", "rag-platform-backend"], {
     encoding: "utf8",

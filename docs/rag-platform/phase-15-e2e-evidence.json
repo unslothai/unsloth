@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "phase": 15,
+  "requiredScenarioCount": 24,
+  "scenarios": [
+    { "id": 1, "name": "registration-login-profile-password", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/auth-api.test.ts", "studio/frontend/src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx"] },
+    { "id": 2, "name": "password-recovery-chain", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/auth-api.test.ts", "studio/frontend/src/integrations/platform-backend/__tests__/platform-auth-form.test.tsx"] },
+    { "id": 3, "name": "oauth-state-and-open-redirect", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/oauth.test.ts", "studio/frontend/src/integrations/platform-backend/__tests__/auth-api.test.ts"] },
+    { "id": 4, "name": "provider-model-defaults", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/model-api.test.ts", "studio/frontend/src/features/settings/components/platform-model-tools.test.tsx"] },
+    { "id": 5, "name": "pipeline-and-model-utilities", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/model-api.test.ts", "studio/frontend/src/features/settings/components/platform-model-tools.test.tsx"] },
+    { "id": 6, "name": "dataset-upload-parse", "evidence": ["studio/frontend/src/features/documents/use-document-library.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/document-api.test.ts"] },
+    { "id": 7, "name": "generic-document-media-artifact", "evidence": ["studio/frontend/src/features/documents/document-asset-dialog.test.tsx", "studio/frontend/src/features/documents/document-library-page.test.tsx"] },
+    { "id": 8, "name": "parse-cancel-retry-cleanup", "evidence": ["studio/frontend/src/features/documents/use-document-library.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/operations-api.test.ts"] },
+    { "id": 9, "name": "retrieval-and-chunk-preview", "evidence": ["studio/frontend/src/features/documents/dataset-quality-workspace.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/chunk-api.test.ts"] },
+    { "id": 10, "name": "project-chat-session-stream", "evidence": ["studio/frontend/src/features/chat/api/platform-chat-adapter.test.ts", "studio/frontend/src/integrations/platform-backend/__tests__/chat-completion-api.test.ts"] },
+    { "id": 11, "name": "citation-feedback-history", "evidence": ["studio/frontend/src/components/assistant-ui/rag-sources.test.tsx", "studio/frontend/src/features/chat/components/platform-chat-sources-button.test.tsx"] },
+    { "id": 12, "name": "mindmap-recommendation-voice", "evidence": ["studio/frontend/src/features/chat/components/platform-chat-enrichments.test.tsx", "studio/frontend/src/features/chat/adapters/platform-voice-adapters.test.ts"] },
+    { "id": 13, "name": "token-expiry-degraded-recovery", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/auth-guards.test.ts", "studio/frontend/src/components/platform-backend-banner.test.tsx"] },
+    { "id": 14, "name": "dataset-document-session-idor", "evidence": ["studio/frontend/src/integrations/platform-backend/__tests__/error-policy.test.ts", "studio/frontend/src/integrations/platform-backend/__tests__/phase-14-management-api.test.ts"] },
+    { "id": 15, "name": "skill-space-index-compilation", "evidence": ["studio/frontend/src/features/documents/advanced-dataset/skills-panel.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/advanced-dataset-api.test.ts"] },
+    { "id": 16, "name": "agent-lifecycle-files-webhook", "evidence": ["studio/frontend/src/features/agents/agents-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/agent-api.test.ts"] },
+    { "id": 17, "name": "connector-file-commit", "evidence": ["studio/frontend/src/features/files/files-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/phase-12-files-connectors-api.test.ts"] },
+    { "id": 18, "name": "memory-retention-delete", "evidence": ["studio/frontend/src/features/memory/memory-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/phase-13-memory-search-api.test.ts"] },
+    { "id": 19, "name": "search-completion-source", "evidence": ["studio/frontend/src/features/search/search-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/phase-13-memory-search-api.test.ts"] },
+    { "id": 20, "name": "tenant-user-role-idor", "evidence": ["studio/frontend/src/features/management/management-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/phase-14-management-api.test.ts"] },
+    { "id": 21, "name": "bot-channel-public-token", "evidence": ["studio/frontend/src/features/management/management-page.test.tsx", "scripts/rag-platform/phase-14-runtime-smoke.mjs"] },
+    { "id": 22, "name": "admin-operations-authority", "evidence": ["studio/frontend/src/features/management/management-page.test.tsx", "studio/frontend/src/integrations/platform-backend/__tests__/phase-14-management-api.test.ts"] },
+    { "id": 23, "name": "hybrid-four-service-sse", "evidence": ["scripts/rag-platform/phase-8-runtime-smoke.mjs", "scripts/rag-platform/phase-14-runtime-smoke.mjs"] },
+    { "id": 24, "name": "route-coverage-negative-gate", "evidence": ["scripts/rag-platform/coverage-negative-test.mjs"] }
+  ],
+  "runtimeSuites": [
+    "scripts/rag-platform/phase-7-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-8-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-9-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-10-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-11-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-12-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-13-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-14-runtime-smoke.mjs",
+    "scripts/rag-platform/phase-15-runtime-smoke.mjs"
+  ]
+}

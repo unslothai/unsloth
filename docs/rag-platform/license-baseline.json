@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "capturedAt": "2026-08-18",
+  "sha256": {
+    "LICENSE": "40e0b458a68b557560def38b106a1a0da1aac57685536dcb882f1c78c647e4d3",
+    "studio/LICENSE.AGPL-3.0": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "backend/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  }
+}

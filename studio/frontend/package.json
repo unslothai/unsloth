@@ -18,6 +18,7 @@
     "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "catalog:check:network": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts --network",
     "test": "vitest run",
+    "test:phase15": "vitest run src/features/migration src/integrations/platform-backend/__tests__/phase-15-performance.test.ts",
     "test:watch": "vitest",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
