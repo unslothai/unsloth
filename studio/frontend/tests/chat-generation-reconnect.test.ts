@@ -16,7 +16,9 @@ registerBundlerResolver();
 installLocalStorageFake();
 
 const {
+  cancelChatGenerationRun,
   createChatGenerationRun,
+  createChatGenerationRunUntilAbort,
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } = await import("../src/features/chat/api/chat-generation-api.ts");
@@ -58,15 +60,16 @@ const frame = (
 
 function sse(frames: string[]): Response {
   const encoder = new TextEncoder();
-  return new Response(
-    new ReadableStream({
-      start(controller) {
-        for (const value of frames) controller.enqueue(encoder.encode(value));
-        controller.close();
-      },
-    }),
-    { status: 200, headers: { "content-type": "text/event-stream" } },
-  );
+  const body = new ReadableStream({
+    start(controller) {
+      for (const value of frames) controller.enqueue(encoder.encode(value));
+      controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
 }
 
 test("reconnect resumes from the applied cursor without duplicate chunks", async () => {
@@ -94,7 +97,7 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
           ]);
     }
     return new Response(
-      JSON.stringify(run(follows ? "running" : "queued", 2)),
+      JSON.stringify(follows ? run("completed", 4) : run("queued", 2)),
       {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -103,13 +106,19 @@ test("reconnect resumes from the applied cursor without duplicate chunks", async
   }) as typeof fetch;
   try {
     const sequences: number[] = [];
+    const snapshots: Array<[string, number]> = [];
     for await (const update of followChatGenerationRun("run-1", {
       initialRun: run("running", 0),
       replayFrom: 0,
     })) {
       if (update.event) sequences.push(update.event.seq);
+      else snapshots.push([update.run.status, sequences.length]);
     }
     assert.deepEqual(sequences, [1, 2, 3, 4]);
+    assert.deepEqual(snapshots, [
+      ["running", 0],
+      ["completed", 2],
+    ]);
     assert.match(eventUrls[0], /after=0$/);
     assert.match(eventUrls[1], /after=2$/);
     assert.equal(
@@ -154,6 +163,108 @@ test("an ambiguous create retries the same run instead of starting generation tw
     assert.equal(created.id, "run-1");
     assert.equal(bodies.length, 2);
     assert.equal(JSON.parse(bodies[0]).runId, JSON.parse(bodies[1]).runId);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Stop cancels the server run while an event reconnect is delayed", async () => {
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  let eventCalls = 0;
+  let cancelCalls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/cancel")) {
+      cancelCalls += 1;
+      return new Response(JSON.stringify(run("cancelled", 0)), { status: 200 });
+    }
+    if (url.includes("/events")) {
+      eventCalls += 1;
+      throw new TypeError("offline");
+    }
+    return new Response(JSON.stringify(run("running", 0)), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const following = (async () => {
+      for await (const update of followChatGenerationRun("run-1", {
+        initialRun: run("running", 0),
+        replayFrom: 0,
+        signal: controller.signal,
+      })) {
+        assert.equal(update.run.status, "running");
+      }
+    })();
+    while (eventCalls === 0)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    await cancelChatGenerationRun("run-1");
+    controller.abort();
+    await following;
+    assert.equal(cancelCalls, 1);
+    assert.equal(eventCalls, 1);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("completed, cancelled, and backend-restarted snapshots are terminal", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const status of ["completed", "cancelled", "failed"] as const) {
+      const terminal = run(status, 0);
+      globalThis.fetch = (async (input: RequestInfo | URL) =>
+        String(input).includes("/events")
+          ? sse([])
+          : new Response(JSON.stringify(terminal), {
+              status: 200,
+            })) as typeof fetch;
+      const seen: string[] = [];
+      for await (const update of followChatGenerationRun("run-1", {
+        initialRun: terminal,
+        replayFrom: 0,
+      })) {
+        seen.push(update.run.status);
+      }
+      assert.deepEqual(seen, [status]);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Stop during create cancels the run after its delayed reply", async () => {
+  const original = globalThis.fetch;
+  const controller = new AbortController();
+  let releaseCreate!: () => void;
+  const delayed = new Promise<void>((resolve) => {
+    releaseCreate = resolve;
+  });
+  let cancelled = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/cancel")) {
+      cancelled += 1;
+      return new Response(JSON.stringify(run("cancelled", 1)), { status: 200 });
+    }
+    await delayed;
+    return new Response(JSON.stringify(run("queued", 1)), { status: 202 });
+  }) as typeof fetch;
+  try {
+    const creating = createChatGenerationRunUntilAbort(
+      {
+        runId: "run-1",
+        threadId: "thread-1",
+        userMessageId: "user-1",
+        assistantMessageId: "assistant-1",
+        requestPayload: run("queued", 1).requestPayload,
+      },
+      controller.signal,
+    );
+    controller.abort({ detach: false });
+    assert.equal(await creating, null);
+    releaseCreate();
+    while (cancelled === 0)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(cancelled, 1);
   } finally {
     globalThis.fetch = original;
   }

@@ -170,6 +170,42 @@ export async function createChatGenerationRun(
   }
 }
 
+/** Start idempotently, but let an explicit Stop return before a slow create reply. */
+export async function createChatGenerationRunUntilAbort(
+  input: CreateChatGenerationRunInput,
+  signal: AbortSignal,
+): Promise<ChatGenerationRun | null> {
+  const createPromise = createChatGenerationRun(input);
+  let resolveAbort: (() => void) | undefined;
+  const aborted = new Promise<null>((resolve) => {
+    resolveAbort = () => resolve(null);
+    if (signal.aborted) {
+      resolveAbort();
+    } else {
+      signal.addEventListener("abort", resolveAbort, { once: true });
+    }
+  });
+  try {
+    const run = await Promise.race([createPromise, aborted]);
+    if (run) {
+      return run;
+    }
+    const detached = Boolean(
+      (signal.reason as { detach?: boolean } | undefined)?.detach,
+    );
+    createPromise
+      .then((created) =>
+        detached ? undefined : cancelChatGenerationRun(created.id),
+      )
+      .catch(() => undefined);
+    return null;
+  } finally {
+    if (resolveAbort) {
+      signal.removeEventListener("abort", resolveAbort);
+    }
+  }
+}
+
 export async function getChatGenerationRun(
   id: string,
   signal?: AbortSignal,

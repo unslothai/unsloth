@@ -223,7 +223,7 @@ import {
   cancelChatGenerationRun,
   type ChatGenerationRun,
   type ChatGenerationStatus,
-  createChatGenerationRun,
+  createChatGenerationRunUntilAbort,
   followChatGenerationRun,
   supportsChatGenerationRuns,
 } from "./chat-generation-api";
@@ -5651,39 +5651,17 @@ export function createOpenAIStreamAdapter(
                 await supportsChatGenerationRuns(resolvedThreadId!, runSignal)
               ) {
                 generationDecision = "durable";
-                const createPromise = createChatGenerationRun({
-                  runId: cancelId,
-                  threadId: resolvedThreadId!,
-                  userMessageId: generationUserMessage!.id,
-                  assistantMessageId: unstable_assistantMessageId!,
-                  requestPayload,
-                });
-                let resolveCreateAbort: (() => void) | null = null;
-                const aborted = new Promise<null>((resolve) => {
-                  resolveCreateAbort = () => resolve(null);
-                  if (runSignal.aborted) resolveCreateAbort();
-                  else {
-                    runSignal.addEventListener("abort", resolveCreateAbort, {
-                      once: true,
-                    });
-                  }
-                });
-                generationRun = await Promise.race([createPromise, aborted]);
-                if (resolveCreateAbort) {
-                  runSignal.removeEventListener("abort", resolveCreateAbort);
-                }
+                generationRun = await createChatGenerationRunUntilAbort(
+                  {
+                    runId: cancelId,
+                    threadId: resolvedThreadId!,
+                    userMessageId: generationUserMessage!.id,
+                    assistantMessageId: unstable_assistantMessageId!,
+                    requestPayload,
+                  },
+                  runSignal,
+                );
                 if (!generationRun) {
-                  const detached = Boolean(
-                    (runSignal.reason as { detach?: boolean } | undefined)
-                      ?.detach,
-                  );
-                  void createPromise
-                    .then((created) =>
-                      detached
-                        ? undefined
-                        : cancelChatGenerationRun(created.id),
-                    )
-                    .catch(() => {});
                   return;
                 }
                 generationRunId = generationRun.id;

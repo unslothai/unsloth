@@ -95,6 +95,12 @@ import {
   restoredAssistantStatus,
 } from "./utils/continuation";
 import {
+  generationNeedsRecovery,
+  generationRecoveryMetadata,
+  shouldPreserveGenerationMetadata,
+  subscribeGenerationRecoveryTriggers,
+} from "./utils/chat-generation-recovery";
+import {
   extractDeltaText,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
@@ -715,15 +721,6 @@ type GenerationRecovery = {
 
 const generationRecoveries = new Map<string, GenerationRecovery>();
 
-function generationNeedsRecovery(metadata: Record<string, unknown>): boolean {
-  const status = metadata.generationStatus;
-  return (
-    typeof metadata.generationRunId === "string" &&
-    (metadata.generationSettled !== true ||
-      !["cancelled", "completed", "failed"].includes(String(status)))
-  );
-}
-
 function generationRawContent(content: MessageRecord["content"]): {
   raw: string;
   reasoningOpen: boolean;
@@ -784,9 +781,6 @@ function scheduleGenerationRecovery(
 
     const publish = async (run: ChatGenerationRun) => {
       const status = run.status;
-      const settled =
-        ["cancelled", "completed", "failed"].includes(status) &&
-        cursor >= run.lastEventSeq;
       const runModel = useChatRuntimeStore.getState().models.find(
         (model) => model.id === run.requestPayload.model,
       );
@@ -797,27 +791,14 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
-      const nextMetadata: Record<string, unknown> = {
-        ...currentMetadata,
-        generationRunId: runId,
-        generationSeq: cursor,
-        generationStatus: status,
-        generationSettled: settled,
-        serverManaged: true,
-      };
-      if (status === "completed" && settled) {
-        if (lengthLimited) {
-          nextMetadata.incomplete = { reason: "length" };
-        } else {
-          delete nextMetadata.incomplete;
-        }
-      } else if (status === "failed") {
-        nextMetadata.incomplete = { reason: "interrupted" };
-      } else if (status === "cancelled") {
-        nextMetadata.incomplete = { reason: "cancelled" };
-      } else {
-        nextMetadata.incomplete = { reason: "cancelled" };
-      }
+      const nextMetadata = generationRecoveryMetadata({
+        current: currentMetadata,
+        runId,
+        status,
+        cursor,
+        lastEventSeq: run.lastEventSeq,
+        lengthLimited,
+      });
       currentMetadata = nextMetadata;
       const content = parseAssistantContent(
         reasoningOpen ? `${raw}</think>` : raw,
@@ -1424,17 +1405,11 @@ function useStudioRuntimeAdapters(
         })
         .catch(() => {});
     };
-    const onVisible = () => {
-      if (document.visibilityState === "visible") recoverCurrentThread();
-    };
-    globalThis.addEventListener("online", recoverCurrentThread);
-    globalThis.addEventListener("pageshow", recoverCurrentThread);
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      globalThis.removeEventListener("online", recoverCurrentThread);
-      globalThis.removeEventListener("pageshow", recoverCurrentThread);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    return subscribeGenerationRecoveryTriggers(
+      globalThis,
+      document,
+      recoverCurrentThread,
+    );
   }, [aui]);
 
   // Mirror Data-tab attachment deletions into the loaded thread. The in-memory
@@ -1834,30 +1809,10 @@ function useStudioRuntimeAdapters(
             typeof existingMetadata?.generationRunId === "string" &&
             existingMetadata.generationRunId ===
               incomingMetadata?.generationRunId;
-          const incomingGenerationSeq = Number(
-            incomingMetadata?.generationSeq ?? -1,
+          const preserveGeneration = shouldPreserveGenerationMetadata(
+            existingMetadata,
+            incomingMetadata,
           );
-          const existingGenerationSeq = Number(
-            existingMetadata?.generationSeq ?? -1,
-          );
-          const terminalGenerationStatuses = new Set([
-            "cancelled",
-            "completed",
-            "failed",
-          ]);
-          const existingGenerationStatus = existingMetadata?.generationStatus;
-          const incomingGenerationStatus = incomingMetadata?.generationStatus;
-          const preserveGeneration =
-            typeof existingMetadata?.generationRunId === "string" &&
-            (!sameGenerationRun ||
-              incomingMetadata?.serverManaged !== true ||
-              existingGenerationSeq > incomingGenerationSeq ||
-              (terminalGenerationStatuses.has(
-                String(existingGenerationStatus),
-              ) &&
-                incomingGenerationStatus !== existingGenerationStatus) ||
-              (existingMetadata?.generationSettled === true &&
-                incomingMetadata?.generationSettled !== true));
           const preserveServerManaged =
             existingMetadata?.serverManaged === true &&
             (preserveGeneration ||

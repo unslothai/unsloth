@@ -128,15 +128,10 @@ def test_cancel_run_targets_only_matching_durable_generation():
 
 def test_same_durable_run_and_event_borrows_existing_registration():
     event = threading.Event()
-    with active_generations.ActiveGeneration(
-        event, run_id = "run-1", thread_id = "stale", model = "stale"
-    ):
-        with active_generations.ActiveGeneration(
-            event, run_id = "run-1", thread_id = "thread-1", model = "local"
-        ):
-            assert active_generations.count() == 1
-            assert active_generations.snapshot()[0]["thread_id"] == "thread-1"
-            assert active_generations.snapshot()[0]["model"] == "local"
+    with active_generations.ActiveGeneration(event, run_id = "run-1", thread_id = "stale", model = "stale"):
+        with active_generations.ActiveGeneration(event, run_id = "run-1", thread_id = "thread-1", model = "local"):
+            snapshot = active_generations.snapshot()[0]
+            assert (active_generations.count(), snapshot["thread_id"], snapshot["model"]) == (1, "thread-1", "local")
             assert active_generations.cancel_all() == 1
     assert event.is_set()
     assert active_generations.count() == 0

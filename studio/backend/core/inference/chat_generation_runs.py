@@ -429,8 +429,9 @@ class ChatGenerationSupervisor:
                 )
             pending = []
         finally:
-            if next_raw_task is not None and not next_raw_task.done():
-                next_raw_task.cancel()
+            if next_raw_task is not None:
+                if not next_raw_task.done():
+                    next_raw_task.cancel()
                 await asyncio.gather(next_raw_task, return_exceptions = True)
             await _close_iterator(iterator)
             activity.finish()
