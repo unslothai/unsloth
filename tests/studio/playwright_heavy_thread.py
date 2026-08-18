@@ -1340,6 +1340,15 @@ DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5")
 # what an unloaded machine produces on its own, and the CI configuration runs a single repetition
 # so there is no median to average that away.
 ZERO_BASED_MIN_RISE = int(os.environ.get("SMOKE_ZERO_BASED_MIN_RISE", "5"))
+# Which axes are COUNTS. Stated, not inferred. The zero branch below used to key on `floored`,
+# which only identifies a timing that had a paint floor subtracted; an UNFLOORED timing such as
+# `longest stall ms` or `worst frame ms` is zero at the smallest size whenever the action ends
+# before the recorder produces a sample, and it was then treated as a dropped-frame counter, so a
+# noisy 5ms at the largest size read as a rise of 5 and discriminated. `harness_failures` accepts
+# any one discriminating axis, so that stray millisecond could carry the run.
+#
+# A count is a count of events. Only `frames over 33ms` is one; every other axis is milliseconds.
+COUNTER_AXES = frozenset(f"{a} frames over 33ms" for a in ACTIONS)
 # Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring
 # notices are what this number exists for; anything the app emits per message would be two orders
 # of magnitude above it at 220 messages.
@@ -1419,6 +1428,22 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 # SMOKE_DISCRIMINATION_RATIO said, because a ratio was never computed for it.
                 # `harness_failures` accepts any ONE discriminating axis, so that stray frame
                 # could carry the whole verdict while every latency axis was flat or broken.
+                if name not in COUNTER_AXES:
+                    # A timing that reads zero at the smallest size did not "grow from nothing",
+                    # it resolved below what the recorder can see. ZERO_BASED_MIN_RISE is a count
+                    # of events and means nothing applied to milliseconds.
+                    per_axis[name] = {
+                        "small": small,
+                        "large": large,
+                        "ratio": None,
+                        "discriminated": False,
+                        "reason": (
+                            "zero at the smallest size and this axis is a timing, not a count, "
+                            "so there is no rise to measure"
+                        ),
+                        "floored": floored,
+                    }
+                    continue
                 rose = large >= ZERO_BASED_MIN_RISE
                 if rose:
                     reason = f"rose from zero to {large}"

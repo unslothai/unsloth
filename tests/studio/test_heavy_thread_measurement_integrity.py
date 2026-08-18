@@ -1047,5 +1047,72 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
     )
 
 
+# ── zero-based is not the same as counted ─────────────────────────────
+#
+# The zero branch keyed on `floored`, which only identifies a timing that had a paint floor
+# subtracted. An UNFLOORED timing reads zero at the smallest size whenever the action resolves
+# before the recorder produces a sample, and was then treated as a dropped-frame counter, so a
+# noisy 5ms at the largest size read as a rise of 5 and discriminated.
+
+
+def timing_cells(small, large, sizes = (25000, 300000)) -> dict:
+    return {
+        "engines": ["chromium"],
+        "sizes": list(sizes),
+        "repetitions": 1,
+        "by_engine": {
+            "chromium": {
+                "by_size": {
+                    str(sizes[0]): {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"longest_stall_ms": small}},
+                    },
+                    str(sizes[1]): {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"longest_stall_ms": large}},
+                    },
+                }
+            }
+        },
+    }
+
+
+def test_an_unfloored_timing_at_zero_does_not_discriminate() -> None:
+    """`scroll longest stall ms` carries no paint floor, so the old `floored` test did not catch
+    it, and 0 -> 5 milliseconds read as a rise of 5 events."""
+    row = HARNESS.report_growth(timing_cells(0, 5))["chromium"]["scroll longest stall ms"]
+    assert row["discriminated"] is False, row
+    assert "timing, not a count" in row["reason"], row
+
+
+def test_a_counter_is_still_judged_as_a_counter() -> None:
+    """The control: the fix must not turn every zero-based axis into an automatic no."""
+    row = HARNESS.report_growth(counter_cells(0, HARNESS.ZERO_BASED_MIN_RISE))["chromium"][
+        "scroll frames over 33ms"
+    ]
+    assert row["discriminated"] is True, row
+
+
+def test_the_counter_set_is_stated_and_non_empty() -> None:
+    """Inferring which axes are counts is what produced the defect. If a rename ever empties this
+    set, every counter silently becomes a timing and the liveness verdict loses its only
+    zero-based axis, so the set is pinned against the axis list itself."""
+    assert HARNESS.COUNTER_AXES, "no axis is classified as a counter any more"
+    names = {name for name, _pick, _floored in HARNESS.GROWTH_AXES}
+    assert HARNESS.COUNTER_AXES <= names, (
+        f"COUNTER_AXES names axes that do not exist: {HARNESS.COUNTER_AXES - names}"
+    )
+    # Stated exactly rather than pattern-matched. My first attempt keyed on the name not ending
+    # in "ms", which is wrong: the counter axis is called "frames over 33ms" and legitimately
+    # does. Naming the whole set is the point of classifying it explicitly in the first place.
+    assert HARNESS.COUNTER_AXES == frozenset(
+        f"{action} frames over 33ms" for action in HARNESS.ACTIONS
+    ), HARNESS.COUNTER_AXES
+    timings = names - HARNESS.COUNTER_AXES
+    assert "scroll longest stall ms" in timings and "menu wall ms" in timings, (
+        f"a timing axis is classified as a count: {HARNESS.COUNTER_AXES}"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
