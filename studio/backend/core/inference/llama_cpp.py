@@ -122,6 +122,12 @@ from state.tool_approvals import (
     begin_tool_decision,
     new_approval_id,
     wait_tool_decision,
+    
+)
+
+from core.inference.query_router import (
+    get_router, 
+    get_budget_manager,
 )
 
 logger = get_logger(__name__)
@@ -20537,6 +20543,50 @@ class LlamaCppBackend:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
+        # PRE-CHECK GATE: Route query & filter search tools (query_router)
+
+        context_len = self.context_length or 16384
+        query_router = get_router()
+        token_budget = get_budget_manager(context_len)
+
+        user_turn = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    user_turn = content
+                elif isinstance(content, list):
+                    user_turn = " ".join(
+                        part.get("text", "") for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
+                    )
+                else:
+                    user_turn = str(content or "")
+                break
+
+        # Classify user query before LLM reasoning
+        route_decision = query_router.classify(user_turn)
+
+        # Log the decision visibly in Studio structured logs
+        logger.info(
+            "query_router_decision",
+            query=user_turn[:60],
+            needs_search=route_decision.needs_search,
+            reason=route_decision.reason,
+            confidence=route_decision.confidence,
+            domains=route_decision.domains,
+        )
+
+        # If search is not needed, remove search tools to save latency & tokens
+        if not route_decision.needs_search and tools:
+            def _is_search_tool(t: dict) -> bool:
+                name = (t.get("function") or {}).get("name") or t.get("name") or ""
+                return name in ("web_search", "search", "google_search", "brave_search")
+
+            before_count = len(tools)
+            tools = [t for t in tools if not _is_search_tool(t)]
+            logger.info("query_router_pruned_tools", before=before_count, after=len(tools))
+            
 
         def _attach_internal_feedback_to_tool_result(feedback: str) -> bool:
             """Keep controller instructions inside the current tool exchange."""
@@ -20742,6 +20792,12 @@ class LlamaCppBackend:
         for iteration in range(max_tool_iterations + _extra):
             if cancel_event is not None and cancel_event.is_set():
                 return
+
+            if not token_budget.can_continue(conversation):
+                conversation = token_budget.trim_to_budget(conversation)
+                if not token_budget.can_continue(conversation):
+                    break
+                
             # Whether this turn ran a tool; a no-op-only turn stays False and doesn't consume budget.
             _turn_executed_real_tool = False
 
