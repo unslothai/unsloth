@@ -13,12 +13,9 @@
 // The page exposes an imperative API on `window` rather than reacting to DOM events, because the
 // driver has to interleave forced-GC heap samples with stream ticks and needs a promise per step.
 
-import {
-  createCodePlugin as createShikiCodePlugin,
-  type HighlightResult,
-} from "@streamdown/code";
+import { createCodePlugin as createShikiCodePlugin } from "@streamdown/code";
 import { createMathPlugin } from "@streamdown/math";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Streamdown } from "streamdown";
 import { createCodePlugin } from "@/components/assistant-ui/code-plugin";
@@ -165,7 +162,7 @@ function proseSource(chars: number, seed: number): string {
   return parts.join(" ").slice(0, chars);
 }
 
-export type Kind = "stream" | "whole" | "prose";
+type Kind = "stream" | "whole" | "prose";
 
 function bodyFor(kind: Kind, chars: number, seed: number): string {
   if (kind === "prose") return proseSource(chars, seed);
@@ -183,11 +180,9 @@ function Reply({
   text: string;
   streaming: boolean;
 }) {
-  const cacheRef = useRef({ messageId, cache: new IncrementalMarkdownCache() });
-  if (cacheRef.current.messageId !== messageId) {
-    cacheRef.current = { messageId, cache: new IncrementalMarkdownCache() };
-  }
-  const cache = cacheRef.current.cache;
+  // One cache per mount rather than the ref-and-compare MarkdownTextImpl uses, because the driver
+  // mounts a fresh host for every reply, so the message can never change under this component.
+  const [cache] = useState(() => new IncrementalMarkdownCache());
   const processed = stabilizeStreamingMarkdown(preprocessLaTeX(text), streaming);
   const incremental = streaming ? cache.update(processed) : null;
   return (
@@ -310,7 +305,7 @@ async function rawEntries(
             language: "python",
             themes: THEMES as unknown as HighlightArgs[0]["themes"],
           },
-          (_result: HighlightResult) => {
+          () => {
             landed += 1;
             resolve();
           },
