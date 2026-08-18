@@ -200,6 +200,6 @@ def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
         "the fetch stub is matching every /api/ request again, which hides stray requests from "
         "the harness's own stray_api_requests counter"
     )
-    assert "forks$/" in page or "/forks" in page, (
-        "the fetch stub must match the fork-count endpoint specifically"
-    )
+    assert (
+        "forks$/" in page or "/forks" in page
+    ), "the fetch stub must match the fork-count endpoint specifically"
