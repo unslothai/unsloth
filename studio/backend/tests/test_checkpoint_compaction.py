@@ -553,3 +553,115 @@ def test_the_first_compaction_is_not_refused_for_lacking_a_tool_that_cannot_exis
     assert llama_cpp._memory_tool_withheld("thread-1", [
         {"type": "function", "function": {"name": "bash"}},
     ]) is False
+
+
+def test_a_protected_message_does_not_let_the_next_turn_un_compact_the_epoch():
+    """The boundary this fit records has to reproduce THIS fit on the next request.
+
+    `truncate_oldest_messages` skips a protected group and keeps evicting past it, so the
+    reset's evicted set is not a prefix: an instruction pinned in the middle of the thread
+    leaves live turns on BOTH sides of it. `_branch_boundary` stops counting at the first
+    surviving message, so it records the leading run and not what was actually dropped,
+    and the next request replays that smaller number -- which puts the turns this reset
+    removed straight back into the model's context, one turn after the user was told they
+    were compacted away and the system prompt told the model only the carried_forward
+    block was kept. The rolling window cannot show this: it always trims to fit, so it
+    never restores what it dropped.
+    """
+    from core.inference.llama_cpp import _branch_boundary
+
+    pinned = {"role": "user", "content":
+              "Standing instruction two, given later: prefix every reply with BETA-7788."}
+    branch = [{"role": "system", "content": "you are helpful"},
+              {"role": "user", "content": INSTRUCTION},
+              {"role": "assistant", "content": "Understood."}]
+    for index in range(4):
+        branch += [{"role": "user", "content": f"Section {index}. " + "x" * 600},
+                   {"role": "assistant", "content": f"Section {index} noted."}]
+    branch += [pinned, {"role": "assistant", "content": "Will do."}]
+    for index in range(4, 8):
+        branch += [{"role": "user", "content": f"Section {index}. " + "x" * 600},
+                   {"role": "assistant", "content": f"Section {index} noted."}]
+    branch += [{"role": "user", "content": "continue"}]
+    protected = {id(pinned)}
+
+    fitted, truncation = _fit(branch, protected_message_ids = protected)
+    assert truncation["checkpoint_started"] is True
+    kept_ids = {id(message) for message in fitted}
+    evicted = [message for message in branch if id(message) not in kept_ids
+               and message["role"] != "system"]
+    assert any("Section 7" in str(message["content"]) for message in evicted), (
+        "the reset must have dropped turns after the pinned one for this test to mean "
+        "anything"
+    )
+    boundary = _branch_boundary(fitted, branch)
+
+    # The next turn of the SAME epoch: one reply, one follow-up, same boundary replayed.
+    later = branch + [{"role": "assistant", "content": "Carrying on."},
+                      {"role": "user", "content": "and now the second half"}]
+    replayed, _ = _fit(later, sticky_dropped = boundary, protected_message_ids = protected)
+
+    back = [message for message in evicted if id(message) in {id(m) for m in replayed}]
+    assert not back, (
+        "turns the reset compacted away are back in the model's context one turn later: "
+        + ", ".join(str(message["content"])[:24] for message in back)
+    )
+
+
+def test_the_final_answer_pass_never_starts_an_epoch_behind_the_tools_it_does_not_send():
+    """The gate has to be asked about the catalogue the request actually carries.
+
+    The synthesised final answer is sent with no tools array -- its own token count passes
+    `None` for tools, and `stream_payload` has no "tools" key -- so a model compacted
+    there cannot call `search_conversation`, and unlike an ordinary turn there is no loop
+    left to run one either. Asking `_memory_tool_withheld` with the REQUEST's catalogue
+    answers a different question and lets a new epoch start exactly there, which is the
+    outcome the gate exists to refuse and which this file already pins for the empty
+    catalogue (`_memory_tool_withheld("thread-1", []) is True`).
+    """
+    import inspect
+
+    from core.inference import llama_cpp
+
+    source = inspect.getsource(llama_cpp)
+    final_pass = source[source.index("# Final streaming pass with the full conversation"):]
+
+    assert "_memory_tool_withheld" not in final_pass, (
+        "the final-answer pass asks the epoch gate about tools it does not send"
+    )
+    assert final_pass.count("tools_withheld = True") == 2, (
+        "both final-pass fits (preflight and respawn refit) must declare the withheld loop"
+    )
+    # ...and the gate itself still refuses on that answer.
+    assert llama_cpp._can_reset_epoch("thread-1", True, tools_withheld = True) is False
+
+
+def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
+    """Without this the sticky boundary is unreadable on every thinking model.
+
+    assistant-ui stores a reply as content PARTS and `parseAssistantContent` splits
+    `<think>` into a `reasoning` part, which `runtime-provider` persists verbatim. The
+    same reply goes back on the wire as text only -- the thought travels in
+    `reasoning_content`, a sibling field the probe never reads. So the stored probe is
+    strictly longer than the branch, the substring test in `content_on_branch` misses,
+    `_sticky_compaction_boundary` finds no on-branch assistant turn and returns 0, and
+    checkpoint phase one -- the only thing standing between an epoch and a one-turn
+    window -- never runs. Rolling only slides a little further; this fit resets from
+    scratch on every overflowing turn.
+    """
+    from core.rag import conversation_archive
+
+    stored = [{"type": "reasoning", "text": "The user wants section notes. I will confirm."},
+              {"type": "text", "content_type": None, "text": "Section 3 noted."}]
+    wire = [{"role": "assistant", "content": "Section 3 noted."}]
+
+    branch = conversation_archive.branch_message_texts(wire, ("assistant",))
+
+    assert conversation_archive.message_text(stored) == "section 3 noted."
+    assert conversation_archive.content_on_branch(stored, branch) is True
+    # A reply that really is off-branch is still rejected.
+    assert conversation_archive.content_on_branch(
+        [{"type": "reasoning", "text": "The user wants section notes."},
+         {"type": "text", "text": "Section 9 noted."}],
+        branch,
+    ) is False

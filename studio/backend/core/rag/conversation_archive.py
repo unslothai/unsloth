@@ -120,6 +120,20 @@ def _probe_text(message: dict) -> str:
                 result = part.get("result")
                 if result not in (None, "", {}, []):
                     results.extend(rendered(result))
+            elif part.get("type") == "reasoning":
+                # A thinking model's stored reply is [reasoning, text]; the wire copy the
+                # probe is matched against carries the text only, because the client sends
+                # the thought in `reasoning_content`, a FIELD, not in `content`. Folding
+                # it in here (the `"text" in part` arm below does) makes the stored probe
+                # strictly longer than the branch, so the substring test in
+                # `content_on_branch` fails for every assistant turn of every reasoning
+                # thread and `_sticky_compaction_boundary` returns 0 forever. Harmless
+                # under the rolling window, which only slides a little further; under the
+                # checkpoint fit the boundary is the whole of phase one, so its loss
+                # turns every overflowing turn into a fresh reset -- the one-turn window
+                # that phase one exists to prevent. Skipped on both sides: the wire shape
+                # has no reasoning part to lose.
+                continue
             elif part.get("type") in ("text", "input_text") or "text" in part:
                 texts.append(str(part.get("text") or ""))
     else:

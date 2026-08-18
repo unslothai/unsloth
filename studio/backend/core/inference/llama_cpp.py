@@ -723,6 +723,18 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     USER turn on is excluded: it is never evicted, and an inline recall rewrites that turn
     into a new dict, which an identity scan reads as an eviction. Excluding just the last
     message is not the same thing, since a continued assistant message follows it.
+
+    Every evicted message is counted, not just the leading run, because that is what the
+    replay actually consumes: ``truncate_oldest_messages``'s ``min_dropped`` counts the
+    messages it drops and SKIPS protected groups, so the two agree exactly. Stopping at
+    the first survivor agreed with it only while eviction was a clean prefix. It is not:
+    a protected group (an instruction pin, an anchored recall) is skipped and eviction
+    carries on past it, leaving live turns on both sides. Under the checkpoint reset that
+    understated the boundary badly enough to un-compact the epoch -- the turns the reset
+    removed came back on the very next request, one turn after the user was told they had
+    been compacted away and the system prompt told the model that only the
+    carried_forward block was kept. Where eviction WAS a prefix, which is every case the
+    rolling window produces without pins, this counts the same number as before.
     """
     messages = list(branch or ())
     cutoff = max(
@@ -735,9 +747,8 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
     for message in messages:
         if message.get("role") in ("system", "developer"):
             continue
-        if id(message) in live:
-            break
-        count += 1
+        if id(message) not in live:
+            count += 1
     return count
 
 
@@ -22356,7 +22367,17 @@ class LlamaCppBackend:
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                             thread_id, _backend_supports_tools(self),
-                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                            # Withheld, not `tools`: this is the synthesised final answer,
+                            # and `stream_payload` below carries no tools array at all
+                            # (the count above passes None for the same reason). Asking
+                            # the gate with the request's catalogue answers a question
+                            # this request does not pose, and lets a NEW epoch start on
+                            # the one pass that cannot call `search_conversation` and has
+                            # no loop left to run it -- an epoch behind a tool that is
+                            # absent, which is what the gate exists to refuse. Replaying
+                            # one already in force is unaffected: the system turn still
+                            # carries the block an earlier fit appended.
+                            tools_withheld = True,
                         ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
@@ -22477,7 +22498,8 @@ class LlamaCppBackend:
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                             thread_id, _backend_supports_tools(self),
-                            tools_withheld = _memory_tool_withheld(thread_id, tools),
+                            # The final pass again, so again no tools array is sent.
+                            tools_withheld = True,
                         ),
                 )
                 if truncation and truncation["fits"]:
