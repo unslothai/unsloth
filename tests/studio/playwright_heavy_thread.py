@@ -166,6 +166,14 @@ ACTION_TIMEOUT_MS = int(os.environ.get("SMOKE_ACTION_TIMEOUT_MS", "120000"))
 # action that never happened and nothing else, so it has to stay well above the slowest honest
 # measurement or a very slow open is reported as "never opened".
 SETTLE_TIMEOUT_MS = int(os.environ.get("SMOKE_SETTLE_TIMEOUT_MS", "120000"))
+# How long the highlighter has to stay still before a re-open counts as finished. Four polls of
+# the 250ms interval wait_for_highlighting_settled() uses, because that is what was MEASURED to be
+# needed: a gate that released after one 250ms lull released mid-rebuild. The grace is not charged
+# to the action -- quietUntilIdle() reports the time of the last activity, not of the timeout.
+HIGHLIGHT_GRACE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_GRACE_MS", "1000"))
+# How often the settle loop is allowed to count highlighted tokens. It is a document-wide query,
+# so per frame it would be an O(nodes) cost inside the region being timed, growing with the thread.
+HIGHLIGHT_PROBE_MS = int(os.environ.get("SMOKE_HIGHLIGHT_PROBE_MS", "100"))
 ACTIONS = ("keystroke", "scroll", "jump", "menu", "delete", "reopen")
 
 # Installed into every page before anything else runs.
@@ -184,8 +192,17 @@ RECORDER_INIT = """
       window.__rafCount += 1;
       cb(t);
     });
-  window.__nextPaint = () =>
-    new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve())));
+  // Counted, because every one of these is a double rAF and therefore a ~33ms vsync floor inside
+  // whatever is being timed across it. GROWTH_AXES used to declare that count by hand per axis
+  // and defaulted it to 0 for every generated axis, which left the floor in both ends of those
+  // ratios. begin() zeroes this and end() reports it, so a window's floor is measured rather
+  // than asserted, and waits taken OUTSIDE a recorder window (ACTION_SETUPS, for one) are
+  // excluded by construction rather than by remembering to exclude them.
+  window.__paintWaits = 0;
+  window.__nextPaint = () => {
+    window.__paintWaits += 1;
+    return new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve())));
+  };
 
   // Chromium-only, recorded as a cross-check on the portable stall number and never as the
   // headline.
@@ -214,18 +231,38 @@ RECORDER_INIT = """
 
   const recorder = {
     running: false,
+    // Which begin() a scheduled callback belongs to. `running` alone cannot answer that: when the
+    // next action starts before the previous action's already-scheduled rAF has fired -- and it
+    // does, because the actions are issued back to back over a CDP round trip that is shorter
+    // than one frame -- that stale callback wakes to `running === true`, pushes the whole
+    // between-action gap into the NEW arrays as if it were a frame, and schedules a second
+    // recursive loop that then runs alongside the real one for the rest of the run. Measured on
+    // the node harness in test_heavy_thread_measurement_integrity.py: without this token the
+    // second action records the inter-action gap as its worst frame and counts double the frames.
+    generation: 0,
     frames: [],
     stalls: [],
+    // When each sample was taken, so end() can close the window at an earlier instant than the
+    // one it was called at without the samples from after that instant still being in the arrays.
+    frameAt: [],
+    stallAt: [],
     startedAt: 0,
     begin() {
       this.running = true;
+      this.generation += 1;
+      const generation = this.generation;
       this.frames = [];
       this.stalls = [];
+      this.frameAt = [];
+      this.stallAt = [];
       this.startedAt = performance.now();
+      window.__paintWaits = 0;
       let lastFrame = performance.now();
       const frame = () => {
+        if (generation !== this.generation) return;
         const now = performance.now();
         this.frames.push(now - lastFrame);
+        this.frameAt.push(now);
         lastFrame = now;
         if (this.running) nativeRaf(frame);
       };
@@ -236,21 +273,39 @@ RECORDER_INIT = """
       // resolution, which is far below any stall a user can feel.
       let lastStall = performance.now();
       const stall = () => {
+        if (generation !== this.generation) return;
         const now = performance.now();
         this.stalls.push(now - lastStall);
+        this.stallAt.push(now);
         lastStall = now;
         if (this.running) setTimeout(stall, 1);
       };
       setTimeout(stall, 1);
     },
-    end() {
+    /**
+     * Close the window. `untilMs` closes it at an earlier instant than "now" -- used by the
+     * settle loops, which have to keep watching for a while after the page went quiet in order
+     * to know that it stayed quiet, and must not charge that watching to the action.
+     */
+    end(untilMs) {
       this.running = false;
-      const wallMs = performance.now() - this.startedAt;
-      const frames = this.frames;
-      const stalls = this.stalls;
+      // Retire this generation as well as stopping it, so the one callback already in flight
+      // cannot append to the array a later begin() is about to hand out.
+      this.generation += 1;
+      const cutoff = untilMs === undefined ? Infinity : untilMs;
+      const wallMs = (untilMs === undefined ? performance.now() : untilMs) - this.startedAt;
+      // Trimmed, not just clocked: a settle loop that watches an idle page for another second
+      // would otherwise add sixty fast frames to the count and drag median_frame_ms down with
+      // them, at every size equally, which is the same constant-offset trap as the wall clock.
+      const frames = this.frames.filter((_, i) => this.frameAt[i] <= cutoff);
+      const stalls = this.stalls.filter((_, i) => this.stallAt[i] <= cutoff);
       const sorted = frames.slice().sort((a, b) => a - b);
       return {
         wall_ms: Math.round(wallMs * 10) / 10,
+        // How many double-rAF waits this window was clocked across. Not trimmed to `cutoff`:
+        // a wait after the cutoff still happened inside the window that produced wall_ms, and
+        // wall_ms is the number this count is subtracted from.
+        paint_waits: window.__paintWaits,
         frames: frames.length,
         // The first entry spans begin() to the first callback, so it is the wait for the next
         // vsync as much as a rendered frame. Kept: at these timescales it is ~16ms, well under
@@ -284,6 +339,52 @@ RECORDER_INIT = """
         if (calm >= 3) return performance.now() - this.startedAt;
       }
       return null;
+    },
+    /**
+     * Settle for an action that also restarts the SYNTAX HIGHLIGHTER, which quiet() cannot see.
+     *
+     * quiet() declares an action settled after three sub-33ms frames. Shiki highlights each fence
+     * on its own task, and the lull between two of those batches is longer than that -- the same
+     * lull wait_for_highlighting_settled() exists for, where a two-read gate released at 577
+     * highlighted tokens out of the 3216 a finished thread holds. So on re-open, which rebuilds
+     * every fence from nothing, quiet() stops the clock partway through the rebuild.
+     *
+     * Settled here means: no frame over 33ms AND no new highlighted token, for graceMs.
+     *
+     * The returned time is the time of the LAST activity, not the time the grace window expired.
+     * graceMs is a fixed cost that every size would pay equally, and a constant added to both
+     * ends of a ratio drags it towards 1 -- the same trap the paint floor is subtracted for.
+     *
+     * `probe` counts highlighted tokens, which is a document-wide query, so it runs on an
+     * INTERVAL and not once per frame. An O(nodes) query inside the window being timed would cost
+     * more the bigger the thread is, which is to say it would grow like the signal -- the same
+     * reason DELETE_JS polls isConnected on a captured node instead of re-counting [data-role].
+     * The price is that the returned time is quantised to probeEveryMs, which is far below the
+     * differences this axis exists to show.
+     */
+    async quietUntilIdle(timeoutMs, graceMs, probe, probeEveryMs) {
+      const started = performance.now();
+      let lastActivity = performance.now();
+      let lastCount = probe();
+      let lastProbeAt = performance.now();
+      let last = performance.now();
+      while (performance.now() - started < timeoutMs) {
+        await new Promise((resolve) => nativeRaf(() => resolve()));
+        const now = performance.now();
+        let changed = false;
+        if (now - lastProbeAt >= probeEveryMs) {
+          const count = probe();
+          changed = count !== lastCount;
+          lastCount = count;
+          lastProbeAt = now;
+        }
+        if (now - last > 33 || changed) lastActivity = now;
+        last = now;
+        if (now - lastActivity >= graceMs) {
+          return { settleMs: lastActivity - this.startedAt, at: lastActivity };
+        }
+      }
+      return { settleMs: null, at: performance.now() };
     },
   };
   window.__hv = recorder;
@@ -428,6 +529,12 @@ async (settleMs) => {
 #
 # The trigger opens on `pointerdown`, not on `click`: an element.click() leaves the menu shut and
 # the whole measurement silently reads zero. Hence the pointer pair.
+#
+# Everything this window scans, it scans a FIXED number of times: two observer queries, one per
+# portal mutation, and the two censuses below, once each. Measured on Chromium at 300K that is
+# 2.7ms of a 3208ms open+close, against 0.3ms of 375ms at 25K -- 0.08% of the number at both
+# ends, so the share does not grow with the axis. Removing them entirely was measured too, on one
+# page, alternating with the version above: 3389ms against 3394ms at 300K.
 MENU_JS = """
 async (timeoutMs) => {
   const api = window.__heavyThread;
@@ -523,8 +630,26 @@ async (timeoutMs) => {
 # down and rebuilt, which is every markdown block, every Shiki fence and every action bar mounted
 # again from nothing. This is the action users describe as "it hangs when I click back into the
 # conversation", and it is the one that has no incremental path at all.
+#
+# What comes back is the thread with its COMPLETED TOOL CARDS SHUT, because that is what the app
+# does: tool-ui-python.tsx mounts with `defaultOpen={isRunning}` and tool-ui-code-execution.tsx
+# initialises its `open` state from the same false flag, so a finished card remounts collapsed.
+# The panes are therefore in the census this cell prints and not in the rebuild it times, and the
+# gap was measured rather than assumed: 3999 DOM nodes expanded against 3981 rebuilt at 25K, and
+# 42873 against 42675 at 300K. That is 0.45% and 0.46% of the tree, the same fraction at both
+# ends, so it moves the ratio by nothing. Highlighted tokens are IDENTICAL in the two states
+# (3216 and 35086), because the Shiki-highlighted cell renders outside the collapsible by design
+# (#7165) and what is inside it is a plain <pre>: the settle probe below sees the same signal
+# either way. Expanding them inside the window would mean a document-wide querySelectorAll for
+# the triggers plus one synthetic click per card, 22 of them at 300K -- harness work that grows
+# with the axis, to time a state the app never rebuilds into.
+#
+# The two messageCount() calls this makes inside the window are the harness's whole footprint in
+# the number: measured on Chromium at 300K, 0.4ms of a 2292ms re-open, and 0.0ms of 363ms at 25K.
+# The loop cannot poll more often than that because the rebuild is one blocking commit, so the
+# rAF the loop waits on does not fire during it.
 REOPEN_JS = """
-async ([timeoutMs, settleMs]) => {
+async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const api = window.__heavyThread;
   const before = api.messageCount();
   if (!before) return null;
@@ -532,24 +657,43 @@ async ([timeoutMs, settleMs]) => {
   const started = performance.now();
   api.closeThread();
   // Unmount first, or "already back" is indistinguishable from "never left".
+  // Counted, not assumed. `growth()` subtracts one paint floor per double-rAF wait a metric is
+  // clocked across, and that count was hand-declared per axis in GROWTH_AXES. Reopening is
+  // driven by a React state update, so the count check immediately after openThread() always
+  // still sees the unmounted tree and the loop always pays at least one __nextPaint() before it
+  // can observe the rebuilt messages -- the same floor already subtracted from jump and delete.
+  // Reporting it lets the harness check its own declared constant instead of trusting it.
   let closedMs = null;
+  let closePaintWaits = 0;
   while (performance.now() - started < timeoutMs) {
     if (api.messageCount() === 0) { closedMs = performance.now() - started; break; }
+    closePaintWaits += 1;
     await window.__nextPaint();
   }
   const reopenStarted = performance.now();
   api.openThread();
   let ms = null;
+  let paintWaits = 0;
   while (performance.now() - reopenStarted < timeoutMs) {
     if (api.messageCount() >= before) { ms = performance.now() - reopenStarted; break; }
+    paintWaits += 1;
     await window.__nextPaint();
   }
-  const settleMsTaken = await window.__hv.quiet(settleMs);
-  const metrics = window.__hv.end();
+  // Not quiet(): re-open is the action whose whole cost is re-highlighting, and three calm frames
+  // land inside the lull between two Shiki batches.
+  const settled = await window.__hv.quietUntilIdle(
+    settleMs,
+    graceMs,
+    () => api.highlightedTokenCount(),
+    probeEveryMs,
+  );
+  const metrics = window.__hv.end(settled.at);
   return {
     ms,
+    paintWaits,
+    closePaintWaits,
     closedMs: closedMs === null ? null : Math.round(closedMs * 10) / 10,
-    settleMs: settleMsTaken === null ? null : Math.round(settleMsTaken * 10) / 10,
+    settleMs: settled.settleMs === null ? null : Math.round(settled.settleMs * 10) / 10,
     before,
     after: api.messageCount(),
     metrics,
@@ -576,13 +720,20 @@ async (samples) => {
 """
 
 
-def median(values: list[float]) -> float | None:
-    """None is DROPPED, so a repetition whose action timed out does not poison the column. What
-    stops that going silent is `dropped_repetitions` in summarise() and the check on it in
-    harness_failures(): a median over two samples must not be reported as a median over three."""
-    ordered = sorted(v for v in values if v is not None)
-    if not ordered:
+def median(values: list[float | None]) -> float | None:
+    """Median across the repetitions, or None if any repetition did not produce a number.
+
+    A None here is not a missing reading, it is a repetition in which the thing being timed never
+    happened: the menu that never opened inside SETTLE_TIMEOUT_MS, the delete whose message never
+    left the DOM, the action that never reached a settled state. Dropping those and taking the
+    median of what is left changes the sample population and reports a partially broken action as
+    a clean three-repetition measurement -- and it hides it from harness_failures(), whose
+    `openMs is None` / `ms is None` checks then read the median of the repetitions that did work.
+    So one bad repetition poisons the aggregate, and the run says so.
+    """
+    if not values or any(v is None for v in values):
         return None
+    ordered = sorted(values)
     middle = len(ordered) // 2
     if len(ordered) % 2:
         return round(ordered[middle], 1)
@@ -686,83 +837,49 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
     return out
 
 
-def fixture_census(page) -> dict[str, int]:
-    """What is actually on screen right now. Cheap enough to run once per repetition."""
-    return page.evaluate(
-        """() => ({
-            messages: document.querySelectorAll("[data-role]").length,
-            domNodes: document.getElementsByTagName("*").length,
-            highlightedTokens: document.querySelectorAll("pre code span").length,
-        })"""
-    )
+# The gate that says expandTools() really mounted the result panes.
+#
+# It reads codeExecutionPanes, which is `[data-slot="tool-fallback-content"] pre`, and NOT
+# collapsibleOutputs, which is the content element itself. Radix keeps that element in the tree
+# for its collapse animation, so it is present while the card is shut: measured on this tree at
+# 300K characters, immediately after seeding and BEFORE any expandTools() call, collapsibleOutputs
+# was already 22 of the 22 expected while codeExecutionPanes was 0. A `collapsibleOutputs >= n`
+# gate is therefore satisfied by a thread of closed cards -- it cannot fail, and it released the
+# highlighter wait below before the fences it exists to sequence had mounted. The pane's <pre> is
+# a child of that element, so it appears only once the card is really open: 0 collapsed, 22
+# expanded, at both sizes on all three engines.
+EXPANDED_PANES_GATE_JS = "(n) => window.__heavyThread.counts().codeExecutionPanes >= n"
 
 
-def settle_view(page) -> None:
-    """Wait out the highlighter, then put the tool cards back. Untimed.
+def build_fixture(page) -> None:
+    """Bring the page back to the fixture every column claims to have been measured on, untimed.
 
-    A thread that has just been imported or just been re-opened is still highlighting: measured
-    on Chromium at 300K, the scroll gesture read 667ms on the first repetition and 1100ms on the
-    two that followed, and the difference was the re-highlighting, not the scroll. Re-open also
-    unmounts the thread, and an uncontrolled Radix collapsible comes back closed, so a thread
-    that is not re-expanded carries no tool result panes at all -- a different, cheaper fixture
-    wearing the same label. Idempotent: with the cards already open nothing is clicked.
+    Order matters and it is the reason this is one function rather than three call sites. Radix
+    unmounts collapsed content, so the tool result panes -- which are CODE, two of the seven fences
+    a content cycle produces -- do not exist until expandTools() has run. Waiting for the
+    highlighter BEFORE expanding therefore gates on the fences that were already there and then
+    mounts a fresh batch of unhighlighted ones, whose Shiki work lands in whatever is timed next.
+    Expand first, then wait for the highlighter, which is the order measure_cell() seeds in.
     """
-    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
     expanded = page.evaluate("() => window.__heavyThread.expandTools()")
     if expanded:
         page.wait_for_function(
-            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
+            EXPANDED_PANES_GATE_JS,
             arg = expanded,
             timeout = ACTION_TIMEOUT_MS,
         )
+    wait_for_highlighting_settled(page, ACTION_TIMEOUT_MS)
 
 
-def reseed(page, size: int) -> None:
-    """Import the seeded thread again and settle the view on it. Untimed."""
-    plan = page.evaluate("(n) => window.__heavyThread.seed(n)", size)
-    page.wait_for_function(
-        "(n) => window.__heavyThread.messageCount() >= n",
-        arg = plan["messages"],
-        timeout = SEED_TIMEOUT_MS,
-    )
-    settle_view(page)
-
-
-def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
-    """The six scripted actions, once, in the order a user meets them.
-
-    RE-SEEDED at both points where `delete` has left the runtime short: at the top of every
-    repetition but the first, and again before `reopen`. `DELETE_JS` removes the last assistant
-    message from the RUNTIME and `REOPEN_JS` deliberately preserves the runtime, so without a
-    restore each of those measures a thread one message shorter than the one the pre-action
-    census passed -- and a different content mix, because the message it takes is a different
-    KIND each time.
-
-    Across repetitions, measured on chromium: at 300K the thread went 220 -> 219 -> 218 messages
-    and 35086 -> 34438 highlighted tokens across the default three repetitions (-0.9%/rep, -1.8%
-    of tokens); at 25K, where one cycle is the whole fixture, it went 20 -> 19 -> 18 messages and
-    3216 -> 2520 -> 2520 tokens, which is 22% of the highlighting gone by repetition two.
-
-    Inside one repetition it is the same defect and at the small end the larger one, because
-    `delete` takes the kind-9 JSON fence and at 25K that is the only one in the fixture. Fresh
-    page per arm, medians of 3: re-open rebuilt 19 of 20 messages, 6 of 7 <pre> and 2520 of 3216
-    tokens, and read 259.5ms against 373.2ms for the seeded fixture on chromium and 292ms against
-    330ms on webkit; at 100K, 848.5ms against 986.4ms and 1083ms against 1227ms. The deficit
-    shrinks as the thread grows (22% of the highlighting at 25K, 5.2% at 100K, 1.8% at 300K), so
-    it does not cancel out of a growth ratio: chromium's re-open curve from 25K to 100K reads
-    3.27x measured that way against 2.64x on the fixture the column names.
-
-    The re-seed also puts every message back into a freshly-mounted state, and that is NOT free:
-    measured on chromium at 300K, the menu open+close median moved 71.9ms -> 352.0ms, because
-    without it repetitions 2 and 3 open a menu on a thread that has already been through one.
-    Both numbers are honest; only one of them is the number the table claims to report, which is
-    "the median of three repetitions of the seeded fixture".
-    """
+def one_repetition(page, cdp) -> dict[str, dict]:
+    """The five scripted actions, once, in the order a user meets them."""
     rep: dict[str, dict] = {}
-    if first:
-        settle_view(page)
-    else:
-        reseed(page, size)
+    # The previous repetition ended by re-opening the thread, which throws away every highlighted
+    # fence and starts Shiki again, and by deleting a message, which the restore below puts back.
+    # Without this wait, repetitions 2 and 3 measure a thread that is still building itself:
+    # measured on Chromium at 300K, the scroll gesture read 667ms on the first repetition and
+    # 1100ms on the two that followed, and the difference was the re-highlighting, not the scroll.
+    build_fixture(page)
     rep["keystroke"] = run_action(page, cdp, "keystroke", KEYSTROKE_JS, KEYSTROKES)
     rep["scroll"] = run_action(
         page,
@@ -795,15 +912,27 @@ def one_repetition(page, cdp, size: int, first: bool) -> dict[str, dict]:
     page.locator('[data-role="assistant"]').last.hover(timeout = ACTION_TIMEOUT_MS)
     rep["delete"] = run_action(page, cdp, "delete", DELETE_JS, SETTLE_TIMEOUT_MS)
 
-    # Put back what `delete` took, or the column below rebuilds a thread the cell was never
-    # seeded with. See the docstring for the sizes: at 25K it is a whole content kind.
-    reseed(page, size)
+    # The delete is PERMANENT: it removes a message from the runtime's repository, not from the
+    # view. Left alone, repetition 2 re-opens and measures a thread one message shorter than the
+    # one the census at the top of this cell asserted, and repetition 3 one shorter again. At the
+    # smallest size the whole thread is a single ten-kind cycle, so those three deletions take the
+    # json fence, then both inline images, then the svg -- the exact "the fixture quietly lost a
+    # content kind" failure harness_failures() gates on, except that the gate reads a census taken
+    # before any repetition ran and so never sees it. Restore, then rebuild, untimed.
+    restored = page.evaluate("() => window.__heavyThread.restore()")
+    page.wait_for_function(
+        "(n) => window.__heavyThread.messageCount() >= n",
+        arg = restored,
+        timeout = ACTION_TIMEOUT_MS,
+    )
+    build_fixture(page)
+
     rep["reopen"] = run_action(
         page,
         cdp,
         "reopen",
         REOPEN_JS,
-        [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS],
+        [SETTLE_TIMEOUT_MS, SETTLE_TIMEOUT_MS, HIGHLIGHT_GRACE_MS, HIGHLIGHT_PROBE_MS],
     )
     return rep
 
@@ -833,7 +962,13 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         numeric_keys = set()
         for row in rows:
             for key, value in row.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # `value is None` is deliberately a key too. A timing that came back null in every
+                # repetition would otherwise be absent from the merged row entirely, and the
+                # verdict's `menu["openMs"] is None` would raise KeyError instead of reporting the
+                # menu that never opened. Present-and-None is the readable form of that.
+                if value is None or (
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                ):
                     numeric_keys.add(key)
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
@@ -845,10 +980,6 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
         # The headline value from each repetition, unaggregated, so a median can be checked
         # against the spread it came from rather than taken on trust.
         merged["per_repetition"] = [r.get(HEADLINE[action][0]) for r in rows]
-        # How many repetitions produced no headline value at all. The action still "ran" -- the
-        # script returned -- but its settle loop hit the timeout, so median() silently took the
-        # median of the rest and `repetitions` above would over-state the sample count.
-        merged["dropped_repetitions"] = sum(1 for v in merged["per_repetition"] if v is None)
         out[action] = merged
     return out
 
@@ -867,15 +998,27 @@ def measure_cell(context, engine: str, size: int) -> dict:
     api_prefix = f"{BASE}/api/"
     stray_requests: list[str] = []
     console_warnings: list[str] = []
+    # Severity kept SEPARATE from the warning list. The allowance below exists for Gecko's two
+    # scroll-anchoring notices, which are the engine describing itself. An application exception
+    # is not chatter: a single console.error or an uncaught pageerror inside a measured
+    # interaction means the interaction did not do what the row says it did, and folding those
+    # into the same list let one pass under a "> 4" threshold and exit 0.
+    console_errors: list[str] = []
     page.on(
         "request",
         lambda r: stray_requests.append(r.url) if r.url.startswith(api_prefix) else None,
     )
     page.on(
         "console",
-        lambda m: console_warnings.append(m.text[:200]) if m.type in ("warning", "error") else None,
+        lambda m: (
+            console_errors.append(m.text[:200])
+            if m.type == "error"
+            else console_warnings.append(m.text[:200])
+            if m.type == "warning"
+            else None
+        ),
     )
-    page.on("pageerror", lambda e: console_warnings.append(f"pageerror: {e}"[:200]))
+    page.on("pageerror", lambda e: console_errors.append(f"pageerror: {e}"[:200]))
     cdp = None
     try:
         page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
@@ -900,7 +1043,7 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # is looking at them open, and the closed thread is a different fixture.
         result["tool_triggers_expanded"] = page.evaluate("() => window.__heavyThread.expandTools()")
         page.wait_for_function(
-            "(n) => window.__heavyThread.counts().collapsibleOutputs >= n",
+            EXPANDED_PANES_GATE_JS,
             arg = max(1, result["tool_triggers_expanded"]),
             timeout = SEED_TIMEOUT_MS,
         )
@@ -913,8 +1056,11 @@ def measure_cell(context, engine: str, size: int) -> dict:
         result["seed_api_requests"] = len(stray_requests)
         result["seed_console_warnings"] = len(console_warnings)
         result["first_seed_warning"] = console_warnings[0] if console_warnings else "-"
+        result["seed_console_errors"] = len(console_errors)
+        result["first_seed_error"] = console_errors[0] if console_errors else "-"
         stray_requests.clear()
         console_warnings.clear()
+        console_errors.clear()
 
         result["cpu_throttle_rate"] = 1.0
         if cdp is not None and CPU_THROTTLE_RATE != 1.0:
@@ -927,8 +1073,8 @@ def measure_cell(context, engine: str, size: int) -> dict:
         censuses = []
         for index in range(REPEATS):
             info(f"  {engine} {size} chars: repetition {index + 1}/{REPEATS}")
-            reps.append(one_repetition(page, cdp, size, first = index == 0))
-            censuses.append(fixture_census(page))
+            reps.append(one_repetition(page, cdp))
+            censuses.append(page.evaluate("window.__heavyThread.counts()"))
         result["per_repetition_census"] = censuses
         result["repetitions"] = REPEATS
         result["actions"] = summarise(reps)
@@ -939,8 +1085,14 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Cumulative over seeding and every action: a liveness check, not attributable to any one.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
+        # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden:
+        # these cost no round trip, but they are real requests the app makes and the number
+        # should not vanish just because the harness declines to pay for them.
+        result["stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
         result["console_warnings"] = len(console_warnings)
         result["first_console_warning"] = console_warnings[0] if console_warnings else "-"
+        result["console_errors"] = len(console_errors)
+        result["first_console_error"] = console_errors[0] if console_errors else "-"
     finally:
         page.close()
     return result
@@ -1010,6 +1162,11 @@ def _action(action: str, key: str):
     return lambda r: r["actions"][action][key]
 
 
+def _floor_from(action: str, key: str):
+    """A `floored` that is measured per row rather than declared once for every action."""
+    return lambda r: (r.get("actions", {}).get(action) or {}).get(key) or 0
+
+
 TABLE_ROWS = (
     ("chars requested", lambda r: r["chars_requested"]),
     ("chars rendered", lambda r: r["plan"]["chars"]),
@@ -1021,12 +1178,17 @@ TABLE_ROWS = (
     ("repetitions", lambda r: r["repetitions"]),
     ("cpu throttle rate", lambda r: r["cpu_throttle_rate"]),
     ("paint floor ms", lambda r: r["paint_floor_ms"]),
+    ("reopen paint waits", lambda r: (r.get("actions", {}).get("reopen") or {}).get("paintWaits")),
     ("longtask api supported", lambda r: r["long_task_supported"]),
     ("seed api requests", lambda r: r["seed_api_requests"]),
     ("seed console warnings", lambda r: r["seed_console_warnings"]),
     ("first seed warning", lambda r: r["first_seed_warning"]),
     ("action api requests", lambda r: r["stray_api_requests"]),
+    ("stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
     ("action console warnings", lambda r: r["console_warnings"]),
+    ("seed console errors", lambda r: r.get("seed_console_errors", 0)),
+    ("action console errors", lambda r: r.get("console_errors", 0)),
+    ("first action error", lambda r: r.get("first_console_error", "-")),
     ("first action warning", lambda r: r["first_console_warning"]),
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
@@ -1140,36 +1302,113 @@ def print_table(results: dict) -> None:
         info(name.ljust(label_width) + "".join(cell.rjust(cell_width) for cell in cells))
 
 
-# Growth axes: the whole point of the harness is that these rise with content. `floored` marks a
-# metric clocked across a double rAF, which carries the ~33ms vsync floor; left in, the floor
-# compresses every ratio towards 1 and lets a real regression sit under the threshold.
+# Growth axes: the whole point of the harness is that these rise with content. The third field is
+# HOW MANY double-rAF waits the metric is clocked across; each one carries its own ~33ms vsync
+# floor, and left in, that floor compresses every ratio towards 1 and lets a real regression sit
+# under the threshold. `menu open+close ms` is the sum of two independently floored timings, so it
+# carries two.
 GROWTH_AXES = tuple(
-    [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), False) for a in ACTIONS]
-    + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), False) for a in ACTIONS]
-    + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), False) for a in ACTIONS]
-    + [(f"{a} wall ms", _action(a, "wall_ms"), False) for a in ACTIONS]
+    [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), 0) for a in ACTIONS]
+    + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), 0) for a in ACTIONS]
+    + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), 0) for a in ACTIONS]
+    # The floor is READ from the row, not declared: every one of these windows crosses a
+    # different number of mandatory double-rAF waits, and declaring 0 for all of them left
+    # roughly `paint_waits * paint_floor_ms` of constant baseline in both ends of the ratio.
+    # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it
+    # after closing it, so it crosses the same two waits `menu open+close ms` correctly declares,
+    # and `menu wall ms` was declaring none of them.
+    + [(f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits")) for a in ACTIONS]
     + [
-        ("keystroke median ms", _action("keystroke", "median_sample_ms"), True),
-        ("scroll gesture ms", _action("scroll", "gestureMs"), False),
-        ("scroll settle ms", _action("scroll", "settleMs"), False),
-        ("jump painted ms", _action("jump", "paintedMs"), True),
-        ("jump settle ms", _action("jump", "settleMs"), False),
-        ("menu open+close ms", _action("menu", "open_close_ms"), True),
-        ("delete ms", _action("delete", "ms"), True),
-        ("reopen ms", _action("reopen", "ms"), False),
+        # The rule for the entries below: an axis measured from `__hv.startedAt` spans the WHOLE
+        # recorder window, so it carries every double-rAF wait in it and takes the measured
+        # `paint_waits`. An axis measured from a later mark carries only its own and keeps a
+        # declared count. Both kinds are here on purpose and the difference is not cosmetic.
+        #
+        # gestureMs is `performance.now() - __hv.startedAt`, and BOTH settle figures come from
+        # `quiet()` / `quietUntilIdle()`, which return `... - this.startedAt` rather than the time
+        # they themselves took. All three therefore contained the scroll's twenty paint waits and
+        # declared none of them, leaving ~20 vsync floors in both ends of those ratios, which
+        # compresses them hard enough to report a real size-dependent regression as flat.
+        #
+        # Counted at runtime rather than written in: the twenty come from a LOOP, so the literal
+        # `__nextPaint()` count in the source is one, and any hand-declared number here would have
+        # been wrong in the same way the old zero was.
+        ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
+        ("scroll gesture ms", _action("scroll", "gestureMs"), _floor_from("scroll", "paint_waits")),
+        ("scroll settle ms", _action("scroll", "settleMs"), _floor_from("scroll", "paint_waits")),
+        # NOT paint_waits: paintedMs starts at a mark taken after begin() and spans one wait,
+        # while the jump's window holds two. Using the window count here would subtract a floor
+        # the number never contained.
+        ("jump painted ms", _action("jump", "paintedMs"), 1),
+        ("jump settle ms", _action("jump", "settleMs"), _floor_from("jump", "paint_waits")),
+        # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from
+        # settle() reading the pre-MutationObserver state on entry, once for open and once for
+        # close. The window count is zero here and would remove a floor that is really there.
+        ("menu open+close ms", _action("menu", "open_close_ms"), 2),
+        ("delete ms", _action("delete", "ms"), 1),
+        # 1, not 0: see paintWaits in REOPEN_JS. Leaving it at 0 left a full ~33ms vsync floor
+        # of constant baseline in both ends of the ratio, which compresses it towards 1 and can
+        # report a real reopen curve as flat when the smallest fixture rebuilds near the floor.
+        ("reopen ms", _action("reopen", "ms"), 1),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond
 # to twelve times the content. That is not a flat curve, it is an axis that is not measuring the
 # thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
+# What a counter that starts at zero has to REACH before its rise counts as an answer. A ratio
+# cannot be formed against zero, so DISCRIMINATION_RATIO does not apply to these axes at all and
+# something absolute has to. 5 because the counters this covers are dropped frames and long
+# tasks: at twelve times the content a real curve produces them in quantity, while one or two is
+# what an unloaded machine produces on its own, and the CI configuration runs a single repetition
+# so there is no median to average that away.
+ZERO_BASED_MIN_RISE = int(os.environ.get("SMOKE_ZERO_BASED_MIN_RISE", "5"))
+# Which axes are COUNTS. Stated, not inferred. The zero branch below used to key on `floored`,
+# which only identifies a timing that had a paint floor subtracted; an UNFLOORED timing such as
+# `longest stall ms` or `worst frame ms` is zero at the smallest size whenever the action ends
+# before the recorder produces a sample, and it was then treated as a dropped-frame counter, so a
+# noisy 5ms at the largest size read as a rise of 5 and discriminated. `harness_failures` accepts
+# any one discriminating axis, so that stray millisecond could carry the run.
+#
+# A count is a count of events. Only `frames over 33ms` is one; every other axis is milliseconds.
+COUNTER_AXES = frozenset(f"{a} frames over 33ms" for a in ACTIONS)
 # Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring
 # notices are what this number exists for; anything the app emits per message would be two orders
 # of magnitude above it at 220 messages.
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
-def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | None, float | None]:
+def resolve_floor(floored, row: dict) -> float:
+    """The floor count for one row, as an INT.
+
+    `floored` may be a callable, and the growth report is written to JSON at the end of the run.
+    Putting the callable itself in the report made `json.dumps` raise `Object of type function is
+    not JSON serializable`, which failed every complete run AFTER all the measurements were taken.
+    Nothing in the unit tests caught it because none of them serialise the report.
+    """
+    # NOT int(). `summarise` takes a median across repetitions, so an even-repetition run whose
+    # repetitions paid 1 and 2 waits reports 1.5, and truncating that to 1 left half a vsync floor
+    # in the wall-clock axis and published a distorted ratio. The documented two-repetition
+    # configurations are exactly the ones that produce halves. A float serialises fine.
+    value = floored(row) if callable(floored) else floored
+    return value if isinstance(value, (int, float)) else 0
+
+
+def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, float | None]:
+    """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
+
+    It may be an int, declared once for an axis, or a callable taking the row, for an axis whose
+    window crosses a different number of waits per action. The generated `wall ms` axes are the
+    second kind: they were declared 0 for every action, which left roughly `paint_waits *
+    paint_floor_ms` in both ends of those ratios.
+
+    Each `await __nextPaint()` a metric is clocked across contributes its own ~33ms vsync floor,
+    and a metric that contains two of them carries two. `menu open+close ms` is the case: settle()
+    reads the pre-MutationObserver state on entry, both times, so opening and closing each wait
+    out a full double rAF before their first true comparison. Subtracting one floor from a sum of
+    two left ~33ms of constant baseline in the number, which drags the ratio towards 1 in exactly
+    the way the floor is subtracted to prevent.
+    """
     try:
         rows = (cells[str(sizes[0])], cells[str(sizes[-1])])
         values = []
@@ -1177,8 +1416,9 @@ def growth(cells: dict, pick, floored: bool, sizes: list[int]) -> tuple[float | 
             value = pick(row)
             if value is None:
                 return None, None
-            if floored:
-                value -= row["paint_floor_ms"]
+            count = resolve_floor(floored, row)
+            if count:
+                value -= count * row["paint_floor_ms"]
             values.append(round(value, 2))
         return values[0], values[1]
     except (KeyError, TypeError):
@@ -1193,6 +1433,12 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
         per_axis: dict[str, dict] = {}
         for name, pick, floored in GROWTH_AXES:
             small, large = growth(cells, pick, floored, results["sizes"])
+            # Resolved here, once, so what lands in the JSON is the count that was actually
+            # subtracted at each end rather than the thing that computes it.
+            floor_counts = [
+                resolve_floor(floored, cells.get(str(size), {}))
+                for size in (results["sizes"][0], results["sizes"][-1])
+            ]
             if small is None or large is None:
                 per_axis[name] = {
                     "small": None,
@@ -1217,27 +1463,71 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                         "ratio": None,
                         "discriminated": False,
                         "reason": "at or under the paint floor at the smallest size",
-                        "floored": floored,
+                        "floored": floor_counts,
                     }
                     continue
-                rose = large > small
+                # `large > small` is not enough. These are counts of missed frames and long
+                # tasks, and in the one-repetition Chromium configuration the CI workflow runs
+                # there is no median to smooth them: a single incidental dropped frame takes an
+                # axis from 0 to 1, which was marked as discriminating no matter what
+                # SMOKE_DISCRIMINATION_RATIO said, because a ratio was never computed for it.
+                # `harness_failures` accepts any ONE discriminating axis, so that stray frame
+                # could carry the whole verdict while every latency axis was flat or broken.
+                if name not in COUNTER_AXES:
+                    # A timing that reads zero at the smallest size did not "grow from nothing",
+                    # it resolved below what the recorder can see. ZERO_BASED_MIN_RISE is a count
+                    # of events and means nothing applied to milliseconds.
+                    per_axis[name] = {
+                        "small": small,
+                        "large": large,
+                        "ratio": None,
+                        "discriminated": False,
+                        "reason": (
+                            "zero at the smallest size and this axis is a timing, not a count, "
+                            "so there is no rise to measure"
+                        ),
+                        "floored": floor_counts,
+                    }
+                    continue
+                rose = large >= ZERO_BASED_MIN_RISE
+                if rose:
+                    reason = f"rose from zero to {large}"
+                elif large > small:
+                    reason = (
+                        f"rose from zero only to {large}, under the {ZERO_BASED_MIN_RISE} this "
+                        "counter needs to be distinguishable from noise"
+                    )
+                else:
+                    reason = "zero at both ends"
                 per_axis[name] = {
                     "small": small,
                     "large": large,
                     "ratio": None,
                     "discriminated": rose,
-                    "reason": "rose from zero" if rose else "zero at both ends",
-                    "floored": floored,
+                    "reason": reason,
+                    "floored": floor_counts,
                 }
                 continue
             ratio = round(large / small, 2)
+            # The noise floor applies to a counter whatever its baseline. A dropped-frame count
+            # going 1 -> 2 is a ratio of 2.0 and cleared DISCRIMINATION_RATIO, and since
+            # harness_failures accepts any single discriminating axis, that one incidental frame
+            # could carry the CI smoke while every latency axis was flat. A ratio is only
+            # meaningful once there are enough events for the ratio to be about the content
+            # rather than about one frame either way.
+            noisy_counter = name in COUNTER_AXES and large < ZERO_BASED_MIN_RISE
             per_axis[name] = {
                 "small": small,
                 "large": large,
                 "ratio": ratio,
-                "discriminated": ratio > DISCRIMINATION_RATIO,
-                "reason": "-",
-                "floored": floored,
+                "discriminated": ratio > DISCRIMINATION_RATIO and not noisy_counter,
+                "reason": (
+                    f"only {large} events at the largest size, under the "
+                    f"{ZERO_BASED_MIN_RISE} this counter needs to be distinguishable from noise"
+                    if noisy_counter
+                    else "-"
+                ),
+                "floored": floor_counts,
             }
         report[engine] = per_axis
     return report
@@ -1255,7 +1545,9 @@ def print_growth(results: dict, report: dict) -> None:
                 mark = "DISCRIMINATES" if row["discriminated"] else "flat"
                 small = "-" if row["small"] is None else row["small"]
                 large = "-" if row["large"] is None else row["large"]
-                info(f"  {name:<34} {small:>10} -> {large:>10}       -  {mark} ({row['reason']})")
+                info(
+                    f"  {name:<34} {small:>10} -> {large:>10}       -  " f"{mark} ({row['reason']})"
+                )
                 continue
             mark = "DISCRIMINATES" if row["discriminated"] else "flat"
             floor_note = " (paint floor removed)" if row.get("floored") else ""
@@ -1265,10 +1557,65 @@ def print_growth(results: dict, report: dict) -> None:
             )
 
 
+# The declared double-rAF count for each axis whose action reports how many it actually paid.
+# GROWTH_AXES holds the declaration; the action holds the observation; a harness that declares a
+# floor it does not pay, or pays one it does not declare, subtracts the wrong constant from both
+# ends of every ratio it publishes. Only reopen reports its waits today, so only reopen is
+# checkable here; the entry exists so adding a counter to another action wires it in by name.
+# axis name in GROWTH_AXES -> (action, the field on that action reporting its own wait count)
+FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
+
+
+def declared_floor(axis_name: str) -> int | None:
+    """The `floored` column of GROWTH_AXES for one axis, by exact name.
+
+    Exact rather than prefix-matched: `reopen ms` and a later `reopen settle ms` would both match
+    a prefix, and the check would silently compare one axis's waits against another's declaration.
+    A name that is not an axis returns None, which the caller reports rather than skips.
+    """
+    for name, _pick, floored in GROWTH_AXES:
+        if name == axis_name:
+            return floored
+    return None
+
+
+def floor_declaration_problems(results: dict) -> list[str]:
+    """Axes whose subtracted paint floor does not match the waits the action actually paid."""
+    problems: list[str] = []
+    for engine in results["engines"]:
+        for size in results["sizes"]:
+            row = results["by_engine"][engine]["by_size"].get(str(size), {})
+            if "crashed" in row:
+                continue
+            for axis_name, (action, counter) in FLOOR_COUNTERS.items():
+                measured = row.get("actions", {}).get(action) or {}
+                # An action that did not run is already reported by harness_failures, with the
+                # reason. Reporting it again here as an unverified floor would be a second
+                # failure for one cause, and would bury the real one.
+                if not measured.get("ran", True):
+                    continue
+                observed = measured.get(counter)
+                if observed is None:
+                    problems.append(
+                        f"{engine} at {size} chars recorded no {counter} for {action}, so the "
+                        f"paint floor subtracted from '{axis_name}' is unverified"
+                    )
+                    continue
+                declared = declared_floor(axis_name)
+                if declared == observed:
+                    continue
+                problems.append(
+                    f"{engine} at {size} chars paid {observed} paint wait(s) in {action} but "
+                    f"GROWTH_AXES subtracts {declared} from '{axis_name}'; the ratio is computed "
+                    "after removing the wrong constant from both ends"
+                )
+    return problems
+
+
 def harness_failures(results: dict, report: dict) -> list[str]:
     """Only the ways this harness can be measuring nothing. No performance budgets: see the
     module docstring."""
-    failures: list[str] = []
+    failures: list[str] = list(floor_declaration_problems(results))
     for engine in results["engines"]:
         for size in results["sizes"]:
             row = results["by_engine"][engine]["by_size"][str(size)]
@@ -1297,6 +1644,26 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             # 25K and two at both 100K and 300K -- a growth check fails on that and would leave
             # this harness unable to report a Gecko number at all. The count and the first
             # message are printed per size either way, so a reader can see what was tolerated.
+            # NO allowance. The paragraph above is about engine chatter, which is the engine
+            # describing itself; an application exception is not that. One console.error or one
+            # uncaught pageerror inside a measured interaction means the interaction did not do
+            # what the row says it did, so its timing is not a measurement of the labelled thing.
+            # Sharing one list with the warnings let exactly one such error sit under the "> 4"
+            # threshold and the run exit 0 with the timings published.
+            for phase, count, first in (
+                ("seeding", row.get("seed_console_errors", 0), row.get("first_seed_error", "-")),
+                (
+                    "the measured actions",
+                    row.get("console_errors", 0),
+                    row.get("first_console_error", "-"),
+                ),
+            ):
+                if count:
+                    failures.append(
+                        f"{where} logged {count} console error(s) or page error(s) during "
+                        f"{phase}, the first being {first!r}; an application exception is not "
+                        "engine chatter and the timings around it are not measurements"
+                    )
             if row["console_warnings"] > CONSOLE_WARNING_ALLOWANCE:
                 failures.append(
                     f"{where} logged {row['console_warnings']} console warnings during the "
@@ -1312,6 +1679,20 @@ def harness_failures(results: dict, report: dict) -> list[str]:
                 failures.append(
                     f"{where} rendered {counts['messages']} of {plan['messages']} messages; the "
                     "seed did not land"
+                )
+            # The fixture the pre-action census passed has to be the fixture every repetition
+            # measured, or the median combines threads of different sizes wearing one label.
+            #
+            # Against the SEEDED census, not just across repetitions: `delete` mutates the runtime
+            # and `reopen` preserves it, so a missing restore leaves EVERY repetition equally
+            # short, which agrees with itself and reports a fixture the cell never held.
+            censuses = row.get("per_repetition_census") or []
+            if censuses and any(c["messages"] != counts["messages"] for c in censuses):
+                failures.append(
+                    f"{where} ended its repetitions holding "
+                    f"{[c['messages'] for c in censuses]} messages against the "
+                    f"{counts['messages']} it was seeded with; the median is not over the fixture "
+                    "this cell names"
                 )
             # The fixture IS the measurement. A thread of plain paragraphs would be cheap for
             # reasons the app is not, so every kind the user report names has to be on screen,
@@ -1342,28 +1723,19 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             for name in ACTIONS:
                 if not actions[name].get("ran"):
                     failures.append(f"{where} could not run the {name} action at all")
-                elif actions[name].get("dropped_repetitions"):
+            # A null settle time is the settle loop giving up: the page never produced a calm
+            # window inside SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that",
+            # but it prints as the same `-`, and the axis it feeds merely becomes "not
+            # recorded" -- so another axis can carry the discrimination check and the run exits
+            # 0 having timed out without measuring settlement.
+            for name in ("scroll", "jump", "reopen"):
+                settling = actions[name]
+                if settling.get("ran") and settling.get("settleMs") is None:
                     failures.append(
-                        f"{where} reports the {name} column as a median of "
-                        f"{actions[name]['repetitions']} repetitions, but "
-                        f"{actions[name]['dropped_repetitions']} of them produced no timing at "
-                        f"all ({actions[name]['per_repetition']}); the headline is a median over "
-                        "fewer samples than the table claims"
+                        f"{where} ran the {name} action but it never reached a settled state "
+                        f"within {SETTLE_TIMEOUT_MS}ms, so its settle time and the frame counts "
+                        "beside it are the timeout rather than a measurement"
                     )
-            # The fixture the pre-action census passed has to be the fixture every repetition
-            # measured, or the median combines threads of different sizes wearing one label.
-            #
-            # Against the SEEDED census, not just across repetitions: `delete` mutates the runtime
-            # and `reopen` preserves it, so a missing restore leaves EVERY repetition equally
-            # short, which agrees with itself and reports a fixture the cell never held.
-            censuses = row.get("per_repetition_census") or []
-            if censuses and any(c["messages"] != counts["messages"] for c in censuses):
-                failures.append(
-                    f"{where} ended its repetitions holding "
-                    f"{[c['messages'] for c in censuses]} messages against the "
-                    f"{counts['messages']} it was seeded with; the median is not over the fixture "
-                    "this cell names"
-                )
             keystroke = actions["keystroke"]
             if keystroke.get("ran"):
                 # The DOM value is what the harness itself wrote, so it proves nothing on its
