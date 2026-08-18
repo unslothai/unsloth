@@ -1939,10 +1939,17 @@ export function useChatModelRuntime() {
                     rollbackResponse.tensor_parallel ?? false,
                   loadedDisableVision:
                     rollbackResponse.disable_vision ?? false,
-                  // The pre-switch value, NOT the echo: the replayed request is
-                  // gated on the model having a projector, so a text-only GGUF the
-                  // user switched off echoes false and would flip Vision back on.
-                  disableVision: stateBeforeUnload.disableVision,
+                  // The rolled-back model's own loaded value, matching the request
+                  // above field for field so the control cannot disagree with the
+                  // server it just asked for. Not stateBeforeUnload.disableVision:
+                  // applyPerModelConfigToRuntime wrote the TARGET's value into the
+                  // store before this snapshot was taken, so that field holds the
+                  // failed model's setting and would leave Vision showing off over a
+                  // restored projector, arming the next Apply to switch it off for
+                  // real. Not the echo either: the replayed request is gated on the
+                  // model having a projector, so a text-only GGUF the user switched
+                  // off echoes false and would flip Vision back on.
+                  disableVision: stateBeforeUnload.loadedDisableVision ?? false,
                   loadedVisionDisabledByUser:
                     rollbackResponse.vision_disabled_by_user ?? false,
                   customContextLength:

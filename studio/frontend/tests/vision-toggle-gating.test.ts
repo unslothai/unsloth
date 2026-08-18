@@ -208,3 +208,33 @@ test("the rollback replays the loaded vision baseline, not the control or the ga
     "rollback must not replay the control field, which the pending config overwrites",
   );
 });
+
+// The other half of the same rollback: the store assignment that follows the replayed
+// request. Getting the request right is not enough, because the control the user sees
+// is seeded separately, and applyPerModelConfigToRuntime(pendingLoadConfig) runs BEFORE
+// stateBeforeUnload is captured, so the snapshot's control field already holds the
+// TARGET's setting. Seeding from it leaves the Vision row reading "off" over a restored
+// model whose projector is running, and arms the next Apply to switch it off for real.
+// Source-level for the same reason as the replay above.
+test("the rollback seeds the Vision control from the restored model, not the target", () => {
+  const runtime = read("src/features/chat/hooks/use-chat-model-runtime.ts");
+  const assignment = runtime.slice(
+    runtime.indexOf("loadedSpeculativeType: rollbackSpeculativeType"),
+  );
+  const line = assignment.slice(
+    assignment.indexOf("disableVision:"),
+    assignment.indexOf("loadedVisionDisabledByUser:"),
+  );
+  assert.ok(
+    line.includes("stateBeforeUnload.loadedDisableVision"),
+    `the control must be seeded from the restored model's loaded value, got: ${line.trim()}`,
+  );
+  assert.ok(
+    !/stateBeforeUnload\.disableVision\b/.test(line),
+    "the control must not be seeded from the snapshot the pending config overwrote",
+  );
+  assert.ok(
+    !/rollbackResponse\.disable_vision/.test(line),
+    "the control must not be seeded from the echo, which is false for a text-only GGUF",
+  );
+});

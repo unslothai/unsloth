@@ -2779,6 +2779,66 @@ def _extra_args_mmproj_offload_value(extra_args: Optional[Sequence[str]]) -> Opt
     return value
 
 
+# arg.cpp applies every set_env option BEFORE argv and warns when a command line
+# argument overwrites one, so an inherited placement is a choice Studio can reverse
+# without the user ever seeing why. The child inherits this process's environment
+# (_llama_server_env_for_binary builds on it), so these are reachable from Studio's
+# own env. Both spellings: get_value_from_env checks the LLAMA_ARG_NO_ compatibility
+# form first and forces falsey on mere PRESENCE, empty value included.
+_MMPROJ_OFFLOAD_ENV_VAR = "LLAMA_ARG_MMPROJ_OFFLOAD"
+_MMPROJ_OFFLOAD_NEG_ENV_VAR = "LLAMA_ARG_NO_MMPROJ_OFFLOAD"
+
+
+def _env_sets_mmproj_offload(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when the child's environment names the projector placement at all.
+
+    Ownership, not value: a value arg.cpp parses as neither truthy nor falsey throws
+    out of common_params_parse, and a caller whose load is about to fail on their own
+    variable is still the one who set it. Presence is the test for the same reason
+    llama.cpp uses getenv, so ``LLAMA_ARG_NO_MMPROJ_OFFLOAD=`` counts.
+    """
+    source = os.environ if env is None else env
+    return any(
+        source.get(name) is not None
+        for name in (_MMPROJ_OFFLOAD_ENV_VAR, _MMPROJ_OFFLOAD_NEG_ENV_VAR)
+    )
+
+
+def _env_mmproj_offload_value(env: Optional[Mapping[str, str]] = None) -> Optional[bool]:
+    """The offload the child's environment resolves to, or None for silence.
+
+    get_value_from_env's own order: the negative spelling short-circuits to falsey on
+    presence, then the positive one goes through is_truthy / is_falsey. Anything else
+    is left as None, since arg.cpp raises rather than picking a side and there is no
+    placement to budget for.
+    """
+    source = os.environ if env is None else env
+    if source.get(_MMPROJ_OFFLOAD_NEG_ENV_VAR) is not None:
+        return False
+    raw = source.get(_MMPROJ_OFFLOAD_ENV_VAR)
+    if raw is None:
+        return None
+    value = str(raw).strip().lower()
+    if value in _LLAMA_ARG_TRUE_VALUES:
+        return True
+    if value in _LLAMA_ARG_FALSE_VALUES:
+        return False
+    return None
+
+
+def _resolved_mmproj_offload(
+    extra_args: Optional[Sequence[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[bool]:
+    """Where the projector actually ends up, over extras and environment together.
+
+    Same precedence the child applies: environment first, then argv on top, so a
+    pass-through flag wins over an inherited variable and only silence in both falls
+    through to None.
+    """
+    from_args = _extra_args_mmproj_offload_value(extra_args)
+    return from_args if from_args is not None else _env_mmproj_offload_value(env)
+
+
 _OVERRIDE_TENSOR_FLAGS: frozenset = frozenset(
     {
         "-ot",
@@ -14050,8 +14110,10 @@ class LlamaCppBackend:
                     # (measured 9984 -> 4096) or spills layers to make room for VRAM
                     # nothing occupies, which is worse placement than Studio deciding
                     # on its own. Detecting ownership is not enough here; the resolved
-                    # value is what the child will run.
-                    _user_mmproj_offload = _extra_args_mmproj_offload_value(extra_args)
+                    # value is what the child will run, and arg.cpp reads
+                    # LLAMA_ARG_MMPROJ_OFFLOAD before argv, so the environment places
+                    # the projector just as surely as the flag does.
+                    _user_mmproj_offload = _resolved_mmproj_offload(extra_args)
                     mmproj_size = (
                         self._mmproj_vram_bytes(launch_mmproj_path)
                         if (effective_is_vision and _user_mmproj_offload is not False)
@@ -14731,23 +14793,46 @@ class LlamaCppBackend:
                         and not tensor_parallel
                         and _paravirtual_mmproj_pinnable(server_caps)
                         # llama.cpp is last-wins on the placement pair, so a user who
-                        # named either spelling owns it; do not race them for it.
+                        # named either spelling owns it; do not race them for it. The
+                        # environment counts as naming it: arg.cpp applies set_env
+                        # before argv, so appending --no-mmproj-offload below would
+                        # overwrite LLAMA_ARG_MMPROJ_OFFLOAD=1 rather than lose to it,
+                        # reversing a global placement choice with nothing but a
+                        # llama.cpp warning on stderr to show for it. Same ownership
+                        # the CPU-recovery gate already reads it as.
                         and not _extra_args_set_mmproj_offload(extra_args)
+                        and not _env_sets_mmproj_offload()
                     ):
-                        # One question, asked once: at the floor context, with
-                        # speculative decoding STILL LIVE, does model + drafter +
-                        # projector stay resident in VRAM?
+                        # One question, asked once: at the context this load will
+                        # actually run at, with speculative decoding STILL LIVE, does
+                        # model + drafter + projector stay resident in VRAM?
                         #
-                        # The FLOOR is what makes this a residency question rather than
-                        # a context one. Auto never spills layers to hold a long
-                        # context: the placement loop below shrinks the CONTEXT first
-                        # and only reaches `--fit on` once even its own 4096 fallback
-                        # will not place. Pricing the cache and the compute buffer at
-                        # the model's native length therefore answers "does not fit" for
-                        # a load that is merely going to get a smaller context, and pins
-                        # a projector that was fully resident all along -- measured at
-                        # 8.8x on image encode for zero residency gained. The pin must
-                        # never be able to buy context, only residency.
+                        # Which context that is, is the whole question, and the two
+                        # sizing modes answer it differently.
+                        #
+                        # AUTO gets the FLOOR, which is what makes this a residency
+                        # question rather than a context one. Auto never spills layers
+                        # to hold a long context: the placement loop below shrinks the
+                        # CONTEXT first and only reaches `--fit on` once even its own
+                        # 4096 fallback will not place. Pricing the cache and the
+                        # compute buffer at the model's native length therefore answers
+                        # "does not fit" for a load that is merely going to get a
+                        # smaller context, and pins a projector that was fully resident
+                        # all along -- measured at 8.8x on image encode for zero
+                        # residency gained. Under Auto the pin must never be able to buy
+                        # context, only residency.
+                        #
+                        # An EXPLICIT context gets its requested length, because there
+                        # the same reasoning points the other way. The placement loop
+                        # honors a pinned context verbatim -- every branch above reads
+                        # `effective_ctx if explicit_ctx` and refuses to cap -- so the
+                        # only give left is `--fit on`, which spills MODEL LAYERS to
+                        # host RAM and collapses decode ~3x. Asking at 4096 would answer
+                        # "fits" for a load that then does not, keep the projector on
+                        # the card, and pay for it by offloading the model: the trade
+                        # this probe exists to refuse, at its worst exchange rate. At
+                        # the requested length the pin is priced against what it really
+                        # buys, which is still residency -- of the model.
                         #
                         # The drafter IS charged, and has to be: this runs before the
                         # drop probe, so speculative decoding is still part of the
@@ -14764,7 +14849,11 @@ class LlamaCppBackend:
                             if (_mm_mtp_on_gpu and (mtp_overhead_fn is None or _mtp_kv_unsized))
                             else 0.0
                         )
-                        _mm_floor_ctx = min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
+                        _mm_floor_ctx = (
+                            effective_ctx
+                            if explicit_ctx
+                            else min(self._MMPROJ_FIT_FLOOR_CTX, effective_ctx)
+                        )
                         _mm_need = (
                             gguf_size
                             + mmproj_size
@@ -14784,7 +14873,10 @@ class LlamaCppBackend:
                             # _mtp_bytes at the native length and no context it hands
                             # out lowers it, so charging the reserve at a floor the fit
                             # never applies would promise room the fit never sees.
-                            _mm_need += _mtp_bytes(self._context_length or effective_ctx or 4096)
+                            # Rebound rather than used inline so the log below names the
+                            # length this actually priced against.
+                            _mm_floor_ctx = self._context_length or effective_ctx or 4096
+                            _mm_need += _mtp_bytes(_mm_floor_ctx)
                         # The comparison. _select_gpus is the same machinery the
                         # placement loop uses, at the same fraction and the same
                         # per-device overhead, so "does not fit" here is a placement
@@ -14813,7 +14905,7 @@ class LlamaCppBackend:
                                 "gets slower, text generation is unaffected. Pass "
                                 "--mmproj-offload in the advanced arguments to keep it "
                                 "on the GPU.",
-                                self._MMPROJ_FIT_FLOOR_CTX,
+                                _mm_floor_ctx,
                             )
 
                     # Target pins but the drafter's reserve tips it over: Auto drops the

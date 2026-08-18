@@ -21,7 +21,11 @@ from unittest.mock import patch
 
 import pytest
 
-from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+from core.inference.llama_cpp import (
+    GgufLoadIntent,
+    LlamaCppBackend,
+    _resolved_mmproj_offload,
+)
 from models.inference import InferenceStatusResponse, LoadResponse
 from routes.inference import (
     _estimate_gguf_required_gb,
@@ -768,7 +772,11 @@ def test_a_diffusion_runtime_is_not_torn_down_over_the_vision_switch(tmp_path):
     it on that path makes every identical repeat request a mismatch and reloads a
     runtime that was already the one asked for. The switch must not be what decides,
     so both spellings of the request have to reach the same verdict."""
-    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    from core.inference.llama_cpp import (
+    GgufLoadIntent,
+    LlamaCppBackend,
+    _resolved_mmproj_offload,
+)
 
     backend = LlamaCppBackend()
     backend._is_diffusion = True
@@ -819,3 +827,146 @@ def test_a_projector_the_resolve_rejected_is_not_blamed_on_the_switch(tmp_path):
 
     assert backend._disable_vision is True
     assert backend._vision_disabled_by_user is False
+
+
+def test_an_explicit_context_is_priced_at_the_length_it_asked_for(tmp_path):
+    """The same card the auto test above leaves alone, with the context pinned.
+
+    Auto and explicit sizing give way differently, so the probe cannot ask the same
+    question of both. Auto shrinks the CONTEXT and never spills a layer, which is
+    why it is asked at the 4096 floor. An explicit context is honored verbatim by
+    every branch of the placement loop, so the only give left is ``--fit on``, which
+    offloads MODEL LAYERS. Priced at the floor this load answers "the projector
+    fits" and then pays for it in the one currency the policy refuses to spend.
+
+    Budget 12000 free - 3% of 24000 = 11280 MiB. At the requested 65536: 6144 model
+    + 4096 KV + 256 compute + 320 CUDA context = 10816 resident, and the 1433 MiB
+    the projector really costs puts it at 12249, over. So the projector goes to host
+    RAM and every layer stays on the card.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+
+    cmd = _launch(backend, gguf, n_ctx = 65536)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+    # What the pin bought, and the whole reason it was worth making: the requested
+    # context survives intact with the model fully resident.
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("-c") + 1] == "65536"
+
+
+def test_an_explicit_context_that_fits_with_the_projector_keeps_it_on_the_gpu(tmp_path):
+    """The floor is not simply replaced by "always pin under an explicit context".
+
+    Same card, a context small enough that model + projector + KV all fit. Nothing
+    is bought by moving the encoder off the GPU here, so it stays and image encode
+    keeps its ~8.8x.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+
+    cmd = _launch(backend, gguf, n_ctx = 8192)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("-c") + 1] == "8192"
+
+
+def test_an_environment_owned_placement_is_not_reversed_by_the_pin(tmp_path, monkeypatch):
+    """common/arg.cpp applies every set_env option BEFORE argv, so an appended
+    --no-mmproj-offload does not lose to LLAMA_ARG_MMPROJ_OFFLOAD=1, it overwrites
+    it, and llama.cpp says so only in a stderr warning nobody reads. A user who set
+    the variable globally owns the placement exactly as one who passed the flag
+    does, which is already how the CPU-recovery gate reads it."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "1")
+    # The card that pins when nobody has claimed the placement.
+    backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
+
+
+def test_an_environment_pinned_projector_is_not_charged_against_vram(tmp_path, monkeypatch):
+    """The mirror of the flag case: LLAMA_ARG_MMPROJ_OFFLOAD=0 puts the projector in
+    host RAM just as --no-mmproj-offload does, so budgeting its bytes shrinks the
+    context for VRAM nothing occupies."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "0")
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    # The same context the flag spelling earns on this card.
+    assert cmd[cmd.index("-c") + 1] == "9984"
+
+
+def test_the_negative_environment_spelling_pins_on_presence_alone(tmp_path, monkeypatch):
+    """get_value_from_env checks the LLAMA_ARG_NO_ compatibility spelling first and
+    forces falsey on getenv returning non-null, so an empty value still pins. Read
+    any other way this charges VRAM the child never allocates."""
+    monkeypatch.setenv("LLAMA_ARG_NO_MMPROJ_OFFLOAD", "")
+    backend, gguf = _backend(tmp_path, memory = [(0, 7_600, 8_192)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert cmd[cmd.index("-c") + 1] == "9984"
+
+
+@pytest.mark.parametrize(
+    ("extras", "env", "expected"),
+    [
+        # Silence on both sides is the only None: nobody has placed it.
+        ([], {}, None),
+        ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, True),
+        ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "enabled"}, True),
+        ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "off"}, False),
+        # arg.cpp raises on a value that is neither, so there is no side to budget.
+        ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "yes"}, None),
+        # Presence, not value, and it wins over the positive spelling.
+        ([], {"LLAMA_ARG_NO_MMPROJ_OFFLOAD": ""}, False),
+        ([], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1", "LLAMA_ARG_NO_MMPROJ_OFFLOAD": "0"}, False),
+        # argv is parsed after the environment, so the flag wins either direction.
+        (["--mmproj-offload"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "0"}, True),
+        (["--no-mmproj-offload"], {"LLAMA_ARG_MMPROJ_OFFLOAD": "1"}, False),
+        (["--mmproj-offload"], {"LLAMA_ARG_NO_MMPROJ_OFFLOAD": "1"}, True),
+    ],
+)
+def test_the_resolved_placement_follows_arg_cpps_own_precedence(extras, env, expected):
+    """Environment first, argv on top, the negative spelling short-circuiting on
+    presence. Anything else and Studio budgets for a placement the child does not
+    run."""
+    assert _resolved_mmproj_offload(extras, env) is expected
+
+
+def test_an_unparseable_environment_value_is_still_the_callers_placement(tmp_path, monkeypatch):
+    """No side to budget for, but the variable is set, so Studio must not append its
+    own spelling on top: common_params_parse throws on the value and the load fails
+    naming the caller's variable, not a Studio flag they never chose."""
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "yes")
+    backend, gguf = _backend(tmp_path, memory = [(0, 8_692, 16_384)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--no-mmproj-offload" not in cmd
+
+
+def test_an_explicit_context_too_large_for_either_still_gives_the_projector_up_first(tmp_path):
+    """Same card, a context that does not fit even with the projector in host RAM.
+
+    The fit has to spill layers whatever happens here, which is exactly why the
+    projector should not be holding 1433 MiB of the card while it does: every byte
+    it gives back is a byte of model that stays resident. The order the policy is
+    built on does not change just because the pin alone was not enough, and this is
+    the same shape as dropping the drafter after the pin.
+    """
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+
+    cmd = _launch(backend, gguf, n_ctx = 131072)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "on"
