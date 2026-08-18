@@ -14313,10 +14313,13 @@ class LlamaCppBackend:
                 # try: the launch below reads it either way.
                 _spec_dropped_no_vram = False
                 # Metal unified-memory refusal for a hand-set context, raised AFTER this
-                # block rather than inside it: the `except Exception` below turns any raise
-                # into "GPU selection failed" and then restores the original request, which
-                # is the very over-commit being refused. Carrying the message out survives
-                # that arm, and the ceiling it names was measured before the throw.
+                # block rather than inside it: the `except Exception` below swallows any
+                # raise into the placement fallback and then restores the original request,
+                # which is the very over-commit being refused. Carrying the message out
+                # survives that arm, and the ceiling it names was measured before the throw.
+                # (Worded around the handler's own log line on purpose: test_tp_vision_
+                # regression string-searches this function's source for it to check
+                # statement ordering, and quoting it here moved the match.)
                 _metal_ctx_refusal: Optional[str] = None
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)

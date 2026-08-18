@@ -373,7 +373,11 @@ class TestTheMessageSurvivesTheRoute:
         import ast
         import re
 
-        route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+        # encoding is not optional: routes/inference.py carries non-ASCII (the DeepSeek
+        # tool-call tokens), and read_text() defaults to cp1252 on Windows.
+        route_src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+            encoding = "utf-8"
+        )
         hints = ast.literal_eval(
             re.search(r"_NOT_SUPPORTED_HINTS = (\(.*?\))", route_src, re.S).group(1)
         )
