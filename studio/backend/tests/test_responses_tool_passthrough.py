@@ -63,6 +63,7 @@ from routes.inference import (
     _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
+    _extract_response_format,
     _extract_responses_reasoning,
     _normalise_responses_input,
     _responses_tool_output_content,
@@ -291,6 +292,62 @@ class TestBuildChatRequest:
         chat_req = _build_chat_request(payload, messages, stream = True)
 
         assert chat_req.parallel_tool_calls is False
+
+    def test_text_format_json_schema_becomes_response_format(self):
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        payload = ResponsesRequest(
+            input = "hi",
+            text = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Person",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {
+            "type": "json_schema",
+            "json_schema": {"name": "Person", "schema": schema, "strict": True},
+        }
+
+    def test_text_format_json_object_becomes_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_object"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) == {"type": "json_object"}
+
+    def test_text_format_text_carries_no_response_format(self):
+        # Codex and the Agents SDK send this on ordinary requests; constraining
+        # them would route every call onto the schema path.
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_verbosity_only_carries_no_response_format(self):
+        payload = ResponsesRequest(input = "hi", text = {"verbosity": "low"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
+
+    def test_text_format_json_schema_without_schema_is_ignored(self):
+        payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_schema"}})
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        chat_req = _build_chat_request(payload, messages, stream = False)
+
+        assert _extract_response_format(chat_req) is None
 
     def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
         payload = ResponsesRequest(
@@ -835,7 +892,13 @@ class TestResponsesNonStreamingAdapter:
         assert request.state.skip_api_monitor is False
 
     @staticmethod
-    def _run_in_process_completion(monkeypatch, monitor, timings):
+    def _run_in_process_completion(
+        monkeypatch,
+        monitor,
+        timings,
+        *,
+        observations = None,
+    ):
         """Drive the wrapper over an in-process chat completion: its own monitor row is
         suppressed and a ``ChatCompletion`` has no ``timings`` field to carry them out."""
         import routes.inference as inf_mod
@@ -851,7 +914,11 @@ class TestResponsesNonStreamingAdapter:
         async def fake_chat_completions(chat_req, request):
             assert request.state.skip_api_monitor is True
             # monitor_id is None here: this call's own row is the suppressed one.
+            if observations is not None:
+                observations["perf_callback"] = inf_mod._monitor_perf_callback(None, 4096)
             inf_mod._monitor_usage(None, usage, 4096, timings = timings)
+            if observations is not None:
+                observations["live_entries"] = monitor.snapshot()
             return inf_mod._model_json_response(
                 ChatCompletion(
                     model = "test-model",
@@ -907,6 +974,44 @@ class TestResponsesNonStreamingAdapter:
         assert entry["decode_ms"] == 1000
         # 9s of that request was queue wait and prefill; the model generated at 50 tok/s.
         assert entry["completion_tokens"] / (entry["decode_ms"] / 1000) == 50.0
+
+    def test_in_process_engine_timings_update_outer_monitor_live(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {
+                "prompt_per_second": 90.0,
+                "predicted_ms": 1000.0,
+                "predicted_per_second": 50.0,
+            },
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is not None
+        [entry] = observations["live_entries"]
+        assert entry["status"] == "running"
+        assert entry["prompt_tok_per_sec"] == 90.0
+        assert entry["tok_per_sec"] == 50.0
+        assert entry["decode_ms"] == 1000
+        assert entry["ttft_ms"] is None
+
+    def test_disabled_monitor_does_not_install_responses_perf_callback(self, monkeypatch):
+        monitor = ApiMonitor(max_entries = 3, enabled = False)
+        observations = {}
+
+        self._run_in_process_completion(
+            monkeypatch,
+            monitor,
+            {"prompt_per_second": 90.0, "predicted_per_second": 50.0},
+            observations = observations,
+        )
+
+        assert observations["perf_callback"] is None
+        assert observations["live_entries"] == []
+        assert monitor.snapshot() == []
 
     def test_a_relayed_decode_span_does_not_outlive_its_request(self, monkeypatch):
         """The relay is scoped to one inner call, so a timing-less request inherits nothing."""

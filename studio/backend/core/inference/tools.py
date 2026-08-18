@@ -8964,6 +8964,14 @@ _FULL_ACCESS_SUBSTITUTIONS = (
     # user's own machine" is narrowed at the same time: --secure and -H 0.0.0.0
     # are documented remote modes (README), and the tools run on the host serving
     # Studio, which is then not the device the user is looking at.
+    # _TERMINAL_SHELL_NOTE is carried through unchanged except here: its Git Bash
+    # branch promises a detached program's window appears on the user's desktop,
+    # which only holds while Studio is local.
+    (
+        "opens a window on the user's desktop.",
+        "opens a window on that machine's desktop, which the user sees only if "
+        "they are sitting at it.",
+    ),
     (
         " You are on Windows, and this runs on the user's own machine.",
         " You are on Windows, and this runs wherever Unsloth Studio is running, "
@@ -8991,8 +8999,22 @@ _FULL_ACCESS_SUBSTITUTIONS = (
 #                               prefix is special only while absent, which is why
 #                               the clause names one inside a conditional and
 #                               never categorically
-#   python, unpatched API    -> only open/io.open/os.open and the mkdir family are
-#                               wrapped: os.rename and os.symlink raise, while
+#   API coverage differs per rewrite -> _makedirs calls _remap only, so the
+#                               generic fallback is open/io.open/os.open alone and
+#                               os.makedirs under a missing parent OUTSIDE the
+#                               convention prefixes targets the REAL host path.
+#                               Inside them _remap still rewrites, measured:
+#                               makedirs("/mnt/data/reports") created ./reports and
+#                               raised nothing, so the clause has to name the prefixes
+#                               rather than say "not rewritten at all" -- a model told
+#                               otherwise reports the host path for a directory that
+#                               is in its working directory.
+#                               An attempt, not an outcome: measured
+#                               under this shim, makedirs into a mode-500 directory
+#                               raised PermissionError and created nothing, neither
+#                               on the host nor in the workdir, so the clause must
+#                               not promise creation any more than it promises a
+#                               prefix is absent. os.rename and os.symlink raise, while
 #                               shutil.copy writes the rewritten file through open
 #                               and then raises in copymode
 #   terminal                 -> the shell's own rules, except for Python it
@@ -9007,11 +9029,15 @@ _FULL_ACCESS_CLAUSE = {
         "already sitting there; under any other missing directory only the base "
         "name is kept, and the write fails outright if that name is taken by an "
         "unrelated file, though rewriting the same absolute path just replaces "
-        "what your own earlier call left there. Both reach only open() and the "
-        "mkdir calls, so os.rename, os.symlink and the like are never rewritten "
-        "and simply fail, and a helper such as shutil.copy can write the "
-        "rewritten file and still raise on a later step. Report where a file "
-        "actually landed rather than the path you asked for."
+        "what your own earlier call left there. The convention rewrite covers "
+        "open() and the mkdir calls; the other covers open() alone, so "
+        "os.makedirs under a missing parent outside those prefixes is not "
+        "rewritten and attempts the real host path, which then succeeds or fails "
+        "on the filesystem's own permissions. "
+        "Neither touches os.rename or os.symlink, which simply fail, and a helper "
+        "such as shutil.copy can write the rewritten file and still raise on a "
+        "later step. Report where a file actually landed rather than the path you "
+        "asked for."
     ),
     "terminal": (
         " The code sandbox is disabled, so absolute paths do resolve as the shell "
@@ -9229,6 +9255,24 @@ ALL_TOOLS = [
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
+def _mcp_tool_model_visible(tool: dict) -> bool:
+    """False for MCP Apps tools marked app-only (_meta.ui.visibility without
+    "model"): those exist for a server-rendered widget to call, not the LLM."""
+    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
+    for key in ("meta", "_meta"):
+        meta = tool.get(key)
+        if not isinstance(meta, dict):
+            continue
+        ui = meta.get("ui")
+        visibility = ui.get("visibility") if isinstance(ui, dict) else None
+        if visibility is None:
+            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
+            visibility = meta.get("ui/visibility")
+        if isinstance(visibility, (list, tuple)):
+            return "model" in visibility
+    return True
+
+
 def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     """Convert an MCP server's tool list into OpenAI function specs."""
     display = server.get("display_name") or server["id"]
@@ -9238,6 +9282,9 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
         raw_name = tool.get("name") or ""
         if not raw_name:
             logger.warning("Skipping MCP tool on '%s': empty name.", display)
+            continue
+        if not _mcp_tool_model_visible(tool):
+            logger.debug("Skipping app-only MCP tool '%s' on '%s'.", raw_name, display)
             continue
         name = f"{MCP_TOOL_PREFIX}{server['id']}__{raw_name}"
         # Bad chars or oversized names would 400 the whole request; skip + warn
@@ -9262,7 +9309,10 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    "parameters": tool.get("inputSchema") or {"type": "object", "properties": {}},
+                    # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
+                    "parameters": tool.get("inputSchema")
+                    or tool.get("input_schema")
+                    or {"type": "object", "properties": {}},
                 },
             }
         )
@@ -9426,11 +9476,12 @@ def execute_tool(
             return f"Error: malformed MCP tool name '{name}'"
         server = mcp_servers_db.get_server(server_id)
         if not server:
-            return f"Error: MCP server '{server_id}' not found"
+            return f"Error: MCP server for tool '{tool_name}' not found"
+        display = server.get("display_name") or server_id
         if not server.get("is_enabled"):
-            return f"Error: MCP server '{server_id}' is disabled"
+            return f"Error: MCP server '{display}' is disabled"
         if is_stdio(server["url"]) and not stdio_mcp_enabled():
-            return f"Error: stdio MCP server '{server_id}' is disabled on this host"
+            return f"Error: stdio MCP server '{display}' is disabled on this host"
         # Persist a stateful stdio session only per conversation (thread_id).
         # session_id is the project-wide sandbox id, so scoping by it alone leaks
         # browser/DB/REPL state across conversations; fall back to one-shot. Tag +
