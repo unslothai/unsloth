@@ -4251,6 +4251,18 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
     assert nudged is True
 
 
+def test_chat_count_tokens_counts_a_passthrough_catalog_without_messages(monkeypatch):
+    # The passthrough forwards the caller's own schemas, and /apply-template renders them with no
+    # message to carry them, so the prompt is not empty even though `messages` is.
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 640, supports_tools = True)
+    catalog = [{"type": "function", "function": {"name": "lookup_order"}}]
+    body = _counted_body(_count_request([], tools = catalog))
+    assert body["input_tokens"] == 640
+    assert [
+        (tool.get("function") or {}).get("name") for tool in counted.get("tools") or []
+    ] == ["lookup_order"]
+
+
 # Shapes the recount sends for a thread with documents in scope. Only a PENDING turn is answered
 # from these exact messages, and the tool loop opens it by splicing in what RAG retrieves.
 _PENDING_USER_TURN = [{"role": "user", "content": "what does the contract say"}]
