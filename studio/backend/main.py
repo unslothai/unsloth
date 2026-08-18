@@ -2283,13 +2283,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_remote_frontend_request(scope, app_state) -> bool:
+    """True for a request the desktop backend may answer with its packaged web UI.
+
+    Two ways in, both identified by the connection itself rather than a client
+    header the caller controls: Cloudflare's own edge, or one of the sockets the
+    runtime LAN listener bound (Settings > LAN access).
+    """
+    from lan_access import request_on_lan_listener
+    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+
+
 class _TunnelOnlyFrontend:
     def __init__(self, frontend_app, app_state):
         self.frontend_app = frontend_app
         self.app_state = app_state
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+        if scope["type"] != "http" or _is_remote_frontend_request(scope, self.app_state):
             await self.frontend_app(scope, receive, send)
             return
         await Response(status_code = 404)(scope, receive, send)
@@ -2301,7 +2312,11 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional)"""
+    """Mount frontend static files (optional).
+
+    ``tunnel_only`` restricts the mount to remote callers: the Cloudflare edge, or
+    a socket the runtime LAN listener bound. See :func:`_is_remote_frontend_request`.
+    """
     if not build_path.exists():
         return False
 
@@ -2317,7 +2332,7 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
 
     def _frontend_request_allowed(request: Request) -> bool:
-        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
+        return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
