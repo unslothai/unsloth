@@ -26,6 +26,7 @@ on:
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
       - 'tests/studio/test_heavy_thread_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
@@ -171,7 +172,8 @@ jobs:
         run: |
           python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
             tests/studio/test_autoscroll_harness_contract.py \
-            tests/studio/test_heavy_thread_harness_contract.py -q
+            tests/studio/test_heavy_thread_harness_contract.py \
+            tests/studio/test_heavy_thread_measurement_integrity.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
