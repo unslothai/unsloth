@@ -5485,7 +5485,8 @@ class DiffusionBackend:
                     if reference_images:
                         raise ValueError("reference_images require an input image (init_image).")
                 if reference_images and not (
-                    getattr(state.family, "reference", False) or getattr(state.family, "edit", False)
+                    getattr(state.family, "reference", False)
+                    or getattr(state.family, "edit", False)
                 ):
                     raise ValueError(
                         f"Reference images are not supported for the '{state.family.name}' "
