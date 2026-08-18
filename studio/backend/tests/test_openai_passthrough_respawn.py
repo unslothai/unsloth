@@ -30,6 +30,7 @@ sys.path.insert(0, _backend)
 import routes.inference as inf_mod
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import (
+    _is_lost_upstream_connection,
     _openai_passthrough_non_streaming_upstream,
     _openai_passthrough_stream_admitted,
     _passthrough_retry_url,
@@ -319,3 +320,222 @@ def test_a_backend_without_respawn_hooks_is_untouched(monkeypatch):
         asyncio.run(_run_non_streaming(backend))
 
     assert client.urls == [f"{_DEAD}/v1/chat/completions"]
+
+
+# ── Only a lost connection may be replayed ────────────────────
+
+
+@pytest.mark.parametrize(
+    "exc, retryable",
+    [
+        (httpx.ConnectError("refused"), True),
+        (httpx.ReadError("reset"), True),
+        (httpx.WriteError("broken pipe"), True),
+        (httpx.CloseError("close"), True),
+        (httpx.RemoteProtocolError("Server disconnected without sending a response."), True),
+        (httpx.ReadTimeout("slow"), False),
+        (httpx.ConnectTimeout("slow connect"), False),
+        (httpx.WriteTimeout("slow write"), False),
+        (httpx.PoolTimeout("no free connection"), False),
+    ],
+)
+def test_only_lost_connections_are_replayable(exc, retryable):
+    """A timeout means the server is slow, not gone.
+
+    ``httpx.RequestError`` also covers ``TimeoutException``, and a 20-minute
+    generation on a live llama-server raises ``ReadTimeout``: replaying it
+    resubmits a prompt the server is still decoding. Same split as
+    ``_open_chat_stream_with_respawn_retry``. ``RemoteProtocolError`` is a
+    sibling of ``NetworkError``, not a subclass, so it is named explicitly.
+    """
+    assert _is_lost_upstream_connection(exc) is retryable
+
+
+class _TimingOutClient:
+    """Healthy but slow: every post exceeds the first-token budget."""
+
+    def __init__(self):
+        self.urls = []
+
+    async def aclose(self):
+        pass
+
+    async def post(self, url, **_kwargs):
+        self.urls.append(url)
+        raise httpx.ReadTimeout("the model did not produce a first token in time")
+
+
+def test_non_streaming_does_not_replay_a_slow_generation(monkeypatch):
+    client = _TimingOutClient()
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+    # A live server: _respawn_if_dead reports _healthy, so a retry would go back
+    # to the SAME port with the same prompt while the first copy is still decoding.
+    backend = _Backend(stays_dead = True)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_run_non_streaming(backend))
+
+    assert exc.value.status_code == 502
+    assert backend.respawn_calls == 0, "a timeout respawned a healthy llama-server"
+    assert client.urls == [f"{_DEAD}/v1/chat/completions"], "the slow generation was replayed"
+
+
+# ── The retry must follow the respawned server's new api key ──
+
+
+class _RotatingKeyBackend(_Backend):
+    """llama-server mints a fresh --api-key on every launch (UNSLOTH_DIRECT_STREAM)."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._api_key = "key-before-the-crash"
+
+    @property
+    def _auth_headers(self):
+        return {"Authorization": f"Bearer {self._api_key}"}
+
+    def _respawn_if_dead(self):
+        started = super()._respawn_if_dead()
+        if started:
+            self._api_key = "key-after-the-respawn"
+        return started
+
+
+class _AuthRecordingClient:
+    def __init__(self):
+        self.sent = []
+
+    async def aclose(self):
+        pass
+
+    async def post(self, url, **kwargs):
+        self.sent.append((url, dict(kwargs.get("headers") or {})))
+        if url.startswith(_DEAD):
+            raise httpx.ConnectError("connection refused")
+        return httpx.Response(
+            200,
+            json = {
+                "id": "chatcmpl-1",
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+                ],
+            },
+        )
+
+
+def test_non_streaming_retry_uses_the_respawned_api_key(monkeypatch):
+    client = _AuthRecordingClient()
+    monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: client)
+    backend = _RotatingKeyBackend()
+
+    resp = asyncio.run(_run_non_streaming(backend))
+
+    assert resp.status_code == 200
+    assert client.sent[-1][1]["Authorization"] == "Bearer key-after-the-respawn", (
+        "the retry presented the pre-crash key, which the new server 401s"
+    )
+
+
+def test_streaming_retry_uses_the_respawned_api_key(monkeypatch):
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("authorization")))
+        if str(request.url).startswith(_DEAD):
+            raise httpx.ConnectError("connection refused")
+        content = (
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\n"
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *_a, **kw: real_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    backend = _RotatingKeyBackend()
+
+    blob = asyncio.run(_run_stream(backend))
+
+    assert "[DONE]" in blob
+    assert seen[-1][1] == "Bearer key-after-the-respawn"
+
+
+# ── A crash after the pre-header status window ────────────────
+
+
+class _SlowDeadTransport(httpx.AsyncBaseTransport):
+    """The dead port takes longer than the 100 ms pre-header window to fail.
+
+    That is the ordinary shape of a llama-server that dies while the request is
+    queued or prefilling: dispatch is still pending when the status window
+    closes, so the failure surfaces inside _stream, not in the pre-header
+    handler.
+    """
+
+    def __init__(self, calls, delay = 0.3):
+        self.calls = calls
+        self.delay = delay
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(str(request.url))
+        if str(request.url).startswith(_DEAD):
+            await asyncio.sleep(self.delay)
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        content = (
+            f"data: {json.dumps({'choices': [{'delta': {'content': 'hi'}}]})}\n\n"
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(
+            200, content = content.encode(), headers = {"content-type": "text/event-stream"}
+        )
+
+
+def test_streaming_retries_a_crash_that_lands_after_the_status_window(monkeypatch):
+    calls = []
+    transport = _SlowDeadTransport(calls)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *_a, **kw: real_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    backend = _Backend()
+
+    blob = asyncio.run(_run_stream(backend))
+
+    assert calls == [f"{_DEAD}/v1/chat/completions", f"{_FRESH}/v1/chat/completions"]
+    assert backend.respawn_calls == 1
+    assert "hi" in blob and "[DONE]" in blob
+    # No SSE error chunk leaked to the client before the recovery.
+    assert "Lost connection" not in blob
+
+
+class _SlowTimeoutTransport(_SlowDeadTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(str(request.url))
+        await asyncio.sleep(self.delay)
+        raise httpx.ReadTimeout("the model did not produce a first token in time")
+
+
+def test_streaming_does_not_replay_a_slow_generation_after_the_status_window(monkeypatch):
+    calls = []
+    transport = _SlowTimeoutTransport(calls)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        inf_mod.httpx,
+        "AsyncClient",
+        lambda *_a, **kw: real_client(transport = transport, timeout = kw.get("timeout", 600)),
+    )
+    backend = _Backend(stays_dead = True)
+
+    blob = asyncio.run(_run_stream(backend))
+
+    assert calls == [f"{_DEAD}/v1/chat/completions"], "the slow generation was replayed"
+    assert backend.respawn_calls == 0
+    assert "[DONE]" in blob

@@ -20912,6 +20912,23 @@ def _nudge_retry_messages(
     )
 
 
+def _is_lost_upstream_connection(exc) -> bool:
+    """True only for errors that mean the connection died, not that it was slow.
+
+    ``httpx.RequestError`` also covers ``TimeoutException`` (ConnectTimeout,
+    ReadTimeout, WriteTimeout, PoolTimeout), and a long generation on a HEALTHY
+    llama-server surfaces as ``ReadTimeout``. ``_respawn_if_dead`` reports a live
+    process healthy, so a respawn retry on a timeout resubmits the same prompt to
+    a server that is still decoding the first copy: double the wall clock and two
+    slots burnt. ``NetworkError`` (Connect/Read/Write/CloseError) plus
+    ``RemoteProtocolError`` (a FIN before the response line) are the dead-server
+    set, and they are exactly what ``_open_chat_stream_with_respawn_retry`` retries
+    on. RemoteProtocolError is a sibling of NetworkError, not a subclass, so both
+    have to be named.
+    """
+    return isinstance(exc, (httpx.NetworkError, httpx.RemoteProtocolError))
+
+
 async def _passthrough_retry_url(llama_backend, exc):
     """Fresh upstream URL after respawning a dead llama-server, else None.
 
@@ -22167,7 +22184,7 @@ async def _openai_passthrough_stream_admitted(
                 # ephemeral port without duplicating output, exactly as /v1/messages does.
                 # Without this an OpenAI-API client stays broken until the next explicit
                 # load, while an Anthropic-API client on the same backend recovers itself.
-                if not _respawn_retried:
+                if not _respawn_retried and _is_lost_upstream_connection(e):
                     _respawn_retried = True
                     retry_url = await _passthrough_retry_url(llama_backend, e)
                     if retry_url is not None:
@@ -22181,6 +22198,11 @@ async def _openai_passthrough_stream_admitted(
                                 _release_admission(admission_lease, _tracker)
                         send_task = None
                         target_url = retry_url
+                        # The relaunch minted a fresh --api-key, so the pre-crash
+                        # Authorization header would come back 401.
+                        upstream_headers = _openai_passthrough_upstream_headers(
+                            llama_backend = llama_backend
+                        )
                         continue
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
@@ -22263,7 +22285,7 @@ async def _openai_passthrough_stream_admitted(
             disconnect_watcher = None
 
             nonlocal resp, send_task, first_token_deadline, _truncate_budget
-            nonlocal client
+            nonlocal client, target_url, upstream_headers, _respawn_retried
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
@@ -22440,6 +22462,37 @@ async def _openai_passthrough_stream_admitted(
                             try:
                                 resp = send_task.result()
                             except httpx.RequestError as e:
+                                # A crash while the request sat queued or prefilling lands
+                                # here, not in the pre-header handler: the 100 ms status
+                                # window closed long ago. Only SSE comments have been
+                                # emitted, so the same one-shot, connection-failure-only
+                                # recovery applies without duplicating model output.
+                                if not _respawn_retried and _is_lost_upstream_connection(e):
+                                    _respawn_retried = True
+                                    retry_url = await _passthrough_retry_url(llama_backend, e)
+                                    if retry_url is not None:
+                                        target_url = retry_url
+                                        upstream_headers = _openai_passthrough_upstream_headers(
+                                            llama_backend = llama_backend
+                                        )
+                                        send_task = asyncio.create_task(
+                                            _send_stream_with_preheader_cancel(
+                                                client,
+                                                client.build_request(
+                                                    "POST",
+                                                    target_url,
+                                                    json = body,
+                                                    headers = upstream_headers,
+                                                ),
+                                                cancel_event,
+                                                request = request,
+                                                mark_cancel_on_cancel = False,
+                                            )
+                                        )
+                                        first_token_deadline = (
+                                            time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                                        )
+                                        continue
                                 logger.error(
                                     "openai passthrough stream: upstream unreachable: %s", e
                                 )
@@ -22991,11 +23044,15 @@ async def _openai_passthrough_non_streaming_upstream(
             # sent to the client yet, so retry once on the new port of a respawned server.
             # The helper defers to an MTP fallback already in flight, so nothing respawns
             # underneath it; the recovery call below stays for the paths it declines.
-            if not _respawn_retried:
+            if not _respawn_retried and _is_lost_upstream_connection(e):
                 _respawn_retried = True
                 retry_url = await _passthrough_retry_url(llama_backend, e)
                 if retry_url is not None:
                     target_url = retry_url
+                    # The relaunch minted a fresh --api-key; the pre-crash header 401s.
+                    upstream_headers = _openai_passthrough_upstream_headers(
+                        llama_backend = llama_backend
+                    )
                     continue
             # Surface the same friendly message the sync chat path emits so operators
             # don't see a bare 500 with no diagnostic.
