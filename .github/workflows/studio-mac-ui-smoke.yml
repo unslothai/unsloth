@@ -269,7 +269,8 @@ jobs:
               kill "${STUDIO_PID}" 2>/dev/null || true
               sleep 2
               rm -rf ~/.unsloth/studio/auth
-              UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 \n              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
+              UNSLOTH_DISABLE_MLX_AUTOREPAIR=1 \
+              UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
                 > "logs/studio_retry_${attempt}.log" 2>&1 &
               STUDIO_PID=$!
               echo "STUDIO_PID=$STUDIO_PID" >> "$GITHUB_ENV"
