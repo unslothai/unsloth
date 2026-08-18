@@ -429,8 +429,8 @@ export function VoiceTab() {
     [rawVoices, ttsVoiceURI, dictationLanguage],
   );
   const [previewing, setPreviewing] = useState(false);
-  // A studio preview generates the whole clip before it plays. Separate from `previewing`
-  // so that wait shows as work, not an idle button inviting more clicks.
+  // A studio preview generates the whole clip before it plays; separate from `previewing`
+  // so the wait shows as work.
   const [preparingPreview, setPreparingPreview] = useState(false);
   const [subpage, setSubpage] = useState<"main" | "recents" | "dictionary">(
     "main",
@@ -1244,8 +1244,7 @@ export function VoiceTab() {
                   size="sm"
                   onClick={() => {
                     useSettingsDialogStore.getState().closeDialog();
-                    // Audio keeps the mode it was left in, so name the task: this row is
-                    // about the TTS model, not the transcription one.
+                    // Audio keeps the mode it was left in, so name the TTS task.
                     void navigate({
                       to: "/audio",
                       search: { task: "text-to-speech" },

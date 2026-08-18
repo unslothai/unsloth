@@ -1241,9 +1241,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
-      // A task with no model is a mode intent, used by Settings to send the user here for
-      // a TTS model. The page keeps the mode it was left in, so without this it can land
-      // on the transcription selector.
+      // A task with no model is a mode intent from Settings; without it the page keeps
+      // whatever mode it was left in.
       const task = routeSearch.task;
       if (!task) return;
       const intended =

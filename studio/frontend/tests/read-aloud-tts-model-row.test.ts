@@ -19,8 +19,7 @@ const audioSource = readFileSync(
 );
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
-  // Settings is a modal over the current route, so it has to close or the Audio page
-  // opens behind it.
+  // Settings is a modal, so it must close or Audio opens behind it.
   assert.match(
     source,
     /label=\{t\("settings\.voice\.readAloud\.modelLabel"\)\}[\s\S]*?useSettingsDialogStore\.getState\(\)\.closeDialog\(\);[\s\S]{0,200}?void navigate\(\{\s*to: "\/audio",/,
@@ -30,8 +29,7 @@ test("the studio TTS row offers the Audio page it tells the user to use", () => 
 });
 
 test("the row lands on the TTS selector, not the mode Audio was left in", () => {
-  // AudioPage stays mounted off-route and keeps its `mode` state, so a plain /audio
-  // navigation can show the transcription selector this row is not talking about.
+  // AudioPage stays mounted and keeps its `mode`, so plain /audio can show the wrong selector.
   assert.match(
     source,
     /to: "\/audio",\s*search: \{ task: "text-to-speech" \},/,
@@ -49,8 +47,7 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
 });
 
 test("a studio preview shows the generate wait instead of an idle button", () => {
-  // Showing Stop for the generate wait read as nothing happening, and each extra click
-  // orphaned a request that still counted against the next model load.
+  // Stop during the generate wait read as idle, and extra clicks orphaned requests.
   assert.match(
     source,
     /markPreviewing\(true\);\s*setPreparingPreview\(true\);\s*try \{\s*const url = await generateStudioTtsAudio\(/,
