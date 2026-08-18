@@ -970,3 +970,114 @@ def test_an_explicit_context_too_large_for_either_still_gives_the_projector_up_f
     assert "--mmproj" in cmd
     assert "--no-mmproj-offload" in cmd
     assert cmd[cmd.index("--fit") + 1] == "on"
+
+
+# The context-compute buffer, at the shape the real one has: linear in context, and
+# _CTX_COMPUTE_SPLIT_MULT times larger PER DEVICE once the model is layer-split. The
+# shared _backend stubs it to a flat 0, which is fine for the single-GPU cases above
+# and is exactly why none of them can see a split-rate error.
+_CC_PER_TOKEN = 1536  # 6 MiB at 4096, the rate the bundled estimator produces
+
+
+def _split_rate_backend(tmp_path, *, memory, **kwargs):
+    backend, gguf = _backend(tmp_path, memory = memory, **kwargs)
+    backend._compute_buffer_ctx_bytes = (
+        lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False: (
+            n_ctx
+            * _CC_PER_TOKEN
+            * (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT if layer_split else 1)
+        )
+    )
+    return backend, gguf
+
+
+def test_the_probe_prices_an_explicit_context_the_way_the_split_placement_does(tmp_path):
+    """Two cards, an explicit 65536, and a footprint that only a layer split can hold.
+
+    The explicit branch selects through `_select_gpus_split_aware`, charging the
+    context-compute buffer in the per-device overhead as well as the total and handing
+    the single-to-split step to the retry. A layer split does not just replicate that
+    buffer per card, it replicates a bigger one, so pricing it once understates the
+    real cost several-fold: 96 MiB charged against 768 MiB spent at this context on
+    two devices. That gap is wider than the projector surcharge being decided, so a
+    plain probe answers "the projector fits" on exactly the loads whose placement then
+    falls back to `--fit on` and spills model layers around the projector it kept.
+    """
+    backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 7_200, 8_200), (1, 7_200, 8_200)])
+
+    cmd = _launch(backend, gguf, n_ctx = 65536)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+    # The point of the pin: the requested context is placed on the two cards rather
+    # than the model being offloaded around a resident projector.
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("-c") + 1] == "65536"
+
+
+def test_a_single_card_explicit_load_is_untouched_by_the_split_rate(tmp_path):
+    """No split, no replication, so the split-aware selector must reach the same
+    answer the plain one did. Guards the tightening from leaking onto one-GPU loads,
+    where `_select_gpus_split_aware` returns before its retry."""
+    backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 12_000, 24_000)])
+
+    cmd = _launch(backend, gguf, n_ctx = 8192)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
+    assert cmd[cmd.index("-c") + 1] == "8192"
+
+
+def test_auto_is_priced_at_the_split_rate_too_but_still_at_the_floor(tmp_path):
+    """The split rate and the floor are separate questions and only the floor is Auto's.
+
+    Auto's own loop charges `_cc_bytes(ctx, n_gpus)` and then makes every card hold its
+    copy, so it is already stricter than plain `_select_gpus`; pricing this probe plainly
+    leaves it more optimistic than the loop it gates. What keeps the pin honest under
+    Auto is the FLOOR, not loose accounting: a subset that cannot hold the projector at
+    4096 is one Auto cannot rescue by shrinking further, so `--fit on` was coming either
+    way and giving the projector up is the cheaper half of it.
+
+    Two cards where plain accounting says the projector fits at 4096 and the split rate
+    says it does not.
+    """
+    backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 4_900, 5_900), (1, 4_900, 5_900)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+
+
+def test_auto_still_leaves_a_roomy_split_alone(tmp_path):
+    """The floor is what stops the split rate from turning into a blanket pin: on cards
+    with room at 4096 the projector stays on the GPU and Auto pays for the native
+    context in context, exactly as it does on one card."""
+    backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 12_000, 16_000), (1, 12_000, 16_000)])
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" not in cmd
+
+
+def test_the_probe_reserves_the_compute_buffer_on_every_split_device(tmp_path):
+    """The buffer belongs in the per-device overhead as well as the total.
+
+    That is how the explicit branch charges it, and it is a separate term from the
+    retry's single-to-split step: the step re-prices the FOOTPRINT once the count is
+    known, while this is what makes each individual card carry its own copy. Drop it
+    and a subset whose cards cannot each hold one is accepted; the placement then makes
+    every device hold one anyway and falls back to `--fit on`, spilling model layers
+    around the projector the probe just kept. Verified reachable by sweeping the launch
+    path: without this term these numbers go from pinned with `--fit off` to unpinned
+    with `--fit on`.
+    """
+    backend, gguf = _split_rate_backend(tmp_path, memory = [(0, 6_000, 7_000), (1, 6_000, 7_000)])
+
+    cmd = _launch(backend, gguf, n_ctx = 32768)["cmd"]
+
+    assert "--mmproj" in cmd
+    assert "--no-mmproj-offload" in cmd
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("-c") + 1] == "32768"

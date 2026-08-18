@@ -14877,17 +14877,61 @@ class LlamaCppBackend:
                             # length this actually priced against.
                             _mm_floor_ctx = self._context_length or effective_ctx or 4096
                             _mm_need += _mtp_bytes(_mm_floor_ctx)
-                        # The comparison. _select_gpus is the same machinery the
-                        # placement loop uses, at the same fraction and the same
+                        # The comparison, run through whichever selector the branch
+                        # that follows will use, at the same fraction and the same
                         # per-device overhead, so "does not fit" here is a placement
-                        # that loop could not have chosen either.
-                        _, _mm_needs_fit = self._select_gpus(
-                            _mm_need,
-                            gpus,
-                            usable_fraction = _mm_frac,
-                            total_by_idx = total_by_idx,
-                            per_device_overhead_bytes = _pipeline_overhead_bytes,
-                            min_gpus = _layer_min_gpus,
+                        # that branch could not have chosen either. A probe more
+                        # optimistic than the placement it gates is the one failure
+                        # mode that matters: it keeps the projector on the card and
+                        # the placement then spills model layers around it.
+                        #
+                        # The explicit branch is split-aware, and has to be. A layer
+                        # split does not merely replicate the context-compute buffer
+                        # per device, it replicates a BIGGER one
+                        # (_CTX_COMPUTE_SPLIT_MULT), so a single charge understates
+                        # the real cost several-fold: at 65536 on two cards, 96 MiB
+                        # charged against 768 MiB spent. That gap is wider than the
+                        # projector surcharge the probe is deciding on, so plain
+                        # accounting can answer "fits" on exactly the loads where the
+                        # placement then goes to --fit on. Mirrored term for term:
+                        # the buffer in the per-device overhead as well as the total,
+                        # and the single-to-split step handed to the retry.
+                        #
+                        # Auto needs it too, for the same reason and not a weaker one.
+                        # Its loop charges _cc_bytes(ctx, n_gpus) and then makes every
+                        # card hold its own copy, so it is already stricter than plain
+                        # _select_gpus. What keeps the pin honest under Auto is the
+                        # FLOOR this prices at, not loose accounting on top of it: a
+                        # subset that cannot hold the projector at 4096 is one Auto
+                        # cannot rescue by shrinking further, so --fit on was coming
+                        # either way and the pin is the cheaper half of it.
+                        #
+                        # Plain only where the placement itself is plain: with no KV
+                        # estimate it falls to the file-size-only path, which is
+                        # _select_gpus at the flat overhead. That is the same condition
+                        # that decided whether _mm_need carries a context-compute term
+                        # at all, so the two cannot drift apart.
+                        _mm_split_aware = self._can_estimate_kv()
+                        _, _mm_needs_fit = (
+                            self._select_gpus_split_aware(
+                                _mm_need,
+                                gpus,
+                                usable_fraction = _mm_frac,
+                                total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes
+                                + _cc_bytes(_mm_floor_ctx),
+                                min_gpus = _layer_min_gpus,
+                                split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                            )
+                            if _mm_split_aware
+                            else self._select_gpus(
+                                _mm_need,
+                                gpus,
+                                usable_fraction = _mm_frac,
+                                total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes,
+                                min_gpus = _layer_min_gpus,
+                            )
                         )
                         if _mm_needs_fit:
                             _mmproj_cpu_pinned = True
