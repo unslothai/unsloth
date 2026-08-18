@@ -207,6 +207,59 @@ def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
         )
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "studio-mac-ui-smoke.yml",
+        "studio-mac-inference-smoke.yml",
+        "studio-mac-install-matrix.yml",
+        "studio-tauri-smoke.yml",
+    ],
+)
+def test_a_listed_python_input_brings_its_sibling_imports(name):
+    """Listing a script but not the module it imports leaves half a dependency in the filter.
+
+    `studio/install_llama_prebuilt.py` was listed; `studio/prebuilt_core.py`, which it
+    imports at line 55, was not. Editing only the latter changed exactly what the install
+    matrix asserts on and did not run it.
+
+    Scoped to same-directory imports on purpose. The full transitive closure of an
+    installer is most of the repo, and chasing it would put `pyproject.toml` and every
+    requirements file into a macOS trigger, which is how a filter stops saving anything.
+    Where a deeper dependency matters it is listed by hand with a comment saying why; this
+    covers the one case that is mechanical and therefore easy to forget.
+    """
+    import ast
+
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    on = _on(doc) or {}
+    patterns = (on.get("pull_request") or {}).get("paths") or []
+
+    missing = []
+    for pattern in patterns:
+        source = REPO / pattern
+        if not (source.is_file() and source.suffix == ".py"):
+            continue
+        tree = ast.parse(source.read_text(encoding = "utf-8", errors = "replace"))
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names.update(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+        for module in sorted(names):
+            sibling = source.parent / f"{module}.py"
+            if not sibling.is_file():
+                continue  # stdlib or third-party, not a checked-in sibling
+            rel = sibling.relative_to(REPO).as_posix()
+            if not _covered(rel, patterns):
+                missing.append(f"{rel} (imported by {pattern})")
+    assert not missing, (
+        f"{name} lists a Python input but not a module it imports from the same directory, "
+        f"so editing that module does not run the workflow that depends on it: {missing}"
+    )
+
+
 def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     """The property the whole change exists for, checked against a concrete commit.
 
