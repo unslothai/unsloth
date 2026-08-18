@@ -66,8 +66,7 @@ _FINAL_PATH_CHAIN = (
 
 def _final_path_helpers(source: str) -> str:
     return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
-        for name in _FINAL_PATH_CHAIN
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in _FINAL_PATH_CHAIN
     )
 
 

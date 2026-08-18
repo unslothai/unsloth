@@ -348,11 +348,13 @@ def _same_path(got: str, expected: str) -> bool:
     nothing to do with what these cases measure, which is whether the shape
     (Get-Item).Target arrived in was unwrapped to the right single target.
     """
+
     def norm(value: str) -> str:
         value = value.replace("\\", "/")
         if len(value) > 1 and value[1] == ":":
             value = value[2:]
         return value.rstrip("/").lower()
+
     return norm(got) == norm(expected)
 
 
