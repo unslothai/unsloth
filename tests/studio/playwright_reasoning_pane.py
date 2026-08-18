@@ -921,9 +921,7 @@ def measure_cell(
     control_page_end, control_driver_end = _clock_pair(page)
     control_page_ms = control_page_end - control_page_start
     control_driver_ms = (control_driver_end - control_driver_start) * 1000
-    control_ratio = (
-        round(control_page_ms / control_driver_ms, 4) if control_driver_ms > 0 else None
-    )
+    control_ratio = round(control_page_ms / control_driver_ms, 4) if control_driver_ms > 0 else None
 
     # The completion row, and how long it took to arrive.
     #
@@ -996,9 +994,7 @@ def measure_cell(
         "collapse_ms": collapse_ms,
         "settle": settle,
         "time_to_settle_ms": (settle or {}).get("settled_ms"),
-        "rss_samples": [
-            {"t_ms": round(t), "rss_mb": v} for t, v in rss.samples
-        ],
+        "rss_samples": [{"t_ms": round(t), "rss_mb": v} for t, v in rss.samples],
         "rss_growth_mb": rss.growth_mb(),
         "rss_unavailable": rss.reason,
         "control_page_ms": round(control_page_ms),
@@ -1257,9 +1253,7 @@ def summarise(cell: dict) -> dict:
         "early_fps": rnd(early_fps, 1),
         "early_frames_over_33": round(early_over33, 1),
         "late_frames_over_33": round(late_over33, 1),
-        "frames_over_33_ratio": (
-            round(late_over33 / early_over33, 2) if early_over33 else None
-        ),
+        "frames_over_33_ratio": (round(late_over33 / early_over33, 2) if early_over33 else None),
         "early_frames_over_33_pct": rnd(early_over33_pct, 1),
         "late_frames_over_33_pct": rnd(late_over33_pct, 1),
         "frameless_early_samples": frameless_early,
@@ -1312,8 +1306,10 @@ def print_ladder(results: dict) -> None:
     """
     if not CPU_LADDER:
         return
-    print("\n=== CPU THROTTLING LADDER (CHROMIUM ONLY: CDP Emulation.setCPUThrottlingRate) ===",
-          flush = True)
+    print(
+        "\n=== CPU THROTTLING LADDER (CHROMIUM ONLY: CDP Emulation.setCPUThrottlingRate) ===",
+        flush = True,
+    )
     for engine, cells in results.items():
         arms = [c for c in cells.values() if "error" not in c]
         if not arms:
@@ -1359,9 +1355,7 @@ def print_ladder(results: dict) -> None:
                     f"{(cell.get('windows_per_wall_s') or -1):7.3f}",
                     flush = True,
                 )
-            controls = [
-                c["control_ratio"] for c in group if c.get("control_ratio") is not None
-            ]
+            controls = [c["control_ratio"] for c in group if c.get("control_ratio") is not None]
             if len(controls) < 2:
                 continue
             spread_pct = (max(controls) - min(controls)) / min(controls) * 100
