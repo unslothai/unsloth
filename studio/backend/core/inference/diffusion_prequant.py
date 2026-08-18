@@ -601,6 +601,7 @@ def load_prequantized_transformer(
     cache_dir: Optional[str] = None,
     prepare_model: Optional[Any] = None,
     config_subfolder: str = "transformer",
+    local_files_only: bool = False,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
@@ -649,7 +650,9 @@ def load_prequantized_transformer(
             )
             return None
 
-        path = _resolve_checkpoint_path(source, hf_token, cache_dir)
+        path = _resolve_checkpoint_path(
+            source, hf_token, cache_dir, local_files_only = local_files_only
+        )
         if path is None:
             return None
 
@@ -670,7 +673,13 @@ def load_prequantized_transformer(
         # the pinned root may be gone or read-only, and load_config's raise is swallowed below into
         # a None return, silently dropping a prequant whose checkpoint is cached and already loaded.
         config = _load_transformer_config(
-            transformer_cls, base, hf_token, cache_dir, path, config_subfolder
+            transformer_cls,
+            base,
+            hf_token,
+            cache_dir,
+            path,
+            config_subfolder,
+            local_files_only = local_files_only,
         )
         from accelerate import init_empty_weights
 
@@ -765,6 +774,7 @@ def _download_checkpoint_name(
     cache_dir: Optional[str],
     *,
     propagate_missing: bool,
+    local_files_only: bool = False,
 ) -> str:
     """Download ONE checkpoint filename, reusing a copy that sits under the other cache root.
 
@@ -788,6 +798,7 @@ def _download_checkpoint_name(
                     filename = name,
                     token = hf_token,
                     cache_dir = None,
+                    local_files_only = local_files_only,
                 )
             except LocalEntryNotFoundError:  # offline with the copy right there: use it
                 return elsewhere
@@ -802,6 +813,7 @@ def _download_checkpoint_name(
         filename = name,
         token = hf_token,
         cache_dir = cache_dir,
+        local_files_only = local_files_only,
     )
 
 
@@ -809,8 +821,13 @@ def _resolve_checkpoint_path(
     source: PrequantSource,
     hf_token: Optional[str],
     cache_dir: Optional[str] = None,
+    *,
+    local_files_only: bool = False,
 ) -> Optional[str]:
-    """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
+    """The local file path for ``source``, downloading from the Hub if needed; None if absent.
+
+    ``local_files_only`` is the caller's promise that this load may not fetch anything, so a cache
+    miss answers None and the build falls back rather than pulling several GB nobody asked for."""
     if source.kind == "path":
         import os
 
@@ -829,6 +846,7 @@ def _resolve_checkpoint_path(
                 hf_token,
                 cache_dir,
                 propagate_missing = has_fallback,
+                local_files_only = local_files_only,
             )
         except EntryNotFoundError:
             if not has_fallback:
@@ -840,6 +858,7 @@ def _resolve_checkpoint_path(
                 hf_token,
                 cache_dir,
                 propagate_missing = False,
+                local_files_only = local_files_only,
             )
     return None
 
@@ -873,13 +892,22 @@ def _load_transformer_config(
     cache_dir: Optional[str],
     checkpoint_path: str,
     subfolder: str = "transformer",
+    *,
+    local_files_only: bool = False,
 ) -> Any:
-    """``transformer_cls.load_config`` against the checkpoint's cache root, then the other one."""
+    """``transformer_cls.load_config`` against the checkpoint's cache root, then the other one.
+
+    The config is a few KB, but it is still a Hub fetch, and a load that promised to reach nothing
+    has to keep that promise for the small files too."""
     last: Optional[BaseException] = None
     for root in _config_cache_roots(checkpoint_path, cache_dir):
         try:
             return transformer_cls.load_config(
-                base, subfolder = subfolder, token = hf_token, cache_dir = root
+                base,
+                subfolder = subfolder,
+                token = hf_token,
+                cache_dir = root,
+                local_files_only = local_files_only,
             )
         except Exception as exc:  # noqa: BLE001 — try the other root before giving up
             last = exc

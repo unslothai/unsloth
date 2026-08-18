@@ -50,6 +50,7 @@ import {
 } from "./api/providers-api";
 
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
+import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
   CUSTOM_PROVIDER_PRESETS,
@@ -58,14 +59,14 @@ import {
   customProviderDisplayName,
   customProviderModelIdsPlaceholder,
   customPresetSkipsApiKeyField,
-  CUSTOM_MAX_OUTPUT_TOKENS_MIN,
+  PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   getExternalProviderApiKey,
   isCustomProviderType,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   providerModelSupportsStudioTools,
   removeExternalProviderApiKey,
-  supportsCustomMaxOutputTokens,
+  supportsProviderMaxOutputTokens,
   supportsProviderReasoningToggle,
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
@@ -193,9 +194,8 @@ export function ChatProvidersSettings({
     (s) => s.setConnectionsEnabled,
   );
   const isCustomProvider = isCustomProviderType(providerType);
-  // Keyed on the STORED type, not the displayed one. A connection being created has
-  // no server row yet, so the helper falls back to what the create call will send.
-  const supportsMaxOutputTokens = supportsCustomMaxOutputTokens(
+  // a connection being created has no stored type yet, so only the UI type can decide
+  const supportsMaxOutputTokens = supportsProviderMaxOutputTokens(
     providerType,
     editingProviderId ? editingBackendProviderType : null,
   );
@@ -500,9 +500,14 @@ export function ChatProvidersSettings({
     if (!Number.isSafeInteger(value)) {
       throw new Error("Max Tokens limit must be a safe integer.");
     }
-    if (value < CUSTOM_MAX_OUTPUT_TOKENS_MIN) {
+    // getExternalMaxOutputTokens raises a sub-floor cap anyway, so say so instead of storing it
+    const floor = Math.max(
+      PROVIDER_MAX_OUTPUT_TOKENS_MIN,
+      getExternalMinOutputTokens(providerType),
+    );
+    if (value < floor) {
       throw new Error(
-        `Max Tokens limit must be at least ${CUSTOM_MAX_OUTPUT_TOKENS_MIN.toLocaleString()}.`,
+        `Max Tokens limit must be at least ${floor.toLocaleString()}.`,
       );
     }
     return value;
@@ -933,7 +938,16 @@ export function ChatProvidersSettings({
     setClearApiKeyRequested(false);
     setShowApiKey(false);
     setBaseUrlDraft(provider.baseUrl);
-    setMaxOutputTokensDraft(provider.maxOutputTokens?.toString() ?? "");
+    // Seeded at the floor: parseMaxOutputTokens throws below it, so a row stored under
+    // one would fail every unrelated edit. The resolver already reads it as the floor.
+    setMaxOutputTokensDraft(
+      provider.maxOutputTokens == null
+        ? ""
+        : Math.max(
+            provider.maxOutputTokens,
+            getExternalMinOutputTokens(provider.providerType),
+          ).toString(),
+    );
     setEditingBackendProviderType(provider.backendProviderType ?? null);
     setModelSearchQuery("");
     setIsReasoningModel(
@@ -1324,7 +1338,9 @@ export function ChatProvidersSettings({
                       id="provider-max-output-tokens-help"
                       className="text-xs leading-snug text-muted-foreground"
                     >
-                      Leave blank to use the 32,768-token default.
+                      Caps Max Tokens for this connection. Never raises it past a
+                      model's documented limit. Leave blank to use that limit, or
+                      32,768 for a model without one.
                     </p>
                   </div>
                   <div className="flex min-w-0 flex-col gap-1.5">

@@ -10,8 +10,16 @@ import {
 } from "./clipboard-payload.ts";
 
 const PASTED_TEXT_MIME = "text/plain";
-export const PASTED_TEXT_MIN_CHARS = 2000;
-export const PASTED_TEXT_MIN_LINES = 40;
+// Threshold the user picks in Settings > Chat. 0 keeps every paste inline.
+export const PASTED_TEXT_THRESHOLD_OFF = 0;
+export const PASTED_TEXT_DEFAULT_MIN_CHARS = 4000;
+export const PASTED_TEXT_THRESHOLD_CHOICES = [
+  PASTED_TEXT_THRESHOLD_OFF,
+  2000,
+  PASTED_TEXT_DEFAULT_MIN_CHARS,
+  8000,
+  16000,
+] as const;
 const PASTED_TEXT_NAME_MAX_CHARS = 32;
 // Enough for the name after whitespace collapses, without copying a line.
 const PASTED_TEXT_NAME_SCAN_CHARS = 256;
@@ -38,22 +46,15 @@ const pastedTextFiles = new WeakSet<File>();
 // The text as pasted, so draft autosave never re-reads the File on a keystroke.
 const pastedTextByFile = new WeakMap<File, string>();
 
-function countLines(text: string): number {
-  let lines = 1;
-  for (let index = 0; index < text.length; index += 1) {
-    if (text[index] === "\n") lines += 1;
-  }
-  return lines;
-}
-
-// No upper bound, and whitespace is not exempt: the bigger the paste, the
+// Length alone decides. Whitespace is not exempt: the bigger the paste, the
 // worse it is inline.
-export function shouldAttachPastedText(text: string): boolean {
+export function shouldAttachPastedText(
+  text: string,
+  minChars: number = PASTED_TEXT_DEFAULT_MIN_CHARS,
+): boolean {
   if (text.length === 0) return false;
-  return (
-    text.length >= PASTED_TEXT_MIN_CHARS ||
-    countLines(text) >= PASTED_TEXT_MIN_LINES
-  );
+  if (minChars <= PASTED_TEXT_THRESHOLD_OFF) return false;
+  return text.length >= minChars;
 }
 
 // Splitting a multi-megabyte paste to read one line allocates every other
@@ -269,6 +270,7 @@ export function pasteLongTextAsFile(
   event: ClipboardTextPasteEvent,
   addFile: (file: File) => void | Promise<void>,
   onError?: () => void,
+  minChars?: number,
 ): boolean {
   if (event.defaultPrevented) return false;
   const { clipboardData } = event;
@@ -278,7 +280,7 @@ export function pasteLongTextAsFile(
   if (clipboardAdvertisesFiles(clipboardData)) return false;
 
   const text = clipboardText(clipboardData);
-  if (!shouldAttachPastedText(text)) return false;
+  if (!shouldAttachPastedText(text, minChars)) return false;
 
   // Build the file first: if that throws, the browser can still paste.
   let file: File;

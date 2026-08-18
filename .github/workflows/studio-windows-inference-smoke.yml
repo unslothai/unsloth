@@ -46,11 +46,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -404,84 +404,7 @@ jobs:
         env:
           BASE_URL: http://127.0.0.1:18888
         run: |
-          python - <<'PY'
-          import json
-          import os
-          from openai import OpenAI
-          from anthropic import Anthropic
-
-          BASE = os.environ["BASE_URL"]
-          KEY  = os.environ["TOKEN"]
-          SEED = 3407
-
-          PROMPTS = [
-              "What is 1+1?",
-              "What did I ask before?",
-              "What is the capital of France?",
-              "Repeat the city name",
-          ]
-
-          def run_openai():
-              client = OpenAI(base_url = f"{BASE}/v1", api_key = KEY)
-              history, replies = [], []
-              for prompt in PROMPTS:
-                  history.append({"role": "user", "content": prompt})
-                  resp = client.chat.completions.create(
-                      model       = "default",
-                      messages    = history,
-                      temperature = 0.0,
-                      max_tokens  = 80,
-                      seed        = SEED,
-                      extra_body  = {"enable_thinking": False},
-                  )
-                  text = resp.choices[0].message.content or ""
-                  replies.append(text)
-                  history.append({"role": "assistant", "content": text})
-              return replies
-
-          def run_anthropic():
-              client = Anthropic(
-                  base_url        = BASE,
-                  api_key         = "unused",
-                  default_headers = {"Authorization": f"Bearer {KEY}"},
-              )
-              history, replies = [], []
-              for prompt in PROMPTS:
-                  history.append({"role": "user", "content": prompt})
-                  msg = client.messages.create(
-                      model       = "default",
-                      max_tokens  = 80,
-                      messages    = history,
-                      temperature = 0.0,
-                      extra_body  = {"seed": SEED, "enable_thinking": False},
-                  )
-                  text = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
-                  replies.append(text)
-                  history.append({"role": "assistant", "content": text})
-              return replies
-
-          for label, runner in (("openai", run_openai), ("anthropic", run_anthropic)):
-              first  = runner()
-              second = runner()
-              for i, (a, b) in enumerate(zip(first, second), start = 1):
-                  print(f"[{label} turn {i}] {a!r}")
-                  assert a, f"{label}: empty turn {i} response"
-                  # Compare on stripped content: llama-server can vary
-                  # trailing whitespace (specifically a final '\n') between
-                  # otherwise-identical greedy runs depending on the
-                  # batch-flush boundary at which the stream is closed. The
-                  # generated tokens are identical; only the trailing
-                  # whitespace differs. Keep the raw repr in the failure
-                  # message so a real divergence is still legible.
-                  assert a.strip() == b.strip(), (
-                      f"{label} non-deterministic at turn {i} with temperature=0.0:\n"
-                      f"  run1: {a!r}\n  run2: {b!r}"
-                  )
-              joined = " ".join(first).lower()
-              assert "1" in first[0], f"{label}: turn-1 answer should contain '1', got {first[0]!r}"
-              assert "paris" in joined, f"{label}: expected 'paris' somewhere in the four-turn transcript: {first}"
-              print(f"[{label}] OK -- 4 turns, run1 == run2, history grounded")
-          PY
+          python .github/scripts/studio_smoke/multi_turn_chat.py
 
       - name: Stop Unsloth
         if: always()
