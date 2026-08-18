@@ -33,11 +33,7 @@ import { loadOpenAIAutoSwitchSettings } from "../api/openai-auto-switch";
 import { type OpenAIModel, listOpenAIModels } from "../api/openai-models";
 import type { KeylessApiAccessScope } from "../api/keyless-api-access";
 import { useSettingsPanelPrefsStore } from "../stores/settings-panel-prefs-store";
-import {
-  buildAgentCommand,
-  isLoopbackHost,
-  normalizeHost,
-} from "./agent-command";
+import { buildAgentCommand, isLoopbackHost, normalizeHost } from "./agent-command";
 
 type ExampleType =
   | "curl"
@@ -112,16 +108,19 @@ const DOC_LINKS = [
   { label: "Codex", href: "https://unsloth.ai/docs/basics/codex" },
   { label: "OpenClaw", href: "https://unsloth.ai/docs/integrations/openclaw" },
   { label: "OpenCode", href: "https://unsloth.ai/docs/integrations/opencode" },
-  {
-    label: "Hermes Agent",
-    href: "https://unsloth.ai/docs/integrations/hermes-agent",
-  },
+  { label: "Hermes Agent", href: "https://unsloth.ai/docs/integrations/hermes-agent" },
 ];
 
 // Fallback until the backend's installed-CLI check resolves. Mirrors
 // CODING_AGENTS in studio/backend/utils/coding_agents.py, minus HIDDEN_AGENTS
 // (see ../api/coding-agents.ts).
-const DEFAULT_AGENTS = ["claude", "codex", "openclaw", "opencode", "hermes"];
+const DEFAULT_AGENTS = [
+  "claude",
+  "codex",
+  "openclaw",
+  "opencode",
+  "hermes",
+];
 // The agent selection resets to this whenever an auto-pick is no longer
 // trustworthy (leaving loopback, or the only compatible detected agent
 // stops being compatible) rather than lingering on a stale choice.
@@ -377,9 +376,7 @@ function looksLikePath(id: string): boolean {
 // Same model, ignoring any ":quant" a caller pinned.
 function sameBaseModelId(a: string, b: string): boolean {
   const base = (id: string) => id.trim().toLowerCase().split(":")[0];
-  return (
-    a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b)
-  );
+  return a.trim().toLowerCase() === b.trim().toLowerCase() || base(a) === base(b);
 }
 
 // The model the examples name: always an id /v1 resolves against, null when there is none.
@@ -394,9 +391,7 @@ function useExampleModelName(): string | null {
   // what it freed: the stored checkpoint only, never an arbitrary catalog entry.
   const [idleReload, setIdleReload] = useState(false);
   const usableCheckpoint =
-    !!checkpoint &&
-    !checkpoint.startsWith("external::") &&
-    !looksLikePath(checkpoint);
+    !!checkpoint && !checkpoint.startsWith("external::") && !looksLikePath(checkpoint);
 
   // Always: a stored checkpoint can stop being servable without the store changing.
   // biome-ignore lint/correctness/useExhaustiveDependencies: a load or unload must refetch the servable ids
@@ -444,8 +439,7 @@ function useExampleModelName(): string | null {
     // Name something held here, with its quant to pin the file on disk.
     const fromCatalog = (): string | null => {
       const pick =
-        catalog?.find((m) => m.loaded) ??
-        (autoSwitch ? catalog?.[0] : undefined);
+        catalog?.find((m) => m.loaded) ?? (autoSwitch ? catalog?.[0] : undefined);
       if (!pick) {
         return null;
       }
@@ -459,8 +453,7 @@ function useExampleModelName(): string | null {
     // /v1/models has not answered, which is not evidence against it.
     const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));
     const backed =
-      catalog === null ||
-      (!!entry && (entry.loaded || autoSwitch || idleReload));
+      catalog === null || (!!entry && (entry.loaded || autoSwitch || idleReload));
     if (usableCheckpoint && checkpoint && backed) {
       if (checkpoint.includes(":")) {
         return checkpoint;
@@ -472,14 +465,7 @@ function useExampleModelName(): string | null {
       return quant ? `${checkpoint}:${quant}` : checkpoint;
     }
     return fromCatalog();
-  }, [
-    autoSwitch,
-    catalog,
-    checkpoint,
-    ggufVariant,
-    idleReload,
-    usableCheckpoint,
-  ]);
+  }, [autoSwitch, catalog, checkpoint, ggufVariant, idleReload, usableCheckpoint]);
 }
 
 // Backend PATH detection is only safe in the desktop app, where the UI owns
@@ -545,8 +531,7 @@ export function UsageExamples({
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [lang, setLang] = useState<ExampleType>(
-    storedPrefs.apiExampleLang &&
-      EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
+    storedPrefs.apiExampleLang && EXAMPLE_TYPE_IDS.has(storedPrefs.apiExampleLang)
       ? (storedPrefs.apiExampleLang as ExampleType)
       : "curl",
   );
@@ -628,13 +613,7 @@ export function UsageExamples({
     agentPickedByUserRef.current = false;
     setStoredAgent(null);
     setAgent(DEFAULT_AGENT);
-  }, [
-    agent,
-    agentsLoaded,
-    availableAgents,
-    localAgentDetection,
-    setStoredAgent,
-  ]);
+  }, [agent, agentsLoaded, availableAgents, localAgentDetection, setStoredAgent]);
 
   // Single source of truth for the auto-picked agent, re-derived whenever
   // the detected list or the loaded model's GGUF-ness changes -- in either
@@ -655,17 +634,13 @@ export function UsageExamples({
   // path a model can be GGUF through, matching the same is_gguf-or-equivalent
   // check hasGgufSource applies to a staged pick.
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeNativePathToken = useChatRuntimeStore(
-    (s) => s.activeNativePathToken,
-  );
+  const activeNativePathToken = useChatRuntimeStore((s) => s.activeNativePathToken);
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   useEffect(() => {
     if (agentPickedByUserRef.current) return;
     if (detectedAgents.length === 0) return;
     const isGguf =
-      activeGgufVariant != null ||
-      activeNativePathToken != null ||
-      ggufContextLength != null;
+      activeGgufVariant != null || activeNativePathToken != null || ggufContextLength != null;
     const preferred = detectedAgents.find((a) => a !== "codex" || isGguf);
     if (preferred) {
       setAgent(preferred);
@@ -676,23 +651,14 @@ export function UsageExamples({
       // of leaving a codex command unsloth_cli will reject.
       setAgent(DEFAULT_AGENT);
     }
-  }, [
-    agent,
-    detectedAgents,
-    activeGgufVariant,
-    activeNativePathToken,
-    ggufContextLength,
-  ]);
+  }, [agent, detectedAgents, activeGgufVariant, activeNativePathToken, ggufContextLength]);
 
   const model = useExampleModelName();
   // a dummy key is accepted under keyless access, so the snippet runs without creating one
-  const key =
-    apiKey ||
-    (keylessScope !== "off" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  const key = apiKey || (keylessScope !== "off" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
   // the agent reaches past /v1, so only the full scope lets it run without a real key
   const agentKey =
-    apiKey ||
-    (keylessScope === "full" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+    apiKey || (keylessScope === "full" ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
 
   // Null model: nothing is servable, so there is no snippet worth copying.
   const snippets = useMemo(
