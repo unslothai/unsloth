@@ -4201,4 +4201,389 @@ def test_every_refusal_reason_the_routes_can_raise_has_prose(monkeypatch):
     assert all(text.strip() for text in spec.MLX_SPECULATIVE_REFUSALS.values())
 
 
+def test_the_options_endpoint_reports_the_drafters_the_sources_found(monkeypatch):
+    # The sources and the merge are each covered directly; this is the wiring that turns
+    # them into the endpoint's answer, and without it every other test still passes.
+    from core.inference import mlx_speculative as spec
+
+    draft = {"model_type": "gemma4_assistant", "backbone_hidden_size": 64, "vocab_size": 100}
+    monkeypatch.setattr(spec, "_read_config", lambda _t: _MTP_TARGET)
+    monkeypatch.setattr(
+        spec, "_active_cached_drafter_configs",
+        lambda: iter([("org/Drafter", draft, Path("/nowhere"), 2048)]),
+    )
+    monkeypatch.setattr(spec, "_token_id_map", lambda _t: _TOKENS)
+    monkeypatch.setattr(spec, "_token_id_map_from_path", lambda _p: _TOKENS)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(
+        spec, "mlx_speculative_runtime_capabilities",
+        lambda: {"common": True, "methods": {"mtp": True}, "reason": None},
+    )
+
+    options = spec.mlx_speculative_options("org/target")
+    assert options["runtime_supported"] is True
+    assert [c["repo_id"] for c in options["candidates"]] == ["org/Drafter"]
+    candidate = options["candidates"][0]
+    assert candidate["method"] == "mtp" and candidate["source"] == "cached"
+    assert candidate["downloaded"] is True and candidate["compatible"] is True
+    assert candidate["approximate_size_bytes"] == 2048
+    # The reason has to survive the merge onto the candidate, or the picker cannot say
+    # why a drafter the user can see is not selectable.
+    assert "reason" in candidate and candidate["reason"] == "method_not_integrated"
+
+    # A target whose configuration cannot be read has no structure to match against.
+    monkeypatch.setattr(spec, "_read_config", lambda _t: None)
+    assert spec.mlx_speculative_options("org/target")["candidates"] == []
+
+
+def test_a_nested_text_config_is_read_in_place_of_the_outer_block():
+    # Multimodal checkpoints carry the language model's shape one level down; reading the
+    # outer block would compare a vision tower's dimensions to the target's.
+    from core.inference import mlx_speculative as spec
+    assert spec._text_config({"hidden_size": 1, "text_config": {"hidden_size": 64}})[
+        "hidden_size"
+    ] == 64
+    assert spec._text_config({"hidden_size": 64, "text_config": None})["hidden_size"] == 64
+
+
+def test_a_drafter_that_materializes_embeddings_is_charged_for_them():
+    # Ordered-embedding drafters build a vocabulary-sized table at load, which is not in
+    # the download and would otherwise be missing from the memory estimate.
+    from core.inference import mlx_speculative as spec
+
+    ordered = {"model_type": "gemma4_assistant", "use_ordered_embeddings": True,
+               "text_config": {"vocab_size": 100, "hidden_size": 64}}
+    assert spec._dynamic_materialization_bytes(ordered) == 100 * 64 * 2
+    assert spec._dynamic_materialization_bytes({**ordered, "use_ordered_embeddings": False}) == 0
+    assert spec._dynamic_materialization_bytes({**ordered, "model_type": "other"}) == 0
+    assert spec._dynamic_materialization_bytes(
+        {**ordered, "text_config": {"vocab_size": None, "hidden_size": 64}}
+    ) == 0
+
+
+def test_a_drafter_must_leave_headroom_in_unified_memory(monkeypatch):
+    # Target and drafter share one pool with everything else running, so fitting exactly
+    # is not fitting.
+    from core.inference import mlx_speculative as spec
+
+    psutil = pytest.importorskip("psutil")
+    total = psutil.virtual_memory().total
+    assert spec._mlx_speculative_memory_ready(int(total * 0.80)) is True
+    assert spec._mlx_speculative_memory_ready(int(total * 0.90)) is False
+# fmt: on
+# fmt: off
+
+
+_MTP_TARGET = {"hidden_size": 64, "num_hidden_layers": 8, "vocab_size": 100, "eos_token_id": 2}
+_TOKENS = {f"t{i}": i for i in range(100)}
+
+_DFLASH_TARGET = {"model_type": "gemma4", "hidden_size": 64, "num_hidden_layers": 8,
+                  "vocab_size": 100, "eos_token_id": 1}
+_DFLASH_DRAFT = {"model_type": "dflash", "hidden_size": 64, "vocab_size": 100,
+                 "num_target_layers": 8, "eos_token_id": 1,
+                 "dflash_config": {"target_layer_ids": [0, 3, 7]}}
+
+
+def _matches(spec, method, draft, target = None, target_id = "org/target",
+             draft_id = "org/drafter",):
+    return spec._dynamic_candidate_config_matches(
+        method, target_id, target or _MTP_TARGET, draft, Path("/nowhere"), draft_id
+    )
+
+
+@pytest.mark.parametrize(
+    "draft,expected",
+    [
+        ({"backbone_hidden_size": 64, "vocab_size": 100}, True),
+        # The drafter reads the target's hidden state, so a different width cannot bind.
+        ({"backbone_hidden_size": 32, "vocab_size": 100}, False),
+        ({"backbone_hidden_size": 64, "vocab_size": 99}, False),
+        # The binding may be declared under any of three keys, in this order.
+        ({"target_hidden_size": 64, "vocab_size": 100}, True),
+        ({"hidden_size": 64, "vocab_size": 100}, True),
+        ({"backbone_hidden_size": 64, "hidden_size": 32, "vocab_size": 100}, True),
+        # A Qwen MTP drafter additionally spans the target's depth and declares its own.
+        ({"model_type": "qwen3_5_mtp", "backbone_hidden_size": 64, "vocab_size": 100,
+          "num_hidden_layers": 8, "mtp_num_hidden_layers": 1}, True),
+        ({"model_type": "qwen3_5_mtp", "backbone_hidden_size": 64, "vocab_size": 100,
+          "num_hidden_layers": 7, "mtp_num_hidden_layers": 1}, False),
+        ({"model_type": "qwen3_5_mtp", "backbone_hidden_size": 64, "vocab_size": 100,
+          "num_hidden_layers": 8, "mtp_num_hidden_layers": 0}, False),
+    ],
+)
+def test_an_mtp_drafter_is_matched_on_every_binding_it_declares(monkeypatch, draft, expected):
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_token_id_map", lambda _t: _TOKENS)
+    monkeypatch.setattr(spec, "_token_id_map_from_path", lambda _p: _TOKENS)
+    assert _matches(spec, "mtp", draft) is expected
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        ({}, True),
+        ({"hidden_size": 32}, False),
+        ({"vocab_size": 99}, False),
+        # The drafter is built for a target of a particular depth.
+        ({"num_target_layers": 7}, False),
+        ({"eos_token_id": 9}, False),
+        # The captures index the target's layers, so a deeper build is refused here.
+        ({"dflash_config": {"target_layer_ids": [0, 3, 8]}}, False),
+        ({"dflash_config": {"target_layer_ids": [0, 3, 3]}}, False),
+        ({"dflash_config": {"target_layer_ids": []}}, False),
+        ({"dflash_config": {"target_layer_ids": "0,3,7"}}, False),
+        ({"dflash_config": {}}, False),
+    ],
+)
+def test_a_dflash_drafter_is_matched_on_every_dimension_it_binds(monkeypatch, override, expected):
+    pytest.importorskip("mlx_vlm.utils")
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: object())
+    assert _matches(spec, "dflash", {**_DFLASH_DRAFT, **override}, _DFLASH_TARGET) is expected
+
+
+def test_a_drafter_the_runtime_cannot_parse_is_refused_by_the_matcher(monkeypatch):
+    # The scanner drops these first, so this is the backstop for a config that becomes
+    # unparseable between the scan and the match.
+    pytest.importorskip("mlx_vlm.utils")
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: None)
+    assert _matches(spec, "dflash", _DFLASH_DRAFT, _DFLASH_TARGET) is False
+
+
+@pytest.mark.parametrize(
+    "override,expected",
+    [
+        ({}, True),
+        ({"hidden_size": 32}, False),
+        ({"vocab_size": 99}, False),
+        ({"num_target_layers": 7}, False),
+        ({"target_layer_ids": [0, 3, 8]}, False),
+        ({"target_layer_ids": [0, 3, 3]}, False),
+        ({"target_layer_ids": []}, False),
+    ],
+)
+def test_a_laguna_drafter_is_matched_from_its_normalized_config(monkeypatch, override, expected):
+    # The installed runtime names laguna as its DFlash kind, so this is the branch a drafter
+    # the runtime identifies takes, reading the parsed config rather than the raw one.
+    pytest.importorskip("mlx_vlm.utils")
+    from core.inference import mlx_speculative as spec
+
+    normalized = SimpleNamespace(**{"target_layer_ids": [0, 3, 7], "hidden_size": 64,
+                                    "vocab_size": 100, "num_target_layers": 8, **override})
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: normalized)
+    assert _matches(spec, "dflash", {"model_type": "laguna"}, _DFLASH_TARGET) is expected
+
+
+def _eagle_normalized(**override):
+    # Production feeds objects, not dicts, so the getattr branch is the one that runs.
+    inner = SimpleNamespace(hidden_size = 32, vocab_size = 100)
+    return SimpleNamespace(**{"target_hidden_size": 64, "capture_layer_ids": [0, 3, 7],
+                              "transformer_layer_config": inner, **override})
+
+
+@pytest.mark.parametrize(
+    "normalized,draft_captures,expected",
+    [
+        (_eagle_normalized(), [0, 3, 7], True),
+        (_eagle_normalized(target_hidden_size = 32), [0, 3, 7], False),
+        (_eagle_normalized(transformer_layer_config = SimpleNamespace(
+            hidden_size = 32, vocab_size = 99)), [0, 3, 7], False),
+        (_eagle_normalized(transformer_layer_config = SimpleNamespace(
+            hidden_size = None, vocab_size = 100)), [0, 3, 7], False),
+        # EAGLE-3 reads exactly three auxiliary hidden states, all distinct, all present.
+        (_eagle_normalized(capture_layer_ids = [0, 3, 8]), [0, 3, 7], False),
+        (_eagle_normalized(capture_layer_ids = [0, 3, 3]), [0, 3, 7], False),
+        (_eagle_normalized(capture_layer_ids = [0, 3]), [0, 3, 7], False),
+        (_eagle_normalized(), [0, 3], False),
+        (_eagle_normalized(), [0, 3, 3], False),
+        (_eagle_normalized(), None, False),
+    ],
+)
+def test_an_eagle3_drafter_is_matched_on_every_structural_conjunct(
+    monkeypatch, normalized, draft_captures, expected
+):
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: normalized)
+    draft = {"eagle_aux_hidden_state_layer_ids": draft_captures,
+             "speculators_config": {"verifier": {"name_or_path": "org/target"}}}
+    assert _matches(spec, "eagle3", draft) is expected
+
+
+def test_an_eagle3_drafter_must_name_the_target_as_its_verifier(monkeypatch):
+    # Without this the endpoint would offer any structurally plausible EAGLE-3 drafter
+    # for any target of the same shape.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: _eagle_normalized())
+    draft = {"eagle_aux_hidden_state_layer_ids": [0, 3, 7],
+             "speculators_config": {"verifier": {"name_or_path": "org/somebody-else"}}}
+    assert _matches(spec, "eagle3", draft) is False
+
+    draft["speculators_config"] = {"verifier": {"name_or_path": "org/target"}}
+    monkeypatch.setattr(spec, "_verifier_matches_target", lambda *_a: True)
+    assert _matches(spec, "eagle3", draft) is True
+
+
+def test_a_target_whose_runtime_cannot_roll_back_is_refused_for_dflash():
+    # DFlash rewinds the target's cache on rejection, so a family without that entry
+    # point is refused before a load rather than crashing mid-generation.
+    pytest.importorskip("mlx_vlm.utils")
+    from core.inference import mlx_speculative as spec
+
+    assert spec._target_method_contract_available("dflash", {"model_type": "gemma4"}) is True
+    assert spec._target_method_contract_available("dflash", {"model_type": "gemma4_text"}) is False
+    assert spec._target_method_contract_available("dflash", {"model_type": "laguna"}) is False
+    # Only DFlash carries this requirement.
+    assert spec._target_method_contract_available("mtp", {"model_type": "gemma4_text"}) is True
+
+
+@pytest.mark.parametrize(
+    "runtime_ready,enabled,match,memory,caps_reason,reason",
+    [
+        (False, False, True, True, None, "method_runtime_unavailable"),
+        # A runtime that says why it cannot draft is reported in its own words.
+        (False, False, True, True, "runtime_missing_speculative_api",
+         "runtime_missing_speculative_api"),
+        (True, False, True, True, None, "method_not_integrated"),
+        (True, True, None, True, None, "tokenizer_contract_unavailable"),
+        # Both rungs at once: an unverifiable checkpoint is reported as unverifiable, not
+        # as a memory problem the user would try to solve by freeing memory.
+        (True, True, None, False, None, "tokenizer_contract_unavailable"),
+        (True, True, True, False, None, "insufficient_unified_memory"),
+        (True, True, True, True, None, None),
+    ],
+)
+def test_a_matched_drafter_reports_why_it_cannot_run(
+    monkeypatch, runtime_ready, enabled, match, memory, caps_reason, reason
+):
+    # Every candidate is offered with the reason it cannot run rather than omitted, so
+    # the picker can explain a drafter the user can see but not select.
+    from core.inference import mlx_speculative as spec
+
+    caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": caps_reason}
+    monkeypatch.setattr(
+        spec, "_active_cached_drafter_configs",
+        lambda: iter([("org/drafter", {"model_type": "gemma4_assistant"}, Path("/nowhere"), 1)]),
+    )
+    monkeypatch.setattr(spec, "_drafter_method", lambda _c: "mtp")
+    monkeypatch.setattr(spec, "_dynamic_candidate_config_matches", lambda *a: match)
+    monkeypatch.setattr(spec, "_dynamic_materialization_bytes", lambda _c: 0)
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: memory)
+
+    rows = list(spec._cached_candidate_rows(
+        "org/target", _MTP_TARGET, caps, frozenset({"mtp"} if enabled else ()),
+    ))
+    assert len(rows) == 1
+    assert rows[0].reason == reason
+    assert rows[0].fields["loadable"] is (reason is None)
+    # An unproven drafter holds its repository open for a later snapshot that verifies.
+    assert rows[0].status == (spec.MATCH if match is True else spec.INDETERMINATE)
+# fmt: on
+
+
+# fmt: off
+def _write_snapshot(root, repo, revision, *, config, weights = True, tokenizer = True,):
+    snapshot = root / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text(json.dumps(config))
+    if weights:
+        (snapshot / "model.safetensors").write_bytes(b"\x00" * 64)
+    if tokenizer:
+        (snapshot / "tokenizer.json").write_text(json.dumps({"model": {"vocab": {"a": 1}}}))
+    return snapshot
+
+
+def _scanner_env(monkeypatch, root):
+    from core.inference import mlx_speculative as spec
+
+    # The scanner's own filters are the subject; whether mlx-vlm can build a config for a
+    # given architecture is exercised by the matcher tests.
+    monkeypatch.setattr(spec, "_drafter_architecture_available", lambda _c: True)
+    monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: object())
+    monkeypatch.setattr(spec, "_active_hf_cache_root", lambda: root)
+    return spec
+
+
+_DFLASH_CACHED = {"model_type": "dflash", "dflash_config": {"target_layer_ids": [0]}}
+
+
+def test_the_scanner_offers_only_snapshots_that_could_actually_load(monkeypatch, tmp_path):
+    # Every candidate the endpoint shows starts here, so a snapshot that cannot load must
+    # not reach the merge at all: a half-finished download is the common case.
+    spec = _scanner_env(monkeypatch, tmp_path)
+
+    _write_snapshot(tmp_path, "org/whole", "r1", config = _DFLASH_CACHED)
+    _write_snapshot(tmp_path, "org/no-weights", "r1", config = _DFLASH_CACHED, weights = False)
+    _write_snapshot(tmp_path, "org/not-a-drafter", "r1", config = {"model_type": "llama"})
+    # An MTP drafter is matched by token map, so one without a tokenizer is unusable even
+    # though its weights are all present.
+    _write_snapshot(tmp_path, "org/mtp-no-tokenizer", "r1",
+                    config = {"model_type": "gemma4_assistant"}, tokenizer = False)
+    # A directory that does not decode to an owner and a name is not a repository, even
+    # when it holds an otherwise loadable snapshot.
+    nonsense = (tmp_path / "models--nonsense") / "snapshots" / "r1"
+    nonsense.mkdir(parents = True)
+    (nonsense / "config.json").write_text(json.dumps(_DFLASH_CACHED))
+    (nonsense / "model.safetensors").write_bytes(b"\x00" * 64)
+    (nonsense / "tokenizer.json").write_text("{}")
+
+    found = {repo for repo, _config, _snapshot, _bytes in spec._scan_active_cached_drafter_configs(tmp_path)}
+    assert found == {"org/whole"}
+
+
+@pytest.mark.parametrize("unbuildable", ["architecture", "config"])
+def test_the_scanner_drops_a_drafter_the_runtime_cannot_build(monkeypatch, tmp_path, unbuildable):
+    # The scanner is the only place these two are checked: an MTP drafter is matched by token
+    # map and never reaches the matcher's own guard, so nothing downstream would catch it.
+    spec = _scanner_env(monkeypatch, tmp_path)
+    if unbuildable == "architecture":
+        monkeypatch.setattr(spec, "_drafter_architecture_available", lambda _c: False)
+    else:
+        monkeypatch.setattr(spec, "_normalized_drafter_config", lambda _c: None)
+
+    _write_snapshot(tmp_path, "org/mtp", "r1", config = {"model_type": "gemma4_assistant"})
+    _write_snapshot(tmp_path, "org/dflash", "r1", config = _DFLASH_CACHED)
+    assert spec._scan_active_cached_drafter_configs(tmp_path) == ()
+
+
+def test_a_revision_missing_a_shard_does_not_hide_a_whole_one(monkeypatch, tmp_path):
+    # Filenames cannot tell a whole payload from one short a shard, so a half-downloaded newer
+    # revision would be offered in place of the complete older one it shadows.
+    spec = _scanner_env(monkeypatch, tmp_path)
+
+    whole = _write_snapshot(tmp_path, "org/sharded", "aaa", config = _DFLASH_CACHED)
+    torn = _write_snapshot(tmp_path, "org/sharded", "zzz", config = _DFLASH_CACHED,
+                           weights = False)
+    (torn / "model-00001-of-00002.safetensors").write_bytes(b"\x00" * 64)
+    (torn / "model.safetensors.index.json").write_text(json.dumps({
+        "weight_map": {"a": "model-00001-of-00002.safetensors",
+                       "b": "model-00002-of-00002.safetensors"},
+    }))
+
+    offered = [s.name for _r, _c, s, _b in spec._scan_active_cached_drafter_configs(tmp_path)]
+    assert offered == [whole.name]
+
+
+def test_the_scanner_offers_the_checked_out_revision_first(monkeypatch, tmp_path):
+    # Among snapshots that match equally the merge keeps the first, so which revision the
+    # user is offered is decided here: the one the cache has checked out.
+    spec = _scanner_env(monkeypatch, tmp_path)
+
+    for revision in ("aaa", "zzz", "mmm"):
+        _write_snapshot(tmp_path, "org/many", revision, config = _DFLASH_CACHED)
+    repo_dir = tmp_path / "models--org--many"
+    (repo_dir / "refs").mkdir()
+    (repo_dir / "refs" / "main").write_text("mmm")
+
+    order = [s.name for _repo, _config, s, _bytes in spec._scan_active_cached_drafter_configs(tmp_path)]
+    assert order[0] == "mmm"
+    # The rest are reverse-sorted, so the ordering is total rather than partly incidental.
+    assert order[1:] == ["zzz", "aaa"]
 # fmt: on
