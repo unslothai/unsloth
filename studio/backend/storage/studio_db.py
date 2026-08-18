@@ -838,6 +838,75 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_research_document_sources_run "
         "ON research_document_sources(run_id, id)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_generation_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            assistant_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+            request_hash TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            worker_token TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'running', 'cancelling', 'cancelled', 'completed', 'failed'
+            )),
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            last_event_seq INTEGER NOT NULL DEFAULT 0,
+            finish_reason TEXT,
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER
+        )
+        """
+    )
+    chat_generation_run_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_generation_runs)").fetchall()
+    }
+    if "worker_token" not in chat_generation_run_cols:
+        conn.execute("ALTER TABLE chat_generation_runs ADD COLUMN worker_token TEXT")
+    conn.execute(
+        """UPDATE chat_generation_runs SET worker_token=lower(hex(randomblob(16)))
+           WHERE worker_token IS NULL"""
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chat_generation_events (
+            run_id TEXT NOT NULL REFERENCES chat_generation_runs(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(run_id, seq)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_owner_thread_status "
+        "ON chat_generation_runs(owner_subject, thread_id, status)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_generation_runs_one_active_thread "
+        "ON chat_generation_runs(owner_subject, thread_id) "
+        "WHERE status IN ('queued','running','cancelling')"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS tombstone_chat_generation_run_id
+        BEFORE DELETE ON chat_generation_runs
+        BEGIN
+            INSERT OR REPLACE INTO app_settings (key, value_json, updated_at)
+            VALUES (
+                'chat-generation-run-tombstone:' || OLD.id,
+                'true',
+                CAST(strftime('%s', 'now') AS INTEGER) * 1000
+            );
+        END
+        """
+    )
     inventory_state = conn.execute(
         """
         SELECT inventory_version, dirty
@@ -2554,6 +2623,23 @@ def _research_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
     }
 
 
+def _generation_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return {
+        str(message_id)
+        for row in conn.execute(
+            """SELECT user_message_id, assistant_message_id
+               FROM chat_generation_runs WHERE thread_id = ?""",
+            (thread_id,),
+        ).fetchall()
+        for message_id in row
+        if message_id is not None
+    }
+
+
+def _server_managed_message_ids(conn: sqlite3.Connection, thread_id: str) -> set[str]:
+    return _research_message_ids(conn, thread_id) | _generation_message_ids(conn, thread_id)
+
+
 def _surviving_parent_id(
     conn: sqlite3.Connection, thread_id: str, message_id: str, pruned: set
 ) -> "str | None":
@@ -2627,13 +2713,17 @@ def _research_message_would_change(
     )
 
 
-def _guard_research_messages(
+def _guard_server_managed_messages(
     conn: sqlite3.Connection,
     thread_id: str,
     messages: list[dict],
     pruned: set = frozenset(),
+    *,
+    allow_research_update: bool = False,
 ) -> None:
-    protected = _research_message_ids(conn, thread_id)
+    protected = _generation_message_ids(conn, thread_id)
+    if not allow_research_update:
+        protected.update(_research_message_ids(conn, thread_id))
     if not protected:
         return
     for message in messages:
@@ -2641,7 +2731,7 @@ def _guard_research_messages(
             conn, thread_id, message, pruned
         ):
             raise ChatMessageProtectedError(
-                "Research prompts and responses are server-managed and cannot be edited"
+                "server-managed generation messages cannot be edited"
             )
 
 
@@ -2921,8 +3011,12 @@ def upsert_chat_message(message: dict, *, allow_research_update: bool = False) -
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        if not allow_research_update:
-            _guard_research_messages(conn, message["threadId"], [message])
+        _guard_server_managed_messages(
+            conn,
+            message["threadId"],
+            [message],
+            allow_research_update = allow_research_update,
+        )
         _raise_if_chat_message_thread_conflicts(
             conn,
             message["threadId"],
@@ -3002,11 +3096,13 @@ def sync_chat_messages(
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
-        # Research messages are server-managed: keep the server record rather than reject the
+        # Generation-linked messages are server-managed: keep the record rather than reject the
         # batch on client drift. No _guard_research_messages call here as a result -- these ids
         # never reach it. upsert_chat_message still guards, so the single-message route keeps
         # rejecting edits.
         research_ids = _research_message_ids(conn, thread_id)
+        generation_ids = _generation_message_ids(conn, thread_id)
+        managed_ids = research_ids | generation_ids
         # The rows this sync will delete, computed before the upsert so a relink forced by
         # that deletion can be told apart from an edit. Research ids are subtracted because
         # the delete below exempts them: counting one as pruned would walk the reseat past a
@@ -3023,19 +3119,19 @@ def sync_chat_messages(
                     ).fetchall()
                 }
                 - retained
-                - research_ids
+                - managed_ids
             )
-        protected = set() if allow_research_update else research_ids
+        protected = generation_ids if allow_research_update else managed_ids
         messages = [m for m in messages if str(m["id"]) not in protected]
         # Content is dropped, structure is not: the prune below can delete a research
         # message's parent, and a dangling parent makes the whole thread unimportable. The
         # replacement is walked from the stored chain, never taken from the client.
         #
-        # Candidates come from research_ids rather than `protected` because the delete exempts
+        # Candidates come from managed_ids rather than `protected` because the delete exempts
         # research rows whatever allow_research_update says, so a narrower set would leave one
         # dangling. Ids the batch itself writes are excluded: an authorized caller reparenting
         # a research row must not have that overwritten by the repair.
-        reseat_candidates = research_ids - {str(m["id"]) for m in messages}
+        reseat_candidates = managed_ids - {str(m["id"]) for m in messages}
         reseat_parents = {
             message_id: _surviving_parent_id(conn, thread_id, message_id, pruned)
             for message_id, stored_parent in _parents_of(conn, thread_id, reseat_candidates).items()
@@ -3108,7 +3204,7 @@ def sync_chat_messages(
             }
             # Update permission is not delete permission: prune-exempt even for
             # allow_research_update callers.
-            missing_ids = sorted(existing_ids - retained_ids - research_ids)
+            missing_ids = sorted(existing_ids - retained_ids - managed_ids)
             for start in range(0, len(missing_ids), _SQLITE_IN_CHUNK_SIZE):
                 chunk = missing_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
                 placeholders = ",".join("?" for _ in chunk)
@@ -3599,7 +3695,7 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         if row is None:
             conn.rollback()
             return False
-        if str(message_id) in _research_message_ids(conn, str(row["thread_id"])):
+        if str(message_id) in _server_managed_message_ids(conn, str(row["thread_id"])):
             conn.rollback()
             raise ChatMessageProtectedError(
                 "Research prompts and responses are server-managed and cannot be edited"
