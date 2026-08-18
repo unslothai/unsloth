@@ -363,27 +363,21 @@ def verdict_pending_mlx_repair(chat_only: bool, reason: Optional[str]) -> bool:
 
 
 def verdict_blames_the_mlx_stack() -> bool:
-    """True while the published verdict is the chat-only one the MLX gate produced.
-
-    Unlocked deliberately: _DETECT_LOCK is held across a whole detection pass, imports
-    included, so a post-warm caller taking it would park behind an early request's first
-    import. A straddling read costs one needless measurement or one deferred overturn, and
-    the overturn re-reads under the lock."""
+    """Unlocked deliberately: _DETECT_LOCK is held across a whole detection pass, imports
+    included, so taking it here would park the post-warm worker behind an early request's
+    first import. The overturn re-reads under the lock, so a straddling read costs at most
+    one needless measurement."""
     return bool(CHAT_ONLY) and CHAT_ONLY_REASON == "mlx_unavailable"
 
 
 def overturn_the_mlx_verdict(epoch: Optional[int] = None) -> bool:
-    """Re-detect while the published verdict still blames the MLX stack, for a caller that
-    has just measured it as usable.
+    """For a caller that has just measured the stack as usable.
 
-    The read and the re-detect are one locked section, or a forced pass landing between
-    them loses its fresh answer to this one. ``epoch`` is the one the caller read before
-    that measurement, so a shutdown since discards the pass rather than republishing for a
-    lifespan that has ended.
-
-    True only for a settled verdict that can now train, which asking for a re-detect
-    guarantees none of; callers announce this answer. Settled is /api/health's three-part
-    read, since shutdown clears DEVICE before the event and the verdict."""
+    Read and re-detect are one locked section, or a forced pass landing between them loses
+    its answer to this one. ``epoch`` is the caller's from before that measurement, so a
+    shutdown since discards the pass instead of republishing for a lifespan that has ended.
+    True is /api/health's three-part settled read rather than "a re-detect ran", since
+    callers announce it and shutdown clears DEVICE before the event and the verdict."""
     with _DETECT_LOCK:
         if not CHAT_ONLY or CHAT_ONLY_REASON != "mlx_unavailable":
             return False
