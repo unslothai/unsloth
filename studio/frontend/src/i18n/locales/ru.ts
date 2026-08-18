@@ -158,6 +158,50 @@ export const ru = {
       agents: "Агенты",
       debugging: "Журналы",
       voice: "Голос",
+      keyboardShortcuts: "Сочетания",
+    },
+    keyboardShortcuts: {
+      title: "Сочетания клавиш",
+      description:
+        "Измените любое сочетание или очистите его, чтобы освободить комбинацию для браузера или ОС.",
+      searchPlaceholder: "Поиск сочетаний…",
+      noResults: "Ни одно сочетание не соответствует запросу.",
+      unassigned: "Не назначено",
+      recording: "Нажмите клавиши…",
+      recordingHint: "Нажмите новую комбинацию или Esc для отмены.",
+      needsModifier: "Добавьте ⌘, Ctrl или Alt. Одиночная клавиша перехватит ввод текста.",
+      conflict: "Используется также другим сочетанием",
+      conflictShadowed: "Эта комбинация занята другим сочетанием, и выполняется оно",
+      edit: "Изменить сочетание",
+      clear: "Удалить сочетание",
+      reset: "Вернуть значение по умолчанию",
+      resetAll: "Сбросить всё до значений по умолчанию",
+      groups: {
+        general: "Общие",
+        chat: "Чат",
+      },
+      actions: {
+        newChat: {
+          label: "Новый чат",
+          description: "Начать новый чат",
+        },
+        searchChats: {
+          label: "Поиск по чатам",
+          description: "Открыть окно поиска по чатам",
+        },
+        toggleSidebar: {
+          label: "Показать/скрыть боковую панель",
+          description: "Показать или скрыть боковую панель",
+        },
+        openSettings: {
+          label: "Открыть настройки",
+          description: "Открыть окно настроек",
+        },
+        openKeyboardShortcuts: {
+          label: "Сочетания клавиш",
+          description: "Открыть этот список сочетаний",
+        },
+      },
     },
     debugging: {
       logSection: "Файл журнала",

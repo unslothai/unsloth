@@ -11,7 +11,12 @@ import {
   // runner, which does not do bundler-style resolution.
 } from "../lib/keyboard-shortcuts.ts";
 
-const STORAGE_KEY = "unsloth_keyboard_shortcuts";
+/**
+ * Exported so "Reset all local preferences" in General can clear it by
+ * reference rather than by a second copy of the literal.
+ */
+export const KEYBOARD_SHORTCUTS_STORAGE_KEY = "unsloth_keyboard_shortcuts";
+const STORAGE_KEY = KEYBOARD_SHORTCUTS_STORAGE_KEY;
 
 /**
  * Deltas only, so a changed default still reaches rows the user never touched.

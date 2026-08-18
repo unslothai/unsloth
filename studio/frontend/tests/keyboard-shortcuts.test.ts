@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   SHORTCUT_DEFS,
@@ -14,6 +15,7 @@ import {
   parseBinding,
 } from "../src/features/settings/lib/keyboard-shortcuts.ts";
 import {
+  KEYBOARD_SHORTCUTS_STORAGE_KEY,
   findConflicts,
   resolveAllBindings,
   resolveBinding,
@@ -238,6 +240,59 @@ test("an unbound or unclaimed chord has no owner", () => {
   assert.equal(shortcutOwningBinding({}, "Mod+Alt+KeyZ"), null);
   // A cleared action does not own the chord it used to have.
   assert.equal(shortcutOwningBinding({ searchChats: null }, "Mod+KeyK"), null);
+});
+
+// Reset-all is the documented escape hatch. A chord bound to something the
+// browser eats leaves the Shortcuts tab itself hard to reach, so the General
+// reset has to cover this key or the user is stuck with it.
+test("Reset all local preferences clears the rebound chords", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const keys = source.slice(
+    source.indexOf("const PREFS_KEYS"),
+    source.indexOf("];", source.indexOf("const PREFS_KEYS")),
+  );
+  assert.ok(keys, "PREFS_KEYS moved; this contract needs updating");
+  assert.ok(
+    keys.includes("KEYBOARD_SHORTCUTS_STORAGE_KEY") ||
+      keys.includes(`"${KEYBOARD_SHORTCUTS_STORAGE_KEY}"`),
+    `${KEYBOARD_SHORTCUTS_STORAGE_KEY} missing from PREFS_KEYS`,
+  );
+});
+
+// Every overlay carries the tab label and every row, or a non-English install
+// shows an English word in the middle of a translated settings dialog.
+test("every locale overlay carries the shortcut strings", async () => {
+  const locales = [
+    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+  ];
+  for (const locale of locales) {
+    const source = await readFile(
+      new URL(`../src/i18n/locales/${locale}.ts`, import.meta.url),
+      "utf8",
+    );
+    const at = source.indexOf("keyboardShortcuts: {");
+    assert.notEqual(
+      at,
+      -1,
+      `${locale} is missing the settings.keyboardShortcuts subtree`,
+    );
+    const subtree = source.slice(at, source.indexOf("\n    },", at));
+    for (const key of ["title", "resetAll", "conflictShadowed", "groups"]) {
+      assert.ok(
+        subtree.includes(`${key}:`),
+        `${locale} is missing settings.keyboardShortcuts.${key}`,
+      );
+    }
+    for (const def of SHORTCUT_DEFS) {
+      assert.ok(
+        subtree.includes(`${def.id}: {`),
+        `${locale} is missing settings.keyboardShortcuts.actions.${def.id}`,
+      );
+    }
+  }
 });
 
 test("every settings tab survives a reload", () => {

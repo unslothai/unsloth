@@ -154,6 +154,50 @@ export const zhCN = {
       data: "数据",
       agents: "智能体",
       debugging: "日志",
+      keyboardShortcuts: "快捷键",
+    },
+    keyboardShortcuts: {
+      title: "键盘快捷键",
+      description:
+        "可以更改任意快捷键，或将其清除，把该组合让给浏览器或操作系统。",
+      searchPlaceholder: "搜索快捷键…",
+      noResults: "没有匹配的快捷键。",
+      unassigned: "未分配",
+      recording: "请按下按键…",
+      recordingHint: "按下新的组合键，或按 Esc 取消。",
+      needsModifier: "请加上 ⌘、Ctrl 或 Alt。单独一个按键会吞掉正常输入。",
+      conflict: "另一个快捷键也在使用该组合",
+      conflictShadowed: "该组合已被另一个快捷键占用，执行的是那一个",
+      edit: "更改快捷键",
+      clear: "移除快捷键",
+      reset: "恢复默认",
+      resetAll: "全部恢复默认",
+      groups: {
+        general: "通用",
+        chat: "聊天",
+      },
+      actions: {
+        newChat: {
+          label: "新建聊天",
+          description: "开始一个新的聊天",
+        },
+        searchChats: {
+          label: "搜索聊天",
+          description: "打开聊天搜索对话框",
+        },
+        toggleSidebar: {
+          label: "切换侧边栏",
+          description: "显示或隐藏侧边栏",
+        },
+        openSettings: {
+          label: "打开设置",
+          description: "打开设置对话框",
+        },
+        openKeyboardShortcuts: {
+          label: "键盘快捷键",
+          description: "打开该快捷键列表",
+        },
+      },
     },
     debugging: {
       logSection: "日志文件",
