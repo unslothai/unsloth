@@ -118,3 +118,12 @@ jobs:
       # thing that would silently stop running, so it cannot be the one to notice.
       - name: Every Chat UI script still belongs to a shard
         run: python3 -m pytest tests/studio/test_chat_ui_shards_cover_everything.py -q
+
+      # Same reason, and it is the whole point of this one. The guard exists to reject a
+      # PR that removes UNSLOTH_ALLOW_HOST_OFFLOAD from the macOS GGUF job, or adds it to
+      # the Linux or Windows one. Such a PR edits a workflow and nothing else, which
+      # Backend CI's paths filter (studio/**, tests/**, its own YAML) does not match, so
+      # the assertion protecting the guard was never collected for the exact change it
+      # exists to reject.
+      - name: The host-offload opt-out is still macOS-only
+        run: python3 -m pytest tests/studio/test_mac_host_offload_optin.py -q
