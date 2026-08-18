@@ -13,6 +13,7 @@ export {
   registerNativeDatasetPath,
 } from "./api";
 export type { NativeDocumentFolderSelection } from "./api";
+export { nativeFileName } from "./drop-paths";
 export { nativeDropTargetAt } from "./native-drop-targets";
 export { useNativeDropTarget } from "./use-native-drop-target";
 export {

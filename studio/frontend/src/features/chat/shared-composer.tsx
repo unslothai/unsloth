@@ -148,6 +148,7 @@ import {
 import {
   type CompositionEvent,
   type ClipboardEvent,
+  type DragEvent as ReactDragEvent,
   type FC,
   type KeyboardEvent,
   type MutableRefObject,
@@ -502,6 +503,13 @@ function PillGlyph({ children }: { children: ReactNode }) {
       <XIcon className="composer-pill-x" />
     </span>
   );
+}
+
+/** True when a drop reached this composer from a portaled child, such as a
+ * dialog and its overlay, which React routes through here but which owns it. */
+function isPortaledDrop(event: ReactDragEvent): boolean {
+  const target = event.target as Element | null;
+  return !target?.closest?.(".chat-composer-surface");
 }
 
 export function SharedComposer({
@@ -1989,7 +1997,7 @@ export function SharedComposer({
     <div
       className="chat-composer-surface"
       onDragOver={(e) => {
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(true);
       }}
@@ -1997,7 +2005,7 @@ export function SharedComposer({
       onDrop={(e) => {
         // Phase 1 native model drops own Tauri local-path drops. Restore
         // browser attachment drops in Tauri once Phase 1d adds token bridging.
-        if (isTauri) return;
+        if (isTauri || isPortaledDrop(e)) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);

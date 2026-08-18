@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef } from "react";
@@ -14,7 +15,12 @@ import {
 import { RAG_UPLOAD_ACCEPT, isLinkedFolderManaged } from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
 import { LinkedFoldersManager } from "./linked-folders-manager";
-import { useRagDocuments } from "./use-rag-documents";
+import {
+  fileItems,
+  type RagUploadItem,
+  useRagDocuments,
+} from "./use-rag-documents";
+import { useSourceDrop } from "./use-source-drop";
 
 /** Project "Sources" tab: documents indexed for retrieval in every chat that
  * belongs to the project. */
@@ -31,11 +37,11 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   // cannot cache "no sources" for the probe's TTL, and announce after it, which
   // is the half other instances and other tabs listen for. Announcing before
   // would refetch and resurrect the row this panel has already dropped.
-  const handleFiles = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0) return;
+  const handleItems = useCallback(
+    async (items: RagUploadItem[]) => {
+      if (items.length === 0) return;
       invalidateProjectSources(projectId);
-      await upload(files);
+      await upload(items);
       announceProjectSourcesUpdated(projectId);
     },
     [projectId, upload],
@@ -66,17 +72,14 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     [projectId, refresh],
   );
 
+  const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
+    onItems: (items) => void handleItems(items),
+  });
+
   const empty = documents.length === 0;
 
   return (
-    <div
-      className="mt-8"
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        void handleFiles(Array.from(e.dataTransfer.files ?? []));
-      }}
-    >
+    <div className="mt-8" ref={nativeDropTarget} {...dropProps}>
       <input
         ref={fileInputRef}
         type="file"
@@ -86,7 +89,7 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = "";
-          void handleFiles(files);
+          void handleItems(fileItems(files));
         }}
       />
       <div className="mb-4 rounded-[22px] bg-muted/30 px-5 py-4">
@@ -97,7 +100,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
         />
       </div>
       {empty ? (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-[26px] bg-muted/30 px-6 py-16 text-center">
+        <div
+          className={cn(
+            "flex flex-col items-center justify-center gap-3 rounded-[26px] bg-muted/30 px-6 py-16 text-center transition-colors",
+            dragging && "bg-primary/5 ring-1 ring-primary/60",
+          )}
+        >
           <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
             <HugeiconsIcon
               icon={FolderAddIcon}
@@ -126,7 +134,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
           <p className="text-ui-11 text-muted-foreground">Or drop files here</p>
         </div>
       ) : (
-        <div className="flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5">
+        <div
+          className={cn(
+            "flex flex-col gap-4 rounded-[26px] bg-muted/30 px-6 py-5 transition-colors",
+            dragging && "bg-primary/5 ring-1 ring-primary/60",
+          )}
+        >
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm text-muted-foreground">
               {documents.length === 1
