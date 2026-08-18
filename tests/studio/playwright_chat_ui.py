@@ -132,13 +132,21 @@ def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
-    # The composer can mount and then go back behind the root Suspense fallback
-    # while the route chunk finishes loading, so the first assertion here lands
-    # on "Loading..." and the 5s default expects it to already be over. Windows
-    # has no retry wrapper around this script (macos does), so on a slow runner
-    # that surfaces raw. Wait the pill out on the same budget as the composer.
-    pill.wait_for(state = "visible", timeout = 60_000)
-    expect(pill).to_be_visible()
+
+    def await_pill():
+        """Wait the pill out on the composer's budget, not expect's 5s default.
+
+        The chat route is lazy, so the shell can be mounted while the chunk is
+        still loading and the page is showing the root Suspense fallback. Every
+        reload below uses domcontentloaded, which returns long before that chunk
+        resolves, so asserting straight after one races it. Seen on main
+        (aa32c1861) as `Aria snapshot: - text: Loading...` on both the Windows
+        and macOS smokes.
+        """
+        pill.wait_for(state = "visible", timeout = 60_000)
+        expect(pill).to_be_visible()
+
+    await_pill()
 
     def expect_mode(label):
         expect(pill).to_have_attribute("data-pill-label", label)
@@ -192,7 +200,7 @@ def exercise_permission_mode_controls(page, shoot):
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
     page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    await_pill()
 
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
@@ -218,7 +226,7 @@ def exercise_permission_mode_controls(page, shoot):
 
     # Pointer and compact-layout coverage.
     page.set_viewport_size({"width": 390, "height": 844})
-    expect(pill).to_be_visible()
+    await_pill()
     box = pill.bounding_box()
     if box is None or box["x"] < 0 or box["x"] + box["width"] > 390:
         fail(f"permission pill is clipped in compact layout: {box!r}")
@@ -237,7 +245,7 @@ def exercise_permission_mode_controls(page, shoot):
         for legacy_value, expected_label in migration_cases:
             set_legacy_confirm(legacy_value)
             page.reload(wait_until = "domcontentloaded")
-            expect(pill).to_be_visible()
+            await_pill()
             expect_mode(expected_label)
     finally:
         page.unroute("**/api/chat/settings", refuse_settings_hydration)
@@ -249,7 +257,7 @@ def exercise_permission_mode_controls(page, shoot):
     expect_mode("Ask for approval")
     set_legacy_confirm("false")
     page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    await_pill()
     expect_mode("Ask for approval")
     cached = page.evaluate("() => localStorage.getItem('unsloth_chat_permission_mode')")
     if cached != "ask":
@@ -289,7 +297,7 @@ def exercise_permission_mode_controls(page, shoot):
         fail(f"Full access overwrote persisted mode with {stored!r}")
 
     page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    await_pill()
     expect_mode("Run automatically")
 
     # Leave the full chat smoke in the fresh-install default.
