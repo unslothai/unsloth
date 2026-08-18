@@ -98,6 +98,20 @@ let armedByTouch = false;
  */
 let pointerIsDown = false;
 /**
+ * Which pointer the guarded gesture belongs to. Two pointers can be down at once -- a second
+ * finger, or a mouse on a touchscreen laptop -- and only one of them owes the click this guard
+ * exists to eat. Measured on chromium with real CDP touch: press and HOLD the unconfirmed
+ * "Delete message" button with a finger while the menu is open, which Radix leaves open because
+ * it defers a touch dismissal to the resulting click, then press inside the menu with the mouse,
+ * then lift the finger, and the message is gone. Without this id the second press disarmed the
+ * first gesture's swallower and the menu surface check returned without rearming.
+ *
+ * Two FINGERS cannot reach that: with two active touch points the engine suppresses every
+ * compatibility mouse event for the rest of the gesture, so the held finger's release delivers
+ * no click at all. The hybrid touch-and-mouse case is the one that lands.
+ */
+let armedPointerId: number | undefined;
+/**
  * Whether an activation key is held down during the guarded gesture. Space is the whole set: a
  * button activates on Space's KEYUP and on Enter's keydown, so Enter has always fired before the
  * pointer's own click and is covered by the `pointerIsDown` branch in `swallowClick`, while Space
@@ -162,6 +176,7 @@ const disarm = (): void => {
   if (!armed) return;
   armed = false;
   pointerIsDown = false;
+  armedPointerId = undefined;
   activationKeyIsDown = false;
   keyboardOnly = false;
   document.removeEventListener("click", swallowClick, true);
@@ -279,11 +294,12 @@ function swallowClick(event: Event): void {
   document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
-const arm = (touch: boolean): void => {
+const arm = (touch: boolean, pointerId: number): void => {
   if (armed) return;
   armed = true;
   armedByTouch = touch;
   pointerIsDown = true;
+  armedPointerId = pointerId;
   activationKeyIsDown = false;
   keyboardOnly = false;
   // Capture, so this runs before React's root-container delegation reaches any control.
@@ -399,6 +415,13 @@ export function useDismissingClickGuard(): void {
   useEffect(() => {
     const releaseMenuMark = markNonModalMenuOpen();
     const onPointerDown = (event: PointerEvent): void => {
+      // A SECOND pointer is not a new gesture while the guarded one is still pressed. Radix
+      // defers a touch dismissal to the resulting click, so a finger held on a control outside
+      // an open menu leaves that menu usable by a second pointer, and every early return below
+      // gives up the guard without rearming it. Measured on chromium with real CDP touch: a
+      // finger holding the unconfirmed "Delete message" button, a mouse press inside the menu,
+      // then lifting the finger, deleted the message.
+      if (armed && pointerIsDown && event.pointerId !== armedPointerId) return;
       // A new gesture always supersedes the last one, so a press that never produced a click
       // cannot leave the swallower armed.
       disarm();
@@ -417,7 +440,7 @@ export function useDismissingClickGuard(): void {
       const target = event.target;
       if (!(target instanceof Element)) return;
       if (target.closest(MENU_SURFACE)) return;
-      arm(event.pointerType === "touch");
+      arm(event.pointerType === "touch", event.pointerId);
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => {

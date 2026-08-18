@@ -35,6 +35,20 @@ The guard must swallow too little nowhere:
                  release does not clear, so the click still fires; Blink and WebKit gate it on the
                  shared `:active` state, which the release does clear, so no click is ever
                  dispatched and the case cannot fail there however broken the guard is.
+  touch_hold_    a finger presses and HOLDS the unconfirmed "Delete message" button, a MOUSE
+    second_      press lands inside the still-open menu, then the finger lifts. Radix defers a
+    pointer      touch dismissal to the resulting click, so the menu is still there for a second
+                 pointer to land in, and every early return in the guard's `pointerdown` handler
+                 gave the guard up without rearming it. Discriminates: chromium. Needs two
+                 pointers alive at once, so it is CDP-only and reports itself skipped elsewhere
+                 rather than passing vacuously; it asserts both pointers were live before it
+                 trusts any verdict. TWO FINGERS cannot reach this and the case does not try:
+                 measured with real CDP multi-touch, two active touch points suppress every
+                 compatibility mouse event for the rest of the gesture, so the held finger's
+                 release delivers no click to swallow in the first place. This case watches the
+                 swallow-too-little direction only: the second pointer's own press raises no
+                 `click` while a touch point is live, on either tree, so it cannot also stand in
+                 for the swallow-too-much direction.
   dismiss_then_  click the button to dismiss, then press Space, the key a reader uses to scroll.
     space        No click is involved for the guard to swallow: the press it DID swallow left the
                  button focused, and a focused button activates on Space. Discriminates on
@@ -188,6 +202,71 @@ WATCH_NEUTRAL_JS = """
 """
 
 
+# Two pointers alive at once is the whole premise of `touch_hold_second_pointer`, and a run that
+# silently delivered only one would report a confident false negative. This records every
+# pointerdown the document sees, so the case can assert the overlap happened before it trusts a
+# verdict, and it counts the clicks the SECOND pointer's press must still deliver.
+MULTI_POINTER_INIT = """
+(() => {
+  const st = { live: [], maxLive: 0, concurrentTypes: [], downs: [] };
+  window.__multiPointer = st;
+  const typeOf = {};
+  document.addEventListener("pointerdown", (e) => {
+    st.live.push(e.pointerId);
+    typeOf[e.pointerId] = e.pointerType;
+    if (st.live.length > st.maxLive) {
+      st.maxLive = st.live.length;
+      st.concurrentTypes = st.live.map((id) => typeOf[id]);
+    }
+    st.downs.push({ id: e.pointerId, type: e.pointerType, primary: e.isPrimary });
+  }, true);
+  const drop = (e) => {
+    const i = st.live.indexOf(e.pointerId);
+    if (i >= 0) st.live.splice(i, 1);
+  };
+  document.addEventListener("pointerup", drop, true);
+  document.addEventListener("pointercancel", drop, true);
+  const inMenu = (el) => Boolean(el && el.closest && el.closest(
+    '[role="menu"],[role="menuitem"],[data-radix-popper-content-wrapper]'
+  ));
+  const seen = (e) => ({ tag: e.target && e.target.tagName, detail: e.detail,
+    inMenu: inMenu(e.target) });
+  st.clicks = [];
+  st.delivered = [];
+  document.addEventListener("click", (e) => { st.clicks.push(seen(e)); }, true);
+  // Bubble phase on `document`: the guard stops propagation in CAPTURE at `document`, so a click
+  // it swallowed can never reach this. Node identity is not usable here -- the menu re-renders
+  // between the setup read and the press -- so delivery is read off the event's own target.
+  document.addEventListener("click", (e) => { st.delivered.push(seen(e)); }, false);
+})()
+"""
+
+# A point INSIDE the guard's own MENU_SURFACE that is not a selectable item, so the second
+# pointer's press is "inside the menu" and changes nothing by itself. Grid-searched rather than
+# guessed, and null rather than a fallback if the menu has no such point, so a run that could not
+# set the case up says so instead of testing something else.
+MENU_BLANK_JS = """
+() => {
+  const menu = document.querySelector('[role="menu"]');
+  if (!menu) return null;
+  const r = menu.getBoundingClientRect();
+  for (let y = Math.round(r.y) + 1; y < r.bottom - 1; y += 1) {
+    for (let x = Math.round(r.x) + 1; x < r.right - 1; x += 2) {
+      const el = document.elementFromPoint(x, y);
+      if (!el) continue;
+      const surface = el.closest(
+        '[role="menu"],[role="menuitem"],[data-radix-popper-content-wrapper]'
+      );
+      if (!surface) continue;
+      if (el.closest('[role="menuitem"]')) continue;
+      return { x, y, tag: el.tagName };
+    }
+  }
+  return null;
+}
+"""
+
+
 async def hover_last_assistant(page) -> None:
     await page.evaluate(
         "() => window.__heavyThread.lastAssistantMessage()?.scrollIntoView({ block: 'center' })"
@@ -202,7 +281,7 @@ async def hover_last_assistant(page) -> None:
         await page.wait_for_timeout(600)
 
 
-async def one_case(page, case: str) -> dict:
+async def one_case(page, case: str, engine: str = "chromium", context = None) -> dict:
     """Open the menu, attack the Delete button one way, report whether it fired."""
     await hover_last_assistant(page)
     opened = await page.evaluate(OPEN_MENU_JS)
@@ -321,6 +400,63 @@ async def one_case(page, case: str) -> dict:
         }
     elif case == "touch":
         await page.touchscreen.tap(x, y)
+    elif case == "touch_hold_second_pointer":
+        # A finger holds the unconfirmed "Delete message" button with the menu open, a MOUSE
+        # press lands inside the menu, then the finger lifts. Radix defers a touch dismissal to
+        # the resulting click, so the menu is still open under the second pointer, and a guard
+        # that lets any pointerdown disarm it has nothing left for the click the finger's release
+        # synthesises. Playwright's Touchscreen only exposes an atomic `tap()`, so holding a
+        # finger down needs CDP and this case runs on chromium alone.
+        if engine != "chromium" or context is None:
+            return {
+                "case": case,
+                "skipped": f"{engine} has no API for a held touch alongside a second pointer",
+            }
+        blank = await page.evaluate(MENU_BLANK_JS)
+        if not blank:
+            return {"case": case, "error": "no non-item spot inside the menu"}
+        cdp = await context.new_cdp_session(page)
+        finger = [{"x": x, "y": y, "id": 1, "radiusX": 1, "radiusY": 1, "force": 1}]
+        await cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": finger})
+        await page.wait_for_timeout(150)
+        held = await page.evaluate(FACTS_JS)
+        await page.mouse.move(blank["x"], blank["y"])
+        await page.mouse.down()
+        await page.wait_for_timeout(80)
+        live = await page.evaluate("() => window.__multiPointer.live.length")
+        await page.mouse.up()
+        await page.wait_for_timeout(150)
+        await cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": finger})
+        await page.wait_for_timeout(1500)
+        after = await page.evaluate(FACTS_JS)
+        state = await page.evaluate("() => window.__multiPointer")
+        # Every one of these is a way the case could look green while having tested nothing: the
+        # finger's press never reaching the document, the menu closing on the touch after all, or
+        # only one of the two pointers ever being alive. An unmet premise is a FAILURE here, not
+        # a pass, because a probe that cannot tell you it missed is worse than no probe.
+        if not held["menuOpen"]:
+            return {"case": case, "error": "the held touch dismissed the menu, so there was no "
+                                           "open menu for a second pointer to land in"}
+        if state["maxLive"] < 2 or live < 2:
+            return {"case": case, "error": f"the two pointers never coexisted: maxLive="
+                                           f"{state['maxLive']}, live at the second press={live}"}
+        if sorted(state["concurrentTypes"]) != ["mouse", "touch"]:
+            return {"case": case, "error": f"wrong pointer types: {state['concurrentTypes']}"}
+        return {
+            "case": case,
+            "concurrentPointers": state["downs"],
+            "menuOpenUnderSecondPointer": held["menuOpen"],
+            "assistantMessagesBefore": before["assistantMessages"],
+            "assistantMessagesAfter": after["assistantMessages"],
+            "deleted": after["assistantMessages"] < before["assistantMessages"],
+            "menuClosed": not after["menuOpen"],
+            "clicksSeen": state["clicks"],
+            "clicksDelivered": state["delivered"],
+            # Recorded, not asserted on. The second pointer's own press produces no `click` at
+            # all while a touch point is live -- measured as zero on the fixed AND the unfixed
+            # tree -- so a "the menu press must still land" assertion here would fail on both and
+            # would be measuring the engine rather than the guard.
+        }
     elif case == "select":
         # Not a dismissal at all: a click INSIDE the menu, which must still reach its item.
         spot = await page.evaluate(WATCH_ITEM_JS)
@@ -473,6 +609,7 @@ async def run(engine: str, cases: list[str]) -> dict:
                 has_touch = case.startswith("touch"),
             )
             page = await context.new_page()
+            await page.add_init_script(MULTI_POINTER_INIT)
             await page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
             await page.wait_for_function("() => Boolean(window.__heavyThread)", timeout = 60_000)
             plan = await page.evaluate("(n) => window.__heavyThread.seed(n)", CHARS)
@@ -482,7 +619,7 @@ async def run(engine: str, cases: list[str]) -> dict:
                 timeout = 300_000,
             )
             try:
-                out["cases"].append(await one_case(page, case))
+                out["cases"].append(await one_case(page, case, engine, context))
             except Exception as exc:  # a failed case is a result, not a crash
                 out["cases"].append({"case": case, "error": repr(exc)})
             await context.close()
@@ -496,7 +633,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,touch_hold_second_pointer,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
@@ -523,6 +660,12 @@ def main() -> int:
     # A verdict nobody reads is not a gate. Deleting a message is the failure this exists to
     # catch, and a case that could not run is a failure too, or a broken fixture would report
     # a clean sheet.
+    # A case the engine cannot present is reported rather than counted either way. Reading it as
+    # a pass would let an engine with no multi-pointer input silently certify a guard nobody
+    # tested there.
+    skipped = [(c["case"], c["skipped"]) for c in result["cases"] if c.get("skipped")]
+    for case, why in skipped:
+        print(f"[probe] SKIPPED {case}: {why}", flush = True)
     deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
     # A guard that swallows the dismissing click so thoroughly that Radix never sees it would
     # leave the menu OPEN, which is its own bug and one this probe used to record and ignore.
