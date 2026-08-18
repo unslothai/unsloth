@@ -249,9 +249,7 @@ def test_mcp_specs_match_the_installed_sdk_dump():
     from core.inference.tools import _mcp_specs_for_server
 
     schema = {"type": "object", "properties": {"q": {"type": "string"}}}
-    dumped = Tool(name = "search", description = "d", inputSchema = schema).model_dump(
-        exclude_none = True
-    )
+    dumped = Tool(name = "search", description = "d", inputSchema = schema).model_dump(exclude_none = True)
     specs = _mcp_specs_for_server({"id": "srv", "display_name": "S"}, [dumped])
     assert specs[0]["function"]["parameters"] == schema
 
