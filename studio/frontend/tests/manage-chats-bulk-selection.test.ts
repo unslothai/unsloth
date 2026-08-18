@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Bulk pin/unpin ordering, and the scope the header checkbox claims. The view is
-// .tsx and pulls in the whole app, so its selection scope is read as text the way
+// .tsx and pulls in the whole app, so it is read as text the way
 // chat-only-route-guard.test.ts does; the store is exercised for real.
 
 import assert from "node:assert/strict";
@@ -67,8 +67,8 @@ test("the header checkbox says it selects the visible chats, which is what it do
     ),
     "utf8",
   );
-  // The page shows MANAGE_PAGE_SIZE rows behind a "Show more", so the control
-  // cannot reach the whole list; the label must not promise that it does.
+  // Rows sit behind a "Show more", so the control cannot reach the whole list
+  // and the label must not promise that it does.
   assert.match(src, /onCheckedChange=\{toggleAllVisible\}/);
   assert.match(src, /aria-label="Select all visible chats"/);
   assert.doesNotMatch(src, /aria-label="Select all chats"/);
