@@ -516,6 +516,8 @@ export function ChatSettingsPanel({
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
+  // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
+  const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
@@ -1062,7 +1064,7 @@ export function ChatSettingsPanel({
               )}
               {showContextVramWarning && (
                 <p className="text-ui-11 text-amber-500">
-                  {platformDeviceType === "mac" ? (
+                  {isUnifiedMemory ? (
                     <>
                       Context length exceeds what fits in unified memory (
                       {ggufMaxContextLength?.toLocaleString()} tokens). The GPU

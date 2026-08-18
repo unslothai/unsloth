@@ -1986,6 +1986,14 @@ _CTX_FIT_VRAM_FRACTION = 0.97
 # 0.85 MLX uses in mlx_inference.py (_configure_memory_limits); not kept in sync.
 _APPLE_UNIFIED_MEMORY_FRACTION = 0.85
 
+# _fit_context_to_vram's own floor, and llama.cpp's: common_params.fit_params_min_ctx
+# is 4096, so neither Studio's fit nor "--fit on" will price a context below it. Any
+# 4096 the fit hands back is therefore that floor rather than a measurement, and the
+# Metal branch re-prices from _FIT_FLOOR_MIN_CTX (the 256 alignment step the search
+# rounds to) to find out whether anything at all fits before it trusts the number.
+_FIT_MIN_CTX = 4096
+_FIT_FLOOR_MIN_CTX = 256
+
 # How far amd-smi's total VRAM may sit from HIP's before the two are reporting
 # different memory scopes rather than one pool (an APU carve-out against the GTT
 # pool, a partition against the whole card). Same 10% margin
@@ -15603,12 +15611,14 @@ class LlamaCppBackend:
                         _apple_fit_budget_mib = int(
                             _apple_budget_mib * max(0.0, 1.0 - _flat_mtp_reserve)
                         )
-                        if self._can_estimate_kv():
-                            cap = self._fit_context_to_vram(
-                                native_ctx_for_cap,
+
+                        def _apple_ctx_fit(target: int, min_ctx: int) -> int:
+                            return self._fit_context_to_vram(
+                                target,
                                 _apple_fit_budget_mib,
                                 model_size_fit,
                                 cache_type_kv,
+                                min_ctx = min_ctx,
                                 swa_full = swa_full,
                                 n_parallel = n_parallel,
                                 kv_unified = planned_kv_unified,
@@ -15621,20 +15631,43 @@ class LlamaCppBackend:
                                 pooled = True,
                                 total_mib = None,
                             )
-                            _cap_footprint_mib = (
-                                model_size_fit + _kv_bytes(cap) + _mtp_bytes(cap) + _cc_bytes(cap)
+
+                        def _apple_footprint_mib(ctx: int) -> float:
+                            return (
+                                model_size_fit + _kv_bytes(ctx) + _mtp_bytes(ctx) + _cc_bytes(ctx)
                             ) / (1024 * 1024)
+
+                        if self._can_estimate_kv():
+                            cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_MIN_CTX)
+                            _cap_footprint_mib = _apple_footprint_mib(cap)
                             # Fit returns the request unchanged when it fits OR weights
                             # exceed budget; only the latter over-commits, so floor to 4096.
                             if _cap_footprint_mib <= _apple_fit_budget_mib:
                                 max_available_ctx = cap
                                 _apple_measured_ceiling = cap
                             else:
-                                # Weights alone exceed the budget, so the fit returned the
-                                # request untouched and no context is really available.
-                                # Floor for the UI, but do not refuse against a number the
-                                # fit never vouched for.
-                                max_available_ctx = min(4096, native_ctx_for_cap)
+                                # Two states land here and only one of them is unmeasurable.
+                                # Weights alone over budget: the fit returned the request
+                                # untouched, priced nothing, and no context can rescue it.
+                                # Or the weights do fit and it is the helper's own 4096
+                                # floor that does not -- there 4096 is a floor, not a
+                                # measurement, so re-price under it before concluding
+                                # nothing was measured. Without that pass a Mac with room
+                                # for no tested context skipped the refusal for every
+                                # explicit request and reached llama-server, whose --fit
+                                # cannot reduce below fit_params_min_ctx (4096) either, so
+                                # the backstop had nothing left to give.
+                                _floor_cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_FLOOR_MIN_CTX)
+                                if (
+                                    _floor_cap < cap
+                                    and _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib
+                                ):
+                                    max_available_ctx = _floor_cap
+                                    _apple_measured_ceiling = _floor_cap
+                                else:
+                                    # Floor for the UI, but do not refuse against a number
+                                    # the fit never vouched for.
+                                    max_available_ctx = min(4096, native_ctx_for_cap)
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
                             # and floor to 4096 rather than launch at native and over-commit.
@@ -15660,6 +15693,25 @@ class LlamaCppBackend:
                             # a GPU the launch never touches. What an oversized CPU load
                             # does risk is host RAM, which _host_offload_shortfall_message
                             # already covers, priced against the pool it really draws on.
+                            #
+                            # The fit above is sized through the model's native length, so
+                            # on its own it caps the ceiling there and refuses every request
+                            # past it as an over-commit -- including one this Mac has the
+                            # memory for. Nothing clamps a request to the native length on
+                            # the way in (the Extra Arguments box takes a raw "--ctx-size"
+                            # and even suggests "--rope-scaling yarn"), and llama.cpp builds
+                            # the context at the full -c, only capping the per-slot value
+                            # afterwards, so the request really is what gets allocated.
+                            # Re-price through it, and only adopt the answer when it is one
+                            # the budget vouches for.
+                            if effective_ctx > native_ctx_for_cap:
+                                _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
+                                if (
+                                    _extended_ceiling > _apple_measured_ceiling
+                                    and _apple_footprint_mib(_extended_ceiling)
+                                    <= _apple_fit_budget_mib
+                                ):
+                                    _apple_measured_ceiling = _extended_ceiling
                             _metal_ctx_refusal = self._metal_context_overcommit_message(
                                 effective_ctx,
                                 _apple_measured_ceiling,

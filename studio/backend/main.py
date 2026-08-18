@@ -1683,6 +1683,13 @@ async def health_check(request: Request):
 
     platform_map = {"darwin": "mac", "win32": "windows", "linux": "linux"}
     device_type = platform_map.get(sys.platform, sys.platform)
+    # Reported alongside device_type, not folded into it: "mac" is every Darwin host,
+    # and an Intel Mac with a discrete GPU spills to system RAM like a PC, while on
+    # Apple Silicon there is one pool and nowhere to spill. The UI words its memory
+    # warnings from this. Same gate the Metal context budget uses, and a pure platform
+    # check, so it costs nothing on a health poll.
+    from utils.hardware import is_apple_silicon
+
     authed = {
         **base,
         "version": UNSLOTH_VERSION,
@@ -1703,6 +1710,7 @@ async def health_check(request: Request):
         # cannot come from a different detection pass than the reason beside it.
         authed["chat_only_detail"] = snapshot[2]
         authed["device_type"] = device_type
+        authed["apple_silicon"] = is_apple_silicon()
         # base predates the bearer await; never ship "detecting" beside a measurement.
         authed.pop("hardware_detecting", None)
         # Same for the deferred marker: the client reads it first and would keep the old reason.

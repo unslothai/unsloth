@@ -113,6 +113,11 @@ def _launch(
     paravirtual = False,
     cache_type_kv = None,
     backend = None,
+    real_fit = False,
+    budget_bytes = 9 * 1024**3,
+    weights_bytes = 1024,
+    kv_per_token = 1024,
+    native = NATIVE,
 ):
     """Drive the real load_model with no GPU enumerated (the Metal condition).
 
@@ -123,11 +128,17 @@ def _launch(
     Returns the launch capture ({"cmd": argv}, empty when nothing launched). Pass
     ``backend`` to drive a second load through the same instance, which is the only way
     to observe what a refusal does to state a previous load left behind.
+
+    ``real_fit`` leaves _fit_context_to_vram unstubbed so the branch runs against the
+    helper's actual return contract -- its 4096 floor, and its habit of handing the
+    request straight back. ``budget_bytes`` / ``weights_bytes`` / ``kv_per_token`` /
+    ``native`` then place the model against the budget; the stubbed ceiling ignores all
+    four, so they only matter with ``real_fit``.
     """
     monkeypatch.setattr(
         LlamaCppBackend,
         "_apple_metal_memory_budget_bytes",
-        staticmethod(lambda: 9 * 1024**3 if metal else 0),
+        staticmethod(lambda: budget_bytes if metal else 0),
     )
     if paravirtual:
         import core.inference.llama_cpp as _llama_cpp
@@ -137,10 +148,11 @@ def _launch(
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: can_estimate_kv
-    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 1024
+    backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * kv_per_token
     backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
-    backend._fit_context_to_vram = lambda native, *a, **k: min(int(native), CEILING)
-    backend._get_gguf_size_bytes = lambda _path: 1024
+    if not real_fit:
+        backend._fit_context_to_vram = lambda target, *a, **k: min(int(target), CEILING)
+    backend._get_gguf_size_bytes = lambda _path: weights_bytes
     backend._mmproj_vram_bytes = lambda _path: 0
     backend._resolve_launch_mmproj_path = lambda **kwargs: None
     backend._apu_ram_shortfall_message = lambda *a, **k: None
@@ -150,7 +162,7 @@ def _launch(
     backend._wait_for_health = lambda timeout: True
     backend._detect_audio_type_strict = lambda: None
     backend._apply_detected_audio = lambda _detected: True
-    backend._context_length = NATIVE
+    backend._context_length = native
 
     captured = {}
 
@@ -446,3 +458,163 @@ class TestTheContextCanArriveByAnotherDoor:
         so it must not turn into a refusal."""
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "0"])["cmd"]
         assert _ctx_values(cmd) and _ctx_values(cmd)[-1] != "0"
+
+
+# 1 MiB of KV per token, so a handful of thousand tokens is worth gigabytes and the
+# fit's own 4096 floor can be pushed past the budget on a stub model.
+_FAT_KV = 1024 * 1024
+_BUDGET = 9 * 1024**3
+# load_model folds a flat compute-buffer reserve into the weights before the fit sees
+# them, so what is left of a 9 GiB budget for weights + KV is well under 9 GiB. Sized
+# so the weights fit with room for a few hundred tokens and nothing like 4096.
+_TIGHT_WEIGHTS = 3300 * 1024**2
+_TIGHT_CEILING = 768
+
+
+def _named_ceiling(message: str) -> int:
+    """The ceiling the refusal quotes back, so a test can assert about it directly."""
+    return int(message.split("The largest that fits is ")[1].split(" ")[0].replace(",", ""))
+
+
+class TestWhenEvenTheFitsOwnMinimumDoesNotFit:
+    """The fit floors at ``min_ctx`` (4096), so a 4096 coming back means either "4096
+    fits" or "nothing fits, here is the floor". Reading the second as "the weights alone
+    are over budget" skipped the refusal on exactly the machine that needs it: llama.cpp
+    will not reduce below fit_params_min_ctx (4096) either, so "--fit on" has nothing
+    left to give and the launch over-commits wired memory.
+    """
+
+    def test_the_premise_the_fit_hands_back_its_own_floor(self):
+        """Not a behaviour assertion -- a guard on the return contract the branch reads.
+
+        998 MiB of weights against a 1000 MiB budget leaves room for 2048 tokens at
+        1 KiB each, yet asking with the default floor still answers 4096.
+        """
+        backend = LlamaCppBackend()
+        backend._can_estimate_kv = lambda: True
+        backend._estimate_kv_cache_bytes = lambda ctx, *a, **k: int(ctx) * 1024
+
+        def fit(min_ctx):
+            return backend._fit_context_to_vram(
+                NATIVE,
+                1000,
+                998 * 1024**2,
+                None,
+                min_ctx = min_ctx,
+                budget_frac = 1.0,
+                pooled = True,
+                total_mib = None,
+                compute_ctx_bytes_fn = lambda _ctx: 0,
+            )
+
+        assert fit(4096) == 4096  # the floor, not a measurement
+        assert fit(256) == 2048  # what actually fits
+
+    def _tight(self, tmp_path, monkeypatch, **kw):
+        return _launch(
+            tmp_path,
+            monkeypatch,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = _TIGHT_WEIGHTS,
+            kv_per_token = _FAT_KV,
+            **kw,
+        )
+
+    def test_an_explicit_context_is_refused(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "unified"):
+            self._tight(tmp_path, monkeypatch, n_ctx = 4096)
+
+    def test_the_refusal_names_what_actually_fits(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = f"{_TIGHT_CEILING:,}"):
+            self._tight(tmp_path, monkeypatch, n_ctx = 8192)
+
+    def test_auto_starts_at_what_fits_not_at_the_floor(self, tmp_path, monkeypatch):
+        """The same number the refusal names, or the UI advertises as its maximum a
+        context that is itself the over-commit."""
+        cmd = self._tight(tmp_path, monkeypatch, n_ctx = 0)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(_TIGHT_CEILING)
+
+    def test_a_context_that_does_fit_still_launches(self, tmp_path, monkeypatch):
+        cmd = self._tight(tmp_path, monkeypatch, n_ctx = 512)["cmd"]
+        assert _ctx_values(cmd)[-1] == "512"
+
+    def test_weights_over_budget_is_still_never_refused(self, tmp_path, monkeypatch):
+        """The exemption the guard shipped with: nothing was measured there, so refusing
+        would block loads that work today."""
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 10 * 1024**3,
+            kv_per_token = _FAT_KV,
+            n_ctx = 32768,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "32768"
+
+
+class TestAContextAboveTheModelsNativeLength:
+    """The fit is sized through the native length, so its ceiling can never exceed it
+    and every request past it read as an over-commit whatever the machine had spare.
+    Nothing clamps a request to the native length on the way in (the Extra Arguments box
+    takes a raw --ctx-size and its placeholder suggests --rope-scaling yarn), and
+    llama.cpp builds the context at the full -c, capping only the per-slot value
+    afterwards, so the request is what actually gets allocated.
+    """
+
+    _NATIVE = 32768
+    _ASKED = 131072
+
+    def _above(self, tmp_path, monkeypatch, **kw):
+        return _launch(
+            tmp_path,
+            monkeypatch,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            native = self._NATIVE,
+            **kw,
+        )
+
+    def test_it_launches_when_unified_memory_holds_it(self, tmp_path, monkeypatch):
+        # 1 KiB per token: 131,072 tokens is 128 MiB against a 9 GiB budget.
+        cmd = self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = 1024)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(self._ASKED)
+
+    def test_the_pass_through_spelling_launches_too(self, tmp_path, monkeypatch):
+        """The spelling a RoPE-scaled request actually arrives in."""
+        cmd = self._above(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 0,
+            kv_per_token = 1024,
+            extra_args = ["--rope-scaling", "yarn", "--ctx-size", str(self._ASKED)],
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == str(self._ASKED)
+
+    def test_it_is_still_refused_when_the_memory_is_not_there(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "unified"):
+            self._above(tmp_path, monkeypatch, n_ctx = self._ASKED, kv_per_token = _FAT_KV)
+
+    def test_the_refusal_names_the_measured_ceiling_not_the_native_length(
+        self, tmp_path, monkeypatch
+    ):
+        """A refusal that names the native length is reporting the wrong limit: here
+        memory holds sixteen times it, so "lower the context to 4,096" throws away a
+        context that would have loaded.
+        """
+        # 64 KiB per token against ~4 GiB of headroom: tens of thousands of tokens fit,
+        # far past the 4096 this GGUF was trained at.
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(
+                tmp_path,
+                monkeypatch,
+                real_fit = True,
+                budget_bytes = _BUDGET,
+                native = 4096,
+                kv_per_token = 64 * 1024,
+                n_ctx = self._ASKED,
+            )
+        message = str(excinfo.value)
+        assert "4,096" not in message
+        assert _named_ceiling(message) > 4096
