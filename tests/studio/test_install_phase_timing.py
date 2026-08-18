@@ -318,17 +318,17 @@ def test_the_outer_installer_restores_the_origin_it_set():
     saves and restores every other handoff variable this way.
     """
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert "PreviousInstallTimingT0" in src, (
-        "install.ps1 no longer saves the previous UNSLOTH_INSTALL_TIMING_T0"
-    )
+    assert (
+        "PreviousInstallTimingT0" in src
+    ), "install.ps1 no longer saves the previous UNSLOTH_INSTALL_TIMING_T0"
     tail = src[src.rindex("} finally {") :]
     assert "UNSLOTH_INSTALL_TIMING_T0" in tail, (
         "the origin is not restored in a finally, so a failed install leaves it behind in "
         "the caller's session"
     )
-    assert "Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0" in tail, (
-        "when there was no previous value the variable must be REMOVED, not left set"
-    )
+    assert (
+        "Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0" in tail
+    ), "when there was no previous value the variable must be REMOVED, not left set"
 
 
 def test_the_posix_installer_is_timed_on_the_same_terms_as_the_windows_one():
