@@ -446,18 +446,18 @@ def test_a_scroll_that_never_settled_is_a_harness_failure() -> None:
     cell = copy.deepcopy(clean_cell())
     cell["actions"]["scroll"]["settleMs"] = None
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
-    assert any("scroll action but it never reached a settled state" in f for f in failures), (
-        failures
-    )
+    assert any(
+        "scroll action but it never reached a settled state" in f for f in failures
+    ), failures
 
 
 def test_a_reopen_that_never_settled_is_a_harness_failure() -> None:
     cell = copy.deepcopy(clean_cell())
     cell["actions"]["reopen"]["settleMs"] = None
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
-    assert any("reopen action but it never reached a settled state" in f for f in failures), (
-        failures
-    )
+    assert any(
+        "reopen action but it never reached a settled state" in f for f in failures
+    ), failures
 
 
 def test_a_jump_that_never_settled_is_a_harness_failure() -> None:
