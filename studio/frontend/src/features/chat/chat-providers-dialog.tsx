@@ -159,6 +159,8 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  // Latches the one-shot auto-open below. Every navigation the user drives sets
+  // it too, so a slow first sync cannot pull them back into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
   const [providerType, setProviderType] = useState<string>("");
@@ -437,11 +439,13 @@ export function ChatProvidersSettings({
     if (entry?.model_list_mode === "curated") {
       setAvailableModels([...entry.default_models]);
     }
+    autoOpenedAddFormRef.current = true;
     setPage("form");
   }
 
   function closeForm() {
     resetForm();
+    autoOpenedAddFormRef.current = true;
     setPage("list");
   }
 
@@ -778,6 +782,7 @@ export function ChatProvidersSettings({
         provider,
       ]);
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
       toast.success("Connection added.");
     } catch (error) {
@@ -927,6 +932,7 @@ export function ChatProvidersSettings({
       );
       toast.success("Connection updated.");
       resetForm();
+      autoOpenedAddFormRef.current = true;
       setPage("list");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
@@ -938,6 +944,7 @@ export function ChatProvidersSettings({
 
   async function editProvider(provider: ExternalProviderConfig) {
     setEditingProviderId(provider.id);
+    autoOpenedAddFormRef.current = true;
     setPage("form");
     setProviderType(provider.providerType);
     setCustomProviderName(

@@ -49,7 +49,22 @@ test("the form's back arrow still returns to the list", () => {
   // A starting point, not a trap: the way back and its copy both stay.
   assert.match(
     dialog,
-    /function closeForm\(\) \{\s*resetForm\(\);\s*setPage\("list"\);/,
+    /function closeForm\(\) \{\s*resetForm\(\);\s*autoOpenedAddFormRef\.current = true;\s*setPage\("list"\);/,
   );
   assert.match(dialog, /No connections yet/);
+});
+
+test("navigating before the sync lands consumes the auto-open", () => {
+  // The Add connection row stays live while the first sync runs, so a user can
+  // open the form and go back before it lands. Every path that moves the page
+  // latches the one-shot, or the sync would drag them back into the form.
+  const calls = [...dialog.matchAll(/setPage\("(?:list|form)"\)/g)];
+  assert.equal(calls.length, 6);
+  for (const call of calls) {
+    const before = dialog.slice(
+      Math.max(0, (call.index ?? 0) - 200),
+      call.index,
+    );
+    assert.match(before, /autoOpenedAddFormRef\.current = true;/);
+  }
 });
