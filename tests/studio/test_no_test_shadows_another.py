@@ -45,7 +45,8 @@ def _shadowed() -> list[str]:
             scopes += [(n.name, n.body) for n in tree.body if isinstance(n, ast.ClassDef)]
             for scope, body in scopes:
                 defined = [
-                    n for n in body
+                    n
+                    for n in body
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and n.name.startswith("test")
                 ]
