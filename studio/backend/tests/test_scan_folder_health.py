@@ -299,13 +299,13 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
 @pytest.mark.parametrize(
     "winerror, expected",
     [
-        (5, STATUS_PERMISSION_DENIED),      # ERROR_ACCESS_DENIED
-        (65, STATUS_PERMISSION_DENIED),     # ERROR_NETWORK_ACCESS_DENIED
-        (21, STATUS_MISSING),               # ERROR_NOT_READY: nothing in the card reader
-        (53, STATUS_MISSING),               # ERROR_BAD_NETPATH
-        (267, STATUS_MISSING),              # ERROR_DIRECTORY
-        (23, STATUS_UNREADABLE),            # ERROR_CRC: the drive is failing
-        (31, STATUS_UNREADABLE),            # ERROR_GEN_FAILURE
+        (5, STATUS_PERMISSION_DENIED),  # ERROR_ACCESS_DENIED
+        (65, STATUS_PERMISSION_DENIED),  # ERROR_NETWORK_ACCESS_DENIED
+        (21, STATUS_MISSING),  # ERROR_NOT_READY: nothing in the card reader
+        (53, STATUS_MISSING),  # ERROR_BAD_NETPATH
+        (267, STATUS_MISSING),  # ERROR_DIRECTORY
+        (23, STATUS_UNREADABLE),  # ERROR_CRC: the drive is failing
+        (31, STATUS_UNREADABLE),  # ERROR_GEN_FAILURE
     ],
 )
 def test_windows_errors_classify_from_the_native_code(winerror, expected):
