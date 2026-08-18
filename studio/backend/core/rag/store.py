@@ -121,13 +121,23 @@ def conversation_match_queries(query: str) -> list[str]:
 
     So: first REQUIRE the identifier-like tokens, which restricts the candidates to
     chunks that are actually about the thing asked about; then fall back to an OR over
-    the content words. Two expressions rather than one, because a conjunction that
-    matches nothing must not mean "this archive has nothing to say".
+    the content words. Two expressions rather than one, because a filter that matches
+    nothing must not mean "this archive has nothing to say".
 
     A question made entirely of function words ("what about it?") keeps all its tokens:
     an empty expression would make `search_lexical` return nothing at all, and a query
     that retrieves the wrong turns is still better than a recall that silently vanishes
     on exactly the turns that needed it.
+
+    SEVERAL identifiers are ORed, not ANDed. "What are the current values of A123 and
+    B456" is two questions in one envelope, and the turn answering either one names one
+    of them: requiring both keeps only the turns that DISCUSS the pair, which are exactly
+    the older comparisons, and drops both current assignments. Measured on an archive of
+    six comparison turns plus one latest assignment each: the conjunction returned the
+    four oldest comparisons and neither value, where the permissive pass returns both.
+    The filter's job is to keep every slot on something the question asked about, and one
+    identifier out of two is still that; the content-word pass still does the ranking,
+    and a chunk naming both still outranks a chunk naming one, because it matches more.
     """
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
@@ -137,8 +147,36 @@ def conversation_match_queries(query: str) -> list[str]:
     permissive = " OR ".join(f'"{t}"' for t in content)
     if not identifiers:
         return [permissive]
-    conjunctive = " AND ".join(f'"{t}"' for t in identifiers)
-    return [conjunctive] if conjunctive == permissive else [conjunctive, permissive]
+    focused = " OR ".join(f'"{t}"' for t in identifiers)
+    return [focused] if focused == permissive else [focused, permissive]
+
+
+def lexical_matching_ids(conn: sqlite3.Connection, chunk_ids, expression: str) -> set:
+    """Which of ``chunk_ids`` match ``expression``, by the index's own tokenizer.
+
+    Membership, not ranking, and therefore not subject to any top-k window. A ranked pass
+    truncated at k answers "is this chunk among the k the index happened to return",
+    which is a different question and the wrong one when the scores are tied: FTS5 floors
+    the BM25 IDF of a term present in more than half the index at 1e-6, so the identifier
+    a whole thread is about orders nothing and the k that come back are arbitrary. Asking
+    the index directly, restricted to candidates already in hand, is exact however long
+    the thread gets.
+    """
+    ids = list(dict.fromkeys(chunk_ids))
+    if not ids or not expression:
+        return set()
+    found: set = set()
+    # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
+    for start in range(0, len(ids), 500):
+        batch = ids[start : start + 500]
+        placeholders = ",".join("?" * len(batch))
+        rows = conn.execute(
+            f"SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "
+            f"AND chunk_id IN ({placeholders})",
+            [expression, *batch],
+        ).fetchall()
+        found.update(row[0] for row in rows)
+    return found
 
 
 def create_kb(

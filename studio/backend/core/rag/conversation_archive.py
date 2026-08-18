@@ -808,7 +808,7 @@ def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> li
 def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     """Archive lexical candidates: the identifiers FILTER, the content words RANK.
 
-    The conjunctive pass cannot also do the ranking. FTS5 floors the BM25 IDF of a term
+    The identifier pass cannot also do the ranking. FTS5 floors the BM25 IDF of a term
     that appears in more than half of the index at 1e-6 (`ext/fts5/fts5_aux.c`: "if
     (N < 2*nHit), the IDF is negative. Which is undesirable. So the minimum allowable IDF
     is (1e-6)"), and in a per-thread archive the identifier the whole conversation is
@@ -818,10 +818,10 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
     current value fell outside the 16 candidates and the recall answered with the four
     oldest turns instead.
 
-    So the conjunction decides WHICH chunks are eligible, over a wide window, and the
-    content-word pass decides the order among them. Chunks the ranking pass never saw
-    keep their place behind the ones it did, and chunks that match only the content words
-    stay last, which is what keeps every slot on the subject of the question.
+    So the identifiers decide WHICH chunks are eligible and the content-word pass decides
+    the order among them. Chunks the ranking pass never saw keep their place behind the
+    ones it did, and chunks that match only the content words stay last, which is what
+    keeps every slot on the subject of the question.
     """
     expressions = (
         store.conversation_match_queries(query) if config.CONVERSATION_QUERY_FOCUS else [None]
@@ -832,11 +832,26 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
         )
     strict = _lexical_pass(conn, scope, query, model, _BRANCH_FILTER_MAX_CANDIDATES, expressions[0])
     loose = _lexical_pass(conn, scope, query, model, fetch, expressions[-1])
-    strict_ids = {hit.chunk_id for hit in strict}
-    ranked = [hit for hit in loose if hit.chunk_id in strict_ids]
+    # Eligibility is asked of the index, not read off the strict pass's top rows. That
+    # pass is capped, and its order is the arbitrary one described above, so a chunk
+    # naming the identifier can be missing from it purely because the archive is long:
+    # past `_BRANCH_FILTER_MAX_CANDIDATES` chunks on the subject, the turn stating the
+    # current value can be the one left out, and ranking it behind every capped row is
+    # the same lost answer this function exists to prevent.
+    eligible = {hit.chunk_id for hit in strict}
+    try:
+        eligible |= store.lexical_matching_ids(
+            conn, [hit.chunk_id for hit in loose], expressions[0]
+        )
+    except Exception:
+        # An exact membership test is an improvement on the capped one, not a dependency:
+        # the strict rows on their own are what this did before.
+        logger.warning("conversation_archive.eligibility_probe_failed", exc_info = True)
+    ranked = [hit for hit in loose if hit.chunk_id in eligible]
     already = {hit.chunk_id for hit in ranked}
     ranked += [hit for hit in strict if hit.chunk_id not in already]
-    ranked += [hit for hit in loose if hit.chunk_id not in strict_ids]
+    already |= {hit.chunk_id for hit in strict}
+    ranked += [hit for hit in loose if hit.chunk_id not in already]
     return ranked
 
 
@@ -844,12 +859,12 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
     """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest.
 
     The lexical pass runs TWICE when the question contains an identifier: once requiring
-    all of them, then once over the content words. Requiring them is what stops an
+    one of them, then once over the content words. Requiring them is what stops an
     incidental word in the question outranking the subject of the whole conversation (see
     `store.conversation_match_queries`); running the permissive pass as well is what
-    orders the survivors and what stops a conjunction that matches nothing from reading
+    orders the survivors and what stops a filter that matches nothing from reading
     as an empty archive (see `_focused_lexical`). The merged list is what the caller's
-    widening loop measures, so a conjunction returning few rows cannot be mistaken for
+    widening loop measures, so a filter returning few rows cannot be mistaken for
     "nothing left to widen into".
     """
     hits: list = []

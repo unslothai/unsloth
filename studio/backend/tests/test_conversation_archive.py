@@ -1697,6 +1697,68 @@ def test_a_ubiquitous_identifier_cannot_crowd_out_the_newest_revision(conn):
     assert "991234" in text
 
 
+def test_a_question_about_two_variables_recalls_both_current_values(conn):
+    """Two identifiers must not become a requirement to name BOTH.
+
+    The turn that answers "what are A and B now" names one of them; the turns naming both
+    are the older comparisons. Requiring the conjunction made every comparison eligible
+    and both assignments ineligible, so the four slots went to the four oldest turns and
+    neither current value came back -- the same lost answer as the ubiquitous-identifier
+    case above, reached through the filter rather than through the ranking.
+    """
+    other = "ZQXVARB456"
+    for index in range(6):
+        _archive(
+            _turn(
+                f"How does {VARIABLE} compare with {other} in scenario {index}?",
+                f"In scenario {index}, {VARIABLE} and {other} trade off differently.",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 700001"))
+    _archive(_turn(f"please update {other}", f"the current value of {other} is now 800002"))
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE} and of {other}?", top_k = 4
+    )
+
+    assert found is not None
+    text, sources = found
+    assert "700001" in text and "800002" in text
+    # And the filter still did its job: every slot names something that was asked about.
+    assert all(
+        VARIABLE.lower() in source["text"].lower() or other.lower() in source["text"].lower()
+        for source in sources
+    )
+
+
+def test_the_newest_revision_survives_a_strict_pass_that_hit_its_cap(conn, monkeypatch):
+    """Eligibility is a property of a chunk, not of the capped pass's top rows.
+
+    The identifier pass is bounded at `_BRANCH_FILTER_MAX_CANDIDATES`, and by the same
+    IDF floor its order within that bound carries no information. Past the bound the turn
+    stating the current value can be the one left out, and reading absence from that list
+    as "does not name the subject" ranked it behind every capped row, where the fetch
+    window then dropped it. The cap is patched down here so the archive stays small; at
+    the shipped 256 the same loss was measured on a 301-chunk archive, which a long
+    thread reaches at roughly 60 turns once any of them carry a pasted block
+    (CHUNK_TOKENS is 500).
+    """
+    monkeypatch.setattr(conversation_archive, "_BRANCH_FILTER_MAX_CANDIDATES", 16)
+    for index in range(19):
+        _archive(
+            _turn(
+                f"lets discuss {VARIABLE} aspect number {index}",
+                f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 991234"))
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}?")
+
+    assert found is not None
+    assert "991234" in found[0]
+
+
 def test_the_archive_query_keeps_the_negation_that_carries_the_question(conn):
     """ "What did I say NOT to delete" is only that question while `not` survives."""
     assert '"not"' in store.conversation_match_queries("What did I say not to delete?")[0]
