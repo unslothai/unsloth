@@ -1755,10 +1755,7 @@ def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatc
     cmd = tmp_path / "fake-agent.cmd"
     cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
 
-    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
-        str(cmd),
-        "--flag",
-    ]
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [str(cmd), "--flag"]
 
 
 def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
