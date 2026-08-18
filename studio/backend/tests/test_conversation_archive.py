@@ -2164,12 +2164,8 @@ def test_turning_the_query_focus_off_restores_the_old_order_on_a_tied_archive(co
     monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
     values = _revisions(8, distractors = 0)
 
-    found = conversation_archive.recall(
-        THREAD, f"what is the current value of {VARIABLE}", top_k = 4
-    )
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}", top_k = 4)
 
     assert found is not None
     returned = [value for value in values if value in found[0]]
-    assert returned == values[:4], (
-        f"the knob did not restore the previous selection: {returned}"
-    )
+    assert returned == values[:4], f"the knob did not restore the previous selection: {returned}"
