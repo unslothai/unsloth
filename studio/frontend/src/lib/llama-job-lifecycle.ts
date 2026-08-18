@@ -9,6 +9,10 @@ interface LlamaJob {
   operation: LlamaJobOperation;
 }
 
+interface TimestampedLlamaJob extends LlamaJob {
+  started_at: string | null;
+}
+
 interface IdentifiedLlamaJob extends LlamaJob {
   startedAt: string | null;
 }
@@ -66,4 +70,23 @@ export function llamaUpdatePresentation(
     visible: !switching,
     running: true,
   };
+}
+
+/**
+ * A poll that left while the job was still running can return after a later
+ * poll already observed success or error. Adopting that running snapshot
+ * re-pins the "Updating..." toast after the completion poller has stopped.
+ */
+export function llamaUpdateSnapshotIsStale(
+  adopted: TimestampedLlamaJob,
+  incoming: TimestampedLlamaJob,
+): boolean {
+  if (adopted.state !== "success" && adopted.state !== "error") {
+    return false;
+  }
+  return (
+    incoming.state === "running" &&
+    adopted.started_at != null &&
+    adopted.started_at === incoming.started_at
+  );
 }
