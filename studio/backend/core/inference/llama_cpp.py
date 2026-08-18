@@ -15683,9 +15683,21 @@ class LlamaCppBackend:
                                 # cannot reduce below fit_params_min_ctx (4096) either, so
                                 # the backstop had nothing left to give.
                                 _floor_cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_FLOOR_MIN_CTX)
-                                if _floor_cap >= cap:
-                                    # It could not shrink, so the weights themselves are
-                                    # over budget and the fit priced nothing. A different
+                                # Ask the budget directly rather than inferring the
+                                # weights-only state from the two fits disagreeing. Both
+                                # calls are bounded by the same target, so on a model
+                                # whose native length is already at or under the floor
+                                # they return the same number for a reason that has
+                                # nothing to do with the weights, and the comparison read
+                                # that as "priced nothing" and refused nothing. Reachable
+                                # at native == 256, and also whenever the GGUF carries no
+                                # context length and the request itself is that small.
+                                _weights_over_budget = (
+                                    model_size_fit / (1024 * 1024)
+                                ) > _apple_fit_budget_mib
+                                if _weights_over_budget:
+                                    # The fit priced nothing: no context can rescue a load
+                                    # whose weights alone miss the budget. A different
                                     # failure, owned by the host-RAM guard. Floor for the
                                     # UI, but do not refuse against a number the fit never
                                     # vouched for.

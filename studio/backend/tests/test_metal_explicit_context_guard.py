@@ -741,3 +741,58 @@ class TestWhenNothingFitsAtAll:
                 weights_bytes = _TIGHT_WEIGHTS,
                 kv_per_token = _FAT_KV,
             )
+
+
+class TestAModelWhoseNativeLengthIsAtTheFloor:
+    """The weights-only state has to be read off the budget, not off two fits agreeing.
+
+    Both probes are bounded by the same target, so on a model whose native length is
+    already at or under the search's 256 alignment step they return the same number for
+    a reason that has nothing to do with the weights. Inferring "the fit priced nothing"
+    from that agreement left both verdicts unset and let every explicit context through
+    on a host where none of them fit. Reachable at native == 256 exactly, and also
+    whenever the GGUF carries no context length so the request itself becomes the target.
+    """
+
+    TIGHT = dict(
+        real_fit = True,
+        budget_bytes = _BUDGET,
+        weights_bytes = 3950 * 1024**2,
+        kv_per_token = _FAT_KV,
+    )
+
+    @pytest.mark.parametrize("native", [128, 256, 512, 4096])
+    def test_an_explicit_context_is_refused_at_every_native_length(
+        self, tmp_path, monkeypatch, native
+    ):
+        with pytest.raises(RuntimeError, match = "unified memory"):
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, native = native, **self.TIGHT)
+
+    def test_weights_over_budget_is_still_not_refused_at_the_floor(self, tmp_path, monkeypatch):
+        """The state the old comparison was trying to detect still has to pass through,
+        and now it is detected by asking the budget rather than by the two fits tying."""
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 8192,
+            native = 256,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 12 * 1024**3,
+            kv_per_token = _FAT_KV,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_a_roomy_host_still_launches_at_a_tiny_native_length(self, tmp_path, monkeypatch):
+        """Nothing about a small native length should refuse on its own."""
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 256,
+            native = 256,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 100 * 1024**2,
+            kv_per_token = _FAT_KV,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "256"
