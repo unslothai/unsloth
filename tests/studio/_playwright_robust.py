@@ -445,8 +445,8 @@ def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
         lambda m: info(f"console.{m.type}: {m.text}") if m.type == "error" else None,
     )
     page.on("requestfailed", lambda r: info(f"requestfailed: {r.url} {r.failure}"))
-    # Vite reloads the page itself once it re-optimizes a dependency it only discovers
-    # after the entry ran, which unmounts the tree mid-assertion. Name it if it happens.
+    # Vite reloads the page after re-optimizing a late-discovered dep, unmounting the
+    # tree mid-assertion. Name it if it happens.
     page.on(
         "framenavigated",
         lambda f: info(f"navigated: {f.url}") if f is page.main_frame else None,

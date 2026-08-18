@@ -74,10 +74,9 @@ def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
 
 
 def test_harnesses_report_why_the_page_failed() -> None:
-    # An entry module that throws and one that is merely slow both end as a timeout on a
-    # locator that was never created. Run 31935573269 was exactly that: 15s of nothing,
-    # no console, no page error, no server output, and the same shape on 7 of the 8 runs
-    # that reached this step. A harness that cannot say why it failed cannot be fixed.
+    # A thrown entry module and a merely slow one both end as a timeout on a locator that
+    # was never created. Run 31935573269 was that: 15s of nothing, no console, no page
+    # error, no server output, on 7 of the 8 runs that reached this step.
     for name in (
         "playwright_chat_autoscroll.py",
         "playwright_research_freeze.py",
@@ -89,8 +88,8 @@ def test_harnesses_report_why_the_page_failed() -> None:
 
 
 def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
-    # The live log above is gone once the runner is recycled. The screenshot, the body
-    # excerpt and vite's own transform errors are what remains to look at.
+    # The live log dies with the runner; the screenshot, body excerpt and vite's own
+    # transform errors are what remains.
     text = source("playwright_strip_ansi_smoke.py")
     assert "dump(page, vite)" in text, "the assertions do not run under the dump"
     assert "dump_diagnostics(page, ART" in text
@@ -98,10 +97,10 @@ def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
 
 
 def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, monkeypatch) -> None:
-    # The tail is a deque a daemon thread appends to for as long as vite lives, and the
-    # dump runs before the server is stopped. Iterating it live while printing (stdout
-    # releases the GIL) raises "deque mutated during iteration", so the dump aborts and
-    # the tail is lost in the one case it was added for: a reload or transform storm.
+    # A daemon thread appends to the tail deque for as long as vite lives, and the dump
+    # runs before the server stops. Iterating it live while printing (stdout releases the
+    # GIL) raises "deque mutated during iteration", losing the tail in the one case it was
+    # added for: a reload or transform storm.
     import importlib.util
     import threading
     from collections import deque
@@ -133,8 +132,8 @@ def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, mo
     talker.start()
     try:
         for _ in range(5):
-            # `page` is unused by the tail print; dump_diagnostics is best-effort and
-            # swallows everything it cannot do, so a stub is enough to reach the loop.
+            # `page` is unused by the tail print and dump_diagnostics is best-effort,
+            # so a stub reaches the loop.
             smoke.dump(types.SimpleNamespace(), vite)
     finally:
         stop.set()

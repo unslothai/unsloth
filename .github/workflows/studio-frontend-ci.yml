@@ -187,19 +187,17 @@ jobs:
       - name: Startup bundle budget
         run: npm run bundle:check
 
-      # The browser smokes sit after the build gates on purpose. A job stops at its first
-      # failing step, so while they ran above, one red smoke skipped the build and all
-      # three bundle assertions: the checks that decide whether the app ships at all never
-      # reported. Ordering them last costs nothing (each smoke starts its own vite dev
-      # server and reads no dist/) and keeps a smoke failure to itself.
+      # Smokes go last: every step carries an implicit success(), so running them ahead of
+      # the build gates let one red smoke skip the build and all three bundle assertions.
+      # Costs nothing here, since each smoke starts its own vite server and reads no dist/.
       - name: Install Chromium for browser smokes
         working-directory: ${{ github.workspace }}
         run: |
           python3 -m pip install 'playwright>=1.45,<2' pytest
           python3 -m playwright install --with-deps chromium
 
-      # Cheap and browserless, but it imports the harnesses, which import playwright, so it has
-      # to sit after the install. Covers the Windows teardown branch no runner here executes.
+      # Browserless, but imports the harnesses (hence playwright), so it sits after the
+      # install. Covers the Windows teardown branch no runner here executes.
       - name: Dev-server lifecycle tests
         working-directory: ${{ github.workspace }}
         run: |
@@ -212,8 +210,8 @@ jobs:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_strip_ansi_smoke.py
 
-      # Each harness owns its vite dev server, like the ANSI smoke above. Starting one here
-      # would background npm, so $! is the wrapper and killing it orphans the node child.
+      # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
+      # wrapper and killing it orphans the node child.
       - name: Browser smoke for chat autoscroll
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_chat_autoscroll.py
@@ -222,8 +220,7 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      # The screenshot and serialized DOM the harnesses write when they fail. Small, and
-      # only kept on failure, unlike the dist upload below.
+      # Screenshot and serialized DOM the harnesses write on failure; small, kept only then.
       - name: Upload browser smoke artifacts
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
