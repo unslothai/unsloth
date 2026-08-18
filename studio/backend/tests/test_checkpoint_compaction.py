@@ -665,3 +665,42 @@ def test_a_reasoning_models_saved_reply_is_still_recognised_as_on_branch():
          {"type": "text", "text": "Section 9 noted."}],
         branch,
     ) is False
+
+
+def test_an_epoch_that_may_not_reset_keeps_its_block_instead_of_being_trimmed_away():
+    """The worst of both was the old behaviour: a request that may not reset fell through
+    to the rolling window, which replays the checkpoint-sized boundary (a near-total
+    eviction) WITHOUT rebuilding the block that made it survivable. Measured before the
+    fix: 22 dropped either way, but rolling kept 2 messages with the standing instruction
+    gone from the prompt entirely, one turn after the user was told the conversation was
+    compacted and searchable."""
+    from core.inference import llama_cpp
+
+    messages = _thread() + [{"role": "user", "content": "continue"}]
+    _, first = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 0,
+    )
+
+    fitted, truncation = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = False, sticky_dropped = first["dropped_messages"],
+    )
+
+    assert truncation["checkpoint"] is True
+    assert truncation["checkpoint_started"] is False
+    assert truncation["carried_forward_chars"] > 0
+    assert INSTRUCTION[:60] in fitted[0]["content"]
+
+
+def test_a_block_never_promises_a_tool_the_request_will_not_be_given():
+    """The block's last sentence is its only claim about the world outside itself, so it
+    is the only one that can be false. A request whose catalogue has no
+    `search_conversation` still deserves the instructions, but must not be sent looking."""
+    items = [INSTRUCTION]
+
+    assert "search_conversation tool" in render_checkpoint(items)
+    withheld = render_checkpoint(items, searchable = False)
+    assert "search_conversation" not in withheld
+    assert "cannot retrieve it on this turn" in withheld
+    assert INSTRUCTION in withheld

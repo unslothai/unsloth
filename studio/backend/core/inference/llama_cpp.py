@@ -206,6 +206,28 @@ def _fit_context(messages, **kwargs):
     try:
         from core.inference import checkpoint
 
+        if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
+            # An epoch is already in force and THIS request may not reset -- tools were
+            # withdrawn, the policy is off, or the route's catalogue has no
+            # `search_conversation`. Falling straight through to rolling was the worst of
+            # both: it replays the checkpoint-sized boundary, which is a near-total
+            # eviction, WITHOUT rebuilding the block that made that eviction survivable.
+            # Measured on a 24-message thread with the standing instruction in the block:
+            # 22 dropped either way, but rolling kept 2 messages with the instruction gone
+            # from the prompt entirely, one turn after the user was told the conversation
+            # was compacted and searchable. So replay the epoch and keep the block, with
+            # the header's tool sentence swapped for one that does not promise a lookup
+            # this request cannot perform. If the replay cannot fit, fall through to
+            # rolling BELOW, which drops the boundary rather than reusing it.
+            fitted, truncation = checkpoint.fit_checkpoint_context(
+                messages, can_reset = False, searchable = False, **kwargs
+            )
+            if truncation is not None and truncation.get("fits"):
+                return fitted, truncation
+            # A checkpoint boundary means nothing to the rolling window, which cannot
+            # rebuild what that boundary assumed. Recomputing from scratch loses the
+            # epoch, which is the honest trade: an un-compacted window tells no lie.
+            kwargs.pop("sticky_dropped", None)
         if can_reset and checkpoint.enabled():
             # A degraded archive downgrades reset to REPLAY rather than closing the door.
             # Refusing outright sent the request to the rolling window, which replays the

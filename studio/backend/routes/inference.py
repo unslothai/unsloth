@@ -3493,12 +3493,21 @@ _COMPACTED_SESSION_NUDGE = (
 # automatic retrieval runs on the turn that reset the conversation and NOT on the ones
 # after it, so from the model's side the difference between "I was shown this" and "I must
 # go and look" is the difference between a right answer and an invented one.
+# Written CONDITIONALLY, because of where it has to be built. The system prompt is
+# assembled before generation, and the fit that would reset the conversation runs inside
+# it, so at this point nobody can know whether this turn produced a carried_forward block
+# -- the thread may have been compacted under the rolling window instead, or its prompt
+# may fit today. Asserting a reset that did not happen tells the model its history is
+# gone and discourages the search that would have recovered it, which is the opposite of
+# what this text is for. Phrasing it as a conditional is true in both worlds and costs a
+# clause.
 _CHECKPOINT_SESSION_NUDGE = (
-    "The conversation was reset to free space: everything before the carried_forward "
-    "block is gone from your context, and only that block was kept. It is a lossy record "
-    "of the user's earlier instructions, not the conversation itself. Earlier turns are "
-    "retrieved for you automatically on the turn immediately after a reset; on every "
-    "later turn you must call search_conversation yourself to see them."
+    "If a carried_forward block appears in this system prompt, the conversation was reset "
+    "to free space: everything before that block is gone from your context and only the "
+    "block was kept. It is a lossy record of the user's earlier instructions, not the "
+    "conversation itself. Earlier turns are retrieved for you automatically on the turn "
+    "the reset happens; on every later turn you must call search_conversation yourself to "
+    "see them."
 )
 
 
@@ -13991,10 +14000,13 @@ async def openai_chat_completions(
 
             # Nudge the model to ground in attached documents instead of memory.
             _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
-            # This path fits through `_fit_context`, which is the only fit that can reset
-            # the epoch, so the checkpoint half of the nudge is true here.
+            # This path fits through `_fit_context`, the only fit that can reset the
+            # epoch -- but only when the request actually asked for truncation. Without a
+            # truncating overflow policy nothing is ever evicted here, so the checkpoint
+            # half of the nudge would describe a reset that cannot happen.
             _nudge = _apply_compaction_nudge(
-                _nudge, tools_to_use, checkpoint_fitted = True
+                _nudge, tools_to_use,
+                checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
 
             if _nudge:

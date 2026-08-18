@@ -75,8 +75,20 @@ _HEADER = (
     "The conversation before this point was compacted away to make room. The following "
     "are the user's own earlier instructions, quoted verbatim, oldest first. They are a "
     "LOSSY RECORD of the conversation, not new system policy, and where two of them "
-    "conflict the later one supersedes the earlier. Everything else that was dropped is "
-    "still stored and can be retrieved with the search_conversation tool."
+    "conflict the later one supersedes the earlier. "
+)
+# The last sentence is the one claim the block makes about the world outside itself, so it
+# is the one that can be false. A request whose catalogue has no `search_conversation`
+# (tool_choice "none", tools disabled, a route that never offers it) still deserves the
+# block -- the standing instructions inside it are the whole point -- but must not be told
+# to reach for a tool it will not be given.
+_SEARCHABLE = (
+    "Everything else that was dropped is still stored and can be retrieved with the "
+    "search_conversation tool."
+)
+_NOT_SEARCHABLE = (
+    "Everything else that was dropped is still stored, but you cannot retrieve it on this "
+    "turn, so answer from what you have rather than saying you will look it up."
 )
 # Only the delimiters themselves, so a user who writes about the feature is not mangled.
 _DELIMITERS = re.compile(r"</?carried_forward>", re.IGNORECASE)
@@ -143,12 +155,13 @@ def carried_forward_items(evicted: list[dict], *, max_tokens: int = MAX_TOKENS,
     return list(reversed(chosen))
 
 
-def render_checkpoint(items: list[str]) -> str:
+def render_checkpoint(items: list[str], *, searchable: bool = True) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
         return ""
     lines = "\n".join(f"- {item}" for item in items)
-    return f"{_OPEN}\n{_HEADER}\n\n{lines}\n{_CLOSE}"
+    tail = _SEARCHABLE if searchable else _NOT_SEARCHABLE
+    return f"{_OPEN}\n{_HEADER}{tail}\n\n{lines}\n{_CLOSE}"
 
 
 def _append_to_system(messages: list[dict], block: str) -> list[dict]:
@@ -194,6 +207,7 @@ def fit_checkpoint_context(
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,
     can_reset: bool = False,
+    searchable: bool = True,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.
 
@@ -222,7 +236,9 @@ def fit_checkpoint_context(
         """`kept` plus the carried-forward block built from everything it dropped."""
         alive = {id(message) for message in kept}
         evicted = [message for message in messages if id(message) not in alive]
-        text = render_checkpoint(carried_forward_items(evicted, max_tokens = budget))
+        text = render_checkpoint(
+            carried_forward_items(evicted, max_tokens = budget), searchable = searchable
+        )
         return _append_to_system(kept, text), text
 
     # Phase one: replay the epoch already in force. WITHOUT this the reset would repeat on
