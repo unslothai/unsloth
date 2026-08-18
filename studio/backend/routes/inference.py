@@ -20714,11 +20714,14 @@ def _anthropic_map_generation_error(e: Exception) -> HTTPException:
     return HTTPException(status_code = 500, detail = _friendly_error(e))
 
 
-def _collect_anthropic_events(run_gen) -> list:
+async def _collect_anthropic_events(run_gen) -> list:
     """Drain the generator into a list, mapping an upstream 4xx / context
     overflow to a clean Anthropic 400 instead of leaking a 500."""
-    try:
+    def _drain():
         return list(run_gen())
+
+    try:
+        return await asyncio.to_thread(_drain)
     except HTTPException:
         raise
     except Exception as e:
@@ -20775,7 +20778,7 @@ async def _anthropic_tool_non_streaming(
     # trailing text. See the stop_reason mapping below.
     ends_on_tool_use = False
 
-    events = _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen)
 
     for event in events:
         etype = event.get("type", "")
@@ -20854,7 +20857,7 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
     prev_text = ""
     captured_finish_reason = None
 
-    events = _collect_anthropic_events(run_gen)
+    events = await _collect_anthropic_events(run_gen)
 
     for cumulative in events:
         if isinstance(cumulative, dict):
