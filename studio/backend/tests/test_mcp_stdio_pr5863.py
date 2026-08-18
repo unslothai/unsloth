@@ -235,8 +235,7 @@ def test_disabled_reason_tools_disabled(monkeypatch):
 
 
 def test_disabled_reason_explicit_optin_not_suspended(monkeypatch):
-    # An explicit operator =1 is not the loopback auto-default; the tunnel
-    # suspension does not apply, so the gate stays on.
+    # An explicit operator =1 is not the loopback auto-default, so no tunnel suspension.
     monkeypatch.setenv("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
     host_policy.set_remote_connector_active(True)
     assert mcp_client.stdio_mcp_enabled() is True

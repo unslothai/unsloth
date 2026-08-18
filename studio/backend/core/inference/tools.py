@@ -9258,8 +9258,7 @@ _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 def _mcp_tool_model_visible(tool: dict) -> bool:
     """False for MCP Apps tools marked app-only (_meta.ui.visibility without
     "model"): those exist for a server-rendered widget to call, not the LLM."""
-    # Both spellings: model_dump() gives "meta", the wire gives "_meta". Taking
-    # only the first non-empty one lets unrelated keys mask the other's visibility.
+    # model_dump() gives "meta", the wire "_meta"; unrelated keys in one must not mask the other.
     for key in ("meta", "_meta"):
         meta = tool.get(key)
         if not isinstance(meta, dict):
@@ -9267,7 +9266,7 @@ def _mcp_tool_model_visible(tool: dict) -> bool:
         ui = meta.get("ui")
         visibility = ui.get("visibility") if isinstance(ui, dict) else None
         if visibility is None:
-            # Tolerated, not spec: the spec only deprecates flat "ui/resourceUri".
+            # Tolerated, not spec: only flat "ui/resourceUri" is deprecated.
             visibility = meta.get("ui/visibility")
         if isinstance(visibility, (list, tuple)):
             return "model" in visibility
@@ -9310,8 +9309,7 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
                 "function": {
                     "name": name,
                     "description": f"[{display}] {tool.get('description') or ''}".strip(),
-                    # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both
-                    # so a bump cannot silently strip every tool's arguments.
+                    # mcp<2 dumps "inputSchema", 2.x "input_schema"; accept both.
                     "parameters": tool.get("inputSchema")
                     or tool.get("input_schema")
                     or {"type": "object", "properties": {}},

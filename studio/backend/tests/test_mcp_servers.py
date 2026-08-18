@@ -216,7 +216,7 @@ def test_mcp_specs_read_visibility_from_either_meta_spelling():
     [
         (["model"], True),
         (["app"], False),
-        ([], False),  # undefined by the spec; "visible to nobody" reads as hidden
+        ([], False),  # "visible to nobody" reads as hidden
         ("model", True),  # not a list: unrecognised shape stays visible
         (None, True),
         (["Model"], False),  # spec values are lowercase
