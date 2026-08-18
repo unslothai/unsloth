@@ -483,34 +483,39 @@ def _as_wire(messages: list[dict]) -> list[dict]:
             if isinstance(part, dict) and part.get("type") == "tool-call"
         ]
         if not calls:
-            wire.append({
-                "role": message.get("role"),
-                "content": content,
-                "tool_calls": message.get("tool_calls"),
-            })
+            wire.append(
+                {
+                    "role": message.get("role"),
+                    "content": content,
+                    "tool_calls": message.get("tool_calls"),
+                }
+            )
             continue
         rest = [
             part
             for part in parts
             if not (isinstance(part, dict) and part.get("type") == "tool-call")
         ]
-        wire.append({
-            "role": message.get("role"),
-            "content": [
-                {key: value for key, value in call.items() if key != "result"}
-                for call in calls
-            ],
-            "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
-        })
+        wire.append(
+            {
+                "role": message.get("role"),
+                "content": [
+                    {key: value for key, value in call.items() if key != "result"} for call in calls
+                ],
+                "tool_calls": [{"id": call.get("toolCallId"), "function": {}} for call in calls],
+            }
+        )
         for call in calls:
             result = call.get("result")
             if result in (None, "", {}, []):
                 continue
-            wire.append({
-                "role": "tool",
-                "tool_call_id": call.get("toolCallId"),
-                "content": result if isinstance(result, str) else json.dumps(result),
-            })
+            wire.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.get("toolCallId"),
+                    "content": result if isinstance(result, str) else json.dumps(result),
+                }
+            )
         if rest:
             wire.append({"role": message.get("role"), "content": rest})
     return wire
@@ -595,8 +600,7 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         if position
         and len(position) >= 1
         and all(
-            _same(stored, live, is_call)
-            for stored, live, is_call in zip(position, texts, calls)
+            _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
         )
     ]
 

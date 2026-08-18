@@ -2324,25 +2324,45 @@ def _persist_agent_thread():
     """A thread whose newest turn is a tool exchange, stored the way the UI stores one."""
     from storage import studio_db
 
-    studio_db.upsert_chat_thread({"id": THREAD, "title": "t", "modelType": "base",
-                                  "modelId": "local-model", "createdAt": 1})
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model", "createdAt": 1}
+    )
     rows = [
         ("user", [{"type": "text", "text": "what is the capital of peru"}]),
         ("assistant", [{"type": "text", "text": "Lima."}]),
         ("user", [{"type": "text", "text": "list the files in the repo"}]),
-        ("assistant", [
-            {"type": "tool-call", "toolCallId": "c1", "toolName": "terminal",
-             "args": {"command": "ls"}, "result": "main.py readme.md"},
-            {"type": "text", "text": "the repo has two files."},
-        ]),
+        (
+            "assistant",
+            [
+                {
+                    "type": "tool-call",
+                    "toolCallId": "c1",
+                    "toolName": "terminal",
+                    "args": {"command": "ls"},
+                    "result": "main.py readme.md",
+                },
+                {"type": "text", "text": "the repo has two files."},
+            ],
+        ),
     ]
     for index, (role, content) in enumerate(rows):
-        studio_db.upsert_chat_message({"id": f"{THREAD}-{index}", "threadId": THREAD,
-                                       "role": role, "content": content,
-                                       "createdAt": index + 2})
+        studio_db.upsert_chat_message(
+            {
+                "id": f"{THREAD}-{index}",
+                "threadId": THREAD,
+                "role": role,
+                "content": content,
+                "createdAt": index + 2,
+            }
+        )
     return [
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "function": {"name": "terminal", "arguments": '{"command": "ls"}'}}
+            ],
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "main.py readme.md"},
         {"role": "assistant", "content": "the repo has two files."},
     ]
@@ -2380,14 +2400,20 @@ def test_a_tool_exchange_is_numbered_where_the_conversation_put_it(conn):
     tool_turn = _persist_agent_thread()
     # The order eviction really produces: the oldest turn, then the tool groups, and the
     # user turn that opened them only once it stops being the newest.
-    conversation_archive.archive_turns(THREAD, [
-        {"role": "user", "content": "what is the capital of peru"},
-        {"role": "assistant", "content": "Lima."},
-    ])
+    conversation_archive.archive_turns(
+        THREAD,
+        [
+            {"role": "user", "content": "what is the capital of peru"},
+            {"role": "assistant", "content": "Lima."},
+        ],
+    )
     conversation_archive.archive_turns(THREAD, tool_turn)
-    conversation_archive.archive_turns(THREAD, [
-        {"role": "user", "content": "list the files in the repo"},
-    ])
+    conversation_archive.archive_turns(
+        THREAD,
+        [
+            {"role": "user", "content": "list the files in the repo"},
+        ],
+    )
 
     scope = store.conversation_archive_scope(THREAD)
     ordinals = [
