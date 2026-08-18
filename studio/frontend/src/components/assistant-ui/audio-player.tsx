@@ -4,6 +4,8 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { useShieldedFromDismissingPress } from "@/lib/menu-dismiss";
 import { downloadUrl, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { Download01Icon } from "@hugeicons/core-free-icons";
@@ -20,6 +22,14 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // A native <input type="range"> COMMITS ON POINTERDOWN: pressing the track moves the thumb and
+  // fires `input` there and then, so the press that dismisses a non-modal menu has already
+  // seeked the audio by the time the click swallower in lib/menu-dismiss.ts runs. Same shape as
+  // Radix Slider, and the same answer: out of the hit test for exactly as long as such a menu is
+  // open. Measured on chromium with the composer "+" menu open, one press on the visible
+  // scrubber: currentTime 0 -> 4.08 s, read BEFORE the release.
+  const shielded = useShieldedFromDismissingPress();
 
   const togglePlay = () => {
     const audio = audioRef.current;
@@ -101,7 +111,13 @@ export const AudioPlayer: FC<AudioPlayerProps> = ({ src }) => {
           step={0.01}
           value={progress}
           onChange={handleSeek}
-          className="h-1.5 w-full cursor-pointer accent-primary"
+          style={shielded ? { pointerEvents: "none" } : undefined}
+          className={cn(
+            // Marks the control for the static popper exception in index.css, so a scrubber
+            // that ever lives INSIDE an open menu stays the user's to press.
+            "pointerdown-commits",
+            "h-1.5 w-full cursor-pointer accent-primary",
+          )}
         />
         <div className="flex justify-between text-ui-10 text-muted-foreground">
           <span>{formatTime(progress)}</span>

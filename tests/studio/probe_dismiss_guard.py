@@ -112,6 +112,9 @@ from playwright_heavy_thread import (  # noqa: E402
 
 CHARS = int(os.environ.get("PROBE_CHARS", "25000"))
 HOLD_MS = int(os.environ.get("PROBE_HOLD_MS", "600"))
+# Past CLICK_GRACE_MS (500) in src/lib/menu-dismiss.ts, deliberately: the bound is the thing
+# `touch_hold_second_pointer_grace` is waiting out.
+GRACE_HOLD_MS = int(os.environ.get("PROBE_GRACE_HOLD_MS", "900"))
 
 OPEN_MENU_JS = """
 async () => {
@@ -405,7 +408,7 @@ async def one_case(
         }
     elif case == "touch":
         await page.touchscreen.tap(x, y)
-    elif case == "touch_hold_second_pointer":
+    elif case in ("touch_hold_second_pointer", "touch_hold_second_pointer_grace"):
         # A finger holds the unconfirmed "Delete message" button with the menu open, a MOUSE
         # press lands inside the menu, then the finger lifts. Radix defers a touch dismissal to
         # the resulting click, so the menu is still open under the second pointer, and a guard
@@ -430,7 +433,21 @@ async def one_case(
         await page.wait_for_timeout(80)
         live = await page.evaluate("() => window.__multiPointer.live.length")
         await page.mouse.up()
-        await page.wait_for_timeout(150)
+        # The _grace variant waits out the release-anchored bound with the FINGER STILL DOWN.
+        # `startGrace` is reached by the second pointer's own `pointerup`, and if it cannot tell
+        # that release from the guarded one it retires a gesture nobody has let go of; 500 ms
+        # later the guard is gone and the finger's own compatibility click lands on Delete.
+        # Measured on chromium: message deleted. The plain variant lifts INSIDE the window and
+        # therefore cannot see this at all, which is why both are kept.
+        await page.wait_for_timeout(
+            GRACE_HOLD_MS if case.endswith("_grace") else 150
+        )
+        if case.endswith("_grace"):
+            still_down = await page.evaluate("() => window.__multiPointer.live.length")
+            if still_down < 1:
+                return {"case": case,
+                        "error": "the finger was no longer down when the bound expired, so the "
+                                 "case tested nothing"}
         await cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": finger})
         await page.wait_for_timeout(1500)
         after = await page.evaluate(FACTS_JS)
@@ -644,7 +661,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,touch_hold_second_pointer,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,touch_hold_second_pointer,touch_hold_second_pointer_grace,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

@@ -181,13 +181,32 @@ const disarm = (): void => {
   keyboardOnly = false;
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
-  document.removeEventListener("pointercancel", disarm, true);
+  document.removeEventListener("pointercancel", disarmOnPointerCancel, true);
   document.removeEventListener("keydown", disarmOnKey, true);
   document.removeEventListener("keyup", disarmOnActivationKeyUp, true);
   window.removeEventListener("blur", disarm);
 };
 
-function startGrace(): void {
+/** The release or cancel of a pointer that is not the one the guard armed for. */
+const isAnotherPointer = (event: PointerEvent): boolean =>
+  armedPointerId !== undefined && event.pointerId !== armedPointerId;
+
+const disarmOnPointerCancel = (event: PointerEvent): void => {
+  // Same filter, same reason as `startGrace`: a second pointer's cancel is not the guarded
+  // gesture ending, and disarming on it leaves the click the guarded pointer still owes to
+  // land on whatever it was pressing.
+  if (isAnotherPointer(event)) return;
+  disarm();
+};
+
+function startGrace(event: PointerEvent): void {
+  // Only the ARMED pointer's release retires its gesture. `useDismissingClickGuard`'s
+  // `pointerdown` handler already filters a second pointer, but this listener took no event and
+  // so could not: a mouse pressed and RELEASED inside the menu while a finger is still holding
+  // the unconfirmed "Delete message" button started the 500 ms bound on the FINGER's behalf, and
+  // once that expired the finger's own compatibility click reached the button. Measured on
+  // chromium with real CDP touch: message deleted.
+  if (isAnotherPointer(event)) return;
   pointerIsDown = false;
   if (graceTimer !== undefined) window.clearTimeout(graceTimer);
   // A release-anchored bound cannot retire the guard while Space is still down: the click that
@@ -307,7 +326,7 @@ const arm = (touch: boolean, pointerId: number): void => {
   // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
   // one: bound it at release, and drop it outright on a cancel, a key, or losing the window.
   document.addEventListener("pointerup", startGrace, true);
-  document.addEventListener("pointercancel", disarm, true);
+  document.addEventListener("pointercancel", disarmOnPointerCancel, true);
   document.addEventListener("keydown", disarmOnKey, true);
   document.addEventListener("keyup", disarmOnActivationKeyUp, true);
   window.addEventListener("blur", disarm);
@@ -408,44 +427,53 @@ export function useShieldedFromDismissingPress(): boolean {
 }
 
 /**
+ * Install the document watcher for one open menu, and return the removal.
+ *
+ * Exported for the same reason `markNonModalMenuOpen` is: the arm/disarm state machine below is
+ * the part with the sharp edges, and it can be driven end to end against a fake document without
+ * a renderer. Application code mounts `<MenuDismissGuard />`; nothing else should call this.
+ */
+export function installDismissingClickGuard(): () => void {
+  const releaseMenuMark = markNonModalMenuOpen();
+  const onPointerDown = (event: PointerEvent): void => {
+    // A SECOND pointer is not a new gesture while the guarded one is still pressed. Radix
+    // defers a touch dismissal to the resulting click, so a finger held on a control outside
+    // an open menu leaves that menu usable by a second pointer, and every early return below
+    // gives up the guard without rearming it. Measured on chromium with real CDP touch: a
+    // finger holding the unconfirmed "Delete message" button, a mouse press inside the menu,
+    // then lifting the finger, deleted the message.
+    if (armed && pointerIsDown && event.pointerId !== armedPointerId) return;
+    // A new gesture always supersedes the last one, so a press that never produced a click
+    // cannot leave the swallower armed.
+    disarm();
+    // Only the primary button ever synthesises the click this exists to eat. A right or
+    // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
+    // the user's NEXT left click: measured on all three engines, the click after a right-click
+    // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
+    // forever, but not arming at all is the actual answer.
+    //
+    // `button` is the whole test on purpose. macOS spells its secondary click ctrl+left, which
+    // arrives as button 0 with `ctrlKey`, and the engines disagree about what follows it:
+    // Blink raises `contextmenu` and no `click`, WebKit sends both. Skipping those would drop
+    // the swallow on WebKit, which is the engine Desktop ships on macOS, and on every ctrl+left
+    // elsewhere, where it is an ordinary primary click. So that one is left to the bound.
+    if (event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(MENU_SURFACE)) return;
+    arm(event.pointerType === "touch", event.pointerId);
+  };
+  document.addEventListener("pointerdown", onPointerDown, true);
+  return () => {
+    document.removeEventListener("pointerdown", onPointerDown, true);
+    releaseMenuMark();
+  };
+}
+
+/**
  * Call from inside an open non-modal menu's content. Mount it via `<MenuDismissGuard />`
  * rather than calling it directly, so the guard's lifetime is exactly the content's.
  */
 export function useDismissingClickGuard(): void {
-  useEffect(() => {
-    const releaseMenuMark = markNonModalMenuOpen();
-    const onPointerDown = (event: PointerEvent): void => {
-      // A SECOND pointer is not a new gesture while the guarded one is still pressed. Radix
-      // defers a touch dismissal to the resulting click, so a finger held on a control outside
-      // an open menu leaves that menu usable by a second pointer, and every early return below
-      // gives up the guard without rearming it. Measured on chromium with real CDP touch: a
-      // finger holding the unconfirmed "Delete message" button, a mouse press inside the menu,
-      // then lifting the finger, deleted the message.
-      if (armed && pointerIsDown && event.pointerId !== armedPointerId) return;
-      // A new gesture always supersedes the last one, so a press that never produced a click
-      // cannot leave the swallower armed.
-      disarm();
-      // Only the primary button ever synthesises the click this exists to eat. A right or
-      // middle press raises `contextmenu` or `auxclick` instead, so arming for one can only eat
-      // the user's NEXT left click: measured on all three engines, the click after a right-click
-      // dismissal was suppressed. The release-anchored bound caps that at 500 ms rather than
-      // forever, but not arming at all is the actual answer.
-      //
-      // `button` is the whole test on purpose. macOS spells its secondary click ctrl+left, which
-      // arrives as button 0 with `ctrlKey`, and the engines disagree about what follows it:
-      // Blink raises `contextmenu` and no `click`, WebKit sends both. Skipping those would drop
-      // the swallow on WebKit, which is the engine Desktop ships on macOS, and on every ctrl+left
-      // elsewhere, where it is an ordinary primary click. So that one is left to the bound.
-      if (event.button !== 0) return;
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      if (target.closest(MENU_SURFACE)) return;
-      arm(event.pointerType === "touch", event.pointerId);
-    };
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      releaseMenuMark();
-    };
-  }, []);
+  useEffect(installDismissingClickGuard, []);
 }
