@@ -123,6 +123,7 @@ import {
   parseExternalModelId,
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
+import { queueAttachmentEligibility } from "@/features/chat/utils/queue-attachment-eligibility";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
@@ -2755,20 +2756,24 @@ const Composer: FC<{
   );
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
-  const composerAcceptsQueueing =
-    !hasPendingAudio &&
-    !isComposing &&
-    !hasPendingAttachments &&
-    !hasMaterializingImageAttachments &&
-    !hasMaterializingAudioAttachments &&
-    !disabled &&
-    !overlay;
-  const canQueueCurrentPrompt =
-    composerText.trim().length > 0 && !hasAttachments && composerAcceptsQueueing;
-  // A long paste is text the composer parked in a chip, so it queues like the
-  // same text did before it attached, rather than being refused as a file.
-  const canQueuePastedTextPrompt =
-    attachmentsAreAllPastedText && composerAcceptsQueueing;
+  // #9210: the queue legs (text, pasted-text chip, attachment-only) live in
+  // one extracted gate so tests can pin them without mounting the composer.
+  const {
+    canQueueCurrentPrompt,
+    canQueuePastedTextPrompt,
+    canQueueAttachmentPrompt,
+  } = queueAttachmentEligibility({
+    hasAttachments,
+    hasPendingAudio,
+    isComposing,
+    hasPendingAttachments,
+    hasMaterializingImageAttachments,
+    hasMaterializingAudioAttachments,
+    disabled,
+    overlay,
+    composerText,
+    attachmentsAreAllPastedText,
+  });
 
   // Per-thread draft autosave: restore on mount, then mirror composer text
   // into localStorage (debounced) so a half-typed message survives a
@@ -4235,7 +4240,11 @@ const Composer: FC<{
               // button, so a running thread shows Stop instead of Queue.
               queueDisabled={
                 disableQueue ||
-                !(canQueueCurrentPrompt || canQueuePastedTextPrompt)
+                !(
+                  canQueueCurrentPrompt ||
+                  canQueuePastedTextPrompt ||
+                  canQueueAttachmentPrompt
+                )
               }
               onQueueClick={() => {
                 if (disableQueue) return;
@@ -4249,6 +4258,12 @@ const Composer: FC<{
                 }
                 const queuedPrompt = composerText.trim();
                 if (queuedPrompt.length === 0) {
+                  // #9210: an attachment with no text cannot ride the text
+                  // queue, but send() already submits it. Take the same path
+                  // the form submit takes so the button does what it shows.
+                  if (canQueueAttachmentPrompt) {
+                    handleSubmit();
+                  }
                   return;
                 }
                 startHydratedPromptQueue(
