@@ -869,9 +869,9 @@ def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelI
                 and existing.source in _LOCAL_PATH_DEDUPE_SOURCES
                 and model.source != existing.source
             ):
-                prefer_candidate = _LOCAL_SOURCE_PRIORITY[model.source] < _LOCAL_SOURCE_PRIORITY[
-                    existing.source
-                ]
+                prefer_candidate = (
+                    _LOCAL_SOURCE_PRIORITY[model.source] < _LOCAL_SOURCE_PRIORITY[existing.source]
+                )
             else:
                 prefer_candidate = _prefer_complete_larger(
                     model.partial,
