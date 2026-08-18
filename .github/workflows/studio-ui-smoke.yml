@@ -120,7 +120,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Static reads, so it runs first and fails fast; nothing else runs it.
       - name: Playwright locator contract (static)
@@ -158,12 +157,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -193,13 +195,14 @@ jobs:
       # a cache holding the older engines.
       - name: Restore the Playwright browser cache
         id: pw-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Install Playwright browsers
+        id: pw-install
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -209,6 +212,34 @@ jobs:
           else
             python -m playwright install --with-deps chromium firefox webkit
           fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Reset auth + boot Unsloth
         if: matrix.shard == 'chat'
@@ -581,7 +612,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local
@@ -605,13 +635,14 @@ jobs:
       # a cache holding the older engines.
       - name: Restore the Playwright browser cache
         id: pw-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
           path: ~/.cache/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Install Playwright browsers
+        id: pw-install
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -621,6 +652,34 @@ jobs:
           else
             python -m playwright install --with-deps chromium firefox webkit
           fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Cross-browser loaded-models indicator
         # The three engines are independent runs of the same suite, and running
