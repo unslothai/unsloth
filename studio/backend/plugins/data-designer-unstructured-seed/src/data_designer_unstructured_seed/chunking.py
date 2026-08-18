@@ -20,8 +20,7 @@ _PANDAS = None
 
 
 def _pandas():
-    # On use, not at module scope, so importing this module costs nothing.
-    # Cached in a global so a repeat is a global read, not an import statement.
+    # Imported on use, not at module scope, so importing this module costs nothing.
     global _PANDAS
     if _PANDAS is None:
         try:
