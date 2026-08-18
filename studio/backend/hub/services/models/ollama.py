@@ -47,6 +47,11 @@ def _ollama_manifest_ref(tag_file: Path) -> str:
     return f"{_OLLAMA_MANIFEST_REF_PREFIX}{quote(str(tag_file), safe = '')}"
 
 
+def is_ollama_manifest_ref(ref: str) -> bool:
+    """True when *ref* is an opaque ``ollama-manifest:`` inventory reference."""
+    return ref.startswith(_OLLAMA_MANIFEST_REF_PREFIX)
+
+
 def _safe_is_file(path: Path) -> bool:
     try:
         return path.is_file()

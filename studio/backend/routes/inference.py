@@ -49,6 +49,10 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
+from hub.services.models.ollama import (
+    is_ollama_manifest_ref,
+    materialize_ollama_model_ref,
+)
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
@@ -4660,6 +4664,19 @@ def _active_gguf_intent(
 def _resolve_model_identifier_for_request(
     request: LoadRequest | ValidateModelRequest, *, operation: str
 ) -> tuple[str, str, bool]:
+    if is_ollama_manifest_ref(request.model_path):
+        # The read-only inventory scan hands the picker an opaque manifest
+        # reference; the load path owns the filesystem write that turns it into
+        # a loadable .gguf link (hub/services/models/ollama.py).
+        try:
+            resolved = materialize_ollama_model_ref(request.model_path)
+        except ValueError as exc:
+            logger.warning("inference.ollama_materialize_failed: %s", exc)
+            raise HTTPException(
+                status_code = 400,
+                detail = redact_native_paths(str(exc)),
+            ) from exc
+        return resolved, Path(resolved).name, False
     if not request.native_path_lease:
         return request.model_path, request.model_path, False
     try:

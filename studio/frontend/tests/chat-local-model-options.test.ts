@@ -29,21 +29,20 @@ function row(over: Record<string, unknown> = {}) {
   } as never;
 }
 
-test("Ollama rows are withheld until their refs are loadable", () => {
-  // /api/hub/local scans read-only and returns an opaque `ollama-manifest:` id that only
-  // materialize_ollama_model_ref can turn into a .gguf path, and nothing calls that yet.
-  // The picker withholds these rows for the same reason (PICKER_LOCAL_SOURCES), so Chat
-  // matches it: an entry that fails on click is worse than one that is not offered.
-  assert.deepEqual(
-    chatLocalModelOptions([
-      row({
-        id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3",
-        display_name: "llama3",
-        source: "ollama",
-      }),
-    ]),
-    [],
-  );
+test("Ollama rows are offered under their own label", () => {
+  // /api/hub/local scans read-only and returns an opaque `ollama-manifest:` id;
+  // POST /load resolves it through materialize_ollama_model_ref, so the reference
+  // is loadable as-is and Chat lists it like the picker does (PICKER_LOCAL_SOURCES).
+  const options = chatLocalModelOptions([
+    row({
+      id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fllama3",
+      display_name: "llama3",
+      source: "ollama",
+    }),
+  ]);
+  assert.equal(options.length, 1);
+  assert.equal(options[0]?.name, "llama3");
+  assert.equal(options[0]?.baseModel, "Ollama");
 });
 
 test("a directory with two weight formats yields one option per load id", () => {
