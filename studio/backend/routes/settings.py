@@ -1022,6 +1022,8 @@ def _read_last_local_model(subject: str) -> "dict | None":
     if not isinstance(stored, dict):
         stored = get_app_setting(LAST_LOCAL_MODEL_SETTING_KEY, None)
     return stored if isinstance(stored, dict) else None
+
+
 # Client clocks stamp loads (a dropped PUT can only be ordered by the clock that
 # saw it), but a future-dated stamp must not freeze the record forever: cap the
 # lead a client clock may claim over server time.
