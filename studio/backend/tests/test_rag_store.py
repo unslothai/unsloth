@@ -324,3 +324,72 @@ def test_gate_counts_a_folder_document_that_outlived_its_folder(rag_conn):
     rag_conn.commit()
     assert store.linked_folder_rows_exist(rag_conn) is True
     assert store.search_lexical(rag_conn, "kb_a", "alpha", 10) == []
+
+
+def _pasted_prose(words: int) -> str:
+    """Distinct ordinary words, as a pasted log or source file supplies them.
+
+    Purely alphabetic on purpose: a token mixing letters and digits short-circuits the
+    identifier test on its first clause and never reaches the scan being measured, so a
+    synthetic `tok1 tok2 ...` paste hides the cost that real prose pays.
+    """
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    return " ".join(
+        letters[index % 26]
+        + letters[(index // 26) % 26]
+        + letters[(index // 676) % 26]
+        + letters[(index // 17576) % 26]
+        + "qz"
+        for index in range(words)
+    )
+
+
+def test_a_pasted_log_does_not_make_the_archive_query_quadratic(monkeypatch):
+    """Shaping the archive query must not re-tokenize the question once per token.
+
+    `conversation_match_queries` runs on the LATEST USER MESSAGE, and the message that
+    forces a compaction is very often a pasted log or source file. Re-scanning the whole
+    question inside the per-token identifier test made the shaping cost grow with the
+    square of the question's length: 48 KB of pasted prose measured at 4.6s and 96 KB at
+    17.7s of pure CPU, against 2.3ms for the same text through `_match_query`. The recall
+    path can run the shaping several times per request -- once per widening iteration in
+    `conversation_archive.recall`, and again for each rung of the over-budget top_k
+    backoff -- so the multiplier lands on the one turn that compacts the thread.
+
+    Counted rather than timed, so the guard is deterministic: the number of full scans of
+    the question is what has to stay bounded, not the wall clock on one machine.
+    """
+    scans = {"n": 0}
+    real = store._TOKEN
+
+    class CountingToken:
+        def findall(self, text):
+            scans["n"] += 1
+            return real.findall(text)
+
+    monkeypatch.setattr(store, "_TOKEN", CountingToken())
+
+    question = f"what is the current value of ZQXVARA123 {_pasted_prose(2000)}"
+    expressions = store.conversation_match_queries(question)
+
+    assert expressions and expressions[0].startswith('"zqxvara123"')
+    # Once for the lower-cased tokens, once for the raw ones. Anything that grows with
+    # the token count is the quadratic coming back.
+    assert scans["n"] <= 2, f"tokenized the question {scans['n']} times"
+
+
+def test_query_shaping_stays_cheap_on_a_pasted_log():
+    """The wall-clock companion to the scan count, with a wide margin.
+
+    6000 pasted words is roughly a 48 KB paste, which is one source file. Unfixed this
+    takes about 4.6s of CPU; linear it takes about 6ms. A 1.0s ceiling is unreachable by
+    a linear implementation on any machine that can run this suite at all.
+    """
+    import time
+
+    question = f"what is the current value of ZQXVARA123\n{_pasted_prose(6000)}"
+    started = time.perf_counter()
+    expressions = store.conversation_match_queries(question)
+    elapsed = time.perf_counter() - started
+    assert expressions and expressions[0] == '"zqxvara123"'
+    assert elapsed < 1.0, f"shaping a 6000-word paste took {elapsed:.2f}s"

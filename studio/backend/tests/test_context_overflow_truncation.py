@@ -1022,10 +1022,12 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
 # to go. These cover the pin that holds it, and the bounds that stop the pin itself
 # becoming the problem.
 
+
 def _instruction(text = None):
     return {
         "role": "user",
-        "content": text or (
+        "content": text
+        or (
             "Standing instruction for the rest of this task: always report results as a "
             "markdown table, and end every reply with STATUS::ZQXVARA123-ALPHA."
         ),
@@ -1040,8 +1042,7 @@ def _filler_turns(count, chars = 800):
     out = []
     for index in range(count):
         out.append({"role": "user", "content": nudges[index % len(nudges)]})
-        out.append({"role": "assistant",
-                    "content": f"Section {index}. " + "x" * chars})
+        out.append({"role": "assistant", "content": f"Section {index}. " + "x" * chars})
     return out
 
 
@@ -1051,22 +1052,24 @@ def test_a_governing_instruction_survives_filler_turns():
 
     instruction = _instruction()
     messages = (
-        [{"role": "system", "content": "you are helpful"}, instruction,
-         {"role": "assistant", "content": "Understood."}]
+        [
+            {"role": "system", "content": "you are helpful"},
+            instruction,
+            {"role": "assistant", "content": "Understood."},
+        ]
         + _filler_turns(6)
         + [{"role": "user", "content": "continue"}]
     )
 
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
-    kept, dropped = truncate_oldest_messages(
-        messages, 0.3, protected_message_ids = pinned
-    )
+    kept, dropped = truncate_oldest_messages(messages, 0.3, protected_message_ids = pinned)
 
     assert any(message is instruction for message in kept)
     assert dropped >= 2
     # And with the knob at its shipped default the behaviour is exactly today's.
     kept_today, _ = truncate_oldest_messages(
-        messages, 0.3,
+        messages,
+        0.3,
         protected_message_ids = instruction_pin.pinned_instruction_ids(messages, groups = 0),
     )
     assert not any(message is instruction for message in kept_today)
@@ -1078,8 +1081,7 @@ def test_a_pinned_instruction_cannot_starve_the_window():
     from core.inference import instruction_pin
 
     # ~890 tokens each, so any one of them fits under the 1024 ceiling and no two do.
-    big = [_instruction("Please " + "consider this requirement carefully. " * 95)
-           for _ in range(3)]
+    big = [_instruction("Please " + "consider this requirement carefully. " * 95) for _ in range(3)]
     messages = []
     for instruction in big:
         messages += [instruction, {"role": "assistant", "content": "ok"}]
@@ -1101,9 +1103,14 @@ def test_later_long_user_turns_crowd_out_an_older_instruction():
     instruction = _instruction()
     messages = [instruction, {"role": "assistant", "content": "Understood."}]
     for index in range(3):
-        messages += [{"role": "user", "content": f"Now review section {index} of the "
-                                                 f"report and summarise it. " + "x" * 400},
-                     {"role": "assistant", "content": f"Section {index} reviewed."}]
+        messages += [
+            {
+                "role": "user",
+                "content": f"Now review section {index} of the "
+                f"report and summarise it. " + "x" * 400,
+            },
+            {"role": "assistant", "content": f"Section {index} reviewed."},
+        ]
     messages += [{"role": "user", "content": "continue"}]
 
     pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096)
@@ -1115,7 +1122,7 @@ def test_later_long_user_turns_crowd_out_an_older_instruction():
 
 
 def test_a_short_follow_up_is_never_pinned():
-    """"pin the last N user turns" would pin the nudge and leave the instruction."""
+    """ "pin the last N user turns" would pin the nudge and leave the instruction."""
     from core.inference import instruction_pin
 
     instruction = _instruction()
@@ -1136,10 +1143,13 @@ def test_an_upload_is_never_treated_as_filler():
     """A one-word message with an image attached is a request, not a nudge."""
     from core.inference import instruction_pin
 
-    message = {"role": "user", "content": [
-        {"type": "text", "text": "this"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-    ]}
+    message = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ],
+    }
 
     assert instruction_pin.is_substantive(message)
 
@@ -1153,3 +1163,94 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     # Short, but it names the thing it wants: replacing this with an older instruction
     # would answer a question the user did not ask.
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
+
+
+def test_a_self_contained_two_word_request_is_not_thin():
+    """Thin has to mean "names nothing", not "is short".
+
+    A word count swept in every self-contained short request, and a thin query earns an
+    anchor that `conversation_archive.recall` spends AHEAD of the user's own words. At
+    top_k=1 -- which the over-budget backoff (4 -> 2 -> 1) and a small window both reach,
+    since `_recall_top_k` is `budget // CHUNK_TOKENS` -- the anchor takes the only slot
+    and the turn answering what was actually asked is never retrieved.
+    """
+    from core.inference import instruction_pin
+
+    for request in ("review billing", "restart nginx", "fix authentication", "ZQXVARA123?"):
+        assert not instruction_pin.is_thin_query(request), request
+
+    # Still thin, because every word of these is a function word or a nudge: there is
+    # genuinely nothing in them to search an archive for.
+    for nudge in ("what about it", "and then?", "do it", "yes please", "why?", "???"):
+        assert instruction_pin.is_thin_query(nudge), nudge
+
+
+def test_a_pin_is_charged_for_everything_it_holds():
+    """`truncate_oldest_messages` protects by GROUP, so the reply rides along with the
+    instruction. Charging only the instruction let a 28-token pin hold 20037 tokens, past
+    both the ceiling and the prompt-fraction cap, and `_fit_with_instruction_pins` then
+    dropped every pin on the retry -- losing the instruction the pin exists to keep."""
+    from core.inference import instruction_pin
+
+    instruction = _instruction()
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        instruction,
+        {"role": "assistant", "content": "x " * 40000},
+        {"role": "user", "content": "continue"},
+    ]
+
+    assert instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024) == set()
+
+    # And the same instruction with a reply the budget can afford is still pinned.
+    modest = list(messages)
+    modest[2] = {"role": "assistant", "content": "Understood."}
+    assert instruction_pin.pinned_instruction_ids(modest, groups = 2, max_tokens = 1024) == {
+        id(instruction)
+    }
+
+
+def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
+    """A trailing tool exchange is its own group, and `truncate_oldest_messages` skips a
+    protected group BEFORE the `starts_user_turn` expansion, so that group stays an
+    independent eviction unit and goes while the pinned instruction stays. Charging it to
+    the pin would let one ordinary file read cost a one-line instruction its pin over
+    tokens the pin never keeps -- and an agent run is exactly where the filler follow-up
+    the pin exists for appears."""
+    from core.inference import instruction_pin
+    from core.inference.context_window import truncate_oldest_messages
+
+    instruction = _instruction()
+    tool_call = {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{"id": "c1", "function": {"name": "read", "arguments": "{}"}}],
+    }
+    tool_result = {"role": "tool", "tool_call_id": "c1", "content": "y " * 40000}
+    messages = [
+        {"role": "system", "content": "you are helpful"},
+        instruction,
+        tool_call,
+        tool_result,
+        {"role": "user", "content": "continue"},
+    ]
+
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
+    assert pinned == {id(instruction)}
+
+    # And the 20k tokens it was being charged for are evicted anyway, with the pin on.
+    kept, dropped = truncate_oldest_messages(messages, 0.01, protected_message_ids = pinned)
+    assert any(message is instruction for message in kept)
+    assert not any(message is tool_call for message in kept)
+    assert not any(message is tool_result for message in kept)
+    assert dropped == 2
+
+    # The reply that shares the instruction's own group is still charged, so the ceiling
+    # keeps working on the thing it does hold.
+    with_reply = [
+        {"role": "system", "content": "you are helpful"},
+        instruction,
+        {"role": "assistant", "content": "x " * 40000},
+        {"role": "user", "content": "continue"},
+    ]
+    assert instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()

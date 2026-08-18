@@ -76,12 +76,21 @@ def _match_query(query: str) -> str:
 # Function words only, and a closed list rather than anything corpus-derived, so the
 # behaviour is reviewable and identical on every install. Nothing here can carry the
 # subject of a question.
-_ARCHIVE_STOPWORDS = frozenset("""
+#
+# `no` and `not` are deliberately NOT here. They are function words, but they are the
+# only words that carry the difference in "what did I say not to delete?", and dropping
+# them leaves `say` and `delete` -- terms a long archive has in most of its turns, whose
+# BM25 IDF FTS5 then floors at 1e-6, so they order nothing. Keeping the negation costs
+# nothing where it is common (the same floor applies to it) and is the whole query where
+# it is rare.
+_ARCHIVE_STOPWORDS = frozenset(
+    """
 a about all am an and any are as at be been being but by can could did do does doing
-for from get give had has have how i if in into is it its just let me my no not now of
+for from get give had has have how i if in into is it its just let me my now of
 on or please should so tell that the their them then there these they this those to us
 was we were what when where which who why will with would you your
-""".split())
+""".split()
+)
 
 # Identifier-ish: a token mixing letters and digits (ZQXVARA123, 9134), one containing an
 # underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
@@ -89,12 +98,20 @@ was we were what when where which who why will with would you your
 _HAS_LETTER_AND_DIGIT = re.compile(r"(?=.*[^\W\d_])(?=.*\d)", re.UNICODE)
 
 
-def _is_identifier(token: str, raw_query: str) -> bool:
+def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
+    """``raw_tokens`` is the query's tokens BEFORE lower-casing, tokenized once.
+
+    Once, and as a set, because the caller runs this per distinct token: re-scanning the
+    query text inside the loop made the whole function quadratic in the question's
+    length, which a pasted log turns into a multi-second stall on the request that
+    compacts the thread (48 KB of pasted text measured at 4.6s, 96 KB at 17.7s, against
+    2.3ms for the same text through `_match_query`).
+    """
     if "_" in token:
         return True
     if _HAS_LETTER_AND_DIGIT.match(token):
         return True
-    return len(token) >= 3 and token.upper() in _TOKEN.findall(raw_query)
+    return len(token) >= 3 and token.upper() in raw_tokens
 
 
 def conversation_match_queries(query: str) -> list[str]:
@@ -112,24 +129,63 @@ def conversation_match_queries(query: str) -> list[str]:
 
     So: first REQUIRE the identifier-like tokens, which restricts the candidates to
     chunks that are actually about the thing asked about; then fall back to an OR over
-    the content words. Two expressions rather than one, because a conjunction that
-    matches nothing must not mean "this archive has nothing to say".
+    the content words. Two expressions rather than one, because a filter that matches
+    nothing must not mean "this archive has nothing to say".
 
     A question made entirely of function words ("what about it?") keeps all its tokens:
     an empty expression would make `search_lexical` return nothing at all, and a query
     that retrieves the wrong turns is still better than a recall that silently vanishes
     on exactly the turns that needed it.
+
+    SEVERAL identifiers are ORed, not ANDed. "What are the current values of A123 and
+    B456" is two questions in one envelope, and the turn answering either one names one
+    of them: requiring both keeps only the turns that DISCUSS the pair, which are exactly
+    the older comparisons, and drops both current assignments. Measured on an archive of
+    six comparison turns plus one latest assignment each: the conjunction returned the
+    four oldest comparisons and neither value, where the permissive pass returns both.
+    The filter's job is to keep every slot on something the question asked about, and one
+    identifier out of two is still that; the content-word pass still does the ranking,
+    and a chunk naming both still outranks a chunk naming one, because it matches more.
     """
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    identifiers = [t for t in tokens if _is_identifier(t, query)]
+    raw_tokens = frozenset(_TOKEN.findall(query))
+    identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
     permissive = " OR ".join(f'"{t}"' for t in content)
     if not identifiers:
         return [permissive]
-    conjunctive = " AND ".join(f'"{t}"' for t in identifiers)
-    return [conjunctive] if conjunctive == permissive else [conjunctive, permissive]
+    focused = " OR ".join(f'"{t}"' for t in identifiers)
+    return [focused] if focused == permissive else [focused, permissive]
+
+
+def lexical_matching_ids(conn: sqlite3.Connection, chunk_ids, expression: str) -> set:
+    """Which of ``chunk_ids`` match ``expression``, by the index's own tokenizer.
+
+    Membership, not ranking, and therefore not subject to any top-k window. A ranked pass
+    truncated at k answers "is this chunk among the k the index happened to return",
+    which is a different question and the wrong one when the scores are tied: FTS5 floors
+    the BM25 IDF of a term present in more than half the index at 1e-6, so the identifier
+    a whole thread is about orders nothing and the k that come back are arbitrary. Asking
+    the index directly, restricted to candidates already in hand, is exact however long
+    the thread gets.
+    """
+    ids = list(dict.fromkeys(chunk_ids))
+    if not ids or not expression:
+        return set()
+    found: set = set()
+    # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER, which is 999 on older builds.
+    for start in range(0, len(ids), 500):
+        batch = ids[start : start + 500]
+        placeholders = ",".join("?" * len(batch))
+        rows = conn.execute(
+            f"SELECT chunk_id FROM chunks_fts WHERE chunks_fts MATCH ? "
+            f"AND chunk_id IN ({placeholders})",
+            [expression, *batch],
+        ).fetchall()
+        found.update(row[0] for row in rows)
+    return found
 
 
 def create_kb(
@@ -205,8 +261,18 @@ def create_document(
     linked_relative_path: str | None = None,
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
+    created_at: str | None = None,
     commit: bool = True,
 ) -> str:
+    """``created_at`` is for a REWRITE of a row that already exists, and nothing else.
+
+    A re-embed deletes the old row and inserts a new one for the same content, so stamping
+    it with the current time would say the turn was archived when its vectors were
+    rebuilt. That is not a cosmetic difference for an archived turn: an archive written
+    before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
+    takes a fresh timestamp moves that turn to the end of its own conversation. Omitted,
+    this is byte for byte what every other caller has always got.
+    """
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
@@ -223,7 +289,7 @@ def create_document(
             sha256,
             status,
             stored_path,
-            _now(),
+            created_at or _now(),
             embedding_model,
             linked_folder_id,
             linked_relative_path,
@@ -430,8 +496,14 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
-def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int,
-                   *, match_query: str | None = None):
+def search_lexical(
+    conn: sqlite3.Connection,
+    scope,
+    query: str,
+    k: int,
+    *,
+    match_query: str | None = None,
+):
     """BM25 lexical search over one scope or several. Returns
     [(chunk_id, score)], higher = better.
 

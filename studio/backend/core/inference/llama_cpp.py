@@ -286,7 +286,6 @@ def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
     anchors = set(anchor_ids or ())
     try:
         from core.inference import instruction_pin
-
         pins = instruction_pin.pinned_instruction_ids(
             messages,
             prompt_target = prompt_budget(

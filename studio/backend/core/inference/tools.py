@@ -10070,7 +10070,10 @@ def build_conversation_recall(
         return None
     try:
         found = conversation_archive.recall(
-            thread_id, query, top_k = top_k, branch_messages = branch_messages,
+            thread_id,
+            query,
+            top_k = top_k,
+            branch_messages = branch_messages,
             extra_queries = [anchor] if anchor else None,
             # This is the automatic lookup, so it is the one the quality floor applies to.
             forced = True,

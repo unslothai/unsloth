@@ -35,7 +35,7 @@ from __future__ import annotations
 import os
 import re
 
-from core.inference.context_window import estimate_message_tokens, group_turns
+from core.inference.context_window import estimate_messages_tokens, group_turns
 
 # 80 characters. Objective, and there is no way to trip it accidentally in either
 # direction that a reasonable person would argue with: someone who typed a paragraph
@@ -51,13 +51,64 @@ PIN_MAX_FRACTION = float(os.environ.get("ROLLING_INSTRUCTION_PIN_MAX_FRACTION", 
 # A pure REJECT list: it can only stop something being treated as an instruction, never
 # promote one. Deleting it changes nothing except which side of the line a long-winded
 # "okay, please keep going with that" falls on.
-_CONTINUATIONS = frozenset({
-    "continue", "continue please", "carry on", "go on", "go ahead", "keep going",
-    "proceed", "next", "more", "yes", "y", "yeah", "yep", "ok", "okay", "k", "sure",
-    "no", "n", "nope", "thanks", "thank you", "ta", "done", "good", "great", "fine",
-    "please continue", "please carry on", "resume", "and", "then",
-})
+_CONTINUATIONS = frozenset(
+    {
+        "continue",
+        "continue please",
+        "carry on",
+        "go on",
+        "go ahead",
+        "keep going",
+        "proceed",
+        "next",
+        "more",
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "ok",
+        "okay",
+        "k",
+        "sure",
+        "no",
+        "n",
+        "nope",
+        "thanks",
+        "thank you",
+        "ta",
+        "done",
+        "good",
+        "great",
+        "fine",
+        "please continue",
+        "please carry on",
+        "resume",
+        "and",
+        "then",
+    }
+)
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—]+")
+
+# What "anaphoric" means, as a closed list rather than a word count: function words and
+# pronouns, none of which can name the subject of a request. A message made only of these
+# ("what about it", "and then") has nothing to search an archive for; a message with one
+# word outside them ("review billing") names its own subject and must keep its own
+# retrieval slots. Same shape and the same reason as `_CONTINUATIONS`: reviewable, and
+# identical on every install.
+#
+# Negation is left out on purpose, matching `store._ARCHIVE_STOPWORDS`: "not that" is the
+# conservative side of the line, and being conservative here only costs an anchor, while
+# being wrong the other way costs the answer.
+_FUNCTION_WORDS = frozenset(
+    """
+a about all also am an and another any anything are as at be been being both but by can
+could did do does doing each either else even ever for from get give had has have he her
+here him his how i if in into is it its just like me mine my of on once one only or other
+our ours out over please same she should so some someone something still such than that
+the their theirs them then there these they thing things this those to too us was we were
+what when where which while who whom whose why will with would you your yours
+""".split()
+)
 
 
 def _text_of(message: dict) -> str:
@@ -80,8 +131,7 @@ def _has_non_text_part(message: dict) -> bool:
     if not isinstance(content, list):
         return False
     return any(
-        isinstance(part, dict) and part.get("type") not in (None, "text")
-        for part in content
+        isinstance(part, dict) and part.get("type") not in (None, "text") for part in content
     )
 
 
@@ -98,9 +148,12 @@ def is_substantive(message: dict, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> 
     return normalised not in _CONTINUATIONS
 
 
-def last_substantive_instruction(messages: list[dict], *,
-                                 min_chars: int = INSTRUCTION_MIN_CHARS,
-                                 skip_latest: bool = True) -> str | None:
+def last_substantive_instruction(
+    messages: list[dict],
+    *,
+    min_chars: int = INSTRUCTION_MIN_CHARS,
+    skip_latest: bool = True,
+) -> str | None:
     """The most recent real instruction, for use as a recall query.
 
     ``skip_latest`` skips the newest user message, which is the one that was too thin to
@@ -118,27 +171,72 @@ def last_substantive_instruction(messages: list[dict], *,
 
 
 def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
-    """Whether searching an archive for this text is worth a retrieval slot."""
+    """Whether searching an archive for this text is worth a retrieval slot.
+
+    Thin means the message NAMES NOTHING TO SEARCH FOR: every word of it is a function
+    word, an anaphor or a continuation. It deliberately does not mean "short". Counting
+    words instead swept in every self-contained two-word request -- "review billing",
+    "restart nginx", "ZQXVARA123?" -- and the anchor a thin query earns is spent ahead of
+    the user's own words in `conversation_archive.recall`. At the top_k of 1 that both the
+    over-budget backoff (4 -> 2 -> 1) and a small window (`_recall_top_k` is
+    `budget // CHUNK_TOKENS`) reach, the anchor takes the only slot: measured on a
+    nine-turn archive, "review billing" at top_k=1 recalled the standing instruction and
+    NOT the billing turn, which the same recall returns without an anchor.
+    """
     stripped = (text or "").strip()
     if not stripped:
         return True
     if len(stripped) >= min_chars:
         return False
     normalised = _PUNCTUATION.sub(" ", stripped.lower()).strip()
+    if normalised in _CONTINUATIONS:
+        return True
     # Short AND anaphoric. A short question that names something ("what is ZQXVARA123?")
     # is a perfectly good query and must not be replaced by an older instruction.
-    return normalised in _CONTINUATIONS or len(normalised.split()) <= 2
+    words = normalised.split()
+    if not words:
+        # Punctuation only ("???"). Nothing survives tokenisation, so the archive query
+        # would be empty and the recall would return nothing at all.
+        return True
+    return all(word in _FUNCTION_WORDS or word in _CONTINUATIONS for word in words)
 
 
-def pinned_instruction_ids(messages: list[dict], *, groups: int = PIN_GROUPS,
-                           min_chars: int = INSTRUCTION_MIN_CHARS,
-                           max_tokens: int = PIN_MAX_TOKENS,
-                           prompt_target: int | None = None) -> set[int]:
+def _protected_cost(turns: list[list[dict]], index: int) -> int:
+    """What pinning the head of ``turns[index]`` actually costs the window.
+
+    `truncate_oldest_messages` protects by GROUP, not by message, and `group_turns` puts
+    an assistant reply that carries no tool calls in the SAME group as the user message it
+    answers. So pinning a one-line instruction also holds that reply, and charging only the
+    instruction let a pin exceed the ceiling by an arbitrary amount: measured at 28 tokens
+    charged against 20037 actually held. The budget has to count what is really kept, or it
+    is not a budget.
+
+    It must not count more than that either. A trailing tool exchange is NOT held: an
+    assistant message with tool calls opens its own group, and `truncate_oldest_messages`
+    skips a protected group BEFORE the `starts_user_turn` expansion that would otherwise
+    absorb the groups behind it, so that tool group stays its own eviction unit and is
+    evicted independently of the pin. Charging it would let one large tool result cost a
+    small instruction its pin over tokens the pin never keeps -- which is the case the pin
+    exists for, since an agent run is exactly where the filler follow-up appears.
+    """
+    return estimate_messages_tokens(turns[index])
+
+
+def pinned_instruction_ids(
+    messages: list[dict],
+    *,
+    groups: int = PIN_GROUPS,
+    min_chars: int = INSTRUCTION_MIN_CHARS,
+    max_tokens: int = PIN_MAX_TOKENS,
+    prompt_target: int | None = None,
+) -> set[int]:
     """`id()`s of the messages in the most recent instruction groups worth protecting.
 
     Bounded twice over. At most ``groups`` of them, and never more than ``max_tokens``
-    summed across the pinned USER messages -- their replies are not pinned, because the
-    instruction is the thing that has to survive, not the answer to it. Anything larger
+    summed across everything the pin actually holds: only the USER message is named, but
+    the window protects by group, so the reply in that group is held with it and is charged
+    with it -- and a trailing tool exchange, which is its own group and stays independently
+    evictable, is not (see `_protected_cost`). Anything larger
     than the ceiling is not pinned AT ALL rather than partially: the single enormous
     instruction is precisely the thing that could starve the window, so it is the thing
     excluded.
@@ -159,8 +257,11 @@ def pinned_instruction_ids(messages: list[dict], *, groups: int = PIN_GROUPS,
     # would be worse than pointless: the inline recall path REPLACES that message with a
     # new dict, so its id would go stale and silently protect nothing.
     newest_user = next(
-        (index for index in range(len(turns) - 1, -1, -1)
-         if any(m.get("role") == "user" for m in turns[index])),
+        (
+            index
+            for index in range(len(turns) - 1, -1, -1)
+            if any(m.get("role") == "user" for m in turns[index])
+        ),
         None,
     )
 
@@ -176,7 +277,7 @@ def pinned_instruction_ids(messages: list[dict], *, groups: int = PIN_GROUPS,
         head = group[0]
         if not is_substantive(head, min_chars = min_chars):
             continue
-        cost = estimate_message_tokens(head)
+        cost = _protected_cost(turns, index)
         if spent + cost > ceiling:
             continue
         pinned.add(id(head))

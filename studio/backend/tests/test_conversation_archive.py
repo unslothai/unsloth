@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.rag import conversation_archive, retrieval, store  # noqa: E402
+from core.rag import config, conversation_archive, retrieval, store  # noqa: E402
 from storage import rag_db  # noqa: E402
 
 THREAD = "thread-abc"
@@ -187,8 +187,9 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
     ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")
-        return real_hybrid(conn_, scope, query, k = k, model_name = model_name, mode = mode,
-                           lexical_query = lexical_query)
+        return real_hybrid(
+            conn_, scope, query, k = k, model_name = model_name, mode = mode, lexical_query = lexical_query
+        )
 
     monkeypatch.setattr(retrieval, "retrieve_hybrid", only_lexical_works)
     found = conversation_archive.recall(THREAD, "sourdough")
@@ -1438,19 +1439,27 @@ VARIABLE = "ZQXVARA123"
 # the variable and cancelled the very effect under test -- the tests passed against the
 # unfixed build.
 _DISTRACTORS = [
-    ("What is a good default value for a retry budget?",
-     "Three attempts with backoff is a common default."),
+    (
+        "What is a good default value for a retry budget?",
+        "Three attempts with backoff is a common default.",
+    ),
     ("Change the log level to debug for now.", "Log level is debug."),
     ("Remind me to update the deployment notes later.", "I will remind you."),
-    ("Is it better to set a timeout per request or per session?",
-     "Per request is usually safer."),
-    ("Correction to my earlier note about the changelog wording.",
-     "Noted, the changelog wording is corrected."),
+    ("Is it better to set a timeout per request or per session?", "Per request is usually safer."),
+    (
+        "Correction to my earlier note about the changelog wording.",
+        "Noted, the changelog wording is corrected.",
+    ),
     ("Which branch should the release notes land on?", "The release branch."),
 ]
 
 
-def _revisions(count, thread_id = THREAD, *, distractors = 3):
+def _revisions(
+    count,
+    thread_id = THREAD,
+    *,
+    distractors = 3,
+):
     """A variable assigned, then revised, with filler that shares the vocabulary.
 
     Values are fixed rather than random so a failure is reproducible, and the filler never
@@ -1459,8 +1468,9 @@ def _revisions(count, thread_id = THREAD, *, distractors = 3):
     values = [f"10000{index}" for index in range(count)]
     filler = 0
     for value in values:
-        _archive(_turn(f"Set {VARIABLE} to {value}.", f"Understood. {VARIABLE} is {value}."),
-                 thread_id)
+        _archive(
+            _turn(f"Set {VARIABLE} to {value}.", f"Understood. {VARIABLE} is {value}."), thread_id
+        )
         for _ in range(distractors):
             question, answer = _DISTRACTORS[filler % len(_DISTRACTORS)]
             filler += 1
@@ -1509,8 +1519,12 @@ def test_the_questions_filler_cannot_outrank_the_subject(conn):
     """One slot, and it must go to the turn about the thing asked about."""
     for index in range(6):
         _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
-    _archive(_turn("What is a good default value for a retry budget?",
-                   "Three attempts with backoff is a common default value."))
+    _archive(
+        _turn(
+            "What is a good default value for a retry budget?",
+            "Three attempts with backoff is a common default value.",
+        )
+    )
 
     found = conversation_archive.recall(
         THREAD, f"What is the current value of {VARIABLE}?", top_k = 1
@@ -1536,8 +1550,9 @@ def test_the_archive_query_requires_the_rare_token_and_drops_filler():
 
 def test_recalled_turns_are_presented_oldest_first(conn):
     """The model answers with the last assignment it reads, so the order IS the answer."""
-    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
-                   "Understood."))
+    _archive(
+        _turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40, "Understood.")
+    )
     _archive(_turn(f"{VARIABLE} 222222", "Understood."))
 
     found = conversation_archive.recall(
@@ -1572,17 +1587,28 @@ def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
     entire conversation into the order its vectors were rebuilt."""
     from core.rag import embeddings
 
+    # `embedding_identity` too, not only the encode: `archive_turns` short-circuits on
+    # the EXPECTED identity before it embeds anything, so patching the encode alone
+    # leaves the re-embed path unreached and this test passing on any implementation.
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
     first = _turn("the oldest turn", "a")
-    _archive(first)
-    _archive(_turn("a later turn", "b"))
-    monkeypatch.setattr(embeddings, "encode_with_identity",
-                        lambda texts, **kwargs: ([[0.5] * 8 for _ in texts], "other-model"))
-    _archive(first)
+    assert _archive([dict(message) for message in first]) == 1
+    assert _archive(_turn("a later turn", "b")) == 1
+    identity["name"] = "st:model-b"
+    assert _archive([dict(message) for message in first]) == 1
 
     scope = store.conversation_archive_scope(THREAD)
     rows = conn.execute(
-        "SELECT filename, archive_ordinal FROM documents WHERE scope=? "
-        "ORDER BY archive_ordinal", (scope,),
+        "SELECT filename, archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+        (scope,),
     ).fetchall()
     assert [row["archive_ordinal"] for row in rows] == [0, 1]
 
@@ -1603,7 +1629,7 @@ def test_an_archive_written_before_ordinals_still_recalls_in_order(conn):
     assert found is not None
     text, _sources = found
     assert text.index("older") < text.index("newer")
-    assert 'turn="1"' not in text          # the NULL one claims no position
+    assert 'turn="1"' not in text  # the NULL one claims no position
     assert 'turn="2"' in text
 
 
@@ -1628,8 +1654,9 @@ def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
 
     monkeypatch.setattr(config, "CONVERSATION_QUERY_FOCUS", False)
     monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
-    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
-                   "Understood."))
+    _archive(
+        _turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40, "Understood.")
+    )
     _archive(_turn(f"{VARIABLE} 222222", "Understood."))
 
     found = conversation_archive.recall(
@@ -1644,3 +1671,365 @@ def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
     assert "turn=" not in text
     assert "supersedes" not in text
     assert "oldest first" not in text
+
+
+def test_a_ubiquitous_identifier_cannot_crowd_out_the_newest_revision(conn):
+    """The conjunctive pass FILTERS; it must not also rank, and must not fill `fetch`.
+
+    FTS5 floors the BM25 IDF of a term present in more than half the index at 1e-6, so in
+    an archive that is all about one variable the identifier orders nothing. Cutting that
+    pass off at `fetch` therefore dropped the turn stating the current value and answered
+    with the four oldest turns instead -- worse than the OR query it replaced.
+    """
+    for index in range(19):
+        _archive(
+            _turn(
+                f"lets discuss {VARIABLE} aspect number {index}",
+                f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 991234"))
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}?")
+
+    assert found is not None
+    text, _sources = found
+    assert "991234" in text
+
+
+def test_a_question_about_two_variables_recalls_both_current_values(conn):
+    """Two identifiers must not become a requirement to name BOTH.
+
+    The turn that answers "what are A and B now" names one of them; the turns naming both
+    are the older comparisons. Requiring the conjunction made every comparison eligible
+    and both assignments ineligible, so the four slots went to the four oldest turns and
+    neither current value came back -- the same lost answer as the ubiquitous-identifier
+    case above, reached through the filter rather than through the ranking.
+    """
+    other = "ZQXVARB456"
+    for index in range(6):
+        _archive(
+            _turn(
+                f"How does {VARIABLE} compare with {other} in scenario {index}?",
+                f"In scenario {index}, {VARIABLE} and {other} trade off differently.",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 700001"))
+    _archive(_turn(f"please update {other}", f"the current value of {other} is now 800002"))
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE} and of {other}?", top_k = 4
+    )
+
+    assert found is not None
+    text, sources = found
+    assert "700001" in text and "800002" in text
+    # And the filter still did its job: every slot names something that was asked about.
+    assert all(
+        VARIABLE.lower() in source["text"].lower() or other.lower() in source["text"].lower()
+        for source in sources
+    )
+
+
+def test_the_newest_revision_survives_a_strict_pass_that_hit_its_cap(conn, monkeypatch):
+    """Eligibility is a property of a chunk, not of the capped pass's top rows.
+
+    The identifier pass is bounded at `_BRANCH_FILTER_MAX_CANDIDATES`, and by the same
+    IDF floor its order within that bound carries no information. Past the bound the turn
+    stating the current value can be the one left out, and reading absence from that list
+    as "does not name the subject" ranked it behind every capped row, where the fetch
+    window then dropped it. The cap is patched down here so the archive stays small; at
+    the shipped 256 the same loss was measured on a 301-chunk archive, which a long
+    thread reaches at roughly 60 turns once any of them carry a pasted block
+    (CHUNK_TOKENS is 500).
+    """
+    monkeypatch.setattr(conversation_archive, "_BRANCH_FILTER_MAX_CANDIDATES", 16)
+    for index in range(19):
+        _archive(
+            _turn(
+                f"lets discuss {VARIABLE} aspect number {index}",
+                f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
+            )
+        )
+    _archive(_turn(f"please update {VARIABLE}", f"the current value of {VARIABLE} is now 991234"))
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}?")
+
+    assert found is not None
+    assert "991234" in found[0]
+
+
+# Ordinary turns of a long engineering chat: each uses the question's content words the
+# way a person would, and none of them names the variable, so none can ever be a correct
+# answer. "current" and "value" are plain English, which is the point -- a real thread
+# says them about other things.
+_CONTENT_WORD_TURNS = [
+    ("What is the current value of the retry budget?", "Three attempts, by default."),
+    ("Is the timeout value still 30 seconds?", "Yes, that is the current setting."),
+    ("What value should the batch size take?", "Whatever the current GPU allows."),
+    ("Remind me of the current log level.", "Debug, as of the last change."),
+    ("Does the cache TTL have a sensible value?", "The current one is an hour."),
+    ("What is the current default for max tokens?", "The value is 2048."),
+    ("Is that value configurable at runtime?", "Yes, the current build reads it live."),
+    ("What is the current branch protection rule?", "One review, no stale value."),
+]
+
+
+def test_the_ranking_pass_is_widened_until_it_has_eligible_chunks_to_order(conn):
+    """The content-word pass ranks the ELIGIBLE chunks, so its window must reach them.
+
+    Fetched at `fetch` it need not reach any: `fetch` ordinary turns using "current" or
+    "value" about other things fill it end to end, none of them names the variable, and
+    the membership probe -- which only classifies ids already in that window -- then has
+    nothing to promote. The merged list falls back to the identifier pass's order, which
+    the IDF floor makes uninformative (every turn merely discussing the variable scores
+    the same, and the one stating its value scores WORSE, because it names the variable
+    once where they name it three times). At 41 turns the assignment ranked 21st of 21
+    and the recall answered with the four oldest turns instead.
+    """
+    for index in range(20):
+        _archive(
+            _turn(
+                f"lets discuss {VARIABLE} aspect number {index}",
+                f"{VARIABLE} is a config knob, remark {index} about how {VARIABLE} behaves",
+            )
+        )
+    # A normal-length answer, not a one-liner: the length normalisation is what puts it
+    # below the short distractors in the content-word pass.
+    _archive(
+        _turn(
+            f"please update {VARIABLE}",
+            f"the current value of {VARIABLE} is now 991234. I bumped it after the load test "
+            "showed the old setting was too low for the nightly job, so please redeploy the "
+            "workers before the next run and keep an eye on the queue depth for the first hour",
+        )
+    )
+    for index in range(20):
+        question, answer = _CONTENT_WORD_TURNS[index % len(_CONTENT_WORD_TURNS)]
+        _archive(_turn(f"{question} (note {index})", answer))
+
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}?")
+
+    assert found is not None
+    text, sources = found
+    assert "991234" in text
+    # And the filter still holds: no slot goes to a turn that never names the subject.
+    assert all(VARIABLE.lower() in source["text"].lower() for source in sources)
+
+
+def test_the_archive_query_keeps_the_negation_that_carries_the_question(conn):
+    """ "What did I say NOT to delete" is only that question while `not` survives."""
+    assert '"not"' in store.conversation_match_queries("What did I say not to delete?")[0]
+
+    _archive(_turn("Please do not delete the staging bucket, ever.", "Understood."))
+    for question, answer in (
+        ("delete the old build artifacts in dist", "Removed the dist folder."),
+        ("can you delete the unused import in main.py", "Import removed."),
+        ("delete the stale feature branch", "Branch deleted."),
+        ("I want you to delete the temp uploads folder", "Temp uploads cleared."),
+        ("delete every log older than a week", "Old logs cleared."),
+        ("please delete the duplicated test file", "Duplicate test removed."),
+        ("delete the leftover docker volumes", "Volumes pruned."),
+        ("delete the commented out block in config", "Block removed."),
+    ):
+        _archive(_turn(question, answer))
+
+    found = conversation_archive.recall(THREAD, "What did I say not to delete?", top_k = 4)
+
+    assert found is not None
+    assert "staging bucket" in found[0]
+
+
+def test_re_embedding_a_turn_archived_before_ordinals_leaves_it_unnumbered(conn, monkeypatch):
+    """A NULL ordinal predates the column. Allocating one on re-embed would move the
+    conversation's OLDEST turn behind every numbered one, and the renderer would then
+    read it as the later, superseding statement."""
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    oldest = _turn("the pelican turn", "the oldest statement about pelicans")
+    assert _archive([dict(message) for message in oldest]) == 1
+    scope = store.conversation_archive_scope(THREAD)
+    # What an upgraded database looks like: written before the column, never backfilled.
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    assert _archive(_turn("newest pelican question", "the newest statement about pelicans")) == 1
+
+    identity["name"] = "st:model-b"
+    assert _archive([dict(message) for message in oldest]) == 1
+
+    # By created_at, because the re-embed keeps the turn's original timestamp rather than
+    # stamping the moment its vectors were rebuilt: the unnumbered turn is still the
+    # oldest row in the scope, which is what the ordering of an upgraded archive rests on.
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY created_at", (scope,)
+        ).fetchall()
+    ]
+    assert ordinals == [None, 0]
+    text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
+    assert text.index("oldest statement") < text.index("newest statement")
+
+
+def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, monkeypatch):
+    """An archive with no ordinals is ordered by `created_at` and by nothing else, so a
+    re-embed that re-stamps the rows it reaches puts them AFTER the rows it never got to.
+
+    `archive_turns` is built to survive a pass that dies partway -- it logs, sets
+    `_INGEST_FAILED` and leaves whatever it wrote searchable -- and a locked database or
+    a full disk is an ordinary way to get there. The turns it managed to rewrite then
+    carry the newest timestamps in the scope, so the oldest statements in the
+    conversation are quoted LAST, under a header that says the list is oldest first and
+    that the later turn supersedes the earlier one. The model is told the first answer
+    is the current one.
+    """
+    from core.rag import embeddings
+
+    identity = {"name": "st:model-a"}
+    real = embeddings.encode_with_identity
+    monkeypatch.setattr(
+        embeddings,
+        "encode_with_identity",
+        lambda texts, **kwargs: (real(texts, **kwargs)[0], identity["name"]),
+    )
+    monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
+
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 6)]
+    history = [dict(message) for turn in turns for message in turn]
+    _save_thread(THREAD, history, append = True)
+    assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 5
+    scope = store.conversation_archive_scope(THREAD)
+    # What an upgraded database looks like: archived before the column, never backfilled.
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+
+    # The embedder changes, so every turn is stale and the whole archive is rewritten --
+    # and the rewrite dies on the third turn.
+    identity["name"] = "st:model-b"
+    real_add = store.add_chunks
+    calls = {"n": 0}
+
+    def add_chunks_until_the_disk_fills(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("database or disk is full")
+        return real_add(*args, **kwargs)
+
+    monkeypatch.setattr(store, "add_chunks", add_chunks_until_the_disk_fills)
+    conversation_archive.archive_turns(THREAD, [dict(m) for m in history])
+    monkeypatch.setattr(store, "add_chunks", real_add)
+    # The pass really did stop partway: two rows re-embedded, three left on the old model.
+    models = [
+        row["embedding_model"]
+        for row in conn.execute(
+            "SELECT embedding_model FROM documents WHERE scope=? ORDER BY created_at", (scope,)
+        ).fetchall()
+    ]
+    assert sorted(models) == ["st:model-a"] * 3 + ["st:model-b"] * 2
+
+    text, sources = conversation_archive.recall(THREAD, "pelicans", top_k = 5)
+    assert "supersedes" in text
+    quoted = [source["text"].split("STATEMENT")[1][0] for source in sources]
+    assert quoted == ["1", "2", "3", "4", "5"], quoted
+
+
+def test_merging_two_recall_queries_still_lists_legacy_turns_first(conn):
+    """The merge key has to agree with `_conversation_order`, or the merged block
+    contradicts its own "oldest first" header on an upgraded archive."""
+    _archive(_turn("the pelican turn", "OLDLEGACY statement about pelicans"))
+    _archive(_turn("more pelican talk", "NEWNUMBERED statement about pelicans"))
+    scope = store.conversation_archive_scope(THREAD)
+    oldest = conn.execute(
+        "SELECT id FROM documents WHERE scope=? ORDER BY created_at", (scope,)
+    ).fetchone()["id"]
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE id=?", (oldest,))
+    conn.commit()
+
+    merged = conversation_archive.recall(THREAD, "pelican", top_k = 4, extra_queries = ["statement"])
+
+    assert merged is not None
+    text, _sources = merged
+    assert text.index("OLDLEGACY") < text.index("NEWNUMBERED")
+
+
+def test_merging_two_recall_queries_keeps_one_turns_chunks_in_order(conn, monkeypatch):
+    """Both queries hit the same long turn, so every source carries the same `turn` and a
+    stable sort would quote it in query order -- tail first."""
+    monkeypatch.setattr(config, "CHUNK_TOKENS", 30)
+    monkeypatch.setattr(config, "CHUNK_OVERLAP", 0)
+    body = (
+        "ALPHAHEAD the opening of the turn "
+        + " ".join(f"w{index}" for index in range(25))
+        + " OMEGATAIL the closing of the turn "
+        + " ".join(f"z{index}" for index in range(25))
+    )
+    _archive(_turn("a very long turn", body))
+
+    merged = conversation_archive.recall(THREAD, "ALPHAHEAD", top_k = 2, extra_queries = ["OMEGATAIL"])
+
+    assert merged is not None
+    text, _sources = merged
+    assert text.index("ALPHAHEAD") < text.index("OMEGATAIL")
+
+
+def test_merging_two_recall_queries_keeps_legacy_turns_in_the_order_they_were_said(
+    tmp_path, monkeypatch
+):
+    """Every pre-ordinal row has `turn` None, so ordering them only by chunk index leaves
+    them in whatever order the two queries happened to return them: the anchor's hits
+    first, then the follow-up's. `_conversation_order` breaks exactly this tie with
+    `created_at`, and the merged path has to agree with it or the block contradicts its own
+    oldest-first header on an upgraded database."""
+    from core.rag import conversation_archive
+
+    merged = [
+        {"turn": None, "createdAt": "2026-01-02T00:00:00Z", "chunkIndex": 0, "text": "later"},
+        {"turn": None, "createdAt": "2026-01-01T00:00:00Z", "chunkIndex": 0, "text": "earlier"},
+        {"turn": 3, "createdAt": "2026-01-03T00:00:00Z", "chunkIndex": 0, "text": "numbered"},
+    ]
+    merged.sort(
+        key = lambda source: (
+            source.get("turn") is not None,
+            source.get("turn") or 0,
+            source.get("createdAt") or "",
+            source.get("chunkIndex") or 0,
+        )
+    )
+
+    assert [m["text"] for m in merged] == ["earlier", "later", "numbered"]
+
+
+def test_recall_sources_carry_the_fields_the_merge_orders_by():
+    """The sort above is only as good as the field it reads, and nothing RENDERS
+    `createdAt` or `chunkIndex`, so an unused-looking key is exactly the sort of thing a
+    later cleanup deletes. This pins the producer."""
+    from types import SimpleNamespace
+
+    from core.rag import tool
+
+    rows = {
+        "c1": {
+            "document_id": "d1",
+            "filename": "chat",
+            "text": "hello",
+            "archive_ordinal": None,
+            "chunk_index": 2,
+            "created_at": "2026-01-01T00:00:00Z",
+        },
+    }
+    hits = [SimpleNamespace(chunk_id = "c1", score = 0.5)]
+
+    _, sources = tool.format_conversation_recall(rows, hits)
+
+    assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
+    assert sources[0]["chunkIndex"] == 2
+    assert sources[0]["turn"] is None
