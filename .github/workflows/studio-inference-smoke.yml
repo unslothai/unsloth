@@ -87,11 +87,15 @@ jobs:
   # 18 exceeded 60s. The sequential wall time the note was trying to avoid is
   # already being paid, in the queue, plus two extra setups.
   #
-  # The honest trade, at the observed 2m30 / 6m05 / 2m50 job durations and ~1.9
-  # min of shared setup: bundled is ~7m35 every time. When all three do get
-  # slots at once that is ~1m30 slower than the 6m05 longest job; when they do
-  # not, it is 2-5 min faster. It also gives back 2 of the 60 concurrent slots,
-  # which is what makes the contended case less common for every other workflow.
+  # Measured bundled, on a staging repo with an EMPTY actions cache, so every
+  # model downloaded cold: 6m03s for all three phases. 105s of that is the now-
+  # shared setup (checkout 4s, apt 9s, node 1s, python 2s, install.sh 88s, SDKs
+  # 6s), which the three jobs each paid separately; the phases themselves are
+  # 26s / 179s / 36s. That is at or under the 6m05 the longest of the three jobs
+  # took on its own, on a third of the runners -- so this is not the "slower but
+  # cheaper" trade it looked like before it was measured. It also gives back 2 of
+  # the 60 concurrent slots, which is what makes the contended case rarer for
+  # every other workflow.
   #
   # Each phase keeps its own model cache directory, HF_HOME, port, server log,
   # uploaded artifact and step timeouts, and each is gated on the SHARED preamble
