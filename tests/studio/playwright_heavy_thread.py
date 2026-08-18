@@ -643,16 +643,26 @@ async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const started = performance.now();
   api.closeThread();
   // Unmount first, or "already back" is indistinguishable from "never left".
+  // Counted, not assumed. `growth()` subtracts one paint floor per double-rAF wait a metric is
+  // clocked across, and that count was hand-declared per axis in GROWTH_AXES. Reopening is
+  // driven by a React state update, so the count check immediately after openThread() always
+  // still sees the unmounted tree and the loop always pays at least one __nextPaint() before it
+  // can observe the rebuilt messages -- the same floor already subtracted from jump and delete.
+  // Reporting it lets the harness check its own declared constant instead of trusting it.
   let closedMs = null;
+  let closePaintWaits = 0;
   while (performance.now() - started < timeoutMs) {
     if (api.messageCount() === 0) { closedMs = performance.now() - started; break; }
+    closePaintWaits += 1;
     await window.__nextPaint();
   }
   const reopenStarted = performance.now();
   api.openThread();
   let ms = null;
+  let paintWaits = 0;
   while (performance.now() - reopenStarted < timeoutMs) {
     if (api.messageCount() >= before) { ms = performance.now() - reopenStarted; break; }
+    paintWaits += 1;
     await window.__nextPaint();
   }
   // Not quiet(): re-open is the action whose whole cost is re-highlighting, and three calm frames
@@ -666,6 +676,8 @@ async ([timeoutMs, settleMs, graceMs, probeEveryMs]) => {
   const metrics = window.__hv.end(settled.at);
   return {
     ms,
+    paintWaits,
+    closePaintWaits,
     closedMs: closedMs === null ? null : Math.round(closedMs * 10) / 10,
     settleMs: settled.settleMs === null ? null : Math.round(settled.settleMs * 10) / 10,
     before,
@@ -1127,6 +1139,7 @@ TABLE_ROWS = (
     ("repetitions", lambda r: r["repetitions"]),
     ("cpu throttle rate", lambda r: r["cpu_throttle_rate"]),
     ("paint floor ms", lambda r: r["paint_floor_ms"]),
+    ("reopen paint waits", lambda r: (r.get("actions", {}).get("reopen") or {}).get("paintWaits")),
     ("longtask api supported", lambda r: r["long_task_supported"]),
     ("seed api requests", lambda r: r["seed_api_requests"]),
     ("seed console warnings", lambda r: r["seed_console_warnings"]),
@@ -1265,7 +1278,10 @@ GROWTH_AXES = tuple(
         ("jump settle ms", _action("jump", "settleMs"), 0),
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
-        ("reopen ms", _action("reopen", "ms"), 0),
+        # 1, not 0: see paintWaits in REOPEN_JS. Leaving it at 0 left a full ~33ms vsync floor
+        # of constant baseline in both ends of the ratio, which compresses it towards 1 and can
+        # report a real reopen curve as flat when the smallest fixture rebuilds near the floor.
+        ("reopen ms", _action("reopen", "ms"), 1),
     ]
 )
 # A ratio at or below this from the smallest size to the largest means the axis did not respond
@@ -1385,10 +1401,59 @@ def print_growth(results: dict, report: dict) -> None:
             )
 
 
+# The declared double-rAF count for each axis whose action reports how many it actually paid.
+# GROWTH_AXES holds the declaration; the action holds the observation; a harness that declares a
+# floor it does not pay, or pays one it does not declare, subtracts the wrong constant from both
+# ends of every ratio it publishes. Only reopen reports its waits today, so only reopen is
+# checkable here; the entry exists so adding a counter to another action wires it in by name.
+# axis name in GROWTH_AXES -> (action, the field on that action reporting its own wait count)
+FLOOR_COUNTERS = {"reopen ms": ("reopen", "paintWaits")}
+
+
+def declared_floor(axis_name: str) -> int | None:
+    """The `floored` column of GROWTH_AXES for one axis, by exact name.
+
+    Exact rather than prefix-matched: `reopen ms` and a later `reopen settle ms` would both match
+    a prefix, and the check would silently compare one axis's waits against another's declaration.
+    A name that is not an axis returns None, which the caller reports rather than skips.
+    """
+    for name, _pick, floored in GROWTH_AXES:
+        if name == axis_name:
+            return floored
+    return None
+
+
+def floor_declaration_problems(results: dict) -> list[str]:
+    """Axes whose subtracted paint floor does not match the waits the action actually paid."""
+    problems: list[str] = []
+    for engine in results["engines"]:
+        for size in results["sizes"]:
+            row = results["by_engine"][engine]["by_size"].get(str(size), {})
+            if "crashed" in row:
+                continue
+            for axis_name, (action, counter) in FLOOR_COUNTERS.items():
+                observed = (row.get("actions", {}).get(action) or {}).get(counter)
+                if observed is None:
+                    problems.append(
+                        f"{engine} at {size} chars recorded no {counter} for {action}, so the "
+                        f"paint floor subtracted from '{axis_name}' is unverified"
+                    )
+                    continue
+                declared = declared_floor(axis_name)
+                if declared == observed:
+                    continue
+                problems.append(
+                    f"{engine} at {size} chars paid {observed} paint wait(s) in {action} but "
+                    f"GROWTH_AXES subtracts {declared} from '{axis_name}'; the ratio is computed "
+                    "after removing the wrong constant from both ends"
+                )
+    return problems
+
+
 def harness_failures(results: dict, report: dict) -> list[str]:
     """Only the ways this harness can be measuring nothing. No performance budgets: see the
     module docstring."""
-    failures: list[str] = []
+    failures: list[str] = list(floor_declaration_problems(results))
     for engine in results["engines"]:
         for size in results["sizes"]:
             row = results["by_engine"][engine]["by_size"][str(size)]

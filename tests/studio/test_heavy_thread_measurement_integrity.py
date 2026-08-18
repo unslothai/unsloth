@@ -556,6 +556,9 @@ def clean_cell() -> dict:
             "reopen": {
                 **action,
                 "ms": 400.0,
+                # One double-rAF wait, the floor GROWTH_AXES subtracts from the `reopen ms` axis.
+                "paintWaits": 1,
+                "closePaintWaits": 1,
                 "closedMs": 20.0,
                 "settleMs": 900.0,
                 "before": 20,
@@ -751,6 +754,77 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
     )
     assert "restore(): number" in page
     assert "seeded.current = built.messages" in page
+
+
+# ── the declared paint floor ──────────────────────────────────────────
+#
+# `growth()` subtracts `floored` double-rAF vsync floors from both ends of every ratio, and
+# `floored` was a hand-declared integer per axis. Declaring it too low leaves a ~33ms constant in
+# both ends, which drags the ratio towards 1 and can report a real curve as flat; declaring it too
+# high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
+# the constant is checked against the run rather than trusted.
+
+
+def floor_row(observed, engine = "chromium", size = 25000):
+    cell = {"actions": {"reopen": {"ms": 120.0, "paintWaits": observed}}}
+    return {
+        "engines": [engine],
+        "sizes": [size],
+        "by_engine": {engine: {"by_size": {str(size): cell}}},
+    }
+
+
+def test_reopen_declares_the_one_paint_floor_it_pays() -> None:
+    """Reopen is driven by a React state update, so the count check straight after openThread()
+    always still sees the unmounted tree and the loop always waits at least one paint."""
+    assert HARNESS.declared_floor("reopen ms") == 1
+
+
+def test_a_matching_floor_declaration_is_accepted() -> None:
+    """The control. Without it the checks below could be met by rejecting every run."""
+    assert HARNESS.floor_declaration_problems(floor_row(1)) == []
+
+
+def test_a_floor_declared_below_the_waits_paid_is_rejected() -> None:
+    problems = HARNESS.floor_declaration_problems(floor_row(2))
+    assert len(problems) == 1 and "subtracts 1" in problems[0], problems
+
+
+def test_a_floor_declared_above_the_waits_paid_is_rejected() -> None:
+    problems = HARNESS.floor_declaration_problems(floor_row(0))
+    assert len(problems) == 1 and "paid 0 paint wait" in problems[0], problems
+
+
+def test_an_unreported_wait_count_is_a_failure_not_a_skip() -> None:
+    """A cell that stopped reporting `paintWaits` leaves the subtraction unverified. Skipping it
+    is how this check would quietly stop checking anything."""
+    row = floor_row(1)
+    del row["by_engine"]["chromium"]["by_size"]["25000"]["actions"]["reopen"]["paintWaits"]
+    problems = HARNESS.floor_declaration_problems(row)
+    assert len(problems) == 1 and "unverified" in problems[0], problems
+
+
+def test_a_crashed_cell_is_not_reported_twice() -> None:
+    """`harness_failures` already reports the crash itself, with the reason."""
+    row = floor_row(0)
+    row["by_engine"]["chromium"]["by_size"]["25000"]["crashed"] = "boom"
+    assert HARNESS.floor_declaration_problems(row) == []
+
+
+def test_the_floor_check_decides_the_exit_code() -> None:
+    """Wiring, not logic: a checker whose result never reaches `harness_failures` passes its own
+    unit tests forever while the harness goes on publishing ratios built on the wrong constant."""
+    body = HARNESS_SOURCE.split("def harness_failures", 1)[1]
+    assert "floor_declaration_problems(results)" in body, (
+        "harness_failures ignores the paint-floor check, so a mis-declared floor never fails"
+    )
+
+
+def test_reopen_counts_the_waits_it_pays() -> None:
+    """Source-level half: the counter has to be incremented in the loop that clocks `ms`."""
+    reopen = HARNESS.REOPEN_JS.split("api.openThread();", 1)[1]
+    assert "paintWaits += 1;" in reopen, "the reopen timing loop no longer counts its paint waits"
+    assert "paintWaits," in HARNESS.REOPEN_JS, "the count is never returned to the harness"
 
 
 if __name__ == "__main__":
