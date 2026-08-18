@@ -92,8 +92,13 @@ class _ScriptedBackend:
     ):
         self.calls.append({"messages": messages, "tools": tools, **kwargs})
         snapshots = self._responder(messages, tools)
-        if stats_holder is not None and self._stats is not None:
-            stats_holder["stats"] = self._stats
+        # A list scripts stats per call, where None is a generation that ended
+        # without publishing any -- a cancelled one, say.
+        _stats = self._stats
+        if isinstance(_stats, list):
+            _stats = _stats[min(len(self.calls), len(_stats)) - 1]
+        if stats_holder is not None and _stats is not None:
+            stats_holder["stats"] = _stats
         for snap in snapshots:
             yield snap
 
@@ -493,6 +498,56 @@ def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkey
     body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
     assert backend.calls[0]["stop"] == ["END"]
     assert body["choices"][0]["message"]["content"] == "hi"
+
+
+def test_n_serves_one_full_generation_per_choice(monkeypatch):
+    """Each choice is its own sampling run, as on the llama-server path: the
+    backend is asked once per choice rather than one reply being copied, and the
+    prompt they share is not re-counted. Two runs may sample the same text; what
+    is guaranteed is that each was generated."""
+    turns = iter(["first", "second"])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(turns)],
+        stats = {"usage": {"prompt_tokens": 7, "completion_tokens": 3}},
+    )
+    body = _json_body(_call(_request(n = 2), monkeypatch, backend, supports_tools = False))
+    assert [c["index"] for c in body["choices"]] == [0, 1]
+    assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
+    assert len(backend.calls) == 2  # a generation per choice, not one reused
+
+
+def _monitor_entry(payload, monkeypatch, backend, **install_kwargs):
+    """The one monitor row a request leaves behind, and what it raised, if it did."""
+    from fastapi import HTTPException
+
+    monitor = _install(monkeypatch, backend, **install_kwargs)
+
+    async def _run():
+        return await openai_chat_completions(payload, request = _Request(), current_subject = "u")
+
+    error = None
+    try:
+        asyncio.run(_run())
+    except HTTPException as exc:
+        error = exc
+    [entry] = monitor.snapshot()
+    return entry, error
+
+
+def test_one_monitor_row_describes_the_whole_turn(monkeypatch):
+    """The last choice cannot speak for the turn: the row shows every reply, and a
+    choice that ended without publishing stats is not billed the previous one's."""
+    turns = iter(["first", "second"])
+    backend = _ScriptedBackend(
+        lambda messages, tools: [next(turns)],
+        stats = [{"usage": {"prompt_tokens": 7, "completion_tokens": 3}}, None],
+    )
+    entry, _ = _monitor_entry(_request(n = 2), monkeypatch, backend, supports_tools = False)
+    assert "first" in entry["reply"] and "second" in entry["reply"]
+    assert entry["prompt_tokens"] == 7  # the shared prompt, not 7 per choice
+    assert entry["completion_tokens"] == 3  # only the choice that published
+    # Per-choice reasons can differ, so the turn claims none of them.
+    assert entry.get("stop_reason") is None
 
 
 def test_streaming_cancel_does_not_finalize_tool_call(monkeypatch):

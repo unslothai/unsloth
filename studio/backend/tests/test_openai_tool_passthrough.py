@@ -1044,22 +1044,44 @@ class TestChatCompletionRequestToolFields:
         assert "does not advertise tools" in entry["error"]
         assert monitor.active_count() == 0
 
-    def test_n_rejected_for_non_gguf_path(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "model_entry, extra_body, unreachable_pre_switch",
+        [
+            ({"is_audio": True, "audio_type": "tts"}, {}, False),
+            ({"has_audio_input": True}, {"audio_base64": "AAAA"}, False),
+            ({}, {"enable_tools": True}, False),
+            ({}, {"stream": True}, True),
+        ],
+    )
+    def test_the_non_gguf_paths_that_cannot_sample_twice_refuse_n(
+        self, monkeypatch, model_entry, extra_body, unreachable_pre_switch
+    ):
+        """Plain non-GGUF text now serves extra choices, so only the paths that
+        answer something other than a sample still refuse: one waveform, one
+        transcript of the one recording, a loop that runs turns rather than
+        samples, and one SSE stream, which carries a single choice whether or not
+        the pre-switch check (reached only when a load may) ran."""
+        import routes.inference as inference_route
+
         class _NoGGUFBackend:
             is_loaded = False
             supports_tools = False
 
         class _InferenceBackend:
             active_model_name = "test-model"
-            models = {"test-model": {}}
+            models = {"test-model": model_entry}
 
+        if unreachable_pre_switch:
+            monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+        monkeypatch.setattr(
+            inference_route,
+            "_detect_safetensors_features",
+            lambda *a, **k: {"supports_tools": True},
+        )
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
-            json = {
-                "messages": [{"role": "user", "content": "hi"}],
-                "n": 2,
-            },
+            json = {"messages": [{"role": "user", "content": "hi"}], "n": 2, **extra_body},
         )
         self._assert_unsupported_n(resp)
 

@@ -556,8 +556,37 @@ def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
     )
 
 
-def _raise_unsupported_n(path_label: str) -> None:
-    _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
+def _choice_seed(
+    seed: Optional[int],
+    choice_index: int,
+    *,
+    negative_is_random: bool = False,
+) -> Optional[int]:
+    """A seed of its own per choice, so a seeded request samples n times rather
+    than repeating one run. Shared by both drains so they cannot disagree.
+
+    llama-server reads a negative seed as "pick one at random", and offsetting
+    that would make every choice after the first deterministic. MLX maps every
+    seed onto its key domain instead, so a negative one is as fixed as any other
+    and must be offset like any other.
+    """
+    if seed is None or not choice_index:
+        return seed
+    if negative_is_random and seed < 0:
+        return seed
+    return seed + choice_index
+
+
+def _raise_unsupported_n(path_label: str, monitor_id: Optional[str] = None) -> None:
+    """Refuse n > 1 on a path that cannot sample twice.
+
+    Pass the monitor row when one is already open, or Studio keeps reporting a
+    generation that was refused before it began.
+    """
+    message = f"n > 1 is not supported for {path_label}."
+    if monitor_id:
+        api_monitor.fail(monitor_id, message)
+    _raise_unsupported_openai_parameter("n", message)
 
 
 def _sse_streaming_response(content, *, unstarted_cleanup = None) -> StreamingResponse:
@@ -13431,17 +13460,23 @@ async def openai_chat_completions(
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = public_model_id(backend.active_model_name) or payload.model
-        if _wants_multiple_choices(payload):
-            _raise_unsupported_n("non-GGUF chat completions")
+        # Restated here because the pre-switch check runs only when an automatic
+        # load may: one SSE stream carries a single choice either way.
+        if payload.stream and _wants_multiple_choices(payload):
+            _raise_unsupported_n("streaming chat completions")
 
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
+            if _wants_multiple_choices(payload):
+                _raise_unsupported_n("non-GGUF audio chat completions")
             _reject_audio_output_continuation(payload)
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
+        if payload.audio_base64 and _wants_multiple_choices(payload):
+            _raise_unsupported_n("non-GGUF audio-input chat completions")
         if model_info.get("audio_type") == "whisper" and not payload.audio_base64:
             raise HTTPException(
                 status_code = 400,
@@ -14663,9 +14698,7 @@ async def openai_chat_completions(
         # ── Standard GGUF path (no tools) ─────────────────────
 
         def gguf_generate(choice_index: int = 0):
-            _seed = payload.seed
-            if _seed is not None and _seed >= 0 and choice_index:
-                _seed += choice_index
+            _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
                 messages = gguf_messages,
                 image_b64 = image_b64,
@@ -15423,6 +15456,9 @@ async def openai_chat_completions(
         if not _sf_tools_to_use:
             _sf_use_tools = False
 
+    if _sf_use_tools and _wants_multiple_choices(payload):
+        _raise_unsupported_n("non-GGUF tool chat completions", monitor_id)
+
     if _sf_use_tools:
         # permission_mode ask/auto require the confirm gate for Unsloth's own tool
         # loop; when a CLI policy (--enable-tools) forces the loop on without a
@@ -15997,12 +16033,14 @@ async def openai_chat_completions(
 
     if payload.use_adapter is not None:
 
-        def generate(messages_override = None):
+        def generate(messages_override = None, choice_index = 0):
             kw = (
                 gen_kwargs
                 if messages_override is None
                 else {**gen_kwargs, "messages": messages_override}
             )
+            if choice_index:
+                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
             return backend.generate_with_adapter_control(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
@@ -16011,12 +16049,14 @@ async def openai_chat_completions(
             )
     else:
 
-        def generate(messages_override = None):
+        def generate(messages_override = None, choice_index = 0):
             kw = (
                 gen_kwargs
                 if messages_override is None
                 else {**gen_kwargs, "messages": messages_override}
             )
+            if choice_index:
+                kw = {**kw, "seed": _choice_seed(payload.seed, choice_index)}
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
@@ -16252,90 +16292,116 @@ async def openai_chat_completions(
         _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
         _tracker.__enter__()
         try:
-            full_text = ""
-            for token in generate():
-                if isinstance(token, GenStreamError):
-                    backend.reset_generation_state(cancel_event)
-                    _msg = _friendly_gen_stream_error(token)
-                    api_monitor.fail(monitor_id, _msg)
-                    raise HTTPException(status_code = 500, detail = _msg)
-                full_text = token
+            _n = payload.n or 1
+            _choices = []
+            _monitor_replies = []
+            _prompt_tokens = 0
+            _sum_completion = 0
+            _prompt_details = None
+            _last_stats = None
 
-            # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
-            # the shared generate(). Client-tool healing then runs on the visible
-            # text so tool markup inside a reasoning block is never promoted.
-            _reasoning_text, _visible_text = _extract_responses_reasoning(
-                full_text,
-                parse_think_markers = _sf_parse_think,
-                reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
-            )
-            # Client-tool passthrough: promote text-form calls; opt-in single
-            # nudge retry on unparseable tool markup.
-            _msg = {"role": "assistant", "content": _visible_text}
-            if _reasoning_text:
-                _msg["reasoning_content"] = _reasoning_text
-            # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
-            # stopped on request, not at the cap, so it stays "stop".
-            _finish = (
-                "stop" if cancel_event.is_set() else _stats_finish_reason(stats_holder.get("stats"))
-            )
-            if _sf_heal:
-                if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
-                    _finish = "tool_calls"
-                elif nudge_enabled(payload.nudge_tool_calls):
-                    _data = {
-                        "choices": [{"message": {"role": "assistant", "content": _visible_text}}]
-                    }
-                    if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
-                        # A failed retry must not 500 the request; keep the first
-                        # response (GGUF nudge parity). The retry's generate()
-                        # overwrites stats_holder, so save the first attempt's stats
-                        # and restore them if the retry is discarded.
-                        _first_stats = stats_holder.get("stats")
-                        try:
-                            retry_text = ""
-                            for token in generate(
-                                [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)]
-                            ):
-                                retry_text = token
-                            # Re-split reasoning on the retry so its visible text is
-                            # what heals into a call (and reaches the monitor).
-                            # The nudge retry appends messages, so it is not a
-                            # continuation and normal prefill detection applies.
-                            _retry_reasoning, _retry_visible = _extract_responses_reasoning(
-                                retry_text,
-                                parse_think_markers = _sf_parse_think,
-                                reasoning_prefilled = _sf_reasoning_prefilled,
-                            )
-                            retry_msg = {"role": "assistant", "content": _retry_visible}
-                            if _retry_reasoning:
-                                retry_msg["reasoning_content"] = _retry_reasoning
-                            if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
-                                _visible_text, _msg, _finish = (
-                                    _retry_visible,
-                                    retry_msg,
-                                    "tool_calls",
+            def _one_choice(choice_index):
+                """One sampled answer, healing and nudge retry included.
+
+                A full generation of its own -- its own seed, its own stats --
+                exactly as the llama-server path drains its own ``n``.
+                """
+                # Cleared per choice: one cancelled before it publishes must report
+                # nothing rather than inherit the previous choice's token count.
+                stats_holder.pop("stats", None)
+                full_text = ""
+                for token in generate(choice_index = choice_index):
+                    if isinstance(token, GenStreamError):
+                        backend.reset_generation_state(cancel_event)
+                        _msg = _friendly_gen_stream_error(token)
+                        api_monitor.fail(monitor_id, _msg)
+                        raise HTTPException(status_code = 500, detail = _msg)
+                    full_text = token
+
+                # Split prefilled <think> reasoning (GGUF parity); also covers MLX via
+                # the shared generate(). Client-tool healing then runs on the visible
+                # text so tool markup inside a reasoning block is never promoted.
+                _reasoning_text, _visible_text = _extract_responses_reasoning(
+                    full_text,
+                    parse_think_markers = _sf_parse_think,
+                    reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
+                )
+                # Client-tool passthrough: promote text-form calls; opt-in single
+                # nudge retry on unparseable tool markup.
+                _msg = {"role": "assistant", "content": _visible_text}
+                if _reasoning_text:
+                    _msg["reasoning_content"] = _reasoning_text
+                # Budget exhaustion unless a heal below promotes a tool call; a cancelled turn
+                # stopped on request, not at the cap, so it stays "stop".
+                _finish = (
+                    "stop"
+                    if cancel_event.is_set()
+                    else _stats_finish_reason(stats_holder.get("stats"))
+                )
+                if _sf_heal:
+                    if heal_openai_message(_msg, _sf_heal, _sf_healing_tools):
+                        _finish = "tool_calls"
+                    elif nudge_enabled(payload.nudge_tool_calls):
+                        _data = {
+                            "choices": [
+                                {"message": {"role": "assistant", "content": _visible_text}}
+                            ]
+                        }
+                        if nudge_should_retry(_data, _sf_heal, _sf_healing_tools):
+                            # A failed retry must not 500 the request; keep the first
+                            # response (GGUF nudge parity). The retry's generate()
+                            # overwrites stats_holder, so save the first attempt's stats
+                            # and restore them if the retry is discarded.
+                            _first_stats = stats_holder.get("stats")
+                            try:
+                                retry_text = ""
+                                for token in generate(
+                                    [*gen_kwargs["messages"], *nudge_messages(_data, _sf_heal)],
+                                    choice_index = choice_index,
+                                ):
+                                    retry_text = token
+                                # Re-split reasoning on the retry so its visible text is
+                                # what heals into a call (and reaches the monitor).
+                                # The nudge retry appends messages, so it is not a
+                                # continuation and normal prefill detection applies.
+                                _retry_reasoning, _retry_visible = _extract_responses_reasoning(
+                                    retry_text,
+                                    parse_think_markers = _sf_parse_think,
+                                    reasoning_prefilled = _sf_reasoning_prefilled,
                                 )
-                            else:
-                                # Retry produced no healable call -> first response wins.
+                                retry_msg = {"role": "assistant", "content": _retry_visible}
+                                if _retry_reasoning:
+                                    retry_msg["reasoning_content"] = _retry_reasoning
+                                if heal_openai_message(retry_msg, _sf_heal, _sf_healing_tools):
+                                    _visible_text, _msg, _finish = (
+                                        _retry_visible,
+                                        retry_msg,
+                                        "tool_calls",
+                                    )
+                                else:
+                                    # Retry produced no healable call -> first response wins.
+                                    stats_holder["stats"] = _first_stats
+                            except Exception as retry_exc:
+                                logger.debug(
+                                    "Nudge retry failed; keeping first response: %s", retry_exc
+                                )
                                 stats_holder["stats"] = _first_stats
-                        except Exception as retry_exc:
-                            logger.debug(
-                                "Nudge retry failed; keeping first response: %s", retry_exc
-                            )
-                            stats_holder["stats"] = _first_stats
-                # parallel_tool_calls=false: cap to one call (GGUF parity).
-                if payload.parallel_tool_calls is False:
-                    _tcs = _msg.get("tool_calls")
-                    if isinstance(_tcs, list) and len(_tcs) > 1:
-                        _msg["tool_calls"] = _tcs[:1]
+                    # parallel_tool_calls=false: cap to one call (GGUF parity).
+                    if payload.parallel_tool_calls is False:
+                        _tcs = _msg.get("tool_calls")
+                        if isinstance(_tcs, list) and len(_tcs) > 1:
+                            _msg["tool_calls"] = _tcs[:1]
+                return _msg, _finish, stats_holder.get("stats")
 
-            response = ChatCompletion(
-                id = completion_id,
-                created = created,
-                model = model_name,
-                choices = [
+            for _idx in range(_n):
+                # Stop spawning the remaining choices once cancelled, as the
+                # llama-server drain does.
+                if _idx and cancel_event.is_set():
+                    break
+                _msg, _finish, _choice_stats = _one_choice(_idx)
+                _choices.append(
                     CompletionChoice(
+                        index = _idx,
                         message = CompletionMessage(
                             content = _msg["content"],
                             reasoning_content = _msg.get("reasoning_content"),
@@ -16343,30 +16409,65 @@ async def openai_chat_completions(
                         ),
                         finish_reason = _finish,
                     )
-                ],
+                )
+                _monitor_replies.append(_msg)
+                if _choice_stats:
+                    _last_stats = _choice_stats
+                    _choice_usage = _choice_stats.get("usage") or {}
+                    # The prompt is shared across all n choices, so its tokens count
+                    # ONCE; only generated tokens accumulate (llama-server parity).
+                    _prompt_tokens = _choice_usage.get("prompt_tokens") or _prompt_tokens
+                    _sum_completion += _choice_usage.get("completion_tokens") or 0
+                    if _prompt_details is None:
+                        _prompt_details = _choice_usage.get("prompt_tokens_details")
+            _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
+
+            response = ChatCompletion(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = _choices,
             )
-            _monitor_reply = _msg.get("content") or ""
-            if _finish == "tool_calls":
-                _tcs = _msg.get("tool_calls") or []
+
+            def _reply_text(msg, finish):
+                _text = msg.get("content") or ""
+                if finish != "tool_calls":
+                    return _text
                 _calls_text = "; ".join(
                     f"{(tc.get('function') or {}).get('name', '')}"
                     f"({(tc.get('function') or {}).get('arguments', '')})"
-                    for tc in _tcs
+                    for tc in msg.get("tool_calls") or []
                 )
-                _monitor_reply = (_msg.get("content") or "") + (
-                    f"[tool_calls] {_calls_text}" if _calls_text else ""
+                return _text + (f"[tool_calls] {_calls_text}" if _calls_text else "")
+
+            if len(_choices) > 1:
+                # Every choice, labelled, as the llama-server drain reports them:
+                # showing the last one alone would hide the rest of the turn.
+                _monitor_reply = "\n\n".join(
+                    f"Choice {_i + 1}:\n{_reply_text(_reply, _choice.finish_reason)}"
+                    for _i, (_reply, _choice) in enumerate(zip(_monitor_replies, _choices))
                 )
+            else:
+                _monitor_reply = _reply_text(_msg, _finish)
             api_monitor.set_reply(monitor_id, _monitor_reply)
-            # Reuse the response's finish_reason. Outside the stats block: a run
-            # whose token count is unknown reports no stats.
-            api_monitor.set_perf(monitor_id, stop_reason = _finish)
-            _stats = stats_holder.get("stats")
-            if _stats:
-                _monitor_usage(
-                    monitor_id,
-                    _stats.get("usage"),
-                    timings = _stats.get("timings"),
+            if len(_choices) <= 1:
+                # Outside the stats block, since a run with no token count still has
+                # a reason. Suppressed for n > 1: choices can end differently, and
+                # the last one's would describe the whole turn as uniformly that.
+                api_monitor.set_perf(monitor_id, stop_reason = _finish)
+            if _last_stats:
+                # Every choice shares the one prompt, so the monitor is told the
+                # summed completion against a single prompt count -- not the last
+                # choice's numbers, which would under-report the work done.
+                _usage = dict(_last_stats.get("usage") or {})
+                _usage.update(
+                    prompt_tokens = _prompt_tokens,
+                    completion_tokens = _sum_completion,
+                    total_tokens = _prompt_tokens + _sum_completion,
                 )
+                if _prompt_details is not None:
+                    _usage["prompt_tokens_details"] = _prompt_details
+                _monitor_usage(monitor_id, _usage, timings = _last_stats.get("timings"))
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
