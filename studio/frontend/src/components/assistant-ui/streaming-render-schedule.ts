@@ -595,6 +595,92 @@ type CommitBoundary = {
   repairBroke: boolean;
 };
 
+// Where one commit left the retained prefix. `advanceContext` only ever adds
+// facts and cannot be undone, so each commit's context is stored to allow a
+// rewind to an earlier boundary.
+type CommitPoint = {
+  blockCount: number;
+  length: number;
+  context: RetainedContext;
+};
+
+// CommonMark counts a line feed, a lone carriage return, and a carriage return
+// followed by a line feed as the same line ending, and reference parsers
+// normalise to LF before parsing, so this cannot change what is rendered. The
+// scan runs per frame and costs nothing next to the repair and lex it protects
+// (0.4 us on an 88,000 character reply); the replace only runs for a reply that
+// actually carries a carriage return.
+function normalizeLineEndings(text: string): string {
+  return text.includes("\r") ? text.replace(/\r\n?/g, "\n") : text;
+}
+
+/**
+ * `a` begins with `b`.
+ *
+ * `String.prototype.startsWith` is the obvious spelling and is far slower here,
+ * because it scans where slicing to the prefix length and comparing lets the
+ * engine reject on length and then compare natively.
+ *
+ * The win is in the PREFIX length, not in how the strings are represented. Swept
+ * on V8: at an 8 character prefix `startsWith` is FASTER (0.4x), at 1,024 it is
+ * 105x slower and at 60,000 it is 250x slower, and a cons receiver behaves the
+ * same as a flat one (250x against 254x). So do not reach for this helper for
+ * short prefixes; it earns its place on a reply-length one.
+ *
+ * Semantically identical: `slice` clamps to the string length, so a `b` longer
+ * than `a` yields a short slice that cannot equal it.
+ */
+export const hasPrefix = (a: string, b: string): boolean =>
+  a.length >= b.length && a.slice(0, b.length) === b;
+
+function sharedPrefixLength(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < limit && left.charCodeAt(index) === right.charCodeAt(index)) {
+    index += 1;
+  }
+  return index;
+}
+
+// Does `text` end at a blank line, counting the start of the document as one?
+// Unchanged characters alone cannot keep a block across a rewrite: Marked reads
+// `paragraph\n` plus new text as a lazy continuation, so an edit that closes up
+// a blank line re-segments the paragraph before it even though that paragraph's
+// characters never moved. `\r` counts as line-ending whitespace, so CRLF reads
+// the same as LF.
+function endsAtBlankLine(text: string, end: number): boolean {
+  if (end === 0) {
+    return true;
+  }
+  if (text.charCodeAt(end - 1) !== 10) {
+    return false;
+  }
+  let index = end - 2;
+  while (index >= 0) {
+    const code = text.charCodeAt(index);
+    if (code === 32 || code === 9 || code === 13) {
+      index -= 1;
+      continue;
+    }
+    return code === 10;
+  }
+  return true;
+}
+
+// The last blank line at or before `limit`, or 0 for none. An untouched blank
+// line between the boundary and the rewrite carries most of the insulation, so
+// the boundary need not land on the blank line itself. Not all of it: see
+// `rewindToRewrite`, which also keeps a rollback window of blocks between the
+// boundary and the first changed character.
+function lastBlankLineEnd(text: string, limit: number): number {
+  for (let end = limit; end > 0; end -= 1) {
+    if (endsAtBlankLine(text, end)) {
+      return end;
+    }
+  }
+  return 0;
+}
+
 // Remend may synthesize closing syntax at the end of an incomplete tail.
 // Never retain synthetic or mid-string repaired text. Scan forward once,
 // recording the latest exact boundary whose global repair parity is neutral.
@@ -638,10 +724,18 @@ export class IncrementalMarkdownCache {
   private source = "";
   private tail = "";
   private committedBlocks: string[] = [];
+  private committedLength = 0;
+  private commitPoints: CommitPoint[] = [];
   private context = createRetainedContext();
   private fullDocumentMode = false;
   private lastMarkdown: string | null = null;
   private droppedRetainedBlocks = false;
+  // How often a rewrite discarded the whole retained prefix, and how many
+  // characters a rewind handed back to the live tail. Both redo work with an
+  // identical result, so time is the only other evidence they happened. Tests
+  // read these to hold the rewind path in place.
+  private retainedPrefixRebuilds = 0;
+  private rewoundCharacters = 0;
   // Bumped only when the Markdown string alone cannot signal a changed render.
   renderGeneration = 0;
 
@@ -668,6 +762,8 @@ export class IncrementalMarkdownCache {
     this.source = markdown;
     this.tail = markdown;
     this.committedBlocks = [];
+    this.committedLength = 0;
+    this.commitPoints = [];
     this.context = createRetainedContext();
   }
 
@@ -677,17 +773,101 @@ export class IncrementalMarkdownCache {
     return this.render(remend(markdown));
   }
 
+  // The text handed to the cache is not always an extension of the last one:
+  // `preprocessLaTeX` rewrites an already emitted span when a `\(...\)` closes,
+  // a `\[...\]` becomes a `$$` block or a currency `$` turns out not to open
+  // math, and a closing fence rewrites its own body. Each edits one span, so
+  // rewind to the last commit the rewrite can neither reach nor re-segment
+  // rather than discarding the whole prefix. Returns false when nothing
+  // survives and the caller has to start over; mutates nothing before then, so
+  // the reset fallback never sees a half-rewound cache. `fullDocumentMode`
+  // cannot be set here: only `renderFullDocument` raises it, and it clears
+  // `commitPoints` first, so the guard below has already returned.
+  private rewindToRewrite(markdown: string): boolean {
+    if (this.commitPoints.length === 0) {
+      return false;
+    }
+
+    // Characters the rewrite left alone. Usually the rewrite is inside the live
+    // tail, and `slice` shares the original's characters, so that case costs
+    // one native comparison plus a scan of the tail (about to be re-lexed
+    // anyway) rather than a scan of the whole reply.
+    const committedPrefix = this.source.slice(0, this.committedLength);
+    const shared = hasPrefix(markdown, committedPrefix)
+      ? this.committedLength +
+        sharedPrefixLength(markdown.slice(this.committedLength), this.tail)
+      : sharedPrefixLength(markdown, committedPrefix);
+
+    // Unchanged characters alone do not make a boundary safe to keep, so stop
+    // at the last blank line the rewrite left intact.
+    const safeLimit = lastBlankLineEnd(this.source, shared);
+
+    // A blank line is not a wall either: Marked merges a run of them into one
+    // separator block, so inserting a newline (as `\[...\]` -> `\n$$\n` does)
+    // re-segments the separator in front of it, and a list or indented code
+    // block reopens across one. So demand the same margin the append path
+    // requires -- ROLLBACK_BLOCKS blocks behind the boundary -- measured from
+    // the first changed character. Counting backwards costs only the blocks
+    // near the rewrite.
+    let blocksBeforeLimit = this.committedBlocks.length;
+    let scanned = this.committedLength;
+    while (blocksBeforeLimit > 0 && scanned > safeLimit) {
+      blocksBeforeLimit -= 1;
+      scanned -= this.committedBlocks[blocksBeforeLimit].length;
+    }
+    const blockLimit = blocksBeforeLimit - ROLLBACK_BLOCKS;
+    if (blockLimit <= 0) {
+      return false;
+    }
+
+    let index = this.commitPoints.length - 1;
+    while (
+      index >= 0 &&
+      (this.commitPoints[index].length > safeLimit ||
+        this.commitPoints[index].blockCount > blockLimit)
+    ) {
+      index -= 1;
+    }
+    if (index < 0) {
+      return false;
+    }
+
+    const point = this.commitPoints[index];
+    if (point.length < this.committedLength) {
+      this.rewoundCharacters += this.committedLength - point.length;
+      this.committedBlocks.length = point.blockCount;
+      this.committedLength = point.length;
+      this.commitPoints.length = index + 1;
+      this.droppedRetainedBlocks = true;
+    }
+
+    this.context = point.context;
+    this.tail = markdown.slice(this.committedLength);
+    return true;
+  }
+
   private updateTail(markdown: string): void {
-    if (markdown.startsWith(this.source)) {
+    if (hasPrefix(markdown, this.source)) {
       this.tail += markdown.slice(this.source.length);
-    } else {
+    } else if (!this.rewindToRewrite(markdown)) {
+      if (this.committedBlocks.length > 0) {
+        this.retainedPrefixRebuilds += 1;
+      }
       this.resetIncrementalState(markdown);
       this.fullDocumentMode = false;
     }
     this.source = markdown;
   }
 
-  update(markdown: string): IncrementalMarkdownRender {
+  update(rawMarkdown: string): IncrementalMarkdownRender {
+    // Every boundary this class finds is a byte offset into the text it was
+    // handed, but the blocks it compares against come back from Streamdown with
+    // their line endings already normalised. On a CRLF reply the two disagree
+    // one block in, `findCommitBoundary` sees `"para"` where the source holds
+    // `"para\r"`, nothing is ever committed, and the whole reply re-repairs and
+    // re-lexes on every frame. Normalise first so both sides speak LF.
+    const markdown = normalizeLineEndings(rawMarkdown);
+
     // Tokens arrive faster than frames, so the coalescer hands the same text to
     // several renders. Nothing about the result can differ, and repeating the
     // work would be the whole reply again once the document path is in use.
@@ -698,7 +878,7 @@ export class IncrementalMarkdownCache {
       };
     }
 
-    if (this.fullDocumentMode && markdown.startsWith(this.source)) {
+    if (this.fullDocumentMode && hasPrefix(markdown, this.source)) {
       this.source = markdown;
       return this.renderFullDocument(markdown);
     }
@@ -755,8 +935,14 @@ export class IncrementalMarkdownCache {
     }
 
     this.committedBlocks.push(...blocks.slice(0, commit.count));
+    this.committedLength += commit.length;
     this.context = nextContext;
     this.tail = nextTail;
+    this.commitPoints.push({
+      blockCount: this.committedBlocks.length,
+      length: this.committedLength,
+      context: nextContext,
+    });
 
     return this.render(nextMarkdown);
   }

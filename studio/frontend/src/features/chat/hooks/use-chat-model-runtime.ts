@@ -79,10 +79,12 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { mmprojLoadNotice } from "../utils/mmproj-fallback";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   type CpuFallbackReason,
+  type MmprojFallbackReason,
   type InferenceStatusResponse,
   isMultimodalResponse,
 } from "../types/api";
@@ -1045,6 +1047,7 @@ export function useChatModelRuntime() {
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
       let cpuFallbackReason: CpuFallbackReason | null = null;
+      let mmprojFallbackReason: MmprojFallbackReason | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1524,8 +1527,11 @@ export function useChatModelRuntime() {
               tensor_split: loadSplitRatio ?? undefined,
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
+
+              force_reload: forceReload,
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
+            mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1729,6 +1735,7 @@ export function useChatModelRuntime() {
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
+              mmprojFallbackReason: loadResponse.mmproj_fallback_reason ?? null,
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
               activeLoadId: loadPath === modelId ? null : loadPath,
@@ -2194,13 +2201,21 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
-          const loadedTitle = cpuFallbackReason
-            ? `${toastDisplayName} loaded on CPU`
-            : `${toastDisplayName} loaded`;
-          const loadedDescription = cpuFallbackReason
-            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-            : undefined;
-          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+          const mmprojNotice = mmprojFallbackReason
+            ? mmprojLoadNotice(toastDisplayName, mmprojFallbackReason)
+            : null;
+          const loadedTitle = mmprojNotice
+            ? mmprojNotice.title
+            : cpuFallbackReason
+              ? `${toastDisplayName} loaded on CPU`
+              : `${toastDisplayName} loaded`;
+          const loadedDescription = mmprojNotice
+            ? mmprojNotice.description
+            : cpuFallbackReason
+              ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
+              : undefined;
+          const showLoadedToast =
+            mmprojNotice || cpuFallbackReason ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
             showLoadedToast(loadedTitle, {
               description: loadedDescription,

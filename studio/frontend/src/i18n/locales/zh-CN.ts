@@ -180,6 +180,8 @@ export const zhCN = {
       closeAriaLabel: "关闭设置",
       searchPlaceholder: "搜索设置…",
       searchNoResults: "未找到设置。",
+      panelFailed: "无法加载此部分。",
+      panelReload: "重新加载",
     },
     tabs: {
       general: "通用",
@@ -279,6 +281,8 @@ export const zhCN = {
         allowMicrophone: "允许使用麦克风",
         micAccessBlocked:
           "麦克风访问已被阻止。请在浏览器中允许此 Unsloth 页面使用麦克风，然后重试。",
+        micAccessBlockedDesktop:
+          "麦克风访问已被阻止。请重试并选择允许，或在系统隐私设置中启用麦克风。",
         micAccessUnsupported: "此浏览器或环境不支持访问麦克风。",
         systemDefault: "系统默认",
         savedMicDisconnected: "已保存的麦克风（未连接）",
@@ -1078,6 +1082,8 @@ export const zhCN = {
       archivedVideos: "已归档的视频",
       archivedVideosDescription: "查看和管理你归档的视频。",
       manageAction: "管理",
+      manageChats: "管理聊天",
+      manageChatsDescription: "选择多个聊天进行移动、置顶、归档、导出或删除。",
       exportArchivedChats: "导出",
       exportingArchivedChats: "正在导出...",
       exportedOneArchivedChat: "已导出 1 个归档聊天",
