@@ -93,6 +93,25 @@ function parentOf(
   return repo?.messages.find(({ message: m }) => m.id === id)?.parentId;
 }
 
+/** The branch tip the thread is left showing. */
+function headOf(
+  repo: ExportedMessageRepository | null,
+): string | null | undefined {
+  return repo?.headId;
+}
+
+/** A regenerate: two replies under one prompt, `shown` being the one on screen. */
+function regenerated(): ExportedMessageRepository {
+  return {
+    headId: "a1b",
+    messages: [
+      { parentId: null, message: message("u1", "user") },
+      { parentId: "u1", message: message("a1a", "assistant") },
+      { parentId: "u1", message: message("a1b", "assistant") },
+    ],
+  } as ExportedMessageRepository;
+}
+
 test("deleting the only message empties the thread", async () => {
   const t = threadOver({
     headId: "u1",
@@ -173,15 +192,7 @@ test("deleting an assistant reply does NOT cascade to its prompt", async () => {
 test("every reply on a branched prompt is cascaded, not just the visible one", async () => {
   // A regenerate leaves several assistant replies under one prompt. Cascading only the first
   // would leave the others parented onto a message that is gone.
-  const exported = {
-    headId: "a1b",
-    messages: [
-      { parentId: null, message: message("u1", "user") },
-      { parentId: "u1", message: message("a1a", "assistant") },
-      { parentId: "u1", message: message("a1b", "assistant") },
-    ],
-  } as ExportedMessageRepository;
-  const t = threadOver(exported);
+  const t = threadOver(regenerated());
   await deleteThreadMessage({
     thread: t.thread,
     messageId: "u1",
@@ -202,4 +213,79 @@ test("nothing is imported when the id is not in the thread", async () => {
     }),
   );
   assert.equal(t.result(), null);
+});
+
+test("what is left is still pointed at by a head that exists", async () => {
+  // `headId` is not cosmetic. `import` hands it straight to MessageRepository.resetHead,
+  // which throws on an id it cannot find. A head still naming the message that was just
+  // deleted therefore does not merely show the wrong branch: the import fails AFTER the
+  // backend prune has already run, so the server drops the message and the screen keeps it.
+  for (const [exported, messageId] of [
+    [linear(3), "a3"], // the head itself
+    [linear(3), "u1"], // the root, cascading
+    [linear(4), "u3"], // the middle
+    [regenerated(), "a1b"],
+  ] as const) {
+    const t = threadOver(exported);
+    await deleteThreadMessage({
+      thread: t.thread,
+      messageId,
+      remoteId: undefined,
+    });
+    // `some` rather than `includes`, so a head of null or undefined fails here too: every
+    // one of these deletes leaves messages behind, so every one must leave a tip on them.
+    const head = headOf(t.result());
+    assert.ok(
+      idsOf(t.result()).some((id) => id === head),
+      `head ${String(head)} is not a message in the thread after deleting ${messageId}`,
+    );
+  }
+
+  // Emptying the thread is the one case with nothing left to point at.
+  const empty = threadOver({
+    headId: "u1",
+    messages: [{ parentId: null, message: message("u1", "user") }],
+  } as ExportedMessageRepository);
+  await deleteThreadMessage({
+    thread: empty.thread,
+    messageId: "u1",
+    remoteId: undefined,
+  });
+  assert.equal(headOf(empty.result()), null);
+});
+
+test("deleting the shown reply falls back to the sibling it was regenerated from", async () => {
+  // Deleting the reply on screen has to leave the other one showing. Falling back to the
+  // prompt instead would park the thread on a message with a reply hidden underneath it,
+  // which reads as an unanswered prompt.
+  const t = threadOver(regenerated());
+  await deleteThreadMessage({
+    thread: t.thread,
+    messageId: "a1b",
+    remoteId: undefined,
+  });
+  assert.deepEqual(idsOf(t.result()), ["u1", "a1a"]);
+  assert.equal(headOf(t.result()), "a1a");
+});
+
+test("deleting a hidden branch leaves the shown message shown", async () => {
+  // a1b is a regenerate the user switched away from; the conversation continued under a1a.
+  // Deleting the branch nobody is looking at must not move the thread off a2.
+  const t = threadOver({
+    headId: "a2",
+    messages: [
+      { parentId: null, message: message("u1", "user") },
+      { parentId: "u1", message: message("a1a", "assistant") },
+      { parentId: "u1", message: message("a1b", "assistant") },
+      { parentId: "a1a", message: message("u2", "user") },
+      { parentId: "u2", message: message("a2", "assistant") },
+    ],
+  } as ExportedMessageRepository);
+  await deleteThreadMessage({
+    thread: t.thread,
+    messageId: "a1b",
+    remoteId: undefined,
+  });
+  assert.deepEqual(idsOf(t.result()), ["u1", "a1a", "u2", "a2"]);
+  assert.equal(headOf(t.result()), "a2");
 });
