@@ -2,25 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A value read at module-evaluation time must come from a module that cannot be
- * mid-initialization when the read happens.
- *
- * `general-tab.tsx` builds a top-level `const` array containing
- * `SIDEBAR_ORGANIZATION_STORAGE_KEY`. That key used to be defined in
- * `sidebar-organization-store.ts`, which imports zustand and sits in an import
- * cycle running through the chat barrel. Entering that cycle from the settings
- * side left the binding in its temporal dead zone, and the read threw
- * `Cannot access 'SIDEBAR_ORGANIZATION_STORAGE_KEY' before initialization`.
- * Nothing catches that: there is no error boundary above the router, so the
- * whole tree unmounts and the app shows a white screen on launch.
- *
- * The app only avoided it by accident. `app-sidebar.tsx` imports the theme
- * toggler above its own chat import, which happened to evaluate the store
- * first; swapping those two lines reproduced the white screen. That is not a
- * property anyone can be expected to preserve by hand, so it is asserted here.
- *
- * The fix is a keys module with no imports of its own. A module with no imports
- * is always fully evaluated before its importer, cycle or not.
+ * `general-tab.tsx` reads `SIDEBAR_ORGANIZATION_STORAGE_KEY` at module scope.
+ * While that key lived in `sidebar-organization-store.ts`, which sits in an
+ * import cycle through the chat barrel, the read could hit the temporal dead
+ * zone and throw, unmounting the app: a white screen on launch. Import order
+ * hid it by accident, so the fix (a keys module importing nothing, hence always
+ * evaluated first) is asserted here rather than left to convention.
  */
 
 import assert from "node:assert/strict";
@@ -61,8 +48,7 @@ const staticSpecifiers = (file: string, text: string): string[] => {
 };
 
 test("the sidebar organization keys module imports nothing", async () => {
-  // This is the whole reason it is safe to read at module scope. An import here
-  // puts it back in the cycle and the white screen comes back.
+  // An import here puts it back in the cycle and the white screen comes back.
   const text = await readFile(KEYS, "utf8");
   assert.deepEqual(
     staticSpecifiers(KEYS, text),
@@ -103,8 +89,8 @@ test("general-tab reads the key from the keys module, not the store or the barre
 });
 
 test("the key is still read at module scope, so the guard above is load-bearing", async () => {
-  // If this ever stops being a module-scope read the two tests above are
-  // pointless and should go, rather than sit here passing for no reason.
+  // If this stops being a module-scope read, the two tests above are pointless
+  // and should go.
   const text = await readFile(GENERAL_TAB, "utf8");
   const source = parse(GENERAL_TAB, text);
 

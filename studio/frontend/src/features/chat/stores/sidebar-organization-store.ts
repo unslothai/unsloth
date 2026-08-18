@@ -9,10 +9,9 @@ export type SidebarOrganizeBy = "project" | "list";
 /** How chat rows are ordered inside whichever list they land in. */
 export type SidebarChatSort = "priority" | "updated" | "manual";
 
-// Lives in a leaf module, and is re-exported here so existing importers are
-// unchanged. general-tab.tsx reads it from a top-level const, and this store is
-// inside an import cycle through the chat barrel, so a binding defined here is
-// readable too late. See sidebar-organization-keys.ts.
+// Defined in a leaf module and re-exported here so existing importers are
+// unchanged: this store is in an import cycle, so a binding defined here would
+// be readable too late. See sidebar-organization-keys.ts.
 export { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "./sidebar-organization-keys.ts";
 

@@ -13,10 +13,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
-// From the keys module, not the barrel and not the store: both are inside an import cycle with
-// this file, so the key was still in its temporal dead zone when the module-scope list below read
-// it ("Cannot access ... before initialization"), killing the whole module graph. The keys module
-// imports nothing, so it is always evaluated first.
+// From the keys module, not the barrel or the store: both are in an import cycle with this file,
+// so the key was still in its temporal dead zone when the module-scope list below read it, killing
+// the module graph. The keys module imports nothing, so it is always evaluated first.
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-keys";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
