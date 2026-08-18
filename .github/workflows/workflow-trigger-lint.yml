@@ -80,60 +80,36 @@ jobs:
       - name: Backend still runs on the oldest interpreter the matrix claims
         run: python3 scripts/lint_backend_python_floor.py
 
-      # And the test that says the step above must exist. Without this, a pull request
-      # that edits only this workflow and deletes that step passes: Backend CI's paths
-      # cover its own YAML and studio/**, not .github/workflows/**, so the assertion
-      # protecting the step is never collected for the one change it exists to reject.
-      - name: The floor lint is still wired up
-        run: python3 -m pytest tests/studio/test_backend_ci_matrix.py -q
-
-      # Runs here rather than in the Repo tests job, for this workflow's own reason:
-      # the regression it catches is a workflow or .github/scripts edit that drops a
-      # Playwright invocation, and studio-backend-ci.yml's paths do not include
-      # .github/workflows/**, .github/scripts/** or .github/actions/**, so such a PR
-      # never collected the guard and stayed green until the post-merge main run.
-      # This workflow carries no paths filter at all, by design, so it sees every PR.
-      # Same cost shape as the lint above: filesystem reads, seconds.
-      - name: Playwright suites still run somewhere
-        run: python3 -m pytest tests/studio/test_playwright_suites_run_in_ci.py -q
-
-      # Here for the same reason, one step further out: this guard reads the concurrency
-      # block of EVERY workflow, so the PR that breaks it is a PR that edits some other
-      # workflow's YAML. No workflow's paths filter contains .github/workflows/**, so a
-      # revert of, say, wheel-smoke.yml back to a shared main group never collected this
-      # test and merged green. Only this job sees such a PR.
-      - name: Main runs still survive a merge burst
-        run: python3 -m pytest tests/studio/test_main_runs_survive_merge_bursts.py -q
-
-      # And here for the same reason: this one reads the three OS smoke workflows, so
-      # the change that breaks it edits a workflow and nothing else, which no paths
-      # filter in the repo matches. Filesystem reads, seconds.
-      - name: The OS smoke legs still share one script
-        run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q
-
-      # Same reason once more, and the sharpest instance of it. This one reads
-      # studio-ui-smoke.yml to check every Playwright script still lands on some shard,
-      # so the edit it exists to catch is by definition a workflow-only edit. Backend
-      # CI's paths filter does not match one, and the UI smoke job it guards is the very
-      # thing that would silently stop running, so it cannot be the one to notice.
-      - name: Every Chat UI script still belongs to a shard
-        run: python3 -m pytest tests/studio/test_chat_ui_shards_cover_everything.py -q
-
-      # Same reason, and it is the whole point of this one. The guard exists to reject a
-      # PR that removes UNSLOTH_ALLOW_HOST_OFFLOAD from the macOS GGUF job, or adds it to
-      # the Linux or Windows one. Such a PR edits a workflow and nothing else, which
-      # Backend CI's paths filter (studio/**, tests/**, its own YAML) does not match, so
-      # the assertion protecting the guard was never collected for the exact change it
-      # exists to reject.
-      - name: The host-offload opt-out is still macOS-only
-        run: python3 -m pytest tests/studio/test_mac_host_offload_optin.py -q
-
-      # Same reason. This guard covers work that was moved OFF its own runner into a
-      # background lane of Lint CI, and every way that regresses -- a lane launched but
-      # never collected, a missing exit status read as success, a launch that stops
-      # detaching -- is an edit to lint-ci.yml or to one of the two absorbed workflows.
-      # No other job's paths filter matches a workflow-only change, and the failure modes
-      # are all silent, so nothing would go red while the absorbed suites quietly stopped
-      # being able to fail anything.
-      - name: The absorbed Lint CI lanes still run and can still fail
-        run: python3 -m pytest tests/studio/test_absorbed_lanes_still_run.py -q
+      # ONE pytest invocation, not one per file.
+      #
+      # These were 7 separate steps, each paying interpreter startup and collection to
+      # run a single module -- and each new guard added an eighth, a ninth. Collapsed
+      # into one call, which also lets pytest share collection across them.
+      #
+      # The list grew as much as it shrank. Every module here reads a workflow file, so
+      # the edit that breaks it is by definition a workflow-only edit, and this is the
+      # only job in the repo with no paths filter. Ten guards were sitting outside it,
+      # collected first by Backend CI's unfiltered push on main -- after the change had
+      # already merged. tests/studio/test_workflow_guards_run_unfiltered.py keeps the
+      # list honest so the next one is not forgotten too.
+      - name: Workflow guard suites
+        run: |
+          python3 -m pytest -q \
+            tests/studio/test_backend_ci_matrix.py \
+            tests/studio/test_backend_ci_parallel_isolation.py \
+            tests/studio/test_absorbed_lanes_still_run.py \
+            tests/studio/test_chat_ui_shards_cover_everything.py \
+            tests/studio/test_ci_shell_suite_coverage.py \
+            tests/studio/test_compile_caches_are_per_worker.py \
+            tests/studio/test_composer_rtl_bidi_attribute.py \
+            tests/studio/test_frontend_dep_removal.py \
+            tests/studio/test_gguf_smoke_phases_stay_independent.py \
+            tests/studio/test_indicator_browsers_run_in_parallel.py \
+            tests/studio/test_mac_host_offload_optin.py \
+            tests/studio/test_main_runs_survive_merge_bursts.py \
+            tests/studio/test_pester_bootstrap_hardening.py \
+            tests/studio/test_playwright_suites_run_in_ci.py \
+            tests/studio/test_smoke_workflows_share_one_script.py \
+            tests/studio/test_stt_model_search_locator_contract.py \
+            tests/studio/test_windows_small_checks_stay_on_their_image.py \
+            tests/studio/test_workflow_guards_run_unfiltered.py
