@@ -431,6 +431,28 @@ def is_benign_console_error(msg: str) -> bool:
     return any(p in msg for p in BENIGN_CONSOLE_ERROR_PATTERNS)
 
 
+def echo_browser_errors(page: Any, info: Callable[[str], None]) -> None:
+    """Print what the browser knows, live, as it happens.
+
+    A harness that only asserts on the DOM cannot tell an entry module that threw
+    from one that is merely slow: both end as an `expect(...)` timeout on a locator
+    that was never created, under an empty CI log. The smokes each own a throwaway
+    page, so printing straight through beats collecting for a caller to forward.
+    """
+    page.on("pageerror", lambda e: info(f"pageerror: {e}"))
+    page.on(
+        "console",
+        lambda m: info(f"console.{m.type}: {m.text}") if m.type == "error" else None,
+    )
+    page.on("requestfailed", lambda r: info(f"requestfailed: {r.url} {r.failure}"))
+    # Vite reloads the page after re-optimizing a late-discovered dep, unmounting the
+    # tree mid-assertion. Name it if it happens.
+    page.on(
+        "framenavigated",
+        lambda f: info(f"navigated: {f.url}") if f is page.main_frame else None,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Diagnostic dump.
 # ─────────────────────────────────────────────────────────────────────

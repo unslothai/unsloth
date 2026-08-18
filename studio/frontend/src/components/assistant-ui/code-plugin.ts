@@ -67,9 +67,11 @@ const normalizeLanguage = (language: string): BundledLanguage => {
   return alias ?? (key as BundledLanguage);
 };
 
-// Cache completed lines and their grammar state so each refresh tokenizes only
-// new text. Large fences retain the previous 250 ms plain-tail cadence.
-const MIN_INCREMENTAL_CHARS = 2000;
+// A streaming fence re-enters highlight() every frame with the whole block, so
+// Shiki re-tokenizes it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, cache the
+// completed lines and their grammar state so each refresh tokenizes only new
+// text, keeping the 250 ms plain-tail cadence.
+export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
 // An unvirtualized thread mounts every fence. Bound both their count and source
 // size; token data measured roughly 30 bytes per source character.

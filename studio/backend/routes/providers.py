@@ -117,17 +117,20 @@ def _validate_max_output_tokens_contract(
     field_was_set: bool,
     value: Optional[int] = None,
 ) -> None:
-    """Reject a non-null override on a provider type with its own documented caps.
+    """Reject a non-null override on a ChatGPT subscription.
 
-    An explicit null is allowed through everywhere: the dialog shows the field for rows
-    it displays as Custom but the backend stores as `openai`, and a blank field
-    serialises as null, so rejecting it failed every unrelated edit of those rows.
-    Clearing an override that cannot exist is a no-op.
+    Codex routing, model list and output cap are all fixed, so an override stored there
+    would never be read. Every other type takes one: the frontend uses it to lower a
+    model's documented cap, or to replace the 32,768-token fallback for a model with no
+    documented cap.
+
+    An explicit null is allowed everywhere, Codex included: a blank field serialises as
+    null rather than as an omission, and clearing an absent override is a no-op.
     """
-    if field_was_set and value is not None and provider_type != "custom":
+    if field_was_set and value is not None and provider_type == "openai_codex":
         raise HTTPException(
             status_code = 400,
-            detail = "Max Tokens limit can only be overridden for generic Custom providers.",
+            detail = "ChatGPT subscriptions use a fixed Max Tokens limit.",
         )
 
 
