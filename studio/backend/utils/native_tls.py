@@ -44,6 +44,11 @@ from pathlib import Path
 
 _NATIVE_TLS_ENV = "UNSLOTH_STUDIO_NATIVE_TLS"
 _DEFAULT_ON_PLATFORMS = ("darwin", "win32", "linux")
+# install.sh sets the uv cert vars on macOS only; keep the runtime mirror off
+# Linux too. On a host with an empty OS CA store they would move uv off its
+# bundled roots and break installs, a cost the Python side does not pay: httpx
+# and requests keep certifi loaded and only gain the OS anchors.
+_UV_SYSTEM_CERTS_PLATFORMS = ("darwin", "win32")
 _TRUTHY = ("1", "true", "yes")
 _FALSEY = ("0", "false", "no")
 
@@ -116,8 +121,14 @@ def activate_native_tls() -> bool:
     # uv's rustls ignores in-process injection (uv >= 0.11 reads UV_SYSTEM_CERTS,
     # older reads UV_NATIVE_TLS). Mirror one value across both: uv takes either as
     # an opt-in, so an opt-out in one spelling must carry to the other.
-    os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
-    os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
+    if sys.platform in _UV_SYSTEM_CERTS_PLATFORMS:
+        os.environ.setdefault("UV_SYSTEM_CERTS", os.environ.get("UV_NATIVE_TLS", "1"))
+        os.environ.setdefault("UV_NATIVE_TLS", os.environ["UV_SYSTEM_CERTS"])
+    # vendored truststore 0.10.4 evaluates PEP 604 unions at import time, so on
+    # 3.9 the import below can only fail; skip the warning it would log.
+    if sys.version_info < (3, 10):
+        _logger.debug("native TLS needs Python >= 3.10; TLS keeps certifi defaults")
+        return False
     # append, not insert(0): a user-installed truststore must win over the vendored copy.
     if _VENDOR_DIR not in sys.path:
         sys.path.append(_VENDOR_DIR)

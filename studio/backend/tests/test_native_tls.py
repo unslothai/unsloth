@@ -154,3 +154,32 @@ def test_activate_fails_open_when_injection_raises(monkeypatch):
     monkeypatch.setitem(sys.modules, "truststore", fake)
 
     assert native_tls.activate_native_tls() is False
+
+
+def test_linux_activation_does_not_export_uv_env(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is True
+    assert "UV_SYSTEM_CERTS" not in os.environ
+    assert "UV_NATIVE_TLS" not in os.environ
+
+
+def test_env_opt_out_wins_on_linux(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("UNSLOTH_STUDIO_NATIVE_TLS", "0")
+    assert native_tls.native_tls_enabled() is False
+
+
+def test_python_39_fails_open_but_keeps_uv_export(monkeypatch):
+    import os
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "version_info", (3, 9, 18))
+    calls = _fake_truststore(monkeypatch)
+
+    assert native_tls.activate_native_tls() is False
+    assert calls == []
+    assert os.environ["UV_SYSTEM_CERTS"] == "1"
