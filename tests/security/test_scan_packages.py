@@ -2076,9 +2076,7 @@ def test_digest_pinned_packages_are_version_pinned():
         (root / "scripts" / "scan_packages_baseline.json").read_text(encoding = "utf-8")
     )
     pinned_packages = {
-        sp._norm_pkg(e["package"])
-        for e in baseline["entries"]
-        if e.get("file_sha256")
+        sp._norm_pkg(e["package"]) for e in baseline["entries"] if e.get("file_sha256")
     }
     assert pinned_packages, "no digest-pinned entries; this guard would be vacuous"
 
@@ -2099,6 +2097,5 @@ def test_digest_pinned_packages_are_version_pinned():
 
     assert not offenders, (
         "these packages carry digest-pinned baseline entries but float in requirements, "
-        "so the security audit goes red whenever upstream publishes: "
-        + "; ".join(offenders)
+        "so the security audit goes red whenever upstream publishes: " + "; ".join(offenders)
     )
