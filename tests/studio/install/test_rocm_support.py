@@ -2975,7 +2975,11 @@ class TestInstallShStructure:
                 f.write('#!/bin/sh\ncase "${1:-}" in -m) echo x86_64 ;; *) echo Linux ;; esac\n')
             os.chmod(os.path.join(d, "uname"), 0o755)
 
-            def run(no_version_state, probed_first, probe_stub = "echo gfx1151"):
+            def run(
+                no_version_state,
+                probed_first,
+                probe_stub = "echo gfx1151",
+            ):
                 script = (
                     "set -euo pipefail\n"
                     "_has_usable_nvidia_gpu() { return 1; }\n"
