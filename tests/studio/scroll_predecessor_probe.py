@@ -182,6 +182,70 @@ def checked(action: str, out):
     return out
 
 
+# The measured scroll itself is the one thing every arm has in common, so it is the one thing no
+# arm may be allowed to skip. `checked()` above proves the PREDECESSOR happened; this proves the
+# gesture the predecessor is supposed to be affecting happened too. Without it a row where
+# SCROLL_JS returned null, or never went quiet, or never moved, is appended like any other, `med()`
+# drops the missing fields as if they were merely absent, and the arm publishes a predecessor
+# comparison built on a scroll that did not occur.
+def scroll_row_problems(row: dict) -> list[str]:
+    problems = []
+    if not row.get("ran"):
+        problems.append("SCROLL_JS returned null, so the viewport was not in the DOM")
+        return problems
+    gesture = row.get("gestureMs")
+    if not isinstance(gesture, (int, float)):
+        problems.append(f"it reported no gesture duration (gestureMs={gesture!r})")
+    if row.get("settleMs") is None:
+        problems.append(
+            "the page never went quiet within the settle timeout, so the post-gesture work is "
+            "unbounded and settle_ms is not a measurement of anything"
+        )
+    travelled = row.get("scrolledPx")
+    if not isinstance(travelled, (int, float)):
+        problems.append(f"it reported no travel (scrolledPx={travelled!r})")
+    elif travelled <= 0:
+        problems.append("the viewport did not move at all, so nothing was scrolled")
+    return problems
+
+
+# The tolerance on "the same gesture". The scroll is 20 steps of 400px from a fixed anchor, so a
+# healthy arm travels exactly as far as the control; 5% is slack for a fixture whose scroll height
+# leaves the last step clamped at a boundary, not room for an arm to scroll a different distance.
+TRAVEL_TOLERANCE = 0.05
+
+
+def skewed_arms(arms: dict) -> list[str]:
+    """Arms whose measured scroll covered a different distance from the control's.
+
+    Every arm is a comparison against `nothing`, and that comparison only means anything if the
+    gesture being compared is the same gesture. `scroll_row_problems` rejects a scroll that did
+    not happen; this rejects a set of scrolls that happened DIFFERENTLY, which reads as a
+    predecessor cost and is not one.
+    """
+    control = arms.get("nothing", {}).get("scrolled_px")
+    if not control:
+        return []
+    return [
+        f"{n} travelled {r['scrolled_px']}px against the control's {control}px"
+        for n, r in arms.items()
+        if r.get("scrolled_px")
+        and abs(r["scrolled_px"] - control) > TRAVEL_TOLERANCE * control
+    ]
+
+
+def checked_scroll(name: str, row: dict) -> dict:
+    """Raised, not recorded, for the same reason `checked()` raises: `main()` marks the arm
+    failed, keeps it out of the table and exits non-zero."""
+    problems = scroll_row_problems(row)
+    if problems:
+        raise RuntimeError(
+            f"the measured scroll under the {name} predecessor did not complete: "
+            f"{'; '.join(problems)}"
+        )
+    return row
+
+
 # Each entry runs `before(page)` and then the harness's own SCROLL_JS. `nothing` is the control:
 # it is repetition one of the harness, which is the repetition that comes in at the floor.
 def before_nothing(page):
@@ -498,6 +562,7 @@ def main() -> int:
                             )
                         )
                         rows[-1]["boundary"] = page.evaluate(read_boundary_counter)
+                        checked_scroll(name, rows[-1])
                         r = rows[-1]
                         info(
                             f"  rep {i + 1}/{REPS} fixture {fixture[-1]} msgs "
@@ -558,6 +623,11 @@ def main() -> int:
                         "layout_ms": med("layout_ms"),
                         "recalc_style_ms": med("recalc_style_ms"),
                         "settle_ms": med("settleMs"),
+                        # Published so the cross-arm check below has something to compare, and so
+                        # a reader can see that every arm scrolled the same distance rather than
+                        # take it on trust.
+                        "scrolled_px": med("scrolledPx"),
+                        "scrolled_px_all": [r.get("scrolledPx") for r in rows],
                         "boundary_events": [r.get("boundary") for r in rows],
                     }
                 except Exception as exc:  # noqa: BLE001
@@ -594,6 +664,14 @@ def main() -> int:
             return 1
         if not results["arms"]:
             info("no arms ran")
+            return 1
+        # Every arm is a comparison against `nothing`, and that comparison only means anything if
+        # the gesture being compared is the same gesture. Per-row validation above rejects a
+        # scroll that did not happen; this rejects a set of scrolls that happened differently,
+        # which reads as a predecessor cost and is not one.
+        skewed = skewed_arms(results["arms"])
+        if skewed:
+            info("arms did not scroll a comparable distance: " + "; ".join(skewed))
             return 1
     finally:
         if vite is not None:
