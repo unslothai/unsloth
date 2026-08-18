@@ -267,6 +267,23 @@ async def one_case(page, case: str) -> dict:
         await page.mouse.up()
         await page.wait_for_timeout(120)
         await page.keyboard.up("Space")
+    elif case == "held_space_then_space":
+        # `held_space` leaves the guard correct about the CLICK and wrong about the FOCUS. The
+        # press focuses the button; the held-Space branch swallows the pointer click and returns
+        # early, so nothing releases that focus. The gesture then ends with the button still
+        # focused, and the next ordinary Space -- the key a reader uses to scroll -- activates it
+        # and deletes the message. Same failure as `dismiss_then_space`, reached down the one
+        # path that skipped the blur.
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.wait_for_timeout(120)
+        await page.keyboard.down("Space")
+        await page.wait_for_timeout(120)
+        await page.mouse.up()
+        await page.wait_for_timeout(120)
+        await page.keyboard.up("Space")
+        await page.wait_for_timeout(300)
+        await page.keyboard.press("Space")
     elif case == "dismiss_then_space":
         # Dismiss the menu with an ordinary click on the unconfirmed "Delete message" button, which
         # the guard swallows, and then press Space -- the key a reader uses to scroll a thread. The
@@ -453,7 +470,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,dismiss_then_space,dismiss_on_composer,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

@@ -243,6 +243,14 @@ function swallowClick(event: Event): void {
     keyboardOnly = true;
     event.stopPropagation();
     event.preventDefault();
+    // Throwing the click away is only half of undoing the press here too. Without this the
+    // button the press landed on keeps focus for the whole of the held key and after it, so an
+    // ordinary Space later activates it and deletes the message this guard just saved. Measured
+    // on chromium, firefox and webkit. Blurring also removes the pending activation at its
+    // source on Gecko, whose keyup handler returns early when the element is no longer the
+    // focused one (`nsGenericHTMLElement::HandleKeyboardActivation`), so the swallow below is
+    // belt and braces on the engines that would still fire one.
+    releaseFocusTakenByTheSwallowedPress(event);
     return;
   }
   const touch = armedByTouch;
