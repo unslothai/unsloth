@@ -40,6 +40,14 @@ NOT_IN_CI = {
     # can go wrong silently, the verdict in harness_failures, is driven without a
     # browser by test_autoscroll_harness_contract.py, which CI does run.
     "playwright_thread_weight.py",
+    # The same shape as the one above, for the streaming reasoning pane. It is a
+    # measurement harness rather than a gate: it sets no budget, it has to stream a
+    # 90,000 character reply at the field trace's own 327 characters a second under
+    # 6x CPU throttling for its numbers to mean anything, and one arm of that costs
+    # ten minutes and more on a loaded runner. Run by hand when the pane's cost
+    # curve needs re-measuring. What it can get silently wrong is the same thing:
+    # its verdict, which it reports through harness_failures and a non-zero exit.
+    "playwright_reasoning_pane.py",
 }
 
 
