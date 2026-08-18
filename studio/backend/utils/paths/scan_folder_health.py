@@ -34,6 +34,13 @@ STATUS_UNKNOWN = "unknown"
 _PROBE_DEPTH = 2
 # Total opens for one probe, whatever the shape. Bounds the cost; the depth does not.
 _PROBE_OPEN_LIMIT = 64
+# A huggingface_hub cache keeps the files one level below that, in
+# <root>/models--org--name/snapshots/<commit>/, and that commit directory is the
+# only place the weights are. Refuse it and every directory above it still lists
+# fine, while the cache scan drops the model without raising, so the folder looks
+# healthy and empty at once. Costs one extra open per cached revision, and only in
+# a directory actually named this, so no other layout pays for it.
+_HF_SNAPSHOTS_DIR = "snapshots"
 
 
 def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Optional[str]]:
@@ -48,7 +55,7 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
     if budget[0] <= 0:
         return STATUS_UNKNOWN, None
     budget[0] -= 1
-    subdirs: list[str] = []
+    subdirs: list[tuple[str, str]] = []
     truncated = False
     try:
         with os.scandir(path) as entries:
@@ -62,13 +69,20 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
                     break
                 try:
                     if entry.is_dir():
-                        subdirs.append(entry.path)
+                        subdirs.append((entry.name, entry.path))
                 except OSError as error:
                     return classify_scan_error(error), entry.path
     except OSError as error:
         return classify_scan_error(error), path
-    for subdir in subdirs:
-        status, cause = _probe_dir(subdir, depth = depth - 1, budget = budget)
+    for name, subdir in subdirs:
+        child_depth = depth - 1
+        if child_depth <= 0 and name == _HF_SNAPSHOTS_DIR:
+            # Spend one more level here rather than raising the depth everywhere:
+            # a diffusers pipeline keeps component directories under each model, so
+            # a blanket extra level would burn the budget on folders shaped
+            # <root>/<publisher>/<model>/<component>.
+            child_depth = 1
+        status, cause = _probe_dir(subdir, depth = child_depth, budget = budget)
         if status == STATUS_MISSING:
             # It was in the listing a moment ago and is gone now: a model being
             # deleted, or a download renaming its temp directory away mid-walk.
@@ -223,9 +237,18 @@ def refresh_failed_scan_folders(folders: list[dict]) -> None:
         if status == STATUS_OK:
             _failed.pop(path, None)
             continue
-        if previous == STATUS_PARTIAL and status == STATUS_PERMISSION_DENIED:
+        if (
+            previous == STATUS_PARTIAL
+            and status == STATUS_PERMISSION_DENIED
+            and cause is not None
+            and cause != path
+        ):
             # The probe cannot see that models were found, so keep the wording
             # the scan chose. A folder that is gone still replaces it below.
+            # Only while the refusal is still something inside the folder: when
+            # the registered root itself is the one refusing, nothing can be
+            # scanned any more, and "some models could not be read" would be
+            # telling the user the wrong half of the problem.
             status = STATUS_PARTIAL
         _record(path, status, cause or path)
 

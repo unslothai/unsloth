@@ -27,6 +27,7 @@ from utils.paths.scan_folder_health import (
     clear_scan_failure,
     is_readable_dir,
     note_scan_folder_scanned,
+    probe_folder,
     probe_status,
     record_scan_failure,
     refresh_failed_scan_folders,
@@ -773,3 +774,84 @@ def test_reading_status_never_touches_the_filesystem(monkeypatch):
     statuses = {row["path"]: row["status"] for row in annotate_scan_folders(rows)}
     assert statuses == {"/models/a": STATUS_OK, "/models/b": STATUS_PERMISSION_DENIED}
     assert scan_folder_status("/models/b") == STATUS_PERMISSION_DENIED
+
+
+@requires_posix_permissions
+def test_a_denied_hf_snapshot_commit_directory_is_not_ok(tmp_path: Path):
+    """The HF cache keeps the files one level below <publisher>/<model>.
+
+    <root>/models--org--name/snapshots/<commit>/ is where the weights are; refuse
+    it and every directory above it still lists, so a depth that stops at
+    ``snapshots`` calls the folder healthy while the model is gone from the list.
+    """
+    repo = tmp_path / "models--org--model"
+    (repo / "blobs").mkdir(parents = True)
+    (repo / "blobs" / "deadbeef").write_bytes(b"stub")
+    (repo / "refs").mkdir()
+    (repo / "refs" / "main").write_text("a" * 40, encoding = "utf-8")
+    commit = repo / "snapshots" / ("a" * 40)
+    commit.mkdir(parents = True)
+    (commit / "config.json").write_text("{}", encoding = "utf-8")
+    commit.chmod(0o000)
+    try:
+        status, cause = probe_folder(str(tmp_path), children = True)
+        assert status == STATUS_PERMISSION_DENIED
+        assert cause == str(commit)
+
+        note_scan_folder_scanned(str(tmp_path), found = False)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PERMISSION_DENIED
+    finally:
+        commit.chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_the_snapshot_level_costs_nothing_on_a_plain_folder(tmp_path: Path, monkeypatch):
+    """Only a directory named ``snapshots`` buys the extra level.
+
+    A diffusers pipeline keeps component directories under each model, so raising
+    the depth for everything would spend the budget on <publisher>/<model>/<part>.
+    """
+    part = tmp_path / "publisher" / "model" / "transformer"
+    part.mkdir(parents = True)
+    (part / "denied").mkdir()
+    (part / "denied").chmod(0o000)
+
+    opened: list[str] = []
+    real_scandir = os.scandir
+
+    def counting_scandir(path, *args, **kwargs):
+        opened.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", counting_scandir)
+    try:
+        # Root, publisher, model. The component level is still out of reach.
+        assert probe_status(str(tmp_path), children = True) == STATUS_OK
+        assert len(opened) == 3
+    finally:
+        (part / "denied").chmod(stat.S_IRWXU)
+
+
+@requires_posix_permissions
+def test_a_partial_folder_whose_root_is_denied_stops_saying_partial(tmp_path: Path):
+    """Once the registered root refuses, nothing in it can be scanned.
+
+    Telling the user only some models could not be read sends them looking for
+    the one bad model in a folder none of which is readable.
+    """
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    bad.chmod(0o000)
+    rows = [{"id": 1, "path": str(tmp_path), "created_at": "2026-01-01"}]
+    try:
+        note_scan_folder_scanned(str(tmp_path), found = True)
+        assert scan_folder_status(str(tmp_path)) == STATUS_PARTIAL
+
+        tmp_path.chmod(0o000)
+        try:
+            refresh_failed_scan_folders(rows)
+            assert annotate_scan_folders(rows)[0]["status"] == STATUS_PERMISSION_DENIED
+        finally:
+            tmp_path.chmod(stat.S_IRWXU)
+    finally:
+        bad.chmod(stat.S_IRWXU)
