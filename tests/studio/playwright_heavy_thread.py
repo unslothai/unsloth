@@ -192,8 +192,17 @@ RECORDER_INIT = """
       window.__rafCount += 1;
       cb(t);
     });
-  window.__nextPaint = () =>
-    new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve())));
+  // Counted, because every one of these is a double rAF and therefore a ~33ms vsync floor inside
+  // whatever is being timed across it. GROWTH_AXES used to declare that count by hand per axis
+  // and defaulted it to 0 for every generated axis, which left the floor in both ends of those
+  // ratios. begin() zeroes this and end() reports it, so a window's floor is measured rather
+  // than asserted, and waits taken OUTSIDE a recorder window (ACTION_SETUPS, for one) are
+  // excluded by construction rather than by remembering to exclude them.
+  window.__paintWaits = 0;
+  window.__nextPaint = () => {
+    window.__paintWaits += 1;
+    return new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve())));
+  };
 
   // Chromium-only, recorded as a cross-check on the portable stall number and never as the
   // headline.
@@ -247,6 +256,7 @@ RECORDER_INIT = """
       this.frameAt = [];
       this.stallAt = [];
       this.startedAt = performance.now();
+      window.__paintWaits = 0;
       let lastFrame = performance.now();
       const frame = () => {
         if (generation !== this.generation) return;
@@ -292,6 +302,10 @@ RECORDER_INIT = """
       const sorted = frames.slice().sort((a, b) => a - b);
       return {
         wall_ms: Math.round(wallMs * 10) / 10,
+        // How many double-rAF waits this window was clocked across. Not trimmed to `cutoff`:
+        // a wait after the cutoff still happened inside the window that produced wall_ms, and
+        // wall_ms is the number this count is subtracted from.
+        paint_waits: window.__paintWaits,
         frames: frames.length,
         // The first entry spans begin() to the first callback, so it is the wait for the next
         // vsync as much as a rendered frame. Kept: at these timescales it is ~16ms, well under
@@ -984,15 +998,27 @@ def measure_cell(context, engine: str, size: int) -> dict:
     api_prefix = f"{BASE}/api/"
     stray_requests: list[str] = []
     console_warnings: list[str] = []
+    # Severity kept SEPARATE from the warning list. The allowance below exists for Gecko's two
+    # scroll-anchoring notices, which are the engine describing itself. An application exception
+    # is not chatter: a single console.error or an uncaught pageerror inside a measured
+    # interaction means the interaction did not do what the row says it did, and folding those
+    # into the same list let one pass under a "> 4" threshold and exit 0.
+    console_errors: list[str] = []
     page.on(
         "request",
         lambda r: stray_requests.append(r.url) if r.url.startswith(api_prefix) else None,
     )
     page.on(
         "console",
-        lambda m: console_warnings.append(m.text[:200]) if m.type in ("warning", "error") else None,
+        lambda m: (
+            console_errors.append(m.text[:200])
+            if m.type == "error"
+            else console_warnings.append(m.text[:200])
+            if m.type == "warning"
+            else None
+        ),
     )
-    page.on("pageerror", lambda e: console_warnings.append(f"pageerror: {e}"[:200]))
+    page.on("pageerror", lambda e: console_errors.append(f"pageerror: {e}"[:200]))
     cdp = None
     try:
         page.goto(f"{BASE}/smoke-heavy-thread.html", wait_until = "domcontentloaded")
@@ -1030,8 +1056,11 @@ def measure_cell(context, engine: str, size: int) -> dict:
         result["seed_api_requests"] = len(stray_requests)
         result["seed_console_warnings"] = len(console_warnings)
         result["first_seed_warning"] = console_warnings[0] if console_warnings else "-"
+        result["seed_console_errors"] = len(console_errors)
+        result["first_seed_error"] = console_errors[0] if console_errors else "-"
         stray_requests.clear()
         console_warnings.clear()
+        console_errors.clear()
 
         result["cpu_throttle_rate"] = 1.0
         if cdp is not None and CPU_THROTTLE_RATE != 1.0:
@@ -1059,6 +1088,8 @@ def measure_cell(context, engine: str, size: int) -> dict:
         result["stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
         result["console_warnings"] = len(console_warnings)
         result["first_console_warning"] = console_warnings[0] if console_warnings else "-"
+        result["console_errors"] = len(console_errors)
+        result["first_console_error"] = console_errors[0] if console_errors else "-"
     finally:
         page.close()
     return result
@@ -1128,6 +1159,11 @@ def _action(action: str, key: str):
     return lambda r: r["actions"][action][key]
 
 
+def _floor_from(action: str, key: str):
+    """A `floored` that is measured per row rather than declared once for every action."""
+    return lambda r: (r.get("actions", {}).get(action) or {}).get(key) or 0
+
+
 TABLE_ROWS = (
     ("chars requested", lambda r: r["chars_requested"]),
     ("chars rendered", lambda r: r["plan"]["chars"]),
@@ -1147,6 +1183,9 @@ TABLE_ROWS = (
     ("action api requests", lambda r: r["stray_api_requests"]),
     ("stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
     ("action console warnings", lambda r: r["console_warnings"]),
+    ("seed console errors", lambda r: r.get("seed_console_errors", 0)),
+    ("action console errors", lambda r: r.get("console_errors", 0)),
+    ("first action error", lambda r: r.get("first_console_error", "-")),
     ("first action warning", lambda r: r["first_console_warning"]),
     ("messages rendered", lambda r: r["counts"]["messages"]),
     ("dom nodes", lambda r: r["counts"]["domNodes"]),
@@ -1269,7 +1308,16 @@ GROWTH_AXES = tuple(
     [(f"{a} longest stall ms", _action(a, "longest_stall_ms"), 0) for a in ACTIONS]
     + [(f"{a} worst frame ms", _action(a, "worst_frame_ms"), 0) for a in ACTIONS]
     + [(f"{a} frames over 33ms", _action(a, "frames_over_33"), 0) for a in ACTIONS]
-    + [(f"{a} wall ms", _action(a, "wall_ms"), 0) for a in ACTIONS]
+    # The floor is READ from the row, not declared: every one of these windows crosses a
+    # different number of mandatory double-rAF waits, and declaring 0 for all of them left
+    # roughly `paint_waits * paint_floor_ms` of constant baseline in both ends of the ratio.
+    # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it
+    # after closing it, so it crosses the same two waits `menu open+close ms` correctly declares,
+    # and `menu wall ms` was declaring none of them.
+    + [
+        (f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits"))
+        for a in ACTIONS
+    ]
     + [
         ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
         ("scroll gesture ms", _action("scroll", "gestureMs"), 0),
@@ -1294,8 +1342,13 @@ DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5")
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
-def growth(cells: dict, pick, floored: int, sizes: list[int]) -> tuple[float | None, float | None]:
+def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, float | None]:
     """`floored` is a COUNT of double-rAF waits inside the metric, not a flag.
+
+    It may be an int, declared once for an axis, or a callable taking the row, for an axis whose
+    window crosses a different number of waits per action. The generated `wall ms` axes are the
+    second kind: they were declared 0 for every action, which left roughly `paint_waits *
+    paint_floor_ms` in both ends of those ratios.
 
     Each `await __nextPaint()` a metric is clocked across contributes its own ~33ms vsync floor,
     and a metric that contains two of them carries two. `menu open+close ms` is the case: settle()
@@ -1311,8 +1364,9 @@ def growth(cells: dict, pick, floored: int, sizes: list[int]) -> tuple[float | N
             value = pick(row)
             if value is None:
                 return None, None
-            if floored:
-                value -= floored * row["paint_floor_ms"]
+            count = floored(row) if callable(floored) else floored
+            if count:
+                value -= count * row["paint_floor_ms"]
             values.append(round(value, 2))
         return values[0], values[1]
     except (KeyError, TypeError):
@@ -1488,6 +1542,22 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             # 25K and two at both 100K and 300K -- a growth check fails on that and would leave
             # this harness unable to report a Gecko number at all. The count and the first
             # message are printed per size either way, so a reader can see what was tolerated.
+            # NO allowance. The paragraph above is about engine chatter, which is the engine
+            # describing itself; an application exception is not that. One console.error or one
+            # uncaught pageerror inside a measured interaction means the interaction did not do
+            # what the row says it did, so its timing is not a measurement of the labelled thing.
+            # Sharing one list with the warnings let exactly one such error sit under the "> 4"
+            # threshold and the run exit 0 with the timings published.
+            for phase, count, first in (
+                ("seeding", row.get("seed_console_errors", 0), row.get("first_seed_error", "-")),
+                ("the measured actions", row.get("console_errors", 0), row.get("first_console_error", "-")),
+            ):
+                if count:
+                    failures.append(
+                        f"{where} logged {count} console error(s) or page error(s) during "
+                        f"{phase}, the first being {first!r}; an application exception is not "
+                        "engine chatter and the timings around it are not measurements"
+                    )
             if row["console_warnings"] > CONSOLE_WARNING_ALLOWANCE:
                 failures.append(
                     f"{where} logged {row['console_warnings']} console warnings during the "

@@ -140,7 +140,7 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
     assert "PAINT_FLOOR_JS" in text
     # Once per double-rAF wait the metric is clocked across, not once per metric: `menu open+close
     # ms` is the sum of two independently floored timings and carries two floors.
-    assert 'value -= floored * row["paint_floor_ms"]' in section(
+    assert 'value -= count * row["paint_floor_ms"]' in section(
         text, "def growth(", "def report_growth"
     )
 

@@ -851,5 +851,123 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
     assert len(problems) == 1 and "unverified" in problems[0], problems
 
 
+# ── the wall axes carry the floor they actually paid ──────────────────
+
+
+def wall_cells(paint_waits: int, floor_ms: float = 33.0, wall_ms: float = 200.0) -> dict:
+    return {
+        str(size): {
+            "paint_floor_ms": floor_ms,
+            "actions": {"menu": {"wall_ms": wall_ms, "paint_waits": paint_waits}},
+        }
+        for size in (25000, 300000)
+    }
+
+
+def wall_axis():
+    for name, pick, floored in HARNESS.GROWTH_AXES:
+        if name == "menu wall ms":
+            return pick, floored
+    raise AssertionError("menu wall ms is no longer an axis")
+
+
+def test_the_wall_axis_floor_is_read_from_the_row_not_declared() -> None:
+    """`MENU_JS` opens the recorder before opening the menu and closes it after closing it, so it
+    crosses the same two waits `menu open+close ms` declares. The generated wall axes declared 0
+    for every action, leaving that floor in both ends of the ratio."""
+    _pick, floored = wall_axis()
+    assert callable(floored), "the wall axis floor is a hardcoded number again"
+    row = {"actions": {"menu": {"paint_waits": 2}}}
+    assert floored(row) == 2
+
+
+def test_the_measured_floor_is_actually_subtracted() -> None:
+    pick, floored = wall_axis()
+    small, large = HARNESS.growth(wall_cells(2), pick, floored, [25000, 300000])
+    assert small == 200.0 - 2 * 33.0, small
+    assert large == 200.0 - 2 * 33.0, large
+
+
+def test_an_axis_that_paid_no_waits_is_left_alone() -> None:
+    """The control: the change must not subtract a floor from a window that never waited."""
+    pick, floored = wall_axis()
+    small, _large = HARNESS.growth(wall_cells(0), pick, floored, [25000, 300000])
+    assert small == 200.0, small
+
+
+def test_a_missing_wait_count_subtracts_nothing_rather_than_crashing() -> None:
+    """An older result file has no `paint_waits`. Subtracting an unknown count would be worse
+    than subtracting none, and raising would drop the axis entirely."""
+    _pick, floored = wall_axis()
+    assert floored({"actions": {"menu": {}}}) == 0
+    assert floored({}) == 0
+
+
+# ── an application exception is not engine chatter ────────────────────
+
+
+def error_cell(seed_errors = 0, action_errors = 0) -> dict:
+    cell = copy.deepcopy(clean_cell())
+    cell["seed_console_errors"] = seed_errors
+    cell["first_seed_error"] = "boom" if seed_errors else "-"
+    cell["console_errors"] = action_errors
+    cell["first_console_error"] = "TypeError: x is not a function" if action_errors else "-"
+    return cell
+
+
+def test_a_clean_cell_still_passes_with_the_error_counters_present() -> None:
+    """The control, so the two checks below cannot be met by rejecting every run."""
+    assert HARNESS.harness_failures(results_with(error_cell()), discriminating_report()) == []
+
+
+def test_one_console_error_during_the_actions_fails_the_run() -> None:
+    """Previously this went into the same list as Gecko's two scroll-anchoring notices and passed
+    under the `> 4` allowance, so a run could exit 0 with an application exception in it."""
+    failures = HARNESS.harness_failures(
+        results_with(error_cell(action_errors = 1)), discriminating_report()
+    )
+    assert any("console error" in f and "measured actions" in f for f in failures), failures
+
+
+def test_one_console_error_during_seeding_fails_the_run() -> None:
+    failures = HARNESS.harness_failures(
+        results_with(error_cell(seed_errors = 1)), discriminating_report()
+    )
+    assert any("console error" in f and "seeding" in f for f in failures), failures
+
+
+def test_the_warning_allowance_still_tolerates_engine_chatter() -> None:
+    """Firefox emits two scroll-anchoring notices and the harness must still be able to report a
+    Gecko number. Errors are rejected; warnings under the allowance are not."""
+    cell = error_cell()
+    cell["console_warnings"] = HARNESS.CONSOLE_WARNING_ALLOWANCE
+    assert HARNESS.harness_failures(results_with(cell), discriminating_report()) == []
+
+
+def test_warnings_and_errors_are_captured_into_separate_lists() -> None:
+    """Source-level: one list for both is how the severity was lost in the first place."""
+    assert "console_errors: list[str] = []" in HARNESS_SOURCE
+    assert 'page.on("pageerror", lambda e: console_errors.append' in HARNESS_SOURCE
+    assert 'if m.type == "error"' in HARNESS_SOURCE, "errors are no longer routed by severity"
+    assert 'if m.type == "warning"' in HARNESS_SOURCE, "warnings are no longer routed by severity"
+    # Keyed on the predicate alone, not on the whole expression around it: the first version of
+    # this assertion pinned an exact one-line form and stayed green when the predicate was put
+    # back on a line of its own.
+    assert 'm.type in ("warning", "error")' not in HARNESS_SOURCE, (
+        "one predicate captures both severities again, so an application exception is filed as "
+        "chatter and absorbed by the warning allowance"
+    )
+
+
+def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> None:
+    """Without the reset the count is cumulative across every action in the page, so each window
+    subtracts a larger floor than it paid and later actions go negative."""
+    begin = HARNESS_SOURCE.split("    begin() {", 1)[1].split("},", 1)[0]
+    assert "__paintWaits = 0" in begin, (
+        "begin() no longer zeroes the paint-wait counter, so every window inherits the waits of "
+        "the ones before it"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
