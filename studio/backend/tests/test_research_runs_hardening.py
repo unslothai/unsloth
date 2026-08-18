@@ -1983,3 +1983,48 @@ def test_stream_completion_gives_a_model_switch_more_than_the_generic_backoff(mo
     assert len(sent) == research_runs._MAX_MODEL_WAITS + 1
     # Each wait is longer than the last: a swap that has not finished in 5s needs more, not less.
     assert sum(delays) == 30.0
+
+
+def _slow_admission_stream(gap_seconds: float):
+    """A queue that announces itself on a slow heartbeat, then admits and answers."""
+
+    class _SlowQueue:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for _ in range(2):
+                yield ": admission-wait"
+                await asyncio.sleep(gap_seconds)
+            yield ": admission-done"
+            for line in _stream_body().splitlines():
+                yield line
+
+    return _SlowQueue()
+
+
+def test_a_slow_admission_heartbeat_widens_the_queue_gap_bound(monkeypatch):
+    """The gap between queue notices is bounded by the heartbeat operators configured."""
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "300")
+    timeouts: list[httpx.Timeout] = []
+    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())], timeouts)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)
+    assert timeouts[0].read == 300 * 3 + research_runs._STREAM_READ_TIMEOUT_MARGIN_SECONDS
+
+
+def test_an_unlimited_run_survives_a_gap_past_the_default_queue_bound(monkeypatch):
+    """A healthy queue on a slow heartbeat must not be failed as a first-output stall."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "0.1")
+    _install_fake_client(monkeypatch, [_slow_admission_stream(0.15)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 0) == ("report", "", "stop", None)

@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
+from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import message_text_with_pastes
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import EMPTY_SEARCH_RESULTS, RAG_SOURCES_SENTINEL, execute_tool
@@ -112,6 +113,8 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
+_ADMISSION_HEARTBEAT_MISSES = 3
 # Model-loading budget when the request budget is unlimited, and its ceiling for any budget:
 # a poll loop must stay bounded however long generation itself is allowed to run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
@@ -1279,8 +1282,14 @@ class ResearchSupervisor:
                 first_output_budget = min(first_output_budget, model_timeout)
             # Unlimited only removes the total wall-clock deadline. Keep connection and response
             # headers bounded, but never let HTTPX's body-read timeout undercut the idle guard.
-            # The same bound caps the silence between queue notices, which no wall clock covers.
-            admission_gap_budget = max(first_output_budget, _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS)
+            # The same bound caps the silence between queue notices, which no wall clock covers,
+            # so it has to clear the heartbeat those notices are actually paced by.
+            admission_gap_budget = max(
+                first_output_budget,
+                _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
+                llama_admission_config_from_env().keepalive_interval_s
+                * _ADMISSION_HEARTBEAT_MISSES,
+            )
             timeout = (
                 httpx.Timeout(model_timeout)
                 if model_timeout
