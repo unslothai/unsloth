@@ -56,6 +56,18 @@ def _mutex_helpers(source: str) -> str:
             # stub would keep passing if the real call ever went wrong.
             "Write-StudioLine",
             "Enter-StudioNamedMutex",
+            # Get-StudioFinalPath is a dispatcher now: it asks the initializer
+            # whether the native helper compiled, and falls back to the pure
+            # PowerShell resolver when it did not (issue #9140).
+            "Test-StudioDirectoryUsable",
+            "Remove-StudioStalePrivateTempDirectories",
+            "New-StudioPrivateTempDirectory",
+            "Initialize-StudioTempEnvironment",
+            "Write-StudioFinalPathDegraded",
+            "Initialize-StudioFinalPathNativeType",
+            "Resolve-StudioLinkTarget",
+            "Get-StudioLexicalPath",
+            "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
             "Get-StudioPathHash",
             "Get-StudioInstallMutexName",
@@ -76,8 +88,19 @@ def _process_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
         for name in (
+            "Write-StudioLine",
+            "Test-StudioDirectoryUsable",
+            "Remove-StudioStalePrivateTempDirectories",
+            "New-StudioPrivateTempDirectory",
+            "Initialize-StudioTempEnvironment",
+            "Write-StudioFinalPathDegraded",
+            "Initialize-StudioFinalPathNativeType",
+            "Resolve-StudioLinkTarget",
+            "Get-StudioLexicalPath",
+            "Resolve-StudioFinalPathInfo",
             "Get-StudioFinalPath",
             "Test-StudioProtectedPathMatch",
+            "Get-StudioProcessImagePath",
             "Get-RunningStudioVenvProcesses",
         )
     )
@@ -255,14 +278,23 @@ def test_installer_ignores_command_line_and_cwd_only_path_mentions():
     assert "Get-CimInstance" not in detector
     assert ".CommandLine" not in detector
     assert "$process.Path" not in detector
-    assert "[UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id)" in detector
+    assert "Get-StudioProcessImagePath -ProcessId $process.Id" in detector
+
+    # That helper is where the executable identity now comes from, so the same
+    # contract has to hold on every rung of its fallback: a confirmed image, never
+    # a command line. Its Win32_Process rung exists because a host that cannot
+    # compile the native helper would otherwise find no running processes at all
+    # and overwrite a venv Studio has open (issue #9140).
+    image = _extract(r"    function Get-StudioProcessImagePath \{.*?\n    \}\n", source)
+    assert ".CommandLine" not in image
+    assert "ExecutablePath" in image
 
 
 @pytest.mark.skipif(os.name != "nt" or not POWERSHELLS, reason = "Windows PowerShell is required")
 @pytest.mark.parametrize("shell", POWERSHELLS)
 def test_versioned_native_helper_loads_after_older_installer_type(shell: str):
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    final_path_helper = _mutex_helpers(source)
     script = f"""
 $ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @'
@@ -538,7 +570,7 @@ def test_path_identity_failure_is_reported_as_unknown(shell: str):
     script = f"""
 $ErrorActionPreference = "Stop"
 {_mutex_helpers(source)}
-function Get-StudioFinalPath {{ throw "identity unavailable" }}
+function Resolve-StudioFinalPathInfo {{ throw "identity unavailable" }}
 $match = Test-StudioPathEqual -Left "C:\\one" -Right "C:\\two"
 Write-Output ($null -eq $match)
 """

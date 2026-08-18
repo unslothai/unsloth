@@ -315,10 +315,138 @@ function Install-UnslothStudio {
         if (Get-Command Restore-StudioVenvRollback -CommandType Function -ErrorAction SilentlyContinue) {
             Restore-StudioVenvRollback
         }
+        # Most failures return before the try/finally that owns the locks, and
+        # under `irm | iex` these variables belong to the caller's own session.
+        # Defined later in the file, so probed the same way as the rollback above.
+        if (Get-Command Restore-StudioTempEnvironment -CommandType Function -ErrorAction SilentlyContinue) {
+            Restore-StudioTempEnvironment
+        }
         if ($TauriMode) {
             exit $Code
         }
         throw $Message
+    }
+
+    # ── Usable temporary storage ──
+    # Windows picks the temp directory from TMP, then TEMP, then the profile, and
+    # never checks that the winner exists or that we may write there. The desktop
+    # app hands us whatever it inherited -- studio/src-tauri/src/install.rs sets
+    # neither -- and one report had it pointing at C:\Windows\TEMP, where the
+    # source file Add-Type had just written was gone by the time csc.exe opened it
+    # (issue #9140). That directory is not only the compiler's: the Python, uv and
+    # VC++ downloads below stage through it too. Probe it once and, if it cannot
+    # hold a file, point BOTH variables at a directory we own for the rest of the
+    # run. Every child process and every [System.IO.Path]::GetTempPath() call
+    # reads the process environment block, so this is the whole fix in one place.
+    function Test-StudioDirectoryUsable {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        try {
+            if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+                New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop | Out-Null
+            }
+            # Write, read back, delete -- not Test-Path. The failure shapes that
+            # matter here (write without read, a scanner deleting what was just
+            # created) all pass an existence check and then lose the file.
+            $probe = Join-Path $Path ("unsloth-probe-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".tmp")
+            [System.IO.File]::WriteAllText($probe, "unsloth")
+            $readBack = [System.IO.File]::ReadAllText($probe)
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            return ($readBack -eq "unsloth")
+        } catch {
+            return $false
+        }
+    }
+
+    function Remove-StudioStalePrivateTempDirectories {
+        param([Parameter(Mandatory = $true)][string]$Root)
+        # The directory handed out below outlives the install (a Studio started
+        # from here inherits it as its own %TEMP%), so bound the pile here instead
+        # of deleting one that may still be in use.
+        try {
+            $cutoff = (Get-Date).AddDays(-1)
+            foreach ($stale in @(Get-ChildItem -LiteralPath $Root -Directory -Filter "ust-*" -ErrorAction Stop)) {
+                if ($stale.LastWriteTime -ge $cutoff) { continue }
+                # Windows PowerShell 5.1's Remove-Item -Recurse walks THROUGH a
+                # junction and deletes what it points at. Nothing this script
+                # created here is a reparse point, so anything that is gets the
+                # link itself removed and its target left alone.
+                if ($stale.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                    Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
+                    continue
+                }
+                Remove-Item -LiteralPath $stale.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+
+    function New-StudioPrivateTempDirectory {
+        $roots = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+            $roots += (Join-Path $env:LOCALAPPDATA "UnslothStudio\temp")
+        }
+        try {
+            $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
+            if (-not [string]::IsNullOrWhiteSpace($localAppData)) {
+                $roots += (Join-Path $localAppData "UnslothStudio\temp")
+            }
+        } catch {}
+        if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            $roots += (Join-Path $env:USERPROFILE ".unsloth\temp")
+        }
+        foreach ($root in $roots) {
+            # Short leaf on purpose: the .NET Framework compiler Windows
+            # PowerShell 5.1 shells out to still meets the legacy path limit.
+            $leaf = "ust-" + $PID + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $candidate = Join-Path $root $leaf
+            if (Test-StudioDirectoryUsable -Path $candidate) {
+                Remove-StudioStalePrivateTempDirectories -Root $root
+                return $candidate
+            }
+        }
+        return $null
+    }
+
+    $script:StudioTempOverride = $null
+    $script:StudioTempChecked = $false
+    function Initialize-StudioTempEnvironment {
+        if ($script:StudioTempChecked) { return }
+        $script:StudioTempChecked = $true
+        # TMP wins over TEMP, so an unusable TMP is enough on its own; only fall
+        # through to TEMP when TMP is unset.
+        $inherited = if (-not [string]::IsNullOrWhiteSpace($env:TMP)) { $env:TMP } else { $env:TEMP }
+        if (Test-StudioDirectoryUsable -Path $inherited) { return }
+        $private = New-StudioPrivateTempDirectory
+        if (-not $private) {
+            Write-StudioLine "[WARN] No writable temporary directory was found; downloads may fail." -ForegroundColor Yellow
+            return
+        }
+        # Absent is not the same as empty: restoring an absent variable as "" would
+        # change how every later child resolves its own temp directory.
+        $script:StudioTempOverride = [pscustomobject]@{
+            TmpSet = ($null -ne $env:TMP)
+            TmpValue = $env:TMP
+            TempSet = ($null -ne $env:TEMP)
+            TempValue = $env:TEMP
+            Path = $private
+        }
+        $env:TMP = $private
+        $env:TEMP = $private
+        Write-StudioLine "[WARN] The inherited temporary directory is not usable; this install will use its own." -ForegroundColor Yellow
+    }
+
+    function Restore-StudioTempEnvironment {
+        $override = $script:StudioTempOverride
+        if ($null -eq $override) { return }
+        $script:StudioTempOverride = $null
+        if ($override.TmpSet) { $env:TMP = $override.TmpValue }
+        else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
+        if ($override.TempSet) { $env:TEMP = $override.TempValue }
+        else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
+        # The directory itself stays: a Studio autostarted from this install
+        # inherited it as its own %TEMP%, and the host's real one is broken --
+        # that is why this exists. New-StudioPrivateTempDirectory sweeps the old
+        # ones on the next run.
     }
 
     # ── Parse flags ──
@@ -416,26 +544,44 @@ function Install-UnslothStudio {
     try { $defaultProfile = [Environment]::GetFolderPath("UserProfile") } catch {}
     $tauriProfile = if ($defaultProfile) { $defaultProfile } else { $env:USERPROFILE }
 
-    function Get-StudioFinalPath {
-        param([Parameter(Mandatory = $true)][string]$Path)
-        $fullPath = [System.IO.Path]::GetFullPath($Path)
-        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
-        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
-            $fullPath = $fullPath.TrimEnd('\', '/')
+    # GetFinalPathNameByHandleW is the only exact answer: it follows junctions,
+    # symlinks and SUBST drives, expands 8.3 aliases and reports the on-disk
+    # spelling, none of which GetFullPath reproduces. It costs a C# compile, and
+    # Windows PowerShell 5.1 -- the interpreter the desktop app spawns -- compiles
+    # by dropping the source in %TEMP% and running csc.exe. When that directory is
+    # unusable, or a scanner eats the generated source, Add-Type throws CS2001,
+    # which used to travel up Get-StudioPathHash and abort a first launch as
+    # "Could not create the Studio install lock" (issue #9140). Try once, retry
+    # once with %TEMP% pointed somewhere we know we can write, then remember the
+    # answer -- callers below resolve dozens of paths and must not pay for it
+    # again -- and let Get-StudioLexicalPath carry the run.
+    $script:StudioFinalPathNativeState = $null
+    $script:StudioFinalPathWarned = $false
+    function Write-StudioFinalPathDegraded {
+        param([string]$Reason)
+        if ($script:StudioFinalPathWarned) { return }
+        $script:StudioFinalPathWarned = $true
+        Write-StudioLine "[WARN] Could not load the native path resolver ($Reason)." -ForegroundColor Yellow
+        Write-StudioLine "       Continuing with the PowerShell resolver; installation is unaffected." -ForegroundColor Yellow
+    }
+
+    function Initialize-StudioFinalPathNativeType {
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
         }
-        $existingPath = $fullPath
-        $missingSegments = @()
-        while (-not (Test-Path -LiteralPath $existingPath)) {
-            $leaf = [System.IO.Path]::GetFileName($existingPath)
-            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
-            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
-                return $fullPath
-            }
-            $missingSegments = @($leaf) + $missingSegments
-            $existingPath = $parent
+        if ($null -ne $script:StudioFinalPathNativeState) { return $script:StudioFinalPathNativeState }
+        # Constrained Language Mode forbids Add-Type outright, so compiling would
+        # only produce a second, less honest error.
+        $languageMode = "FullLanguage"
+        try { $languageMode = [string]$ExecutionContext.SessionState.LanguageMode } catch {}
+        if ($languageMode -ne "FullLanguage") {
+            $script:StudioFinalPathNativeState = $false
+            Write-StudioFinalPathDegraded -Reason "PowerShell is in $languageMode"
+            return $false
         }
-        if (-not ("UnslothStudioFinalPathV2" -as [type])) {
-            Add-Type -TypeDefinition @'
+        Initialize-StudioTempEnvironment
+        $source = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -539,8 +685,175 @@ public static class UnslothStudioFinalPathV2
   }
 }
 '@
+        $firstError = $null
+        try {
+            Add-Type -TypeDefinition $source -ErrorAction Stop
+        } catch {
+            $firstError = $_.Exception.Message
         }
-        $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+        # A compile that reports failure can still have loaded the type, and the
+        # same name cannot be defined twice in one session.
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
+        }
+        $private = New-StudioPrivateTempDirectory
+        if ($private) {
+            $hadTmp = ($null -ne $env:TMP)
+            $previousTmp = $env:TMP
+            $hadTemp = ($null -ne $env:TEMP)
+            $previousTemp = $env:TEMP
+            try {
+                # Both, because GetTempPath reads TMP first.
+                $env:TMP = $private
+                $env:TEMP = $private
+                try { Add-Type -TypeDefinition $source -ErrorAction Stop } catch {}
+            } finally {
+                if ($hadTmp) { $env:TMP = $previousTmp } else { Remove-Item Env:\TMP -ErrorAction SilentlyContinue }
+                if ($hadTemp) { $env:TEMP = $previousTemp } else { Remove-Item Env:\TEMP -ErrorAction SilentlyContinue }
+                # Only now: deleting while csc.exe still holds the directory is
+                # the very race being worked around.
+                Remove-Item -LiteralPath $private -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ("UnslothStudioFinalPathV2" -as [type]) {
+            $script:StudioFinalPathNativeState = $true
+            return $true
+        }
+        $script:StudioFinalPathNativeState = $false
+        # The first line of the compiler's own output, never the whole C# dump it
+        # echoes after it.
+        $reason = if ($firstError) { ($firstError -split "`r?`n")[0].Trim() } else { "compilation failed" }
+        Write-StudioFinalPathDegraded -Reason $reason
+        return $false
+    }
+
+    function Resolve-StudioLinkTarget {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $item = $null
+        try { $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop } catch { return $null }
+        $target = $null
+        # PowerShell 7 walks the whole chain; 5.1 only exposes the raw reparse
+        # target, which is relative for a relative symlink and may still carry the
+        # NT device prefix a junction stores it with.
+        if ($item.PSObject.Methods.Name -contains 'ResolveLinkTarget') {
+            try {
+                $final = $item.ResolveLinkTarget($true)
+                if ($final) { $target = [string]$final.FullName }
+            } catch { $target = $null }
+        }
+        if ([string]::IsNullOrWhiteSpace($target)) {
+            $raw = $null
+            try { $raw = $item.Target } catch { $raw = $null }
+            # 5.1 hands this back as a COLLECTION, not a string, and not always an
+            # [array] either -- so unwrap anything that is not already a string
+            # rather than testing for one container type and letting the rest fall
+            # through to a space-joined mess.
+            if ($null -ne $raw -and $raw -isnot [string]) {
+                $raw = @($raw) | Select-Object -First 1
+            }
+            if (-not [string]::IsNullOrWhiteSpace($raw)) { $target = [string]$raw }
+        }
+        if ([string]::IsNullOrWhiteSpace($target)) { return $null }
+        if ($target.StartsWith('\??\')) { $target = $target.Substring(4) }
+        try {
+            if (-not [System.IO.Path]::IsPathRooted($target)) {
+                $parent = [System.IO.Path]::GetDirectoryName($Path)
+                if ([string]::IsNullOrEmpty($parent)) { return $null }
+                $target = [System.IO.Path]::Combine($parent, $target)
+            }
+            $target = [System.IO.Path]::GetFullPath($target)
+        } catch { return $null }
+        if ([string]::Equals(
+            $target.TrimEnd('\', '/'), $Path.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $null
+        }
+        return $target
+    }
+
+    # Compiler-free stand-in for the native resolver. Normalized, not exact: it
+    # cannot expand an 8.3 alias or recover the stored casing, which is why
+    # callers get told the answer is inexact rather than being handed a lie.
+    # Never throws -- a path identity nobody can establish must not be the reason
+    # an install stops.
+    function Get-StudioLexicalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $current = $null
+        try { $current = [System.IO.Path]::GetFullPath($Path) } catch { return $Path }
+        # A plain hashtable, not a generic HashSet: PowerShell's is already
+        # case-insensitive, and constructing a generic type is one of the things a
+        # locked-down host can forbid -- which is the kind of host that got here.
+        $visited = @{}
+        # A link on a PARENT component is the ordinary Windows shape
+        # (C:\Users\me -> D:\Users\me, redirected profiles), so walk from the root
+        # and start over whenever a component turns out to be one. Capped, with a
+        # visited set, because reparse points can point at each other.
+        for ($hop = 0; $hop -lt 32; $hop++) {
+            if ($visited.ContainsKey($current)) { break }
+            $visited[$current] = $true
+            $root = ""
+            try { $root = [System.IO.Path]::GetPathRoot($current) } catch { break }
+            if ([string]::IsNullOrEmpty($root) -or $current.Length -lt $root.Length) { break }
+            $walked = $root
+            $rewritten = $null
+            $tail = $current.Substring($root.Length)
+            # [char[]] on purpose: an untyped array binds Split's single-string
+            # overload instead, which splits on nothing.
+            foreach ($segment in $tail.Split([char[]]@('\', '/'), [System.StringSplitOptions]::RemoveEmptyEntries)) {
+                $walked = [System.IO.Path]::Combine($walked, $segment)
+                $target = Resolve-StudioLinkTarget -Path $walked
+                if ($target) {
+                    $remainder = $current.Substring($walked.Length).TrimStart('\', '/')
+                    $rewritten = if ($remainder) { [System.IO.Path]::Combine($target, $remainder) } else { $target }
+                    break
+                }
+            }
+            if (-not $rewritten) { break }
+            try { $current = [System.IO.Path]::GetFullPath($rewritten) } catch { $current = $rewritten; break }
+        }
+        try {
+            $provider = (Resolve-Path -LiteralPath $current -ErrorAction Stop).ProviderPath
+            if (-not [string]::IsNullOrWhiteSpace($provider)) { $current = $provider }
+        } catch {}
+        return $current
+    }
+
+    # Exact = $true means the native resolver answered and the string is
+    # byte-for-byte what it always was. Callers that key a lock on the result use
+    # it to decide how much they may conclude from an inequality.
+    function Resolve-StudioFinalPathInfo {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullRoot = [System.IO.Path]::GetPathRoot($fullPath)
+        if (-not $fullRoot -or $fullPath.Length -gt $fullRoot.Length) {
+            $fullPath = $fullPath.TrimEnd('\', '/')
+        }
+        $existingPath = $fullPath
+        $missingSegments = @()
+        while (-not (Test-Path -LiteralPath $existingPath)) {
+            $leaf = [System.IO.Path]::GetFileName($existingPath)
+            $parent = [System.IO.Path]::GetDirectoryName($existingPath)
+            if ([string]::IsNullOrEmpty($leaf) -or [string]::IsNullOrEmpty($parent)) {
+                return [pscustomobject]@{ Path = $fullPath; Exact = $false }
+            }
+            $missingSegments = @($leaf) + $missingSegments
+            $existingPath = $parent
+        }
+        $exact = $false
+        $resolved = $null
+        if (Initialize-StudioFinalPathNativeType) {
+            try {
+                $resolved = [UnslothStudioFinalPathV2]::Resolve($existingPath)
+                $exact = $true
+            } catch {
+                $resolved = $null
+            }
+        }
+        if ([string]::IsNullOrEmpty($resolved)) {
+            $resolved = Get-StudioLexicalPath -Path $existingPath
+            $exact = $false
+        }
         if ($resolved.StartsWith('\\?\UNC\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $resolved = '\\' + $resolved.Substring(8)
         } elseif ($resolved.StartsWith('\\?\', [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -551,9 +864,14 @@ public static class UnslothStudioFinalPathV2
         }
         $resolvedRoot = [System.IO.Path]::GetPathRoot($resolved)
         if ($resolvedRoot -and $resolved.Length -le $resolvedRoot.Length) {
-            return $resolvedRoot
+            return [pscustomobject]@{ Path = $resolvedRoot; Exact = $exact }
         }
-        return $resolved.TrimEnd('\', '/')
+        return [pscustomobject]@{ Path = $resolved.TrimEnd('\', '/'); Exact = $exact }
+    }
+
+    function Get-StudioFinalPath {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        return (Resolve-StudioFinalPathInfo -Path $Path).Path
     }
 
     # Custom Unsloth roots are not supported with --tauri (the desktop app uses
@@ -684,6 +1002,11 @@ public static class UnslothStudioFinalPathV2
         Write-StudioLine "  $Rule" -ForegroundColor DarkGray
     }
     Write-StudioLine ""
+
+    # Here rather than earlier so its warning lands under the banner; it is also
+    # called from Initialize-StudioFinalPathNativeType, which a --tauri run with a
+    # custom root can reach first, and is a no-op the second time.
+    Initialize-StudioTempEnvironment
 
     # ── Helper: refresh PATH from registry (deduplicating entries) ──
     # Merge order: venv Scripts (if active) > Machine > User > current $env:Path.
@@ -2048,7 +2371,10 @@ exit 0
 
     # Regen .lnk + launcher only; used by `unsloth studio update`.
     if ($ShortcutsOnly) {
-        if ($TauriMode) { return }
+        # `unsloth studio update` reaches the installer only through this branch, and
+        # it returns before the try/finally that owns the locks, so the temp
+        # redirection has to be undone here too.
+        if ($TauriMode) { Restore-StudioTempEnvironment; return }
         # The launcher runs the interpreter, so that is what has to be there. Checking
         # unsloth.exe instead would refuse to regenerate shortcuts on exactly the
         # machines that need them, where the console script is present but denied.
@@ -2088,6 +2414,7 @@ exit 0
             }
         }
         New-StudioShortcuts -ManagedPythonPath $ShortcutPython
+        Restore-StudioTempEnvironment
         return
     }
 
@@ -2225,6 +2552,13 @@ exit 0
 
     function Get-StudioPathHash {
         param([Parameter(Mandatory = $true)][string]$Path)
+        # Identical to what it always was whenever the native resolver answered.
+        # When it could not, this hashes the normalized spelling instead, so two
+        # ALIASES of one root (a junction and its target, an 8.3 name and its long
+        # form) name different mutexes and would not exclude each other. That is
+        # reachable only by two installs racing into the same directory through
+        # different spellings, and it is not destructive on its own -- unlike
+        # refusing to install at all, which is what this used to do.
         $canonical = (Get-StudioFinalPath -Path $Path).ToUpperInvariant()
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
         $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -2243,15 +2577,26 @@ exit 0
             [Parameter(Mandatory = $true)][string]$Right
         )
         try {
-            $leftFull = Get-StudioFinalPath -Path $Left
-            $rightFull = Get-StudioFinalPath -Path $Right
+            $leftInfo = Resolve-StudioFinalPathInfo -Path $Left
+            $rightInfo = Resolve-StudioFinalPathInfo -Path $Right
         } catch {
             Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
             return $null
         }
-        return [string]::Equals(
-            $leftFull, $rightFull, [System.StringComparison]::OrdinalIgnoreCase
-        )
+        if ([string]::Equals(
+            $leftInfo.Path, $rightInfo.Path, [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $true
+        }
+        # Two spellings that merely LOOK different are only proof of two different
+        # directories when both were resolved exactly; otherwise they may still be
+        # aliases of one. $null is the caller's "identity unresolved" signal and
+        # makes it take both runtime locks rather than guess.
+        if (-not $leftInfo.Exact -or -not $rightInfo.Exact) {
+            Write-StudioLine "[WARN] Could not resolve Studio path identity; using the runtime lock." -ForegroundColor Yellow
+            return $null
+        }
+        return $false
     }
 
     function Get-StudioInstallMutexName {
@@ -2378,6 +2723,55 @@ exit 0
         }
     }
 
+    # QueryFullProcessImageNameW is what this wants -- it answers for processes
+    # whose MainModule is not readable from here -- but it needs the compiled
+    # helper. Without a fallback a host that cannot compile would find NO running
+    # processes and cheerfully overwrite a venv that Studio has open, so the
+    # ladder below ends at Win32_Process. Every rung reports a real executable
+    # image; a command line or working directory that mentions the path is still
+    # never accepted as proof.
+    $script:StudioProcessImageTable = $null
+    $script:StudioProcessImageWarned = $false
+    function Get-StudioProcessImagePath {
+        param([Parameter(Mandatory = $true)][int]$ProcessId)
+        if (Initialize-StudioFinalPathNativeType) {
+            try {
+                $native = [UnslothStudioFinalPathV2]::GetProcessImagePath($ProcessId)
+                if (-not [string]::IsNullOrWhiteSpace($native)) { return $native }
+            } catch {}
+            return $null
+        }
+        if (-not $script:StudioProcessImageWarned) {
+            $script:StudioProcessImageWarned = $true
+            Write-StudioLine "[WARN] Scanning for running Studio processes without the native helper; a process this shell cannot inspect may go unnoticed." -ForegroundColor Yellow
+        }
+        $process = $null
+        try { $process = Get-Process -Id $ProcessId -ErrorAction Stop } catch { $process = $null }
+        if ($process) {
+            # .Path is MainModule.FileName -- literally so on 5.1, where it is an
+            # ETS ScriptProperty over it -- so there is no second rung to try
+            # here: when this is empty, MainModule was unreadable.
+            try {
+                if (-not [string]::IsNullOrWhiteSpace($process.Path)) { return $process.Path }
+            } catch {}
+        }
+        # Queried once per run, not once per process: this is the slow rung.
+        if ($null -eq $script:StudioProcessImageTable) {
+            $script:StudioProcessImageTable = @{}
+            try {
+                foreach ($row in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+                    if (-not [string]::IsNullOrWhiteSpace($row.ExecutablePath)) {
+                        $script:StudioProcessImageTable[[int]$row.ProcessId] = [string]$row.ExecutablePath
+                    }
+                }
+            } catch {}
+        }
+        if ($script:StudioProcessImageTable.ContainsKey($ProcessId)) {
+            return $script:StudioProcessImageTable[$ProcessId]
+        }
+        return $null
+    }
+
     function Get-RunningStudioVenvProcesses {
         param(
             [Parameter(Mandatory = $true)][string]$VenvPath,
@@ -2393,7 +2787,7 @@ exit 0
         # directory that merely mentions the path is not proof of an open file.
         foreach ($process in @(Get-Process -ErrorAction SilentlyContinue)) {
             $executable = $null
-            try { $executable = [UnslothStudioFinalPathV2]::GetProcessImagePath($process.Id) } catch { continue }
+            try { $executable = Get-StudioProcessImagePath -ProcessId $process.Id } catch { continue }
             if (-not $executable) { continue }
             try { $executable = Get-StudioFinalPath -Path $executable } catch { continue }
             if (Test-StudioProtectedPathMatch -Candidate $executable -ProtectedPath $resolvedPath -Exact:$Exact) {
@@ -5753,6 +6147,9 @@ exit 0
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
         Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        # Matters for `irm | iex`, where these variables belong to the user's own
+        # session and outlive the install.
+        Restore-StudioTempEnvironment
     }
     if ($null -ne $studioAutoStartProcess) {
         $studioAutoStartProcess.WaitForExit()
