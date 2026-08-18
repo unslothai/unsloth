@@ -854,7 +854,11 @@ def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
 # ── the wall axes carry the floor they actually paid ──────────────────
 
 
-def wall_cells(paint_waits: int, floor_ms: float = 33.0, wall_ms: float = 200.0) -> dict:
+def wall_cells(
+    paint_waits: int,
+    floor_ms: float = 33.0,
+    wall_ms: float = 200.0,
+) -> dict:
     return {
         str(size): {
             "paint_floor_ms": floor_ms,

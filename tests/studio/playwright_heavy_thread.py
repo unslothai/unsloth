@@ -1314,10 +1314,7 @@ GROWTH_AXES = tuple(
     # MENU_JS is the clearest case: it opens the recorder before opening the menu and closes it
     # after closing it, so it crosses the same two waits `menu open+close ms` correctly declares,
     # and `menu wall ms` was declaring none of them.
-    + [
-        (f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits"))
-        for a in ACTIONS
-    ]
+    + [(f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits")) for a in ACTIONS]
     + [
         ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
         ("scroll gesture ms", _action("scroll", "gestureMs"), 0),
@@ -1550,7 +1547,11 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             # threshold and the run exit 0 with the timings published.
             for phase, count, first in (
                 ("seeding", row.get("seed_console_errors", 0), row.get("first_seed_error", "-")),
-                ("the measured actions", row.get("console_errors", 0), row.get("first_console_error", "-")),
+                (
+                    "the measured actions",
+                    row.get("console_errors", 0),
+                    row.get("first_console_error", "-"),
+                ),
             ):
                 if count:
                     failures.append(
