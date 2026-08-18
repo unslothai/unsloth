@@ -288,7 +288,10 @@ jobs:
 
       - name: Restore the pip cache
         id: pip-cache
-        uses: ./.github/actions/pip-cache-restore
+        # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
+        # under `unsloth/`, so the unprefixed path is a directory that does not
+        # exist and the step fails with "Can't find 'action.yml'".
+        uses: ./unsloth/.github/actions/pip-cache-restore
         with:
           key-files: |
             unsloth/.github/workflows/notebooks-ci.yml
@@ -367,7 +370,10 @@ jobs:
 
       - name: Save the pip cache
         if: always()
-        uses: ./.github/actions/pip-cache-save
+        # ./ resolves from GITHUB_WORKSPACE, and this job checks the repo out
+        # under `unsloth/`, so the unprefixed path is a directory that does not
+        # exist and the step fails with "Can't find 'action.yml'".
+        uses: ./unsloth/.github/actions/pip-cache-save
         with:
           dir: ${{ steps.pip-cache.outputs.dir }}
           key: ${{ steps.pip-cache.outputs.key }}

@@ -504,3 +504,36 @@ def test_no_setup_python_step_declares_a_cache_path_without_a_cache():
         f"these steps declare cache-dependency-path but no cache, so the key is never "
         f"used and the config only misleads: {offenders}"
     )
+
+
+def test_local_action_references_use_the_nested_checkout_path():
+    """`uses: ./...` resolves from GITHUB_WORKSPACE, not from the workflow file.
+
+    GitHub's own docs put it plainly: if the action checks the repository out to a
+    different location than the workflow, the relative path for a local action has to be
+    updated. Three jobs here check out under `unsloth/` because they need a second repo
+    beside it, so an unprefixed `./.github/actions/...` points at a directory that does not
+    exist and the step fails with "Can't find 'action.yml', 'action.yaml' or 'Dockerfile'".
+
+    Same root cause as the cache-key path check above, one level out: the key paths were
+    fixed for these jobs and the action paths were not.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        checkout_dirs = [
+            str((s.get("with") or {}).get("path")).rstrip("/")
+            for s in steps
+            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
+        ]
+        if not checkout_dirs:
+            continue
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if uses.startswith("./") and not any(uses.startswith(f"./{d}/") for d in checkout_dirs):
+                offenders.append(f"{name}:{jid}: {uses} (checkouts: {checkout_dirs})")
+    assert not offenders, (
+        "these local action references are workspace-root-relative in a job that checks "
+        "the repo out into a subdirectory, so the runner cannot find the action:\n  "
+        + "\n  ".join(offenders)
+    )
