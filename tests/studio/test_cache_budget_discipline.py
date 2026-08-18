@@ -234,8 +234,7 @@ def test_no_job_uses_setup_pythons_built_in_pip_cache():
         f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
-        and (step.get("with") or {}).get("cache")
+        if "setup-python" in str(step.get("uses", "")) and (step.get("with") or {}).get("cache")
     ]
     assert not offenders, (
         f"these jobs use setup-python's built-in cache, which saves on every ref with no "
@@ -268,7 +267,11 @@ def test_every_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
     """
     restore, _ = _pip_cache_steps(name, jid)
     assert restore is not None, f"{name}:{jid} no longer restores a pip cache"
-    files = [l.strip() for l in str((restore.get("with") or {}).get("key-files") or "").splitlines() if l.strip()]
+    files = [
+        l.strip()
+        for l in str((restore.get("with") or {}).get("key-files") or "").splitlines()
+        if l.strip()
+    ]
     assert files, f"{name}:{jid} passes no key-files, so the key describes nothing"
 
 
@@ -289,9 +292,9 @@ def test_every_restored_pip_cache_is_also_saved_and_wired_to_its_restore(name, j
     assert ident, f"{name}:{jid}'s restore step has no id, so the save cannot read its outputs"
     with_ = save.get("with") or {}
     for field in ("dir", "key", "cache-hit"):
-        assert f"steps.{ident}.outputs.{field}" in str(with_.get(field, "")), (
-            f"{name}:{jid}'s save does not take {field} from steps.{ident}.outputs"
-        )
+        assert f"steps.{ident}.outputs.{field}" in str(
+            with_.get(field, "")
+        ), f"{name}:{jid}'s save does not take {field} from steps.{ident}.outputs"
 
 
 def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
