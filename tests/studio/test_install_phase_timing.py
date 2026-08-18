@@ -71,9 +71,9 @@ def _sh_function(name: str) -> str:
 @pytest.mark.parametrize("fn", ["step", "substep"])
 def test_the_bash_half_rejects_zero_and_empty(fn):
     body = _sh_function(fn)
-    assert re.search(r'""\|0\)', body), (
-        f'setup.sh\'s {fn}() no longer treats "" and 0 as off:\n{body}'
-    )
+    assert re.search(
+        r'""\|0\)', body
+    ), f'setup.sh\'s {fn}() no longer treats "" and 0 as off:\n{body}'
 
 
 @pytest.mark.parametrize("fn", ["step", "substep"])
@@ -91,9 +91,9 @@ def test_the_bash_helpers_are_silent_by_default_and_prefix_when_asked(fn):
         ["bash", "-c", script], capture_output = True, text = True, env = {**base, ENV_VAR: "1"}
     )
     assert on.returncode == 0, on.stderr
-    assert re.search(r"\[ *\d+s\] ", on.stdout), (
-        f"{ENV_VAR}=1 produced no elapsed prefix: {on.stdout!r}"
-    )
+    assert re.search(
+        r"\[ *\d+s\] ", on.stdout
+    ), f"{ENV_VAR}=1 produced no elapsed prefix: {on.stdout!r}"
 
 
 def test_both_print_helpers_carry_the_prefix():
@@ -101,12 +101,12 @@ def test_both_print_helpers_carry_the_prefix():
     src = SETUP_PS1.read_text(encoding = "utf-8")
     for fn, var in (("function step {", "$Value"), ("function substep {", "$Message")):
         block = src[src.index(fn) :][:1600]
-        assert "Variable:script:StudioTimingEnabled" in block, (
-            f"{fn.strip()} no longer consults the timing switch"
-        )
-        assert f'{var} = ("[{{0,7:N1}}s] "' in block, (
-            f"{fn.strip()} does not prefix {var} with the elapsed time"
-        )
+        assert (
+            "Variable:script:StudioTimingEnabled" in block
+        ), f"{fn.strip()} no longer consults the timing switch"
+        assert (
+            f'{var} = ("[{{0,7:N1}}s] "' in block
+        ), f"{fn.strip()} does not prefix {var} with the elapsed time"
     for fn in ("step", "substep"):
         assert "SECONDS" in _sh_function(fn), f"setup.sh {fn}() carries no timing"
 
