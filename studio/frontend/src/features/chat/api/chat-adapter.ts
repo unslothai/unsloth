@@ -146,7 +146,7 @@ import type {
   OpenAIReasoningContentPart,
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
-import { mmprojFallbackMessage } from "../utils/mmproj-fallback";
+import { loadFallbackNotice } from "../utils/mmproj-fallback";
 import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
@@ -2611,24 +2611,21 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     cpuFallbackReason?: CpuFallbackReason | null,
     mmprojFallbackReason?: MmprojFallbackReason | null,
   ): void => {
+    // Both reasons, composed. Nesting them as `mmproj ? ... : cpu ? ...` dropped the
+    // CPU message whenever both were set, which is reachable and is the case this
+    // feature exists for -- see loadFallbackNotice.
+    const notice = loadFallbackNotice(
+      message,
+      cpuFallbackReason,
+      mmprojFallbackReason,
+    );
     const options = {
-      description: mmprojFallbackReason
-        ? mmprojFallbackMessage(mmprojFallbackReason)
-        : cpuFallbackReason
-          ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
-          : undefined,
+      description: notice.description,
       duration: 5000,
       icon: undefined,
     };
-    const showToast =
-      mmprojFallbackReason || cpuFallbackReason ? toast.warning : toast.success;
-    const title = mmprojFallbackReason
-      ? mmprojFallbackReason === "cpu_offload"
-        ? `${message} with vision on CPU`
-        : `${message} without vision`
-      : cpuFallbackReason
-        ? `${message} on CPU`
-        : message;
+    const showToast = notice.degraded ? toast.warning : toast.success;
+    const title = notice.title;
     if (autoLoadToastDismissed) {
       showToast(title, options);
       return;
