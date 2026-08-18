@@ -1800,8 +1800,17 @@ def zero_vram_chat_load(
         return False
     # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection as GPU-bearing except
     # "off". Canonicalize first: the UI sends the literal "off", which a bare truthiness test read as "speculation requested".
-    spec_mode = _canonicalize_spec_mode(speculative_type)
-    if needs_mmproj or spec_mode not in (None, "off"):
+    # ...and an ABSENT mode is not a quiet "off": _canonicalize_spec_mode returns None
+    # for None, "" and whitespace alike, and every consumer resolves that to "auto"
+    # (`_canonicalize_spec_mode(...) or "auto"` in load_model), where a remote or local
+    # sidecar can be discovered and launched with its default GPU offload. Grouping None
+    # with "off" here let an API or defaulted load skip acquire_for(CHAT) while the
+    # launch-time mask, which reads the FINISHED argv and so sees the drafter that was
+    # added, kept the GPUs visible. The two then disagreed about the same load: no
+    # arbiter, real VRAM, free to land on a resident image or video pipeline and OOM
+    # both. Only the canonical "off" is speculation-free.
+    spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+    if needs_mmproj or spec_mode != "off":
         return False
     if LlamaCppBackend._is_vulkan_backend():
         return False
