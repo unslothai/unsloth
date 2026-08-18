@@ -1091,9 +1091,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         self.assertEqual(placement.native_post_handoff_free_gb, {0: 28.0})
 
     def test_post_handoff_snapshot_does_not_credit_nonresident_usage(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 22.0}]
-        }
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 22.0}]}
         backend = SimpleNamespace(
             active_model_name = "resident",
             post_handoff_gpu_availability_gb = lambda: (
@@ -1123,9 +1121,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         self.assertEqual(effective.reclaimable_gpu_gb, {0: 10.0})
 
     def test_post_handoff_snapshot_credits_live_llama_process(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
-        }
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]}
         llama = SimpleNamespace(
             is_loaded = True,
             reclaimable_gpu_memory_gb = lambda: {0: 18.0},
@@ -1146,9 +1142,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         self.assertEqual(effective.reclaimable_gpu_gb, {0: 18.0})
 
     def test_post_handoff_snapshot_rejects_same_owner_replacement(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
-        }
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]}
         backend = SimpleNamespace(active_model_name = None)
         llama = SimpleNamespace(
             is_loaded = True,
@@ -1325,10 +1319,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         server._step_listener = None
         server._resident_params_vram_gb = None
         process = SimpleNamespace(
-            stdout = [
-                "total params memory size = 18432.00MB "
-                "(VRAM 18432.00MB, RAM 0.00MB)\n"
-            ],
+            stdout = ["total params memory size = 18432.00MB (VRAM 18432.00MB, RAM 0.00MB)\n"],
             poll = lambda: None,
         )
         server._process = process
@@ -1339,7 +1330,6 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
 
     def test_sd_server_physical_mapping_requires_resolved_resident_pin(self):
         from core.inference import sd_cpp_backend
-
         with (
             patch("utils.hardware.get_parent_visible_gpu_ids", return_value = [3, 7]),
             patch.object(
@@ -1371,9 +1361,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
             )
 
     def test_post_handoff_snapshot_credits_media_allocator_only(self):
-        utilization = {
-            "devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
-        }
+        utilization = {"devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
         torch_stub = types.ModuleType("torch")
         torch_stub.cuda = SimpleNamespace(
             device_count = lambda: 1,
@@ -1408,9 +1396,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
             self.assertEqual(effective.reclaimable_gpu_gb, {1: 18.0})
 
     def test_post_handoff_snapshot_refuses_inflight_media_replacement(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
-        }
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
         for owner in ("diffusion", "video"):
             media_backend = SimpleNamespace(
                 _generate_lock = threading.Lock(),
@@ -1435,9 +1421,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
                 self.assertIsNone(self.route._native_audio_post_handoff_free_gb())
 
     def test_post_handoff_snapshot_credits_resident_sd_server_floor(self):
-        utilization = {
-            "devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]
-        }
+        utilization = {"devices": [{"index": 1, "vram_total_gb": 24.0, "vram_used_gb": 20.0}]}
         server = SimpleNamespace(reclaimable_params_vram_gb = lambda _gpu: {1: 18.0})
         state = SimpleNamespace(
             server = server,
@@ -1472,16 +1456,8 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
     def test_media_handoff_waits_for_credited_bytes_to_become_free(self):
         samples = iter(
             [
-                {
-                    "devices": [
-                        {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}
-                    ]
-                },
-                {
-                    "devices": [
-                        {"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0}
-                    ]
-                },
+                {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]},
+                {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 4.0}]},
             ]
         )
         with (
@@ -1500,12 +1476,8 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
             )
 
     def test_media_handoff_refuses_when_credited_bytes_never_settle(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
-        }
-        with patch(
-            "utils.hardware.get_visible_gpu_utilization", return_value = utilization
-        ):
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
+        with patch("utils.hardware.get_visible_gpu_utilization", return_value = utilization):
             self.assertFalse(
                 self.route._wait_for_native_audio_gpu_free_gb(
                     0,
@@ -1532,9 +1504,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
 
         source = inspect.getsource(self.route._load_model_impl)
         aggregate = source.index("post_handoff_needed_gb = float(")
-        chat_target = source.index(
-            "post_chat_handoff_expected_free_gb = {", aggregate
-        )
+        chat_target = source.index("post_chat_handoff_expected_free_gb = {", aggregate)
         worker_load = source.index("backend.load_model,", chat_target)
         threaded = source.index(
             "post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,",

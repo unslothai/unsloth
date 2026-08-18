@@ -279,17 +279,12 @@ def can_load_chat_during_training(
         # A native-audio switch may carry one atomic post-handoff capacity
         # snapshot. It already combines live free memory with only the outgoing
         # Studio backend, so do not re-read and add those values here.
-        if (
-            not requested_gpu_ids
-            and not is_gguf
-            and post_handoff_free_gpu_vram_gb is not None
-        ):
+        if not requested_gpu_ids and not is_gguf and post_handoff_free_gpu_vram_gb is not None:
             required_gb = required_override_gb
             if required_gb is None:
                 required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
             free_vals = [
-                max(float(effective), 0.0)
-                for effective in post_handoff_free_gpu_vram_gb.values()
+                max(float(effective), 0.0) for effective in post_handoff_free_gpu_vram_gb.values()
             ]
             usable_gb = max(free_vals) if free_vals else None
             needed_gb = (
@@ -297,11 +292,7 @@ def can_load_chat_during_training(
                 if required_gb is not None
                 else None
             )
-            fits = (
-                required_gb is not None
-                and usable_gb is not None
-                and usable_gb >= needed_gb
-            )
+            fits = required_gb is not None and usable_gb is not None and usable_gb >= needed_gb
             return fits, {
                 "mode": "native_post_handoff",
                 "required_gb": required_gb,

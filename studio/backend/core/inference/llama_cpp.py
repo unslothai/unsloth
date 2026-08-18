@@ -13245,11 +13245,7 @@ class LlamaCppBackend:
         return out
 
     def _start_llama_process(
-        self,
-        cmd: list[str],
-        env: dict,
-        *,
-        child_gpu_physical_ids: Optional[tuple[int, ...]],
+        self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
     ) -> None:
         """Spawn llama-server from cmd and start draining its output.
 
@@ -16846,7 +16842,6 @@ class LlamaCppBackend:
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     from utils.hardware import get_parent_visible_gpu_ids
-
                     _parent_gpu_ids = get_parent_visible_gpu_ids()
                     if _parent_gpu_ids:
                         _child_gpu_physical_ids = tuple(int(i) for i in _parent_gpu_ids)

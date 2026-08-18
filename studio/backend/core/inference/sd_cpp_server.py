@@ -76,8 +76,7 @@ _JOBS_PATH = "/sdcpp/v1/jobs"
 # lines are deliberately excluded: those allocations can change between
 # generations, while this floor lives until the server process exits.
 _TOTAL_PARAMS_VRAM_RE = re.compile(
-    r"total params memory size\s*=\s*[0-9.]+\s*MB\s*"
-    r"\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
+    r"total params memory size\s*=\s*[0-9.]+\s*MB\s*\(\s*VRAM\s+([0-9]+(?:\.[0-9]+)?)\s*MB\b",
     re.IGNORECASE,
 )
 

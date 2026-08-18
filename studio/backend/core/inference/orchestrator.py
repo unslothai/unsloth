@@ -432,9 +432,7 @@ class InferenceOrchestrator:
             return None
 
         with self._dispatcher_lifecycle_lock:
-            if self._exclusive_tts_pending or getattr(
-                self, "_exclusive_vram_probe_pending", False
-            ):
+            if self._exclusive_tts_pending or getattr(self, "_exclusive_vram_probe_pending", False):
                 return None
             self._exclusive_vram_probe_pending = True
         acquired = False
@@ -479,8 +477,7 @@ class InferenceOrchestrator:
                 return None
             try:
                 reclaimable = {
-                    int(index): max(float(value), 0.0)
-                    for index, value in reported.items()
+                    int(index): max(float(value), 0.0) for index, value in reported.items()
                 }
                 return live_free, total_by_index, reclaimable
             except (TypeError, ValueError):
@@ -600,8 +597,7 @@ class InferenceOrchestrator:
 
         def _threshold_reached(sample: dict[int, int]) -> bool:
             return bool(expected_mib) and all(
-                sample.get(index, -1) >= required
-                for index, required in expected_mib.items()
+                sample.get(index, -1) >= required for index, required in expected_mib.items()
             )
 
         if _threshold_reached(previous):
@@ -754,8 +750,7 @@ class InferenceOrchestrator:
             rtype = resp.get("type", "")
 
             if rtype == expected_type and (
-                expected_request_id is None
-                or resp.get("request_id") == expected_request_id
+                expected_request_id is None or resp.get("request_id") == expected_request_id
             ):
                 return resp
 

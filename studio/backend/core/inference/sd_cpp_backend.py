@@ -899,17 +899,13 @@ def _offload_with_device_pin_impl(
 
 
 def _resolved_server_physical_gpu_id(
-    binary: Optional[str],
-    device: str,
-    ordinal: Optional[int],
-    committed_flags: tuple[str, ...],
+    binary: Optional[str], device: str, ordinal: Optional[int], committed_flags: tuple[str, ...]
 ) -> Optional[int]:
     """Physical id for a provably single-device resident sd-server."""
     if device != "cuda" or "--offload-to-cpu" in committed_flags:
         return None
     try:
         from utils.hardware import get_parent_visible_gpu_ids
-
         visible = [int(i) for i in get_parent_visible_gpu_ids()]
     except Exception:
         return None

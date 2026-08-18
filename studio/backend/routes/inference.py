@@ -7095,9 +7095,7 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
         backend = get_inference_backend()
         worker_snapshot = None
         if getattr(backend, "active_model_name", None):
-            worker_snapshot = getattr(
-                backend, "post_handoff_gpu_availability_gb", lambda: None
-            )()
+            worker_snapshot = getattr(backend, "post_handoff_gpu_availability_gb", lambda: None)()
         if worker_snapshot is not None:
             free_by_index, total_by_index, worker_reclaimable = worker_snapshot
             live = {
@@ -7112,9 +7110,7 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
             return None
         llama_backend = get_llama_cpp_backend()
         if getattr(llama_backend, "is_loaded", False):
-            _merge_report(
-                getattr(llama_backend, "reclaimable_gpu_memory_gb", lambda: None)()
-            )
+            _merge_report(getattr(llama_backend, "reclaimable_gpu_memory_gb", lambda: None)())
     elif owner in (DIFFUSION, VIDEO):
         # Diffusers/Video normally live in this process; native sd.cpp instead
         # contributes a child-process startup floor below. Hold the backend's
@@ -7123,11 +7119,9 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
         # reclaimable at once.
         if owner == DIFFUSION:
             from core.inference.diffusion_engine_router import get_active_diffusion_engine
-
             media_backend = get_active_diffusion_engine()
         else:
             from core.inference.video import get_video_backend
-
             media_backend = get_video_backend()
         generate_lock = getattr(media_backend, "_generate_lock", None)
         state_lock = getattr(media_backend, "_lock", None)
@@ -7160,13 +7154,12 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
                     if (
                         server is None
                         or getattr(media_backend, "_cpu_backend_forced", False)
-                        or "--offload-to-cpu"
-                        in tuple(getattr(state, "offload_flags", ()) or ())
+                        or "--offload-to-cpu" in tuple(getattr(state, "offload_flags", ()) or ())
                     ):
                         return None
-                    reported = getattr(
-                        server, "reclaimable_params_vram_gb", lambda _gpu: None
-                    )(getattr(state, "physical_gpu_id", None))
+                    reported = getattr(server, "reclaimable_params_vram_gb", lambda _gpu: None)(
+                        getattr(state, "physical_gpu_id", None)
+                    )
                     if not _merge_report(reported):
                         return None
                 else:
@@ -7469,9 +7462,7 @@ async def _preflight_native_audio_placement(
             detail = "Higgs TTS requires Python 3.10 or newer in Studio.",
         )
 
-    def _resolve() -> tuple[
-        Optional[List[int]], Optional[float], Optional[dict[int, float]]
-    ]:
+    def _resolve() -> tuple[Optional[List[int]], Optional[float], Optional[dict[int, float]]]:
         import utils.hardware as hardware
         from core.inference.native_audio import (
             native_audio_kv_memory_gb,
@@ -9075,9 +9066,7 @@ async def _load_model_impl(
             # Refresh immediately before the arbiter handoff, then bind the
             # snapshot's epoch to the eviction so a same-owner media replacement
             # cannot swap in a smaller model between check and teardown.
-            final_availability = await asyncio.to_thread(
-                _native_audio_post_handoff_free_gb
-            )
+            final_availability = await asyncio.to_thread(_native_audio_post_handoff_free_gb)
             selected = list(placement.resolved_gpu_ids or ())
             required = placement.native_required_gb
             if final_availability is None or len(selected) != 1 or required is None:
@@ -9108,16 +9097,13 @@ async def _load_model_impl(
             )
             expected_native_owner = final_availability.owner_snapshot
             post_handoff_needed_gb = float(
-                (final_training_info or initial_training_info or {}).get("needed_gb")
-                or required
+                (final_training_info or initial_training_info or {}).get("needed_gb") or required
             )
             if expected_native_owner[0] in (DIFFUSION, VIDEO):
                 post_media_handoff_gpu = selected_gpu
                 post_media_handoff_needed_gb = post_handoff_needed_gb
             elif expected_native_owner[0] == CHAT:
-                post_chat_handoff_expected_free_gb = {
-                    selected_gpu: post_handoff_needed_gb
-                }
+                post_chat_handoff_expected_free_gb = {selected_gpu: post_handoff_needed_gb}
 
         if chat_load_needs_gpu:
             try:
@@ -9134,7 +9120,6 @@ async def _load_model_impl(
                 )
             except Exception as exc:
                 from core.inference.gpu_arbiter import OwnerChangedError
-
                 if isinstance(exc, OwnerChangedError):
                     raise HTTPException(status_code = 409, detail = str(exc)) from exc
                 raise
