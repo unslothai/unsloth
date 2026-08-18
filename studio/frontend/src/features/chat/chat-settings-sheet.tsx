@@ -105,7 +105,11 @@ import {
   isLocalModelPath,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
-import type { InferenceParams } from "./types/runtime";
+import {
+  MAX_SAMPLING_SEED,
+  modelReadsSamplingSeed,
+  type InferenceParams,
+} from "./types/runtime";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -501,7 +505,7 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isLoadedGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -512,9 +516,17 @@ export function ChatSettingsPanel({
   // suffix too (mirrors the chat page's activeModelIsGguf). Otherwise Max Tokens
   // would fall back to params.maxSeqLength instead of the loaded GGUF context.
   const isGguf =
-    isLoadedGguf ||
+    activeGgufVariant != null ||
     ggufContextLength != null ||
     (currentCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
+  // The predicate the request body gates on too, so the panel cannot offer a seed it drops.
+  const showSeed =
+    !isExternalModel &&
+    modelReadsSamplingSeed(
+      activeGgufVariant,
+      ggufContextLength,
+      currentCheckpoint,
+    );
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
@@ -780,6 +792,8 @@ export function ChatSettingsPanel({
       onParamsChange(nextParams);
     };
   }
+
+  const setSeed = set("seed");
 
   // Lower a live Max Tokens that no longer fits the connection's cap.
   // `resolveExternalMaxTokensClamp` documents why an unresolved provider must not be
@@ -1491,6 +1505,50 @@ export function ChatSettingsPanel({
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
+            {showSeed ? (
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+                    Seed
+                  </span>
+                  <InfoHint>
+                    Pins the sampling draw so the same prompt and settings can
+                    reproduce the same reply. Leave blank to draw a fresh seed
+                    each request. It only fixes the draw, so the other sampling
+                    settings have to stay put as well; at Temperature 0 decoding
+                    is already greedy and a seed changes nothing.
+                  </InfoHint>
+                </div>
+                <InputGroup className="panel-input-group w-[8.5rem] shrink-0">
+                  <InputGroupInput
+                    id="inference-seed"
+                    // A TEXT input: type="number" reports an unreadable entry as "", clearing the pin.
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={params.seed == null ? "" : String(params.seed)}
+                    onChange={(e) => {
+                      const digits = e.target.value
+                        .replace(/\D/g, "")
+                        // Measured after the padding: a zero-padded seed is short enough
+                        // to keep, and truncating instead of clamping would rewrite it.
+                        .replace(/^0+(?=\d)/, "");
+                      setSeed(
+                        digits === ""
+                          ? null
+                          : digits.length > 10
+                            ? MAX_SAMPLING_SEED
+                            : Math.min(Number(digits), MAX_SAMPLING_SEED),
+                      );
+                    }}
+                    placeholder="Random"
+                    aria-label="Seed"
+                    className="!h-9 min-h-0 min-w-0 self-stretch !px-3 py-0 text-ui-13 font-medium leading-9 text-nav-fg md:text-ui-13"
+                  />
+                </InputGroup>
+              </div>
+            ) : null}
           </div>
         </CollapsibleSection>
 

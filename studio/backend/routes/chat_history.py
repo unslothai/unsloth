@@ -362,6 +362,16 @@ class ChatInferenceSettings(BaseModel):
     systemVariables: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    # llama.cpp reads the seed as a uint32 and spends 0xFFFFFFFF on its "draw one" sentinel.
+    seed: Optional[int] = Field(default = None, ge = 0, le = 2**32 - 2)
+
+    @field_validator("seed", mode = "before")
+    @classmethod
+    def _no_booleans(cls, value: Any) -> Any:
+        # Same contract as ChatPresetLoadConfig: bool subclasses int, so lax mode stores `true` as 1.
+        if isinstance(value, bool):
+            raise ValueError("Expected a number, got a boolean.")
+        return value
 
 
 class ChatPresetLoadConfig(BaseModel):
