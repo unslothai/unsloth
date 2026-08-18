@@ -172,16 +172,23 @@ def access_exposure(app_state: Any) -> Optional[str]:
     Advisory: it decides how bluntly the UI words the warning, never whether the
     setting may be used. An unknown bind host is reported as network-reachable.
     """
-    from utils.host_policy import is_external_host, remote_connector_active
+    from utils.host_policy import (
+        is_external_host,
+        lan_connector_active,
+        tunnel_connector_active,
+    )
 
     if bool(getattr(app_state, "remote_access_is_colab", False)):
         return "colab"
     if bool(getattr(app_state, "secure", False)):
         return "public_url"
-    if getattr(app_state, "cloudflare_url", None) or remote_connector_active():
+    if getattr(app_state, "cloudflare_url", None) or tunnel_connector_active():
         return "public_url"
     bind_host = getattr(app_state, "bind_host", None)
     if not isinstance(bind_host, str) or is_external_host(bind_host):
+        return "network"
+    # a LAN listener reaches the local network only, so it must not read as a public url
+    if lan_connector_active():
         return "network"
     return None
 

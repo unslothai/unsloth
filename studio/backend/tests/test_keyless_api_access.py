@@ -374,6 +374,23 @@ def test_a_live_tunnel_is_reported_without_a_url_on_state(monkeypatch):
     assert access_exposure(SimpleNamespace(bind_host = "127.0.0.1")) == "public_url"
 
 
+def test_a_lan_listener_is_network_reach_not_a_public_url(monkeypatch):
+    """Both connectors answer remote_connector_active, so reading that alone told the
+    operator anyone with a public URL was let in when only the local network was."""
+    from utils import host_policy
+
+    monkeypatch.setattr(host_policy, "_lan_connector_active", True)
+    assert access_exposure(SimpleNamespace(bind_host = "127.0.0.1")) == "network"
+
+
+def test_a_tunnel_still_wins_over_a_lan_listener(monkeypatch):
+    from utils import host_policy
+
+    monkeypatch.setattr(host_policy, "_lan_connector_active", True)
+    monkeypatch.setattr(host_policy, "_remote_connector_active", True)
+    assert access_exposure(SimpleNamespace(bind_host = "127.0.0.1")) == "public_url"
+
+
 def test_exposure_does_not_stop_a_request():
     """The admin's choice stands however the server is reached."""
     set_keyless_api_access("full")
