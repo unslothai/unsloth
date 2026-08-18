@@ -184,6 +184,8 @@ export const ru = {
       closeAriaLabel: "Закрыть настройки",
       searchPlaceholder: "Поиск по настройкам…",
       searchNoResults: "Настройки не найдены.",
+      panelFailed: "Не удалось загрузить этот раздел.",
+      panelReload: "Перезагрузить",
     },
     tabs: {
       general: "Общие",
