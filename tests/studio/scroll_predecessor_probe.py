@@ -229,8 +229,7 @@ def skewed_arms(arms: dict) -> list[str]:
     return [
         f"{n} travelled {r['scrolled_px']}px against the control's {control}px"
         for n, r in arms.items()
-        if r.get("scrolled_px")
-        and abs(r["scrolled_px"] - control) > TRAVEL_TOLERANCE * control
+        if r.get("scrolled_px") and abs(r["scrolled_px"] - control) > TRAVEL_TOLERANCE * control
     ]
 
 

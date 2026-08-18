@@ -74,7 +74,11 @@ class _FakePage:
     def __init__(self, calls: list[str]) -> None:
         self.calls = calls
 
-    def evaluate(self, script, arg=None):  # noqa: ANN001
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):  # noqa: ANN001
         self.calls.append(f"evaluate:{_label(script)}")
         # Only the action script returns a payload; setups and resets return nothing.
         if _label(script) == "action":
@@ -130,9 +134,7 @@ def test_anchoring_runs_before_the_counters_are_armed(ordering, name):
     before the snapshot is gone.
     """
     _run(ordering, name)
-    assert "evaluate:setup_or_reset" in ordering, (
-        f"{name} ran no setup evaluate at all: {ordering}"
-    )
+    assert "evaluate:setup_or_reset" in ordering, f"{name} ran no setup evaluate at all: {ordering}"
     setup_at = ordering.index("evaluate:setup_or_reset")
     assert setup_at < ordering.index("arm_long_tasks"), (
         f"{name} anchored AFTER the long-task observer was armed, so the reposition lands in "
@@ -147,9 +149,9 @@ def test_anchoring_runs_before_the_counters_are_armed(ordering, name):
 def test_an_action_with_no_precondition_runs_no_setup(ordering):
     """`keystroke` has nothing to position, and must not gain a scroll it did not ask for."""
     _run(ordering, "keystroke")
-    assert "evaluate:setup_or_reset" not in ordering, (
-        f"keystroke ran a positioning evaluate it does not need: {ordering}"
-    )
+    assert (
+        "evaluate:setup_or_reset" not in ordering
+    ), f"keystroke ran a positioning evaluate it does not need: {ordering}"
 
 
 def test_cleanup_still_runs_after_every_snapshot(ordering):
@@ -174,12 +176,12 @@ def test_cleanup_still_runs_after_every_snapshot(ordering):
 
 def _script_source(name: str) -> str:
     return dict(
-        scroll=HARNESS.SCROLL_JS,
-        jump=HARNESS.JUMP_JS,
-        keystroke=HARNESS.KEYSTROKE_JS,
-        menu=HARNESS.MENU_JS,
-        delete=HARNESS.DELETE_JS,
-        reopen=HARNESS.REOPEN_JS,
+        scroll = HARNESS.SCROLL_JS,
+        jump = HARNESS.JUMP_JS,
+        keystroke = HARNESS.KEYSTROKE_JS,
+        menu = HARNESS.MENU_JS,
+        delete = HARNESS.DELETE_JS,
+        reopen = HARNESS.REOPEN_JS,
     )[name]
 
 
@@ -193,9 +195,7 @@ def test_the_action_script_does_not_reposition_before_its_recorder_opens(name):
     moved twice.
     """
     prologue = _script_source(name).split("window.__hv.begin();")[0]
-    code = "\n".join(
-        line for line in prologue.splitlines() if not line.strip().startswith("//")
-    )
+    code = "\n".join(line for line in prologue.splitlines() if not line.strip().startswith("//"))
     offenders = re.findall(r"scrollTo\(|scrollTop\s*=|scrollIntoView\(", code)
     assert not offenders, (
         f"{name} still repositions the viewport before its recorder window opens: {offenders}. "
