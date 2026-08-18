@@ -417,7 +417,9 @@ def identity(nonce: str, request: Request) -> dict:
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
-# Keep SQLite-backed handlers synchronous so FastAPI runs them in its threadpool.
+# Read-only handlers are sync so FastAPI runs them in its threadpool; the ones that mutate
+# state stay async, because the event loop is what keeps each check-then-write atomic
+# (login's admission-then-record, refresh's consume-then-reissue against logout).
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
     """Auth initialization state; ``default_username`` is exposed for first-boot UI prefill only."""
@@ -431,7 +433,7 @@ def auth_status() -> AuthStatusResponse:
 
 
 @router.post("/login", response_model = Token)
-def login(payload: AuthLoginRequest, request: Request) -> Token:
+async def login(payload: AuthLoginRequest, request: Request) -> Token:
     """Login with username/password. Per-account + per-IP rate-limited."""
     key = _bucket_key(request, payload.username)
     unknown_key = _unknown_user_key(request)
@@ -441,7 +443,7 @@ def login(payload: AuthLoginRequest, request: Request) -> Token:
             status_code = status.HTTP_429_TOO_MANY_REQUESTS,
             # IP not interpolated into the body; behind a proxy/NAT it's
             # misleading or an info leak.
-            detail = (f"Too many failed login attempts. " f"Try again in {blocked_for} seconds."),
+            detail = (f"Too many failed login attempts. Try again in {blocked_for} seconds."),
             headers = {"Retry-After": str(blocked_for)},
         )
 
@@ -478,7 +480,7 @@ def login(payload: AuthLoginRequest, request: Request) -> Token:
 
 
 @router.post("/logout", status_code = status.HTTP_204_NO_CONTENT)
-def logout(
+async def logout(
     request: Request, current_subject: str = Depends(get_current_subject_allow_password_change)
 ) -> Response:
     """Revoke refresh tokens for the subject; the access token is stateless and expires on its own."""
@@ -494,7 +496,7 @@ def logout(
 
 
 @router.post("/desktop-login", response_model = Token)
-def desktop_login(payload: DesktopLoginRequest) -> Token:
+async def desktop_login(payload: DesktopLoginRequest) -> Token:
     """Exchange a local desktop secret for normal admin-subject tokens."""
     verified = storage.validate_desktop_secret_with_credential(payload.secret)
     if verified is None:
@@ -513,7 +515,7 @@ def desktop_login(payload: DesktopLoginRequest) -> Token:
 
 
 @router.post("/refresh", response_model = Token)
-def refresh(payload: RefreshTokenRequest) -> Token:
+async def refresh(payload: RefreshTokenRequest) -> Token:
     """Exchange a refresh token for a new access+refresh pair (single-use)."""
     consumed = storage.consume_refresh_token(payload.refresh_token)
     if consumed is None:
@@ -536,7 +538,7 @@ def refresh(payload: RefreshTokenRequest) -> Token:
 
 
 @router.post("/desktop-initial-password", response_model = Token)
-def set_desktop_initial_password(
+async def set_desktop_initial_password(
     payload: DesktopInitialPasswordRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
@@ -605,7 +607,7 @@ def set_desktop_initial_password(
 
 
 @router.post("/change-password", response_model = Token)
-def change_password(
+async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
@@ -691,7 +693,7 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
 
 
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
-def create_api_key(
+async def create_api_key(
     payload: CreateApiKeyRequest, credential: tuple = Depends(get_current_credential)
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
@@ -730,7 +732,7 @@ def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKey
 
 
 @router.delete("/api-keys/{key_id}")
-def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

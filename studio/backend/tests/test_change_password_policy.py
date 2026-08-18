@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -44,7 +45,7 @@ def _change(new_password):
     )
     # is_desktop explicitly: positionally it would default to the Depends object,
     # which is truthy, and silently take the preserve-desktop-secret branch.
-    return auth_routes.change_password(payload, None, "unsloth", False)
+    return asyncio.run(auth_routes.change_password(payload, None, "unsloth", False))
 
 
 def test_rejects_whitespace_only_password(_user):
