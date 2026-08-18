@@ -126,9 +126,9 @@ def _drive(monkeypatch, case: _Case):
 @pytest.mark.parametrize("case", _MUTATIONS.values(), ids = list(_MUTATIONS))
 def test_a_config_mutation_runs_on_the_event_loop_thread(monkeypatch, case):
     threads, loop_thread = _drive(monkeypatch, case)
-    assert threads[0] == loop_thread, (
-        f"{case.path} ran in the threadpool, so its read-then-write is no longer serialized"
-    )
+    assert (
+        threads[0] == loop_thread
+    ), f"{case.path} ran in the threadpool, so its read-then-write is no longer serialized"
 
 
 @pytest.mark.parametrize("case", _READS.values(), ids = list(_READS))
