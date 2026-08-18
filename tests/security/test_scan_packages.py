@@ -2064,8 +2064,47 @@ def _supported_python_versions(root):
     return [f"3.{minor}" for minor in range(int(lo.group(1)), last + 1)]
 
 
+def _audited_requirements(root):
+    """(source, spec) for everything security-audit.yml feeds to the scanner.
+
+    Both halves, because the workflow has two. `audit-reqs/unsloth-deps.txt` is
+    generated from pyproject's `project.dependencies` plus the
+    `huggingfacenotorch` extra, and the rest are the studio requirement files
+    copied through a `git+` filter. Reading only the second half is how a pinned
+    package declared in pyproject goes unchecked.
+    """
+    import tomllib
+
+    for req in sorted((root / "studio" / "backend" / "requirements").glob("*.txt")):
+        for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
+            spec = raw.split("#", 1)[0].strip()
+            if spec and not spec.startswith("-") and "git+" not in spec:
+                yield f"{req.name}:{lineno}", spec
+    with open(root / "pyproject.toml", "rb") as fh:
+        project = tomllib.load(fh)["project"]
+    declared = list(project["dependencies"])
+    declared += list(project["optional-dependencies"]["huggingfacenotorch"])
+    for spec in declared:
+        if "git+" not in spec:
+            yield "pyproject.toml", spec
+
+
+# unsloth_zoo is digest-pinned and deliberately NOT version-pinned, so it is named
+# here rather than quietly skipped. The recurrence this guard exists to stop is an
+# upstream release we do not control changing the bytes and reddening main on a day
+# nobody touched the repo. unsloth_zoo is our own, released in lockstep with this
+# package, and pinning it exactly would break that; when its digest reopens, the
+# change is one of ours and re-reviewing it is the point of the pin (#8104, and that
+# entry is the credential send itself). Third-party packages get no such licence, so
+# the test asserts this list holds only first-party names.
+# Exactly the first-party packages that ARE digest-pinned today, asserted below to
+# be exactly that, so a name added here without an entry, or a third-party name
+# added at all, fails rather than silently widening the exemption.
+FIRST_PARTY_DIGEST_PINNED = {"unsloth-zoo"}
+
+
 def test_digest_pinned_packages_are_pinned_on_every_supported_python():
-    """A digest-pinned package must be `==` pinned, and pinned for every Python we support.
+    """A digest-pinned third-party package must be `==` pinned on every Python we support.
 
     The two mechanisms are only coherent together. `file_sha256` deliberately reopens a
     reviewed CRITICAL on ANY edit to the file, because the evidence records a network
@@ -2075,27 +2114,30 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
     on a change anyone here made. That is not hypothetical: `openai>=2.7.2` floated onto
     3.2.0, which touched all four pinned files, and the extras shard went red on main.
 
-    The second half of the assertion is the trap the first half walks into. `==` is
-    strictly narrower than `>=`, so pinning the newest release silently drops every
-    interpreter that release does not support: openai 3.x needs 3.10, this project
-    supports 3.9 back to pyproject's requires-python, and a bare `openai==3.2.0` does
-    not resolve there AT ALL, where `>=2.7.2` had been quietly picking 2.48.0. A pin
-    that fixes CI by breaking an install is not a fix, so the markers on the pinned
-    lines have to cover the whole supported range between them.
+    `==` has to mean one version. `openai==3.*` satisfies a naive prefix test and is a
+    floating prefix match to pip, which recreates the same failure, so the specifier is
+    parsed rather than pattern-matched and a wildcard is rejected.
 
-    Marker-only, so it stays offline and deterministic. That bounds what the second
+    And `==` is strictly narrower than `>=`, so pinning the newest release silently
+    drops every interpreter that release does not support: openai 3.x needs 3.10, this
+    project supports 3.9 back to pyproject's requires-python, and a bare
+    `openai==3.2.0` does not resolve there AT ALL, where `>=2.7.2` had been quietly
+    picking 2.48.0. A pin that fixes CI by breaking an install is not a fix, so the
+    markers on the pinned lines have to cover the whole supported range between them.
+
+    Marker-only, so it stays offline and deterministic. That bounds what the coverage
     half can see: it catches a marker partition with a hole in it (a `>= "3.11"` beside
     a `< "3.10"` leaves 3.10 resolving to nothing), but it cannot catch a single
     unmarked pin whose version happens not to support 3.9, because knowing that means
-    asking PyPI for the release's requires-python. Resolving extras.txt on each
+    asking PyPI for the release's requires-python. Resolving the requirements on each
     supported interpreter is what covers that, and it is done as a resolution
     simulation rather than from here, so this module stays network-free.
     """
     import json
     import pathlib
-    import re
 
     from packaging.markers import Marker
+    from packaging.requirements import Requirement
 
     root = pathlib.Path(__file__).resolve().parents[2]
     baseline = json.loads(
@@ -2105,40 +2147,51 @@ def test_digest_pinned_packages_are_pinned_on_every_supported_python():
         sp._norm_pkg(e["package"]) for e in baseline["entries"] if e.get("file_sha256")
     }
     assert pinned_packages, "no digest-pinned entries; this guard would be vacuous"
+    stray = FIRST_PARTY_DIGEST_PINNED - pinned_packages
+    assert not stray, f"exemption names a package with no digest-pinned entry: {sorted(stray)}"
+    third_party = pinned_packages - FIRST_PARTY_DIGEST_PINNED
+    assert third_party, "every digest-pinned package is exempt; this guard would be vacuous"
 
     pythons = _supported_python_versions(root)
     assert pythons, "no supported python versions parsed out of requires-python"
 
-    req_dir = root / "studio" / "backend" / "requirements"
     floating = []
-    # package -> the python_version values some `==` line claims
     covered: dict[str, set[str]] = {}
     present: set[str] = set()
-    for req in sorted(req_dir.glob("*.txt")):
-        for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
-            spec = raw.split("#", 1)[0].strip()
-            if not spec or spec.startswith("-") or "git+" in spec:
-                continue
-            requirement, _, marker_text = spec.partition(";")
-            name = re.split(r"[<>=!~\[]", requirement, maxsplit = 1)[0].strip()
-            pkg = sp._norm_pkg(name)
-            if pkg not in pinned_packages:
-                continue
-            present.add(pkg)
-            if not re.search(rf"^{re.escape(name)}\s*==", requirement.strip()):
-                floating.append(f"{req.name}:{lineno}: {spec}")
-                continue
-            marker = Marker(marker_text.strip()) if marker_text.strip() else None
-            for python in pythons:
-                if marker is None or marker.evaluate({"python_version": python}):
-                    covered.setdefault(pkg, set()).add(python)
+    for source, spec in _audited_requirements(root):
+        try:
+            requirement = Requirement(spec)
+        except Exception:
+            continue
+        pkg = sp._norm_pkg(requirement.name)
+        if pkg not in third_party:
+            continue
+        present.add(pkg)
+        specifiers = list(requirement.specifier)
+        exact = (
+            len(specifiers) == 1
+            and specifiers[0].operator == "=="
+            # `==3.*` is a prefix match, not a pin, and pip resolves it to
+            # whatever 3.x is newest.
+            and not specifiers[0].version.endswith(".*")
+        )
+        if not exact:
+            floating.append(f"{source}: {spec}")
+            continue
+        marker = requirement.marker
+        for python in pythons:
+            if marker is None or marker.evaluate({"python_version": python}):
+                covered.setdefault(pkg, set()).add(python)
 
     assert not floating, (
-        "these packages carry digest-pinned baseline entries but float in requirements, "
-        "so the security audit goes red whenever upstream publishes: " + "; ".join(floating)
+        "these packages carry digest-pinned baseline entries but are not pinned to one "
+        "version in what the security audit scans, so it goes red whenever upstream "
+        "publishes: " + "; ".join(floating)
     )
     gaps = {
-        pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
+        pkg: sorted(
+            set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1])
+        )
         for pkg in sorted(present)
     }
     gaps = {pkg: missing for pkg, missing in gaps.items() if missing}
