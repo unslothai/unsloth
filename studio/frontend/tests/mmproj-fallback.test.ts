@@ -168,9 +168,16 @@ test("each fallback alone still reads exactly as it did before", () => {
   // The title the standalone helper produces, unchanged.
   assert.equal(offload.title, mmprojLoadNotice("X", "cpu_offload").title);
 
-  const textOnly = loadFallbackNotice("X loaded", null, "projector_incompatible");
+  const textOnly = loadFallbackNotice(
+    "X loaded",
+    null,
+    "projector_incompatible",
+  );
   assert.equal(textOnly.title, "X loaded without vision");
-  assert.equal(textOnly.description, mmprojFallbackMessage("projector_incompatible"));
+  assert.equal(
+    textOnly.description,
+    mmprojFallbackMessage("projector_incompatible"),
+  );
 });
 
 test("a clean load is not degraded and carries no description", () => {
