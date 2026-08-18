@@ -926,6 +926,8 @@ def test_model_wait_budget_stays_bounded_for_any_request_budget():
     # Unlimited uses the shipped default, and an oversized finite budget is capped.
     assert research_runs._model_wait_budget(_waiting_run(0)) == 900 / waits
     assert research_runs._model_wait_budget(_waiting_run(10**9)) == 3600 / waits
+
+
 def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypatch):
     content_chunks = ["# Result\n" + ("a" * 300), "b" * 300, "c" * 300]
     stream = _delta_stream_body(
