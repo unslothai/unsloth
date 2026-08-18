@@ -892,6 +892,25 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             None,
             id = "indented-code",
         ),
+        # CommonMark expands a tab to a four-column tab stop, so these open an indented code
+        # block just as four spaces do. Accepting them would publish whatever a model wrote
+        # after a marker it only meant to quote.
+        pytest.param(
+            "Analysis.\n\n\t<!-- UNSLOTH_FINAL_REPORT -->\nPrivate tail",
+            None,
+            id = "tab-indented-code",
+        ),
+        pytest.param(
+            "Analysis.\n\n  \t<!-- UNSLOTH_FINAL_REPORT -->\nPrivate tail",
+            None,
+            id = "tab-completes-the-fourth-column",
+        ),
+        # Three columns is still a paragraph, so the marker there is the real boundary.
+        pytest.param(
+            "Planning.\n   <!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
+            "# Report\nBody",
+            id = "three-space-indent-is-not-code",
+        ),
         pytest.param(
             "Reasoning\n<!-- UNSLOTH_FINAL_REPORT -->",
             "",

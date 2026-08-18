@@ -299,11 +299,15 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_char = token[0]
             fence_length = len(token)
             continue
-        indentation = len(content) - len(content.lstrip(" "))
+        # CommonMark measures indentation in columns with a four-column tab stop, so one tab
+        # opens an indented code block exactly as four spaces do. Counting characters, or
+        # stripping only spaces, would accept a marker that Markdown renders as code.
+        prefix = content[: len(content) - len(content.lstrip(" \t"))]
+        indentation = len(prefix.expandtabs(4))
         # The prompt shows the marker inside backticks, so models echo it fenced. splitlines
         # also breaks on \x0b\x0c\x1c-\x1e\x85  , which rstrip("\r\n") leaves on the
         # line, so strip every whitespace form rather than let a stray one hide the boundary.
-        if indentation <= 3 and content[indentation:].strip().strip("`").strip() == boundary:
+        if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:
         return None
