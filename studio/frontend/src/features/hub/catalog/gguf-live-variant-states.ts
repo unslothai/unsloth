@@ -8,6 +8,7 @@ import { normalizeGgufVariantIdentity } from "../lib/model-identity";
 export type LiveGgufVariantState = {
   state: ManagedDownload["state"];
   expectedBytes: number;
+  transferredBytes: number;
   startedAt: number;
 };
 
@@ -49,6 +50,7 @@ export function createLiveGgufVariantStatesSelector(repoId: string): (state: {
         {
           state: job.state,
           expectedBytes: job.expectedBytes,
+          transferredBytes: Math.max(job.downloadedBytes, job.completedBytes),
           startedAt: job.startedAt,
         },
       ]);
@@ -76,12 +78,25 @@ export function applyLiveGgufVariantStates(
       variant.download_size_bytes ?? 0,
       variant.size_bytes,
     );
+    // The row says "N left", so N has to follow the transfer. Only
+    // download_size_bytes moved here, leaving the label on the remainder the
+    // one-time variant fetch measured -- or, for a download that started after
+    // it, on the full total. A running job carries its own progress, so derive
+    // the remainder from that and keep the fetched figure for everything else.
+    const liveRemaining =
+      expectedBytes > 0 && live.transferredBytes > 0
+        ? Math.max(expectedBytes - live.transferredBytes, 0)
+        : null;
     return {
       ...variant,
       downloaded: liveComplete ? true : livePartial ? false : variant.downloaded,
       partial: liveComplete ? false : livePartial || variant.partial,
       download_size_bytes:
         expectedBytes > 0 ? expectedBytes : variant.download_size_bytes,
+      download_remaining_bytes:
+        liveComplete
+          ? variant.download_remaining_bytes
+          : liveRemaining ?? variant.download_remaining_bytes,
     };
   });
 }
