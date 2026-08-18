@@ -33,7 +33,7 @@ import {
   createRootRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { type ReactElement, useEffect } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./src/index.css";
 
@@ -92,12 +92,42 @@ function assistantMarkdown(index: number): string {
   ].join("\n\n");
 }
 
+/**
+ * A reply that is prose and nothing else: no fence, no math, no link, no image.
+ *
+ * The default body above carries a code fence, and Streamdown gives every fence its own Copy
+ * button, so every assistant message in the default fixture happens to hold a focusable control
+ * whether or not its action bar is mounted. Most real replies are not like that. This variant
+ * exists so the harness can seed a reply whose focusable count is ZERO and a keyboard walk has
+ * nothing to land on (#8992, review item on unreachable plain-text replies).
+ */
+function plainAssistantMarkdown(index: number): string {
+  return [`Reply ${index}. ${PROSE}`, CLOSING].join("\n\n");
+}
+
 function userMarkdown(index: number): string {
   return `Prompt ${index}. ${PROSE}`;
 }
 
+/**
+ * Which assistant replies are plain prose, by their ordinal among assistant messages.
+ * `"all"` makes every reply plain; omitting it keeps the default fenced body everywhere, so
+ * the existing weight measurements are untouched.
+ */
+type SeedOptions = { plainAssistants?: readonly number[] | "all" };
+
+function isPlain(assistantOrdinal: number, options: SeedOptions | undefined): boolean {
+  const plain = options?.plainAssistants;
+  if (!plain) return false;
+  if (plain === "all") return true;
+  return plain.includes(assistantOrdinal);
+}
+
 /** Alternating prompts and replies, oldest first, as a loaded thread arrives. */
-function buildMessages(count: number): ThreadMessageLike[] {
+function buildMessages(
+  count: number,
+  options?: SeedOptions,
+): ThreadMessageLike[] {
   return Array.from({ length: count }, (_, index) =>
     index % 2 === 0
       ? {
@@ -106,7 +136,14 @@ function buildMessages(count: number): ThreadMessageLike[] {
         }
       : {
           role: "assistant" as const,
-          content: [{ type: "text" as const, text: assistantMarkdown(index) }],
+          content: [
+            {
+              type: "text" as const,
+              text: isPlain((index - 1) / 2, options)
+                ? plainAssistantMarkdown(index)
+                : assistantMarkdown(index),
+            },
+          ],
         },
   );
 }
@@ -118,16 +155,44 @@ const NEVER_RUNS: ChatModelAdapter = {
   },
 };
 
-function ThreadWeightApi(): null {
+function ThreadWeightApi({
+  setThreadMounted,
+}: {
+  setThreadMounted: (mounted: boolean) => void;
+}): null {
   const aui = useAui();
 
   useEffect(() => {
     const api = {
       /** Replace the thread with `count` messages, oldest first. */
-      seed(count: number): void {
+      seed(count: number, options?: SeedOptions): void {
         aui
           .thread()
-          .import(ExportedMessageRepository.fromArray(buildMessages(count)));
+          .import(
+            ExportedMessageRepository.fromArray(buildMessages(count, options)),
+          );
+      },
+      /**
+       * Unmount or remount the Thread while the RUNTIME stays alive, which is what a sidebar
+       * thread switch does to a message's React subtree. The per-message `isHovering` flag
+       * lives in the runtime's message client, not in React, so it outlives this.
+       */
+      setThreadMounted(mounted: boolean): void {
+        setThreadMounted(mounted);
+      },
+      /**
+       * The runtime's own `isHovering` per message, oldest first. Reading the flag rather than
+       * counting mounted bars is what makes a leak test able to see a flag that is set while
+       * nothing is rendered.
+       */
+      hoverFlags(): { id: string; isHovering: boolean }[] {
+        return aui
+          .thread()
+          .getState()
+          .messages.map((message) => ({
+            id: message.id,
+            isHovering: Boolean(message.isHovering),
+          }));
       },
       /**
        * One selector pass. Polling for a deletion has to read this, not counts(): counts() is
@@ -232,23 +297,24 @@ function ThreadWeightApi(): null {
       },
     };
     (window as unknown as { __threadWeight: typeof api }).__threadWeight = api;
-  }, [aui]);
+  }, [aui, setThreadMounted]);
 
   return null;
 }
 
 function Harness(): ReactElement {
   const runtime = useLocalRuntime(NEVER_RUNS);
+  const [threadMounted, setThreadMounted] = useState(true);
   return (
     <TooltipProvider>
       <AssistantRuntimeProvider runtime={runtime}>
-        <ThreadWeightApi />
+        <ThreadWeightApi setThreadMounted={setThreadMounted} />
         {/* Thread is flex-1 basis-0 min-h-0, so it needs a bounded flex parent to scroll. */}
         <div
           data-smoke="thread"
           style={{ display: "flex", flexDirection: "column", height: "100vh" }}
         >
-          <Thread hideWelcome={true} />
+          {threadMounted ? <Thread hideWelcome={true} /> : null}
         </div>
       </AssistantRuntimeProvider>
     </TooltipProvider>
