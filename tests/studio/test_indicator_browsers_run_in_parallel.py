@@ -93,13 +93,24 @@ def test_each_engine_gets_its_own_studio_home():
         "credentials."
     )
     # The home has to VARY, and vary by the same token that selects the engine. A fixed
-    # path would be the shared home again under a new name.
+    # path would be the shared home again under a new name. Resolved through one level of
+    # shell indirection, because the path is built into a local before it is exported.
+    assignments = dict(
+        re.findall(r"(?m)^\s*(\w+)=(.+?)\s*\\?$", run)
+    )
     assignment = next((l for l in run.splitlines() if "UNSLOTH_STUDIO_HOME=" in l), "")
-    home_vars = set(re.findall(r"\$\{?(\w+)\}?", assignment.split("UNSLOTH_STUDIO_HOME=", 1)[1]))
+    value = assignment.split("UNSLOTH_STUDIO_HOME=", 1)[1]
+    seen, frontier = set(), re.findall(r"\$\{?(\w+)\}?", value)
+    while frontier:
+        name = frontier.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        frontier += re.findall(r"\$\{?(\w+)\}?", assignments.get(name, ""))
     engine_vars = set(
         re.findall(r"\$\{?(\w+)\}?", run[run.index("run-studio-indicator-browser.sh") :][:200])
     )
-    assert home_vars & engine_vars, (
+    assert seen & engine_vars, (
         f"UNSLOTH_STUDIO_HOME ({assignment.strip()!r}) does not vary by the same variable the "
         f"engine does, so the concurrent runs still share one home and race on its auth dir"
     )
@@ -135,6 +146,42 @@ def test_all_engines_are_waited_on_before_the_step_gives_up():
     assert not re.search(r"wait[^\n]*\|\|\s*exit", run), (
         "the step exits on the first failing engine, so a run where two engines regress "
         "reports only one and the second surfaces days later"
+    )
+
+
+def test_each_isolated_home_still_reaches_the_installed_studio_venv():
+    """A bare empty UNSLOTH_STUDIO_HOME is not a data root, it is an EMPTY INSTALL.
+
+    This is the trap that made the first cut of this change fail every engine.
+    UNSLOTH_STUDIO_HOME selects the CLI's install root: `_studio_venv_python()` resolves
+    $UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python and `_find_run_py()` globs under the
+    same directory, so pointing the variable at a fresh directory makes the launch print
+    "Unsloth Studio not set up. Run install.sh first." and exit BEFORE it binds a port.
+    All three engines then fail identically, which reads like a bug in the suite rather
+    than in the isolation.
+
+    So each per-engine home must link the venv install.sh already built. Asserted because
+    the failure mode is loud but deeply misleading about its own cause.
+    """
+    run = str(_indicator_step().get("run", ""))
+    assert "unsloth_studio" in run, (
+        "the per-engine homes no longer connect to the installed studio venv, so every "
+        "launch will exit with 'Unsloth Studio not set up' before binding its port"
+    )
+    assert re.search(r"ln -sf?n?\s", run), (
+        "the venv is no longer symlinked into each per-engine home. Copying it instead "
+        "would make three copies of the install and cost more than the serialisation this "
+        "change removed."
+    )
+
+
+def test_the_cli_still_resolves_the_venv_from_the_studio_home():
+    """The symlink is only correct while the CLI looks there. Pin the path it uses."""
+    src = (REPO / "unsloth_cli" / "commands" / "studio.py").read_text(encoding = "utf-8")
+    assert 'STUDIO_HOME / "unsloth_studio"' in src, (
+        "unsloth_cli no longer resolves the studio venv at STUDIO_HOME/unsloth_studio, so "
+        "the symlink the indicator step creates may point at the wrong place; re-check "
+        "what the CLI expects before trusting the isolated homes"
     )
 
 
