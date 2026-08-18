@@ -27,15 +27,21 @@ function Install-UnslothStudio {
     # every non-empty string is true, so UNSLOTH_INSTALL_TIMING=0 would enable it.
     $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
     $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
-    # Saved and restored like every other handoff variable in this script, because the
-    # documented `irm ... | iex` entry point runs in the CALLER's process: an origin left
-    # behind there outlives this install. The next run in that session would refuse to
-    # replace it and a later `unsloth studio update` would inherit it, so both would
-    # report seconds since the FIRST install rather than since they started.
-    $script:PreviousInstallTimingT0 = $env:UNSLOTH_INSTALL_TIMING_T0
-    $script:HadPreviousInstallTimingT0 = ($null -ne $script:PreviousInstallTimingT0)
-    if ($script:StudioTimingEnabled) {
-        $env:UNSLOTH_INSTALL_TIMING_T0 = [System.DateTime]::UtcNow.Ticks.ToString()
+    # Computed here, but NOT written to the environment here. The documented
+    # `irm ... | iex` entry point runs in the CALLER's process, so anything set on
+    # $env: outlives this install: the next run in that session would inherit the old
+    # origin and a later `unsloth studio update` would too, both then reporting seconds
+    # since the FIRST install. Writing it at the top also leaks on every early return
+    # above the handoff, of which there are several (the install-lock failures, and the
+    # "another install is already running" path), all of which exit before any finally.
+    #
+    # Only the CHILD needs it, so it is exported next to the other handoff variables
+    # immediately before the handoff and restored in the finally that already covers
+    # them. Nothing between here and there can leave it behind.
+    $script:StudioTimingT0 = if ($env:UNSLOTH_INSTALL_TIMING_T0) {
+        $env:UNSLOTH_INSTALL_TIMING_T0
+    } else {
+        [System.DateTime]::UtcNow.Ticks.ToString()
     }
 
     # The user's PowerShell profile has already run by the time this does, and the documented
@@ -5441,6 +5447,12 @@ exit 0
     $hadPreviousUnslothStudioHome = ($null -ne $previousUnslothStudioHome)
     $previousTauriMode = $env:UNSLOTH_TAURI_MODE
     $hadPreviousTauriMode = ($null -ne $previousTauriMode)
+    # The child continues this installer's clock rather than starting its own.
+    $previousInstallTimingT0 = $env:UNSLOTH_INSTALL_TIMING_T0
+    $hadPreviousInstallTimingT0 = ($null -ne $previousInstallTimingT0)
+    if ($script:StudioTimingEnabled) {
+        $env:UNSLOTH_INSTALL_TIMING_T0 = $script:StudioTimingT0
+    }
     $env:UNSLOTH_TAURI_MODE = if ($TauriMode) { "1" } else { "0" }
     if ($StudioRedirectMode -eq 'env') {
         $env:UNSLOTH_STUDIO_HOME = $StudioHome
@@ -5498,6 +5510,11 @@ exit 0
         Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
+        if ($hadPreviousInstallTimingT0) {
+            $env:UNSLOTH_INSTALL_TIMING_T0 = $previousInstallTimingT0
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0 -ErrorAction SilentlyContinue
+        }
         if ($hadPreviousUnslothStudioHome) {
             $env:UNSLOTH_STUDIO_HOME = $previousUnslothStudioHome
         } else {
@@ -5789,12 +5806,6 @@ exit 0
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
         Exit-StudioInstallMutex -Mutex $studioInstallMutex
-        # In the finally, so a failed install does not leave the origin behind either.
-        if ($script:HadPreviousInstallTimingT0) {
-            $env:UNSLOTH_INSTALL_TIMING_T0 = $script:PreviousInstallTimingT0
-        } else {
-            Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0 -ErrorAction SilentlyContinue
-        }
     }
     if ($null -ne $studioAutoStartProcess) {
         $studioAutoStartProcess.WaitForExit()

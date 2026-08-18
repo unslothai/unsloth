@@ -310,25 +310,60 @@ def test_the_tick_handoff_is_bounds_checked_not_just_parsed():
     )
 
 
-def test_the_outer_installer_restores_the_origin_it_set():
+def test_the_outer_installer_never_leaks_the_origin_into_the_callers_session():
     """`irm ... | iex` runs in the CALLER's process, so what it sets there outlives it.
 
     A leftover origin makes the next install in that session, and any later
-    `unsloth studio update`, report seconds since the FIRST install. install.ps1 already
-    saves and restores every other handoff variable this way.
+    `unsloth studio update`, report seconds since the FIRST install.
+
+    Restoring in a finally is not enough on its own: this function has several early
+    returns above the handoff (the install-lock failure, and the "another install is
+    already running" path), and they exit before any try begins. So the variable must not
+    be written at the top of the function at all. It is set beside the other handoff
+    variables immediately before the child launch and restored in the finally that already
+    covers them, which is the one region an early return cannot skip.
     """
     src = INSTALL_PS1.read_text(encoding = "utf-8")
-    assert (
-        "PreviousInstallTimingT0" in src
-    ), "install.ps1 no longer saves the previous UNSLOTH_INSTALL_TIMING_T0"
-    tail = src[src.rindex("} finally {") :]
-    assert "UNSLOTH_INSTALL_TIMING_T0" in tail, (
-        "the origin is not restored in a finally, so a failed install leaves it behind in "
-        "the caller's session"
+    lines = src.splitlines()
+    assigns = [i for i, l in enumerate(lines) if "$env:UNSLOTH_INSTALL_TIMING_T0 =" in l]
+    assert assigns, "install.ps1 never sets the origin, so the child cannot continue the clock"
+    siblings = next(i for i, l in enumerate(lines) if "$previousUnslothStudioHome =" in l)
+    early = [i + 1 for i in assigns if i < siblings]
+    assert not early, (
+        f"install.ps1 writes the origin at line(s) {early}, above the handoff block at line "
+        f"{siblings + 1}. Every early return between the two leaks it into the caller's "
+        f"environment, where it outlives the install."
     )
+    tail = src[src.index("Invoke-ManagedUnslothCli") :]
     assert (
         "Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0" in tail
-    ), "when there was no previous value the variable must be REMOVED, not left set"
+    ), "with no previous value the variable must be REMOVED after the handoff, not left set"
+
+
+@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
+@pytest.mark.parametrize("script", ["install.sh", "studio/setup.sh"])
+@pytest.mark.parametrize("value", ["junk", "1;rm", "-5", "9999999999999999999999", ""])
+def test_a_hostile_inherited_origin_never_breaks_a_posix_install(script, value):
+    """$(( )) evaluates a bare word as a VARIABLE NAME, and `set -u` then aborts.
+
+    An inherited UNSLOTH_INSTALL_TIMING_T0=junk killed the installer outright with
+    "junk: unbound variable", and "1;rm" was an arithmetic syntax error, so an unrelated
+    outer process could stop an install that merely asked for timing. Anything that is not
+    a plain non-negative integer, or that yields a negative elapsed, falls back to the
+    local clock. Run rather than read: a text check would miss exactly this shape.
+    """
+    body = _sh_function_of(REPO / script, "step")
+    prog = "set -euo pipefail\nC_DIM= C_OK= C_RST= C_WARN=\n" + body + '\nstep lbl msg\n'
+    r = subprocess.run(
+        ["bash", "-c", prog],
+        capture_output = True,
+        text = True,
+        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1", f"{ENV_VAR}_T0": value},
+    )
+    assert r.returncode == 0, f"{script} aborted on {ENV_VAR}_T0={value!r}: {r.stderr.strip()}"
+    assert re.search(r"\[\d+s\] ", r.stdout), (
+        f"{script} produced no usable prefix for {ENV_VAR}_T0={value!r}: {r.stdout!r}"
+    )
 
 
 def test_the_posix_installer_is_timed_on_the_same_terms_as_the_windows_one():

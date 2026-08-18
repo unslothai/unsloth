@@ -76,12 +76,24 @@ fi
 # keeping the two sides symmetrical means neither grows a dependency the other lacks.
 step() {
     local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(( $(date +%s) - SECONDS )) } ))s] " ;; esac
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
+    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
+        ""|*[!0-9]* ) ;;
+        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
+            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
+    esac
+    _t="[${_e}s] " ;; esac
     printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$_t" "$2"
 }
 substep() {
     local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(( $(date +%s) - SECONDS )) } ))s] " ;; esac
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
+    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
+        ""|*[!0-9]* ) ;;
+        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
+            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
+    esac
+    _t="[${_e}s] " ;; esac
     printf "  %-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$_t" "$1"
 }
 

@@ -60,7 +60,16 @@ fi
 # Exported only when timing is on, and only when nothing upstream set one already, so a
 # nested invocation does not reset the outer run's zero.
 if [ "${UNSLOTH_INSTALL_TIMING:-0}" != "0" ] && [ -n "${UNSLOTH_INSTALL_TIMING:-}" ]; then
-    : "${UNSLOTH_INSTALL_TIMING_T0:=$(date +%s)}"
+    # Validated, not just defaulted. The value lands inside an arithmetic expansion
+    # below, and $(( )) evaluates a bare word as a VARIABLE NAME: with `set -u` an
+    # inherited UNSLOTH_INSTALL_TIMING_T0=junk aborts the installer with
+    # "junk: unbound variable", and a value like "1;rm" is an arithmetic syntax error.
+    # Either way an unrelated outer process could stop the install outright, so anything
+    # that is not a plain non-negative integer is replaced rather than trusted. Same
+    # reasoning as the tick bounds check in studio/setup.ps1.
+    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
+        "" | *[!0-9]* ) UNSLOTH_INSTALL_TIMING_T0="$(date +%s)" ;;
+    esac
     export UNSLOTH_INSTALL_TIMING_T0
 fi
 
@@ -68,12 +77,24 @@ fi
 # both helpers below rather than shared, so each stays self-contained.
 step()    {
     local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(date +%s)} ))s] " ;; esac
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
+    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
+        ""|*[!0-9]* ) ;;
+        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
+            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
+    esac
+    _t="[${_e}s] " ;; esac
     printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$_t" "$2"
 }
 substep() {
     local _t=""
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(date +%s)} ))s] " ;; esac
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _e=$SECONDS
+    case "${UNSLOTH_INSTALL_TIMING_T0:-}" in
+        ""|*[!0-9]* ) ;;
+        * ) _e=$(( $(date +%s) - UNSLOTH_INSTALL_TIMING_T0 ))
+            [ "$_e" -ge 0 ] || _e=$SECONDS ;;
+    esac
+    _t="[${_e}s] " ;; esac
     printf "  ${C_DIM}%-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$_t" "$1"
 }
 
