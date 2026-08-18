@@ -64,10 +64,28 @@ jobs:
           python-version: '3.12'
 
       - name: Install PyYAML
-        run: pip install pyyaml pytest
+        run: pip install pyyaml pytest vermin
 
       - name: Lint workflow triggers + cache keys
         run: python3 scripts/lint_workflow_triggers.py
+
+      # What the dropped interpreter legs used to catch, as far as a static check can.
+      # A pull request runs only the newest leg now, so nothing EXECUTES the backend on
+      # the oldest one until the push to main. ast.parse at a feature_version covers
+      # syntax and nothing else, which would miss the actual shape of this regression:
+      # reaching for a stdlib name that does not exist yet, like the `anext` in
+      # core/research_runs.py that already requires 3.10. vermin reads both, so a symbol
+      # added after the floor fails here in seconds rather than on main in 23 minutes.
+      # No paths filter on this workflow, so it sees every pull request.
+      - name: Backend still runs on the oldest interpreter the matrix claims
+        run: python3 scripts/lint_backend_python_floor.py
+
+      # And the test that says the step above must exist. Without this, a pull request
+      # that edits only this workflow and deletes that step passes: Backend CI's paths
+      # cover its own YAML and studio/**, not .github/workflows/**, so the assertion
+      # protecting the step is never collected for the one change it exists to reject.
+      - name: The floor lint is still wired up
+        run: python3 -m pytest tests/studio/test_backend_ci_matrix.py -q
 
       # Runs here rather than in the Repo tests job, for this workflow's own reason:
       # the regression it catches is a workflow or .github/scripts edit that drops a
@@ -86,3 +104,17 @@ jobs:
       # test and merged green. Only this job sees such a PR.
       - name: Main runs still survive a merge burst
         run: python3 -m pytest tests/studio/test_main_runs_survive_merge_bursts.py -q
+
+      # And here for the same reason: this one reads the three OS smoke workflows, so
+      # the change that breaks it edits a workflow and nothing else, which no paths
+      # filter in the repo matches. Filesystem reads, seconds.
+      - name: The OS smoke legs still share one script
+        run: python3 -m pytest tests/studio/test_smoke_workflows_share_one_script.py -q
+
+      # Same reason once more, and the sharpest instance of it. This one reads
+      # studio-ui-smoke.yml to check every Playwright script still lands on some shard,
+      # so the edit it exists to catch is by definition a workflow-only edit. Backend
+      # CI's paths filter does not match one, and the UI smoke job it guards is the very
+      # thing that would silently stop running, so it cannot be the one to notice.
+      - name: Every Chat UI script still belongs to a shard
+        run: python3 -m pytest tests/studio/test_chat_ui_shards_cover_everything.py -q
