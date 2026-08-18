@@ -144,7 +144,10 @@ import type {
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
 } from "../types/api";
-import type { ChatModelSummary } from "../types/runtime";
+import {
+  modelReadsSamplingSeed,
+  type ChatModelSummary,
+} from "../types/runtime";
 import {
   getStoredChatThread,
   getStoredChatThreadReadResult,
@@ -5421,6 +5424,16 @@ export function createOpenAIStreamAdapter(
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,
             presence_penalty: params.presencePenalty,
+            // Omitted when unset so llama-server keeps drawing a fresh seed, and when the
+            // model does not reach it, so a pin left over from a GGUF is not sent invisibly.
+            ...(params.seed == null ||
+            !modelReadsSamplingSeed(
+              runtime.activeGgufVariant,
+              runtime.ggufContextLength,
+              params.checkpoint,
+            )
+              ? {}
+              : { seed: params.seed }),
             image_base64: imageBase64,
             audio_base64: audioBase64,
             cancel_id: cancelId,
