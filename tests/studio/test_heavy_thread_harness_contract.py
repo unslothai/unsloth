@@ -551,4 +551,11 @@ def test_every_stubbed_endpoint_is_reported() -> None:
     assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
     harness = source("playwright_heavy_thread.py")
     assert "stubbed_api_requests" in harness, "the harness must read the stubbed-request record"
-    assert '"stubbed api requests"' in harness, "the stubbed-request count must reach the table"
+    # Both halves must reach the table. The seed snapshot alone is the number the harness used to
+    # publish, and it cannot contain a single request any measured action made.
+    assert (
+        '"seed stubbed api requests"' in harness
+    ), "the seed-time stubbed-request count must reach the table"
+    assert (
+        '"action stubbed api requests"' in harness
+    ), "the action-attributable stubbed-request count must reach the table"

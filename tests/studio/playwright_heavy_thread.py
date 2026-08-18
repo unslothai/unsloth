@@ -1694,7 +1694,15 @@ class SeededPage:
         # Answered locally by the page's allowlist rather than reaching the network. Recorded and
         # printed rather than silently swallowed: two whole-endpoint GETs per reopen is a real
         # cost and stays visible even though it is kept out of the timed region.
-        self.record["stubbed_api_requests"] = len(self.page.evaluate("window.__stubbedApi || []"))
+        #
+        # This is the SEED-time snapshot only, and it is subtracted in finish() so the published
+        # number is the fan-out the ACTIONS provoked. Reading it here and stopping was the bug:
+        # every request this metric exists to expose -- the two per reopen, the delete's own
+        # persistence -- is made after seeding, so the column read at this point could only ever
+        # show the fork-count GETs the seed itself paid, and reported the action fan-out as zero.
+        self.record["seed_stubbed_api_requests"] = len(
+            self.page.evaluate("window.__stubbedApi || []")
+        )
         self.record["seed_console_warnings"] = len(self.console_warnings)
         self.record["first_seed_warning"] = (
             self.console_warnings[0] if self.console_warnings else "-"
@@ -1721,6 +1729,13 @@ class SeededPage:
         # Cumulative over seeding and every action on this page: a liveness check, not
         # attributable to any one action.
         self.record["raf_callbacks"] = self.page.evaluate("window.__rafCount")
+        # Action-attributable, exactly like stray_api_requests below: that list is cleared at the
+        # end of seed(), and the stubbed log is not clearable from here, so the seed snapshot is
+        # subtracted instead. Read HERE, after the repetitions, or the reopen and delete requests
+        # this counts do not exist yet.
+        self.record["stubbed_api_requests"] = len(
+            self.page.evaluate("window.__stubbedApi || []")
+        ) - self.record.get("seed_stubbed_api_requests", 0)
         self.record["stray_api_requests"] = len(self.stray_requests)
         self.record["console_warnings"] = len(self.console_warnings)
         self.record["first_console_warning"] = (
@@ -1843,6 +1858,7 @@ def merge_seeds(seeds: list[dict]) -> dict:
             if s.get("arm", "").startswith("isolated:")
         },
         "seed_api_requests": sum(s["seed_api_requests"] for s in seeds),
+        "seed_stubbed_api_requests": sum(s.get("seed_stubbed_api_requests", 0) for s in seeds),
         "stubbed_api_requests": sum(s.get("stubbed_api_requests", 0) for s in seeds),
         "seed_console_warnings": max(s["seed_console_warnings"] for s in seeds),
         "first_seed_warning": seed_warned[0]["first_seed_warning"] if seed_warned else "-",
@@ -2025,7 +2041,9 @@ TABLE_ROWS = (
     ("paint floor ms", lambda r: r["paint_floor_ms"]),
     ("longtask api supported", lambda r: r["long_task_supported"]),
     ("seed api requests", lambda r: r["seed_api_requests"]),
-    ("stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
+    ("seed stubbed api requests", lambda r: r.get("seed_stubbed_api_requests", 0)),
+    # The fan-out the measured actions provoked, which is what this metric is for.
+    ("action stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
     ("seed console warnings", lambda r: r["seed_console_warnings"]),
     ("first seed warning", lambda r: short(r["first_seed_warning"])),
     ("action api requests", lambda r: r["stray_api_requests"]),

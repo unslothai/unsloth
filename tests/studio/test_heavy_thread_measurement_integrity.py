@@ -1424,3 +1424,106 @@ def test_merge_seeds_records_the_floor_of_every_isolated_page() -> None:
     )
     # And the median is still there, because the non-action axes and the sequenced table need it.
     assert merged["paint_floor_ms"] == 32.0
+
+
+class StubStubbedApiPage:
+    """A page whose stubbed-request log GROWS while the actions run, which is the real shape.
+
+    Nothing in the fixture is answered from the allowlist before the app mounts; the fork-count
+    GETs land during seeding, and the two project/knowledge-base GETs per reopen plus the delete's
+    own persistence land later, inside the repetitions. So a log read once, at seed time, is
+    structurally incapable of containing the thing the metric is published to expose.
+    """
+
+    def __init__(self, seed_calls: int, action_calls: int) -> None:
+        self._seed_calls = seed_calls
+        self._action_calls = action_calls
+        self.actions_have_run = False
+
+    def evaluate(self, script: str, *args, **kwargs):
+        if "__stubbedApi" in script:
+            total = self._seed_calls + (self._action_calls if self.actions_have_run else 0)
+            return [f"/api/stubbed/{i}" for i in range(total)]
+        if "__rafCount" in script:
+            return 0
+        return 0
+
+
+def _seeded_with(page) -> object:
+    """A SeededPage with only the state finish() reads, so no browser is needed."""
+    seeded = object.__new__(HARNESS.SeededPage)
+    seeded.page = page
+    seeded.cdp = None
+    seeded.stray_requests = []
+    seeded.console_warnings = []
+    seeded.console_errors = []
+    seeded.record = {"arm": "isolated:reopen"}
+    return seeded
+
+
+def test_the_stubbed_request_total_is_read_after_the_actions_have_run() -> None:
+    """The published count must include the requests the measured actions provoked.
+
+    Read only in seed(), it reported 0 for every reopen and every delete on every engine -- a
+    column whose entire purpose is showing that fan-out, sitting at the value it would have if the
+    fan-out did not exist. It is not a threshold anyone would notice going quiet.
+    """
+    page = StubStubbedApiPage(seed_calls = 40, action_calls = 6)
+    seeded = _seeded_with(page)
+    seeded.record["seed_stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
+    page.actions_have_run = True
+    record = seeded.finish()
+    assert record["stubbed_api_requests"] == 6, (
+        f"the stubbed-request count is {record['stubbed_api_requests']!r}, not the 6 requests the "
+        f"actions made. It is being read before the actions run, so the reopen and delete fan-out "
+        f"this column exists to expose can never appear in it."
+    )
+    # And the seed's own share stays separately visible rather than being folded in.
+    assert record["seed_stubbed_api_requests"] == 40, record
+
+
+def test_the_stubbed_request_count_is_zero_when_the_actions_provoke_nothing() -> None:
+    """The counterpart: it must not simply be re-reporting the seed total under a new name."""
+    page = StubStubbedApiPage(seed_calls = 40, action_calls = 0)
+    seeded = _seeded_with(page)
+    seeded.record["seed_stubbed_api_requests"] = len(page.evaluate("window.__stubbedApi || []"))
+    page.actions_have_run = True
+    record = seeded.finish()
+    assert record["stubbed_api_requests"] == 0, (
+        f"an arm whose actions made no stubbed request reports "
+        f"{record['stubbed_api_requests']!r}; the seed's own 40 are leaking into the "
+        f"action-attributable column."
+    )
+
+
+def test_merge_seeds_keeps_both_halves_of_the_stubbed_request_count() -> None:
+    """Both are summed across the seven pages, so neither can be dropped in the merge."""
+    seeds = [
+        {
+            "arm": f"isolated:{name}",
+            "paint_floor_ms": 16.0,
+            "plan": {"chars": 1000},
+            "counts": {},
+            "viewport": {},
+            "tool_triggers_expanded": 0,
+            "cpu_throttle_rate": 1,
+            "long_task_supported": True,
+            "seed_api_requests": 0,
+            "seed_stubbed_api_requests": 40,
+            "stubbed_api_requests": stubbed,
+            "seed_console_warnings": 0,
+            "first_seed_warning": "-",
+            "seed_console_errors": 0,
+            "first_seed_error": "-",
+            "raf_callbacks": 0,
+            "stray_api_requests": 0,
+            "console_warnings": 0,
+            "first_console_warning": "-",
+            "console_errors": 0,
+            "first_console_error": "-",
+        }
+        for name, stubbed in (("scroll", 0), ("reopen", 2))
+    ]
+    merged = HARNESS.merge_seeds(seeds)
+    assert merged["stubbed_api_requests"] == 2, merged
+    assert merged["seed_stubbed_api_requests"] == 80, merged
