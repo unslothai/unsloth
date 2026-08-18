@@ -67,13 +67,21 @@ import "./src/index.css";
 // here, before anything mounts, keeps that off the wire entirely; answering them from the
 // Playwright side instead would put a round trip to another process inside a timed region, once
 // per assistant message.
+// Only the fork-count endpoint. A blanket `/api/` match would resolve any other request the
+// measured interactions make before Playwright ever emitted it, so `stray_api_requests` would
+// stay at zero and the fan-out this harness exists to detect would be invisible to it.
+const FORK_COUNT_URL = /\/api\/chat\/threads\/[^/]+\/messages\/[^/]+\/forks$/;
+
 const realFetch = window.fetch.bind(window);
 window.fetch = (input, init) => {
   const url =
     typeof input === "string" ? input : ((input as Request).url ?? String(input));
-  if (url.includes("/api/")) {
+  if (FORK_COUNT_URL.test(url)) {
+    // `{ count: 0 }`, not `{}`. getForkCount returns `data.count`, and `undefined <= 0` is false,
+    // so an empty body renders a badge reading "undefined forks" on EVERY assistant message and
+    // adds DOM in proportion to thread size, which is the axis being measured.
     return Promise.resolve(
-      new Response("{}", {
+      new Response('{"count":0}', {
         status: 200,
         headers: { "content-type": "application/json" },
       }),

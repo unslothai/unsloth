@@ -175,3 +175,31 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
     assert (FRONTEND / "smoke-heavy-thread-main.tsx").exists()
     assert "start_vite(PORT)" in text
     assert "stop_process(vite)" in text
+
+
+def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
+    # `getForkCount` returns `data.count`, and the badge's guard is `count <= 0`. `undefined <= 0`
+    # is false, so a `{}` body renders a badge reading "undefined forks from this message" on every
+    # assistant message. Measured at 25000 chars: 10 badges and 4031 DOM nodes with `{}`, 0 badges
+    # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
+    # harness measures.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert '{"count":0}' in page, (
+        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
+        "count undefined and renders a badge on every assistant message"
+    )
+    assert '"{}"' not in page, "the fork-count stub is answering with an empty object again"
+
+
+def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
+    # A blanket `/api/` match resolves any other request a measured interaction makes before
+    # Playwright emits it, so `measure_cell`'s listener never increments `stray_api_requests` and
+    # the API fan-out this harness claims to detect cannot reach it.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert 'url.includes("/api/")' not in page, (
+        "the fetch stub is matching every /api/ request again, which hides stray requests from "
+        "the harness's own stray_api_requests counter"
+    )
+    assert "forks$/" in page or "/forks" in page, (
+        "the fetch stub must match the fork-count endpoint specifically"
+    )
