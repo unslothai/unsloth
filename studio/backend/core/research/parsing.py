@@ -300,8 +300,10 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_length = len(token)
             continue
         indentation = len(content) - len(content.lstrip(" "))
-        # The prompt shows the marker inside backticks, so models echo it fenced.
-        if indentation <= 3 and content[indentation:].strip(" \t`").strip(" \t") == boundary:
+        # The prompt shows the marker inside backticks, so models echo it fenced. splitlines
+        # also breaks on \x0b\x0c\x1c-\x1e\x85  , which rstrip("\r\n") leaves on the
+        # line, so strip every whitespace form rather than let a stray one hide the boundary.
+        if indentation <= 3 and content[indentation:].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:
         return None
