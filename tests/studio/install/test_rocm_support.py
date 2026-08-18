@@ -63,11 +63,13 @@ _install_bnb_windows_rocm = stack_mod._install_bnb_windows_rocm
 
 @pytest.fixture(autouse = True)
 def _reset_torch_runtime_probe():
-    """The torch classification is memoized for the life of an install run, so one
-    test's mocked probe must not leak into the next."""
+    """The torch classification and the host ROCm version are both memoized for the
+    life of an install run, so one test's mocked probes must not leak into the next."""
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
     yield
     stack_mod._invalidate_torch_runtime_probe()
+    stack_mod._invalidate_rocm_version_probe()
 
 
 def _extract_sh_function_body(source: str, name: str) -> str:
@@ -739,6 +741,51 @@ class TestDetectRocmVersion:
                 with patch("subprocess.run", return_value = hipconfig):
                     assert _detect_rocm_version() == (6, 1)
         assert "ROCm version sources disagree" not in capsys.readouterr().err
+
+    def test_detection_is_memoized_so_the_warning_prints_once(self, tmp_path, capsys):
+        """_ensure_rocm_torch() runs twice on Linux (post-base repair and final repair).
+
+        The host ROCm stack cannot change between them, so the sources must be probed
+        once and the disagreement warning emitted once, matching install.sh which
+        resolves the tag a single time. Without the memo a split Debian stack, whose
+        sources disagree by construction, warns the user twice per install.
+        """
+        info_dir = tmp_path / ".info"
+        info_dir.mkdir()
+        (info_dir / "version").write_text("5.7.0\n", encoding = "utf-8")
+        calls = []
+
+        def which(cmd):
+            return "/usr/bin/hipconfig" if cmd == "hipconfig" else None
+
+        def run(cmd, *a, **kw):
+            calls.append(cmd)
+            return MagicMock(returncode = 0, stdout = b"6.1.0\n")
+
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
+            with patch("shutil.which", side_effect = which):
+                with patch("subprocess.run", side_effect = run):
+                    assert _detect_rocm_version() == (6, 1)
+                    probes_after_first = len(calls)
+                    assert _detect_rocm_version() == (6, 1)
+                    assert len(calls) == probes_after_first, (
+                        f"second call re-probed: {calls[probes_after_first:]}"
+                    )
+        assert capsys.readouterr().err.count("ROCm version sources disagree") == 1
+
+    def test_memo_reset_reprobes(self, tmp_path):
+        """The invalidator has to actually clear the memo, or the autouse fixture
+        cannot keep one test's mocked host from leaking into the next."""
+        info_dir = tmp_path / ".info"
+        info_dir.mkdir()
+        (info_dir / "version").write_text("6.1.0\n", encoding = "utf-8")
+        with patch.dict(os.environ, {"ROCM_PATH": str(tmp_path)}):
+            with patch("shutil.which", return_value = None):
+                assert _detect_rocm_version() == (6, 1)
+                (info_dir / "version").write_text("7.0.0\n", encoding = "utf-8")
+                assert _detect_rocm_version() == (6, 1)  # memoized
+                stack_mod._invalidate_rocm_version_probe()
+                assert _detect_rocm_version() == (7, 0)  # re-probed
 
     def test_hipconfig_multiline_output(self, tmp_path):
         """hipconfig with multi-line output -- should use first line."""
@@ -2132,7 +2179,9 @@ class TestGfx1102Rocm64Floor:
             assert result.stdout.strip().endswith(f"/{expected} LEAF:{expected}"), result.stdout
 
     @staticmethod
-    def _install_sh_routing_result(preamble: str, leaf: str = "rocm6.1") -> tuple:
+    def _install_sh_routing_result(
+        preamble: str, leaf: str = "rocm6.1", radeon_in: str = "false"
+    ) -> tuple:
         """Run install.sh's architecture-routing block, returning (leaf, floor-target flag)."""
         shell = shutil.which("bash")
         if not shell:
@@ -2151,20 +2200,22 @@ class TestGfx1102Rocm64Floor:
             + "\n"
             + f'TORCH_INDEX_URL="https://download.pytorch.org/whl/{leaf}"\n'
             + f'_torch_index_leaf="{leaf}"\n'
-            + "_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon=false\n"
+            + f"_torch_index_pinned=false\nSKIP_TORCH=false\n_amd_gpu_radeon={radeon_in}\n"
             + "_gfx_rocm64_target=false\n"
             + "unset HSA_OVERRIDE_GFX_VERSION HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES\n"
             + "unset CUDA_VISIBLE_DEVICES UNSLOTH_ROCM_GFX_ARCH UNSLOTH_PYTORCH_MIRROR\n"
             + preamble
             + "\n"
             + source[start:end]
-            + '\nprintf "LEAF:%s TARGET:%s\\n" "$_torch_index_leaf" "$_gfx_rocm64_target"\n'
+            + '\nprintf "LEAF:%s TARGET:%s RADEON:%s\\n" '
+            '"$_torch_index_leaf" "$_gfx_rocm64_target" "$_amd_gpu_radeon"\n'
         )
         result = subprocess.run([shell, "-c", script], capture_output = True, text = True)
         assert result.returncode == 0, result.stderr
         tail = result.stdout.strip().rsplit("LEAF:", 1)[-1]
-        _leaf, _target = tail.split(" TARGET:")
-        return _leaf, _target
+        _leaf, _rest = tail.split(" TARGET:")
+        _target, _radeon = _rest.split(" RADEON:")
+        return _leaf, _target, _radeon
 
     @classmethod
     def _run_install_sh_routing(cls, preamble: str) -> str:
@@ -2281,7 +2332,33 @@ class TestGfx1102Rocm64Floor:
     ):
         """The migrated repair keys off the arch, so the flag cannot depend on a reroute."""
         result = self._install_sh_routing_result(f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"', leaf)
-        assert result == (expected_leaf, expected_target)
+        assert result[:2] == (expected_leaf, expected_target)
+
+    @pytest.mark.parametrize(
+        ("gfx", "leaf", "expected_radeon"),
+        (
+            # The floor picks an index that ships this arch's kernels, so the Radeon
+            # branch must not substitute repo.radeon.com wheels for it: rocm-rel-6.4's
+            # newest pairing trio (torch 2.6.0+rocm6.4.0) has no gfx1102 Tensile
+            # libraries, and rocm-rel-7.2 carries neither gfx1102 nor gfx1100.
+            ("gfx1102", "rocm6.1", "false"),
+            ("gfx1200", "rocm6.1", "false"),
+            ("gfx1201", "rocm6.1", "false"),
+            # Cleared even when the leaf already satisfies the floor and the reroute
+            # is a no-op, exactly as the gfx906 branch below does.
+            ("gfx1102", "rocm6.4", "false"),
+            ("gfx1102", "rocm7.2", "false"),
+            # Every other Radeon keeps the branch.
+            ("gfx1100", "rocm6.1", "true"),
+            ("gfx1101", "rocm6.4", "true"),
+        ),
+    )
+    def test_install_sh_floor_arches_leave_the_radeon_branch(self, gfx, leaf, expected_radeon):
+        """A floored arch must not be handed repo.radeon.com wheels lacking its kernels."""
+        result = self._install_sh_routing_result(
+            f'export UNSLOTH_ROCM_GFX_ARCH="{gfx}"', leaf, radeon_in = "true"
+        )
+        assert result[2] == expected_radeon, result
 
     @staticmethod
     def _run_migrated_rocm_repair(torch_version: str, hip: str, gfx_target: str) -> str:

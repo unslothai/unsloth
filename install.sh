@@ -4694,6 +4694,18 @@ case "$_torch_index_leaf" in
         case "$_runtime_gfx" in
             gfx1102|gfx1200|gfx1201)
                 _gfx_rocm64_target=true
+                # These arches train from the PyTorch generic wheels, never the Radeon
+                # repo, so clear the marketing-name flag exactly as the gfx906 branch
+                # below does -- and for the same reason. repo.radeon.com's newest
+                # pairing trio under rocm-rel-6.4/ is torch 2.6.0+rocm6.4.0, whose
+                # rocBLAS Tensile libraries carry gfx1030/1100/1101/1200/1201/908/942
+                # and no gfx1102 at all; rocm-rel-7.2/ is narrower still (gfx120X-all,
+                # gfx90a, gfx942, gfx950). Leaving the flag set sends the very host this
+                # floor exists for to a wheel with no kernels for its arch, because the
+                # index chosen just above is only the Radeon branch's fallback.
+                # Clear it whenever the arch is the runtime target, even when the leaf
+                # already satisfies the floor and the reroute below is a no-op.
+                _amd_gpu_radeon=false
                 if _rocm_leaf_below "$_torch_index_leaf" 6 4; then
                     echo "" >&2
                     echo "  [WARN] $_runtime_gfx detected -- routing torch to rocm6.4 because older" >&2

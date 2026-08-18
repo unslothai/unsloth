@@ -678,8 +678,34 @@ def _amd_smi_allowed() -> bool:
     return False
 
 
+# Memoized host ROCm version, mirroring _TORCH_RUNTIME_PROBE above. Unlike torch, the
+# host ROCm stack cannot change mid-run, so nothing has to invalidate it after a pip
+# operation; the reset exists for tests. _PROBED distinguishes "not probed yet" from a
+# probed None. Without this, _ensure_rocm_torch() runs twice on Linux (the post-base
+# repair and the final repair), so all five sources are probed twice and the
+# disagreement warning below prints twice where install.sh prints it once.
+_ROCM_VERSION_PROBE: "tuple[int, int] | None" = None
+_ROCM_VERSION_PROBED: bool = False
+
+
+def _invalidate_rocm_version_probe() -> None:
+    """Forget the memoized host ROCm version."""
+    global _ROCM_VERSION_PROBE, _ROCM_VERSION_PROBED
+    _ROCM_VERSION_PROBE = None
+    _ROCM_VERSION_PROBED = False
+
+
 def _detect_rocm_version() -> tuple[int, int] | None:
-    """Return (major, minor) of the installed ROCm stack, or None."""
+    """Return (major, minor) of the installed ROCm stack, or None. Memoized per run."""
+    global _ROCM_VERSION_PROBE, _ROCM_VERSION_PROBED
+    if not _ROCM_VERSION_PROBED:
+        _ROCM_VERSION_PROBE = _detect_rocm_version_uncached()
+        _ROCM_VERSION_PROBED = True
+    return _ROCM_VERSION_PROBE
+
+
+def _detect_rocm_version_uncached() -> tuple[int, int] | None:
+    """Probe every ROCm version source and return the highest reading, or None."""
     readings: list[tuple[str, tuple[int, int]]] = []
 
     def _record(source: str, major: int, minor: int) -> None:
