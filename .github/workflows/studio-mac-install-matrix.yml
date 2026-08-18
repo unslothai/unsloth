@@ -21,6 +21,21 @@ on:
       - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/setup.sh'
+      - 'install.sh'
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/workflows/studio-mac-install-matrix.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   workflow_dispatch:
 
 concurrency:
