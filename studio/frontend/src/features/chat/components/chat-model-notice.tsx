@@ -17,19 +17,21 @@ import { getStoredChatThread } from "../utils/chat-history-storage";
 export function useChatCreatedModel(
   threadId: string | undefined,
 ): string | null {
-  const [modelId, setModelId] = useState<string | null>(null);
+  // Keyed by the chat it was read for, not a bare value. Clearing it in the
+  // effect is a frame late: the effect is passive, so the first render for the
+  // incoming chat has already committed with the outgoing chat's model, which
+  // paints the wrong notice and moves the viewport padding under it. Answering
+  // only for a matching key makes that render impossible rather than brief.
+  const [read, setRead] = useState<{
+    threadId: string;
+    modelId: string | null;
+  } | null>(null);
   useEffect(() => {
-    if (!threadId) {
-      setModelId(null);
-      return;
-    }
+    if (!threadId) return;
     let cancelled = false;
-    // Cleared first: without this the outgoing chat's model is on screen until
-    // the next read lands, which is the wrong model against the new chat.
-    setModelId(null);
     void getStoredChatThread(threadId)
       .then((thread) => {
-        if (!cancelled) setModelId(thread?.modelId || null);
+        if (!cancelled) setRead({ threadId, modelId: thread?.modelId || null });
       })
       .catch(() => {
         // A failed read is not worth a message: the notice is an offer, not a
@@ -39,7 +41,7 @@ export function useChatCreatedModel(
       cancelled = true;
     };
   }, [threadId]);
-  return modelId;
+  return read && read.threadId === threadId ? read.modelId : null;
 }
 
 type ChatModelNoticeProps = {

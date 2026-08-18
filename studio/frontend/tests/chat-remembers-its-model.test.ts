@@ -20,6 +20,9 @@ const page = read("../src/features/chat/chat-page.tsx");
 const sidebar = read("../src/components/app-sidebar.tsx");
 const items = read("../src/features/chat/hooks/use-chat-sidebar-items.ts");
 const thread = read("../src/components/assistant-ui/thread.tsx");
+const researchPanel = read(
+  "../src/features/chat/components/research-activity-panel.tsx",
+);
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -72,13 +75,18 @@ test("the notice stays quiet when it has nothing to offer", () => {
 
 test("switching chats does not show the outgoing chat's model", () => {
   // The read is async, so a stale value would sit over the incoming chat until it lands.
+  // Clearing it inside the effect is not enough: the effect is passive, so the first
+  // render for the incoming chat commits with the outgoing chat's model already on
+  // screen. The answer is keyed by the chat it was read for, so a foreign value cannot
+  // be returned at all rather than being returned briefly.
   const hook = notice.slice(
     notice.indexOf("export function useChatCreatedModel"),
     notice.indexOf("type ChatModelNoticeProps"),
   );
-  assert.match(hook, /setModelId\(null\);\s*\n\s*void getStoredChatThread/);
+  assert.match(hook, /setRead\(\{ threadId, modelId:/);
+  assert.match(hook, /return read && read\.threadId === threadId \? read\.modelId : null;/);
   // and a read that resolves after the chat changed is dropped
-  assert.match(hook, /if \(!cancelled\) setModelId/);
+  assert.match(hook, /if \(!cancelled\) setRead/);
   assert.match(hook, /cancelled = true;/);
 });
 
@@ -166,6 +174,43 @@ test("the conversation reserves the space the notice overlay takes", () => {
   // And the fade moves down with it, or it would dissolve behind the opaque bar.
   const fade = slice(page, "chat-header-fade", '"');
   assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);
+});
+
+test("the research panel reserves the notice's height too", () => {
+  // The thread viewport is not the only surface the bar covers. The notice is an
+  // absolute child of the chat content container (chat-page.tsx), so its
+  // containing block is that whole container -- the deep-research column
+  // included, not just the thread pane. ResearchActivityPanel offsets itself by
+  // the header height for exactly the same reason, which lands its header at the
+  // notice's top edge.
+  //
+  // Measured on a Studio built from this tree, saved chat on claude-opus-4-5 with
+  // the composer on gpt-5-mini and the research panel open: notice rect
+  // {top:48,bottom:84,left:280,right:1590}, aside {top:48,left:1099.41,right:1600}
+  // -> 36px x 490.59px of the aside covered, which is its entire header band.
+  // elementFromPoint at the centre of the "Deep research" h2 (1212,73) and at the
+  // centre of the close button (1568,78) BOTH returned the notice, so it was
+  // swallowing the clicks, not merely painting over them. With the checkpoint set
+  // to the chat's own model the notice self-suppresses and both return the h2 and
+  // the button. The aside's margin-top was 48px in every case: nothing
+  // compensated for it.
+  const style = slice(researchPanel, 'variant === "panel"', ": undefined");
+  // Both edges move, or the panel keeps its old height and overflows the bottom.
+  assert.match(
+    style,
+    /marginTop:\s*\n?\s*"calc\(var\(--studio-content-top-inset, 0px\) \+ var\(--studio-chat-header-height, 48px\) \+ var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  assert.match(
+    style,
+    /height:\s*\n?\s*"calc\(100% - var\(--studio-content-top-inset, 0px\) - var\(--studio-chat-header-height, 48px\) - var\(--studio-chat-notice-height, 0px\)\)"/,
+  );
+  // 0px is the only safe fallback: the sheet variant and every chat without a
+  // notice must keep the exact geometry they had before this notice existed.
+  assert.doesNotMatch(
+    style,
+    /--studio-chat-notice-height,\s*2\.25rem/,
+    "the panel must not assume a notice is present",
+  );
 });
 
 test("the sidebar label cannot collide with the spinner or the unread dot", () => {
