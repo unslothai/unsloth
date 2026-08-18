@@ -388,15 +388,19 @@ def _variant_dependency_key(repo_id: str, filename: str) -> Optional[str]:
         return None
 
 
-def variant_remaining_bytes(repo_id: str, requirement) -> Optional[int]:
+def variant_remaining_bytes(
+    repo_id: str, requirement, repo_cache_dir: Optional[Path] = None
+) -> Optional[int]:
     """Bytes a resume of this variant still has to fetch, or None when unknown.
 
     Priced per file, which is what the transfer actually reuses: a finished shard is
     kept, an unresumable partial is refetched whole. So a one-file quant reads back its
     full size, and that is the honest number to show.
 
-    Counts the ACTIVE cache root only, so a variant held in another root prices as
-    untouched. That overstates the transfer, which is the safe direction to be wrong in.
+    Counted in the root the row names, falling back to the active one. Pricing a pinned row
+    against the active root is wrong in both directions: shards already in the pinned root earn
+    no credit, and a copy of the same blob in the active root earns credit a resume into the
+    pinned root cannot use, which says less is left than really is.
     """
     if requirement is None or not requirement.required_hashes:
         return None
@@ -405,6 +409,7 @@ def variant_remaining_bytes(repo_id: str, requirement) -> Optional[int]:
             "model",
             repo_id,
             requirement.required_hashes,
+            root = repo_cache_dir.parent if repo_cache_dir is not None else None,
         )
     except Exception as e:
         logger.warning(f"Remaining-bytes lookup failed for {repo_id}: {e}")
@@ -440,6 +445,7 @@ def variant_remaining_bytes_from_state(
     return variant_remaining_bytes(
         repo_id,
         plan_from_expected_files(variant, manifest.expected_files),
+        repo_cache_dir,
     )
 
 
@@ -1540,7 +1546,9 @@ async def get_gguf_variants_answer(
                 ),
                 # Scanned per partial variant only: repos carry one, and the scan walks blobs/.
                 download_remaining_bytes = (
-                    variant_remaining_bytes(repo_id, requirement) if is_partial else None
+                    variant_remaining_bytes(repo_id, requirement, repo_cache_dir)
+                    if is_partial
+                    else None
                 ),
                 downloaded = downloaded,
                 update_available = downloaded

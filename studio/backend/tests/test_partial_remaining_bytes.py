@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -37,13 +38,19 @@ GB = 1024**3
 
 @pytest.fixture
 def blobs(monkeypatch, tmp_path):
-    root = tmp_path / "hub"
-    blobs_dir = root / "models--Org--Model" / "blobs"
+    blobs_root = tmp_path / "hub"
+    blobs_dir = blobs_root / "models--Org--Model" / "blobs"
     blobs_dir.mkdir(parents = True)
-    monkeypatch.setenv("HF_HUB_CACHE", str(root))
-    monkeypatch.setattr(download_registry, "hf_cache_root", lambda **_kw: root)
-    monkeypatch.setattr(hf_cache_state, "hf_cache_root", lambda **_kw: root)
-    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [root])
+    monkeypatch.setenv("HF_HUB_CACHE", str(blobs_root))
+    # Honours an explicit root, which is what a row pinned to another cache passes; None
+    # still resolves to the active one. A stub that ignored the argument would answer the
+    # active root for a pinned row and hide exactly the bug the pinned tests are about.
+    def _root(*, root: Optional[Path] = None, **_kw):
+        return Path(root) if root is not None else blobs_root
+
+    monkeypatch.setattr(download_registry, "hf_cache_root", _root)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_root", _root)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *_a, **_k: [blobs_root])
     return blobs_dir
 
 
@@ -230,3 +237,37 @@ def test_one_shard_in_two_case_variant_repo_dirs_is_credited_once(blobs, monkeyp
     _write(twin / SHARD_A, 2 * GB)
 
     assert variant_remaining_bytes("Org/Model", _split_plan()) == 2 * GB
+
+
+# --------------------------------------------------------------------------------------------
+# A row pinned to another cache root. A resume writes into the root the row names, so blobs in
+# the active root are not bytes it can reuse. Both directions were wrong: shards in the pinned
+# root earned no credit, and a copy in the active root earned credit that does not exist.
+# --------------------------------------------------------------------------------------------
+
+
+def test_a_pinned_root_gets_credit_for_the_shards_it_holds(blobs, tmp_path):
+    other_root = tmp_path / "previous-hub"
+    other_blobs = other_root / "models--Org--Model" / "blobs"
+    other_blobs.mkdir(parents = True)
+    _write(other_blobs / SHARD_A, 2 * GB)
+
+    pinned = other_root / "models--Org--Model"
+    assert variant_remaining_bytes("Org/Model", _split_plan(), pinned) == 2 * GB
+
+
+def test_the_active_roots_copy_does_not_pay_for_a_pinned_row(blobs, tmp_path):
+    # The whole variant sits in the active root, and none of it in the pinned one. Counting it
+    # reported nothing left to fetch for a transfer that has everything still to do.
+    _write(blobs / SHARD_A, 2 * GB)
+    _write(blobs / SHARD_B, 2 * GB)
+    other_root = tmp_path / "previous-hub"
+    (other_root / "models--Org--Model" / "blobs").mkdir(parents = True)
+
+    pinned = other_root / "models--Org--Model"
+    assert variant_remaining_bytes("Org/Model", _split_plan(), pinned) == 4 * GB
+
+
+def test_an_unpinned_row_still_reads_the_active_root(blobs):
+    _write(blobs / SHARD_A, 2 * GB)
+    assert variant_remaining_bytes("Org/Model", _split_plan(), None) == 2 * GB

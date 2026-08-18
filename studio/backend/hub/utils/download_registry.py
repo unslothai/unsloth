@@ -1064,9 +1064,18 @@ def completed_blob_bytes(
     return total
 
 
-def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str]) -> int:
-    """Bytes a download will NOT have to fetch again for *blob_hashes*, in the active HF cache
-    root: finalized blobs, plus partials something can still resume from. A blob is in exactly
+def existing_blob_bytes(
+    repo_type: str,
+    repo_id: str,
+    blob_hashes: frozenset[str],
+    *,
+    root: Optional[Path] = None,
+) -> int:
+    """Bytes a download will NOT have to fetch again for *blob_hashes*, in *root* or, when it is
+    None, the active HF cache root: finalized blobs, plus partials something can still resume
+    from. A row pinned to another root must pass it: a resume writes into the root the row names,
+    so blobs sitting in the active one are not bytes it can reuse, and crediting them says less
+    is left than really is. A blob is in exactly
     one state, so summing both candidate names never double-counts. Used to size what a
     (possibly resumed) download still needs to write before the run starts."""
     if not blob_hashes:
@@ -1078,7 +1087,7 @@ def existing_blob_bytes(repo_type: str, repo_id: str, blob_hashes: frozenset[str
     # that shard twice, and the caller's max(0, total - have) then clamped to zero: a variant
     # still missing a whole shard reported nothing left to fetch.
     present = {blob_hash: 0 for blob_hash in blob_hashes}
-    for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
+    for entry in iter_active_repo_cache_dirs(repo_type, repo_id, root = root):
         blobs_dir = entry / "blobs"
         if not blobs_dir.is_dir():
             continue
