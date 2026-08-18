@@ -3518,6 +3518,24 @@ def _resolved_launch_command(
     environment: Optional[dict] = None,
 ) -> list:
     """Return an argv that preserves arguments through standard Windows npm shims."""
+    if os.name == "nt" and Path(executable).suffix.lower() not in {
+        ".exe",
+        ".com",
+        ".cmd",
+        ".bat",
+        ".ps1",
+    }:
+        # npm/pnpm install an extensionless POSIX shim next to the Windows .cmd
+        # one, and shutil.which can hand back the former. CreateProcess rejects
+        # it with WinError 193, so prefer the sibling shim the parser below
+        # already understands. Matched on not-a-Windows-suffix rather than
+        # no-suffix so a dotted bin name (cmd-shim writes foo.bar.cmd) is
+        # rescued too. .CMD is only for case-sensitive volumes.
+        for extension in (".cmd", ".CMD", ".bat"):
+            sibling = Path(executable + extension)
+            if sibling.is_file():
+                executable = str(sibling)
+                break
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # cmd.exe treats CR/LF inside `%*` as command separators, and Windows
         # PowerShell's native-command bridge also rewrites embedded quotes. Match

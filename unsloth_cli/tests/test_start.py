@@ -1692,6 +1692,75 @@ def test_resolved_launch_command_accepts_extensionless_node_target(monkeypatch, 
     ]
 
 
+def test_resolved_launch_command_prefers_cmd_sibling_of_extensionless_shim(monkeypatch, tmp_path):
+    # shutil.which can resolve npm/pnpm's extensionless POSIX shim ahead of its
+    # .cmd sibling; CreateProcess rejects the former with WinError 193 (#9167).
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_keeps_extensionless_executable_without_sibling(
+    monkeypatch, tmp_path
+):
+    # An extensionless path with no shim sibling may be a real PE binary; leave it alone.
+    _simulate_windows(monkeypatch)
+    executable = tmp_path / "fake-agent"
+    executable.write_bytes(b"MZ")
+
+    assert start._resolved_launch_command(str(executable), ["--flag"]) == [
+        str(executable),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_rescues_dotted_bin_name_shim(monkeypatch, tmp_path):
+    # cmd-shim appends .cmd to the whole bin name, so a dotted name pairs
+    # "foo.bar" with "foo.bar.cmd" and still needs the sibling preference.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake.agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake.agent.cmd"
+    target = tmp_path / "node_modules" / "fake-agent" / "index.js"
+    target.parent.mkdir(parents = True)
+    target.write_text("#!/usr/bin/env node\n", encoding = "utf-8")
+    cmd.write_bytes(_npm_node_cmd_shim(r"node_modules\fake-agent\index.js").encode())
+    monkeypatch.setattr(start.shutil, "which", lambda name: r"C:\Program Files\nodejs\node.exe")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        r"C:\Program Files\nodejs\node.exe",
+        str(target),
+        "--flag",
+    ]
+
+
+def test_resolved_launch_command_falls_through_to_non_npm_cmd_sibling(monkeypatch, tmp_path):
+    # A sibling .cmd that is not an npm shim is still what cmd.exe would have
+    # picked over the extensionless file, so it is returned as-is.
+    _simulate_windows(monkeypatch)
+    posix_shim = tmp_path / "fake-agent"
+    posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
+    cmd = tmp_path / "fake-agent.cmd"
+    cmd.write_text("@ECHO off\ncustom-wrapper %*\n", encoding = "utf-8")
+
+    assert start._resolved_launch_command(str(posix_shim), ["--flag"]) == [
+        str(cmd),
+        "--flag",
+    ]
+
+
 def test_launch_windows_npm_shim_preserves_shebang_args_and_environment(monkeypatch, tmp_path):
     _simulate_windows(monkeypatch)
     cmd = tmp_path / "fake-agent.cmd"
