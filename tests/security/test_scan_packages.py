@@ -2050,26 +2050,52 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     assert "scan stalled" in captured.err
 
 
-def test_digest_pinned_packages_are_version_pinned():
-    """A package whose baseline entries pin a file digest must not float in requirements.
+def _supported_python_versions(root):
+    """Every `python_version` marker value pyproject's requires-python admits."""
+    import re
+    import tomllib
+
+    with open(root / "pyproject.toml", "rb") as fh:
+        spec = tomllib.load(fh)["project"]["requires-python"]
+    lo = re.search(r">=\s*3\.(\d+)", spec)
+    hi = re.search(r"<\s*3\.(\d+)", spec)
+    assert lo, f"cannot read a floor out of requires-python {spec!r}"
+    last = int(hi.group(1)) - 1 if hi else int(lo.group(1))
+    return [f"3.{minor}" for minor in range(int(lo.group(1)), last + 1)]
+
+
+def test_digest_pinned_packages_are_pinned_on_every_supported_python():
+    """A digest-pinned package must be `==` pinned, and pinned for every Python we support.
 
     The two mechanisms are only coherent together. `file_sha256` deliberately reopens a
     reviewed CRITICAL on ANY edit to the file, because the evidence records a network
     call and not its destination, so nothing weaker can tell a benign refactor from an
     added credential send. A `>=` spec then hands the choice of file bytes to whatever
     upstream published most recently, so the gate turns red on release day rather than
-    on a change anyone here made.
+    on a change anyone here made. That is not hypothetical: `openai>=2.7.2` floated onto
+    3.2.0, which touched all four pinned files, and the extras shard went red on main.
 
-    That is not hypothetical: `openai>=2.7.2` floated onto 3.2.0, which touched all four
-    pinned files, and the extras shard of the security audit went red on main with four
-    non-baselined CRITICALs that were the same reviewed-benign patterns as before.
+    The second half of the assertion is the trap the first half walks into. `==` is
+    strictly narrower than `>=`, so pinning the newest release silently drops every
+    interpreter that release does not support: openai 3.x needs 3.10, this project
+    supports 3.9 back to pyproject's requires-python, and a bare `openai==3.2.0` does
+    not resolve there AT ALL, where `>=2.7.2` had been quietly picking 2.48.0. A pin
+    that fixes CI by breaking an install is not a fix, so the markers on the pinned
+    lines have to cover the whole supported range between them.
 
-    Pinning the spec makes the bump deliberate, which is the point: the reviewer who
-    raises the version is the one who re-runs --write-baseline and re-reads the diff.
+    Marker-only, so it stays offline and deterministic. That bounds what the second
+    half can see: it catches a marker partition with a hole in it (a `>= "3.11"` beside
+    a `< "3.10"` leaves 3.10 resolving to nothing), but it cannot catch a single
+    unmarked pin whose version happens not to support 3.9, because knowing that means
+    asking PyPI for the release's requires-python. Resolving extras.txt on each
+    supported interpreter is what covers that, and it is done as a resolution
+    simulation rather than from here, so this module stays network-free.
     """
     import json
     import pathlib
     import re
+
+    from packaging.markers import Marker
 
     root = pathlib.Path(__file__).resolve().parents[2]
     baseline = json.loads(
@@ -2080,22 +2106,45 @@ def test_digest_pinned_packages_are_version_pinned():
     }
     assert pinned_packages, "no digest-pinned entries; this guard would be vacuous"
 
+    pythons = _supported_python_versions(root)
+    assert pythons, "no supported python versions parsed out of requires-python"
+
     req_dir = root / "studio" / "backend" / "requirements"
-    offenders = []
+    floating = []
+    # package -> the python_version values some `==` line claims
+    covered: dict[str, set[str]] = {}
+    present: set[str] = set()
     for req in sorted(req_dir.glob("*.txt")):
         for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
             spec = raw.split("#", 1)[0].strip()
             if not spec or spec.startswith("-") or "git+" in spec:
                 continue
-            # Name is everything before the first comparator / marker / extra.
-            name = re.split(r"[<>=!~;\[]", spec, maxsplit = 1)[0].strip()
-            if sp._norm_pkg(name) not in pinned_packages:
+            requirement, _, marker_text = spec.partition(";")
+            name = re.split(r"[<>=!~\[]", requirement, maxsplit = 1)[0].strip()
+            pkg = sp._norm_pkg(name)
+            if pkg not in pinned_packages:
                 continue
-            # `==` on the bare name, not `>=`, `~=` or a bare requirement.
-            if not re.search(rf"^{re.escape(name)}\s*==", spec):
-                offenders.append(f"{req.name}:{lineno}: {spec}")
+            present.add(pkg)
+            if not re.search(rf"^{re.escape(name)}\s*==", requirement.strip()):
+                floating.append(f"{req.name}:{lineno}: {spec}")
+                continue
+            marker = Marker(marker_text.strip()) if marker_text.strip() else None
+            for python in pythons:
+                if marker is None or marker.evaluate({"python_version": python}):
+                    covered.setdefault(pkg, set()).add(python)
 
-    assert not offenders, (
+    assert not floating, (
         "these packages carry digest-pinned baseline entries but float in requirements, "
-        "so the security audit goes red whenever upstream publishes: " + "; ".join(offenders)
+        "so the security audit goes red whenever upstream publishes: "
+        + "; ".join(floating)
+    )
+    gaps = {
+        pkg: sorted(set(pythons) - covered.get(pkg, set()), key = lambda v: int(v.split(".")[1]))
+        for pkg in sorted(present)
+    }
+    gaps = {pkg: missing for pkg, missing in gaps.items() if missing}
+    assert not gaps, (
+        "a digest-pinned package has no exact pin on some supported Python, so "
+        "installing there resolves to nothing at all: "
+        + "; ".join(f"{pkg} uncovered on {', '.join(missing)}" for pkg, missing in gaps.items())
     )
