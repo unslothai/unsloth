@@ -57,8 +57,24 @@ def _load_harness():
     this file calls. Stubbing it keeps these tests runnable in the CPU test job, where the
     Playwright package is not installed, rather than skipping the arithmetic along with the
     browser.
+
+    The stub is torn down again the moment that one import is done, and that is not tidiness.
+    `sys.modules` is process-wide, so a stub left in it is every later test's `playwright` too,
+    and it is a `playwright` that exists and is empty -- the worst of both answers. On the CPU
+    job that is exactly what happened: `pytest.importorskip("playwright")` in
+    test_playwright_server_lifecycle.py and test_autoscroll_harness_contract.py found a module,
+    stopped skipping, and the browser harnesses they then imported died on
+    `from playwright.sync_api import Page, expect, sync_playwright` with "cannot import name
+    'Page' from 'playwright.sync_api' (unknown location)" -- a ModuleType has no `__file__`,
+    which is where the "unknown location" comes from. The harnesses that import only
+    `sync_playwright` were worse than red: they imported clean against a fake and passed.
+
+    Whatever was there before is put back, rather than the keys being popped, so a partially
+    imported real playwright is not damaged either.
     """
     os.environ.setdefault("PW_ART_DIR", str(TEMP_ROOT / "artifacts"))
+    stubbed = False
+    saved = {name: sys.modules.get(name) for name in ("playwright", "playwright.sync_api")}
     if "playwright.sync_api" not in sys.modules:
         try:
             import playwright.sync_api  # noqa: F401
@@ -69,12 +85,39 @@ def _load_harness():
             package.sync_api = module
             sys.modules["playwright"] = package
             sys.modules["playwright.sync_api"] = module
-    import playwright_heavy_thread
+            stubbed = True
+    try:
+        # The names the harness binds at import time survive the teardown below: it is the
+        # module object that keeps them, not the sys.modules entry.
+        import playwright_heavy_thread
+    finally:
+        if stubbed:
+            for name, previous in saved.items():
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
 
     return playwright_heavy_thread
 
 
 HARNESS = _load_harness()
+
+
+def test_importing_this_file_leaves_no_playwright_stub_behind() -> None:
+    """The blast radius is the whole worker, so it is worth one test of its own.
+
+    A real `playwright.sync_api` is a file on disk and has a `__file__`; the stub above is a
+    bare ModuleType and has none. Anything sitting under that name without one is a fake that
+    outlived the import it was built for, and every `pytest.importorskip("playwright")` in the
+    suite will believe it.
+    """
+    for name in ("playwright", "playwright.sync_api"):
+        module = sys.modules.get(name)
+        assert module is None or getattr(module, "__file__", None) is not None, (
+            f"a stub {name} is still in sys.modules, so every later test in this worker sees a "
+            "playwright that exists and is empty"
+        )
 
 
 # ── the node side: the harness's own JS on a virtual clock ────────────
