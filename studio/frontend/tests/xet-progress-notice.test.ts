@@ -27,17 +27,25 @@ const {
   xetNoticesShown,
 } = await import("../src/features/hub/download-manager/xet-progress-notice.ts");
 
-const XET_MODEL = { kind: "model", transport: "xet" } as const;
+const XET_MODEL = {
+  kind: "model",
+  transport: "xet",
+  attached: false,
+} as const;
 
 test("the notice is for Xet model downloads and nothing else", () => {
   assert.ok(shouldShowXetNotice({ ...XET_MODEL, shown: 0 }));
   // HTTP reports steady progress, so the explanation would be wrong there.
   assert.ok(
-    !shouldShowXetNotice({ kind: "model", transport: "http", shown: 0 }),
+    !shouldShowXetNotice({ ...XET_MODEL, transport: "http", shown: 0 }),
   );
-  assert.ok(
-    !shouldShowXetNotice({ kind: "dataset", transport: "xet", shown: 0 }),
-  );
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, kind: "dataset", shown: 0 }));
+});
+
+test("attaching to someone else's job shows nothing", () => {
+  // The backend accepts the start and reports that job's transport, but this
+  // client began no transfer, so it must not spend one of the three either.
+  assert.ok(!shouldShowXetNotice({ ...XET_MODEL, attached: true, shown: 0 }));
 });
 
 test("it stops after the first three", () => {

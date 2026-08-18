@@ -166,6 +166,28 @@ def test_a_different_file_set_is_not_adopted(monkeypatch):
         dl._registry.set_job(key, "complete")
 
 
+def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
+    # A second client starting the same download is accepted and gets the live job's
+    # transport, which reads exactly like a fresh Xet start. Only this flag separates
+    # them, and the Studio download notice keys off it.
+    monkeypatch.setattr(dl, "_reject_if_load_in_flight", lambda repo_id: None)
+    monkeypatch.setattr(dl, "resolve_cached_repo_id_case", lambda repo, **k: repo)
+    monkeypatch.setattr(dl, "scoped_file_blob_hashes", lambda *a, **k: frozenset())
+    monkeypatch.setattr(download_lifecycle, "launch_worker", lambda *a, **k: "running")
+
+    repo = "unsloth/attach-flag-probe"
+    key = dl._download_job_key(repo, dl._scope_variant("diffusion"))
+    try:
+        started = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert started["accepted"] is True and started["attached"] is False
+
+        attached = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
+        assert attached["accepted"] is True and attached["attached"] is True
+        assert attached["job_key"] == key
+    finally:
+        dl._registry.set_job(key, "complete")
+
+
 def test_the_http_retry_keeps_the_scoped_file_list_on_the_record(monkeypatch):
     # The retry reclaims the slot with replace_active, which OVERWRITES the stored metadata. Dropping the file list there left
     # the record claiming an empty scope, so the next identical scoped start compared [] against the real list and 409'd.

@@ -194,6 +194,8 @@ async def download_dataset_response(
             "repo_id": repo_id,
             "state": claim_state,
             "accepted": _registry.adoptable(key),
+            # Accepted, but this client did not start the transfer.
+            "attached": True,
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
@@ -234,6 +236,7 @@ async def download_dataset_response(
         "repo_id": repo_id,
         "state": state,
         "accepted": True,
+        "attached": False,
         "generation": generation,
         # See models: the resolved transport, which a downgrade can make
         # different from the one requested.

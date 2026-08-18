@@ -58,15 +58,21 @@ export function recordXetNoticeShown(): void {
   }
 }
 
-/** Only the transport that behaves this way, and only while it is news. */
+/** Only the transport that behaves this way, and only while it is news.
+ *
+ * A start that attached to a job another tab or client already owns is
+ * accepted and reports that job's transport, but this user started nothing,
+ * so it neither shows the notice nor spends one of the three. */
 export function shouldShowXetNotice(args: {
   kind: DownloadKind;
   transport: ResolvedTransport;
+  attached: boolean;
   shown: number;
 }): boolean {
   return (
     args.kind === DOWNLOAD_KIND.MODEL &&
     args.transport === TRANSPORT.XET &&
+    !args.attached &&
     args.shown < XET_NOTICE_LIMIT
   );
 }

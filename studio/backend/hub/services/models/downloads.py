@@ -310,6 +310,8 @@ async def download_model_response(
             "job_key": key,
             "state": claim_state,
             "accepted": _registry.adoptable(key),
+            # Accepted, but this client did not start the transfer.
+            "attached": True,
             "generation": generation,
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
@@ -357,6 +359,7 @@ async def download_model_response(
         "job_key": key,
         "state": state,
         "accepted": True,
+        "attached": False,
         "generation": generation,
         # The transport that was actually resolved: an explicit "xet" is
         # downgraded to HTTP where hf_xet is unavailable, and a client that

@@ -694,6 +694,7 @@ export async function startJob(
       shouldShowXetNotice({
         kind: req.kind,
         transport: started,
+        attached: result.attached === true,
         shown: xetNoticesShown(),
       })
     ) {
