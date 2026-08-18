@@ -572,7 +572,9 @@ test("only a user edit to a sampling param lands on the chat", () => {
   const drop = slice(store, "function withoutCapturedThreadEdits", "\n}");
   assert.match(
     drop,
-    /isThreadScopedParamKey\(key\) &&\s*!fromModelDefaults &&\s*captureThreadScopedEdit\(key\)/,
+    // The capture may carry the edited value as a further argument; what this pins is
+    // that it happens for a sampling key, and only when the value is not the model's.
+    /isThreadScopedParamKey\(key\) &&\s*!fromModelDefaults &&[\s\S]{0,300}?captureThreadScopedEdit\(\s*key\b/,
   );
   // What the chat takes reaches neither the installation defaults nor this
   // model's memory: both are shared with every other chat.
@@ -626,8 +628,12 @@ test("a model's recommendation does not overwrite the chat's sampling", () => {
   assert.doesNotMatch(setParams, /params: nextParams,/);
 
   const restore = slice(store, "function restoreThreadScopedParams", "\n}");
-  assert.match(restore, /const held = threadScopedOverride\(key\)/);
+  // An edit still waiting on the chat's read answers first, but the stored snapshot is
+  // what a paired chat restores from, so the override has to be consulted either way.
+  assert.match(restore, /const held = [\s\S]{0,120}?threadScopedOverride\(key\)/);
   assert.match(restore, /if \(held === undefined/);
+  // ?? and never ||: 0, "" and -1 are values the user sets on purpose.
+  assert.doesNotMatch(restore, /\|\| threadScopedOverride\(key\)/);
 });
 
 // A pinned chat stores every sampling key, so restoring them all would mean the mode
