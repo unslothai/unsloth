@@ -37,6 +37,7 @@ REPO = Path(__file__).resolve().parents[2]
 SETUP_PS1 = REPO / "studio" / "setup.ps1"
 SETUP_SH = REPO / "studio" / "setup.sh"
 INSTALL_PS1 = REPO / "install.ps1"
+INSTALL_SH = REPO / "install.sh"
 WORKFLOWS = REPO / ".github" / "workflows"
 
 ENV_VAR = "UNSLOTH_INSTALL_TIMING"
@@ -284,3 +285,81 @@ def test_timing_is_never_enabled_unconditionally(script):
     )
     for bad in (f'{ENV_VAR}="1"', f"{ENV_VAR}='1'", f"{ENV_VAR}=1"):
         assert bad not in code, f"{script.name} sets {ENV_VAR} itself: {bad}"
+
+
+def test_the_tick_handoff_is_bounds_checked_not_just_parsed():
+    """TryParse accepts values DateTime's constructor rejects, and it throws.
+
+    -1 and 9223372036854775807 both parse as [long] and are outside DateTime's range, so
+    `[System.DateTime]::new($ticks, ...)` raises. Under this script's
+    $ErrorActionPreference = "Stop" that is a fatal installer startup error caused by junk
+    inherited from an outer process, which is the exact opposite of the documented
+    fall-back-to-a-local-clock behaviour. It also has to be gated on the feature being ON,
+    or a disabled switch still crashes.
+    """
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    block = src[src.index("StudioTimingSw = $null") :][:1400]
+    for bound in ("MinValue.Ticks", "MaxValue.Ticks"):
+        assert bound in block, (
+            f"setup.ps1 no longer bounds-checks the handoff against DateTime.{bound}, so a "
+            f"numeric but out-of-range UNSLOTH_INSTALL_TIMING_T0 throws instead of falling back"
+        )
+    assert "$script:StudioTimingEnabled -and $env:UNSLOTH_INSTALL_TIMING_T0" in block, (
+        "the handoff is parsed even when timing is disabled, so inherited junk can fail an "
+        "install that never asked for timing"
+    )
+
+
+def test_the_outer_installer_restores_the_origin_it_set():
+    """`irm ... | iex` runs in the CALLER's process, so what it sets there outlives it.
+
+    A leftover origin makes the next install in that session, and any later
+    `unsloth studio update`, report seconds since the FIRST install. install.ps1 already
+    saves and restores every other handoff variable this way.
+    """
+    src = INSTALL_PS1.read_text(encoding = "utf-8")
+    assert "PreviousInstallTimingT0" in src, (
+        "install.ps1 no longer saves the previous UNSLOTH_INSTALL_TIMING_T0"
+    )
+    tail = src[src.rindex("} finally {") :]
+    assert "UNSLOTH_INSTALL_TIMING_T0" in tail, (
+        "the origin is not restored in a finally, so a failed install leaves it behind in "
+        "the caller's session"
+    )
+    assert "Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0" in tail, (
+        "when there was no previous value the variable must be REMOVED, not left set"
+    )
+
+
+def test_the_posix_installer_is_timed_on_the_same_terms_as_the_windows_one():
+    """install.sh is the Linux and macOS entry point and has the same shape as install.ps1.
+
+    It bootstraps uv and installs the dependencies before launching studio/setup.sh, so
+    timing only the child leaves the same gap on POSIX that it did on Windows, and the
+    cross-platform parity this repo asserts elsewhere would be a claim the log contradicts.
+    """
+    src = INSTALL_SH.read_text(encoding = "utf-8")
+    assert ENV_VAR in src, "install.sh carries no phase timing, so its own phases are invisible"
+    assert f"{ENV_VAR}_T0" in src, (
+        "install.sh does not publish a shared origin, so studio/setup.sh restarts the clock "
+        "at the handoff"
+    )
+    for fn in ("step", "substep"):
+        body = _sh_function_of(INSTALL_SH, fn)
+        assert ENV_VAR in body, f"install.sh {fn}() emits no timing"
+    child = SETUP_SH.read_text(encoding = "utf-8")
+    assert f"{ENV_VAR}_T0" in child, "studio/setup.sh ignores the origin install.sh publishes"
+
+
+def _sh_function_of(path, name: str) -> str:
+    src = path.read_text(encoding = "utf-8")
+    start = src.index(f"\n{name}() ")
+    depth, i = 0, src.index("{", start)
+    while True:
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : i + 1]
+        i += 1

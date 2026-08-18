@@ -27,7 +27,14 @@ function Install-UnslothStudio {
     # every non-empty string is true, so UNSLOTH_INSTALL_TIMING=0 would enable it.
     $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
     $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
-    if ($script:StudioTimingEnabled -and -not $env:UNSLOTH_INSTALL_TIMING_T0) {
+    # Saved and restored like every other handoff variable in this script, because the
+    # documented `irm ... | iex` entry point runs in the CALLER's process: an origin left
+    # behind there outlives this install. The next run in that session would refuse to
+    # replace it and a later `unsloth studio update` would inherit it, so both would
+    # report seconds since the FIRST install rather than since they started.
+    $script:PreviousInstallTimingT0 = $env:UNSLOTH_INSTALL_TIMING_T0
+    $script:HadPreviousInstallTimingT0 = ($null -ne $script:PreviousInstallTimingT0)
+    if ($script:StudioTimingEnabled) {
         $env:UNSLOTH_INSTALL_TIMING_T0 = [System.DateTime]::UtcNow.Ticks.ToString()
     }
 
@@ -5782,6 +5789,12 @@ exit 0
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }
         Exit-StudioInstallMutex -Mutex $studioInstallMutex
+        # In the finally, so a failed install does not leave the origin behind either.
+        if ($script:HadPreviousInstallTimingT0) {
+            $env:UNSLOTH_INSTALL_TIMING_T0 = $script:PreviousInstallTimingT0
+        } else {
+            Remove-Item Env:UNSLOTH_INSTALL_TIMING_T0 -ErrorAction SilentlyContinue
+        }
     }
     if ($null -ne $studioAutoStartProcess) {
         $studioAutoStartProcess.WaitForExit()

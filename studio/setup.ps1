@@ -45,9 +45,17 @@ $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNS
 # zero. install.ps1 publishes its start as UTC ticks; anything else (unset, or junk
 # inherited from an outer process) falls back to starting the clock here.
 $script:StudioTimingSw = $null
-if ($env:UNSLOTH_INSTALL_TIMING_T0) {
+# Only when timing is ON, and only for a tick count that is actually a DateTime. A bare
+# TryParse is not enough: it accepts -1 and 9223372036854775807, which parse as [long]
+# but are outside DateTime's range, and the constructor then THROWS. Under this script's
+# $ErrorActionPreference = "Stop" that turns junk inherited from an outer process into a
+# fatal installer startup error, which is the opposite of the documented fallback, and it
+# would have happened even with the feature disabled.
+if ($script:StudioTimingEnabled -and $env:UNSLOTH_INSTALL_TIMING_T0) {
     [long]$_t0 = 0
-    if ([long]::TryParse($env:UNSLOTH_INSTALL_TIMING_T0, [ref]$_t0)) {
+    if ([long]::TryParse($env:UNSLOTH_INSTALL_TIMING_T0, [ref]$_t0) -and
+        $_t0 -ge [System.DateTime]::MinValue.Ticks -and
+        $_t0 -le [System.DateTime]::MaxValue.Ticks) {
         $_elapsed = [System.DateTime]::UtcNow - [System.DateTime]::new($_t0, [System.DateTimeKind]::Utc)
         if ($_elapsed.Ticks -ge 0) {
             $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()

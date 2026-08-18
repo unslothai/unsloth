@@ -51,8 +51,31 @@ else
     C_TITLE= C_DIM= C_OK= C_WARN= C_ERR= C_RST=
 fi
 
-step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { printf "  ${C_DIM}%-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
+# Opt-in phase timing, matching studio/setup.ps1 and studio/setup.sh. It starts HERE,
+# not only in the child: this script bootstraps uv and installs the Python and Unsloth
+# dependencies before it launches studio/setup.sh, so timing only the child leaves the
+# larger part of the install unattributed and restarts the clock at the handoff.
+#
+# The origin travels to the child as epoch seconds so its numbers continue this clock.
+# Exported only when timing is on, and only when nothing upstream set one already, so a
+# nested invocation does not reset the outer run's zero.
+if [ "${UNSLOTH_INSTALL_TIMING:-0}" != "0" ] && [ -n "${UNSLOTH_INSTALL_TIMING:-}" ]; then
+    : "${UNSLOTH_INSTALL_TIMING_T0:=$(date +%s)}"
+    export UNSLOTH_INSTALL_TIMING_T0
+fi
+
+# Seconds since the origin, or since this script started when there is none. Inline in
+# both helpers below rather than shared, so each stays self-contained.
+step()    {
+    local _t=""
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(date +%s)} ))s] " ;; esac
+    printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$_t" "$2"
+}
+substep() {
+    local _t=""
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[$(( $(date +%s) - ${UNSLOTH_INSTALL_TIMING_T0:-$(date +%s)} ))s] " ;; esac
+    printf "  ${C_DIM}%-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$_t" "$1"
+}
 
 # ── Parse flags ──
 STUDIO_LOCAL_INSTALL=false
