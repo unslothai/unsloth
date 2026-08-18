@@ -9,7 +9,10 @@ import ts from "typescript";
 
 import type { CodePluginOptions } from "@streamdown/code";
 
-import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts";
+import {
+  createCodePlugin,
+  MIN_INCREMENTAL_CHARS,
+} from "../src/components/assistant-ui/code-plugin.ts";
 
 /**
  * The chat Markdown renderer remounts <Streamdown> whenever the incremental
@@ -30,7 +33,6 @@ import { createCodePlugin } from "../src/components/assistant-ui/code-plugin.ts"
 // through the per-fence slot path a streaming reply uses rather than the small
 // fence shortcut straight to the underlying plugin.
 const LINES = 90;
-const MIN_INCREMENTAL_CHARS = 2000;
 
 /** Unique per run, so the module-scope cache starts cold for this test. */
 const freshCode = (tag: string): string =>
@@ -39,18 +41,28 @@ const freshCode = (tag: string): string =>
     (_, index) => `export const ${tag}_${index} = ${index};`,
   ).join("\n");
 
-async function waitForHighlight(
-  ask: () => unknown,
+/**
+ * Waits for the callback the cold ask registered. Polling `highlight` instead
+ * would be the renderer asking again, which is the very thing under test.
+ */
+async function withTimeout(
+  arrived: Promise<void>,
   timeoutMs = 30_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (ask()) {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      arrived,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("the highlighter never produced tokens")),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
-  throw new Error("the highlighter never produced tokens");
 }
 
 test("a remount gets already highlighted code back in the same tick", async () => {
@@ -70,18 +82,21 @@ test("a remount gets already highlighted code back in the same tick", async () =
   // Cold: the grammar has to load, so the first ask cannot answer inline. The
   // callback is what the renderer would repaint from; this test only needs the
   // tokens to reach the cache, so it drops them.
-  const discard = (): void => undefined;
+  let arrived!: () => void;
+  const tokensArrived = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
   assert.equal(
-    mounted.highlight(options, discard),
+    mounted.highlight(options, () => arrived()),
     null,
     "a cold highlight is expected to answer through its callback",
   );
-  await waitForHighlight(() => mounted.highlight(options));
+  await withTimeout(tokensArrived);
 
-  // A remount builds a new component tree, and with it a new plugin wrapper.
-  // The tokens have to survive that, because they do not live in either.
-  const remounted = createCodePlugin({ themes });
-  const afterRemount = remounted.highlight(options);
+  // A remount rebuilds the component tree, not the module, so the renderer
+  // hands Streamdown this same plugin object and its fence slots again. The
+  // first ask of the new tree has to be answered inline.
+  const afterRemount = mounted.highlight(options);
 
   assert.ok(
     afterRemount,
