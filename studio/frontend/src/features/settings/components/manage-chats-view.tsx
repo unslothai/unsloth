@@ -136,10 +136,16 @@ export function ManageChatsView() {
   }
 
   function openChat(item: SidebarItem) {
+    // Carry the row's project, as the sidebar does. Without it ChatPage keeps
+    // the project it was already on until its backend thread lookup resolves,
+    // so the opened chat briefly runs under the wrong project.
+    const project = item.projectId ? { project: item.projectId } : {};
     navigate({
       to: "/chat",
       search:
-        item.type === "single" ? { thread: item.id } : { compare: item.id },
+        item.type === "single"
+          ? { thread: item.id, ...project }
+          : { compare: item.id, ...project },
     });
     closeSettings();
   }
