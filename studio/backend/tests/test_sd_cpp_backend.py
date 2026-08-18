@@ -1194,6 +1194,27 @@ def test_lists_accelerator_device_reads_the_ggml_device_list(monkeypatch):
     assert bk.sd_cpp_lists_accelerator_device(None) is False
 
 
+def test_supports_graph_cut_needs_both_flags_and_fails_closed(monkeypatch):
+    # The opposite default to the H3 gate: sd-cli exits non-zero on an unknown option, so "cannot tell" must not emit these.
+    monkeypatch.setattr(
+        bk,
+        "_sd_cpp_probe_output",
+        lambda *_a: "  --max-vram         budget\n  --stream-layers    residency\n",
+    )
+    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is True
+
+    # --stream-layers is a no-op without --max-vram, so half a build is not a build to emit on.
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: "  --stream-layers    residency\n")
+    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: _PRE_H3_HELP)
+    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_a: None)
+    assert bk.sd_cpp_supports_graph_cut("/existing/sd-cli") is False
+    assert bk.sd_cpp_supports_graph_cut(None) is False
+
+
 def test_device_name_for_ordinal_reads_the_ggml_device_list(monkeypatch):
     monkeypatch.setattr(
         bk,

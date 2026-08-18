@@ -11,6 +11,22 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+# --- torch.compile cache isolation -------------------------------------------------
+# Must run before torch is imported anywhere below, so it is here rather than in a
+# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
+import importlib.util as _ilu  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+_iso = _pathlib.Path(__file__).resolve()
+for _up in _iso.parents:
+    _candidate = _up / "tests" / "_shared" / "compile_cache_isolation.py"
+    if _candidate.is_file():
+        _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        break
+# -----------------------------------------------------------------------------------
+
 import contextlib
 import errno
 import itertools
@@ -40,6 +56,14 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
 # Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
 os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
+# transient tenant on a live card has time to clear. Under test the snapshots are stubs
+# whose answers do not change with time, so the wait buys nothing and the max() over the
+# reads -- which is what the retry is actually for -- is unaffected. Measured on the
+# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
+# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
+# the production spacing can still set it.
+os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
 @pytest.fixture(scope = "session")

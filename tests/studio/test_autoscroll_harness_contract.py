@@ -46,7 +46,67 @@ def test_research_freeze_asserts_the_dialog_took_the_modal_layer() -> None:
 
 def test_research_freeze_asserts_the_stream_had_something_to_follow() -> None:
     # An empty activity list runs no follow loop, so it clears the frame budgets by measuring
-    # nothing.
+    # nothing. `seed()` leaves activities behind, so the count has to be compared against the
+    # pre-stream baseline rather than against zero.
     main = verdict("playwright_research_freeze.py")
     assert 'stream["raf_per_second"]' in main
     assert 'stream["activities"]' in main
+    assert 'stream["activities_before"]' in main
+
+
+def test_research_freeze_asserts_the_report_stall_and_its_own_probe() -> None:
+    # The stall budget is only a budget if a stall of zero fails too: no second sample means
+    # the probe measured nothing and the comparison below it passes on any tree.
+    main = verdict("playwright_research_freeze.py")
+    assert 'results["report"]["main_thread_stall_ms"] > MAIN_THREAD_STALL_BUDGET_MS' in main
+    assert 'results["report"]["main_thread_stall_ms"] <= 0' in main
+
+
+def test_research_freeze_keeps_a_hit_tested_click_in_the_report_phase() -> None:
+    # A synthetic element.click() skips hit testing and passes on a stranded
+    # `pointer-events: none` tree, so the verdict must read actionability, not just the counter.
+    source_text = source("playwright_research_freeze.py")
+    assert "page.click('[data-smoke=\"click-probe\"]'" in source_text
+    main = verdict("playwright_research_freeze.py")
+    assert 'results["report"]["click_landed"]' in main
+    assert 'results["report"]["clicks_registered"]' in main
+
+
+def test_stream_pacing_asserts_its_long_task_probe_measured_something() -> None:
+    # longTaskMs is the metric the budgets turn on, and it is 0 both when the render is free
+    # and when the observer never ran: `observe({type: "longtask"})` aborts silently on an
+    # engine without the entry type. Without these, a firefox or webkit run, or a broken
+    # observer, scores a perfect zero and exits 0.
+    main = verdict("playwright_stream_pacing.py")
+    assert 'results.get("longTaskSupported")' in main
+    assert 'results["longTasks"] <= 0' in main
+    # Same for an unthrottled run: the renderer keeps up with any rate this can feed, so
+    # every budget passes on any tree.
+    assert 'results["cpu_throttle"] <= 1' in main
+
+
+def test_stream_pacing_asserts_the_reply_was_actually_painted() -> None:
+    # A page that rendered nothing scores a perfect zero on every budget, so the workload
+    # has to be asserted before the numbers mean anything.
+    main = verdict("playwright_stream_pacing.py")
+    assert 'results["paintedChars"] < floor' in main
+    assert 'results["arrivals"]' in main
+    # paintedChars only climbs, so the length at settlement must be checked too, or an empty
+    # final DOM passes on the peak it reached earlier.
+    assert 'results["settledChars"] < floor' in main
+
+
+def test_harnesses_own_their_dev_server() -> None:
+    # A server started beside the harness leaves the node child alive when the wrapper is
+    # killed, stranding the port and the step's stdout. Each harness owns its own instead.
+    for name in (
+        "playwright_chat_autoscroll.py",
+        "playwright_research_freeze.py",
+        "playwright_strip_ansi_smoke.py",
+        "playwright_stream_pacing.py",
+    ):
+        text = source(name)
+        assert "start_vite" in text, f"{name} does not start its own server"
+        assert "stop_process" in text, f"{name} never tears its server down"
+        # Vite's SPA fallback answers 200 with index.html for a page that no longer exists.
+        assert "wait_for_smoke_page" in text, f"{name} gates on status rather than on content"
