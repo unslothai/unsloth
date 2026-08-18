@@ -426,7 +426,9 @@ def test_retrieve_hybrid_mode_selects_backend(monkeypatch):
     monkeypatch.setattr(
         retrieval,
         "retrieve_lexical",
-        lambda c, s, q, k = None: calls.append(("lex", k)) or [],
+        # `match_query` is the archive's shaped FTS query, passed through on the lexical
+        # leg only. Accepted and ignored here: this test is about which backends run.
+        lambda c, s, q, k = None, *, match_query = None: calls.append(("lex", k)) or [],
     )
     monkeypatch.setattr(
         retrieval,

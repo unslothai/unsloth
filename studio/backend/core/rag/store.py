@@ -73,6 +73,65 @@ def _match_query(query: str) -> str:
     return " OR ".join(f'"{t}"' for t in toks)
 
 
+# Function words only, and a closed list rather than anything corpus-derived, so the
+# behaviour is reviewable and identical on every install. Nothing here can carry the
+# subject of a question.
+_ARCHIVE_STOPWORDS = frozenset("""
+a about all am an and any are as at be been being but by can could did do does doing
+for from get give had has have how i if in into is it its just let me my no not now of
+on or please should so tell that the their them then there these they this those to us
+was we were what when where which who why will with would you your
+""".split())
+
+# Identifier-ish: a token mixing letters and digits (ZQXVARA123, 9134), one containing an
+# underscore, or one the user WROTE in capitals and that is long enough not to be an "I"
+# or an "OK". These are the tokens a person uses when they mean one specific thing.
+_HAS_LETTER_AND_DIGIT = re.compile(r"(?=.*[^\W\d_])(?=.*\d)", re.UNICODE)
+
+
+def _is_identifier(token: str, raw_query: str) -> bool:
+    if "_" in token:
+        return True
+    if _HAS_LETTER_AND_DIGIT.match(token):
+        return True
+    return len(token) >= 3 and token.upper() in _TOKEN.findall(raw_query)
+
+
+def conversation_match_queries(query: str) -> list[str]:
+    """FTS5 expressions for searching a CONVERSATION ARCHIVE, most selective first.
+
+    Why the archive needs its own query shaping, when `_match_query` is fine everywhere
+    else: in a per-thread archive the SUBJECT of the conversation is by construction
+    present in many chunks, so BM25 gives it almost no weight, while an incidental word
+    from the question appears once and dominates. Measured on an archive of 17 chunks
+    about one variable: `zqxvara123` scored 0.16 and `value`, from "what is the current
+    value of X", scored 4.755. ORing them lets the filler decide the ranking, and a chunk
+    about "a good default value for a retry budget" outranks every chunk that names the
+    variable. The subject of a long conversation becomes the least discriminative term in
+    its own archive.
+
+    So: first REQUIRE the identifier-like tokens, which restricts the candidates to
+    chunks that are actually about the thing asked about; then fall back to an OR over
+    the content words. Two expressions rather than one, because a conjunction that
+    matches nothing must not mean "this archive has nothing to say".
+
+    A question made entirely of function words ("what about it?") keeps all its tokens:
+    an empty expression would make `search_lexical` return nothing at all, and a query
+    that retrieves the wrong turns is still better than a recall that silently vanishes
+    on exactly the turns that needed it.
+    """
+    tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
+    if not tokens:
+        return []
+    identifiers = [t for t in tokens if _is_identifier(t, query)]
+    content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
+    permissive = " OR ".join(f'"{t}"' for t in content)
+    if not identifiers:
+        return [permissive]
+    conjunctive = " AND ".join(f'"{t}"' for t in identifiers)
+    return [conjunctive] if conjunctive == permissive else [conjunctive, permissive]
+
+
 def create_kb(
     conn: sqlite3.Connection,
     *,
@@ -145,13 +204,15 @@ def create_document(
     linked_folder_id: str | None = None,
     linked_relative_path: str | None = None,
     archive_messages: int | None = None,
+    archive_ordinal: int | None = None,
     commit: bool = True,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
         "status, stored_path, created_at, embedding_model, linked_folder_id, "
-        "linked_relative_path, archive_messages) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "linked_relative_path, archive_messages, archive_ordinal) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
@@ -167,6 +228,7 @@ def create_document(
             linked_folder_id,
             linked_relative_path,
             archive_messages,
+            archive_ordinal,
         ),
     )
     if commit:
@@ -227,6 +289,21 @@ def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
         "ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def next_archive_ordinal(conn: sqlite3.Connection, scope: str) -> int:
+    """The next conversation position for an archived turn group in this scope.
+
+    Deliberately not derived from `created_at`: every turn a single compaction evicts is
+    written microseconds apart, so wall-clock separates compaction EPOCHS and says
+    nothing about order WITHIN one. This counter does, because `archive_turns` allocates
+    it in `group_turns` order.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(MAX(archive_ordinal), -1) + 1 AS n FROM documents WHERE scope=?",
+        (scope,),
+    ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
@@ -353,10 +430,16 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
-def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):
+def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int,
+                   *, match_query: str | None = None):
     """BM25 lexical search over one scope or several. Returns
-    [(chunk_id, score)], higher = better."""
-    mq = _match_query(query)
+    [(chunk_id, score)], higher = better.
+
+    `match_query` lets a caller supply the FTS5 expression itself; the conversation
+    archive shapes its own (see `conversation_match_queries`). Omitted, this is byte for
+    byte what every other caller has always got.
+    """
+    mq = match_query if match_query is not None else _match_query(query)
     if not mq:
         return []
     scopes = _scopes(scope)
@@ -533,7 +616,7 @@ def chunks_by_id(conn: sqlite3.Connection, ids) -> dict:
     placeholders = ",".join("?" * len(ids))
     rows = conn.execute(
         f"SELECT c.id, c.text, c.document_id, c.chunk_index, c.page_number, "
-        f"c.source_page_index, d.filename "
+        f"c.source_page_index, d.filename, d.archive_ordinal, d.created_at "
         f"FROM chunks c JOIN documents d ON d.id=c.document_id "
         f"WHERE c.id IN ({placeholders}) AND NOT EXISTS "
         f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "

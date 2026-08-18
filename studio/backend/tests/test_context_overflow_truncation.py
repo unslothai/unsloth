@@ -1012,3 +1012,144 @@ def test_the_compaction_headroom_needs_a_boundary_to_be_worth_it():
     # The one that can restore its boundary is the one that pays for headroom.
     assert sticky_info["dropped_messages"] > plain_info["dropped_messages"]
     assert len(plain) > len(sticky)
+
+
+# --- Keeping the user's standing instruction when everything else is evicted ---
+#
+# `truncate_oldest_messages` protects system and developer groups, the final group, and
+# the newest USER group. So an instruction is safe only while it IS the newest user turn:
+# one "continue" later it is the oldest evictable thing in the conversation, and the first
+# to go. These cover the pin that holds it, and the bounds that stop the pin itself
+# becoming the problem.
+
+def _instruction(text = None):
+    return {
+        "role": "user",
+        "content": text or (
+            "Standing instruction for the rest of this task: always report results as a "
+            "markdown table, and end every reply with STATUS::ZQXVARA123-ALPHA."
+        ),
+    }
+
+
+def _filler_turns(count, chars = 800):
+    """Short user nudges with long agent replies, which is the shape that produces the
+    defect: the user types "keep going", the agent writes a page, and the newest USER
+    group -- the only one the window protects -- is the nudge."""
+    nudges = ["continue", "keep going", "yes", "ok", "go on", "proceed"]
+    out = []
+    for index in range(count):
+        out.append({"role": "user", "content": nudges[index % len(nudges)]})
+        out.append({"role": "assistant",
+                    "content": f"Section {index}. " + "x" * chars})
+    return out
+
+
+def test_a_governing_instruction_survives_filler_turns():
+    from core.inference import instruction_pin
+    from core.inference.context_window import truncate_oldest_messages
+
+    instruction = _instruction()
+    messages = (
+        [{"role": "system", "content": "you are helpful"}, instruction,
+         {"role": "assistant", "content": "Understood."}]
+        + _filler_turns(6)
+        + [{"role": "user", "content": "continue"}]
+    )
+
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 1024)
+    kept, dropped = truncate_oldest_messages(
+        messages, 0.3, protected_message_ids = pinned
+    )
+
+    assert any(message is instruction for message in kept)
+    assert dropped >= 2
+    # And with the knob at its shipped default the behaviour is exactly today's.
+    kept_today, _ = truncate_oldest_messages(
+        messages, 0.3,
+        protected_message_ids = instruction_pin.pinned_instruction_ids(messages, groups = 0),
+    )
+    assert not any(message is instruction for message in kept_today)
+
+
+def test_a_pinned_instruction_cannot_starve_the_window():
+    """The single enormous instruction is the thing that could starve the window, so it
+    is the thing the ceiling excludes -- not partially, at all."""
+    from core.inference import instruction_pin
+
+    # ~890 tokens each, so any one of them fits under the 1024 ceiling and no two do.
+    big = [_instruction("Please " + "consider this requirement carefully. " * 95)
+           for _ in range(3)]
+    messages = []
+    for instruction in big:
+        messages += [instruction, {"role": "assistant", "content": "ok"}]
+    messages += [{"role": "user", "content": "continue"}]
+
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 3, max_tokens = 1024)
+
+    assert len(pinned) == 1
+
+
+def test_later_long_user_turns_crowd_out_an_older_instruction():
+    """The bound is newest-first over a fixed number of groups, so a standing instruction
+    with enough long user turns after it is NOT pinned. This is the same hole Zed's 80 KB
+    newest-first replay has, and it is recorded here rather than left to be discovered:
+    the pin protects an instruction against FILLER, not against a long conversation.
+    """
+    from core.inference import instruction_pin
+
+    instruction = _instruction()
+    messages = [instruction, {"role": "assistant", "content": "Understood."}]
+    for index in range(3):
+        messages += [{"role": "user", "content": f"Now review section {index} of the "
+                                                 f"report and summarise it. " + "x" * 400},
+                     {"role": "assistant", "content": f"Section {index} reviewed."}]
+    messages += [{"role": "user", "content": "continue"}]
+
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 2, max_tokens = 4096)
+
+    assert id(instruction) not in pinned
+    # It is reachable, though, once the budget covers the turns in between.
+    wide = instruction_pin.pinned_instruction_ids(messages, groups = 4, max_tokens = 4096)
+    assert id(instruction) in wide
+
+
+def test_a_short_follow_up_is_never_pinned():
+    """"pin the last N user turns" would pin the nudge and leave the instruction."""
+    from core.inference import instruction_pin
+
+    instruction = _instruction()
+    messages = [
+        instruction,
+        {"role": "assistant", "content": "Understood."},
+        {"role": "user", "content": "ok, keep going"},
+        {"role": "assistant", "content": "continuing"},
+        {"role": "user", "content": "continue"},
+    ]
+
+    pinned = instruction_pin.pinned_instruction_ids(messages, groups = 3, max_tokens = 4096)
+
+    assert pinned == {id(instruction)}
+
+
+def test_an_upload_is_never_treated_as_filler():
+    """A one-word message with an image attached is a request, not a nudge."""
+    from core.inference import instruction_pin
+
+    message = {"role": "user", "content": [
+        {"type": "text", "text": "this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]}
+
+    assert instruction_pin.is_substantive(message)
+
+
+def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
+    from core.inference import instruction_pin
+
+    assert instruction_pin.is_thin_query("continue")
+    assert instruction_pin.is_thin_query("yes")
+    assert instruction_pin.is_thin_query("ok!")
+    # Short, but it names the thing it wants: replacing this with an older instruction
+    # would answer a question the user did not ask.
+    assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")

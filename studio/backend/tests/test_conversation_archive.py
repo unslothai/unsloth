@@ -183,10 +183,12 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
         k = None,
         model_name = None,
         mode = "hybrid",
+        lexical_query = None,
     ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")
-        return real_hybrid(conn_, scope, query, k = k, model_name = model_name, mode = mode)
+        return real_hybrid(conn_, scope, query, k = k, model_name = model_name, mode = mode,
+                           lexical_query = lexical_query)
 
     monkeypatch.setattr(retrieval, "retrieve_hybrid", only_lexical_works)
     found = conversation_archive.recall(THREAD, "sourdough")
@@ -1417,3 +1419,228 @@ def test_a_first_compaction_embeds_its_turns_in_one_pass(conn, monkeypatch):
     assert conversation_archive.archive_turns(thread_id, evicted) == 12
     assert len(calls) == 1
     assert calls[0] >= 12
+
+
+# --- The subject of a conversation must not be the least findable thing in its archive ---
+#
+# Measured on the pre-fix build with `scripts/fact_update/retrieval_probe.py`: a variable
+# assigned then revised seven times was archived 8/8 and retrieved 0/5, because BM25 gives
+# almost no weight to a term present in half the chunks and a great deal to an incidental
+# word from the question present in one. `zqxvara123` scored 0.16; `value`, from "what is
+# the current value of X", scored 4.755.
+
+VARIABLE = "ZQXVARA123"
+
+
+# Filler that VARIES. This matters more than it looks: the defect is an IDF collapse, so
+# it only reproduces when the question's incidental word ("value") is rare in the archive.
+# A first version of this fixture repeated one distractor, which made "value" as common as
+# the variable and cancelled the very effect under test -- the tests passed against the
+# unfixed build.
+_DISTRACTORS = [
+    ("What is a good default value for a retry budget?",
+     "Three attempts with backoff is a common default."),
+    ("Change the log level to debug for now.", "Log level is debug."),
+    ("Remind me to update the deployment notes later.", "I will remind you."),
+    ("Is it better to set a timeout per request or per session?",
+     "Per request is usually safer."),
+    ("Correction to my earlier note about the changelog wording.",
+     "Noted, the changelog wording is corrected."),
+    ("Which branch should the release notes land on?", "The release branch."),
+]
+
+
+def _revisions(count, thread_id = THREAD, *, distractors = 3):
+    """A variable assigned, then revised, with filler that shares the vocabulary.
+
+    Values are fixed rather than random so a failure is reproducible, and the filler never
+    names the variable, so it can compete for slots without ever being a correct answer.
+    """
+    values = [f"10000{index}" for index in range(count)]
+    filler = 0
+    for value in values:
+        _archive(_turn(f"Set {VARIABLE} to {value}.", f"Understood. {VARIABLE} is {value}."),
+                 thread_id)
+        for _ in range(distractors):
+            question, answer = _DISTRACTORS[filler % len(_DISTRACTORS)]
+            filler += 1
+            _archive(_turn(f"{question} (note {filler})", answer), thread_id)
+    return values
+
+
+def test_every_recall_slot_goes_to_the_subject_of_the_question(conn):
+    """Pre-fix this returns four distractors and not one turn about the variable.
+
+    What the fix guarantees is the CANDIDATE SET: only turns naming the thing asked
+    about. Which of eight equally-scoring assignments wins a slot is BM25's business and
+    is not claimed here -- see `test_the_newest_revision_is_recalled_when_there_is_room`
+    for the part that is.
+    """
+    values = _revisions(8)
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE}?", top_k = 4
+    )
+
+    assert found is not None
+    text, sources = found
+    assert len(sources) == 4
+    assert all(VARIABLE.lower() in source["text"].lower() for source in sources)
+    assert any(value in text for value in values)
+
+
+def test_the_newest_revision_is_recalled_when_there_is_room(conn):
+    """With a slot per revision the newest must be there, and must be read last."""
+    values = _revisions(4)
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE}?", top_k = 4
+    )
+
+    assert found is not None
+    text, _sources = found
+    assert values[-1] in text
+    # Chronological presentation is the point: the LAST assignment the model reads is the
+    # current one, which is not true of relevance order.
+    assert max(text.index(value) for value in values if value in text) == text.index(values[-1])
+
+
+def test_the_questions_filler_cannot_outrank_the_subject(conn):
+    """One slot, and it must go to the turn about the thing asked about."""
+    for index in range(6):
+        _archive(_turn(f"Set {VARIABLE} to 42{index}.", f"Understood. {VARIABLE} is 42{index}."))
+    _archive(_turn("What is a good default value for a retry budget?",
+                   "Three attempts with backoff is a common default value."))
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE}?", top_k = 1
+    )
+
+    assert found is not None
+    assert VARIABLE.lower() in found[0].lower()
+
+
+def test_the_archive_query_requires_the_rare_token_and_drops_filler():
+    """The conjunctive pass first, the stopword-stripped OR second, and never nothing."""
+    focused = store.conversation_match_queries(f"What is the current value of {VARIABLE}?")
+
+    assert focused[0] == f'"{VARIABLE.lower()}"'
+    assert '"current"' in focused[1] and '"value"' in focused[1]
+    assert '"what"' not in focused[1] and '"the"' not in focused[1]
+    # A question made entirely of function words must still search for something: an
+    # empty expression makes search_lexical return [] and the recall silently vanishes.
+    filler = store.conversation_match_queries("what about it")
+    assert filler and '"about"' in filler[0]
+    assert store.conversation_match_queries("!!!") == []
+
+
+def test_recalled_turns_are_presented_oldest_first(conn):
+    """The model answers with the last assignment it reads, so the order IS the answer."""
+    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
+                   "Understood."))
+    _archive(_turn(f"{VARIABLE} 222222", "Understood."))
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE}?", top_k = 2
+    )
+
+    assert found is not None
+    text, sources = found
+    assert text.index("111111") < text.index("222222")
+    assert "supersedes" in text
+    assert sources[0]["citationId"] == 1
+
+
+def test_each_archived_turn_records_its_position(conn):
+    _archive(_turn("first", "a"))
+    _archive(_turn("second", "b"))
+    _archive(_turn("third", "c"))
+
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = [
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY archive_ordinal",
+            (scope,),
+        ).fetchall()
+    ]
+    assert ordinals == [0, 1, 2]
+
+
+def test_re_embedding_a_turn_keeps_its_place(conn, monkeypatch):
+    """Re-embedding walks the whole archive, so a fresh ordinal here would renumber the
+    entire conversation into the order its vectors were rebuilt."""
+    from core.rag import embeddings
+
+    first = _turn("the oldest turn", "a")
+    _archive(first)
+    _archive(_turn("a later turn", "b"))
+    monkeypatch.setattr(embeddings, "encode_with_identity",
+                        lambda texts, **kwargs: ([[0.5] * 8 for _ in texts], "other-model"))
+    _archive(first)
+
+    scope = store.conversation_archive_scope(THREAD)
+    rows = conn.execute(
+        "SELECT filename, archive_ordinal FROM documents WHERE scope=? "
+        "ORDER BY archive_ordinal", (scope,),
+    ).fetchall()
+    assert [row["archive_ordinal"] for row in rows] == [0, 1]
+
+
+def test_an_archive_written_before_ordinals_still_recalls_in_order(conn):
+    """NULL ordinals predate the column, so they sort first rather than not at all."""
+    _archive(_turn("the pelican turn", "older"))
+    _archive(_turn("the pelican answer", "newer"))
+    scope = store.conversation_archive_scope(THREAD)
+    oldest = conn.execute(
+        "SELECT id FROM documents WHERE scope=? ORDER BY archive_ordinal", (scope,)
+    ).fetchone()["id"]
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE id=?", (oldest,))
+    conn.commit()
+
+    found = conversation_archive.recall(THREAD, "pelican", top_k = 2)
+
+    assert found is not None
+    text, _sources = found
+    assert text.index("older") < text.index("newer")
+    assert 'turn="1"' not in text          # the NULL one claims no position
+    assert 'turn="2"' in text
+
+
+def test_asking_what_it_was_originally_still_returns_the_first_assignment(conn):
+    """The guard against a fix that just prefers the newest thing it can find."""
+    values = _revisions(8)
+
+    found = conversation_archive.recall(
+        THREAD, f"What was {VARIABLE} set to at the very start?", top_k = 4
+    )
+
+    assert found is not None
+    text, sources = found
+    assert values[0] in text
+    # First block, because the original assignment is the oldest turn in the set.
+    assert values[0] in sources[0]["text"]
+
+
+def test_relevance_order_is_restored_when_the_knobs_are_off(conn, monkeypatch):
+    """The off setting has to reproduce the previous build, not approximate it."""
+    from core.rag import config
+
+    monkeypatch.setattr(config, "CONVERSATION_QUERY_FOCUS", False)
+    monkeypatch.setattr(config, "CONVERSATION_RECALL_ORDER", "relevance")
+    _archive(_turn(f"Set {VARIABLE} to 111111. " + "Some padding about the topic. " * 40,
+                   "Understood."))
+    _archive(_turn(f"{VARIABLE} 222222", "Understood."))
+
+    found = conversation_archive.recall(
+        THREAD, f"What is the current value of {VARIABLE}?", top_k = 2
+    )
+
+    assert found is not None
+    text, _sources = found
+    # The claim is the RENDERING, not a particular order: no position labels, no header,
+    # nothing the previous build did not emit.
+    assert "111111" in text and "222222" in text
+    assert "turn=" not in text
+    assert "supersedes" not in text
+    assert "oldest first" not in text

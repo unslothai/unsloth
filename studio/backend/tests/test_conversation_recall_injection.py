@@ -727,6 +727,7 @@ def test_conversation_search_top_k_is_clamped(archived, monkeypatch):
         *,
         top_k = None,
         branch_messages = None,
+        extra_queries = None,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -757,6 +758,7 @@ def test_conversation_search_top_k_is_clamped_by_the_live_budget(archived, monke
         *,
         top_k = None,
         branch_messages = None,
+        extra_queries = None,
     ):
         seen["top_k"] = top_k
         return ("earlier turn", [{"id": "1"}])
@@ -949,6 +951,7 @@ def test_an_omitted_top_k_falls_through_to_the_configured_default(archived, monk
         *,
         top_k = None,
         branch_messages = None,
+        extra_queries = None,
     ):
         seen["top_k"] = top_k
         seen["branch_messages"] = branch_messages
@@ -995,6 +998,7 @@ def test_the_forced_recall_searches_for_the_USERS_question(archived, monkeypatch
         *,
         top_k = None,
         branch_messages = None,
+        extra_queries = None,
     ):
         seen["query"] = query
         return ("earlier turn", [{"id": "1"}])
@@ -1280,3 +1284,162 @@ def test_a_tool_exchange_this_request_created_stays_on_the_branch(monkeypatch):
     # And the boundary is still measured against the client's messages, which is what it
     # will be re-applied to.
     assert "_branch_boundary(conversation, _request_branch)" in text
+
+
+# --- The instruction the user gave, and the follow-up that says nothing ---
+
+INSTRUCTION = (
+    "Standing instruction for the rest of this task: always report results as a markdown "
+    "table, and finish every reply with the line STATUS::ZQXVARA123-ALPHA."
+)
+
+
+def _instructed_thread(thread_id = THREAD):
+    """A thread whose instruction is archived and whose newest message is filler."""
+    from storage import studio_db
+
+    turns = [
+        {"role": "user", "content": INSTRUCTION},
+        {"role": "assistant", "content": "Understood."},
+    ] + [
+        message
+        for index in range(6)
+        for message in (
+            {"role": "user", "content": f"Here is section {index} of the report to review."},
+            {"role": "assistant", "content": f"Section {index} looks fine."},
+        )
+    ]
+    studio_db.upsert_chat_thread(
+        {"id": thread_id, "title": "t", "modelType": "base", "modelId": "local-model",
+         "createdAt": 1}
+    )
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {"id": f"{thread_id}-ins-{index}", "threadId": thread_id,
+             "role": message["role"],
+             "content": [{"type": "text", "text": message["content"]}],
+             "createdAt": index + 2}
+        )
+    conversation_archive.archive_turns(thread_id, turns)
+    return turns
+
+
+def test_an_anaphoric_latest_message_recalls_the_governing_instruction(rag_home, rag_conn,
+                                                                       stub_embeddings):
+    """"continue" is what the user types, and what the archive gets searched for.
+
+    Pre-fix the query is the word "continue", which appears in no archived turn, so the
+    recall returns nothing at all on precisely the turn that needed it. That is not a
+    contrived follow-up: OpenCode and Zed both GENERATE one after every auto compaction.
+    """
+    turns = _instructed_thread()
+    branch = turns + [{"role": "user", "content": "continue"}]
+
+    built = tools_mod.build_conversation_recall(
+        branch, THREAD, style = "inline", top_k = 4, branch_messages = branch
+    )
+
+    assert built is not None
+    assert "markdown table" in built["prefix"]
+
+
+def test_a_substantive_latest_message_still_drives_the_query_alone(rag_home, rag_conn,
+                                                                   stub_embeddings,
+                                                                   monkeypatch):
+    """The common path must be untouched: a real question is its own best query."""
+    turns = _instructed_thread()
+    branch = turns + [{"role": "user", "content": "What did section 3 of the report say?"}]
+    seen = {}
+
+    real = conversation_archive.recall
+
+    def recording(thread_id, query, **kwargs):
+        seen["extra"] = kwargs.get("extra_queries")
+        return real(thread_id, query, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "recall", recording)
+    tools_mod.build_conversation_recall(
+        branch, THREAD, style = "inline", top_k = 4, branch_messages = branch
+    )
+
+    assert seen["extra"] is None
+
+
+def test_no_earlier_instruction_means_no_second_query(rag_home, rag_conn, stub_embeddings,
+                                                      monkeypatch):
+    """A thread of nothing but filler must behave exactly as it does today."""
+    from storage import studio_db
+
+    studio_db.upsert_chat_thread(
+        {"id": THREAD, "title": "t", "modelType": "base", "modelId": "local-model",
+         "createdAt": 1}
+    )
+    turns = [{"role": "user", "content": "ok"}, {"role": "assistant", "content": "sure"}]
+    for index, message in enumerate(turns):
+        studio_db.upsert_chat_message(
+            {"id": f"{THREAD}-f{index}", "threadId": THREAD, "role": message["role"],
+             "content": [{"type": "text", "text": message["content"]}],
+             "createdAt": index + 2}
+        )
+    conversation_archive.archive_turns(THREAD, turns)
+    seen = {}
+
+    real = conversation_archive.recall
+
+    def recording(thread_id, query, **kwargs):
+        seen["extra"] = kwargs.get("extra_queries")
+        return real(thread_id, query, **kwargs)
+
+    monkeypatch.setattr(conversation_archive, "recall", recording)
+    tools_mod.build_conversation_recall(
+        turns + [{"role": "user", "content": "continue"}], THREAD, style = "inline",
+        top_k = 4, branch_messages = turns + [{"role": "user", "content": "continue"}],
+    )
+
+    assert seen["extra"] is None
+
+
+def test_both_recall_styles_state_that_a_later_turn_supersedes_an_earlier_one(archived):
+    """The rule has to reach all three consumers, so it lives in the recalled text.
+
+    Putting it in `_RECALL_BLOCK` would cover the plain path only: the tool style routes
+    through a forged tool exchange and the model's own `search_conversation` sees neither.
+    """
+    from storage import studio_db
+
+    extra = [
+        {"role": "user", "content": "and one about otters"},
+        {"role": "assistant", "content": "There once was an otter with tools"},
+    ]
+    # Saved as well as archived: the branch filter checks recalled turns against the
+    # thread's stored transcript, so an archived turn nobody saved is filtered right back
+    # out and the block ends up with a single passage.
+    for index, message in enumerate(extra):
+        studio_db.upsert_chat_message(
+            {"id": f"{THREAD}-otter-{index}", "threadId": THREAD, "role": message["role"],
+             "content": [{"type": "text", "text": message["content"]}],
+             "createdAt": index + 20}
+        )
+    conversation_archive.archive_turns(THREAD, extra)
+    conversation = _conversation()
+
+    inline = tools_mod.build_conversation_recall(conversation, THREAD, style = "inline",
+                                                 top_k = 4)
+    tool_style = tools_mod.build_conversation_recall(conversation, THREAD, style = "tool",
+                                                     top_k = 4)
+
+    assert "supersedes" in inline["prefix"] and "oldest first" in inline["prefix"]
+    tool_result = [m for m in tool_style["messages"] if m.get("role") == "tool"][0]
+    assert "supersedes" in tool_result["content"]
+    # And the sentence that claimed an ordering the block no longer has is gone.
+    assert "most relevant earlier turns" not in inline["prefix"]
+
+
+def test_a_single_recalled_turn_makes_no_ordering_claim(archived):
+    """One passage cannot be in an order, and the backoff's last rung is where room is
+    tightest -- so the header must not be spent there."""
+    built = tools_mod.build_conversation_recall(_conversation(), THREAD, style = "inline",
+                                                top_k = 1)
+
+    assert built is not None
+    assert "supersedes" not in built["prefix"]

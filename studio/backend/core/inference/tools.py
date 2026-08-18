@@ -9994,7 +9994,7 @@ def build_synthetic_search_exchange(
 _RECALL_BLOCK = (
     "<recalled_conversation>\n"
     "This conversation was compacted and earlier turns were removed from your context. "
-    "These are the most relevant earlier turns, retrieved verbatim from this chat.\n"
+    "Relevant earlier turns of this chat are quoted below, retrieved verbatim.\n"
     "{text}\n"
     "</recalled_conversation>\n\n"
 )
@@ -10038,9 +10038,29 @@ def build_conversation_recall(
     query = _last_user_text(branch_messages or conversation) or _last_user_text(conversation)
     if not query:
         return None
+    # When the latest message is a nudge rather than a request -- "continue", "yes", "go
+    # on" -- searching for it retrieves nothing, and the turn that most needs the archive
+    # is the one that gets least from it. The user's last real instruction is asked for as
+    # a SECOND query, so the standing instruction can come back even though the words in
+    # front of us say nothing about it.
+    #
+    # Deliberately not applied to the model's own `search_conversation` calls: there the
+    # model wrote the query, and overriding it would be answering a different question
+    # from the one it asked.
+    anchor = None
+    try:
+        from core.inference import instruction_pin
+
+        if instruction_pin.is_thin_query(query):
+            anchor = instruction_pin.last_substantive_instruction(
+                branch_messages or conversation
+            )
+    except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
+        anchor = None
     try:
         found = conversation_archive.recall(
-            thread_id, query, top_k = top_k, branch_messages = branch_messages
+            thread_id, query, top_k = top_k, branch_messages = branch_messages,
+            extra_queries = [anchor] if anchor else None,
         )
     except Exception:
         logger.warning("Conversation recall failed", exc_info = True)

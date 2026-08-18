@@ -325,11 +325,20 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 if _write_lock:
                     conn.rollback()
                 continue
+            ordinal = None
             if stale is not None:
                 # Same turn, vectors from an embedder the query side no longer asks for.
                 # Skipping it would leave the turn invisible to dense search forever, so
                 # the copy is replaced rather than deduplicated, as ingestion does.
+                #
+                # The turn KEEPS its position. Re-embedding walks the whole archive, so
+                # taking a fresh ordinal here would renumber an entire conversation into
+                # the order its vectors were rebuilt, which is not an order at all.
+                previous = store.get_document(conn, stale) or {}
+                ordinal = previous.get("archive_ordinal")
                 store.delete_document(conn, stale, commit = False)
+            if ordinal is None:
+                ordinal = store.next_archive_ordinal(conn, scope)
             document_id = store.create_document(
                 conn,
                 scope = scope,
@@ -342,6 +351,13 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # Counting role labels only approximates it, since a pasted transcript
                 # writes lines that look exactly like the renderer's own.
                 archive_messages = len(group),
+                # Where this turn sits in the conversation. Allocated inside the write
+                # lock, in `group_turns` order, so it is conversation order within an
+                # epoch and across epochs -- which `created_at` cannot be, since one
+                # compaction writes every turn it evicts microseconds apart. Written
+                # unconditionally, with no knob: a period with ordering switched off must
+                # not punch permanent holes in the sequence.
+                archive_ordinal = ordinal,
                 commit = False,
             )
             try:
@@ -757,9 +773,54 @@ def _document_matches_one_run(
     return any(_one_run_from(start) for start in range(len(transcript)))
 
 
+def _conversation_order(row) -> tuple:
+    """Sort key putting recalled turns in the order they were said.
+
+    NULL ordinals sort FIRST, and that is not a fallback so much as a fact: they were
+    written by a build that had no such column, so they genuinely predate every numbered
+    turn in the same scope. Within a turn, `chunk_index` keeps a long message's pieces
+    contiguous and in order, which relevance ordering gets wrong today. `created_at`
+    breaks ties, because the ordinal is deliberately not UNIQUE: the write lock is
+    best-effort, so two concurrent archive passes can compute the same MAX + 1 and must
+    tie-break rather than raise.
+    """
+    if row is None:
+        return (2, 0, "", 0)
+    ordinal = tool._row_value(row, "archive_ordinal")
+    created = tool._row_value(row, "created_at") or ""
+    index = tool._row_value(row, "chunk_index") or 0
+    if ordinal is None:
+        return (0, 0, created, index)
+    return (1, int(ordinal), created, index)
+
+
 def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str) -> list:
-    """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest."""
-    hits = retrieval.retrieve_hybrid(conn, scope, query, k = fetch, model_name = model, mode = "lexical")
+    """Up to ``fetch`` archive chunks for ``query``: lexical first, hybrid for the rest.
+
+    The lexical pass runs TWICE when the question contains an identifier: once requiring
+    all of them, then once over the content words to top up. Requiring them first is what
+    stops an incidental word in the question outranking the subject of the whole
+    conversation (see `store.conversation_match_queries`); running the permissive pass
+    afterwards is what stops a conjunction that matches nothing from reading as an empty
+    archive. The merged list is what the caller's widening loop measures, so a
+    conjunction returning few rows cannot be mistaken for "nothing left to widen into".
+    """
+    expressions = (store.conversation_match_queries(query)
+                   if config.CONVERSATION_QUERY_FOCUS else [None])
+    hits: list = []
+    seen: set = set()
+    for expression in expressions:
+        if len(hits) >= fetch:
+            break
+        for hit in retrieval.retrieve_hybrid(
+            conn, scope, query, k = fetch, model_name = model, mode = "lexical",
+            lexical_query = expression,
+        ):
+            if hit.chunk_id not in seen:
+                hits.append(hit)
+                seen.add(hit.chunk_id)
+            if len(hits) >= fetch:
+                break
     if len(hits) < fetch:
         try:
             seen = {hit.chunk_id for hit in hits}
@@ -786,6 +847,7 @@ def recall(
     *,
     top_k: Optional[int] = None,
     branch_messages: Optional[list[dict]] = None,
+    extra_queries: Optional[list[str]] = None,
 ) -> Optional[tuple[str, list[dict]]]:
     """Most relevant archived turns for ``query``, rendered like any other RAG hit.
 
@@ -808,6 +870,39 @@ def recall(
 
     scope = store.conversation_archive_scope(thread_id)
     limit = top_k or config.CONVERSATION_ARCHIVE_TOP_K
+    # Two queries rather than one concatenated string. Concatenating would recreate the
+    # very defect the shaped query fixes: the filler's tokens dilute the instruction's
+    # identifiers, and the conjunctive pass would AND identifiers drawn from two
+    # unrelated intents. Run separately, each is shaped on its own and each spends its
+    # own half of the budget. At a limit of one the anchor takes the slot outright: one
+    # chunk retrieved for the word "continue" is worth nothing.
+    queries = [query] + [q.strip() for q in (extra_queries or []) if (q or "").strip()]
+    if len(queries) > 1:
+        share = max(1, -(-limit // len(queries)))
+        merged: list = []
+        seen_ids: set = set()
+        for index, one in enumerate(reversed(queries)):
+            # Anchors first: they are the reason the extra query was added at all.
+            room = limit - len(merged) if index == len(queries) - 1 else share
+            if room <= 0:
+                break
+            found = recall(thread_id, one, top_k = room, branch_messages = branch_messages)
+            if not found:
+                continue
+            for source in found[1]:
+                if source["chunkId"] in seen_ids:
+                    continue
+                seen_ids.add(source["chunkId"])
+                merged.append(source)
+        if not merged:
+            return None
+        if config.CONVERSATION_RECALL_ORDER == "chronological":
+            merged.sort(key = lambda source: (source.get("turn") is None,
+                                              source.get("turn") or 0))
+            kept = merged[:limit]
+            return tool.render_conversation_sources(kept), kept
+        kept = merged[:limit]
+        return tool.render_sources(kept), kept
     conn = None
     try:
         conn = rag_db.get_connection()
@@ -854,7 +949,14 @@ def recall(
             fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
         if not hits:
             return None
-        text, sources = tool._format(rows, hits)
+        if config.CONVERSATION_RECALL_ORDER == "chronological":
+            # AFTER the top-k slice, never before. Sorting first would make the slice take
+            # the OLDEST turns rather than the most relevant ones, which is a different
+            # feature and a worse one.
+            hits.sort(key = lambda hit: _conversation_order(rows.get(hit.chunk_id)))
+            text, sources = tool.format_conversation_recall(rows, hits)
+        else:
+            text, sources = tool._format(rows, hits)
         return (text, sources) if sources else None
     except Exception:
         logger.warning("conversation_archive.recall_failed thread_id=%s", thread_id, exc_info = True)

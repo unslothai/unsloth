@@ -28,9 +28,14 @@ def retrieve_lexical(
     scope: str | list[str],
     query: str,
     k: int | None = None,
+    *,
+    match_query: str | None = None,
 ) -> list[Hit]:
     k = k or config.TOP_K_LEXICAL
-    return [Hit(cid, s, lexical_score = s) for cid, s in store.search_lexical(conn, scope, query, k)]
+    return [
+        Hit(cid, s, lexical_score = s)
+        for cid, s in store.search_lexical(conn, scope, query, k, match_query = match_query)
+    ]
 
 
 def retrieve_dense(
@@ -111,16 +116,23 @@ def retrieve_hybrid(
     k: int | None = None,
     model_name: str | None = None,
     mode: str = "hybrid",
+    lexical_query: str | None = None,
 ) -> list[Hit]:
     """``mode`` picks the backend: lexical-only, dense-only, or RRF of both
-    (default). Pool sizes and the RRF constant come from config."""
+    (default). Pool sizes and the RRF constant come from config.
+
+    ``lexical_query`` replaces the FTS5 expression on the LEXICAL leg only. The dense leg
+    always encodes the natural-language ``query``, because a conjunction of quoted tokens
+    is not a sentence and embedding it would throw away the paraphrase recall that is the
+    dense leg's whole reason for existing. No ranking maths changes here."""
     k = k if k is not None else config.TOP_K_HYBRID
     k = int(k)  # tool-call / scope top_k may arrive as a float; LIMIT + slice need int
     if mode == "lexical":
-        return retrieve_lexical(conn, scope, query, k)
+        return retrieve_lexical(conn, scope, query, k, match_query = lexical_query)
     if mode == "dense":
         return retrieve_dense(conn, scope, query, k, model_name = model_name)
-    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL)
+    lexical = retrieve_lexical(conn, scope, query, config.TOP_K_LEXICAL,
+                               match_query = lexical_query)
     dense = retrieve_dense(conn, scope, query, config.TOP_K_DENSE, model_name = model_name)
     return _rrf([lexical, dense], config.RRF_K, k)
 
