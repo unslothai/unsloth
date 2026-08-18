@@ -117,7 +117,8 @@ def run_engine(pw, engine: str) -> dict:
             "([c, t]) => window.__heavyThread.seedCompactTail(c, t)", [CHARS, TAIL]
         )
         page.wait_for_function(
-            "(n) => window.__heavyThread.messageCount() >= n", arg = plan["messages"],
+            "(n) => window.__heavyThread.messageCount() >= n",
+            arg = plan["messages"],
             timeout = 180000,
         )
         page.wait_for_timeout(3000)
@@ -133,6 +134,7 @@ def run_engine(pw, engine: str) -> dict:
 
             def netgap(s):
                 return max(0, s["gapBottom"] - baseline)
+
             gap0 = netgap(first)
             # How long the gap is on screen: from the first painted frame to the first frame
             # that no longer has one. Measured to the frame that CLOSES it rather than to the
@@ -147,23 +149,25 @@ def run_engine(pw, engine: str) -> dict:
                 gap_ms = closed - lingering[0]["t"]
             else:
                 gap_ms = 0
-            rounds.append({
-                "firstPaintMs": first["t"],
-                "firstRows": first["mountedRows"],
-                "clientHeight": first["clientHeight"],
-                "mountedHeight": first["mountedHeight"],
-                "spacerHeight": first["spacerHeight"],
-                "gapTop0": first["gapTop"],
-                "gapBottom0": first["gapBottom"],
-                "netGap0": gap0,
-                "maxNetGap": max(netgap(s) for s in samples),
-                "gapPersistMs": gap_ms,
-                "gapFrames": len(lingering),
-                "framesToConverge": len(samples),
-                "convergedMs": samples[-1]["t"],
-                "finalRows": samples[-1]["mountedRows"],
-                "finalNetGap": netgap(samples[-1]),
-            })
+            rounds.append(
+                {
+                    "firstPaintMs": first["t"],
+                    "firstRows": first["mountedRows"],
+                    "clientHeight": first["clientHeight"],
+                    "mountedHeight": first["mountedHeight"],
+                    "spacerHeight": first["spacerHeight"],
+                    "gapTop0": first["gapTop"],
+                    "gapBottom0": first["gapBottom"],
+                    "netGap0": gap0,
+                    "maxNetGap": max(netgap(s) for s in samples),
+                    "gapPersistMs": gap_ms,
+                    "gapFrames": len(lingering),
+                    "framesToConverge": len(samples),
+                    "convergedMs": samples[-1]["t"],
+                    "finalRows": samples[-1]["mountedRows"],
+                    "finalNetGap": netgap(samples[-1]),
+                }
+            )
             if r == 0:
                 (OUT / f"{LABEL}-{engine}-{height}-timeline.json").write_text(
                     json.dumps(samples, indent = 1)
