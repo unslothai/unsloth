@@ -32,6 +32,7 @@ from core.research.parsing import (
     _parse_and_validate_plan,
     _parse_json_object,
     _recover_report_from_reasoning,
+    _report_after_boundary,
     _streamed_titles,
 )
 from core.research.citations import (
@@ -44,6 +45,7 @@ from core.research.citations import (
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
     _AGENT_SYSTEM_PROMPT,
+    _REPORT_BOUNDARY_MARKER,
     _REPORT_SYSTEM_PROMPT,
     _SYNTHESIS_AUDIT_SYSTEM_PROMPT,
     _planner_system_prompt,
@@ -112,6 +114,22 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+
+
+def _select_synthesis_report(content: str, reasoning: str) -> str:
+    content_report = _report_after_boundary(content, _REPORT_BOUNDARY_MARKER)
+    if content_report:
+        return content_report
+    reasoning_report = _report_after_boundary(reasoning, _REPORT_BOUNDARY_MARKER)
+    if content_report == "":
+        return reasoning_report or ""
+    if content.strip():
+        return content.strip()
+    return reasoning_report or ""
+
+
+def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
+    return finish_reason == "length" or not report
 
 
 def _auto_scrape_default() -> int:
@@ -2285,15 +2303,22 @@ class ResearchSupervisor:
             max_tokens = 16384,
         )
         await self._check_active(run["id"])
-        if synthesis_finish_reason == "length":
+        report = _select_synthesis_report(report, synthesis_reasoning)
+        if _synthesis_needs_recovery(report, synthesis_finish_reason):
+            recovery_reason = (
+                "exhausted its output budget"
+                if synthesis_finish_reason == "length"
+                else "did not return a safely identifiable final report"
+            )
             recovery_messages = [
                 {
                     **synthesis_messages[0],
                     "content": (
                         synthesis_messages[0]["content"]
-                        + "\nThe previous synthesis exhausted its output budget. Write the report "
+                        + f"\nThe previous synthesis {recovery_reason}. Write the report "
                         "directly without exposing analysis or reconstructing source URLs. Copy "
-                        "citation titles and URLs only from the supplied catalogs."
+                        "citation titles and URLs only from the supplied catalogs. Begin with the "
+                        "required final-report boundary on its own line."
                     ),
                 },
                 synthesis_messages[1],
@@ -2316,7 +2341,7 @@ class ResearchSupervisor:
                 enable_thinking = False,
             )
             synthesis_reasoning += recovery_reasoning
-            report = recovered_report
+            report = _select_synthesis_report(recovered_report, recovery_reasoning)
             synthesis_finish_reason = recovery_finish_reason
             synthesis_usage = recovery_usage
             await self._check_active(run["id"])
@@ -2327,10 +2352,11 @@ class ResearchSupervisor:
                         requested_max_tokens = recovery_max_tokens,
                     )
                 )
-        if not report.strip():
-            report = _recover_report_from_reasoning(synthesis_reasoning)
         if not report:
-            raise ValueError("Local model returned an empty report")
+            raise ValueError(
+                "Local model returned no safely identifiable final report. Disable thinking or "
+                "use a compatible chat template and retry."
+            )
         report = _validate_report_sources(report, sources)
         report = _validate_report_document_sources(report, document_sources)
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])

@@ -194,6 +194,29 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     )
 
 
+def _settle_delay(delay_s: float) -> float:
+    """How long to wait between the retried reads, honouring ``UNSLOTH_SETTLE_DELAY_S``.
+
+    What the retry loop is for is rejecting a TRANSIENT undercount, and the ``max`` over the
+    reads does that whatever the spacing: a real neighbouring tenant caps every read, a
+    transient caps only some. The spacing exists to give a real transient time to clear on a
+    live card, so production keeps the full second.
+
+    A test that reaches this through ``_plan_memory`` cannot pass ``delay_s`` and pays the
+    wait for nothing -- its snapshots are stubs whose answers do not change with time.
+    ``test_diffusion_backend.py`` alone spent 142s of a 328s suite here, most of it in
+    tests sitting at exactly 4.00s. Callers that can pass ``delay_s = 0`` already do
+    (``test_diffusion_memory.py``); this is for the ones that cannot reach the argument.
+    """
+    override = os.environ.get("UNSLOTH_SETTLE_DELAY_S")
+    if override is None:
+        return delay_s
+    try:
+        return max(0.0, float(override))
+    except (TypeError, ValueError):
+        return delay_s  # a typo in the env must not change production behaviour
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -234,6 +257,7 @@ def settled_snapshot_device_memory(
     except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
         pass
     best = snapshot_device_memory(target)
+    delay_s = _settle_delay(delay_s)
     for _ in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.

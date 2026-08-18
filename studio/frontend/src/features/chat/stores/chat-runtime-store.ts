@@ -76,6 +76,7 @@ import {
   type ModelLifecycleLease,
 } from "../utils/model-lifecycle-gate";
 import { shouldAdvanceQueuedSettingsEpoch } from "../utils/queued-settings-epoch";
+import type { MmprojFallbackReason } from "../types/api";
 import type { ResearchWebsitePolicy } from "../types/research";
 import { useExternalProvidersStore } from "./external-providers-store";
 import { PLUS_MENU_PINS_STORAGE_KEY } from "./plus-menu-prefs-store";
@@ -2469,6 +2470,8 @@ type ChatRuntimeStore = {
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /** Projector recovery outcome for the active GGUF, or null. */
+  mmprojFallbackReason: MmprojFallbackReason | null;
   /**
    * Which drafter the loaded model's speculative resolution was about: "mtp",
    * "dspark" or "dflash". Paired with specFallbackReason: the reason alone cannot name the
@@ -3579,6 +3582,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  mmprojFallbackReason: null,
   specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
@@ -4086,6 +4090,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              mmprojFallbackReason: null,
               specDrafterKind: null,
             }
           : {}),
@@ -4341,6 +4346,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      mmprojFallbackReason: null,
       specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,

@@ -184,6 +184,8 @@ export const ptBR = {
       closeAriaLabel: "Fechar configurações",
       searchPlaceholder: "Pesquisar configurações…",
       searchNoResults: "Nenhuma configuração encontrada.",
+      panelFailed: "Não foi possível carregar esta seção.",
+      panelReload: "Recarregar",
     },
     tabs: {
       general: "Geral",
@@ -286,6 +288,8 @@ export const ptBR = {
         allowMicrophone: "Permitir acesso ao microfone",
         micAccessBlocked:
           "O acesso ao microfone foi bloqueado. Permita o acesso ao microfone nesta página do Unsloth e tente novamente.",
+        micAccessBlockedDesktop:
+          "O acesso ao microfone foi bloqueado. Tente novamente e escolha Permitir, ou ative o microfone nas configurações de privacidade do sistema.",
         micAccessUnsupported:
           "O acesso ao microfone não é suportado neste navegador ou contexto.",
         systemDefault: "Padrão do sistema",
@@ -1121,6 +1125,9 @@ export const ptBR = {
       archivedVideos: "Vídeos arquivados",
       archivedVideosDescription: "Veja e gerencie os vídeos que você arquivou.",
       manageAction: "Gerenciar",
+      manageChats: "Gerenciar chats",
+      manageChatsDescription:
+        "Selecione vários chats para mover, fixar, arquivar, exportar ou excluir.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "1 chat arquivado exportado",

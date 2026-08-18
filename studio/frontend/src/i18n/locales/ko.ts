@@ -182,6 +182,8 @@ export const ko = {
       closeAriaLabel: "설정 닫기",
       searchPlaceholder: "설정 검색…",
       searchNoResults: "설정을 찾을 수 없습니다.",
+      panelFailed: "이 섹션을 불러오지 못했습니다.",
+      panelReload: "새로고침",
     },
     tabs: {
       general: "일반",
@@ -282,6 +284,8 @@ export const ko = {
         allowMicrophone: "마이크 허용",
         micAccessBlocked:
           "마이크 접근이 차단되었습니다. 이 Unsloth 페이지에 마이크 접근을 허용한 뒤 다시 시도하세요.",
+        micAccessBlockedDesktop:
+          "마이크 접근이 차단되었습니다. 다시 시도하여 허용을 선택하거나 시스템 개인 정보 보호 설정에서 마이크를 켜세요.",
         micAccessUnsupported:
           "이 브라우저나 환경에서는 마이크 접근을 지원하지 않습니다.",
         systemDefault: "시스템 기본값",
@@ -1106,6 +1110,9 @@ export const ko = {
       archivedVideos: "보관된 동영상",
       archivedVideosDescription: "보관한 동영상을 확인하고 관리합니다.",
       manageAction: "관리",
+      manageChats: "채팅 관리",
+      manageChatsDescription:
+        "여러 채팅을 선택해 이동, 고정, 보관, 내보내기 또는 삭제할 수 있습니다.",
       exportArchivedChats: "내보내기",
       exportingArchivedChats: "내보내는 중...",
       exportedOneArchivedChat: "보관된 채팅 1개를 내보냈습니다",
