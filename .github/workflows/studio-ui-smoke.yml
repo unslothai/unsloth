@@ -63,11 +63,39 @@ permissions:
 
 jobs:
   ui-smoke:
-    name: Chat UI Tests
+    name: Chat UI Tests (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # The job was landing at 22m30s of its 25, so the banner layout step below
-    # took it over and the three image-model steps after it never ran.
+    # Left at 30 even though each shard now carries a quarter of the work.
+    #
+    # It was briefly cut to 20 on the reasoning that a quarter of the job needs a quarter
+    # of the budget. Staging then cancelled three shards at 20m0s inside "Linux deps", an
+    # apt step that takes 13 SECONDS in the org repo. The work was not slow; the runner
+    # was. Tightening a timeout to fit the expected duration converts that kind of
+    # infrastructure stall from a slow pass into a red build, and a timeout is there to
+    # catch a hang, not to police the mean.
     timeout-minutes: 30
+    strategy:
+      # Four shards, split where the job already split itself.
+      #
+      # This is 11 Playwright scripts run one after another against four Studios booted
+      # one after another, and at 22.1 minutes on average it was the largest job in the
+      # repo. The setup every shard has to repeat is small -- checkout, Linux deps,
+      # Install Unsloth, Playwright browsers, about 2.6 minutes -- so splitting it is
+      # nearly all profit in wall-clock, which is the thing being optimised. Runner
+      # minutes go up. That is the trade, taken deliberately.
+      #
+      # The boundaries are the Studio instances, not an even division of scripts: a
+      # Studio boot, its health wait, its bootstrap password and the scripts that drive
+      # it have to stay on one machine. So `chat` takes 18892 and the cross-browser
+      # permission pass, `extra` and `banner` each boot their own 18894 (the two banner
+      # engines alone were 7.25 of the 17.6 minutes, which is why they are a shard), and
+      # `picker` takes 18898 and 18896, which are small and adjacent.
+      #
+      # In-machine parallelism is deliberately NOT used here. These are separate runners,
+      # so each still boots one Studio at a time and nothing competes for RAM.
+      fail-fast: false
+      matrix:
+        shard: [chat, extra, banner, picker]
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -92,10 +120,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       # Static reads, so it runs first and fails fast; nothing else runs it.
       - name: Playwright locator contract (static)
+        if: matrix.shard == 'chat'
         run: |
           python -m pip install --quiet 'pytest>=8'
           python -m pytest tests/studio/test_stt_model_search_locator_contract.py -q
@@ -129,12 +157,15 @@ jobs:
         # merge ref -- per GitHub's docs they "can only be restored by re-runs
         # of the pull request" -- while every PR *can* restore from the default
         # branch. So a PR-scoped save helps almost nothing and competes for the
-        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # per-repo cache budget, and when that budget is exceeded GitHub evicts
         # by least-recently-used, which deletes main's copies that all PRs share.
-        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
-        # same 4.6GB model held four times on four different PR refs and no copy
-        # on main at all. That is the thrash loop: PR misses -> downloads ->
-        # saves its own copy -> evicts main's -> next PR misses.
+        # This repo's budget is 50 GiB, not GitHub's 10GB default, and it was
+        # measured at 49.63 GiB across 258 entries -- 99.3% full, so eviction runs
+        # at the margin. 20.74 GiB of that (42%) is the SAME key held on several
+        # refs, and every one of those keys already has a copy on main, so the
+        # PR-scoped duplicates are redundant by construction. That is the thrash
+        # loop: PR misses -> downloads -> saves its own copy -> evicts main's ->
+        # next PR misses.
         if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
@@ -149,17 +180,75 @@ jobs:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
-      - name: Install Playwright browsers
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
         run: |
           pip install 'playwright>=1.45'
-          python -m playwright install --with-deps chromium firefox webkit
+          echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Three browser engines, downloaded on every job, on every run, uncached. It was
+      # 0.75 minutes when one job needed them; with four shards it is four times that,
+      # and it sits on the critical path of each one.
+      #
+      # Keyed on the resolved Playwright version because that is what decides which
+      # browser builds are wanted: a floating '>=1.45' that resolves higher must not hit
+      # a cache holding the older engines.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+
+      - name: Install Playwright browsers
+        id: pw-install
+        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
+        # the cached directory, so a restored cache without it gives browsers that cannot
+        # start. Only the download is skipped, which is the part that costs.
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            python -m playwright install-deps chromium firefox webkit
+          else
+            python -m playwright install --with-deps chromium firefox webkit
+          fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Reset auth + boot Unsloth
+        if: matrix.shard == 'chat'
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
+        if: matrix.shard == 'chat'
         # The 180 s deadline lives in wait-for-health.sh, along with the
         # reason for it: a cold runner with venv warm-up + lazy imports
         # has been seen to exceed 60 s.
@@ -167,6 +256,7 @@ jobs:
           bash .github/scripts/wait-for-health.sh --port "$STUDIO_PORT"
 
       - name: Pass bootstrap password to the Playwright step
+        if: matrix.shard == 'chat'
         # The Playwright test does its OWN /change-password through the
         # UI (Setup your account / Choose a new password), then loads
         # the model via page.evaluate against /api/inference/load with
@@ -192,6 +282,7 @@ jobs:
           echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
 
       - name: Drive the chat UI with Playwright
+        if: matrix.shard == 'chat'
         env:
           BASE_URL: http://127.0.0.1:18892
           # The test file lives in the repo so it can be run locally
@@ -207,12 +298,13 @@ jobs:
           python tests/studio/playwright_chat_ui.py
 
       - name: Stop Unsloth (chat-ui ends with Shutdown click; this is belt-and-suspenders)
-        if: always()
+        if: (always()) && (matrix.shard == 'chat')
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
       - name: Cross-browser permission controls
+        if: matrix.shard == 'chat'
         run: |
           bash .github/scripts/run-studio-permission-browser.sh 18893 firefox
           bash .github/scripts/run-studio-permission-browser.sh 18893 webkit
@@ -224,16 +316,19 @@ jobs:
       # second one on a different port. Boot is fast (~3-5s on the
       # warm install we already did) so this adds little wall time.
       - name: Reset auth + boot Unsloth for extra UI tests (port 18894)
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18894 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18894
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18894 --log logs/studio_extra.log --tmp /tmp/health2.json
 
       - name: Pass bootstrap pw for extra UI test
+        if: matrix.shard == 'extra' || matrix.shard == 'banner'
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIUiExtra-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
@@ -243,6 +338,7 @@ jobs:
           echo "STUDIO_EXTRA_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive Compare/Recipes/Export/Unsloth/Settings with Playwright
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -256,6 +352,7 @@ jobs:
           python tests/studio/playwright_extra_ui.py
 
       - name: Per-chat settings persistence (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_NEW_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -265,6 +362,7 @@ jobs:
           python tests/studio/playwright_thread_scoped_settings.py
 
       - name: UI font size scaling regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -274,6 +372,7 @@ jobs:
           python tests/studio/playwright_ui_font_scale.py
 
       - name: Update banner layout regression (Playwright)
+        if: matrix.shard == 'banner'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -290,6 +389,7 @@ jobs:
       # this runner gets to Safari. Cut down to `spot` because a third full
       # pass would spend minutes re-answering the first pass's questions.
       - name: Update banner layout, other engines (Playwright)
+        if: matrix.shard == 'banner'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_OLD_PW: ${{ env.STUDIO_EXTRA_OLD_PW }}
@@ -303,6 +403,7 @@ jobs:
           done
 
       - name: Image model full-footprint selector regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -312,6 +413,7 @@ jobs:
           python tests/studio/playwright_image_model_footprint.py
 
       - name: Image staged-download cancel/retry regression (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -323,6 +425,7 @@ jobs:
       # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
       # the queue's ordering and cancellation are covered as well as the single-entry path.
       - name: Image staged-download cancel/retry regression, cold checkpoint (Playwright)
+        if: matrix.shard == 'extra'
         env:
           BASE_URL: http://127.0.0.1:18894
           STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
@@ -333,7 +436,7 @@ jobs:
           python tests/studio/playwright_image_download_cancel_retry.py
 
       - name: Stop second Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'extra' || matrix.shard == 'banner')
         run: |
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
@@ -344,22 +447,26 @@ jobs:
       # Reset clears the stored override (never pins it), and the infra models
       # (RAG embedder + llama.cpp probe) stay hidden from the picker.
       - name: Reset auth + boot Unsloth for model-config tests (port 18898)
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18898 --log logs/studio_modelcfg.log --pid-var STUDIO_MODELCFG_PID
 
       - name: Wait for /api/health on 18898
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18898 --log logs/studio_modelcfg.log --tmp /tmp/health4.json
 
       - name: Pass bootstrap pw for model-config test
+        if: matrix.shard == 'picker'
         run: |
           NEW="CIModelCfg-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
           echo "::add-mask::$NEW"
           echo "STUDIO_MODELCFG_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive model-picker per-model-config with Playwright
+        if: matrix.shard == 'picker'
         env:
           BASE_URL: http://127.0.0.1:18898
           STUDIO_NEW_PW: ${{ env.STUDIO_MODELCFG_NEW_PW }}
@@ -373,7 +480,7 @@ jobs:
           python tests/studio/playwright_model_config.py
 
       - name: Stop fourth Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'picker')
         run: |
           kill "${STUDIO_MODELCFG_PID}" 2>/dev/null || true
           sleep 2
@@ -382,16 +489,19 @@ jobs:
       # Third Unsloth on its own port so a hang here cannot poison the
       # earlier UI tests. No GGUF -- the bug surface is the composer.
       - name: Reset auth + boot Unsloth for IME / i18n tests (port 18896)
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/boot-studio-api-only.sh \
             --port 18896 --log logs/studio_ime.log --pid-var STUDIO_IME_PID
 
       - name: Wait for /api/health on 18896
+        if: matrix.shard == 'picker'
         run: |
           bash .github/scripts/wait-for-health.sh \
             --port 18896 --log logs/studio_ime.log --tmp /tmp/health3.json
 
       - name: Pass bootstrap pw for IME / i18n test
+        if: matrix.shard == 'picker'
         # IME smoke does the change-password against the bootstrap that
         # Unsloth's frontend injects into the page, so it only needs the
         # NEW password.
@@ -401,6 +511,7 @@ jobs:
           echo "STUDIO_IME_NEW_PW=$NEW" >> "$GITHUB_ENV"
 
       - name: Drive IME + multilingual paste regression with Playwright
+        if: matrix.shard == 'picker'
         env:
           BASE_URL: http://127.0.0.1:18896
           STUDIO_NEW_PW: ${{ env.STUDIO_IME_NEW_PW }}
@@ -411,12 +522,21 @@ jobs:
           python tests/studio/playwright_chat_ime_i18n.py
 
       - name: Stop third Unsloth
-        if: always()
+        if: (always()) && (matrix.shard == 'picker')
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
-          # Capture backend + llama-server logs (all three Studios share this
-          # dir) so a stray 500 has a server-side traceback.
+
+      # Every shard, not just the one that happened to own the last Studio.
+      #
+      # This copy used to sit inside the step above, with a comment saying all three
+      # Studios share the directory. That was true when they shared a RUNNER. Each cell
+      # now has its own machine and its own ~/.unsloth/studio/logs, so leaving it there
+      # would upload three artifacts with no server-side traceback in them, and those are
+      # the artifacts anyone debugging a failed shard would open first.
+      - name: Capture the backend and llama-server logs
+        if: always()
+        run: |
           mkdir -p logs/server-logs
           cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
@@ -426,7 +546,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: studio-ui-smoke-artifacts
+          # Per shard: artifacts are immutable within a run, so four cells uploading one
+          # name means the first wins and the other three fail the step. It carries
+          # if: always() and no continue-on-error, so that would turn passing UI runs red.
+          name: studio-ui-smoke-artifacts-${{ matrix.shard }}
           path: |
             logs/studio.log
             logs/studio_extra.log
@@ -489,7 +612,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install Unsloth (--local, --no-torch)
         uses: ./.github/actions/install-unsloth-local
@@ -498,16 +620,133 @@ jobs:
           # Withheld on PR: this step runs checked-out PR code.
           hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
-      - name: Install Playwright browsers
+      - name: Pin the Playwright version so the browser cache has a key
+        id: pw
         run: |
           pip install 'playwright>=1.45'
-          python -m playwright install --with-deps chromium firefox webkit
+          echo "version=$(python -c 'import playwright; from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      # Three browser engines, downloaded on every job, on every run, uncached. It was
+      # 0.75 minutes when one job needed them; with four shards it is four times that,
+      # and it sits on the critical path of each one.
+      #
+      # Keyed on the resolved Playwright version because that is what decides which
+      # browser builds are wanted: a floating '>=1.45' that resolves higher must not hit
+      # a cache holding the older engines.
+      - name: Restore the Playwright browser cache
+        id: pw-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
+
+      - name: Install Playwright browsers
+        id: pw-install
+        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
+        # the cached directory, so a restored cache without it gives browsers that cannot
+        # start. Only the download is skipped, which is the part that costs.
+        run: |
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            python -m playwright install-deps chromium firefox webkit
+          else
+            python -m playwright install --with-deps chromium firefox webkit
+          fi
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
+      - name: Save the Playwright browser cache
+        if: >-
+          always() && github.ref == 'refs/heads/main'
+          && steps.pw-cache.outputs.cache-hit != 'true'
+          && steps.pw-install.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-cfw-v1
 
       - name: Cross-browser loaded-models indicator
+        # The three engines are independent runs of the same suite, and running
+        # them one after another was ~870s of this job's ~1000s -- the largest
+        # single block of Linux wall-clock in CI. They are disjoint: each boots
+        # its own server and drives its own browser, so the only reason they
+        # could not overlap was shared state, not shared work.
+        #
+        # Note the sibling ui-smoke job says in-machine parallelism is
+        # deliberately not used there. That reasoning is "these are separate
+        # runners, so each still boots one Studio at a time" -- it is an argument
+        # about a SHARDED job, and this job has no shards to spread across.
+        #
+        # Two things are shared, and each gets split rather than serialised:
+        #
+        #   port  -- one per engine, so three servers coexist.
+        #   UNSLOTH_STUDIO_HOME -- one per engine. The script wipes
+        #     $studio_home/auth so the boot mints a fresh .bootstrap_password,
+        #     then reads that file back. On a shared home the three runs would
+        #     race destructively: one wipes the password another just minted and
+        #     is about to log in with.
+        #
+        # UNSLOTH_STUDIO_HOME is the CLI's INSTALL root, not just a data root, so a
+        # bare empty directory is not usable: unsloth_cli/commands/studio.py resolves
+        # $UNSLOTH_STUDIO_HOME/unsloth_studio/bin/python and exits "Unsloth Studio not
+        # set up. Run install.sh first." before binding a port. So each per-engine home
+        # SYMLINKS the one venv install.sh already built under ~/.unsloth/studio, and
+        # owns only the mutable state that sits beside it: auth/, studio.db, cache/.
+        #
+        # That keeps it cheap. Nothing is copied or rebuilt per engine, the frontend
+        # still comes from a package-relative path inside the shared venv, and the suite
+        # is UNSLOTH_API_ONLY with the /status endpoints stubbed via page.route, so a
+        # fresh home needs no model, no GPU and no llama.cpp build. That last part is
+        # what makes this safe for THIS suite and not for a job whose home holds a
+        # downloaded model.
         run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+          mkdir -p logs
+          installed_home="${UNSLOTH_STUDIO_HOME:-$HOME/.unsloth/studio}"
+          test -x "$installed_home/unsloth_studio/bin/python" \
+            || { echo "::error::no studio venv under $installed_home"; exit 1; }
+          pids=""
+          for spec in "18899 chromium" "18900 firefox" "18901 webkit"; do
+            port="${spec% *}"
+            engine="${spec#* }"
+            home="${{ github.workspace }}/.studio-indicator-$engine"
+            mkdir -p "$home"
+            ln -sfn "$installed_home/unsloth_studio" "$home/unsloth_studio"
+            UNSLOTH_STUDIO_HOME="$home" \
+              bash .github/scripts/run-studio-indicator-browser.sh "$port" "$engine" \
+              >"logs/indicator-$engine.out" 2>&1 &
+            pids="$pids $!:$engine"
+          done
+          # Wait on ALL of them before failing, so one engine's breakage does not
+          # hide another's: a sequential run reported only the first failure.
+          rc=0
+          for entry in $pids; do
+            if ! wait "${entry%%:*}"; then
+              echo "::error::loaded-models indicator failed in ${entry##*:}"
+              rc=1
+            fi
+          done
+          for f in logs/indicator-*.out; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          exit "$rc"
 
       - name: Upload Playwright artifacts
         # Always, so a green run's screenshots stay reviewable: this suite is
@@ -519,4 +758,5 @@ jobs:
           path: |
             logs/playwright-indicator-*
             logs/studio-indicator-*.log
+            logs/indicator-*.out
           retention-days: 1

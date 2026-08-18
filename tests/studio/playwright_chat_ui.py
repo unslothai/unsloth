@@ -1267,6 +1267,32 @@ with sync_playwright() as p:
             f"{state['intercepted']})"
         )
 
+    # Settle before the five-turn sequence below: two bubbles, nothing streaming,
+    # nothing queued. That is the whole job of this wait. What the turns SAID is
+    # not checked here and never was; the queue behaviour this step exists to
+    # prove is `state.queueSeen` above.
+    #
+    # This used to also require every reply's innerText to be non-empty, which
+    # measured the action bar, not the reply. innerText of a message root spans
+    # the whole subtree, and the assistant action bar sits inside it, so the
+    # clause was satisfied by button labels ("Copy Edit response Refresh Delete
+    # message Read aloud More" plus the tok/s readout) whatever the model
+    # returned. Instrumented at this exact point on the CI runners, comparing the
+    # message content element against the message root, two passing runs read:
+    #
+    #   content=[0, 0]   innerText=[73, 73]  -> clause held, both replies empty
+    #   content=[0, 19]  innerText=[73, 89]  -> clause held, first reply empty
+    #
+    # gemma-3-270m-it answers "Reply with exactly: rapid-first" with an empty
+    # completion often enough to appear in 3 of 8 sampled runs, and the clause
+    # held anyway every time, so it never had the coverage its wording implies.
+    # A content-based replacement would be flakier than what it replaces, because
+    # an empty completion is the model's behaviour, not a defect in Studio.
+    #
+    # It matters now because the assistant action bar autohides on every reply but
+    # the newest, so for the older of the two this reads, the labels are no longer in
+    # the subtree and the clause finally started reporting what it was actually
+    # measuring: a hidden hover affordance.
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
@@ -1274,7 +1300,6 @@ with sync_playwright() as p:
             ).slice(-2);
             return replies.length === 2 &&
                 document.querySelectorAll('[data-role="assistant"]').length >= want &&
-                replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
                 !document.querySelector('button[aria-label="Stop generating"]') &&
                 !document.querySelector('button[aria-label="Remove queued prompt 1"]');
         }""",
