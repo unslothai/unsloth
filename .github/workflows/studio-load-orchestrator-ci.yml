@@ -49,8 +49,8 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
       # One definition, shared with the Lint CI lane that runs this on every commit.
-      # No venv argument here: this job owns its interpreter.
+      # No venv argument here: this job owns its interpreter, and #9151 removed the
+      # pip cache from it because it installs almost nothing.
       - name: Run load-orchestrator tests
         run: bash .github/scripts/lane-load-orchestrator.sh

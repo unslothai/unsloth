@@ -21,12 +21,15 @@ on:
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/playwright_settings_tabs.py'
-
       - 'tests/studio/playwright_stream_pacing.py'
-      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
+      # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_gap_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
@@ -159,62 +162,6 @@ jobs:
         run: npm test
 
 
-      - name: Install Chromium for browser smokes
-        working-directory: ${{ github.workspace }}
-        run: |
-          python3 -m pip install 'playwright>=1.45,<2' pytest
-          python3 -m playwright install --with-deps chromium
-
-      # Cheap and browserless, but it imports the harnesses, which import playwright, so it has
-      # to sit after the install. Covers the Windows teardown branch no runner here executes.
-      - name: Dev-server lifecycle tests
-        working-directory: ${{ github.workspace }}
-        run: |
-          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
-            tests/studio/test_autoscroll_harness_contract.py -q
-
-      - name: Browser smoke for ANSI tool output
-        working-directory: ${{ github.workspace }}
-        env:
-          PW_BROWSER: chromium
-        run: python3 tests/studio/playwright_strip_ansi_smoke.py
-
-      # Each harness owns its vite dev server, like the ANSI smoke above. Starting one here
-      # would background npm, so $! is the wrapper and killing it orphans the node child.
-      - name: Browser smoke for chat autoscroll
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_chat_autoscroll.py
-
-      - name: Browser smoke for research freeze
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_research_freeze.py
-
-      # The settings panels are fetched on first view, so only a browser can answer whether
-      # every tab renders and deep-opens land (and abandoned ones do not come back).
-      - name: Browser smoke for the settings tab panels
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_settings_tabs.py
-
-      # A panel that cannot be fetched is new with lazy loading, and nothing above the
-      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
-      - name: Browser smoke for a settings panel that cannot load
-        working-directory: ${{ github.workspace }}
-        env:
-          PW_CHUNK_FAIL: data
-          PW_PORT: '5400'
-          PW_OUT: logs/settings_tabs_blocked_report.json
-        run: python3 tests/studio/playwright_settings_tabs.py
-
-      # Reports, does not gate, for now. The budgets inside are calibrated on a
-      # developer machine, and this measures a CPU-bound render on a shared runner
-      # under 6x throttling, so a budget set from one box is a flake waiting to
-      # happen. Tighten it from observed runs here and drop continue-on-error, the
-      # way the startup profile did.
-      - name: Browser smoke for chat stream pacing
-        working-directory: ${{ github.workspace }}
-        continue-on-error: true
-        run: python3 tests/studio/playwright_stream_pacing.py
-
       - name: Build
         run: npm run build
 
@@ -245,6 +192,104 @@ jobs:
       # everything Vite preloads for it, fetched and executed before first paint.
       - name: Startup bundle budget
         run: npm run bundle:check
+
+      # Smokes go last: every step carries an implicit success(), so running them ahead of
+      # the build gates let one red smoke skip the build and all three bundle assertions.
+      # Costs nothing here, since each smoke starts its own vite server and reads no dist/.
+      - name: Install Chromium for browser smokes
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2' pytest
+          python3 -m playwright install --with-deps chromium
+
+      # Browserless, but imports the harnesses (hence playwright), so it sits after the
+      # install. Covers the Windows teardown branch no runner here executes.
+      - name: Dev-server lifecycle tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
+            tests/studio/test_autoscroll_harness_contract.py \
+            tests/studio/test_heavy_thread_harness_contract.py \
+            tests/studio/test_heavy_thread_measurement_integrity.py \
+            tests/studio/test_heavy_thread_gap_contract.py -q
+
+      - name: Browser smoke for ANSI tool output
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_BROWSER: chromium
+        run: python3 tests/studio/playwright_strip_ansi_smoke.py
+
+      # Each harness owns its vite server: starting one here backgrounds npm, so $! is the
+      # wrapper and killing it orphans the node child.
+      - name: Browser smoke for chat autoscroll
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_chat_autoscroll.py
+
+      - name: Browser smoke for research freeze
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_research_freeze.py
+
+      # Two small sizes and one repetition on Chromium: enough to prove the fixture still
+      # renders every kind of content it claims to and that the curve still rises, which is all
+      # a PR gate can afford. The measurement this harness exists for is the three-engine,
+      # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
+      # asked for it deliberately, not on every frontend PR.
+      - name: Browser smoke for heavy-thread interaction cost
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_HEAVY_CHARS: '25000,100000'
+          SMOKE_HEAVY_ENGINES: chromium
+          SMOKE_HEAVY_REPEATS: '1'
+          PW_ART_DIR: logs/playwright_heavy_thread
+        run: python3 tests/studio/playwright_heavy_thread.py
+
+      # The settings panels are fetched on first view, so only a browser can answer whether
+      # every tab renders and deep-opens land (and abandoned ones do not come back).
+      - name: Browser smoke for the settings tab panels
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_settings_tabs.py
+
+      # A panel that cannot be fetched is new with lazy loading, and nothing above the
+      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      - name: Browser smoke for a settings panel that cannot load
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_CHUNK_FAIL: data
+          PW_PORT: '5400'
+          PW_OUT: logs/settings_tabs_blocked_report.json
+        run: python3 tests/studio/playwright_settings_tabs.py
+
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
+      - name: Browser smoke for chat stream pacing
+        id: stream_pacing
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+        run: python3 tests/studio/playwright_stream_pacing.py
+
+      # Screenshot and serialized DOM the harnesses write on failure; small, kept only then.
+      #
+      # `failure()` alone is not enough. The stream-pacing smoke is `continue-on-error`, which
+      # rewrites its CONCLUSION to success while leaving its OUTCOME as failure, so on the runs
+      # where it is the only thing that failed -- the runs where its report is the whole point --
+      # `failure()` is false and the report went nowhere. Check its raw outcome too.
+      - name: Upload browser smoke artifacts
+        if: failure() || steps.stream_pacing.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: studio-frontend-smoke-artifacts
+          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
+          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
+          # everything EXCEPT the report of the smoke that had just failed.
+          path: |
+            logs/playwright-*
+            logs/settings_tabs_report.json
+            logs/settings_tabs_blocked_report.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Biome (non-blocking until accumulated drift is cleared)
         continue-on-error: true
