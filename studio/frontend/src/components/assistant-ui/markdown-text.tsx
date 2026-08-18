@@ -41,6 +41,7 @@ import {
   type StreamdownProps,
 } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
+import { MarkdownBlockBoundary } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
@@ -409,7 +410,20 @@ function StreamdownBlockContent(props: BlockProps) {
 
   return <Block {...blockProps} />;
 }
-const StreamdownBlock = memo(StreamdownBlockContent);
+/**
+ * Every block is rendered inside a boundary. Streamdown fetches the code
+ * highlighter and the Mermaid renderer with `React.lazy` the first time a reply
+ * needs them, and a rejected import rethrows during render; without this the
+ * nearest catcher is the ROUTER's, which replaces all of Studio and takes the
+ * reply and its runtime with it. Per block, so one fence losing its colours
+ * costs only that fence.
+ */
+const StreamdownBlock = memo((props: BlockProps) => (
+  <MarkdownBlockBoundary content={props.content}>
+    <StreamdownBlockContent {...props} />
+  </MarkdownBlockBoundary>
+));
+StreamdownBlock.displayName = "StreamdownBlock";
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
 // Coalesce only token events that arrive before the browser's next paint, as
