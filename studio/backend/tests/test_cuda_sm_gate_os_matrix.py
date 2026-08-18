@@ -116,7 +116,9 @@ def _gate(monkeypatch, *, sms, caps_rows):
         LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: "/x/llama-server")
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "_runtime_remedy", classmethod(lambda cls, b: "run `unsloth studio update`")
+        LlamaCppBackend,
+        "_runtime_remedy",
+        classmethod(lambda cls, b: "run `unsloth studio update`"),
     )
     return LlamaCppBackend._cuda_sm_gate_error()
 
@@ -164,26 +166,22 @@ class TestTheSmFloorDecision:
         "sms, cap, refused",
         [
             (CUDA12_OLDER, "7.5", False),  # exactly the floor
-            (CUDA12_OLDER, "7.0", True),   # below every compiled arch
+            (CUDA12_OLDER, "7.0", True),  # below every compiled arch
             (CUDA12_OLDER, "9.0", False),  # newer card JITs the PTX forward
-            (CUDA13_NEWER, "8.9", True),   # sm_89 below an sm_100 floor
+            (CUDA13_NEWER, "8.9", True),  # sm_89 below an sm_100 floor
             (CUDA13_NEWER, "12.0", False),
-            (["120"], "12.1", False),      # GB10 on a 5090 bundle, same major
-            (["121"], "12.0", True),       # sm_121 PTX cannot JIT down to sm_120
+            (["120"], "12.1", False),  # GB10 on a 5090 bundle, same major
+            (["121"], "12.0", True),  # sm_121 PTX cannot JIT down to sm_120
         ],
     )
     def test_floor_not_exact_membership(self, sms, cap, refused, monkeypatch):
         """Only the too-old direction is broken; an exact-SM test would refuse
         working installs (the legacy sm_50-61 PTX bundle drives an sm_86 host)."""
-        error = _gate(
-            monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n"
-        )
+        error = _gate(monkeypatch, sms = frozenset(int(s) for s in sms), caps_rows = f"0, {cap}\n")
         assert bool(error) is refused, error
 
     def test_a_mixed_host_passes_on_its_newest_card(self, monkeypatch):
-        assert _gate(
-            monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n"
-        ) is None
+        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
 
     def test_every_card_too_old_names_them_all(self, monkeypatch):
         error = _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 7.0\n")
@@ -195,7 +193,9 @@ class TestTheSmFloorDecision:
 
     def test_a_failing_probe_fails_open(self, monkeypatch):
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_llama_cuda_sms", staticmethod(lambda binary = None: frozenset({86}))
+            LlamaCppBackend,
+            "_installed_llama_cuda_sms",
+            staticmethod(lambda binary = None: frozenset({86})),
         )
         monkeypatch.setattr(subprocess, "run", _smi("0, 7.5\n", returncode = 9))
         monkeypatch.setattr(
@@ -212,9 +212,7 @@ class TestVisibilityMasks:
     def test_a_numeric_mask_hiding_the_old_card_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        assert _gate(
-            monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n"
-        ) is None
+        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n1, 8.6\n") is None
 
     def test_a_numeric_mask_hiding_the_new_card_still_refuses(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
@@ -225,16 +223,12 @@ class TestVisibilityMasks:
     def test_an_unordered_numeric_mask_fails_open(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
         monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
-        assert _gate(
-            monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n"
-        ) is None
+        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n") is None
 
     def test_an_empty_mask_hides_everything_and_opens_the_gate(self, monkeypatch):
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
         monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-        assert _gate(
-            monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n"
-        ) is None
+        assert _gate(monkeypatch, sms = frozenset({86}), caps_rows = "0, 7.5\n") is None
 
     @pytest.mark.parametrize(
         "mask",
@@ -243,9 +237,7 @@ class TestVisibilityMasks:
             "MIG-GPU-c0ffee00-1111-2222-3333-444455556666/1/0",
         ],
     )
-    def test_a_uuid_or_mig_mask_is_ignored_and_the_whole_host_is_judged(
-        self, mask, monkeypatch
-    ):
+    def test_a_uuid_or_mig_mask_is_ignored_and_the_whole_host_is_judged(self, mask, monkeypatch):
         """These name no physical index we can map back, so the mask is dropped
         and every enumerated card is weighed. That errs toward launching (one
         covered card anywhere opens the gate) and only refuses when nothing on
@@ -258,14 +250,13 @@ class TestVisibilityMasks:
 
 
 class TestMarkerParsing:
-    @pytest.mark.parametrize(
-        "raw", [None, [], "86", ["gfx1100"], ["86", "abc"], ["8.6"], [""]]
-    )
+    @pytest.mark.parametrize("raw", [None, [], "86", ["gfx1100"], ["86", "abc"], ["8.6"], [""]])
     def test_unusable_coverage_reads_as_unknown(self, raw, monkeypatch, tmp_path):
         from utils import llama_cpp_freshness as freshness
-
         monkeypatch.setattr(
-            freshness, "read_install_marker", lambda b: {"supported_sms": raw} if raw is not None else {}
+            freshness,
+            "read_install_marker",
+            lambda b: {"supported_sms": raw} if raw is not None else {},
         )
         assert LlamaCppBackend._installed_llama_cuda_sms("/x/llama-server") is None
 

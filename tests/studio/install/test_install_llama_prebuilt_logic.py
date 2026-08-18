@@ -5115,9 +5115,7 @@ def test_a_non_cuda_bundle_declares_no_supported_sms(tmp_path: Path, install_kin
     treats as unknown coverage. Pin that invariant at the writing end."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
-    choice = _cuda_choice(
-        install_kind = install_kind, runtime_line = runtime_line, supported_sms = None
-    )
+    choice = _cuda_choice(install_kind = install_kind, runtime_line = runtime_line, supported_sms = None)
     write_prebuilt_metadata(
         install_dir,
         requested_tag = "latest",
