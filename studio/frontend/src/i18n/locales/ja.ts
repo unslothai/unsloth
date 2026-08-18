@@ -1088,6 +1088,9 @@ export const ja = {
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
       manageAction: "管理",
+      manageChats: "チャットを管理",
+      manageChatsDescription:
+        "複数のチャットを選択して移動、ピン留め、アーカイブ、エクスポート、削除できます。",
       exportArchivedChats: "エクスポート",
       exportingArchivedChats: "エクスポート中...",
       exportedOneArchivedChat: "アーカイブ済みチャット 1 件をエクスポートしました",
