@@ -817,6 +817,50 @@ def test_unlimited_stream_keeps_header_and_idle_timeouts(monkeypatch):
     assert timeouts[0].read == research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
 
 
+class _QueuedThenSilentResponse:
+    """A backend that announces it is queueing and then never says anything else."""
+
+    status_code = 200
+
+    def raise_for_status(self):
+        return None
+
+    async def aclose(self):
+        return None
+
+    async def aiter_lines(self):
+        yield research_runs._ADMISSION_WAIT_COMMENT
+        await asyncio.sleep(3600)
+
+
+# Queueing is not charged to the request budget, so with no wall clock behind it a backend
+# that queues and then goes quiet would otherwise hold the run open indefinitely.
+def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
+    _install_fake_client(monkeypatch, [_QueuedThenSilentResponse()])
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.2)
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(0)
+    run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 1
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        asyncio.run(
+            asyncio.wait_for(
+                supervisor._stream_completion(run, [{"role": "user"}], report_progress = False),
+                timeout = 30,
+            )
+        )
+
+
+def test_model_wait_budget_stays_bounded_for_any_request_budget():
+    waits = research_runs._MAX_MODEL_WAITS + 1
+    # Unchanged for every budget the shipped range already allowed.
+    assert research_runs._model_wait_budget(_waiting_run(3600)) == 3600 / waits
+    assert research_runs._model_wait_budget(_waiting_run(1800)) == 1800 / waits
+    # Unlimited uses the shipped default, and an oversized finite budget is capped.
+    assert research_runs._model_wait_budget(_waiting_run(0)) == 900 / waits
+    assert research_runs._model_wait_budget(_waiting_run(10**9)) == 3600 / waits
+
+
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
     # Gathered page text lands in these prompts, and --enable-tools would otherwise
     # override the request and expand an omitted enabled_tools to every built-in.

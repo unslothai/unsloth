@@ -9,7 +9,6 @@ import asyncio
 import json
 import re
 import sqlite3
-import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -48,8 +47,10 @@ _SENSITIVE_KEY_SUFFIXES = (
     "sessiontoken",
 )
 _MAX_PLAN_STEPS = 30
-# Zero is the unlimited sentinel. Positive values become an httpx float timeout in the worker.
-_MAX_FINITE_MODEL_TIMEOUT_SECONDS = int(sys.float_info.max)
+# Zero is the unlimited sentinel, so a finite value only has to cover the longest run anyone
+# would set: a year reads back in the 400, unlike a float-max ceiling.
+_MIN_FINITE_MODEL_TIMEOUT_SECONDS = 10
+_MAX_FINITE_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600
 _DELTA_ONLY_EVENTS = {
     "reasoning.updated",
     "report.updated",
@@ -313,17 +314,23 @@ def _sanitize_config(payload: CreateResearchRun, thread: dict) -> dict:
         "maxSteps": (1, _MAX_PLAN_STEPS),
         "maxSources": (1, 100),
         # Zero disables the total wall-clock deadline. Per-output stall deadlines still apply.
-        "modelTimeoutSeconds": (0, _MAX_FINITE_MODEL_TIMEOUT_SECONDS),
+        "modelTimeoutSeconds": (
+            _MIN_FINITE_MODEL_TIMEOUT_SECONDS,
+            _MAX_FINITE_MODEL_TIMEOUT_SECONDS,
+        ),
         "toolTimeoutSeconds": (5, 600),
         # Same range as its parent: slow CPU and offloaded models need minutes to first token.
         "firstOutputTimeoutSeconds": (10, 3600),
     }
     for key, (minimum, maximum) in limits.items():
-        if budgets[key] < minimum or (maximum is not None and budgets[key] > maximum):
-            range_label = (
-                f"at least {minimum}" if maximum is None else f"between {minimum} and {maximum}"
-            )
-            raise HTTPException(status_code = 400, detail = f"{key} must be {range_label}")
+        # The sentinel is not a short timeout, so it skips the floor rather than lowering it.
+        if key == "modelTimeoutSeconds" and budgets[key] == 0:
+            continue
+        if not minimum <= budgets[key] <= maximum:
+            allowed = f"between {minimum} and {maximum}"
+            if key == "modelTimeoutSeconds":
+                allowed = f"0 (unlimited) or {allowed}"
+            raise HTTPException(status_code = 400, detail = f"{key} must be {allowed}")
     # Server-controlled, not client tunable. OFF unless UNSLOTH_RESEARCH_AUTO_SCRAPE=1, and
     # injected only when enabled, so a default run's budgets stay byte-identical to legacy.
     from core.research_runs import _auto_scrape_default

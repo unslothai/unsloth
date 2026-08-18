@@ -112,6 +112,18 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+# Model-loading budget when the request budget is unlimited, and its ceiling for any budget:
+# a poll loop must stay bounded however long generation itself is allowed to run.
+_DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
+_MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
+
+
+def _model_wait_budget(run: dict) -> float:
+    """Share of the request budget one model wait may spend, clamped so neither an unlimited
+    budget nor an oversized finite one leaves the poll loop unbounded."""
+    timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
+    capped = min(timeout or _DEFAULT_MODEL_TIMEOUT_SECONDS, _MAX_MODEL_WAIT_BUDGET_SECONDS)
+    return capped / (_MAX_MODEL_WAITS + 1)
 
 
 def _auto_scrape_default() -> int:
@@ -992,9 +1004,7 @@ class ResearchSupervisor:
         loop = asyncio.get_running_loop()
         # Share the model budget across the allowed waits: spending all of it on one lets the
         # enclosing wall clock fire first, burying the real refusal under a timeout.
-        model_timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
-        # Unlimited generation still bounds model-loading retries at the shipped default.
-        budget = (model_timeout or 900.0) / (_MAX_MODEL_WAITS + 1)
+        budget = _model_wait_budget(run)
         if max_seconds is not None:
             budget = min(budget, max_seconds)
         deadline = loop.time() + budget
@@ -1017,9 +1027,7 @@ class ResearchSupervisor:
         step = _retry_after_seconds(response) or _MODEL_SWITCH_RETRY_SECONDS
         # Same budget share as _wait_for_local_model: one wait must leave room for the others and
         # for the refusal, or the enclosing wall clock fires first and reports a timeout instead.
-        model_timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
-        budget = (model_timeout or 900.0) / (_MAX_MODEL_WAITS + 1)
-        remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, budget)
+        remaining = min(step * waits, _NAMED_MODEL_WAIT_SECONDS, _model_wait_budget(run))
         logger.info("research.waiting_for_model_switch run_id=%s seconds=%.0f", run_id, remaining)
         while remaining > 0:
             await self._check_active(run_id)
@@ -1269,13 +1277,12 @@ class ResearchSupervisor:
                 first_output_budget = min(first_output_budget, model_timeout)
             # Unlimited only removes the total wall-clock deadline. Keep connection and response
             # headers bounded, but never let HTTPX's body-read timeout undercut the idle guard.
+            # The same bound caps the silence between queue notices, which no wall clock covers.
+            admission_gap_budget = max(first_output_budget, _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS)
             timeout = (
                 httpx.Timeout(model_timeout)
                 if model_timeout
-                else httpx.Timeout(
-                    first_output_budget,
-                    read = max(first_output_budget, _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS),
-                )
+                else httpx.Timeout(first_output_budget, read = admission_gap_budget)
             )
             loop = asyncio.get_running_loop()
 
@@ -1373,7 +1380,11 @@ class ResearchSupervisor:
                             # for it, and start the budget when the slot is granted. A plain
                             # ": keep-alive" means a silent backend, which is what we bound.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
-                                first_output_deadline = None
+                                # Unlimited has no wall clock behind this, so bound the gap
+                                # between queue notices; each one refreshes it.
+                                first_output_deadline = (
+                                    None if model_timeout else loop.time() + admission_gap_budget
+                                )
                             elif line.startswith(_ADMISSION_DONE_COMMENT):
                                 first_output_deadline = loop.time() + first_output_budget
                             continue

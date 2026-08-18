@@ -1478,10 +1478,16 @@ def test_research_budget_limits_allow_unlimited_model_requests():
     payload.budgets["modelTimeoutSeconds"] = 0
     assert _sanitize_config(payload, {"modelId": "local-model"})["budgets"] == payload.budgets
 
-    payload.budgets["modelTimeoutSeconds"] = 10**310
-    with pytest.raises(HTTPException, match = "modelTimeoutSeconds must be between"):
-        _sanitize_config(payload, {"modelId": "local-model"})
+    # The ceiling reads back in the 400, and the sentinel is the only sub-floor value allowed.
+    for rejected in (10**310, 9, -1):
+        payload.budgets["modelTimeoutSeconds"] = rejected
+        with pytest.raises(
+            HTTPException,
+            match = "modelTimeoutSeconds must be 0 \\(unlimited\\) or between 10 and 31536000",
+        ):
+            _sanitize_config(payload, {"modelId": "local-model"})
 
+    payload.budgets["modelTimeoutSeconds"] = 7200
     payload.budgets["maxSteps"] = 31
     with pytest.raises(HTTPException, match = "maxSteps must be between 1 and 30"):
         _sanitize_config(payload, {"modelId": "local-model"})

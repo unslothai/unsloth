@@ -17,7 +17,10 @@ import { cn } from "@/lib/utils";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { XIcon } from "lucide-react";
 import { type KeyboardEvent, useState } from "react";
-import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import {
+  DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  useChatRuntimeStore,
+} from "../stores/chat-runtime-store";
 import type { ResearchWebsitePolicy } from "../types/research";
 
 function normalizeDomain(raw: string): string | null {
@@ -226,8 +229,13 @@ function DeepResearchWebsiteAccessContent({
 }) {
   const [draft, setDraft] = useState<ResearchWebsitePolicy>(policy);
   const [unlimited, setUnlimited] = useState(modelTimeoutSeconds === 0);
+  // Unlimited has no minutes of its own, so turning the limit back on offers the default.
   const [timeoutMinutes, setTimeoutMinutes] = useState(
-    String(Math.max(1, Math.ceil(modelTimeoutSeconds / 60))),
+    String(
+      Math.ceil(
+        (modelTimeoutSeconds || DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS) / 60,
+      ),
+    ),
   );
 
   return (
@@ -297,7 +305,7 @@ function DeepResearchWebsiteAccessContent({
                 ? 0
                 : Number.isSafeInteger(minutes) && minutes >= 1
                   ? minutes * 60
-                  : 900,
+                  : DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
             );
             onClose();
           }}
