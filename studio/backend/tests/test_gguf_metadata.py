@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from utils.models.gguf_metadata import (
+    is_gguf_embedding_architecture,
+    is_gguf_embedding_model,
     is_mmproj_by_metadata,
     mmproj_accepts_image,
     pairing_score,
@@ -563,3 +565,26 @@ def test_declared_audio_false_is_not_an_audio_claim(tmp_path: Path):
     """A vision projector writing audio=False is still a vision tower."""
     p = _projector(tmp_path, **{"clip.has_vision_encoder": True, "clip.has_audio_encoder": False})
     assert mmproj_accepts_image(p) is True
+
+
+def test_is_gguf_embedding_architecture_recognises_encoder_arches():
+    assert is_gguf_embedding_architecture("nomic-bert")
+    assert is_gguf_embedding_architecture("NOMIC-BERT-MOE")
+    assert not is_gguf_embedding_architecture("llama")
+    assert not is_gguf_embedding_architecture(None)
+
+
+def test_is_gguf_embedding_model_from_architecture(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "nomic.gguf",
+        {"general.architecture": "nomic-bert"},
+    )
+    assert is_gguf_embedding_model(str(p)) is True
+
+
+def test_is_gguf_embedding_model_from_name_hint(tmp_path: Path):
+    p = _write_synthetic_gguf(
+        tmp_path / "Qwen3-Embedding-4B-Q4_K_M.gguf",
+        {"general.architecture": "qwen3"},
+    )
+    assert is_gguf_embedding_model(str(p), model_identifier = "unsloth/Qwen3-Embedding-4B") is True

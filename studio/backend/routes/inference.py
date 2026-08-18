@@ -6726,6 +6726,8 @@ def _is_embedding_gguf(config: ModelConfig) -> bool:
         if not main:
             return False
         probe = LlamaCppBackend()
+        probe._model_identifier = config.identifier
+        probe._gguf_path = main
         probe._read_gguf_metadata(main)
         return bool(probe.is_embedding_gguf)
     except Exception as exc:

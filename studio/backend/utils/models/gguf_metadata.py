@@ -571,3 +571,74 @@ def pairing_score(
         return 60 if w_base.lower() == p_base.lower() else -1
 
     return 0
+
+
+# GGUF ``general.architecture`` values that only serve embeddings in llama.cpp.
+GGUF_EMBEDDING_ARCHITECTURES: frozenset[str] = frozenset(
+    {
+        "bert",
+        "modern-bert",
+        "nomic-bert",
+        "nomic-bert-moe",
+        "neo-bert",
+        "jina-bert-v2",
+        "jina-bert-v3",
+        "eurobert",
+        "gemma-embedding",
+        "pangu-embedded",
+        "llama-embed",
+    }
+)
+
+# Name hints for bare .gguf files whose architecture is not yet in the set above.
+_EMBEDDING_NAME_HINTS: tuple[str, ...] = (
+    "nomic-embed",
+    "llama-embed",
+    "embed-text",
+    "embedding",
+    "bge-",
+    "gte-",
+    "e5-",
+    "minilm",
+)
+
+
+def is_gguf_embedding_architecture(architecture: Optional[str]) -> bool:
+    """True when ``architecture`` is a dedicated llama.cpp embedding arch."""
+    return bool(architecture and architecture.strip().lower() in GGUF_EMBEDDING_ARCHITECTURES)
+
+
+def is_gguf_embedding_model(
+    gguf_path: str,
+    model_identifier: Optional[str] = None,
+    architecture: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF should be launched with ``--embedding`` for /v1/embeddings."""
+    arch = (architecture or "").strip().lower()
+    if not arch:
+        meta = read_gguf_general_metadata(gguf_path)
+        arch = ((meta or {}).get("general.architecture") or "").strip().lower()
+    if is_gguf_embedding_architecture(arch):
+        return True
+
+    if model_identifier:
+        ident = model_identifier.strip()
+        if ident:
+            try:
+                from utils.models.model_config import is_embedding_model
+
+                if is_embedding_model(ident):
+                    return True
+            except Exception:
+                pass
+            low = ident.lower()
+            if any(needle in low for needle in _EMBEDDING_NAME_HINTS):
+                return True
+
+    try:
+        low_path = Path(gguf_path).name.lower()
+        if any(needle in low_path for needle in _EMBEDDING_NAME_HINTS):
+            return True
+    except Exception:
+        pass
+    return False
