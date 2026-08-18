@@ -495,8 +495,17 @@ jobs:
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
-          # Capture backend + llama-server logs (all three Studios share this
-          # dir) so a stray 500 has a server-side traceback.
+
+      # Every shard, not just the one that happened to own the last Studio.
+      #
+      # This copy used to sit inside the step above, with a comment saying all three
+      # Studios share the directory. That was true when they shared a RUNNER. Each cell
+      # now has its own machine and its own ~/.unsloth/studio/logs, so leaving it there
+      # would upload three artifacts with no server-side traceback in them, and those are
+      # the artifacts anyone debugging a failed shard would open first.
+      - name: Capture the backend and llama-server logs
+        if: always()
+        run: |
           mkdir -p logs/server-logs
           cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 

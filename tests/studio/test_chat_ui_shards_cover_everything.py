@@ -150,3 +150,28 @@ def test_each_shard_uploads_under_its_own_artifact_name():
                 f"cell fails on the conflict, and the step runs with if: always(), so a "
                 f"green test run reports red."
             )
+
+
+def test_every_shard_captures_its_own_server_logs():
+    """Each cell is a separate machine with its own ~/.unsloth/studio/logs.
+
+    The copy used to live inside the step that stops the last Studio, whose comment said
+    all three Studios share the directory. True when they shared a runner; false now. A
+    shard-gated copy leaves three artifacts with no server-side traceback, which is
+    exactly what anyone debugging a failed shard opens first.
+    """
+    for step in _job()["steps"]:
+        if "server-logs" not in str(step.get("run", "")):
+            continue
+        condition = str(step.get("if", ""))
+        assert "always()" in condition, (
+            f"{step.get('name')!r} copies the server logs without always(), so a failing "
+            f"shard uploads an artifact with nothing in it"
+        )
+        assert not _named_shards(condition), (
+            f"{step.get('name')!r} copies the server logs only on "
+            f"{sorted(_named_shards(condition))}. Every cell has its own logs directory, "
+            f"so the others upload artifacts with no server-side traceback."
+        )
+        return
+    raise AssertionError("no step copies ~/.unsloth/studio/logs into the artifact any more")
