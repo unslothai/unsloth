@@ -431,9 +431,9 @@ def test_non_streaming_retry_uses_the_respawned_api_key(monkeypatch):
     resp = asyncio.run(_run_non_streaming(backend))
 
     assert resp.status_code == 200
-    assert client.sent[-1][1]["Authorization"] == "Bearer key-after-the-respawn", (
-        "the retry presented the pre-crash key, which the new server 401s"
-    )
+    assert (
+        client.sent[-1][1]["Authorization"] == "Bearer key-after-the-respawn"
+    ), "the retry presented the pre-crash key, which the new server 401s"
 
 
 def test_streaming_retry_uses_the_respawned_api_key(monkeypatch):
@@ -478,7 +478,11 @@ class _SlowDeadTransport(httpx.AsyncBaseTransport):
     handler.
     """
 
-    def __init__(self, calls, delay = 0.3):
+    def __init__(
+        self,
+        calls,
+        delay = 0.3,
+    ):
         self.calls = calls
         self.delay = delay
 
