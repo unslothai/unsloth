@@ -353,6 +353,144 @@ class TestSecondReviewFindings:
         assert target.read_text() == "someone got here first\n"
 
 
+class TestThirdReviewFindings:
+    """Cases raised in the cross-platform / filesystem review pass."""
+
+    def test_the_receipt_does_not_invent_deletions_at_the_window_edge(self, workdir):
+        # The diff window was cut out of each text by LINE COUNT. An edit that
+        # adds or removes lines shifts everything after it, so the two windows
+        # ended on different lines and difflib called that a second hunk: the
+        # receipt reported "-line319" for a line still in the file, 119 lines
+        # from anything the edit touched. A model that trusts the receipt --
+        # the only reason to send one -- then "restores" a line that never left.
+        target = workdir / "shift.py"
+        target.write_text("".join(f"line{i}\n" for i in range(1, 401)))
+        result = _edit(path = "shift.py", old_string = "line200\n", new_string = "A\nB\n")
+        after = target.read_text()
+        removed = [line[1:] for line in result.splitlines() if line.startswith("-")]
+        assert removed == ["line200"]
+        assert all(removed_line + "\n" not in after for removed_line in removed)
+
+    def test_the_receipt_numbers_a_line_count_change_from_the_real_line(self, workdir):
+        target = workdir / "grow.py"
+        target.write_text("".join(f"line{i}\n" for i in range(1, 401)))
+        result = _edit(path = "grow.py", old_string = "line200\n", new_string = "A\nB\n")
+        assert "@@ -198,5 +198,6 @@" in result
+
+    def test_a_deletion_does_not_invent_additions_at_the_window_edge(self, workdir):
+        target = workdir / "shrink.py"
+        target.write_text("".join(f"line{i}\n" for i in range(1, 401)))
+        result = _edit(
+            path = "shrink.py",
+            old_string = "line200\nline201\nline202\n",
+            new_string = "M\n",
+        )
+        after = target.read_text()
+        added = [line[1:] for line in result.splitlines() if line.startswith("+")]
+        assert added == ["M"]
+        assert all(added_line + "\n" in after for added_line in added)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX FIFO")
+    def test_creating_over_a_fifo_is_refused_rather_than_reopened(self, workdir):
+        # The edit path refuses anything that is not a regular file, but a FIFO
+        # reports st_size 0, so an empty old_string fell into the zero-byte
+        # branch instead -- whose write re-reads the target to check nothing
+        # changed underneath, and open() on a pipe with no writer never returns.
+        # No timeout or cancel event reaches here, so the turn was unrecoverable.
+        import threading
+
+        os.mkfifo(workdir / "pipe")
+        done = []
+        worker = threading.Thread(
+            target = lambda: done.append(
+                _edit(path = "pipe", old_string = "", new_string = "x\n")
+            ),
+            daemon = True,
+        )
+        worker.start()
+        worker.join(10)
+        assert done, "edit_file blocked forever on a FIFO"
+        assert done[0].startswith("Error:")
+        assert stat.S_ISFIFO(os.stat(workdir / "pipe").st_mode)
+
+    def test_the_receipt_never_reports_a_change_the_file_does_not_show(self, workdir):
+        # The property behind the two window cases above, over the shapes that
+        # produced them: every '-' line must really be gone from the file and
+        # every '+' line must really be in it. The receipt is the only thing the
+        # model learns about the edit, so an untruthful one is a wrong answer
+        # even when the bytes on disk are right.
+        import random
+
+        random.seed(7)
+        target = workdir / "prop.py"
+        for _ in range(60):
+            total = random.choice([50, 130, 260, 500])
+            at = random.randrange(1, total)
+            grow = random.randrange(0, 6)
+            target.write_text("".join(f"line{i}\n" for i in range(1, total + 1)))
+            result = _edit(
+                path = "prop.py",
+                old_string = f"line{at}\n",
+                new_string = "".join(f"N{j}\n" for j in range(grow)) or "Z\n",
+            )
+            after = target.read_text()
+            for line in result.splitlines():
+                if line.startswith("-") and not line.startswith("---"):
+                    assert line[1:] + "\n" not in after, (total, at, grow, line)
+                if line.startswith("+") and not line.startswith("+++"):
+                    assert line[1:] + "\n" in after, (total, at, grow, line)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX device node")
+    def test_full_access_does_not_replace_a_device_node(self, workdir):
+        # Full access resolves an absolute path as written, and /dev/null stats
+        # as zero bytes. Measuring size alone sent it down the create-an-empty-
+        # file branch, whose atomic rename would have swapped the character
+        # device for a regular file and broken every process on the box.
+        result = execute_tool(
+            "edit_file",
+            {"path": "/dev/null", "old_string": "", "new_string": "x\n"},
+            session_id = "t",
+            disable_sandbox = True,
+        )
+        assert result.startswith("Error:")
+        assert stat.S_ISCHR(os.stat("/dev/null").st_mode)
+
+    @pytest.mark.parametrize("path,old", [("app.py", "TODO"), ("fresh.py", "")])
+    def test_an_unencodable_new_string_is_refused_not_dropped(self, workdir, path, old):
+        # '"\ud83d"' is what a truncated emoji looks like after json.loads: a
+        # lone surrogate, a str that cannot be encoded. The write encoded before
+        # its first try block, so the UnicodeEncodeError escaped, and the
+        # in-flight contextmanager upstream swallowed it into "Unknown tool:
+        # edit_file". Telling the model the tool does not exist is the worst
+        # possible answer -- it goes back to rewriting the whole file, which is
+        # the cost this tool exists to remove. Both the edit and the create path
+        # reach the same encode, so both are pinned.
+        import json
+
+        arguments = json.loads(
+            '{"path": "%s", "old_string": "%s", "new_string": "\\ud83d launch"}'
+            % (path, old)
+        )
+        target = workdir / "app.py"
+        target.write_text("x = 1\n# TODO\ny = 2\n")
+
+        result = _edit(**arguments)
+
+        assert result.startswith("Error:"), result
+        assert "surrogate" in result
+        assert target.read_text() == "x = 1\n# TODO\ny = 2\n"
+        assert not (workdir / "fresh.py").exists()
+
+    def test_a_paired_surrogate_emoji_still_writes_normally(self, workdir):
+        # The guard must reject only what cannot be encoded; a real emoji
+        # arrives as a matched pair and is ordinary text.
+        target = workdir / "app.py"
+        target.write_text("# TODO\n")
+        result = _edit(path = "app.py", old_string = "TODO", new_string = "done \U0001f680")
+        assert not result.startswith("Error:"), result
+        assert target.read_text() == "# done \U0001f680\n"
+
+
 class TestPublicSchema:
     def test_the_request_schema_lists_edit_file(self):
         # Programmatic clients pick tools off the generated OpenAPI schema; a

@@ -9087,7 +9087,8 @@ def _edit_file_line_window(text: str, index: int, lines: int) -> "tuple[int, int
 
 def _edit_file_receipt(
     before: str,
-    after: str,
+    old: str,
+    new: str,
     name: str,
     count: int,
     change_at: int = 0,
@@ -9103,16 +9104,24 @@ def _edit_file_receipt(
     import difflib
     import itertools
 
-    window_start, before_end = _edit_file_line_window(
+    window_start, window_end = _edit_file_line_window(
         before, change_at, _EDIT_FILE_DIFF_WINDOW_LINES
     )
-    # Both slices share a start: everything before the first change is identical
-    # in the two texts, so the same offset lands on the same line in each.
-    _, after_end = _edit_file_line_window(after, change_at, _EDIT_FILE_DIFF_WINDOW_LINES)
+    # The window is cut out of the old text and the replacement replayed on it,
+    # rather than a second window of the same LINE COUNT being cut out of the
+    # new one. Any edit that adds or removes lines shifts everything after it,
+    # so two windows of equal line count end on different text, and difflib
+    # reports that misalignment as a second hunk -- deletions the edit never
+    # made, a full window away from anything that changed.
+    window_end = max(window_end, change_at + len(old))  # keep the match whole
+    before_window = before[window_start:window_end]
+    # Replacing every occurrence is right in both modes: without replace_all the
+    # file held exactly one match, or this call would have been refused.
+    after_window = before_window.replace(old, new)
     first_line = before.count("\n", 0, window_start) + 1
     stream = difflib.unified_diff(
-        before[window_start:before_end].split("\n"),
-        after[window_start:after_end].split("\n"),
+        before_window.split("\n"),
+        after_window.split("\n"),
         lineterm = "",
         n = 2,
     )
@@ -9219,10 +9228,16 @@ def _edit_file_create(
             return f"Error: cannot write '{name}': {exc}"
         return f"Created {name} ({new.count(chr(10)) + 1} lines)"
     try:
-        existing = os.path.getsize(target)
+        st = os.stat(target)
     except OSError:
-        existing = 1
-    if existing:
+        st = None
+    # Anything that is not an empty regular file is refused rather than
+    # measured. A FIFO reports st_size 0, so it fell into the zero-byte branch
+    # below, where the write re-reads the target to check nothing changed
+    # underneath -- and open() on a FIFO with no writer blocks for ever. This
+    # path carries no timeout or cancel event either, which is why the edit
+    # path already refuses anything that is not a regular file.
+    if st is None or not S_ISREG(st.st_mode) or st.st_size:
         return (
             f"Error: '{name}' already exists. An empty 'old_string' only "
             "creates a new file; to change this one, pass the exact text to "
@@ -9247,6 +9262,20 @@ def _edit_file(
     # Checked, not coerced: str(None) would write the literal "None" into a file.
     if not isinstance(old, str) or not isinstance(new, str):
         return "Error: 'old_string' and 'new_string' must both be strings."
+    # A truncated emoji escape ("\ud83d") survives json.loads as a lone surrogate
+    # that cannot be encoded. The write encodes before its first try block, and
+    # the UnicodeEncodeError raised there is swallowed further up into "Unknown
+    # tool: edit_file" -- the one answer that teaches the model this tool does
+    # not exist and sends it back to the whole-file rewrite. Refused here, ahead
+    # of any filesystem work, so both the edit and the create path are covered.
+    # old_string needs no check: it is only ever compared, never written.
+    try:
+        new.encode("utf-8")
+    except UnicodeEncodeError:
+        return (
+            "Error: 'new_string' contains unpaired surrogate characters, usually "
+            "a half-written emoji; nothing was written. Send it again as plain text."
+        )
     target, error = _edit_file_resolve(
         str(arguments.get("path") or ""), session_id, disable_sandbox
     )
@@ -9323,7 +9352,8 @@ def _edit_file(
     # instead of diffing the whole file.
     return _edit_file_receipt(
         before,
-        after,
+        old,
+        new,
         name,
         count if replace_all else 1,
         change_at = max(before.find(old), 0),
