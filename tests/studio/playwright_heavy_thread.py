@@ -1432,7 +1432,13 @@ def floor_declaration_problems(results: dict) -> list[str]:
             if "crashed" in row:
                 continue
             for axis_name, (action, counter) in FLOOR_COUNTERS.items():
-                observed = (row.get("actions", {}).get(action) or {}).get(counter)
+                measured = row.get("actions", {}).get(action) or {}
+                # An action that did not run is already reported by harness_failures, with the
+                # reason. Reporting it again here as an unverified floor would be a second
+                # failure for one cause, and would bury the real one.
+                if not measured.get("ran", True):
+                    continue
+                observed = measured.get(counter)
                 if observed is None:
                     problems.append(
                         f"{engine} at {size} chars recorded no {counter} for {action}, so the "

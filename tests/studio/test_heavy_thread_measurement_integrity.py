@@ -831,5 +831,25 @@ def test_reopen_counts_the_waits_it_pays() -> None:
     assert "paintWaits," in HARNESS.REOPEN_JS, "the count is never returned to the harness"
 
 
+def test_an_action_that_did_not_run_is_not_reported_twice() -> None:
+    """`harness_failures` already reports the action itself, with the reason. A second failure
+    here for the same cause buries the real one."""
+    row = floor_row(1)
+    reopen = row["by_engine"]["chromium"]["by_size"]["25000"]["actions"]["reopen"]
+    reopen["ran"] = False
+    del reopen["paintWaits"]
+    assert HARNESS.floor_declaration_problems(row) == []
+
+
+def test_an_action_that_ran_without_a_count_is_still_reported() -> None:
+    """The other side of the skip above, so it cannot be widened into a blanket exemption."""
+    row = floor_row(1)
+    reopen = row["by_engine"]["chromium"]["by_size"]["25000"]["actions"]["reopen"]
+    reopen["ran"] = True
+    del reopen["paintWaits"]
+    problems = HARNESS.floor_declaration_problems(row)
+    assert len(problems) == 1 and "unverified" in problems[0], problems
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
