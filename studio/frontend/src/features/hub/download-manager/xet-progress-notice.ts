@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Xet writes chunks out of order, so progress reads 0% and then completes at
+// once, which looks like a hang. No toast import here: poll-loop shows it.
+
+import {
+  DOWNLOAD_KIND,
+  type DownloadKind,
+  type ResolvedTransport,
+  TRANSPORT,
+} from "./constants";
+
+export const XET_NOTICE_LIMIT = 3;
+export const XET_NOTICE_STORAGE_KEY = "unsloth.studio.xetNoticeCount";
+
+// Longer than the Toaster's 5s default, like the explanatory toasts in chat.
+export const XET_NOTICE_DURATION_MS = 8000;
+
+export const XET_NOTICE_TITLE =
+  "Download progress may appear slow, but the download is still running.";
+export const XET_NOTICE_DESCRIPTION =
+  "Hugging Face Xet enables faster downloads by fetching model data as parallel chunks. Because chunks are written out of order and committed in batches, the progress indicator may appear stuck or update unevenly even while data is actively downloading.\n\nFor smoother progress updates, go to 'Model Hub' and switch transport to HTTP.";
+// The blank line needs pre-line. Per-toast classNames replace the Toaster's
+// description class instead of merging, so repeat it.
+export const XET_NOTICE_DESCRIPTION_CLASS =
+  "!text-muted-foreground whitespace-pre-line";
+
+// Carries the count when the write fails (private mode, quota), which would
+// otherwise repeat the toast on every download.
+let sessionShown = 0;
+
+function readStoredCount(): number {
+  if (typeof window === "undefined") return 0;
+  try {
+    const parsed = Number.parseInt(
+      window.localStorage.getItem(XET_NOTICE_STORAGE_KEY) ?? "",
+      10,
+    );
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function xetNoticesShown(): number {
+  return Math.max(sessionShown, readStoredCount());
+}
+
+export function recordXetNoticeShown(): void {
+  const next = xetNoticesShown() + 1;
+  sessionShown = next;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(XET_NOTICE_STORAGE_KEY, String(next));
+  } catch {
+    // Counted in memory above, so this session still stops at the limit.
+  }
+}
+
+/** Only the transport that behaves this way, and only while it is news. */
+export function shouldShowXetNotice(args: {
+  kind: DownloadKind;
+  transport: ResolvedTransport;
+  shown: number;
+}): boolean {
+  return (
+    args.kind === DOWNLOAD_KIND.MODEL &&
+    args.transport === TRANSPORT.XET &&
+    args.shown < XET_NOTICE_LIMIT
+  );
+}
