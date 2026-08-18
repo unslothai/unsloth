@@ -3,6 +3,7 @@
 
 import { FloatingMonitor } from "@/components/floating-monitor";
 import { getClientPlatform } from "@/components/tauri/window-titlebar";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +14,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
   Cancel01Icon,
@@ -31,7 +33,12 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { motion, useReducedMotion } from "motion/react";
 import {
+  Component,
+  type ComponentType,
   type FC,
+  type ReactNode,
+  Suspense,
+  lazy,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -46,18 +53,96 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-import { AboutTab } from "./tabs/about-tab";
-import { AgentsTab } from "./tabs/agents-tab";
-import { ApiKeysTab } from "./tabs/api-keys-tab";
-import { AppearanceTab } from "./tabs/appearance-tab";
-import { ChatTab } from "./tabs/chat-tab";
-import { ConnectionsTab } from "./tabs/connections-tab";
-import { DataTab } from "./tabs/data-tab";
-import { DebuggingTab } from "./tabs/debugging-tab";
-import { GeneralTab } from "./tabs/general-tab";
-import { ProfileTab } from "./tabs/profile-tab";
-import { ResourcesTab } from "./tabs/resources-tab";
-import { VoiceTab } from "./tabs/voice-tab";
+// Statically imported, all twelve panels ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
+const TAB_LOADERS = {
+  general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
+  profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
+  appearance: () =>
+    import("./tabs/appearance-tab").then((m) => ({ default: m.AppearanceTab })),
+  resources: () =>
+    import("./tabs/resources-tab").then((m) => ({ default: m.ResourcesTab })),
+  chat: () => import("./tabs/chat-tab").then((m) => ({ default: m.ChatTab })),
+  voice: () => import("./tabs/voice-tab").then((m) => ({ default: m.VoiceTab })),
+  connections: () =>
+    import("./tabs/connections-tab").then((m) => ({ default: m.ConnectionsTab })),
+  data: () => import("./tabs/data-tab").then((m) => ({ default: m.DataTab })),
+  "api-keys": () => import("./tabs/api-keys-tab").then((m) => ({ default: m.ApiKeysTab })),
+  agents: () => import("./tabs/agents-tab").then((m) => ({ default: m.AgentsTab })),
+  debugging: () =>
+    import("./tabs/debugging-tab").then((m) => ({ default: m.DebuggingTab })),
+  about: () => import("./tabs/about-tab").then((m) => ({ default: m.AboutTab })),
+} satisfies Record<SettingsTab, () => Promise<{ default: FC }>>;
+
+function lazyTabs<T extends Record<string, () => Promise<{ default: FC }>>>(
+  loaders: T,
+): Record<keyof T, ComponentType> {
+  const out = {} as Record<keyof T, ComponentType>;
+  for (const id of Object.keys(loaders) as (keyof T)[]) {
+    out[id] = lazy(loaders[id]);
+  }
+  return out;
+}
+
+const LAZY_TABS = lazyTabs(TAB_LOADERS);
+
+interface PanelBoundaryProps {
+  tab: SettingsTab;
+  message: string;
+  reloadLabel: string;
+  children: ReactNode;
+}
+
+interface PanelBoundaryState {
+  tab: SettingsTab;
+  failed: boolean;
+}
+
+/**
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Studio rather than one panel.
+ *
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
+ */
+class SettingsPanelBoundary extends Component<
+  PanelBoundaryProps,
+  PanelBoundaryState
+> {
+  state: PanelBoundaryState = { tab: this.props.tab, failed: false };
+
+  static getDerivedStateFromError(): Partial<PanelBoundaryState> {
+    return { failed: true };
+  }
+
+  // A different tab is a different chunk, so one panel's failure must not hold the rest.
+  static getDerivedStateFromProps(
+    props: PanelBoundaryProps,
+    state: PanelBoundaryState,
+  ): Partial<PanelBoundaryState> | null {
+    return props.tab === state.tab ? null : { tab: props.tab, failed: false };
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+        <p className="text-muted-foreground text-sm">{this.props.message}</p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          {this.props.reloadLabel}
+        </Button>
+      </div>
+    );
+  }
+}
 
 interface TabDef {
   id: SettingsTab;
@@ -138,32 +223,8 @@ const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex({
 });
 
 function renderTab(tab: SettingsTab) {
-  switch (tab) {
-    case "general":
-      return <GeneralTab />;
-    case "profile":
-      return <ProfileTab />;
-    case "appearance":
-      return <AppearanceTab />;
-    case "resources":
-      return <ResourcesTab />;
-    case "chat":
-      return <ChatTab />;
-    case "voice":
-      return <VoiceTab />;
-    case "connections":
-      return <ConnectionsTab />;
-    case "data":
-      return <DataTab />;
-    case "api-keys":
-      return <ApiKeysTab />;
-    case "agents":
-      return <AgentsTab />;
-    case "debugging":
-      return <DebuggingTab />;
-    case "about":
-      return <AboutTab />;
-  }
+  const Tab = LAZY_TABS[tab];
+  return <Tab />;
 }
 
 export function SettingsDialog() {
@@ -179,6 +240,19 @@ export function SettingsDialog() {
   // from a deferred value so the nav updates first.
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
+
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
+  useEffect(() => {
+    if (!open) return;
+    return scheduleIdleTask(() => {
+      for (const load of Object.values(TAB_LOADERS)) {
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
+        void load().catch(() => undefined);
+      }
+    });
+  }, [open]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -484,7 +558,23 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {renderTab(panelTab)}
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
+                <SettingsPanelBoundary
+                  tab={panelTab}
+                  message={t("settings.dialog.panelFailed")}
+                  reloadLabel={t("settings.dialog.panelReload")}
+                >
+                  <Suspense
+                    fallback={
+                      <div className="fade-in fill-mode-both flex flex-1 animate-in items-center justify-center text-muted-foreground text-sm delay-300 duration-150">
+                        {t("common.loading")}
+                      </div>
+                    }
+                  >
+                    {renderTab(panelTab)}
+                  </Suspense>
+                </SettingsPanelBoundary>
               </div>
             </main>
           </div>

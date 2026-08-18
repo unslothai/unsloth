@@ -78,7 +78,7 @@ export function ManageChatsView() {
     },
   });
   const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
-  const setManyPinned = usePinnedChatsStore((s) => s.setManyPinned);
+  const setPinned = usePinnedChatsStore((s) => s.setPinned);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [visibleCount, setVisibleCount] = useState(MANAGE_PAGE_SIZE);
@@ -181,7 +181,7 @@ export function ManageChatsView() {
 
   function handleTogglePin() {
     const ids = selectedItems.map((item) => item.id);
-    setManyPinned(ids, !allSelectedPinned);
+    setPinned(ids, !allSelectedPinned);
     toast.success(
       `${allSelectedPinned ? "Unpinned" : "Pinned"} ${chatCount(ids.length)}`,
     );
@@ -227,8 +227,8 @@ export function ManageChatsView() {
                   : false
             }
             onCheckedChange={toggleAllVisible}
-            aria-label="Select all chats"
-            title="Select all"
+            aria-label="Select all visible chats"
+            title="Select all visible"
           />
           <span className="text-xs text-muted-foreground">
             {selectedCount > 0

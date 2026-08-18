@@ -11,7 +11,8 @@ export interface PinnedChatsState {
   pinnedIds: string[];
   togglePin: (id: string) => void;
   unpin: (id: string) => void;
-  setManyPinned: (ids: string[], pinned: boolean) => void;
+  /** Pins or unpins a whole selection in one write. */
+  setPinned: (ids: string[], pinned: boolean) => void;
 }
 
 export const usePinnedChatsStore = create<PinnedChatsState>()(
@@ -28,15 +29,17 @@ export const usePinnedChatsStore = create<PinnedChatsState>()(
         set((state) => ({
           pinnedIds: state.pinnedIds.filter((x) => x !== id),
         })),
-      setManyPinned: (ids, pinned) =>
+      setPinned: (ids, pinned) =>
         set((state) => {
           if (!pinned) {
-            const drop = new Set(ids);
+            const dropping = new Set(ids);
             return {
-              pinnedIds: state.pinnedIds.filter((x) => !drop.has(x)),
+              pinnedIds: state.pinnedIds.filter((id) => !dropping.has(id)),
             };
           }
+          // Already pinned chats keep their place; the rest lead, as one pin does.
           const additions = ids.filter((id) => !state.pinnedIds.includes(id));
+          if (additions.length === 0) return state;
           return { pinnedIds: [...additions, ...state.pinnedIds] };
         }),
     }),
