@@ -327,9 +327,7 @@ def test_interface_enumeration_skips_windows_host_only_switches(monkeypatch):
             )
         },
         net_if_addrs = lambda: {
-            "Wi-Fi": [
-                types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.20")
-            ],
+            "Wi-Fi": [types.SimpleNamespace(family = socket.AF_INET, address = "192.168.1.20")],
             "vEthernet (Default Switch)": [
                 types.SimpleNamespace(family = socket.AF_INET, address = "172.31.32.1")
             ],
