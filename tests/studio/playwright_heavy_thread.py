@@ -605,9 +605,15 @@ async ([steps, stepPx, settleMs]) => {
   // next read lands mid-flight. Stepping from a tracked target with an explicit instant
   // behaviour is what a wheel gesture actually does, and it is the only way the gesture moves
   // the distance it asks for.
+  // Anchoring to the bottom is NOT done here. It is a full reposition, and when a previous
+  // repetition or a predecessor arm left the viewport away from the bottom it is a whole extra
+  // top-to-bottom scroll. __hv.begin() below already excluded it from the portable recorder, but
+  // run_action snapshots the CDP counters and arms the long-task observer before this evaluate
+  // starts, so it still landed in this row's task, layout, style and long-task numbers -- and it
+  // landed there only for the repetitions that happened to start away from the bottom, which is
+  // exactly the asymmetry that makes repetition 1 look cheaper than repetitions 2 and 3. It runs
+  // from ACTION_SETUPS instead, before any snapshot is taken.
   const bottom = viewport.scrollHeight - viewport.clientHeight;
-  viewport.scrollTo({ top: bottom, behavior: "instant" });
-  await window.__nextPaint();
   let target = viewport.scrollTop;
   // Reverse at either end rather than stopping. A small thread runs out of travel long before a
   // large one does, and a gesture that covers 2600px at 25K chars and 8000px at 300K is not the
@@ -655,9 +661,9 @@ async (settleMs) => {
   const api = window.__heavyThread;
   const viewport = api.viewport();
   if (!viewport) return null;
+  // Anchored to the bottom by ACTION_SETUPS before run_action took any snapshot, for the same
+  // reason the reset at the end of this script runs from ACTION_RESETS after all of them.
   const bottom = viewport.scrollHeight - viewport.clientHeight;
-  viewport.scrollTo({ top: bottom, behavior: "instant" });
-  await window.__nextPaint();
   window.__hv.begin();
   const started = performance.now();
   // The wheel event first, and it is load-bearing. Studio replaces assistant-ui's autoscroll
@@ -945,6 +951,10 @@ def wait_for_highlighting_settled(page, timeout_ms: int) -> None:
 
 def run_action(page, cdp, name: str, script: str, arg) -> dict:
     """One action, with the portable recorder inside it and the CDP counters bracketing it."""
+    # Precondition first, so it is outside every snapshot below as well as outside the recorder.
+    setup = ACTION_SETUPS.get(name)
+    if setup is not None:
+        page.evaluate(setup)
     reset_long_tasks(page)
     before = cdp_metrics(cdp)
     raw = page.evaluate(script, arg)
@@ -978,6 +988,23 @@ async () => {
 """
 
 ACTION_RESETS = {"jump": JUMP_RESET_JS}
+
+
+# Positioning that must run BEFORE run_action takes its CDP snapshot and arms the long-task
+# observer. Anything here is establishing the action's precondition, not part of the action being
+# timed. The scroll and jump gestures both have to start from the bottom to travel the distance
+# they claim to travel, and reaching the bottom from wherever the last repetition left off is
+# itself a full-height scroll.
+ANCHOR_BOTTOM_JS = """
+async () => {
+  const viewport = window.__heavyThread.viewport();
+  if (!viewport) return;
+  viewport.scrollTo({ top: viewport.scrollHeight - viewport.clientHeight, behavior: "instant" });
+  await window.__nextPaint();
+}
+"""
+
+ACTION_SETUPS = {"scroll": ANCHOR_BOTTOM_JS, "jump": ANCHOR_BOTTOM_JS}
 
 
 ACTION_SCRIPTS = {
