@@ -182,6 +182,35 @@ def test_the_linux_job_still_drives_all_three_browser_engines():
     assert "18899 chromium" not in disabled and "18899 webkit" not in disabled
 
 
+def test_no_build_gate_sits_behind_a_browser_smoke():
+    """A smoke failure must not decide whether the build gates report.
+
+    Every step carries an implicit `if: success()`, so a job stops at its first failing
+    step and skips the rest. The ANSI smoke is intermittently red, and while it ran ahead
+    of them the build and the three bundle assertions never reported at all on those runs.
+    The smokes each start their own vite dev server and read nothing out of `dist/`, so
+    they belong last. Asserted by step index, since the ordering is the whole guarantee.
+    """
+    document = yaml.safe_load(
+        (REPO / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    )
+    names = [str(step.get("name", "")) for step in document["jobs"]["build"]["steps"]]
+    gates = [
+        "Build",
+        "Built bundle must not contain Unsloth's unstable_Provider call site",
+        "Bundle size budget (75 MB)",
+        "Startup bundle budget",
+    ]
+    missing = [gate for gate in gates if gate not in names]
+    assert not missing, f"renamed or deleted build gates: {missing}; update this list"
+    first_smoke = min(index for index, name in enumerate(names) if name.startswith("Browser smoke"))
+    late = [gate for gate in gates if names.index(gate) > first_smoke]
+    assert not late, (
+        f"{late} run after {names[first_smoke]!r}, so a red browser smoke skips them and the "
+        f"checks that decide whether the app ships never report. Move them above the smokes."
+    )
+
+
 def test_the_scan_reads_the_workflows_it_claims_to():
     """A scan that read nothing would pass both checks above on anything."""
     assert len(DRIVERS) > 10, f"only found {len(DRIVERS)} drivers; the glob is wrong"

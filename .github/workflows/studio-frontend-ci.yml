@@ -181,9 +181,15 @@ jobs:
             exit 1
           fi
 
+      # The 75 MB above is the whole artifact, which a lazily loaded page does not
+      # make worse. This is the part the user waits through: the entry chunk plus
+      # everything Vite preloads for it, fetched and executed before first paint.
+      - name: Startup bundle budget
+        run: npm run bundle:check
+
       # The browser smokes sit after the build gates on purpose. A job stops at its first
-      # failing step, so while they ran above, one red smoke skipped the build and both
-      # bundle assertions: the checks that decide whether the app ships at all never
+      # failing step, so while they ran above, one red smoke skipped the build and all
+      # three bundle assertions: the checks that decide whether the app ships at all never
       # reported. Ordering them last costs nothing (each smoke starts its own vite dev
       # server and reads no dist/) and keeps a smoke failure to itself.
       - name: Install Chromium for browser smokes
@@ -226,12 +232,6 @@ jobs:
           path: logs/playwright-*
           retention-days: 3
           if-no-files-found: ignore
-
-      # The 75 MB above is the whole artifact, which a lazily loaded page does not
-      # make worse. This is the part the user waits through: the entry chunk plus
-      # everything Vite preloads for it, fetched and executed before first paint.
-      - name: Startup bundle budget
-        run: npm run bundle:check
 
       - name: Biome (non-blocking until accumulated drift is cleared)
         continue-on-error: true

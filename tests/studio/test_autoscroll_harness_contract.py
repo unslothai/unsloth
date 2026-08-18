@@ -10,6 +10,7 @@ budget, an unasserted click count, and the two guards below), so the rule is pin
 than left to review.
 """
 
+import types
 from pathlib import Path
 
 
@@ -94,6 +95,50 @@ def test_ansi_smoke_keeps_the_failed_page_and_the_server_output() -> None:
     assert "dump(page, vite)" in text, "the assertions do not run under the dump"
     assert "dump_diagnostics(page, ART" in text
     assert 'getattr(vite, "vite_tail"' in text, "vite's output is dropped on failure"
+
+
+def test_the_ansi_dump_survives_a_vite_server_that_is_still_talking(tmp_path, monkeypatch) -> None:
+    # The tail is a deque a daemon thread appends to for as long as vite lives, and the
+    # dump runs before the server is stopped. Iterating it live while printing (stdout
+    # releases the GIL) raises "deque mutated during iteration", so the dump aborts and
+    # the tail is lost in the one case it was added for: a reload or transform storm.
+    import importlib.util
+    import threading
+    from collections import deque
+
+    import pytest
+
+    pytest.importorskip("playwright")
+    monkeypatch.setenv("PW_ART_DIR", str(tmp_path / "art"))
+    spec = importlib.util.spec_from_file_location(
+        "_ansi_smoke_under_test", STUDIO_TESTS / "playwright_strip_ansi_smoke.py"
+    )
+    assert spec is not None and spec.loader is not None
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+
+    tail: deque[str] = deque(maxlen = 20)
+    for index in range(tail.maxlen or 20):
+        tail.append(f"vite line {index}")
+    vite = types.SimpleNamespace(vite_tail = tail)
+    stop = threading.Event()
+
+    def keep_talking() -> None:
+        index = 0
+        while not stop.is_set():
+            tail.append(f"[vite] page reload {index}")
+            index += 1
+
+    talker = threading.Thread(target = keep_talking, daemon = True)
+    talker.start()
+    try:
+        for _ in range(5):
+            # `page` is unused by the tail print; dump_diagnostics is best-effort and
+            # swallows everything it cannot do, so a stub is enough to reach the loop.
+            smoke.dump(types.SimpleNamespace(), vite)
+    finally:
+        stop.set()
+        talker.join(timeout = 5)
 
 
 def test_harnesses_own_their_dev_server() -> None:
