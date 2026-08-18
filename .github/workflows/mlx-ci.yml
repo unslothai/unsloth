@@ -159,6 +159,12 @@ jobs:
         with:
           python-version: '3.12'
           cache: 'pip'
+          # Scope the key to the files this job installs from. Unscoped,
+          # setup-python hashes dependency files repo-wide, so one edit anywhere
+          # invalidates ~700MB x 4 interpreters and orphans the old entries.
+          cache-dependency-path: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # macOS install ladder, validated locally against a Linux
       # mac-sim venv (platform spoofed + mlx_simulation shim + real

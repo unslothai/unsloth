@@ -237,9 +237,15 @@ jobs:
             sleep "$delay"
           done
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        # This job pins its dependencies inline below rather than in a requirements
+        # file, so the workflow IS the dependency spec and hashing it is what makes the
+        # key describe the payload. Unscoped, setup-python hashes dependency files
+        # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
           cache: 'pip'
+          cache-dependency-path: |
+            .github/workflows/version-compat-ci.yml
       - name: Install CPU torch + supported pkg pins
         run: |
           python -m pip install --upgrade pip
@@ -320,9 +326,15 @@ jobs:
             sleep "$delay"
           done
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        # This job pins its dependencies inline below rather than in a requirements
+        # file, so the workflow IS the dependency spec and hashing it is what makes the
+        # key describe the payload. Unscoped, setup-python hashes dependency files
+        # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
           cache: 'pip'
+          cache-dependency-path: |
+            .github/workflows/version-compat-ci.yml
       - name: Install CPU torch + ecosystem + TRL latest
         run: |
           python -m pip install --upgrade pip

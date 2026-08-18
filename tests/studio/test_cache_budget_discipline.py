@@ -124,6 +124,32 @@ def test_only_jobs_that_install_heavy_dependencies_ask_for_the_pip_cache():
 
 
 @pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_ALLOWED))
+def test_every_allowed_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
+    """Without `cache-dependency-path`, setup-python hashes dependency files repo-wide.
+
+    That is the second multiplier behind the 27.05 GiB: 16 distinct keys appeared in a
+    week, because any requirements edit anywhere invalidates every interpreter's entry at
+    once and orphans the old ones. Scoping the key to the files a job actually installs
+    from -- or, for the jobs that pin their dependencies inline, to the workflow file that
+    IS the dependency spec -- keeps an unrelated edit from costing ~700MB per interpreter.
+    """
+    job = _workflows_by_name()[name]["jobs"][jid]
+    for step in job.get("steps") or []:
+        with_ = step.get("with") or {}
+        if "setup-python" not in str(step.get("uses", "")) or with_.get("cache") != "pip":
+            continue
+        assert with_.get("cache-dependency-path"), (
+            f"{name}:{jid} caches pip without a cache-dependency-path, so its key is a hash "
+            f"of dependency files across the whole repo and moves for reasons that have "
+            f"nothing to do with what this job installs"
+        )
+
+
+def _workflows_by_name():
+    return dict(_workflows())
+
+
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_ALLOWED))
 def test_every_allowed_pip_cache_job_still_exists_and_still_earns_it(name, jid):
     """The allowlist must not outlive the jobs, or it silently permits nothing."""
     doc = dict(_workflows()).get(name)
