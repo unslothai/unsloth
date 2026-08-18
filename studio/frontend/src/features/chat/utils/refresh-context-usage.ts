@@ -11,6 +11,7 @@ import {
 } from "../api/chat-adapter";
 import { countChatInputTokens } from "../api/chat-api";
 import { isExternalModelId } from "../external-providers";
+import { hasCountablePrompt } from "../lib/countable-prompt";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { MessageRecord } from "../types";
 import { listStoredChatMessages } from "./chat-history-storage";
@@ -294,6 +295,17 @@ export async function refreshContextUsage(
     if (stale()) return;
     const countExtras = await buildLocalTokenCountExtras(payloadThreadId);
     if (stale()) return;
+
+    // #8882: counting an empty chat prices the generation marker alone, which is a numerator on
+    // a conversation nobody has started.
+    if (
+      !hasCountablePrompt({
+        outboundMessageCount: outbound.length,
+        toolsRequested: countExtras.enable_tools === true,
+      })
+    ) {
+      return;
+    }
 
     // Always ask the server: the template itself has tokens, and `unsloth run --enable-tools`
     // injects schemas the client cannot see.
