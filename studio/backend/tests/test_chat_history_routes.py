@@ -189,10 +189,13 @@ def test_clear_history_fences_pending_thread_ids(monkeypatch):
     captured: list[str] = []
     captured_operation_ids: list[str | None] = []
 
-    def clear_with_ids(thread_ids = (), operation_id = None):
+    def clear_with_ids(
+        thread_ids = (), operation_id = None, include_chat_generation_runs = False
+    ):
         captured.extend(thread_ids)
         captured_operation_ids.append(operation_id)
-        return list(thread_ids), []
+        result = (list(thread_ids), [])
+        return (*result, []) if include_chat_generation_runs else result
 
     async def remove_sandboxes(_thread_ids, _delete_files):
         return 0, []

@@ -115,6 +115,45 @@ def _note_end() -> None:
         _last_active = time.monotonic()
 
 
+class InferenceActivityReservation:
+    """Keep a background inference job visible to lifecycle and idle-unload guards."""
+
+    def __init__(self) -> None:
+        self._state = "new"
+        self._state_lock = threading.Lock()
+
+    def reserve(self) -> None:
+        """Publish pending work synchronously, before its asyncio task can run."""
+        with self._state_lock:
+            if self._state != "new":
+                return
+            _note_pending()
+            self._state = "pending"
+
+    async def start(self) -> None:
+        """Claim the inference slot after any model lifecycle operation completes."""
+        with self._state_lock:
+            if self._state != "pending":
+                return
+        async with _unload_gate():
+            with self._state_lock:
+                if self._state != "pending":
+                    return
+                _note_start()
+                self._state = "started"
+
+    def finish(self) -> None:
+        """Balance a pending or started reservation. Idempotent."""
+        with self._state_lock:
+            if self._state == "pending":
+                _note_unpending()
+            elif self._state == "started":
+                _note_end()
+            else:
+                return
+            self._state = "finished"
+
+
 def _note_untracked_end() -> None:
     # Drop a request that never used the local GGUF without stamping local
     # activity, so periodic external-provider traffic can't keep the model warm.

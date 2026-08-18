@@ -660,6 +660,18 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
+    try:
+        from storage.chat_generation_runs_db import reconcile_orphaned_runs
+
+        reconciled_chat_runs = reconcile_orphaned_runs()
+        if reconciled_chat_runs:
+            _lifespan_log.warning(
+                "Marked %s interrupted chat generation run(s) failed after restart.",
+                reconciled_chat_runs,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
@@ -693,6 +705,10 @@ async def lifespan(app: FastAPI):
 
     app.state.research_supervisor = ResearchSupervisor(app)
     app.state.research_supervisor.start()
+
+    from core.inference.chat_generation_runs import ChatGenerationSupervisor
+
+    app.state.chat_generation_supervisor = ChatGenerationSupervisor(app)
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop, sweep_slot_save_dir
@@ -769,6 +785,10 @@ async def lifespan(app: FastAPI):
     _research_supervisor = getattr(app.state, "research_supervisor", None)
     if _research_supervisor is not None:
         await _research_supervisor.stop()
+
+    _chat_generation_supervisor = getattr(app.state, "chat_generation_supervisor", None)
+    if _chat_generation_supervisor is not None:
+        await _chat_generation_supervisor.stop()
 
     from core.inference.llama_http import aclose as _close_llama_http
 

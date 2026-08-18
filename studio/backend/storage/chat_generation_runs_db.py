@@ -130,6 +130,38 @@ def _commit(conn: sqlite3.Connection, *, notify: bool = False) -> None:
             _EVENTS_CHANGED.notify_all()
 
 
+def _sync_assistant_status_locked(conn: sqlite3.Connection, run_id: str, status: str) -> None:
+    row = conn.execute(
+        """SELECT r.assistant_message_id, m.metadata_json
+           FROM chat_generation_runs r
+           LEFT JOIN chat_messages m ON m.id=r.assistant_message_id
+           WHERE r.id=?""",
+        (run_id,),
+    ).fetchone()
+    if row is None or row["metadata_json"] is None:
+        return
+    metadata = _loads(row["metadata_json"], {})
+    if not isinstance(metadata, dict) or metadata.get("generationRunId") not in (None, run_id):
+        return
+    metadata.update(
+        {
+            "generationRunId": run_id,
+            "generationStatus": status,
+            "serverManaged": True,
+        }
+    )
+    if status == "cancelled":
+        metadata["incomplete"] = {"reason": "cancelled"}
+    elif status == "failed":
+        metadata["incomplete"] = {"reason": "interrupted"}
+    elif status == "completed":
+        metadata.pop("incomplete", None)
+    conn.execute(
+        "UPDATE chat_messages SET metadata_json=? WHERE id=?",
+        (json.dumps(metadata, ensure_ascii = False), row["assistant_message_id"]),
+    )
+
+
 def create_run(
     *,
     run_id: str,
@@ -311,6 +343,30 @@ def get_worker_token(run_id: str) -> str | None:
         conn.close()
 
 
+def get_worker_run(
+    run_id: str,
+    worker_token: str | None = None,
+) -> tuple[dict[str, Any], str, str] | None:
+    """Return one fenced producer snapshot and its owner from the same row read."""
+    conn = get_connection()
+    try:
+        if worker_token is None:
+            row = conn.execute(
+                "SELECT * FROM chat_generation_runs WHERE id=?",
+                (run_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM chat_generation_runs WHERE id=? AND worker_token=?",
+                (run_id, worker_token),
+            ).fetchone()
+        if row is None:
+            return None
+        return _run_from_row(row), str(row["owner_subject"]), str(row["worker_token"])
+    finally:
+        conn.close()
+
+
 def list_active(owner_subject: str, thread_id: str) -> list[dict[str, Any]]:
     conn = get_connection()
     try:
@@ -380,6 +436,7 @@ def mark_running(run_id: str, worker_token: str) -> bool:
                WHERE id=?""",
             (started, started, run_id),
         )
+        _sync_assistant_status_locked(conn, run_id, "running")
         _append_events_locked(conn, run_id, [("run.started", {"status": "running"})])
         _commit(conn, notify = True)
         return True
@@ -418,6 +475,7 @@ def request_cancel(run_id: str, owner_subject: str) -> dict[str, Any] | None:
                 run_id,
                 [("run.cancelled", {"status": "cancelled", "finishReason": "cancelled"})],
             )
+            _sync_assistant_status_locked(conn, run_id, "cancelled")
         else:
             conn.execute(
                 """UPDATE chat_generation_runs
@@ -425,6 +483,7 @@ def request_cancel(run_id: str, owner_subject: str) -> dict[str, Any] | None:
                 (updated, run_id),
             )
             _append_events_locked(conn, run_id, [("run.cancelling", {"status": "cancelling"})])
+            _sync_assistant_status_locked(conn, run_id, "cancelling")
         updated_row = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
@@ -481,6 +540,7 @@ def finish_run(
                WHERE id=?""",
             (status, finish_reason, error, completed, completed, run_id),
         )
+        _sync_assistant_status_locked(conn, run_id, status)
         updated = conn.execute(
             "SELECT * FROM chat_generation_runs WHERE id=?",
             (run_id,),
@@ -551,6 +611,7 @@ def reconcile_orphaned_runs(error: str = "Studio restarted during generation") -
                        updated_at=?, completed_at=? WHERE id=?""",
                 (error, completed, completed, run_id),
             )
+            _sync_assistant_status_locked(conn, run_id, "failed")
             changed += 1
         _commit(conn, notify = bool(changed))
         return changed

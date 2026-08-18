@@ -2199,15 +2199,41 @@ def _active_research_run_ids(
     return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
 
 
-def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
+def _active_chat_generation_run_ids(
+    conn: sqlite3.Connection, thread_ids: set[str] | None = None
+) -> list[str]:
+    if thread_ids is None:
+        rows = conn.execute(
+            """SELECT id, created_at FROM chat_generation_runs
+               WHERE status IN ('queued','running','cancelling')"""
+        ).fetchall()
+    else:
+        rows = []
+        sorted_thread_ids = sorted(thread_ids)
+        for start in range(0, len(sorted_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = sorted_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                conn.execute(
+                    f"""SELECT id, created_at FROM chat_generation_runs
+                        WHERE status IN ('queued','running','cancelling')
+                          AND thread_id IN ({placeholders})""",
+                    chunk,
+                ).fetchall()
+            )
+    return [row["id"] for row in sorted(rows, key = lambda row: (row["created_at"], row["id"]))]
+
+
+def delete_chat_threads_with_active_runs(ids: list[str]) -> tuple[list[str], list[str]]:
     if not ids:
-        return []
+        return [], []
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _ensure_chat_attachment_inventory_current(conn)
         thread_ids = set(ids)
         active_research_run_ids = _active_research_run_ids(conn, thread_ids)
+        active_chat_run_ids = _active_chat_generation_run_ids(conn, thread_ids)
         _reparent_surviving_forks(conn, thread_ids)
         # Record the delete even when no row exists yet. A late POST carrying the same unique id
         # must not recreate a thread after this request has confirmed deletion.
@@ -2219,12 +2245,17 @@ def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
         conn.executemany("DELETE FROM chat_threads WHERE id = ?", [(id,) for id in ids])
         _mark_chat_attachment_inventory_clean(conn)
         conn.commit()
-        return active_research_run_ids
+        return active_research_run_ids, active_chat_run_ids
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def delete_chat_threads_with_active_research_runs(ids: list[str]) -> list[str]:
+    research_run_ids, _chat_run_ids = delete_chat_threads_with_active_runs(ids)
+    return research_run_ids
 
 
 def delete_chat_threads(ids: list[str]) -> list[str]:
@@ -2243,8 +2274,10 @@ def clear_chat_history_with_active_research_runs(
 
 
 def clear_chat_history(
-    additional_thread_ids: Iterable[str] = (), operation_id: Optional[str] = None
-) -> "tuple[list[str], list[str]]":
+    additional_thread_ids: Iterable[str] = (),
+    operation_id: Optional[str] = None,
+    include_chat_generation_runs: bool = False,
+) -> "tuple[list[str], list[str]] | tuple[list[str], list[str], list[str]]":
     """Delete every chat thread. Returns (thread ids removed, research runs cascaded).
 
     Both taken inside the same transaction: another process can add a thread
@@ -2266,7 +2299,8 @@ def clear_chat_history(
                 conn.commit()
                 # The original request already signalled its workers. Replaying that signal can
                 # leave a cancellation event behind after the worker has exited.
-                return list(json.loads(completed["deleted_thread_ids_json"])), []
+                replay = (list(json.loads(completed["deleted_thread_ids_json"])), [])
+                return (*replay, []) if include_chat_generation_runs else replay
         _ensure_chat_attachment_inventory_current(conn)
         removed = sorted(str(row[0]) for row in conn.execute("SELECT id FROM chat_threads"))
         status_placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_RUN_STATUSES)
@@ -2278,6 +2312,7 @@ def clear_chat_history(
                 _ACTIVE_RESEARCH_RUN_STATUSES,
             )
         ]
+        active_chat_runs = _active_chat_generation_run_ids(conn)
         # Fence pending frontend writes and legacy-only ids in the same transaction as the clear.
         _tombstone_chat_threads(conn, sorted(set(additional_thread_ids) | set(removed)))
         conn.execute("DELETE FROM chat_attachment_tombstones")
@@ -2298,6 +2333,8 @@ def clear_chat_history(
                 ),
             )
         conn.commit()
+        if include_chat_generation_runs:
+            return removed, active_runs, active_chat_runs
         return removed, active_runs
     except Exception:
         conn.rollback()
@@ -2466,6 +2503,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
             if thread_ids
             else []
         )
+        active_chat_runs = _active_chat_generation_run_ids(conn, thread_ids)
         _reparent_surviving_forks(conn, thread_ids)
         # Fence the exact membership selected by this transaction so a late writer cannot
         # recreate a project member after the project and its workspace are gone.
@@ -2481,6 +2519,7 @@ def delete_chat_project(id: str, delete_files: bool = False) -> Optional[dict]:
         project = dict(project)
         project["memberIds"] = sorted(thread_ids)
         project["activeResearchRunIds"] = active_runs
+        project["activeChatGenerationRunIds"] = active_chat_runs
         return project
     except Exception:
         conn.rollback()

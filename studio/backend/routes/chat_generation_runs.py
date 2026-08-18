@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from auth.authentication import get_current_subject
+from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
 from utils.api_errors import safe_validation_errors
@@ -172,6 +173,7 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
     sanitized["stream"] = True
     sanitized["thread_id"] = payload.threadId
     sanitized["cancel_id"] = payload.runId
+    sanitized["generation_run_id"] = payload.runId
     return sanitized
 
 
@@ -200,32 +202,42 @@ def _event_cursor(after: int | None, last_event_id: str | None) -> int:
 
 
 @router.post("", status_code = 202)
-def create_chat_generation_run(
+async def create_chat_generation_run(
     payload: CreateChatGenerationRun,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
-    try:
-        run, created = db.create_run(
-            run_id = payload.runId,
-            owner_subject = current_subject,
-            thread_id = payload.threadId,
-            user_message_id = payload.userMessageId,
-            assistant_message_id = payload.assistantMessageId,
-            request_payload = sanitized,
-        )
-    except db.ChatGenerationConflictError as exc:
-        raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code = 404, detail = "Thread not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    except sqlite3.IntegrityError as exc:
-        raise HTTPException(status_code = 409, detail = "Generation run conflicts") from exc
-    supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
-    if supervisor is not None and run["status"] == "queued":
-        supervisor.start(run["id"])
+    # Serialize the off-loop commit with model lifecycle work. If create wins,
+    # the run is registered before the gate opens; if unload/swap wins, the run
+    # is admitted afterward. SSE and unrelated requests stay responsive while
+    # SQLite waits on a lock.
+    async with inference_lifecycle_gate():
+        try:
+            run, created = await asyncio.to_thread(
+                db.create_run,
+                run_id = payload.runId,
+                owner_subject = current_subject,
+                thread_id = payload.threadId,
+                user_message_id = payload.userMessageId,
+                assistant_message_id = payload.assistantMessageId,
+                request_payload = sanitized,
+            )
+        except db.ChatGenerationConflictError as exc:
+            raise HTTPException(status_code = 409, detail = str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code = 404, detail = "Thread not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        except sqlite3.IntegrityError as exc:
+            raise HTTPException(status_code = 409, detail = "Generation run conflicts") from exc
+        supervisor = getattr(request.app.state, "chat_generation_supervisor", None)
+        if supervisor is not None and run["status"] == "queued":
+            supervisor.start(
+                run["id"],
+                thread_id = run["threadId"],
+                model = run["requestPayload"].get("model"),
+            )
     return {**run, "created": created}
 
 
