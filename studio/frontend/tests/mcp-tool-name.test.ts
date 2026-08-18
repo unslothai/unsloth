@@ -45,7 +45,6 @@ test("reads mcp_server from provenance, string-only", () => {
 });
 
 test("old history with no stamp still renders, showing the raw id", () => {
-  // Pre-8557 messages carry no provenance and must stay readable.
   assert.equal(
     formatMcpToolName("mcp__a3f9c1d2e4b6f807__create_issue", undefined),
     "a3f9c1d2e4b6f807 · create_issue",
@@ -53,7 +52,6 @@ test("old history with no stamp still renders, showing the raw id", () => {
 });
 
 test("a stamped name survives the server being renamed or deleted", () => {
-  // The stamp is frozen at call time; no server row is consulted.
   assert.equal(formatMcpToolName("mcp__gone__run", "Old Name"), "Old Name · run");
 });
 

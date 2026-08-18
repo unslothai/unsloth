@@ -105,8 +105,7 @@ function extractText(message: MessageRecord): string {
       const mcpServer = mcpServerFromProvenance(p.provenance);
       if (mcpServer) {
         parts.push(mcpServer);
-        // Index the rendered "Server · tool" label too, so pasting the label
-        // shown on the card (with its separator) matches this conversation.
+        // Index the rendered "Server · tool" label too, so pasting it matches.
         const label =
           typeof p.toolName === "string" ? formatMcpToolName(p.toolName, mcpServer) : null;
         if (label) parts.push(label);

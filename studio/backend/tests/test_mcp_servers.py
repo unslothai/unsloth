@@ -1401,7 +1401,7 @@ def test_display_names_never_reach_the_callable_tool_name(tmp_path, monkeypatch)
         {"id": "srv1", "display_name": "GitHub"}, [{"name": "create_issue"}]
     )
     assert specs[0]["function"]["name"] == "mcp__srv1__create_issue"
-    # The display name is allowed in the description and the provenance stamp.
+    # Allowed in the description and the provenance stamp.
     assert "GitHub" in specs[0]["function"]["description"]
     assert provisional_tool_provenance("mcp__srv1__create_issue")["mcp_server"] == "GitHub"
     assert mcp_display_parts("mcp__srv1__create_issue") == ("GitHub", "create_issue")
@@ -1432,5 +1432,5 @@ def test_adversarial_display_names_do_not_break_provenance(tmp_path, monkeypatch
     mcp_servers_db.create_server(id = "srv1", display_name = display, url = "https://a/m")
     from core.inference.tool_loop_controller import provisional_tool_provenance
 
-    # Stored verbatim; escaping is the renderer's job, not the stamp's.
+    # Stored verbatim; escaping is the renderer's job.
     assert provisional_tool_provenance("mcp__srv1__run")["mcp_server"] == display

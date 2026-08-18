@@ -137,8 +137,7 @@ function formatToolCallName(toolName: string, mcpServer?: string): string {
   if (TOOL_CALL_LABELS[normalized]) return TOOL_CALL_LABELS[normalized];
   const mcpLabel = formatMcpToolName(toolName, mcpServer);
   if (mcpLabel) return `MCP: ${mcpLabel}`;
-  // Too malformed to split, but still MCP: keep the prefix rather than falling
-  // through to the word-caser, which the category check would then contradict.
+  // Malformed but still MCP: keep the prefix so the category check agrees.
   if (normalized.startsWith("mcp__")) return `MCP: ${toolName.slice(5)}`;
   return toolName
     .replace(/[_-]+/g, " ")

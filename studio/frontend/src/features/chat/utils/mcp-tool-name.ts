@@ -10,10 +10,7 @@ export function mcpServerFromProvenance(provenance: unknown): string | undefined
   return typeof value === "string" && value ? value : undefined;
 }
 
-/**
- * "GitHub · create_issue" for an mcp__<serverId>__<tool> name, or null for
- * non-MCP names. Falls back to the raw server id when no display name is known.
- */
+/** "GitHub · create_issue" for mcp__<serverId>__<tool>, else null. Falls back to the raw id. */
 export function formatMcpToolName(
   toolName: string,
   mcpServer?: string,
