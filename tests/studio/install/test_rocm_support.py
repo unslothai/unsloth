@@ -2852,12 +2852,27 @@ class TestInstallShStructure:
             assert (
                 "falling back to CPU-only PyTorch" in r2.stderr
             ), f"an unmappable override must keep the CPU warning: {r2.stderr!r}"
-            # Readable gfx, no override, no version: deliberate CPU fallback.
+            # Readable gfx that HAS a per-arch index, no override, no version.
+            # This used to keep the CPU warning, which is the unslothai#8731 bug:
+            # gfx1151 has its own repo.amd.com index and the version only chooses
+            # between the generic rocmX.Y leaves, so an unreadable version is a
+            # detection miss rather than a decision, and the arch alone routes.
             r3 = run('echo "  Name:  gfx1151"\n')
             assert r3.returncode == 0, f"readable-gfx case aborted: {r3.stderr}"
+            assert r3.stdout.strip().endswith("/cpu")
             assert (
-                "falling back to CPU-only PyTorch" in r3.stderr
-            ), f"a readable-gfx host without a version keeps the CPU warning: {r3.stderr!r}"
+                "falling back to CPU-only PyTorch" not in r3.stderr
+            ), f"a mapped arch must not get the CPU warning: {r3.stderr!r}"
+            assert (
+                "routing to AMD per-arch wheels" in r3.stderr
+            ), f"a mapped arch with no version defers to the reroute: {r3.stderr!r}"
+            # Readable gfx with NO per-arch index: the generic leaves are all there
+            # is and picking one needs a version, so the CPU warning still stands.
+            r4 = run('echo "  Name:  gfx906"\n')
+            assert r4.returncode == 0, f"unmapped readable-gfx case aborted: {r4.stderr}"
+            assert (
+                "falling back to CPU-only PyTorch" in r4.stderr
+            ), f"an unmapped arch without a version keeps the CPU warning: {r4.stderr!r}"
 
     def test_reroute_gate_covers_kfd_only(self):
         """The runtime-less reroute must fire for a KFD-only host: _has_amd_rocm_gpu
