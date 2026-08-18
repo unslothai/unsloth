@@ -56,6 +56,7 @@ def _boot_defaults() -> tuple[str, str]:
     assert log, f"{BOOT_SCRIPT.name} no longer sets a default LOG; this scan is blind"
     return log.group(1), pid.group(1) if pid else "STUDIO_PID"
 
+
 # The phases, in the order they must run. The update phase is last because it
 # ends by uninstalling and asserting the machine is clean.
 PHASE_MARKERS = (
@@ -136,7 +137,7 @@ def test_the_uninstall_phase_runs_last(steps: list[dict]) -> None:
     """
     names = [str(s.get("name") or "") for s in steps]
     uninstall = next(i for i, n in enumerate(names) if n == "Uninstall and verify clean")
-    after = [n for n in names[uninstall + 1:] if n]
+    after = [n for n in names[uninstall + 1 :] if n]
     # Artifact upload is the only legitimate follower: it needs no install.
     assert all("Upload" in n for n in after), (
         f"steps run after the uninstall phase: {after}. That phase removes Unsloth, so "
@@ -221,10 +222,7 @@ def test_every_absorbed_phase_step_says_when_it_runs(steps: list[dict]) -> None:
     start = names.index("Phase 1 environment")
     end = names.index("First update should be a no-op (prebuilt already validated)")
 
-    ungated = [
-        n for s, n in zip(steps[start:end], names[start:end])
-        if not s.get("if")
-    ]
+    ungated = [n for s, n in zip(steps[start:end], names[start:end]) if not s.get("if")]
     assert not ungated, (
         f"absorbed inference steps with no `if:`: {ungated}. Each inherits a job-wide "
         f"implicit success(), so a failure in any earlier phase skips them and the run "
