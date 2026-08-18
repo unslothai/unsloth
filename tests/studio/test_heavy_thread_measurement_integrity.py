@@ -765,7 +765,11 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
 # the constant is checked against the run rather than trusted.
 
 
-def floor_row(observed, engine = "chromium", size = 25000):
+def floor_row(
+    observed,
+    engine = "chromium",
+    size = 25000,
+):
     cell = {"actions": {"reopen": {"ms": 120.0, "paintWaits": observed}}}
     return {
         "engines": [engine],
@@ -815,9 +819,9 @@ def test_the_floor_check_decides_the_exit_code() -> None:
     """Wiring, not logic: a checker whose result never reaches `harness_failures` passes its own
     unit tests forever while the harness goes on publishing ratios built on the wrong constant."""
     body = HARNESS_SOURCE.split("def harness_failures", 1)[1]
-    assert "floor_declaration_problems(results)" in body, (
-        "harness_failures ignores the paint-floor check, so a mis-declared floor never fails"
-    )
+    assert (
+        "floor_declaration_problems(results)" in body
+    ), "harness_failures ignores the paint-floor check, so a mis-declared floor never fails"
 
 
 def test_reopen_counts_the_waits_it_pays() -> None:
