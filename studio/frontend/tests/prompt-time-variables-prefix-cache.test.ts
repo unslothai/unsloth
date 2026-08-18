@@ -25,9 +25,11 @@ test("detects the high-precision time variables", () => {
     promptUsesHighPrecisionTimeVariables("Clock: {{ $time }}"),
     true,
   );
+  // Case-sensitive: the substitution resolves $now/$time exactly, so an
+  // uppercase variant is left unsubstituted and does not churn the prefix.
   assert.equal(
     promptUsesHighPrecisionTimeVariables("{{ $NOW }}"),
-    true,
+    false,
   );
 });
 

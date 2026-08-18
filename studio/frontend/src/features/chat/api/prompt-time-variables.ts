@@ -12,5 +12,8 @@ export function promptUsesHighPrecisionTimeVariables(prompt: string): boolean {
   if (!prompt) {
     return false;
   }
-  return /{{\s*\$now\s*}}|{{\s*\$time\s*}}/i.test(prompt);
+  // Case-sensitive on purpose: resolveSystemPromptVariables looks the
+  // variables up case-sensitively, so {{$NOW}} is left unsubstituted and
+  // does not churn the prefix.
+  return /{{\s*\$now\s*}}|{{\s*\$time\s*}}/.test(prompt);
 }
