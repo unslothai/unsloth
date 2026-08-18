@@ -24,6 +24,10 @@ Cases:
     h5_keyboard          PageDown with focus in the viewport, cursor parked outside it.
     h6_reseed_midscroll  re-import the thread mid-scroll (re-keys every message) and check for a
                          stuck bar or a console error.
+    h7_pen_drift_during_scroll
+                         cursor parked on a message, thread wheel-scrolled, and a PEN drifting
+                         over the same point. A pointer that is not a mouse must not count as
+                         the user moving the cursor, so the bar must not walk to another message.
     h8_nested_scroller   scroll a nested `overflow-y-auto` box; confirm the hook does not see it
                          (scroll does not bubble) by hovering immediately afterwards.
 
@@ -635,6 +639,116 @@ def case_h6_reseed_midscroll(page) -> dict:
     }
 
 
+def case_h7_pen_drift_during_scroll(page) -> dict:
+    """A pointer that is not a mouse must not count as the user moving the cursor.
+
+    The mouse cursor rests on a user message, which is what puts `:hover` on it, and the thread is
+    wheel-scrolled while a PEN drifts over the same point by a couple of pixels a step, which is
+    what a stylus held over a touchscreen does and what a finger does on the way into a drag. A
+    stylus or a finger moving is not the cursor moving, so the hovered message has to hold still
+    for the whole gesture, exactly as it does when the mouse is the only pointer in the room.
+
+    Without the `pointerType` check those `pointermove`s read as an active cursor, the boundary
+    events are let through for the rest of the gesture, and the action bar walks from message to
+    message under a cursor that never moved -- the churn the hook exists to stop, back again on
+    any machine that has a second pointer. `h1t_touch_scroll` cannot see this: a touch-only
+    interaction leaves `:hover` empty, so there are no boundary events to let through and both
+    answers are "no bar".
+
+    On chromium the pen moves go through CDP `Input.dispatchMouseEvent` with `pointerType: "pen"`,
+    so they are trusted and the engine's own hover tracks them. Firefox and WebKit have no such
+    endpoint and the moves are `PointerEvent(pointerType: "pen")` dispatched from the page, which
+    exercises the hook's code path but is not a real device; which one ran is recorded in `pen`.
+    """
+    scroll_by(page, 4000)
+    page.wait_for_timeout(600)
+    target = pick_user_message(page)
+    if not target:
+        return {"skipped": "no user message in view"}
+    x, y = target["x"], target["y"]
+    # The real cursor, parked. It is not moved again: the only pointer input during the gesture is
+    # the pen, which is the whole question.
+    page.mouse.move(x, y)
+    page.wait_for_timeout(600)
+    before = census(page)
+    # A different USER message has to end up under the cursor, otherwise "no other bar appeared"
+    # is true because the gesture stopped over an assistant message, whose bar is not hover-gated.
+    plan = plan_scroll_to_put_user_message_under(page, x, y, target["id"])
+    if not plan:
+        return {"skipped": "no scroll landing another user message under the cursor"}
+    pen = "synthetic"
+    cdp = None
+    try:
+        cdp = page.context.new_cdp_session(page)
+        pen = "cdp"
+    except Exception:  # noqa: BLE001
+        cdp = None
+
+    def pen_move(px, py):
+        if cdp is not None:
+            cdp.send(
+                "Input.dispatchMouseEvent",
+                {"type": "mouseMoved", "x": px, "y": py, "button": "none",
+                 "pointerType": "pen", "force": 0.0},
+            )
+            return
+        page.evaluate(
+            """([px, py]) => {
+              const v = window.__heavyThread.viewport();
+              v.dispatchEvent(new PointerEvent("pointermove", {
+                bubbles: true, clientX: px, clientY: py, pointerType: "pen",
+                pointerId: 7, isPrimary: true,
+              }));
+            }""",
+            [px, py],
+        )
+
+    page.evaluate("() => window.__probeReset()")
+    steps = [round(plan["dy"] / 10)] * 10
+    # Then a few ticks that go nowhere. They keep the gesture alive, so the reading stays inside
+    # the scroll rather than after the settle, and they give the bar several chances to appear on
+    # the message the cursor now sits over rather than one.
+    steps += [8, -8, 8, -8]
+    samples = []
+    for i, delta in enumerate(steps):
+        pen_move(x, y + (2 if i % 2 else -2))
+        page.mouse.wheel(0, delta)
+        # Comfortably under QUIET_MS, so `settle` never runs mid-gesture and every sample below is
+        # a reading of what the person sees WHILE the thread is moving.
+        page.wait_for_timeout(60)
+        samples.append(census(page))
+    owners = [o for s in samples for o in s["owners"] if o]
+    strangers = sorted({o for o in owners if o != target["id"]})
+    events = page.evaluate("() => ({...window.__probe})")
+    page.wait_for_timeout(1200)
+    settled = census(page)
+    return {
+        "pen": pen,
+        "target": target,
+        "before_shown": before["shown"],
+        "before_owners": before["owners"],
+        "scroll_plan": plan,
+        "bars_during_gesture": [s["shown"] for s in samples],
+        "owners_during_gesture": owners,
+        "strangers_during_gesture": strangers,
+        "settled_shown": settled["shown"],
+        "settled_owners": settled["owners"],
+        "message_under_cursor": under(page, x, y),
+        "events": events,
+        # The cursor has to be on the target when the gesture starts, and the wheel has to have
+        # actually scrolled the viewport; without both there is nothing to hold still.
+        "inconclusive": (
+            before["shown"] != 1
+            or before["owners"] != [target["id"]]
+            or events["wheel"] < 8
+            or events["scroll"] < 8
+        ),
+        # The break: the bar left the message the cursor is on and appeared on another one while
+        # the thread was still scrolling, because a pen was moving.
+        "followed_during_scroll": bool(strangers),
+    }
+
+
 def case_h8_nested_scroller(page) -> dict:
     """Scroll a nested `overflow-y-auto` box. `scroll` does not bubble from elements, so the
     hook's viewport listener should not see it and hover should keep working immediately."""
@@ -779,6 +893,7 @@ CASES = {
     "h4_stream_scroll": case_h4_stream_scroll,
     "h5_keyboard": case_h5_keyboard,
     "h6_reseed_midscroll": case_h6_reseed_midscroll,
+    "h7_pen_drift_during_scroll": case_h7_pen_drift_during_scroll,
     "h8_nested_scroller": case_h8_nested_scroller,
 }
 
@@ -807,6 +922,7 @@ BREAK_KEYS = {
     "h4_stream_scroll": ["suppressed_for_whole_stream"],
     "h5_keyboard": ["phantom_bar"],
     "h6_reseed_midscroll": ["stuck_bar_at_rest"],
+    "h7_pen_drift_during_scroll": ["followed_during_scroll"],
     "h8_nested_scroller": ["hover_lost_after_nested_scroll"],
 }
 
