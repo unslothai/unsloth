@@ -1185,5 +1185,43 @@ def wall_cells_for_report(paint_waits: int) -> dict:
     }
 
 
+# ── halves, and counters that never left the noise ────────────────────
+
+
+def test_a_fractional_median_wait_count_is_not_truncated() -> None:
+    """`summarise` medians the wait count across repetitions, so an even-repetition run whose
+    repetitions paid 1 and 2 reports 1.5. Truncating that to 1 left half a vsync floor in the
+    wall axis, and the documented two-repetition configurations are the ones that produce it."""
+    assert HARNESS.resolve_floor(HARNESS._floor_from("menu", "paint_waits"), {"actions": {"menu": {"paint_waits": 1.5}}}) == 1.5
+
+
+def test_the_fractional_floor_is_actually_subtracted() -> None:
+    report = HARNESS.report_growth(wall_cells_for_report(1.5))
+    row = report["chromium"]["menu wall ms"]
+    assert row["floored"] == [1.5, 1.5], row
+    assert row["small"] == round(200.0 - 1.5 * 33.0, 2), row
+
+
+def test_a_counter_with_a_nonzero_baseline_still_needs_the_noise_floor() -> None:
+    """1 -> 2 dropped frames is a ratio of 2.0 and cleared DISCRIMINATION_RATIO, and one
+    discriminating axis is enough for the whole run to pass."""
+    row = HARNESS.report_growth(counter_cells(1, 2))["chromium"]["scroll frames over 33ms"]
+    assert row["discriminated"] is False, row
+    assert "distinguishable from noise" in row["reason"], row
+
+
+def test_a_counter_that_rose_well_past_the_noise_floor_still_discriminates() -> None:
+    """The control, so the rule above cannot be met by rejecting every nonzero counter."""
+    row = HARNESS.report_growth(counter_cells(2, 40))["chromium"]["scroll frames over 33ms"]
+    assert row["discriminated"] is True, row
+
+
+def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
+    """The noise floor is a count of events. Applying it to milliseconds would silently reject
+    real latency curves that happen to sit at low absolute values."""
+    row = HARNESS.report_growth(timing_cells(1.0, 4.0))["chromium"]["scroll longest stall ms"]
+    assert row["discriminated"] is True, row
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

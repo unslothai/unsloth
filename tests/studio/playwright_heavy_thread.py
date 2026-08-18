@@ -1355,7 +1355,7 @@ COUNTER_AXES = frozenset(f"{a} frames over 33ms" for a in ACTIONS)
 CONSOLE_WARNING_ALLOWANCE = int(os.environ.get("SMOKE_CONSOLE_WARNING_ALLOWANCE", "4"))
 
 
-def resolve_floor(floored, row: dict) -> int:
+def resolve_floor(floored, row: dict) -> float:
     """The floor count for one row, as an INT.
 
     `floored` may be a callable, and the growth report is written to JSON at the end of the run.
@@ -1363,7 +1363,12 @@ def resolve_floor(floored, row: dict) -> int:
     not JSON serializable`, which failed every complete run AFTER all the measurements were taken.
     Nothing in the unit tests caught it because none of them serialise the report.
     """
-    return int(floored(row) if callable(floored) else floored)
+    # NOT int(). `summarise` takes a median across repetitions, so an even-repetition run whose
+    # repetitions paid 1 and 2 waits reports 1.5, and truncating that to 1 left half a vsync floor
+    # in the wall-clock axis and published a distorted ratio. The documented two-repetition
+    # configurations are exactly the ones that produce halves. A float serialises fine.
+    value = floored(row) if callable(floored) else floored
+    return value if isinstance(value, (int, float)) else 0
 
 
 def growth(cells: dict, pick, floored, sizes: list[int]) -> tuple[float | None, float | None]:
@@ -1481,12 +1486,24 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                 }
                 continue
             ratio = round(large / small, 2)
+            # The noise floor applies to a counter whatever its baseline. A dropped-frame count
+            # going 1 -> 2 is a ratio of 2.0 and cleared DISCRIMINATION_RATIO, and since
+            # harness_failures accepts any single discriminating axis, that one incidental frame
+            # could carry the CI smoke while every latency axis was flat. A ratio is only
+            # meaningful once there are enough events for the ratio to be about the content
+            # rather than about one frame either way.
+            noisy_counter = name in COUNTER_AXES and large < ZERO_BASED_MIN_RISE
             per_axis[name] = {
                 "small": small,
                 "large": large,
                 "ratio": ratio,
-                "discriminated": ratio > DISCRIMINATION_RATIO,
-                "reason": "-",
+                "discriminated": ratio > DISCRIMINATION_RATIO and not noisy_counter,
+                "reason": (
+                    f"only {large} events at the largest size, under the "
+                    f"{ZERO_BASED_MIN_RISE} this counter needs to be distinguishable from noise"
+                    if noisy_counter
+                    else "-"
+                ),
                 "floored": floor_counts,
             }
         report[engine] = per_axis
