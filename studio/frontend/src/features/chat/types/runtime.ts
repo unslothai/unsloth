@@ -21,6 +21,29 @@ export interface InferenceParams {
    * https://platform.claude.com/docs/en/build-with-claude/fast-mode
    */
   fastMode?: boolean;
+  /**
+   * Sampling seed forwarded to llama-server so a generation can be reproduced.
+   * `null` is unset, which leaves the server to draw its own seed per request.
+   */
+  seed?: number | null;
+}
+
+/** llama.cpp reads the seed as a uint32 and spends 0xFFFFFFFF on LLAMA_DEFAULT_SEED,
+ *  its "draw one" sentinel, so a pin can name every value below that and no other. */
+export const MAX_SAMPLING_SEED = 4_294_967_294;
+
+/** Whether the loaded model decodes through llama-server, the only backend that reads
+ *  a seed. Shared so the panel cannot offer the field where the request would drop it. */
+export function modelReadsSamplingSeed(
+  activeGgufVariant: string | null | undefined,
+  ggufContextLength: number | null | undefined,
+  checkpoint: string | null | undefined,
+): boolean {
+  return (
+    activeGgufVariant != null ||
+    ggufContextLength != null ||
+    (checkpoint?.toLowerCase().endsWith(".gguf") ?? false)
+  );
 }
 
 /** The params that survive a reload. `checkpoint` names the model rather than
@@ -43,6 +66,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   checkpoint: "",
   trustRemoteCode: false,
   fastMode: false,
+  seed: null,
 };
 
 export interface ChatModelSummary {
