@@ -1297,12 +1297,50 @@ HEADLINE = {
 # into the printed table by median() like any other number, and every one of them is also read by
 # `action_failures`, which is the combination that makes a failed repetition invisible: median()
 # only propagates a null, and none of these is ever null.
+# How much of the requested gesture must actually have happened. Not 1.0: the last step of a
+# reversal clamps at a boundary, so a complete gesture can fall a fraction short. Exported and
+# used by BOTH the harness below and scroll_predecessor_probe, because two copies of this number
+# is how the probe came to accept any travel above zero while the harness required 90%.
+SCROLL_TRAVEL_TOLERANCE = 0.9
+REQUESTED_SCROLL_PX = SCROLL_STEPS * SCROLL_STEP_PX
+
+
+def scroll_travel_shortfall(travelled) -> str | None:
+    """Why this repetition's travel does not count as the requested gesture, or None."""
+    if travelled is None:
+        return f"it reported no travel at all against the {REQUESTED_SCROLL_PX}px gesture"
+    if travelled < REQUESTED_SCROLL_PX * SCROLL_TRAVEL_TOLERANCE:
+        return f"it travelled only {travelled}px of the {REQUESTED_SCROLL_PX}px gesture"
+    return None
+
+
+# How far from the bottom a jump may begin and still be the same gesture as the others. One px of
+# rounding, not room for a repetition to start part-way up the thread.
+JUMP_ANCHOR_TOLERANCE_PX = 2
+
+
+def jump_anchor_shortfall(started, bottom) -> str | None:
+    """Why this repetition's jump did not begin at the bottom, or None."""
+    if started is None or bottom is None:
+        return "it did not report where it started, so its length is unverifiable"
+    if abs(bottom - started) > JUMP_ANCHOR_TOLERANCE_PX:
+        return f"it began {round(bottom - started)}px above the bottom rather than at it"
+    return None
+
+
 NUMERIC_PROOFS = (
     # How far the gesture actually travelled.
     "scrolledPx",
     # Where the jump landed, and how far it had to go.
     "landedAt",
     "travelledPx",
+    # Where it BEGAN, and where the bottom was at the time. travelledPx is observed now, so a
+    # jump that started part-way up the thread reports a smaller number rather than the full
+    # height -- but it can still land at 0 and still cover more than a viewport, which satisfies
+    # every other check while contributing a shorter gesture to the median. Kept per repetition
+    # because a median cannot see one short repetition among complete ones.
+    "startedFrom",
+    "bottom",
     # That the popover that opened had something in it, and that a bar was mounted under the
     # pointer at all.
     "itemsWhileOpen",
@@ -2310,18 +2348,29 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
     # cannot see it: [8000, 0, 8000] has a median of 8000, and the repetition whose viewport never
     # moved is inside the published gesture time.
     if scroll.get("ran"):
-        wanted_px = SCROLL_STEPS * SCROLL_STEP_PX
         for index, travelled in enumerate(
             scroll.get("scrolledPx_per_repetition", [scroll.get("scrolledPx")])
         ):
-            if travelled is None or travelled < wanted_px * 0.9:
+            shortfall = scroll_travel_shortfall(travelled)
+            if shortfall:
                 failures.append(
-                    f"{where} travelled only {travelled}px of the {wanted_px}px gesture on "
-                    f"repetition {index + 1}, so its scroll column is not comparable with the "
-                    "others"
+                    f"{where} {shortfall} on repetition {index + 1}, so its scroll column is not "
+                    "comparable with the others"
                 )
     jumped = actions["jump"]
     if jumped.get("ran"):
+        # The anchor ACTION_SETUPS applies can itself be clamped or snapped back. When it is, the
+        # jump starts part-way up, still lands at 0 and still covers more than a viewport, so
+        # every other check here passes while a shorter gesture goes into the median.
+        starts = jumped.get("startedFrom_per_repetition", [jumped.get("startedFrom")])
+        bottoms = jumped.get("bottom_per_repetition", [jumped.get("bottom")])
+        for index, (started, bottom) in enumerate(zip(starts, bottoms)):
+            shortfall = jump_anchor_shortfall(started, bottom)
+            if shortfall:
+                failures.append(
+                    f"{where} jumped on repetition {index + 1} but {shortfall}, so that "
+                    "repetition is a shorter gesture than the ones it is aggregated with"
+                )
         # Unlike the gesture, the jump is DELIBERATELY not the same distance at every
         # size: it is bottom to top, which is the point. What has to hold is that it
         # arrived, or the column is timing a scroll that did not move.

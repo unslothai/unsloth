@@ -115,11 +115,6 @@ def _keystroke_proof(out: dict) -> list[str]:
     return []
 
 
-# How far from the bottom a jump may start and still count as a full-height jump. One px of
-# rounding, not room for a repetition to begin thousands of px up the thread.
-JUMP_ANCHOR_TOLERANCE_PX = 2
-
-
 def _jump_proof(out: dict) -> list[str]:
     landed = out.get("landedAt")
     travelled = out.get("travelledPx") or 0
@@ -128,13 +123,13 @@ def _jump_proof(out: dict) -> list[str]:
         problems.append(f"landed at {landed}px after {travelled}px of travel")
     # travelledPx is observed now, so a jump that began part-way up the thread reports a smaller
     # number rather than the full height, and the arm would quietly average unequal gestures.
-    started, bottom = out.get("startedFrom"), out.get("bottom")
-    if started is None or bottom is None:
-        problems.append("it did not report where it started, so its length is unverifiable")
-    elif abs(bottom - started) > JUMP_ANCHOR_TOLERANCE_PX:
+    # hv owns this too, so the probe and the harness cannot disagree about what counts as a jump
+    # that began at the bottom.
+    shortfall = hv.jump_anchor_shortfall(out.get("startedFrom"), out.get("bottom"))
+    if shortfall:
         problems.append(
-            f"it began {round(bottom - started)}px above the bottom rather than at it, so this "
-            "repetition is a shorter gesture than the ones it is aggregated with"
+            f"{shortfall}, so this repetition is a shorter gesture than the ones it is "
+            "aggregated with"
         )
     return problems
 
@@ -220,8 +215,15 @@ def scroll_row_problems(row: dict) -> list[str]:
     travelled = row.get("scrolledPx")
     if not isinstance(travelled, (int, float)):
         problems.append(f"it reported no travel (scrolledPx={travelled!r})")
-    elif travelled <= 0:
-        problems.append("the viewport did not move at all, so nothing was scrolled")
+    else:
+        # Against the FULL requested distance, not merely against zero. A viewport clamped or
+        # snapped back for part of a repetition still reports a positive number, and skewed_arms
+        # compares medians, so one short repetition among complete ones is hidden by the median
+        # while its timing stays in the experiment. hv owns the threshold so this cannot drift
+        # away from the check the main harness applies to the same gesture.
+        shortfall = hv.scroll_travel_shortfall(travelled)
+        if shortfall:
+            problems.append(shortfall)
     return problems
 
 

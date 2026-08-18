@@ -141,7 +141,17 @@ def clean_actions() -> dict:
             pointer_under = "p",
             pointer_at = "720,450",
         ),
-        "jump": clean_action(paintedMs = 90.0, settleMs = 200.0, landedAt = 0, travelledPx = 19000),
+        # startedFrom/bottom are part of the jump's report now: action_failures rejects a
+        # repetition that cannot show it began at the bottom, because an anchor that was clamped
+        # leaves a jump that still lands at 0 and still covers a viewport.
+        "jump": clean_action(
+            paintedMs = 90.0,
+            settleMs = 200.0,
+            landedAt = 0,
+            travelledPx = 19000,
+            startedFrom = 19000,
+            bottom = 19000,
+        ),
         "menu": clean_action(
             openMs = 100.0,
             closeMs = 40.0,

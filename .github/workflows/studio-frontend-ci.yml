@@ -30,6 +30,8 @@ on:
       - 'tests/studio/scroll_predecessor_probe.py'
       - 'tests/studio/test_heavy_thread_harness_contract.py'
       - 'tests/studio/test_heavy_thread_repetition_rejection.py'
+      - 'tests/studio/test_heavy_thread_setup_window.py'
+      - 'tests/studio/test_scroll_predecessor_validation.py'
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
@@ -178,7 +180,9 @@ jobs:
           python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
             tests/studio/test_autoscroll_harness_contract.py \
             tests/studio/test_heavy_thread_harness_contract.py \
-            tests/studio/test_heavy_thread_repetition_rejection.py -q
+            tests/studio/test_heavy_thread_repetition_rejection.py \
+            tests/studio/test_heavy_thread_setup_window.py \
+            tests/studio/test_scroll_predecessor_validation.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}

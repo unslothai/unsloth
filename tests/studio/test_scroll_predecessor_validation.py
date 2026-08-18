@@ -102,7 +102,37 @@ def test_a_viewport_that_did_not_move_is_rejected():
     """Zero travel is the failure that looks most like a result: every timing field is present and
     numeric, and the row reads as a very fast scroll."""
     problems = PROBE.scroll_row_problems(good_row(scrolledPx = 0))
-    assert any("did not move" in p for p in problems), problems
+    assert any("travelled only 0px" in p for p in problems), problems
+
+
+def test_a_partially_completed_scroll_is_rejected():
+    """The case a bare `> 0` check cannot see. A viewport clamped or snapped back for part of a
+    repetition still reports a positive number, and `skewed_arms` compares MEDIANS, so one short
+    repetition among complete ones is hidden while its timing stays in the experiment."""
+    half = PROBE.hv.REQUESTED_SCROLL_PX // 2
+    problems = PROBE.scroll_row_problems(good_row(scrolledPx = half))
+    assert any(f"travelled only {half}px" in p for p in problems), problems
+
+
+def test_a_gesture_a_fraction_short_is_still_accepted():
+    """The tolerance is for the last step of a reversal clamping at a boundary. Without this the
+    check above could be met by demanding an exact figure no real run produces."""
+    almost = int(PROBE.hv.REQUESTED_SCROLL_PX * 0.95)
+    assert PROBE.scroll_row_problems(good_row(scrolledPx = almost)) == []
+
+
+def test_the_probe_and_the_harness_share_one_definition_of_a_completed_gesture():
+    """Two copies of this threshold is exactly how the probe came to accept any travel above zero
+    while the harness required 90% of the requested distance."""
+    source = Path(PROBE.__file__).read_text(encoding = "utf-8")
+    assert "hv.scroll_travel_shortfall(" in source, (
+        "the probe judges scroll completion on its own terms again"
+    )
+    assert "hv.jump_anchor_shortfall(" in source, (
+        "the probe judges the jump anchor on its own terms again"
+    )
+    assert PROBE.hv.SCROLL_TRAVEL_TOLERANCE == 0.9
+    assert PROBE.hv.JUMP_ANCHOR_TOLERANCE_PX == 2
 
 
 def test_a_missing_travel_field_is_rejected():

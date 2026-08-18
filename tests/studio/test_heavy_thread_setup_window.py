@@ -214,3 +214,74 @@ def test_every_anchored_action_is_registered_for_setup(name):
         f"{name} starts from wherever the last repetition left the viewport, so it no longer "
         "travels the distance it reports"
     )
+
+
+# ── the tests have to be run by something ─────────────────────────────
+#
+# Every defect this directory guards against was found because a check ran. A contract test that
+# no workflow invokes is the same failure one level up: it passes locally forever, and the
+# regression it exists to catch merges unnoticed. This has already happened twice on this branch,
+# so it is pinned rather than remembered.
+
+WORKFLOW = WORKDIR / ".github" / "workflows" / "studio-frontend-ci.yml"
+CONTRACT_TESTS = sorted(
+    path.name
+    for path in (WORKDIR / "tests" / "studio").glob("test_*.py")
+    if path.name.startswith(("test_heavy_thread_", "test_scroll_predecessor_"))
+)
+
+
+def test_there_are_contract_tests_to_check():
+    """Without this the two checks below pass vacuously if the glob ever stops matching."""
+    assert len(CONTRACT_TESTS) >= 3, CONTRACT_TESTS
+
+
+@pytest.mark.parametrize("name", CONTRACT_TESTS)
+def test_every_contract_test_is_invoked_by_the_frontend_workflow(name):
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    run_blocks = text.split("python3 -m pytest")
+    assert any(f"tests/studio/{name}" in block.split("\n\n")[0] for block in run_blocks[1:]), (
+        f"{name} is not in any pytest invocation in studio-frontend-ci.yml, so nothing runs it "
+        "there and a regression it covers can merge unnoticed"
+    )
+
+
+@pytest.mark.parametrize("name", CONTRACT_TESTS)
+def test_every_contract_test_triggers_the_workflow_that_runs_it(name):
+    """Listed in `paths` as well as in the run block. Without it an edit confined to the test
+    itself changes no triggering path, so the job that would have run it never starts."""
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    assert f"- 'tests/studio/{name}'" in text, (
+        f"{name} is absent from the workflow's pull_request.paths, so editing it alone does not "
+        "trigger the workflow that runs it"
+    )
+
+
+# ── the jump's start position survives aggregation ────────────────────
+
+
+@pytest.mark.parametrize("field", ("startedFrom", "bottom"))
+def test_the_jump_start_position_is_kept_per_repetition(field):
+    """`action_failures` falls back to the aggregated value when the per-repetition list is
+    missing, so dropping these from NUMERIC_PROOFS leaves the check running against one number
+    instead of N and a single bad repetition among good ones stops being visible. That fallback is
+    why asserting on `action_failures` alone could not catch this."""
+    assert field in HARNESS.NUMERIC_PROOFS, (
+        f"{field} is no longer retained per repetition, so a jump that started part-way up the "
+        "thread on one repetition is hidden behind the aggregate"
+    )
+
+
+def test_one_bad_repetition_among_good_ones_is_rejected():
+    """The behaviour the field retention exists for, driven rather than asserted structurally.
+
+    Uses the sibling module's clean table so this cannot pass by being missing a key that
+    `action_failures` would have tripped over anyway.
+    """
+    import test_heavy_thread_repetition_rejection as sibling
+
+    actions = sibling.clean_actions()
+    actions["jump"]["startedFrom_per_repetition"] = [8000, 3000, 8000]
+    actions["jump"]["bottom_per_repetition"] = [8000, 8000, 8000]
+    failures = HARNESS.action_failures("t", actions, sibling.COUNTS, sibling.VIEWPORT)
+    assert any("above the bottom" in f and "repetition 2" in f for f in failures), failures
