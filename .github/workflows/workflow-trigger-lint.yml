@@ -119,6 +119,7 @@ jobs:
             tests/studio/test_composer_rtl_bidi_attribute.py \
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
+            tests/studio/test_heavy_thread_setup_window.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
             tests/studio/test_install_phase_timing.py \
             tests/studio/test_mac_host_offload_optin.py \
@@ -126,6 +127,7 @@ jobs:
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
+            tests/studio/test_scroll_predecessor_validation.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \
