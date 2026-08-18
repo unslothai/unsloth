@@ -902,20 +902,35 @@ function restoreThreadScopedParams(params: InferenceParams): InferenceParams {
  * What the model already remembered wins over the installation values, so
  * stepping off a model inside a chat does not flatten a preference that model
  * was given outside one.
+ *
+ * A chat whose read is still out owns its keys just as much as an applied one:
+ * the edit is sitting in heldThreadScopedEdits rather than in a snapshot, and
+ * the store is showing it. Returning early on the applied id alone let a model
+ * switch inside that window snapshot the chat's sampling and prompt into the
+ * outgoing model's memory, which every other chat on that model then replays.
  */
 function withoutActiveThreadParams(
   state: ChatRuntimeStore,
   params: InferenceParams,
 ): InferenceParams {
-  if (threadScopedSettingsThreadId === null) return params;
+  if (threadScopedSettingsThreadId === null && pendingPairingThreadId === null) {
+    return params;
+  }
   const remembered = params.checkpoint
     ? state.paramsByModel[params.checkpoint]
     : undefined;
   const restored: Record<string, unknown> = {};
   for (const key of THREAD_SCOPED_PARAM_KEYS) {
     // Only a key this chat actually owns; the rest are already the model's.
-    if (threadScopedOverride(key) === undefined) continue;
-    const own = remembered?.[key] ?? globalThreadScopedDefaults?.[key];
+    const held = heldThreadScopedParamValue(key);
+    if (held === undefined && threadScopedOverride(key) === undefined) continue;
+    // For a held key the installation copy can still be null (nothing has been
+    // applied yet this session), and the store no longer holds the pre-edit
+    // value either. The sample taken when the window opened is that value.
+    const own =
+      remembered?.[key] ??
+      globalThreadScopedDefaults?.[key] ??
+      (held !== undefined ? pairingWindowDefaults?.[key] : undefined);
     if (own === undefined || isSameThreadScopedValue(own, params[key])) {
       continue;
     }
@@ -958,10 +973,18 @@ function withoutCapturedThreadEdits(
  * whichever model was loaded before it, until a reload rehydrates.
  */
 function noteThreadScopedDefaults(shared: PersistedInferenceParams): void {
-  if (globalThreadScopedDefaults === null) return;
   let next: Record<string, unknown> | null = null;
   for (const [key, value] of Object.entries(shared)) {
     if (!isThreadScopedParamKey(key)) continue;
+    // This value was just written to the installation, and the field is one whose
+    // edit is still held for a chat. The pairing capture restores held fields from
+    // the sample taken when the window opened, so without this it would put the
+    // pre-window value back and leave the in-memory defaults behind the server's
+    // for the rest of the session, pinning it onto the next snapshot-less chat.
+    if (isHeldThreadScopedField(key)) {
+      hydratedDefaultsByHeldField.set(key, value);
+    }
+    if (globalThreadScopedDefaults === null) continue;
     next ??= { ...globalThreadScopedDefaults };
     next[key] = value;
   }
@@ -1695,6 +1718,11 @@ async function mergeThreadScopedSettingsIntoRow(
  * belong to the chat, so when its pairing window closes the default goes back to the
  * value from before the window, which is this browser's pre-hydration copy. The server's
  * is the authoritative one and lands nowhere else.
+ *
+ * A default published by a model that finished loading inside the window is recorded
+ * here for the same reason: setParams has already sent it to the installation, so
+ * restoring the pre-window sample over it would leave this session's copy behind the
+ * server's.
  */
 const hydratedDefaultsByHeldField = new Map<string, unknown>();
 

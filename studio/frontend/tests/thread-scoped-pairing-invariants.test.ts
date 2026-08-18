@@ -683,7 +683,14 @@ test("the in-memory defaults follow the model defaults that were just written", 
   const note = slice(store, "function noteThreadScopedDefaults", "\n}");
   assert.match(note, /if \(!isThreadScopedParamKey\(key\)\) continue;/);
   // Only ever updated, never created: with no chat open there is nothing to hold.
-  assert.match(note, /if \(globalThreadScopedDefaults === null\) return;/);
+  assert.match(note, /if \(globalThreadScopedDefaults === null\) continue;/);
+  // A field whose edit is held is restored from the pre-window sample when the pairing
+  // closes, so a default published inside the window has to be recorded, or this
+  // session's copy stays behind the value the same call just sent to the server.
+  assert.match(
+    note,
+    /if \(isHeldThreadScopedField\(key\)\) \{\s*hydratedDefaultsByHeldField\.set\(key, value\);/,
+  );
   // and it is the fallback apply() actually reads
   assert.match(store, /stored\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/);
 });
@@ -720,11 +727,25 @@ test("the model being left does not remember the open chat's values", () => {
   const strip = slice(store, "function withoutActiveThreadParams", "\n}");
   // Only keys this chat owns, and what the model already knew beats the installation
   // copy, so leaving a chat does not flatten a preference set outside one.
-  assert.match(strip, /if \(threadScopedOverride\(key\) === undefined\) continue;/);
+  // A chat whose read is still out owns its keys too: the edit is in the held list
+  // rather than in a snapshot, and a switch inside that window snapshots the params.
   assert.match(
     strip,
-    /remembered\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/,
+    /if \(held === undefined && threadScopedOverride\(key\) === undefined\) continue;/,
   );
-  // With no chat open there is nothing of a chat's in the params.
-  assert.match(strip, /if \(threadScopedSettingsThreadId === null\) return params;/);
+  assert.match(
+    strip,
+    /remembered\?\.\[key\] \?\?\s*globalThreadScopedDefaults\?\.\[key\]/,
+  );
+  // and for a held key neither of those may exist yet, so the sample taken when the
+  // window opened is the pre-edit value.
+  assert.match(
+    strip,
+    /held !== undefined \? pairingWindowDefaults\?\.\[key\] : undefined/,
+  );
+  // With no chat open and none awaiting its read there is nothing of a chat's here.
+  assert.match(
+    strip,
+    /if \(threadScopedSettingsThreadId === null && pendingPairingThreadId === null\)/,
+  );
 });
