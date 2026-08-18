@@ -7301,7 +7301,7 @@ async def _preflight_native_audio_placement(
                 audio_type,
                 request.hf_token,
             )
-        resolved, _metadata = hardware.prepare_gpu_selection(
+        resolved, metadata = hardware.prepare_gpu_selection(
             placement.requested_gpu_ids,
             model_name = config.identifier,
             hf_token = request.hf_token,
@@ -7309,6 +7309,11 @@ async def _preflight_native_audio_placement(
             max_seq_length = request.max_seq_length,
             required_override_gb = required_gb,
         )
+        if metadata.get("selection_mode") == "fallback_all":
+            raise ValueError(
+                "No single GPU has enough free memory for this native audio model. "
+                "Select a GPU with enough free memory and try again."
+            )
         if resolved and len(resolved) > 1:
             raise ValueError(
                 "Native audio models currently require one GPU. Select a single GPU; "

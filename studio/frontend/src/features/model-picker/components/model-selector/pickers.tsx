@@ -111,6 +111,7 @@ import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventor
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
+  audioPipelineTagFor,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
@@ -2080,8 +2081,6 @@ const MEDIA_PAGE_TASKS: readonly string[] = [
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
-
 function mediaPageForTask(
   task: string | null | undefined,
 ): "images" | "video" | "audio" | null {
@@ -3672,6 +3671,7 @@ export function HubModelPicker({
             task: pickedTask,
             isGguf: Boolean(meta.isGguf || meta.ggufFilename),
             isCurated: artifactForRepoId(id, AUDIO_CATALOG) !== null,
+            audioType: meta.audioType,
             isLocalCheckpoint:
               meta.source === "lora" ||
               meta.source === "exported" ||
@@ -6484,22 +6484,6 @@ export function HubModelPicker({
 
 /** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
  * that section's roving list and shared GGUF-expand state. */
-/** Codec -> the Hub pipeline tag the media routing understands, else undefined.
- *
- * A local checkpoint never gets the ASR tag: it would route to the Audio page, which hands
- * the filesystem path to /audio/stt/load, and the sidecar's resolve_model_id takes only a
- * curated key or an `owner/model` Hub id, so the row is advertised and then 422s. TTS is
- * fine, since that loads through the main slot, which does accept a local path. */
-function audioPipelineTagFor(
-  audioType?: string | null,
-  isLocalCheckpoint = false,
-): string | undefined {
-  if (!audioType) return undefined;
-  if (audioType === "whisper")
-    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
-  return TTS_CODECS.has(audioType) ? "text-to-speech" : undefined;
-}
-
 function FineTunedRows({
   adapters,
   value,

@@ -12,6 +12,8 @@ const NATIVE_AUDIO_TYPES = new Set([
   "minimax_music3",
 ]);
 
+const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
 export function shouldDiscoverCommunityModels(
@@ -24,6 +26,19 @@ export function shouldRecommendCommunityModels(
   policy: CommunityModelPolicy,
 ): boolean {
   return policy === "recommended";
+}
+
+/** Maps detected audio runtime types to the media tag used by Chat routing. */
+export function audioPipelineTagFor(
+  audioType?: string | null,
+  isLocalCheckpoint = false,
+): string | undefined {
+  if (!audioType) return undefined;
+  if (audioType === "whisper")
+    return isLocalCheckpoint ? undefined : "automatic-speech-recognition";
+  return TTS_CODECS.has(audioType) || NATIVE_AUDIO_TYPES.has(audioType)
+    ? "text-to-speech"
+    : undefined;
 }
 
 /** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD
@@ -92,6 +107,7 @@ export function audioPickIsRoutable({
   baseModel,
   tags,
   libraryName,
+  audioType,
 }: {
   id: string;
   task: string | null | undefined;
@@ -102,6 +118,7 @@ export function audioPickIsRoutable({
   baseModel?: string | null;
   tags?: readonly string[] | null;
   libraryName?: string | null;
+  audioType?: string | null;
 }): boolean {
   if (isCurated) return true;
   // A checkpoint from outputs/ has no Hub identity for communityAudioRowIsRunnable to
@@ -124,6 +141,7 @@ export function audioPickIsRoutable({
     baseModel,
     tags,
     libraryName,
+    audioType,
   });
 }
 

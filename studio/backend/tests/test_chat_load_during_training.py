@@ -919,6 +919,7 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
         selected = None,
         requested = None,
         rocm = False,
+        metadata = None,
     ):
         config = SimpleNamespace(
             identifier = "test/native-audio",
@@ -940,7 +941,10 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
                 "utils.hardware.estimate_required_model_memory_gb",
                 side_effect = AssertionError("single-repo native audio keeps the default estimator"),
             ),
-            patch("utils.hardware.prepare_gpu_selection", return_value = (selected, {})),
+            patch(
+                "utils.hardware.prepare_gpu_selection",
+                return_value = (selected, metadata or {}),
+            ),
             patch.object(_hw_module, "IS_ROCM", rocm),
         ):
             return asyncio.run(
@@ -949,6 +953,29 @@ class TestNativeAudioPlacementPreflight(unittest.TestCase):
 
     def test_single_gpu_is_resolved_before_load(self):
         placement = self._run("higgs_tts2", DeviceType.CUDA, selected = [0])
+        self.assertEqual(placement.resolved_gpu_ids, [0])
+
+    def test_automatic_no_fit_fallback_is_rejected_before_load(self):
+        with self.assertRaisesRegex(HTTPException, "No single GPU has enough free memory"):
+            self._run(
+                "higgs_tts2",
+                DeviceType.CUDA,
+                selected = [0],
+                metadata = {
+                    "selection_mode": "fallback_all",
+                    "required_gb": 24.0,
+                    "usable_gb": 16.0,
+                },
+            )
+
+    def test_explicit_single_gpu_is_not_treated_as_no_fit_fallback(self):
+        placement = self._run(
+            "higgs_tts2",
+            DeviceType.CUDA,
+            selected = [0],
+            requested = [0],
+            metadata = {"selection_mode": "explicit"},
+        )
         self.assertEqual(placement.resolved_gpu_ids, [0])
 
     def test_multi_gpu_is_rejected_before_load(self):

@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  audioPipelineTagFor,
   audioPickIsRoutable,
   communityAudioRowIsRunnable,
   curatedAudioInventoryMatches,
@@ -367,6 +368,16 @@ test("cached runnable community audio survives the Audio on-device trust gate", 
 
 test("cached native audio types bypass community family-name heuristics", () => {
   assert.equal(
+    audioPickIsRoutable({
+      id: "local/arbitrary-checkpoint-name",
+      task: "text-to-speech",
+      isGguf: false,
+      isCurated: false,
+      audioType: "moss_tts_local",
+    }),
+    true,
+  );
+  assert.equal(
     communityAudioRowIsRunnable({
       isStt: false,
       isTts: true,
@@ -418,6 +429,7 @@ test("Chat-to-Audio handoff preserves the live Hub task", () => {
     pickerSource,
     /page === "audio" &&\s*!audioPickIsRoutable\(\{[\s\S]*isCurated: artifactForRepoId\(id, AUDIO_CATALOG\) !== null/,
   );
+  assert.match(pickerSource, /audioType:\s*meta\.audioType/);
   assert.match(
     pickerSource,
     /page === "audio"[\s\S]*ggufQuant:\s*meta\.ggufFilename[\s\S]*meta\.ggufVariant/,
@@ -571,19 +583,23 @@ test("an unroutable speech pick is refused instead of loaded into chat", () => {
   );
 });
 
-test("a local Whisper checkpoint is not advertised as a routable ASR row", () => {
+test("fine-tuned audio checkpoints receive only runnable media tags", () => {
   // The STT sidecar's resolve_model_id takes a curated key or an owner/model Hub id, so a
   // filesystem path 422s. Routing one from the picker advertised a row that cannot load.
-  const source = readFileSync(
-    new URL(
-      "../src/features/model-picker/components/model-selector/pickers.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  assert.equal(audioPipelineTagFor("whisper", true), undefined);
+  assert.equal(audioPipelineTagFor("whisper"), "automatic-speech-recognition");
+
+  for (const audioType of [
+    "higgs_tts2",
+    "moss_tts_local",
+    "moss_tts_nano",
+    "higgs_tts3",
+    "minimax_music3",
+  ]) {
+    assert.equal(audioPipelineTagFor(audioType, true), "text-to-speech");
+  }
   assert.match(
-    source,
-    /if \(audioType === "whisper"\)\s*\n?\s*return isLocalCheckpoint \? undefined : "automatic-speech-recognition";/,
+    pickerSource,
+    /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/,
   );
-  assert.match(source, /pipelineTag: audioPipelineTagFor\(adapter\.audioType, true\)/);
 });
