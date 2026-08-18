@@ -409,9 +409,23 @@ function useProgressiveMountWindow(
   // widening commits. The autoscroll hook's own mutation path does not help: it pins a FOLLOWING
   // reader and deliberately leaves a detached one alone.
   //
-  // Measured, injecting a 600px height change into one row above a detached reader while the
-  // window was open: without this the reader moved the full 600px, against 0px on the merge base
-  // where native anchoring absorbed it.
+  // Measured when this was written, injecting a 600px height change into one row above a
+  // detached reader while the window was open: without this the reader moved the full 600px,
+  // against 0px on the merge base where native anchoring absorbed it.
+  //
+  // RE-MEASURED SINCE, and it no longer reproduces: ablating this whole effect (`return` at the
+  // top) leaves grow 600, grow 3600 and shrink 1200 identical to head within noise. The reason
+  // is ordering rather than the logic being wrong. The widening capture effect above is declared
+  // FIRST, so React registers its rAF first on every commit and its callback always runs before
+  // this one's, leaving `anchorRef.current` non-null on every frame the window is open. This
+  // body therefore returns at its first line: instrumented, 0 of 1110 frames across chromium,
+  // firefox and webkit ever got past it, and the widening layout effect absorbs the reflow
+  // instead. Confirmed causally by swapping only the two effect declarations, after which this
+  // body runs about 5 times per repetition.
+  //
+  // Kept rather than deleted because the widening path it currently defers to has no visibility
+  // test, so this is the only thing that would catch a reflow on a frame with no widening
+  // pending. Anyone touching the order of these two effects is switching this on.
   //
   // The anchor here is the first row the reader can actually SEE, not the first row in the list,
   // and that distinction is the whole reason the first version of this measured nothing. Widening
