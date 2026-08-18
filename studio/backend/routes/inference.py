@@ -2880,6 +2880,71 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     return True
 
 
+_STUDIO_MEMORY_TOOLS = frozenset({"search_conversation"})
+
+
+def _tool_call_names(message) -> list[Optional[str]]:
+    """Every function name in a message's ``tool_calls``, or []. None for a nameless call."""
+    calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    )
+    names: list[Optional[str]] = []
+    for call in calls or []:
+        function = (
+            call.get("function")
+            if isinstance(call, dict)
+            else getattr(call, "function", None)
+        ) or {}
+        names.append(
+            function.get("name")
+            if isinstance(function, dict)
+            else getattr(function, "name", None)
+        )
+    return names
+
+
+def _only_studio_memory_tool_history(payload) -> bool:
+    """True when the request's ONLY tool history is Studio's own conversation memory.
+
+    Checkpoint compaction admits `search_conversation` even with the user's tool pills
+    off, so the first time the model uses it the branch gains an assistant `tool_calls`
+    turn plus a `role="tool"` result -- and the client replays both on every later request
+    of that thread, forever. Read as a CLIENT tool contract, that history sends every
+    subsequent turn to the llama-server passthrough, which never runs the context fit: the
+    epoch, the carried-forward block and the automatic recall all vanish one turn after
+    the compaction that created them, and llama-server's own overflow retry trims the
+    conversation instead. It is Studio's own read-only tool, run by Studio's own loop
+    against Studio's own archive, so it is not a contract with the caller and must route
+    exactly as a tools-on Studio chat with tool history already does.
+
+    Deliberately strict: a caller-supplied `tools` catalog, an unnamed call or result, or
+    any other tool name all mean "not ours", so a real OpenAI client tool loop -- which is
+    what this predicate exists to protect -- is never claimed.
+    """
+    if getattr(payload, "tools", None):
+        return False
+    saw_call = False
+    for message in getattr(payload, "messages", None) or []:
+        role = (
+            message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        )
+        for name in _tool_call_names(message):
+            saw_call = True
+            if name not in _STUDIO_MEMORY_TOOLS:
+                return False
+        if role == "tool":
+            result_name = (
+                message.get("name")
+                if isinstance(message, dict)
+                else getattr(message, "name", None)
+            )
+            if result_name not in _STUDIO_MEMORY_TOOLS:
+                return False
+    return saw_call
+
+
 def _takes_tool_passthrough(payload, llama_backend) -> bool:
     """True when a GGUF request is forwarded to llama-server verbatim.
 
@@ -2893,7 +2958,10 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # Read defensively: a count request carries no tool_choice, and absent withdraws nothing.
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
-    ) or _has_openai_tool_history(payload.messages)
+    ) or (
+        _has_openai_tool_history(payload.messages)
+        and not _only_studio_memory_tool_history(payload)
+    )
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True

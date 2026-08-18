@@ -106,13 +106,40 @@ def _can_reset_epoch(thread_id, supports_tools: bool) -> bool:
       while the notice says they are searchable. Incognito, API-only and threadless
       requests archive nothing, so they keep the rolling window.
     * the model must be able to receive `search_conversation` at all. A template that
-      cannot render tools would be offered a memory it can never reach.
+      cannot render tools would be offered a memory it can never reach, and neither must
+      a process whose operator turned the tool loop off.
     """
     if not thread_id or not supports_tools:
         return False
     try:
+        from state.tool_policy import get_tool_policy
+
+        # `supports_tools` is the TEMPLATE's capability, which is not the same question as
+        # "will this request be given the tool". `unsloth studio run --disable-tools` (and
+        # the per-request force-off the public surfaces use) makes `_select_request_tools`
+        # refuse every tool for the life of the process, and blocks the checkpoint
+        # override in `openai_chat_completions` on the way. Resetting anyway puts the
+        # epoch behind a tool that never arrives, on this request and on every one after
+        # it, while the carried-forward header tells the model it can search for what was
+        # dropped. Rolling instead: it keeps the newest turns in view and re-injects the
+        # inline recall on every compacting turn, neither of which needs a tool.
+        if get_tool_policy() is False:
+            return False
+    except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
+        return False
+    try:
         from core.rag import conversation_archive
 
+        if conversation_archive.degraded():
+            # The last archive write failed outright, so `enabled()` and `can_archive()`
+            # both still say yes while nothing is actually being indexed. Resetting there
+            # hands the model a block whose header promises the dropped turns are
+            # searchable when they are not. A lagging flag cannot prevent the FIRST bad
+            # reset, but it stops the thread compounding it on every turn afterwards, and
+            # the same signal already gates the recall reserve 15 lines above for exactly
+            # this reason. Nothing is lost either way: the transcript stays in studio.db
+            # and the client keeps re-sending it, so rolling simply shows more of it.
+            return False
         return bool(conversation_archive.enabled() and conversation_archive.can_archive(thread_id))
     except Exception:  # noqa: BLE001 -- an unavailable archive is a "no", never an error
         return False

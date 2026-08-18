@@ -92,6 +92,35 @@ def test_the_epoch_accumulates_instead_of_resetting_every_turn():
     assert any("Carrying on" in str(m.get("content")) for m in fitted)
 
 
+def test_a_stale_boundary_never_compacts_a_branch_that_now_fits():
+    """A saved boundary describes the branch AND the window it was measured against.
+
+    Reload the model with a larger context, or switch to a longer-context one mid-thread,
+    and the branch that forced the reset now fits with room to spare -- but the boundary
+    rides on an assistant turn still on this branch, so it is read straight back. The
+    rolling fit gates its replay on the prompt not already fitting and says why; this one
+    has to as well, or the thread loses eight turns for the rest of its life and the
+    prompt comes back BIGGER than it went in.
+    """
+    messages = [{"role": "system", "content": "you are helpful"}]
+    for index in range(6):
+        messages += [{"role": "user", "content": f"Section {index}. " + "x" * 200},
+                     {"role": "assistant", "content": f"noted {index}"}]
+
+    from core.inference.context_window import fit_rolling_context
+
+    kwargs = dict(context_length = 32_768, max_tokens = 512, count_tokens = count,
+                  sticky_dropped = 8)
+    rolling, rolling_truncation = fit_rolling_context(messages, **kwargs)
+    fitted, truncation = fit_checkpoint_context(messages, can_reset = True, **kwargs)
+
+    assert count(messages) < 32_768 - 512, "the branch must comfortably fit for this test"
+    # Byte for byte what the rolling arm does, which is nothing at all.
+    assert (rolling_truncation, len(rolling)) == (None, len(messages))
+    assert truncation is None
+    assert fitted is messages
+
+
 def test_a_thread_that_fits_is_untouched():
     messages = _thread(pad = 1, chars = 20)
 
@@ -270,6 +299,100 @@ def test_at_most_max_items_instructions_are_carried():
     assert "number 19" in items[-1]
 
 
+def test_a_process_with_tools_disabled_never_resets(monkeypatch):
+    """`supports_tools` is the TEMPLATE's capability, not "this request gets the tool".
+
+    `unsloth studio run --disable-tools` sets the process policy to False, which makes
+    `_select_request_tools` refuse every tool and blocks the checkpoint override in
+    `openai_chat_completions`. Resetting anyway leaves the epoch behind a tool that never
+    arrives -- on this request and every one after it -- while the carried-forward header
+    tells the model it can search for what was dropped.
+    """
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
+    monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
+
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: None)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+
+    monkeypatch.setattr("state.tool_policy.get_tool_policy", lambda: False)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is False
+
+
+def _memory_tool_branch():
+    """A Studio branch as the client replays it after ONE search_conversation call."""
+    return [
+        {"role": "system", "content": "you are helpful"},
+        {"role": "user", "content": "what did I say about the dataset?"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "search_conversation", "arguments": '{"query": "dataset"}'},
+        }]},
+        {"role": "tool", "tool_call_id": "call_1", "name": "search_conversation",
+         "content": "You said to use the 2024 dataset."},
+        {"role": "assistant", "content": "You asked for the 2024 dataset."},
+        {"role": "user", "content": "and now the next section"},
+    ]
+
+
+class _ToolCapableBackend:
+    supports_tools = True
+    supports_tool_passthrough = True
+
+
+def test_studios_own_memory_history_does_not_steal_the_request_from_the_context_fit():
+    """The one that cost a whole epoch in a live 6-round chat.
+
+    Checkpoint compaction admits `search_conversation` with the user's tool pills OFF, so
+    the branch permanently gains an assistant `tool_calls` turn and a `role="tool"` result.
+    Counted as a CLIENT tool contract, that history routes every later turn of the thread
+    to the llama-server passthrough, which never calls `_fit_context` at all: rounds 3-6
+    reported only `{"dropped_messages": 22/24/28/28, "fits": true}` from llama-server's own
+    overflow retry, with no `checkpoint` key, no token counts and no boundary -- the epoch,
+    the carried-forward block and the standing instruction inside it all gone one turn
+    after the reset that created them.
+    """
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    payload = ChatCompletionRequest(
+        model = "local", messages = _memory_tool_branch(),
+        thread_id = "thread-1", enable_tools = False, stream = True,
+    )
+
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is False
+    assert inference_route._only_studio_memory_tool_history(payload) is True
+
+
+def test_a_real_client_tool_loop_still_takes_the_passthrough():
+    """The predicate above exists to protect exactly this shape, so pin it in the same
+    file: a caller replaying ITS OWN tool results is a client contract, catalog or not."""
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inference_route
+
+    branch = _memory_tool_branch()
+    branch[2]["tool_calls"][0]["function"]["name"] = "get_weather"
+    branch[3]["name"] = "get_weather"
+    payload = ChatCompletionRequest(
+        model = "local", messages = branch,
+        thread_id = "thread-1", enable_tools = False, stream = True,
+    )
+
+    assert inference_route._only_studio_memory_tool_history(payload) is False
+    assert inference_route._takes_tool_passthrough(payload, _ToolCapableBackend()) is True
+
+    # And a client catalog alongside Studio's own history is still the client's request.
+    with_catalog = ChatCompletionRequest(
+        model = "local", messages = _memory_tool_branch(), thread_id = "thread-1",
+        enable_tools = False, stream = True,
+        tools = [{"type": "function", "function": {"name": "get_weather",
+                                                   "parameters": {"type": "object"}}}],
+    )
+    assert inference_route._only_studio_memory_tool_history(with_catalog) is False
+    assert inference_route._takes_tool_passthrough(with_catalog, _ToolCapableBackend()) is True
+
+
 def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     """The second lock on the same door: `_fit_context` already routes a request that may
     not reset to the rolling window, so reaching here with False means something upstream
@@ -280,3 +403,18 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
 
     assert truncation["fits"] is False
     assert fitted is messages
+
+
+def test_a_degraded_archive_stops_the_thread_resetting_again(monkeypatch):
+    """`enabled()` and `can_archive()` are capability checks, so both keep saying yes while
+    the embedder is failing and nothing is being indexed. The reset would then promise a
+    searchable history that does not exist."""
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
+    monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
+    monkeypatch.setattr("core.rag.conversation_archive.degraded", lambda: False)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+
+    monkeypatch.setattr("core.rag.conversation_archive.degraded", lambda: True)
+    assert llama_cpp._can_reset_epoch("thread-1", True) is False

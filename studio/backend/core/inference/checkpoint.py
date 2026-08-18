@@ -218,10 +218,19 @@ def fit_checkpoint_context(
     # every request -- the client re-sends the whole transcript, so the thread is still
     # over budget on turn two, and a fresh reset would evict turn one of the epoch as
     # well. That is not an epoch, it is a window of exactly one turn.
+    #
+    # Gated on the prompt not already fitting, exactly as the rolling replay is: a saved
+    # boundary describes the branch AND the window it was measured against, and neither is
+    # fixed. Reload the model with a larger context, or switch to a longer-context one
+    # mid-thread, and the branch that forced the reset now fits with room to spare -- while
+    # the boundary rides on an assistant turn still on this branch, so it is read back and
+    # applied anyway. Measured without this gate: a 321-token branch against a 32,256-token
+    # budget lost eight messages and came back LARGER than it went in (432 tokens), because
+    # the carried-forward block replaced history that did not need replacing.
     fitted = list(messages)
     dropped = 0
     is_new_epoch = False
-    if sticky_dropped > 0:
+    if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, replayed = truncate_oldest_messages(
             fitted, 1.0,
             protected_message_ids = protected_message_ids,
