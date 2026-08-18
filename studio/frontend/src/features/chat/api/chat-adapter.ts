@@ -6330,6 +6330,29 @@ export function createOpenAIStreamAdapter(
                     addedToolCall = true;
                   }
                 }
+                // The studio tool loop stamps the MCP display name onto the same
+                // chunk that completes the name, so the card never has to show the
+                // internal server id while it waits for tool_start.
+                const mcpStamps = (
+                  chunk as { _mcp_provenance?: Record<string, unknown> }
+                )._mcp_provenance;
+                if (mcpStamps && typeof mcpStamps === "object") {
+                  for (const [backendId, raw] of Object.entries(mcpStamps)) {
+                    const partId = resolveToolPartId(backendId);
+                    const at = toolCallParts.findIndex(
+                      (p) => p.toolCallId === partId,
+                    );
+                    if (at === -1) continue;
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: mergeToolProvenance(
+                        existing.provenance,
+                        parseToolProvenance(raw),
+                      ),
+                    };
+                  }
+                }
                 if (
                   addedToolCall ||
                   replayStateChanged ||
