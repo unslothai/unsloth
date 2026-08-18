@@ -100,21 +100,56 @@ export function ModelRowShell({
   // The state flip is async from the handler's point of view, so `active` is not readable there.
   const activeRef = useRef(active);
   const pending = useRef<PendingReplay | null>(null);
+  // A press is in progress in this row, so the swap has to wait: see `applyPending`.
+  const pressed = useRef(false);
+  const frame = useRef(0);
 
-  const activate = useCallback((pointer: { x: number; y: number } | null) => {
-    if (activeRef.current) return;
+  const applyPending = useCallback(() => {
+    if (activeRef.current || !pending.current || pressed.current) return;
     activeRef.current = true;
-    const shell = shellRef.current;
-    const focused = document.activeElement;
-    pending.current = {
-      focusPath:
-        shell && focused instanceof HTMLElement && focused !== shell && shell.contains(focused)
-          ? childIndexPath(shell, focused)
-          : null,
-      pointer,
-    };
     setActive(true);
   }, []);
+
+  /**
+   * Record what has to be replayed, then hand the swap to the next frame.
+   *
+   * NOT immediately, and this is the whole reason this function is shaped like this. A click is
+   * one gesture -- move, down, up -- and the browser fires the click on the nearest common
+   * ancestor of the down and up targets. Activating replaces the row's button, so a swap that
+   * lands between the down and the up leaves those on two different elements and NO click is
+   * fired at all: the row silently fails to select. Measured on the smoke harness with a single
+   * `mouse.click`, which is exactly that gesture with nothing in between: the merge base selected
+   * the model and closed the panel, an eagerly swapping build did neither.
+   *
+   * `flushSync` looks like the fix and is not: `pointerenter` can be dispatched while React is
+   * already committing (the DOM moving under a still pointer is enough), and React then refuses
+   * the flush, logs, and schedules the update anyway -- so the race is still there, now with a
+   * console error. A frame is late enough to be outside the current event and early enough that
+   * nothing can be seen; if a press arrives first, the swap waits for its click.
+   */
+  const armActivation = useCallback(
+    (pointer: { x: number; y: number } | null) => {
+      if (activeRef.current || pending.current) return;
+      const shell = shellRef.current;
+      const focused = document.activeElement;
+      pending.current = {
+        focusPath:
+          shell && focused instanceof HTMLElement && focused !== shell && shell.contains(focused)
+            ? childIndexPath(shell, focused)
+            : null,
+        pointer,
+      };
+      if (pointer === null) {
+        // Focus is not a two-part gesture: a keyboard user who tabs in has already arrived, and
+        // waiting a frame would let a Tab straight through the row leave it inert.
+        applyPending();
+        return;
+      }
+      cancelAnimationFrame(frame.current);
+      frame.current = requestAnimationFrame(applyPending);
+    },
+    [applyPending],
+  );
 
   const onPointerEnter = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -122,14 +157,42 @@ export function ModelRowShell({
       // move the click's target out from under it. Those devices are opted out above anyway; this
       // is the belt for a hybrid whose primary pointer is a mouse.
       if (event.pointerType === "touch") return;
-      activate({ x: event.clientX, y: event.clientY });
+      armActivation({ x: event.clientX, y: event.clientY });
     },
-    [activate],
+    [armActivation],
   );
 
+  // Capture, because the row's own action buttons stop propagation: a bubbling listener would
+  // never learn that the dots button had been pressed.
+  const onPointerDownCapture = useCallback(() => {
+    pressed.current = true;
+  }, []);
+
+  // On the NEXT frame, not from inside this handler. React collects a click's listener path once,
+  // at the start of the dispatch, and skips the ones whose instance has been unmounted by the time
+  // it gets to them -- so a swap applied in the capture phase silently eats the row button's own
+  // onClick in the bubble phase. Measured: the click landed on the row (capture saw it, the DOM
+  // swap was recorded after it) and the model was still not selected. Deferring to a frame puts
+  // the swap outside the whole dispatch.
+  const onClickCapture = useCallback(() => {
+    pressed.current = false;
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(applyPending);
+  }, [applyPending]);
+
+  // A press that leaves the row will not produce a click here, so release the hold: the click the
+  // browser does fire lands on a common ancestor outside this row either way.
+  const onPointerLeave = useCallback(() => {
+    pressed.current = false;
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(applyPending);
+  }, [applyPending]);
+
   const onFocusCapture = useCallback(() => {
-    activate(null);
-  }, [activate]);
+    armActivation(null);
+  }, [armActivation]);
+
+  useLayoutEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   useLayoutEffect(() => {
     const replay = pending.current;
@@ -170,6 +233,9 @@ export function ModelRowShell({
       ref={shellRef}
       className={className}
       onPointerEnter={onPointerEnter}
+      onPointerDownCapture={onPointerDownCapture}
+      onClickCapture={onClickCapture}
+      onPointerLeave={onPointerLeave}
       onFocusCapture={onFocusCapture}
     >
       <RowActiveContext.Provider value={active}>{children}</RowActiveContext.Provider>

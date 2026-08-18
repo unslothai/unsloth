@@ -183,9 +183,13 @@ def run(page: Page) -> None:
         page.mouse.move(*centre(dot))
         page.wait_for_timeout(400)
         texts = page.evaluate(TOOLTIP_TEXT_JS)
+        # Substring, not equality: Radix renders the label twice, once visibly and once in the
+        # visually-hidden copy screen readers announce, so `textContent` reads
+        # "SafetensorsSafetensors". An equality predicate here reported a tooltip that had opened
+        # perfectly as never having opened.
         check(
             "one mouse move opens the format tooltip",
-            any(t in ("GGUF", "Safetensors", "MLX") for t in texts),
+            any(any(f in t for f in ("GGUF", "Safetensors", "MLX")) for t in texts),
             f"tooltip contents after a single move: {texts}",
         )
         hovered = page.evaluate(ROW_FACTS_JS, 0)
@@ -277,17 +281,125 @@ def run(page: Page) -> None:
     page.keyboard.press("Escape")
     page.wait_for_timeout(300)
 
-    # 7. And a row still selects when clicked.
+    # The synthetic press above is not a gesture a user can make (the button it hits is under
+    # `opacity-0` until the row is hovered), and it leaves a dismissed menu and a moved focus
+    # behind. Reopen so the selection checks below start from a panel in a known state, and say so
+    # if that reopen did not happen: a stale panel would make the next two checks measure the
+    # leftovers of this one.
+    page.evaluate("window.__pickerScale.setOpen(false)")
+    page.wait_for_timeout(400)
+    open_on_device(page)
+    fresh = page.evaluate(ROW_FACTS_JS, 3)
+    check(
+        "the panel is open and cold before the selection checks",
+        fresh is not None and fresh["rows"] >= MODELS and fresh["rowTooltipTriggers"] == 0,
+        f"row 3 on the reopened panel: {None if fresh is None else fresh['rowTooltipTriggers']} "
+        f"tooltip triggers, {None if fresh is None else fresh['rows']} rows",
+    )
+
+    # 7. And a row still selects when clicked, in ONE gesture.
+    #
+    # `mouse.click` is move + down + up with nothing in between, which is what a real click is and
+    # what a wait between the hover and the press hides. Activating a row replaces the button, so a
+    # swap deferred to after the mousedown puts the mouseup on a different element and the browser
+    # fires no click at all. This assertion caught exactly that, and the row now activates
+    # synchronously; on the merge base it passes because nothing is ever swapped.
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(300)
     target = page.evaluate(ROW_FACTS_JS, 3)
     page.mouse.click(*centre(target["optionRect"]))
+    page.wait_for_timeout(600)
+    selected = page.evaluate(
+        """() => ({
+            open: window.__pickerScale.isOpen(),
+            panel: Boolean(window.__pickerScale.panel()),
+            trigger: (window.__pickerScale.trigger()?.textContent || '').trim(),
+        })"""
+    )
+    leaf = (target["menuButtonAria"]["label"] or "").replace("More options for ", "")
+    check(
+        "clicking a row in one gesture still selects it",
+        leaf in selected["trigger"] and not selected["open"] and not selected["panel"],
+        f"after clicking {leaf!r} the picker reads {selected}",
+    )
+
+    # 8. And Enter on a focused row selects it, which is the same path with no pointer at all.
+    page.evaluate("window.__pickerScale.setOpen(false)")
     page.wait_for_timeout(400)
-    trigger_text = page.evaluate(
-        "() => (window.__pickerScale.trigger()?.textContent || '').trim()"
+    open_on_device(page)
+    page.evaluate(
+        """() => {
+            const panel = document.querySelector(".unsloth-model-selector-menu");
+            panel.querySelectorAll("[data-model-picker-option]")[7].focus();
+        }"""
+    )
+    page.wait_for_timeout(400)
+    keyboard_target = page.evaluate(ROW_FACTS_JS, 7)
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(600)
+    keyboard_selected = page.evaluate(
+        """() => ({
+            open: window.__pickerScale.isOpen(),
+            trigger: (window.__pickerScale.trigger()?.textContent || '').trim(),
+        })"""
+    )
+    # The repo id from the row's own dots button, not from the option's textContent: that text runs
+    # the name straight into the param and size chips ("Yi-3B-Math-343B35GB"), so a slice of it is
+    # not a substring of anything and the check failed on a selection that had worked. It failed on
+    # the merge base too, which is what said the predicate was wrong rather than the tree.
+    keyboard_leaf = (keyboard_target["menuButtonAria"]["label"] or "").replace(
+        "More options for ", ""
     )
     check(
-        "clicking a row still selects it",
-        trigger_text != "" and trigger_text.split("/")[-1][:8] in target["optionLabel"],
-        f"picker trigger reads {trigger_text!r} after clicking {target['optionLabel']!r}",
+        "pressing Enter on a focused row still selects it",
+        keyboard_leaf in keyboard_selected["trigger"] and not keyboard_selected["open"],
+        f"after Enter on {keyboard_leaf!r} the picker reads {keyboard_selected}",
+    )
+
+
+def run_touch(page: Page) -> None:
+    """A coarse pointer opts out of the deferral entirely, so it renders the merge base's tree.
+
+    Those devices show the row actions at all times (`[@media(hover:none)]:opacity-100`), have no
+    hover to trade on, and a tap is a pointerdown and a click on the SAME node -- swapping a
+    subtree under a finger would move the click's target out from under it. So the answer there is
+    to change nothing, and this is the check that it really changed nothing.
+    """
+    coarse = page.evaluate(
+        """() => ({
+            coarse: window.matchMedia("(pointer: coarse)").matches,
+            noHover: window.matchMedia("(hover: none)").matches,
+        })"""
+    )
+    # Without this the rest of the section is vacuous: it would be asserting the desktop path twice.
+    check(
+        "the touch context really reports a coarse pointer",
+        coarse["coarse"] or coarse["noHover"],
+        f"{coarse}",
+    )
+    open_on_device(page)
+    facts = page.evaluate(ROW_FACTS_JS, 0)
+    check(
+        "a coarse pointer mounts every row's tooltips up front",
+        facts["panelTooltipTriggers"] >= facts["rows"] * 3,
+        f"{facts['panelTooltipTriggers']} tooltip triggers for {facts['rows']} rows "
+        "(three per row is the merge base's tree)",
+    )
+    check(
+        "a coarse pointer mounts every row's dots menu up front",
+        facts["rowTooltipTriggers"] >= 3,
+        f"row 0 carries {facts['rowTooltipTriggers']} tooltip triggers with no interaction at all",
+    )
+    menu_rect = facts["menuButtonAria"]["rect"]
+    page.touchscreen.tap(
+        menu_rect["x"] + menu_rect["width"] / 2, menu_rect["y"] + menu_rect["height"] / 2
+    )
+    page.wait_for_timeout(800)
+    items = page.evaluate(MENU_ITEMS_JS)
+    check(
+        "tapping the dots opens the menu on a touch device",
+        len(items) >= 2,
+        f"menu items after a tap: {items}",
     )
 
 
@@ -322,6 +434,26 @@ def main() -> int:
             page.wait_for_function("() => Boolean(window.__pickerScale)", timeout=120_000)
             run(page)
             context.close()
+
+            touch_context = browser.new_context(
+                viewport={"width": 1440, "height": 900}, has_touch=True, is_mobile=False
+            )
+            touch_page = touch_context.new_page()
+            touch_page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"[:200]))
+            touch_page.on(
+                "console",
+                lambda m: errors.append(f"console error: {m.text[:160]}")
+                if m.type == "error"
+                else None,
+            )
+            touch_page.goto(
+                f"{BASE}/smoke-model-picker-scale.html", wait_until="domcontentloaded"
+            )
+            touch_page.wait_for_function(
+                "() => Boolean(window.__pickerScale)", timeout=120_000
+            )
+            run_touch(touch_page)
+            touch_context.close()
             browser.close()
     finally:
         if vite is not None:

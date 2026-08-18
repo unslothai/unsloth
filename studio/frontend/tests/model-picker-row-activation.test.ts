@@ -129,6 +129,43 @@ test("activation replays the pointer move Radix needs, and only inside the row",
   assert.match(activation, /useLayoutEffect\(/);
 });
 
+test("a pointer arms the swap for the NEXT frame, never for this event", () => {
+  // A click is move, down, up, and the browser fires the click on the nearest common ancestor of
+  // the down and up targets. Swapping the row's button between them means no click is fired at
+  // all and the row silently fails to select -- measured against the merge base with a single
+  // `mouse.click`, which is that gesture with nothing in between.
+  const shell = block(activation, "export function ModelRowShell({");
+  assert.match(shell, /frame\.current = requestAnimationFrame\(applyPending\)/);
+  assert.doesNotMatch(
+    block(shell, "const onPointerEnter = useCallback(", "  );"),
+    /applyPending\(\)/,
+  );
+});
+
+test("a press in the row holds the swap until its click has been delivered", () => {
+  // The hold is what makes the frame safe: a frame boundary can fall between the down and the up.
+  const shell = block(activation, "export function ModelRowShell({");
+  assert.match(shell, /if \(activeRef\.current \|\| !pending\.current \|\| pressed\.current\) return;/);
+  assert.match(shell, /const onPointerDownCapture = useCallback\(\(\) => \{\s*\n\s*pressed\.current = true;/);
+});
+
+test("the click handler schedules the swap instead of performing it", () => {
+  // React collects a click's listener path once, at the start of the dispatch, and skips listeners
+  // whose instance has been unmounted by the time it reaches them. A swap applied from the capture
+  // phase therefore eats the row button's own onClick in the bubble phase: measured, the click
+  // landed on the row and the model was still not selected.
+  const onClick = block(activation, "const onClickCapture = useCallback(() => {", "  }, [");
+  assert.match(onClick, /requestAnimationFrame\(applyPending\)/);
+  assert.doesNotMatch(onClick, /^\s*applyPending\(\);$/m);
+});
+
+test("focus activates the row immediately, without waiting for a frame", () => {
+  // Focus is not a two-part gesture, and a Tab that passes straight through a row must not leave
+  // it inert behind the cursor.
+  const shell = block(activation, "export function ModelRowShell({");
+  assert.match(shell, /if \(pointer === null\) \{[\s\S]*?applyPending\(\);\s*\n\s*return;\s*\n\s*\}/);
+});
+
 test("coarse-pointer devices are opted out entirely", () => {
   // They show the row actions at all times and a tap is a pointerdown and a click on the same
   // node, so there is no hover to trade on and nothing to gain by swapping a subtree under a
