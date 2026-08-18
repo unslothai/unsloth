@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The backend now owns the remembered model, with localStorage kept as a shadow
-// so an old bundle, an old backend and a dropped write all still behave. That
-// reconciliation is where the subtlety lives and none of it had coverage.
+// The backend owns the remembered model, with localStorage kept as a shadow so
+// an old bundle, an old backend and a dropped write all still behave. That
+// reconciliation is where the subtlety lives and it had no coverage.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -90,7 +90,7 @@ test("a new frontend against an old backend falls back to the shadow", async () 
 
 test("the shadow is written synchronously so a teardown cannot lose it", () => {
   reset();
-  // No await: the legacy record must already be on disk when this returns.
+  // No await: the record must already be stored when this returns.
   recordLastLocalModelLoad({ id: "u/m", kind: "model", ggufVariant: null });
   assert.equal(legacy()?.id, "u/m");
   assert.equal(typeof legacy()?.loadedAt, "number");
@@ -140,7 +140,7 @@ test("a stale shadow loses to an unstamped backend record", async () => {
       loadedAt: Date.now() - 60_000,
     }),
   );
-  // A pre-loaded_at client wrote this; it carries no stamp to compare against.
+  // Written by a pre-loaded_at client, so there is no stamp to compare.
   backend.record = { id: "backend", kind: "model", gguf_variant: null, loaded_at: null };
   const got = await readLastLocalModelLoad();
   assert.equal(got?.id, "backend");
@@ -171,7 +171,7 @@ for (const skew of [-86_400_000, 86_400_000]) {
       LEGACY_KEY,
       JSON.stringify({ id: "fresh", kind: "model", ggufVariant: null, loadedAt: now }),
     );
-    // Same instant, expressed in the server's frame.
+    // The same instant, expressed in the server's frame.
     backend.record = {
       id: "stale",
       kind: "model",

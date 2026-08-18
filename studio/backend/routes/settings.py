@@ -1003,19 +1003,18 @@ _LAST_LOCAL_MODEL_LOCK = threading.Lock()
 
 
 def _last_local_model_key(subject: str) -> str:
-    """Per-subject storage key. The endpoint authenticates a subject, so one
-    shared row would hand user B whichever model user A last loaded."""
+    """Per-subject key: one shared row would hand user B user A's last model."""
     subject = (subject or "").strip()
     if not subject:
         return LAST_LOCAL_MODEL_SETTING_KEY
-    # Hashed so an arbitrary subject string cannot collide with another key.
+    # Hashed so an arbitrary subject cannot collide with another key.
     digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()[:32]
     return f"{LAST_LOCAL_MODEL_SETTING_KEY}:{digest}"
 
 
 def _read_last_local_model(subject: str) -> "dict | None":
     """The subject's record, falling back to the pre-scoping shared row so an
-    upgrade does not lose the model a single-user install already remembered."""
+    upgrade keeps the model the install already remembered."""
     from storage.studio_db import get_app_setting
 
     stored = get_app_setting(_last_local_model_key(subject), None)

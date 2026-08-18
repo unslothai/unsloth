@@ -168,7 +168,7 @@ export async function readLastLocalModelLoad(
     }
   } catch (err) {
     // Name, not instanceof: the retry wrapper can surface an abort as a plain
-    // Error, and swallowing it would return a stale record to a cancelled read.
+    // Error, and swallowing it answers a cancelled read with a stale record.
     if ((err as { name?: string } | null)?.name === "AbortError") {
       throw err;
     }

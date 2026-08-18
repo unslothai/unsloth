@@ -197,7 +197,7 @@ def test_get_tolerates_corrupt_stored_value(client):
 
 @pytest.fixture
 def multi_subject_client(monkeypatch):
-    """One backend, one store, but the authenticated subject is swappable."""
+    """One backend and one store, with a swappable authenticated subject."""
     store: dict = {}
     subject = {"value": "alice"}
 
@@ -230,7 +230,7 @@ def test_one_subject_does_not_inherit_anothers_model(multi_subject_client):
 
 def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
     """Pre-scoping installs stored one shared record; a subject with no row of
-    its own must inherit it rather than boot with nothing remembered."""
+    its own inherits it rather than booting with nothing remembered."""
     c, store, subject = multi_subject_client
     store[settings.LAST_LOCAL_MODEL_SETTING_KEY] = {
         "id": "unsloth/gemma-4-E2B-it-GGUF",
@@ -241,7 +241,7 @@ def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
     subject["value"] = "alice"
     assert c.get("/last-local-model").json()["id"] == "unsloth/gemma-4-E2B-it-GGUF"
 
-    # Once the subject writes, it owns its own row and stops following the shared one.
+    # Once the subject writes it owns its row and stops following the shared one.
     c.put("/last-local-model", json = {"id": "alice/model", "kind": "model", "loaded_at": 2000})
     assert c.get("/last-local-model").json()["id"] == "alice/model"
     assert store[settings.LAST_LOCAL_MODEL_SETTING_KEY]["id"] == "unsloth/gemma-4-E2B-it-GGUF"
@@ -250,17 +250,15 @@ def test_an_upgraded_install_still_sees_the_shared_row(multi_subject_client):
 def test_subject_keys_do_not_collide(multi_subject_client):
     _, _, _ = multi_subject_client
     keys = {settings._last_local_model_key(s) for s in ("a", "b", "a:b", "", "  ")}
-    # "" and "  " both degrade to the shared key; the rest are distinct.
+    # "" and "  " degrade to the shared key; the rest are distinct.
     assert len(keys) == 4
     assert settings._last_local_model_key("") == settings.LAST_LOCAL_MODEL_SETTING_KEY
 
 
 def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
-    """Known limitation, pinned so a change is deliberate. client_now is stamped
-    at send, so time spent in flight is indistinguishable from clock skew and a
-    request delayed by a retry lands near arrival time. A load that genuinely
-    happened later can therefore lose to an older one whose PUT was delayed by
-    more than the gap between them."""
+    """Known limitation, pinned so any change is deliberate. client_now is
+    stamped at send, so flight time is indistinguishable from clock skew: a
+    retry-delayed PUT lands near arrival and can outrank a newer load."""
     c, store = client
     now = int(time.time() * 1000)
 
@@ -271,8 +269,8 @@ def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
     )
     assert c.get("/last-local-model").json()["id"] == "newer"
 
-    # An older load whose PUT sat in a retry for 30s: both stamps are 30s old, so
-    # the shift re-dates it to roughly now and it wins.
+    # An older load whose PUT sat in a retry for 30s: both stamps are 30s old,
+    # so the shift re-dates it to roughly now and it wins.
     old = now - 30_000
     c.put(
         "/last-local-model",
