@@ -3,14 +3,18 @@
 
 """Discovery, recommendation, and preflight policy for MLX speculative decoding."""
 
+from dataclasses import dataclass
 from functools import lru_cache
+import hashlib
 import importlib
+from importlib.metadata import PackageNotFoundError, version
 import inspect
+import itertools
 import json
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 
 MLX_SPECULATIVE_METHODS = frozenset({"mtp", "dflash", "eagle3"})
@@ -768,6 +772,623 @@ def _dynamic_materialization_bytes(config: dict[str, Any]) -> int:
     return int(vocab * hidden * 2) if isinstance(vocab, int) and isinstance(hidden, int) else 0
 
 
+BUILTIN_MTP_ID = "builtin://mtp"
+
+
+@dataclass(frozen = True)
+class NativeMtpEvidence:
+    handler: str
+    weight_bytes: int
+
+
+@dataclass(frozen = True)
+class _NativeMtpHandler:
+    name: str
+    module: str
+    function: str
+    prefixes: tuple[str, ...] | Callable[[dict[str, Any]], tuple[str, ...]]
+    complete: Callable[[dict[str, Any], dict[str, int]], bool]
+
+
+def _exact_layers(sizes: dict[str, int], prefix: str, expected: range) -> bool:
+    tokens = [key[len(prefix) :].split(".", 1)[0] for key in sizes if key.startswith(prefix)]
+    return all(token.isdigit() for token in tokens) and {int(token) for token in tokens} == set(
+        expected
+    )
+
+
+def _only_expected_tensors(
+    sizes: dict[str, int], prefix: str, required: set[str], optional: set[str]
+) -> bool:
+    return all(not key.startswith(prefix) or key in required or key in optional for key in sizes)
+
+
+def _sidecars(weights: set[str], suffixes: tuple[str, ...]) -> set[str]:
+    return {
+        f"{key[: -len('.weight')]}{suffix}"
+        for key in weights
+        if key.endswith(".weight")
+        for suffix in suffixes
+    }
+
+
+def _quantization_for_path(quantization: dict[str, Any], path: str) -> dict[str, Any]:
+    override = quantization.get(path)
+    return override if isinstance(override, dict) else quantization
+
+
+def _qwen_complete(config: dict[str, Any], sizes: dict[str, int]) -> bool:
+    text = config.get("text_config")
+    if not isinstance(text, dict):
+        return False
+    depth = text.get("mtp_num_hidden_layers", 1)
+    if type(depth) is not int or not 1 <= depth <= 16:
+        return False
+    if not _exact_layers(sizes, "mtp.layers.", range(depth)):
+        return False
+    required = {
+        "mtp.fc.weight",
+        "mtp.norm.weight",
+        "mtp.pre_fc_norm_embedding.weight",
+        "mtp.pre_fc_norm_hidden.weight",
+    }
+    attention = (
+        "input_layernorm.weight",
+        "post_attention_layernorm.weight",
+        "self_attn.q_proj.weight",
+        "self_attn.k_proj.weight",
+        "self_attn.v_proj.weight",
+        "self_attn.o_proj.weight",
+        "self_attn.q_norm.weight",
+        "self_attn.k_norm.weight",
+    )
+    target_moe = "moe" in str(config.get("model_type", "")).lower()
+    moe = "moe" in str(text.get("model_type", "")).lower()
+    if target_moe != moe:
+        return False
+    biases = (
+        (
+            "self_attn.q_proj.bias",
+            "self_attn.k_proj.bias",
+            "self_attn.v_proj.bias",
+            "self_attn.o_proj.bias",
+        )
+        if text.get("attention_bias")
+        else ()
+    )
+    for layer in range(depth):
+        prefix = f"mtp.layers.{layer}."
+        required.update(prefix + suffix for suffix in (*attention, *biases))
+        if not moe:
+            required.update(
+                prefix + suffix
+                for suffix in ("mlp.down_proj.weight", "mlp.gate_proj.weight", "mlp.up_proj.weight")
+            )
+            continue
+        required.update(
+            prefix + suffix
+            for suffix in (
+                "mlp.gate.weight",
+                "mlp.shared_expert_gate.weight",
+                "mlp.shared_expert.down_proj.weight",
+                "mlp.shared_expert.gate_proj.weight",
+                "mlp.shared_expert.up_proj.weight",
+            )
+        )
+        sanitized = {
+            prefix + f"mlp.switch_mlp.{projection}_proj.weight"
+            for projection in ("down", "gate", "up")
+        }
+        fused = {prefix + "mlp.experts.gate_up_proj", prefix + "mlp.experts.down_proj"}
+        selected = sanitized if sanitized.issubset(sizes) else fused
+        if not selected.issubset(sizes):
+            return False
+        required.update(selected)
+    quantized = {key for key in required if key.endswith(".weight") and "norm" not in key}
+    optional = _sidecars(quantized, (".scales", ".biases"))
+    sidecars = {key for key in sizes if key.endswith((".scales", ".biases"))}
+    if sidecars:
+        quantization = config.get("mtplx_mtp_quantization")
+        if quantization is None:
+            quantization = config.get("quantization")
+        if (
+            not isinstance(quantization, dict)
+            or type(quantization.get("group_size")) is not int
+            or type(quantization.get("bits")) is not int
+        ):
+            return False
+        for scale in (key for key in sidecars if key.endswith(".scales")):
+            base = scale.removesuffix(".scales")
+            params = _quantization_for_path(quantization, base.removeprefix("mtp."))
+            mode = params.get("mode", "affine")
+            has_biases = f"{base}.biases" in sizes
+            if mode not in {"affine", "mxfp4", "mxfp8", "nvfp4"}:
+                return False
+            if mode == "affine" and not has_biases:
+                return False
+            if mode != "affine" and has_biases:
+                return False
+        if any(
+            f"{key.removesuffix('.biases')}.scales" not in sizes
+            for key in sidecars
+            if key.endswith(".biases")
+        ):
+            return False
+    return required.issubset(sizes) and _only_expected_tensors(sizes, "mtp.", required, optional)
+
+
+_QWEN = _NativeMtpHandler(
+    "qwen3_5",
+    "mlx_vlm.speculative.drafters.qwen3_5_mtp.split",
+    "split_qwen3_5_mtp",
+    ("mtp.",),
+    _qwen_complete,
+)
+
+
+_DEEPSEEK_SHARED_TENSORS = (
+    "enorm.weight",
+    "hnorm.weight",
+    "e_proj.weight",
+    "h_proj.weight",
+    "norm.weight",
+    "attn_norm.weight",
+    "ffn_norm.weight",
+    "attn.q_norm.weight",
+    "attn.kv_norm.weight",
+    "attn.wq_a.weight",
+    "attn.wq_b.weight",
+    "attn.wkv.weight",
+    "attn.wo_a.weight",
+    "attn.wo_b.weight",
+    "attn.attn_sink",
+    "ffn.gate.weight",
+    "ffn.gate.bias",
+    "ffn.shared_experts.w1.weight",
+    "ffn.shared_experts.w2.weight",
+    "ffn.shared_experts.w3.weight",
+    "hc_attn_base",
+    "hc_attn_fn",
+    "hc_attn_scale",
+    "hc_ffn_base",
+    "hc_ffn_fn",
+    "hc_ffn_scale",
+    "hc_head_base",
+    "hc_head_fn",
+    "hc_head_scale",
+)
+
+_DEEPSEEK_UNQUANTIZED_WEIGHTS = frozenset(
+    {
+        "enorm.weight",
+        "hnorm.weight",
+        "norm.weight",
+        "attn_norm.weight",
+        "ffn_norm.weight",
+        "attn.q_norm.weight",
+        "attn.kv_norm.weight",
+        "ffn.gate.weight",
+    }
+)
+
+
+def _deepseek_complete(config: dict[str, Any], sizes: dict[str, int]) -> bool:
+    text = config.get("text_config")
+    text = text if isinstance(text, dict) else config
+    depth = text.get("num_nextn_predict_layers", 1)
+    experts = text.get("n_routed_experts")
+    if type(depth) is not int or not 1 <= depth <= 16:
+        return False
+    if type(experts) is not int or not 1 <= experts <= 2048:
+        return False
+    layer_tokens = [key.split(".", 2)[1] for key in sizes if key.startswith("mtp.")]
+    if any(not token.isdigit() for token in layer_tokens):
+        return False
+    if {int(token) for token in layer_tokens} != {0}:
+        return False
+    prefix = "mtp.0."
+    required = {prefix + suffix for suffix in _DEEPSEEK_SHARED_TENSORS}
+    required.update(
+        prefix + f"ffn.experts.{expert}.w{projection}.weight"
+        for expert in range(experts)
+        for projection in (1, 2, 3)
+    )
+    if not required.issubset(sizes):
+        return False
+    quantized_weights = {
+        key
+        for key in required
+        if key.endswith(".weight") and key.split(".", 2)[-1] not in _DEEPSEEK_UNQUANTIZED_WEIGHTS
+    }
+    expected_experts = set(range(experts))
+    for projection in (1, 2, 3):
+        scaled_experts = {
+            expert
+            for expert in expected_experts
+            if f"{prefix}ffn.experts.{expert}.w{projection}.scales" in sizes
+        }
+        if scaled_experts and scaled_experts != expected_experts:
+            return False
+    optional = _sidecars(quantized_weights, (".scale", ".scales"))
+    if any(key.endswith(".scale") for key in sizes):
+        for key in quantized_weights:
+            scale = key[: -len(".weight")]
+            if f"{scale}.scale" not in sizes and f"{scale}.scales" not in sizes:
+                return False
+    return _only_expected_tensors(sizes, "mtp.", required, optional)
+
+
+_DEEPSEEK = _NativeMtpHandler(
+    "deepseek_v4",
+    "mlx_vlm.speculative.drafters.deepseek_v4_mtp.split",
+    "split_deepseek_v4_mtp",
+    ("mtp.",),
+    _deepseek_complete,
+)
+
+_INKLING_LAYER_TENSORS = (
+    "embed_norm.weight",
+    "hidden_norm.weight",
+    "input_proj.weight",
+    "transformer_block.attn.k_norm.weight",
+    "transformer_block.attn.k_sconv.weight",
+    "transformer_block.attn.q_norm.weight",
+    "transformer_block.attn.rel_logits_proj.proj",
+    "transformer_block.attn.v_sconv.weight",
+    "transformer_block.attn.wk_dv.weight",
+    "transformer_block.attn.wo_ud.weight",
+    "transformer_block.attn.wq_du.weight",
+    "transformer_block.attn.wr_du.weight",
+    "transformer_block.attn.wv_dv.weight",
+    "transformer_block.attn_norm.weight",
+    "transformer_block.attn_sconv.weight",
+    "transformer_block.mlp.global_scale",
+    "transformer_block.mlp.w13_dn.weight",
+    "transformer_block.mlp.w2_md.weight",
+    "transformer_block.mlp_norm.weight",
+    "transformer_block.mlp_sconv.weight",
+)
+
+_INKLING_BLOCK_TENSORS = (
+    "embed_norm.weight",
+    "hidden_norm.weight",
+    "input_proj.weight",
+    "transformer_block.self_attn.qkvr_proj.weight",
+    "transformer_block.self_attn.o_proj.weight",
+    "transformer_block.self_attn.k_sconv.conv.weight",
+    "transformer_block.self_attn.v_sconv.conv.weight",
+    "transformer_block.self_attn.q_norm.weight",
+    "transformer_block.self_attn.k_norm.weight",
+    "transformer_block.self_attn.rel_proj",
+    "transformer_block.mlp.gate_proj.weight",
+    "transformer_block.mlp.up_proj.weight",
+    "transformer_block.mlp.down_proj.weight",
+    "transformer_block.mlp.global_scale",
+    "transformer_block.input_layernorm.weight",
+    "transformer_block.post_attention_layernorm.weight",
+    "transformer_block.attn_sconv.conv.weight",
+    "transformer_block.mlp_sconv.conv.weight",
+)
+
+
+def _inkling_complete(config: dict[str, Any], sizes: dict[str, int]) -> bool:
+    mtp = config.get("mtp_config")
+    text = config.get("text_config")
+    if not isinstance(text, dict) or not text:
+        return False
+    mtp_depth = mtp.get("num_nextn_predict_layers") if isinstance(mtp, dict) else None
+    if "num_mtp_layers" in text:
+        depth = text.get("num_mtp_layers") or text.get("num_nextn_predict_layers") or 1
+    else:
+        depth = mtp_depth or text.get("num_nextn_predict_layers") or 1
+    if type(depth) is not int or not 1 <= depth <= 16:
+        return False
+    raw_prefix = "model.mtp.layers."
+    block_prefix = "model.mtp.blocks."
+    raw = any(key.startswith(raw_prefix) for key in sizes)
+    blocks = any(key.startswith(block_prefix) for key in sizes)
+    if raw == blocks:
+        return False
+    layer_prefix, tensors = (
+        (raw_prefix, _INKLING_LAYER_TENSORS) if raw else (block_prefix, _INKLING_BLOCK_TENSORS)
+    )
+    if not _exact_layers(sizes, layer_prefix, range(depth)):
+        return False
+    required = {"model.llm.norm.weight"}
+    for index in range(depth):
+        prefix = f"{layer_prefix}{index}."
+        required.update(prefix + suffix for suffix in tensors)
+    return required.issubset(sizes) and _only_expected_tensors(sizes, "model.mtp.", required, set())
+
+
+_INKLING = _NativeMtpHandler(
+    "inkling",
+    "mlx_vlm.speculative.drafters.inkling_mtp.split",
+    "split_inkling_mtp",
+    ("model.mtp.", "model.llm.norm.weight"),
+    _inkling_complete,
+)
+
+
+_GLM_HEAD_TENSORS = (
+    "eh_proj.weight",
+    "enorm.weight",
+    "hnorm.weight",
+    "input_layernorm.weight",
+    "post_attention_layernorm.weight",
+    "shared_head.head.weight",
+    "shared_head.norm.weight",
+    "self_attn.q_a_proj.weight",
+    "self_attn.q_a_layernorm.weight",
+    "self_attn.q_b_proj.weight",
+    "self_attn.kv_a_proj_with_mqa.weight",
+    "self_attn.kv_a_layernorm.weight",
+    "self_attn.kv_b_proj.weight",
+    "self_attn.o_proj.weight",
+    "mlp.gate.weight",
+    "mlp.shared_experts.gate_proj.weight",
+    "mlp.shared_experts.up_proj.weight",
+    "mlp.shared_experts.down_proj.weight",
+)
+_GLM_EXPERT_TENSORS = ("gate_proj.weight", "up_proj.weight", "down_proj.weight")
+# Quantization sidecars are absent deliberately: this family's splitter reads the source
+# as plain weights and only quantizes what it writes, so a quantized head cannot be split
+# and must not be offered as one.
+_GLM_OPTIONAL_TENSORS = ("embed_tokens.weight", "mlp.gate.e_score_correction_bias")
+
+
+def _glm_text_config(config: dict[str, Any]) -> dict[str, Any]:
+    text = config.get("text_config") or config
+    return text if isinstance(text, dict) else {}
+
+
+def _glm_prefixes(config: dict[str, Any]) -> tuple[str, ...]:
+    """This family's head is stored as one layer past the last real layer."""
+    layers = _glm_text_config(config).get("num_hidden_layers")
+    return (f"model.layers.{layers}.",) if type(layers) is int and layers >= 0 else ()
+
+
+def _glm_complete(config: dict[str, Any], sizes: dict[str, int]) -> bool:
+    text = _glm_text_config(config)
+    prefixes = _glm_prefixes(config)
+    experts = text.get("n_routed_experts")
+    depth = text.get("num_nextn_predict_layers", 1)
+    if not prefixes or type(experts) is not int or not 0 < experts <= 1024:
+        return False
+    if type(depth) is not int or not 1 <= depth <= 16:
+        return False
+    prefix = prefixes[0]
+    required = {prefix + tensor for tensor in _GLM_HEAD_TENSORS}
+    required |= {
+        f"{prefix}mlp.experts.{index}.{tensor}"
+        for index in range(experts)
+        for tensor in _GLM_EXPERT_TENSORS
+    }
+    optional = {prefix + tensor for tensor in _GLM_OPTIONAL_TENSORS}
+    return required.issubset(sizes) and _only_expected_tensors(sizes, prefix, required, optional)
+
+
+_GLM = _NativeMtpHandler(
+    "glm4_moe_lite",
+    "mlx_vlm.speculative.drafters.glm4_moe_lite_mtp.split",
+    "split_glm4_moe_lite_mtp",
+    _glm_prefixes,
+    _glm_complete,
+)
+
+
+_HANDLERS = {
+    "qwen3_5": _QWEN,
+    "qwen3_5_moe": _QWEN,
+    "deepseek_v4": _DEEPSEEK,
+    "inkling": _INKLING,
+    "inkling_mm_model": _INKLING,
+    "glm4_moe_lite": _GLM,
+}
+
+
+@lru_cache(maxsize = 8)
+def _splitter(module: str, function: str) -> Optional[Callable[..., Path]]:
+    try:
+        value = getattr(importlib.import_module(module), function)
+    except Exception:
+        return None
+    return value if callable(value) else None
+
+
+def _handler(config: dict[str, Any]) -> Optional[_NativeMtpHandler]:
+    handler = _handler_definition(config)
+    if not handler or not _splitter(handler.module, handler.function):
+        return None
+    try:
+        model = getattr(importlib.import_module(handler.module.rsplit(".", 1)[0]), "Model")
+    except Exception:
+        return None
+    return handler if callable(model) else None
+
+
+def _handler_definition(config: dict[str, Any]) -> Optional[_NativeMtpHandler]:
+    text = config.get("text_config")
+    model_type = config.get("model_type") or (
+        text.get("model_type") if isinstance(text, dict) else None
+    )
+    return _HANDLERS.get(model_type)
+
+
+def _safetensor_header(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("rb") as handle:
+            size = int.from_bytes(handle.read(8), "little")
+            if size <= 0 or size > 64 * 1024 * 1024:
+                return {}
+            value = json.loads(handle.read(size))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _tensor_sizes(snapshot: Path, prefixes: tuple[str, ...]) -> Optional[dict[str, int]]:
+    index = snapshot / "model.safetensors.index.json"
+    selected: dict[Path, Optional[set[str]]]
+    try:
+        payload = json.loads(index.read_text(encoding = "utf-8")) if index.is_file() else None
+        weight_map = payload.get("weight_map") if isinstance(payload, dict) else None
+        if isinstance(weight_map, dict):
+            indexed: dict[Path, set[str]] = {}
+            for key, name in weight_map.items():
+                if not isinstance(key, str):
+                    return None
+                if not key.startswith(prefixes):
+                    continue
+                if not isinstance(name, str) or Path(name).name != name:
+                    return None
+                indexed.setdefault(snapshot / name, set()).add(key)
+            selected = indexed
+        else:
+            selected = {}
+        if not selected:
+            selected = {
+                path: None
+                for path in snapshot.glob("*.safetensors")
+                if path.name != "consolidated.safetensors"
+            }
+        if not selected or any(not path.is_file() for path in selected):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    sizes: dict[str, int] = {}
+    for path, keys in selected.items():
+        for key, metadata in _safetensor_header(path).items():
+            if keys is not None and key not in keys:
+                continue
+            offsets = metadata.get("data_offsets") if isinstance(metadata, dict) else None
+            if (
+                key != "__metadata__"
+                and isinstance(offsets, list)
+                and len(offsets) == 2
+                and all(type(offset) is int for offset in offsets)
+                and 0 <= offsets[0] <= offsets[1]
+            ):
+                sizes[key] = offsets[1] - offsets[0]
+    return sizes or None
+
+
+def native_mtp_evidence(snapshot: Path, config: dict[str, Any]) -> Optional[NativeMtpEvidence]:
+    handler = _handler(config)
+    return _native_mtp_evidence(snapshot, config, handler)
+
+
+def _native_mtp_evidence(
+    snapshot: Path, config: dict[str, Any], handler: Optional[_NativeMtpHandler]
+) -> Optional[NativeMtpEvidence]:
+    prefixes = handler.prefixes if handler else ()
+    if callable(prefixes):
+        prefixes = prefixes(config)
+    identity = _snapshot_identity(snapshot, handler) if handler and prefixes else None
+    sizes = _cached_tensor_sizes(str(snapshot), identity, prefixes) if identity else None
+    if not handler or not prefixes or not sizes or not handler.complete(config, sizes):
+        return None
+    selected = [size for key, size in sizes.items() if key.startswith(prefixes)]
+    return NativeMtpEvidence(handler.name, sum(selected))
+
+
+@lru_cache(maxsize = 32)
+def _cached_tensor_sizes(
+    snapshot: str, identity: str, prefixes: tuple[str, ...]
+) -> Optional[dict[str, int]]:
+    del identity
+    return _tensor_sizes(Path(snapshot), prefixes)
+
+
+def _snapshot_identity(
+    snapshot: Path,
+    handler: _NativeMtpHandler,
+    block_size: Optional[int] = None,
+) -> str:
+    block = "auto" if block_size is None else str(block_size)
+    try:
+        runtime = version("mlx-vlm")
+    except PackageNotFoundError:
+        runtime = "unavailable"
+    digest = hashlib.sha256(
+        f"{handler.name}\0{handler.module}\0{handler.function}\0mlx-vlm:{runtime}"
+        f"\0{snapshot.resolve()}\0block:{block}".encode()
+    )
+    for path in sorted(
+        (
+            snapshot / "config.json",
+            snapshot / "model.safetensors.index.json",
+            *snapshot.glob("*.safetensors"),
+        )
+    ):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        digest.update(f"\0{path.name}\0{stat.st_size}\0{stat.st_mtime_ns}".encode())
+    return digest.hexdigest()
+
+
+def mlx_target_snapshot_path(target_id: str) -> Path:
+    config_path = _cached_config_path(target_id)
+    snapshot = config_path.parent if config_path is not None else None
+    if snapshot is None or not _snapshot_complete_at(snapshot):
+        raise FileNotFoundError(f"MLX target checkpoint is not downloaded: {target_id}")
+    return snapshot
+
+
+def _builtin_candidate_rows(target_id, target_config, caps, enabled):
+    """A row for the target's own MTP head, when it carries a complete one.
+
+    A target that can draft for itself needs no companion checkpoint, so this is
+    emitted before any downloadable candidate.
+    """
+    try:
+        snapshot = mlx_target_snapshot_path(target_id)
+    except (OSError, RuntimeError, ValueError):
+        return
+    if snapshot is None:
+        return
+    try:
+        evidence = native_mtp_evidence(snapshot, target_config)
+    except (OSError, RuntimeError, ValueError):
+        return
+    if evidence is None:
+        return
+
+    upstream_ready = bool(caps["methods"].get("mtp"))
+    locally_ready = "mtp" in enabled
+    estimated_memory_bytes = _snapshot_weight_bytes(target_id)
+    if not upstream_ready:
+        reason = caps["reason"] or "method_runtime_unavailable"
+    elif not locally_ready:
+        reason = "method_not_integrated"
+    elif not _mlx_speculative_memory_ready(estimated_memory_bytes):
+        reason = "insufficient_unified_memory"
+    else:
+        reason = None
+    yield _CandidateRow(
+        BUILTIN_MTP_ID,
+        _UNVERIFIED,
+        {
+            "method": "mtp",
+            "repo_id": BUILTIN_MTP_ID,
+            "label": "Built-in MTP",
+            "source": "builtin",
+            "recommended": False,
+            "approximate_size_bytes": evidence.weight_bytes,
+            "estimated_memory_bytes": estimated_memory_bytes,
+            "materialization_bytes": 0,
+            "downloaded": True,
+            "compatible": True,
+            "runtime_supported": upstream_ready,
+            "integration_ready": locally_ready,
+            "loadable": reason is None,
+        },
+        reason,
+    )
+
+
 def _cached_candidate_rows(target_id, target_config, caps, enabled):
     """Rows for drafters already materialized in the local cache.
 
@@ -844,13 +1465,10 @@ def mlx_speculative_options(target_id: str) -> dict[str, Any]:
     """
     capabilities = mlx_speculative_runtime_capabilities()
     target_config = _read_config(target_id)
-    rows = (
-        _cached_candidate_rows(
-            target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS
-        )
-        if target_config is not None
-        else ()
-    )
+    rows = []
+    if target_config is not None:
+        args = (target_id, target_config, capabilities, ENABLED_MLX_SPECULATIVE_METHODS)
+        rows = itertools.chain(_builtin_candidate_rows(*args), _cached_candidate_rows(*args))
     return {
         "target_model": _public_target_model_id(target_id),
         "experimental": True,

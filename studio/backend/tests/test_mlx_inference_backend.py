@@ -4270,6 +4270,321 @@ def test_a_drafter_must_leave_headroom_in_unified_memory(monkeypatch):
     total = psutil.virtual_memory().total
     assert spec._mlx_speculative_memory_ready(int(total * 0.80)) is True
     assert spec._mlx_speculative_memory_ready(int(total * 0.90)) is False
+
+
+_QWEN_MTP_LAYER = (
+    "input_layernorm.weight", "post_attention_layernorm.weight",
+    "self_attn.q_proj.weight", "self_attn.k_proj.weight", "self_attn.v_proj.weight",
+    "self_attn.o_proj.weight", "self_attn.q_norm.weight", "self_attn.k_norm.weight",
+    "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
+)
+
+
+def _qwen_head_tensors(depth = 1):
+    names = {"mtp.fc.weight", "mtp.norm.weight",
+             "mtp.pre_fc_norm_embedding.weight", "mtp.pre_fc_norm_hidden.weight"}
+    for layer in range(depth):
+        names |= {f"mtp.layers.{layer}.{tensor}" for tensor in _QWEN_MTP_LAYER}
+    return dict.fromkeys(names, 16)
+
+
+def _qwen_config(model_type = "qwen3_5", text_type = "qwen3_5", depth = 1,):
+    return {"model_type": model_type,
+            "text_config": {"mtp_num_hidden_layers": depth, "model_type": text_type}}
+
+
+def _deepseek_config(depth = 1, experts = 2):
+    return {"model_type": "deepseek_v4",
+            "text_config": {"num_nextn_predict_layers": depth, "n_routed_experts": experts}}
+
+
+def _deepseek_head_tensors(experts = 2, extra = ()):
+    from core.inference import mlx_speculative as spec
+
+    names = {"mtp.0." + tensor for tensor in spec._DEEPSEEK_SHARED_TENSORS}
+    names |= {f"mtp.0.ffn.experts.{expert}.w{projection}.weight"
+              for expert in range(experts) for projection in (1, 2, 3)}
+    return dict.fromkeys(names | set(extra), 16)
+
+
+def _inkling_config(model_type = "inkling", depth = None, mtp_depth = None,):
+    config = {"model_type": model_type, "text_config": {"model_type": "inkling"}}
+    if depth is not None:
+        config["text_config"]["num_mtp_layers"] = depth
+    if mtp_depth is not None:
+        config["mtp_config"] = {"num_nextn_predict_layers": mtp_depth}
+    return config
+
+
+def _inkling_head_tensors(depth = 1, blocks = False, extra = (),):
+    from core.inference import mlx_speculative as spec
+
+    tensors = spec._INKLING_BLOCK_TENSORS if blocks else spec._INKLING_LAYER_TENSORS
+    prefix = "model.mtp.blocks." if blocks else "model.mtp.layers."
+    names = {"model.llm.norm.weight"}
+    for index in range(depth):
+        names |= {f"{prefix}{index}.{tensor}" for tensor in tensors}
+    return dict.fromkeys(names | set(extra), 16)
+
+
+def _glm_config(layers = 4, depth = 1, experts = 2,):
+    return {"model_type": "glm4_moe_lite",
+            "text_config": {"num_hidden_layers": layers, "n_routed_experts": experts,
+                            "num_nextn_predict_layers": depth}}
+
+
+def _glm_head_tensors(layers = 4, experts = 2, extra = (),):
+    from core.inference import mlx_speculative as spec
+
+    prefix = f"model.layers.{layers}."
+    names = {prefix + tensor for tensor in spec._GLM_HEAD_TENSORS}
+    names |= {f"{prefix}mlp.experts.{expert}.{tensor}"
+              for expert in range(experts) for tensor in spec._GLM_EXPERT_TENSORS}
+    return dict.fromkeys(names | set(extra), 16)
+
+
+_NATIVE_HEAD_STRAYS = {
+    "qwen3_5": (_qwen_config(), _qwen_head_tensors(), "mtp.stray"),
+    "deepseek_v4": (_deepseek_config(), _deepseek_head_tensors(), "mtp.0.unexpected.weight"),
+    "inkling": (_inkling_config(), _inkling_head_tensors(), "model.mtp.extra.norm.weight"),
+    # Layer count differs from the fixture default so a prefix pinned to a constant,
+    # rather than read from the target's own depth, fails here.
+    "glm4_moe_lite": (_glm_config(layers = 7, experts = 3),
+                      _glm_head_tensors(layers = 7, experts = 3),
+                      "model.layers.7.mlp.experts.9.w1"),
+}
+
+
+def test_every_head_this_runtime_can_split_has_a_family():
+    # Families are registered by hand while the runtime decides which heads it can split, so
+    # a gained splitter leaves a self-drafting target unoffered. Read from the installed packages.
+    import importlib
+    import pkgutil
+
+    from core.inference import mlx_speculative as spec
+
+    drafters = pytest.importorskip("mlx_vlm.speculative.drafters")
+    splittable = set()
+    for package in pkgutil.iter_modules(drafters.__path__):
+        module = f"{drafters.__name__}.{package.name}.split"
+        try:
+            split = importlib.import_module(module)
+        except ImportError:
+            continue
+        # Paired with the module: a family registered against the wrong package resolves to
+        # no splitter. Defined-here only, so a re-export is not a splitter this build claims.
+        splittable |= {
+            (module, name) for name in dir(split) if name.startswith("split_")
+            and str(getattr(getattr(split, name), "__module__", "")).startswith(
+                module.rsplit(".", 1)[0] + ".")
+        }
+    assert splittable, "expected the installed runtime to expose at least one splitter"
+    assert splittable == {
+        (handler.module, handler.function) for handler in spec._HANDLERS.values()
+    }
+
+
+def test_a_family_whose_head_moves_with_its_config_is_required_at_the_right_prefix(tmp_path):
+    # One family stores its head a layer index past the last real layer, so moving the declared
+    # depth has to move the required prefix with it. Driven ungated, or the installed
+    # runtime's family list would decide whether this resolution runs at all.
+    from core.inference import mlx_speculative as spec
+
+    family = "glm4_moe_lite"
+    config, sizes, _stray = _NATIVE_HEAD_STRAYS[family]
+    snapshot = tmp_path / family
+    snapshot.mkdir()
+    _fake_safetensors(snapshot / "model.safetensors",
+                      {name: {"data_offsets": [0, 8]} for name in sizes})
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {name: "model.safetensors" for name in sizes}})
+    )
+    handler = spec._HANDLERS[family]
+    assert spec._native_mtp_evidence(snapshot, config, handler) is not None
+    # A config naming a different depth still reads every key, since nothing matches the moved
+    # prefix and the reader globs the shards. What rejects it is the required set having moved.
+    moved = json.loads(json.dumps(config))
+    moved["text_config"]["num_hidden_layers"] += 1
+    assert spec._native_mtp_evidence(snapshot, moved, handler) is None
+
+
+def test_a_head_is_offered_only_where_the_runtime_can_load_it(monkeypatch, tmp_path):
+    # Splitting a head and driving it are separate capabilities: a family whose drafter class
+    # this build lacks must not have its head offered, or the load fails with the target
+    # resident. Supplied and withdrawn here rather than read from the installed packages,
+    # or once every family ships a drafter class this would stop testing anything without
+    # ever failing.
+    import importlib
+
+    from core.inference import mlx_speculative as spec
+
+    pytest.importorskip("mlx_vlm.speculative.drafters")
+    for family, (config, sizes, _stray) in _NATIVE_HEAD_STRAYS.items():
+        snapshot = tmp_path / family
+        snapshot.mkdir()
+        _fake_safetensors(snapshot / "model.safetensors",
+                          {name: {"data_offsets": [0, 8]} for name in sizes})
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {name: "model.safetensors" for name in sizes}})
+        )
+        package = importlib.import_module(spec._HANDLERS[family].module.rsplit(".", 1)[0])
+        monkeypatch.setattr(package, "Model", type("Model", (), {}), raising = False)
+        assert spec.native_mtp_evidence(snapshot, config) is not None, family
+        # An attribute that is not a class is not a drafter either.
+        monkeypatch.setattr(package, "Model", "not a class", raising = False)
+        assert spec.native_mtp_evidence(snapshot, config) is None, family
+        monkeypatch.delattr(package, "Model", raising = False)
+        assert spec.native_mtp_evidence(snapshot, config) is None, family
+
+
+def test_every_family_rejects_a_stray_tensor_under_its_own_prefix():
+    # A complete head plus a tensor it does not define is a different checkpoint sharing the
+    # prefix. Asserted over every family, with strays differing in depth and suffix so a
+    # filter that skips anything shaped like a real tensor name cannot pass them.
+    from core.inference import mlx_speculative as spec
+    assert set(_NATIVE_HEAD_STRAYS) == {handler.name for handler in spec._HANDLERS.values()}
+    for family, (config, sizes, stray) in _NATIVE_HEAD_STRAYS.items():
+        complete = spec._HANDLERS[family].complete
+        assert complete(config, sizes) is True, family
+        assert complete(config, {**sizes, stray: 16}) is False, family
+
+
+def test_a_head_this_runtime_cannot_split_is_not_evidence(monkeypatch, tmp_path):
+    # A complete head of a handled family is still not evidence when this build has no
+    # splitter for it, so the runtime half of the gate cannot be dropped silently.
+    from core.inference import mlx_speculative as spec
+
+    config, sizes = _qwen_config(), _qwen_head_tensors()
+    monkeypatch.setattr(spec, "_tensor_sizes", lambda _s, _p: sizes)
+    assert spec._handler_definition(config).complete(config, sizes) is True
+
+    monkeypatch.setattr(spec, "_splitter", lambda *_a: None)
+    assert spec.native_mtp_evidence(tmp_path, config) is None
+
+
+@pytest.mark.parametrize(
+    "config,sizes,complete",
+    [
+        (_qwen_config(), _qwen_head_tensors(), True),
+        # A head is only usable whole, so one absent projection makes it unusable.
+        (_qwen_config(), {k: v for k, v in _qwen_head_tensors().items()
+                          if k != "mtp.fc.weight"}, False),
+        # Weights for fewer layers than the config declares are a partial download.
+        (_qwen_config(depth = 2), _qwen_head_tensors(1), False),
+        # More layers present than declared is a different head, not this one.
+        (_qwen_config(depth = 1), _qwen_head_tensors(2), False),
+        # A dense head cannot serve a mixture-of-experts target, or the reverse.
+        (_qwen_config(model_type = "qwen3_5_moe"), _qwen_head_tensors(), False),
+        (_qwen_config(), {}, False),
+        # The splitter defaults this count when a config omits one, so its absence is not
+        # evidence of a partial head; a declared count out of range still is.
+        ({"model_type": "glm4_moe_lite",
+          "text_config": {"num_hidden_layers": 4, "n_routed_experts": 2}},
+         _glm_head_tensors(), True),
+        (_glm_config(depth = 999), _glm_head_tensors(), False),
+        (_deepseek_config(), _deepseek_head_tensors(), True),
+        # Weights for fewer experts than the config routes to are a partial download.
+        (_deepseek_config(experts = 3), _deepseek_head_tensors(2), False),
+        # Scales for some experts but not all: a quantization pass that did not finish.
+        (_deepseek_config(),
+         _deepseek_head_tensors(extra = ("mtp.0.ffn.experts.0.w1.scales",)), False),
+        # A layer token with no digits at all is refused before any conversion.
+        (_deepseek_config(), _deepseek_head_tensors(extra = ("mtp.x.weight",)), False),
+        (_deepseek_config(experts = 0), _deepseek_head_tensors(0), False),
+        (_deepseek_config(depth = 17), _deepseek_head_tensors(), False),
+        (_qwen_config(depth = 17), _qwen_head_tensors(17), False),
+        # Scale sidecars for some tensors but not all, in the singular spelling.
+        (_deepseek_config(), _deepseek_head_tensors(extra = ("mtp.0.e_proj.scale",)), False),
+        (_inkling_config(), _inkling_head_tensors(), True),
+        # The multimodal variant carries the same head under the block layout.
+        (_inkling_config("inkling_mm_model"), _inkling_head_tensors(blocks = True), True),
+        # The head reads through the language model's final norm, so it is part of it.
+        (_inkling_config(), {k: v for k, v in _inkling_head_tensors().items()
+                             if k != "model.llm.norm.weight"}, False),
+        # Depth is declared in mtp_config when the text block does not carry it.
+        (_inkling_config(mtp_depth = 2), _inkling_head_tensors(depth = 2), True),
+        (_inkling_config(mtp_depth = 2), _inkling_head_tensors(depth = 1), False),
+        ({"model_type": "inkling"}, _inkling_head_tensors(), False),
+        # A head deeper than any real one is refused rather than enumerated.
+        (_inkling_config(depth = 17), _inkling_head_tensors(depth = 17), False),
+    ],
+)
+def test_a_native_mtp_head_is_recognized_only_when_complete(config, sizes, complete):
+    from core.inference import mlx_speculative as spec
+    assert spec._handler_definition(config).complete(config, sizes) is complete
+
+
+def _fake_safetensors(path, header, *, declared_length = None,):
+    import struct
+    blob = json.dumps(header).encode()
+    length = declared_length if declared_length is not None else len(blob)
+    path.write_bytes(struct.pack("<Q", length) + blob)
+
+
+def test_a_weight_map_naming_a_path_outside_the_snapshot_is_refused(tmp_path):
+    # Entries come from the checkpoint's own index, so a name walking out of the snapshot has
+    # this reader sizing a file the publisher chose. The escape target is real and readable.
+    from core.inference import mlx_speculative as spec
+
+    header = {"mtp.fc.weight": {"data_offsets": [0, 8]}}
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "nested").mkdir(parents = True)
+    _fake_safetensors(tmp_path / "outside.safetensors", header)
+    _fake_safetensors(snapshot / "nested" / "inner.safetensors", header)
+    _fake_safetensors(snapshot / "model.safetensors", header)
+
+    for name in ("../outside.safetensors", "nested/inner.safetensors"):
+        (snapshot / "model.safetensors.index.json").write_text(
+            json.dumps({"weight_map": {"mtp.fc.weight": name}})
+        )
+        assert spec._tensor_sizes(snapshot, ("mtp.",)) is None, name
+
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"mtp.fc.weight": "model.safetensors"}})
+    )
+    assert spec._tensor_sizes(snapshot, ("mtp.",)) == {"mtp.fc.weight": 8}
+
+
+@pytest.mark.parametrize(
+    "runtime_ready,enabled,memory,reason",
+    [
+        (False, False, True, "method_runtime_unavailable"),
+        (True, False, True, "method_not_integrated"),
+        (True, True, False, "insufficient_unified_memory"),
+        (True, True, True, None),
+    ],
+)
+def test_a_target_with_its_own_head_is_offered_before_any_download(
+    monkeypatch, runtime_ready, enabled, memory, reason
+):
+    # A target that can draft for itself needs no companion checkpoint, so the built-in
+    # row is emitted first and carries no download size of its own.
+    from core.inference import mlx_speculative as spec
+
+    monkeypatch.setattr(spec, "mlx_target_snapshot_path", lambda _t: Path("/nowhere"))
+    monkeypatch.setattr(
+        spec, "native_mtp_evidence",
+        lambda _s, _c: SimpleNamespace(weight_bytes = 4096),
+    )
+    monkeypatch.setattr(spec, "_snapshot_weight_bytes", lambda _t: 0)
+    monkeypatch.setattr(spec, "_mlx_speculative_memory_ready", lambda _b: memory)
+
+    caps = {"common": True, "methods": {"mtp": runtime_ready}, "reason": None}
+    rows = list(spec._builtin_candidate_rows(
+        "org/target", _MTP_TARGET, caps, frozenset({"mtp"} if enabled else ()),
+    ))
+    assert len(rows) == 1
+    assert rows[0].key == spec.BUILTIN_MTP_ID
+    assert rows[0].reason == reason
+    assert rows[0].fields["source"] == "builtin"
+    assert rows[0].fields["materialization_bytes"] == 0
+    assert rows[0].fields["loadable"] is (reason is None)
+
+    # A target without a head of its own offers nothing here, rather than an empty row.
+    monkeypatch.setattr(spec, "native_mtp_evidence", lambda _s, _c: None)
+    assert list(spec._builtin_candidate_rows(
+        "org/target", _MTP_TARGET, caps, frozenset({"mtp"}),
+    )) == []
 # fmt: on
 # fmt: off
 
@@ -4486,8 +4801,6 @@ def test_a_matched_drafter_reports_why_it_cannot_run(
     # An unproven drafter holds its repository open for a later snapshot that verifies.
     assert rows[0].status == (spec.MATCH if match is True else spec.INDETERMINATE)
 # fmt: on
-
-
 # fmt: off
 def _write_snapshot(root, repo, revision, *, config, weights = True, tokenizer = True,):
     snapshot = root / f"models--{repo.replace('/', '--')}" / "snapshots" / revision
