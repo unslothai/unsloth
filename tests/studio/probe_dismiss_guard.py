@@ -281,7 +281,12 @@ async def hover_last_assistant(page) -> None:
         await page.wait_for_timeout(600)
 
 
-async def one_case(page, case: str, engine: str = "chromium", context = None) -> dict:
+async def one_case(
+    page,
+    case: str,
+    engine: str = "chromium",
+    context = None,
+) -> dict:
     """Open the menu, attack the Delete button one way, report whether it fired."""
     await hover_last_assistant(page)
     opened = await page.evaluate(OPEN_MENU_JS)
@@ -435,11 +440,17 @@ async def one_case(page, case: str, engine: str = "chromium", context = None) ->
         # only one of the two pointers ever being alive. An unmet premise is a FAILURE here, not
         # a pass, because a probe that cannot tell you it missed is worse than no probe.
         if not held["menuOpen"]:
-            return {"case": case, "error": "the held touch dismissed the menu, so there was no "
-                                           "open menu for a second pointer to land in"}
+            return {
+                "case": case,
+                "error": "the held touch dismissed the menu, so there was no "
+                "open menu for a second pointer to land in",
+            }
         if state["maxLive"] < 2 or live < 2:
-            return {"case": case, "error": f"the two pointers never coexisted: maxLive="
-                                           f"{state['maxLive']}, live at the second press={live}"}
+            return {
+                "case": case,
+                "error": f"the two pointers never coexisted: maxLive="
+                f"{state['maxLive']}, live at the second press={live}",
+            }
         if sorted(state["concurrentTypes"]) != ["mouse", "touch"]:
             return {"case": case, "error": f"wrong pointer types: {state['concurrentTypes']}"}
         return {
