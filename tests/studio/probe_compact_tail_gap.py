@@ -165,7 +165,7 @@ def run_engine(pw, engine: str) -> dict:
             )
             if r == 0:
                 (OUT / f"{LABEL}-{engine}-{height}-timeline.json").write_text(
-                    json.dumps(samples, indent = 1)
+                    json.dumps(samples, indent = 1), encoding = "utf-8"
                 )
         # First commit, on its own re-open so nothing is settled.
         page.evaluate(
@@ -181,7 +181,9 @@ def run_engine(pw, engine: str) -> dict:
         out[height] = rounds
         # After every height, not once at the end: a browser dying on the tallest viewport used to
         # take every earlier measurement down with it.
-        (OUT / f"{LABEL}-{engine}-rounds.json").write_text(json.dumps(out, indent = 1))
+        (OUT / f"{LABEL}-{engine}-rounds.json").write_text(
+            json.dumps(out, indent = 1), encoding = "utf-8"
+        )
         context.close()
     browser.close()
     return out
@@ -197,7 +199,7 @@ def main() -> int:
                 info(f"engine {engine}")
                 results[engine] = run_engine(pw, engine)
         path = OUT / f"{LABEL}-results.json"
-        path.write_text(json.dumps(results, indent = 1))
+        path.write_text(json.dumps(results, indent = 1), encoding = "utf-8")
         info(f"wrote {path}")
         for engine, byh in results.items():
             for height, rounds in byh.items():
