@@ -349,6 +349,40 @@ test("useSidebarThreadGroups regroups when the threads actually change", () => {
   );
 });
 
+test("useSidebarThreadGroups regroups on an edit that leaves the list the same length", () => {
+  // A rename, an archive and a bumped activity time all keep the count identical. A memo keyed on
+  // anything as coarse as the length would serve the old rows here and the rail would lie.
+  const runner = createHookRunner(useSidebarThreadGroups);
+  const before = [thread({ id: "a", title: "old name" }), thread({ id: "b" })];
+  const renamed = [
+    thread({ id: "a", title: "new name" }),
+    thread({ id: "b" }),
+  ];
+  const archived = [
+    thread({ id: "a", title: "new name" }),
+    thread({ id: "b", archived: true }),
+  ];
+  const first = runner.render(before);
+  const second = runner.render(renamed);
+  const third = runner.render(archived);
+
+  assert.notEqual(first.items, second.items);
+  assert.equal(
+    second.items.find((item) => item.id === "a")?.title,
+    "new name",
+    "a renamed chat kept its old title in the rail",
+  );
+  assert.notEqual(second.items, third.items);
+  assert.deepEqual(
+    third.items.map((item) => item.id),
+    ["a"],
+  );
+  assert.deepEqual(
+    third.archivedItems.map((item) => item.id),
+    ["b"],
+  );
+});
+
 test("useSidebarThreadGroups does not conflate the archived list with the live one", () => {
   const runner = createHookRunner(useSidebarThreadGroups);
   const threads = [
