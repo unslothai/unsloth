@@ -15757,10 +15757,7 @@ class LlamaCppBackend:
                                 effective_ctx > native_ctx_for_cap
                             ):
                                 _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
-                                if (
-                                    _apple_footprint_mib(_extended_ceiling)
-                                    > _apple_fit_budget_mib
-                                ):
+                                if _apple_footprint_mib(_extended_ceiling) > _apple_fit_budget_mib:
                                     # 4096 is the helper's floor, not a measurement, and
                                     # the cap above already has to re-price under it for
                                     # the same reason. It bites here too whenever the
