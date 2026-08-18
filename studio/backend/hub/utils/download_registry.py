@@ -1046,7 +1046,11 @@ def _resumable_blob_hashes(entry: Path) -> set[str]:
 
 
 def _manifest_hash_split(
-    repo_type: str, repo_id: str, variant: Optional[str], *, root: Optional[Path] = None
+    repo_type: str,
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    root: Optional[Path] = None,
 ) -> tuple[set[str], set[str]]:
     """``(main, companion)`` blob hashes from the variant's manifest, split the way the worker
     splits them when it asks for a purge. Empty pair when either step cannot answer, which
