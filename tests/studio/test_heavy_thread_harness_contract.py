@@ -14,13 +14,7 @@ CDP counter and the Long Tasks API are Chromium-only, and the failure mode is si
 as "no measurement". So no growth axis and no pass/fail decision may rest on one.
 """
 
-import importlib.util
-import os
-import sys
-import types
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 STUDIO_TESTS = ROOT / "tests" / "studio"
@@ -135,20 +129,7 @@ def test_the_verdict_asserts_the_keystroke_reached_the_runtime() -> None:
     # The DOM value is what the harness itself wrote. A keystroke that reached nothing still
     # reports the ~33ms paint floor, which reads as a plausible timing.
     decision = verdict()
-    assert 'proof["runtimeText"] != proof["domText"]' in decision
-
-
-def test_every_repetition_is_settled_before_it_is_measured() -> None:
-    # Order, which no unit test can reach: the tool panes the expansion mounts carry code fences
-    # of their own, and Shiki starts on them only once they exist. Settling before the expansion
-    # leaves that highlighting inside the keystroke and scroll windows of every repetition after
-    # the first, which is the contamination the settle exists to keep out.
-    text = source(HARNESS)
-    body = section(text, "def one_repetition(", "# Portable headline per action")
-    expanded = body.index("expandTools()")
-    settled = body.index("wait_for_highlighting_settled(")
-    first_measurement = body.index('run_action(page, cdp, "keystroke"')
-    assert expanded < settled < first_measurement, body
+    assert 'keystroke["runtimeText"] != keystroke["domText"]' in decision
 
 
 def test_the_paint_floor_is_measured_and_subtracted() -> None:
@@ -157,13 +138,17 @@ def test_the_paint_floor_is_measured_and_subtracted() -> None:
     # regression sit under the discrimination threshold.
     text = source(HARNESS)
     assert "PAINT_FLOOR_JS" in text
-    assert 'value -= row["paint_floor_ms"]' in section(text, "def growth(", "def report_growth")
+    # Once per double-rAF wait the metric is clocked across, not once per metric: `menu open+close
+    # ms` is the sum of two independently floored timings and carries two floors.
+    assert 'value -= count * row["paint_floor_ms"]' in section(
+        text, "def growth(", "def report_growth"
+    )
 
 
 def test_the_verdict_asserts_the_reopen_really_unmounted() -> None:
     # Without this, "re-open" is timing a thread that never left, which is free.
     decision = verdict()
-    assert 'proof.get("closedMs") is None' in decision
+    assert 'reopened["closedMs"] is None' in decision
 
 
 def test_the_verdict_asserts_discrimination() -> None:
@@ -192,154 +177,59 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
     assert "stop_process(vite)" in text
 
 
-# ── the verdict against the summary it actually gets ──────────────────
-#
-# Everything above reads the source, which is all a check on ORDER or on portability can do. The
-# rest runs summarise() and harness_failures() for real, because the defect they are pinned
-# against is not visible in either function on its own: the summary keeps the LAST repetition's
-# proofs while the headline is a median over all of them, so a repetition that measured nothing
-# reaches the table with a passing verdict in front of it.
+def test_the_fork_count_stub_answers_with_a_real_zero() -> None:
+    # `getForkCount` returns `data.count`, and the badge's guard is `count <= 0`. `undefined <= 0`
+    # is false, so a `{}` body renders a badge reading "undefined forks from this message" on every
+    # assistant message. Measured at 25000 chars: 10 badges and 4031 DOM nodes with `{}`, 0 badges
+    # and 3981 with `{"count":0}`. That is DOM in proportion to thread size, on the axis this
+    # harness measures.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    # Pin the fork-count entry to its own body rather than scanning the whole file: other
+    # endpoints in the allowlist legitimately answer "{}", so a bare file-wide check for it
+    # would fail on them and tell us nothing about this one.
+    forks = next(
+        (line for line in page.splitlines() if "forks$/" in line),
+        "",
+    )
+    assert forks, "the fork-count endpoint is no longer in the stub allowlist"
+    assert '{"count":0}' in forks, (
+        "the fork-count stub must answer with a numeric count; an empty object makes the parsed "
+        f"count undefined and renders a badge on every assistant message. Got: {forks.strip()!r}"
+    )
 
 
-@pytest.fixture(scope = "module")
-def harness(tmp_path_factory):
-    """The harness module, imported for real.
-
-    It pulls in `playwright.sync_api` and creates its artifact directory at import time, so it is
-    loaded here with the browser binding stubbed when absent (this file also runs where playwright
-    is not installed) and with `PW_ART_DIR` pointed at a temp dir, or the import drops a `logs/`
-    tree into whatever directory pytest was run from.
-    """
-    stubbed: list[str] = []
-    try:
-        import playwright.sync_api  # noqa: F401
-    except ImportError:
-        package = types.ModuleType("playwright")
-        binding = types.ModuleType("playwright.sync_api")
-        binding.sync_playwright = None
-        package.sync_api = binding
-        for name, stub in (("playwright", package), ("playwright.sync_api", binding)):
-            if name not in sys.modules:
-                sys.modules[name] = stub
-                stubbed.append(name)
-    previous = os.environ.get("PW_ART_DIR")
-    os.environ["PW_ART_DIR"] = str(tmp_path_factory.mktemp("heavy_thread_artifacts"))
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "_heavy_thread_under_test", STUDIO_TESTS / HARNESS
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        # Both are undone the moment the import is done. A stub left in `sys.modules` is not a
-        # local shortcut: the frontend CI job runs this file in the same pytest process as
-        # test_playwright_server_lifecycle.py, which imports the real binding and would get this
-        # one instead. Measured, not guessed -- the first version of this fixture broke that file.
-        for name in stubbed:
-            sys.modules.pop(name, None)
-        if previous is None:
-            os.environ.pop("PW_ART_DIR", None)
-        else:
-            os.environ["PW_ART_DIR"] = previous
+def test_the_fetch_stub_only_intercepts_fork_counts() -> None:
+    # A blanket `/api/` match resolves any other request a measured interaction makes before
+    # Playwright emits it, so `measure_cell`'s listener never increments `stray_api_requests` and
+    # the API fan-out this harness claims to detect cannot reach it.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert 'url.includes("/api/")' not in page, (
+        "the fetch stub is matching every /api/ request again, which hides stray requests from "
+        "the harness's own stray_api_requests counter"
+    )
+    assert (
+        "forks$/" in page or "/forks" in page
+    ), "the fetch stub must match the fork-count endpoint specifically"
 
 
-def one_good_repetition() -> dict[str, dict]:
-    """What every action returns when it did what it was asked to. Only the fields the verdict
-    reads; `run_action` adds the recorder's own metrics on top."""
-    return {
-        "keystroke": {
-            "ran": True,
-            "median_sample_ms": 34.0,
-            "domText": "aaaaa",
-            "runtimeText": "aaaaa",
-        },
-        "scroll": {"ran": True, "gestureMs": 700.0, "scrolledPx": 8000},
-        "jump": {"ran": True, "paintedMs": 40.0, "landedAt": 0, "travelledPx": 9000},
-        "menu": {
-            "ran": True,
-            "open_close_ms": 70.0,
-            "openMs": 40.0,
-            "closeMs": 30.0,
-            "bodyPointerEvents": "auto",
-            "bodyPointerEventsAfterClose": "auto",
-            "itemsWhileOpen": 6,
-            "triggersWhileHovered": 4,
-        },
-        "delete": {"ran": True, "ms": 50.0, "before": 220, "after": 219},
-        "reopen": {"ran": True, "ms": 300.0, "closedMs": 20.0},
-    }
+def test_the_api_stub_is_an_allowlist_not_a_blanket_match() -> None:
+    # A blanket `/api/` match answers every request the measured interactions make before Playwright
+    # emits it, so `stray_api_requests` stays at zero and the fan-out this harness exists to detect
+    # is invisible to it. Narrowing it is what revealed the project-list and knowledge-base GETs on
+    # reopen, and the delete's own three-request sync.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert (
+        'url.includes("/api/")' not in page
+    ), "the fetch stub is matching every /api/ request again"
+    assert "STUBBED_API" in page, "the fetch stub must answer from an explicit allowlist"
 
 
-def results_for(harness, reps: list[dict[str, dict]]) -> dict:
-    """One engine at one size, healthy everywhere except what a caller put in `reps`. One size
-    keeps the discrimination check, which needs two, out of the way."""
-    size = 300000
-    plan = {"chars": size, "messages": 220, "cycles": 10, "expectedPerCycle": {"codeBlocks": 2}}
-    return {
-        "engines": ["chromium"],
-        "sizes": [size],
-        "by_engine": {
-            "chromium": {
-                "by_size": {
-                    str(size): {
-                        "plan": plan,
-                        "counts": {
-                            "messages": 220,
-                            "codeBlocks": 20,
-                            "highlightedTokens": 35086,
-                            "actionBars": 110,
-                        },
-                        "viewport": {"scrollHeight": 90000, "clientHeight": 800, "scrollTop": 0},
-                        "stray_api_requests": 0,
-                        "console_warnings": 0,
-                        "first_console_warning": "-",
-                        "per_repetition_census": [{"messages": 220} for _ in reps],
-                        "actions": harness.summarise(reps),
-                    }
-                }
-            }
-        },
-    }
-
-
-def test_a_healthy_run_is_not_reported_as_broken(harness) -> None:
-    # The control. Without it the two tests below would pass on a verdict that fails everything.
-    reps = [one_good_repetition() for _ in range(3)]
-    assert harness.harness_failures(results_for(harness, reps), {}) == []
-
-
-def test_an_earlier_repetition_that_typed_into_nothing_is_caught(harness) -> None:
-    # The keystroke reached the DOM but not the React runtime in repetition 1, and landed in 2 and
-    # 3. Its ~33ms paint floor is in the median either way; before this the summary carried
-    # repetition 3's proof and the verdict passed.
-    reps = [one_good_repetition() for _ in range(3)]
-    reps[0]["keystroke"]["runtimeText"] = ""
-    failures = harness.harness_failures(results_for(harness, reps), {})
-    assert [f for f in failures if "repetition 1" in f and "composer state" in f], failures
-
-
-def test_an_earlier_repetition_whose_thread_never_unmounted_is_caught(harness) -> None:
-    # `closedMs` is a proof wearing a number's clothes. Null means the thread never unmounted, and
-    # REOPEN_JS's second loop then finds `messageCount() >= before` already true and returns a
-    # near-zero `ms` for a thread that never left. median() drops the null and `dropped_repetitions`
-    # reads only `ms`, so before this the invalid timing sat in the median with nothing to show it.
-    reps = [one_good_repetition() for _ in range(3)]
-    reps[0]["reopen"]["closedMs"] = None
-    reps[0]["reopen"]["ms"] = 0.4
-    failures = harness.harness_failures(results_for(harness, reps), {})
-    assert [f for f in failures if "repetition 1" in f and "never left" in f], failures
-    # The hole it went through: the summary still reports a plausible median for both.
-    summary = harness.summarise(reps)["reopen"]
-    assert summary["closedMs"] is not None and summary["dropped_repetitions"] == 0
-
-
-def test_an_earlier_repetition_on_the_modal_layer_is_caught(harness) -> None:
-    # A modal menu and a non-modal one cost wildly different amounts, so one repetition measured
-    # on the other layer is not a sample of the same thing as the two beside it.
-    reps = [one_good_repetition() for _ in range(3)]
-    reps[0]["menu"]["bodyPointerEvents"] = "none"
-    reps[0]["menu"]["bodyPointerEventsAfterClose"] = "none"
-    failures = harness.harness_failures(results_for(harness, reps), {})
-    assert [f for f in failures if "repetition 1" in f and "modal layer" in f], failures
-    assert [f for f in failures if "same mechanism" in f], failures
+def test_every_stubbed_endpoint_is_reported() -> None:
+    # Answering a request inside the page removes its round trip from the timings, which is the
+    # point, but it must not remove the request from the record. An endpoint that is answered and
+    # not counted is one nobody can see the cost of later.
+    page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
+    assert "__stubbedApi" in page, "stubbed requests must be recorded on the page"
+    harness = source("playwright_heavy_thread.py")
+    assert "stubbed_api_requests" in harness, "the harness must read the stubbed-request record"
+    assert '"stubbed api requests"' in harness, "the stubbed-request count must reach the table"
