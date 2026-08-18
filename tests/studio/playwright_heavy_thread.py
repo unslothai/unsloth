@@ -1082,6 +1082,12 @@ def measure_cell(context, engine: str, size: int) -> dict:
         # Cumulative over seeding and every action: a liveness check, not attributable to any one.
         result["raf_callbacks"] = page.evaluate("window.__rafCount")
         result["stray_api_requests"] = len(stray_requests)
+        # The URLs themselves, not just how many. The count alone says the harness is broken
+        # without saying which endpoint moved, and this check fires in CI, where nobody can
+        # attach a listener afterwards: the first time it fired, the endpoint behind it had to be
+        # found by re-running the whole smoke locally with a print statement patched in. First
+        # THREE distinct, so a fan-out of hundreds does not fill the log with one repeated line.
+        result["stray_api_urls"] = sorted(set(stray_requests))[:3]
         # Answered inside the page by the smoke entry's allowlist. Reported rather than hidden:
         # these cost no round trip, but they are real requests the app makes and the number
         # should not vanish just because the harness declines to pay for them.
@@ -1181,6 +1187,7 @@ TABLE_ROWS = (
     ("seed console warnings", lambda r: r["seed_console_warnings"]),
     ("first seed warning", lambda r: r["first_seed_warning"]),
     ("action api requests", lambda r: r["stray_api_requests"]),
+    ("first stray api url", lambda r: (r.get("stray_api_urls") or ["-"])[0]),
     ("stubbed api requests", lambda r: r.get("stubbed_api_requests", 0)),
     ("action console warnings", lambda r: r["console_warnings"]),
     ("seed console errors", lambda r: r.get("seed_console_errors", 0)),
@@ -1628,9 +1635,11 @@ def harness_failures(results: dict, report: dict) -> list[str]:
             # being timed, once per message. A warning storm is the same cost via the console
             # channel. Both scale with content, so both would forge the curve.
             if row["stray_api_requests"]:
+                urls = ", ".join(row.get("stray_api_urls") or []) or "unrecorded"
                 failures.append(
                     f"{where} let {row['stray_api_requests']} /api/ requests reach the network "
-                    "during the measured actions; the timings include a round trip per request"
+                    "during the measured actions; the timings include a round trip per request. "
+                    f"First distinct: {urls}"
                 )
             # Console output from inside a timed region is serialised over the debugging channel,
             # so a warning the app emits once per message would both cost time and grow like the
