@@ -10051,12 +10051,9 @@ def build_conversation_recall(
     thin = False
     try:
         from core.inference import instruction_pin
-
         thin = instruction_pin.is_thin_query(query)
         if thin:
-            anchor = instruction_pin.last_substantive_instruction(
-                branch_messages or conversation
-            )
+            anchor = instruction_pin.last_substantive_instruction(branch_messages or conversation)
     except Exception:  # noqa: BLE001 -- a query refinement must never break a chat
         anchor = None
         thin = False
@@ -10065,8 +10062,10 @@ def build_conversation_recall(
         # returns whatever happens to share its stopwords, and under checkpoint compaction
         # that block is also the model's FIRST sight of the search tool -- priming it with
         # a meaningless query teaches the wrong lookup. Skip; the tool stays available.
-        logger.info("Conversation recall skipped: the latest message is a nudge with no "
-                    "earlier instruction to search for instead")
+        logger.info(
+            "Conversation recall skipped: the latest message is a nudge with no "
+            "earlier instruction to search for instead"
+        )
         return None
     try:
         found = conversation_archive.recall(

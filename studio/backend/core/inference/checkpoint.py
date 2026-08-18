@@ -121,8 +121,12 @@ def _neutralise(text: str) -> str:
     return _DELIMITERS.sub(lambda match: match.group(0).replace("<", "‹"), text)
 
 
-def carried_forward_items(evicted: list[dict], *, max_tokens: int = MAX_TOKENS,
-                          max_items: int = MAX_ITEMS) -> list[str]:
+def carried_forward_items(
+    evicted: list[dict],
+    *,
+    max_tokens: int = MAX_TOKENS,
+    max_items: int = MAX_ITEMS,
+) -> list[str]:
     """The user's standing instructions from the evicted turns, oldest first.
 
     Selected NEWEST-first, because the budget should be spent on what the user most
@@ -259,7 +263,8 @@ def fit_checkpoint_context(
     is_new_epoch = False
     if sticky_dropped > 0 and initial_tokens > prompt_target:
         candidate, replayed = truncate_oldest_messages(
-            fitted, 1.0,
+            fitted,
+            1.0,
             protected_message_ids = protected_message_ids,
             min_dropped = sticky_dropped,
         )
@@ -305,7 +310,6 @@ def fit_checkpoint_context(
         # the request fails either way, so dropping turns off a doomed request loses them
         # for nothing. Same keys, because every consumer gates on `fits`.
         from core.inference.context_window import _latest_turn_tokens  # noqa: PLC0415
-
         return messages, {
             "fits": False,
             "dropped_messages": 0,

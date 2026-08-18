@@ -116,7 +116,6 @@ def _memory_tool_withheld(thread_id, tools) -> bool:
         return False
     try:
         from core.rag import conversation_archive
-
         if not conversation_archive.has_archive(thread_id):
             return False
     except Exception:  # noqa: BLE001 -- unknown archive state is "do not refuse"
@@ -130,7 +129,12 @@ def _memory_tool_withheld(thread_id, tools) -> bool:
     return "search_conversation" not in names
 
 
-def _can_reset_epoch(thread_id, supports_tools: bool, *, tools_withheld: bool = False) -> bool:
+def _can_reset_epoch(
+    thread_id,
+    supports_tools: bool,
+    *,
+    tools_withheld: bool = False,
+) -> bool:
     """Whether this request may compact by RESETTING rather than trimming.
 
     Two refusals, both about not lying to the user:
@@ -172,7 +176,6 @@ def _can_reset_epoch(thread_id, supports_tools: bool, *, tools_withheld: bool = 
         return False
     try:
         from core.rag import conversation_archive
-
         return bool(conversation_archive.enabled() and conversation_archive.can_archive(thread_id))
     except Exception:  # noqa: BLE001 -- an unavailable archive is a "no", never an error
         return False
@@ -187,7 +190,6 @@ def _archive_is_degraded() -> bool:
     """
     try:
         from core.rag import conversation_archive
-
         return bool(conversation_archive.degraded())
     except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
         return False
@@ -205,7 +207,6 @@ def _fit_context(messages, **kwargs):
     can_reset = bool(kwargs.pop("can_reset", False))
     try:
         from core.inference import checkpoint
-
         if not can_reset and checkpoint.enabled() and int(kwargs.get("sticky_dropped") or 0) > 0:
             # An epoch is already in force and THIS request may not reset -- tools were
             # withdrawn, the policy is off, or the route's catalogue has no
@@ -260,12 +261,16 @@ def _fit_context(messages, **kwargs):
             if truncation is None or truncation.get("fits"):
                 return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
-        logger.warning("Checkpoint fit failed; falling back to the rolling window",
-                       exc_info = True)
+        logger.warning("Checkpoint fit failed; falling back to the rolling window", exc_info = True)
     return fit_rolling_context(messages, **kwargs)
 
 
-def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
+def _fit_with_instruction_pins(
+    messages,
+    *,
+    anchor_ids = None,
+    **kwargs,
+):
     """`fit_rolling_context`, plus the user's standing instructions held back from eviction.
 
     Applied through the existing `protected_message_ids` seam rather than by changing the
@@ -298,9 +303,7 @@ def _fit_with_instruction_pins(messages, *, anchor_ids = None, **kwargs):
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
     if pins and truncation and not truncation.get("fits"):
-        return _fit_context(
-            messages, protected_message_ids = anchors or None, **kwargs
-        )
+        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
     return fitted, truncation
 
 
@@ -20352,7 +20355,8 @@ class LlamaCppBackend:
                     sticky_dropped = _sticky_compaction_boundary(thread_id, _before_fit),
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
-                        thread_id, _backend_supports_tools(self),
+                        thread_id,
+                        _backend_supports_tools(self),
                         tools_withheld = tools_withheld,
                     ),
                 )
@@ -20980,7 +20984,8 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
-                            thread_id, _backend_supports_tools(self),
+                            thread_id,
+                            _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
                         reserve_tokens = _conversation_recall_reserve(thread_id),
@@ -21135,7 +21140,8 @@ class LlamaCppBackend:
                         anchor_ids = _rolling_anchor_ids,
                         keeps_boundary = _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
-                            thread_id, _backend_supports_tools(self),
+                            thread_id,
+                            _backend_supports_tools(self),
                             tools_withheld = _memory_tool_withheld(thread_id, tools),
                         ),
                     )
@@ -22411,19 +22417,20 @@ class LlamaCppBackend:
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
-                            thread_id, _backend_supports_tools(self),
-                            # Withheld, not `tools`: this is the synthesised final answer,
-                            # and `stream_payload` below carries no tools array at all
-                            # (the count above passes None for the same reason). Asking
-                            # the gate with the request's catalogue answers a question
-                            # this request does not pose, and lets a NEW epoch start on
-                            # the one pass that cannot call `search_conversation` and has
-                            # no loop left to run it -- an epoch behind a tool that is
-                            # absent, which is what the gate exists to refuse. Replaying
-                            # one already in force is unaffected: the system turn still
-                            # carries the block an earlier fit appended.
-                            tools_withheld = True,
-                        ),
+                        thread_id,
+                        _backend_supports_tools(self),
+                        # Withheld, not `tools`: this is the synthesised final answer,
+                        # and `stream_payload` below carries no tools array at all
+                        # (the count above passes None for the same reason). Asking
+                        # the gate with the request's catalogue answers a question
+                        # this request does not pose, and lets a NEW epoch start on
+                        # the one pass that cannot call `search_conversation` and has
+                        # no loop left to run it -- an epoch behind a tool that is
+                        # absent, which is what the gate exists to refuse. Replaying
+                        # one already in force is unaffected: the system turn still
+                        # carries the block an earlier fit appended.
+                        tools_withheld = True,
+                    ),
                     reserve_tokens = _conversation_recall_reserve(thread_id),
                     sticky_dropped = (
                         0
@@ -22542,10 +22549,11 @@ class LlamaCppBackend:
                     anchor_ids = _rolling_anchor_ids,
                     keeps_boundary = _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
-                            thread_id, _backend_supports_tools(self),
-                            # The final pass again, so again no tools array is sent.
-                            tools_withheld = True,
-                        ),
+                        thread_id,
+                        _backend_supports_tools(self),
+                        # The final pass again, so again no tools array is sent.
+                        tools_withheld = True,
+                    ),
                 )
                 if truncation and truncation["fits"]:
                     # Archive only, for the same reason as the iteration refit above.

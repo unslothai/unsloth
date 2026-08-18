@@ -2893,14 +2893,10 @@ def _tool_call_names(message) -> list[Optional[str]]:
     names: list[Optional[str]] = []
     for call in calls or []:
         function = (
-            call.get("function")
-            if isinstance(call, dict)
-            else getattr(call, "function", None)
+            call.get("function") if isinstance(call, dict) else getattr(call, "function", None)
         ) or {}
         names.append(
-            function.get("name")
-            if isinstance(function, dict)
-            else getattr(function, "name", None)
+            function.get("name") if isinstance(function, dict) else getattr(function, "name", None)
         )
     return names
 
@@ -2927,18 +2923,14 @@ def _only_studio_memory_tool_history(payload) -> bool:
         return False
     saw_call = False
     for message in getattr(payload, "messages", None) or []:
-        role = (
-            message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
-        )
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
         for name in _tool_call_names(message):
             saw_call = True
             if name not in _STUDIO_MEMORY_TOOLS:
                 return False
         if role == "tool":
             result_name = (
-                message.get("name")
-                if isinstance(message, dict)
-                else getattr(message, "name", None)
+                message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
             )
             if result_name not in _STUDIO_MEMORY_TOOLS:
                 return False
@@ -2959,8 +2951,7 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     has_client_contract = (
         bool(payload.tools) and getattr(payload, "tool_choice", None) != "none"
     ) or (
-        _has_openai_tool_history(payload.messages)
-        and not _only_studio_memory_tool_history(payload)
+        _has_openai_tool_history(payload.messages) and not _only_studio_memory_tool_history(payload)
     )
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
@@ -3519,14 +3510,16 @@ def _checkpoint_needs_search() -> bool:
     """
     try:
         from core.inference import checkpoint
-
         return checkpoint.enabled()
     except Exception:  # noqa: BLE001 -- an unreadable policy is "no", never an error
         return False
 
 
 def _apply_compaction_nudge(
-    nudge: str, tools: list[dict], *, checkpoint_fitted: bool = False
+    nudge: str,
+    tools: list[dict],
+    *,
+    checkpoint_fitted: bool = False,
 ) -> str:
     """Append the compacted-session nudge when the conversation-archive tool is active.
 
@@ -14014,7 +14007,8 @@ async def openai_chat_completions(
             # truncating overflow policy nothing is ever evicted here, so the checkpoint
             # half of the nudge would describe a reset that cannot happen.
             _nudge = _apply_compaction_nudge(
-                _nudge, tools_to_use,
+                _nudge,
+                tools_to_use,
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
             )
 

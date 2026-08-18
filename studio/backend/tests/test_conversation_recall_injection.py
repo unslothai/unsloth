@@ -1432,8 +1432,11 @@ def test_no_earlier_instruction_means_no_second_query(
 
     monkeypatch.setattr(conversation_archive, "recall", recording)
     block = tools_mod.build_conversation_recall(
-        turns + [{"role": "user", "content": "continue"}], THREAD, style = "inline",
-        top_k = 4, branch_messages = turns + [{"role": "user", "content": "continue"}],
+        turns + [{"role": "user", "content": "continue"}],
+        THREAD,
+        style = "inline",
+        top_k = 4,
+        branch_messages = turns + [{"role": "user", "content": "continue"}],
     )
 
     # The archive is not searched AT ALL. A nudge with no earlier instruction behind it
