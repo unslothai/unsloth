@@ -690,20 +690,29 @@ def _row_to_api_key_response(row: dict) -> ApiKeyResponse:
     )
 
 
+def _require_a_credential_of_its_own(
+    no_credential: bool = Depends(authenticated_without_credential),
+) -> None:
+    """Refuse a caller that nothing but keyless API access let in.
+
+    Both writes here outlive the setting: turning keyless access back off neither
+    withdraws a key it handed out nor restores one it destroyed. Listing is refused
+    with them because it is the step that names the key to revoke.
+    """
+    if no_credential:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "API keys can only be managed from the Unsloth UI or with an existing API key.",
+        )
+
+
 @router.post("/api-keys", response_model = CreateApiKeyResponse)
 async def create_api_key(
     payload: CreateApiKeyRequest,
     credential: tuple = Depends(get_current_credential),
-    no_credential: bool = Depends(authenticated_without_credential),
+    _own_credential: None = Depends(_require_a_credential_of_its_own),
 ) -> CreateApiKeyResponse:
     """Create a new API key. The raw key is returned once and cannot be retrieved later."""
-    # a key minted here keeps working after keyless API access is switched off, so a
-    # caller the setting admitted must not be able to mint one and outlive it
-    if no_credential:
-        raise HTTPException(
-            status_code = status.HTTP_403_FORBIDDEN,
-            detail = "API keys can only be created from the Unsloth UI or with an existing API key.",
-        )
     current_subject, generation = credential
     expires_at = None
     if payload.expires_in_days is not None:
@@ -730,7 +739,10 @@ async def create_api_key(
 
 
 @router.get("/api-keys", response_model = ApiKeyListResponse)
-async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> ApiKeyListResponse:
+async def list_api_keys(
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own),
+) -> ApiKeyListResponse:
     """List all API keys for the authenticated user (raw keys are never exposed)."""
     rows = storage.list_api_keys(current_subject)
     return ApiKeyListResponse(
@@ -739,7 +751,11 @@ async def list_api_keys(current_subject: str = Depends(get_current_subject)) -> 
 
 
 @router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: int, current_subject: str = Depends(get_current_subject)) -> dict:
+async def revoke_api_key(
+    key_id: int,
+    current_subject: str = Depends(get_current_subject),
+    _own_credential: None = Depends(_require_a_credential_of_its_own),
+) -> dict:
     """Revoke (soft-delete) an API key."""
     if not storage.revoke_api_key(current_subject, key_id):
         raise HTTPException(

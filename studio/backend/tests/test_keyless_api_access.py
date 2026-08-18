@@ -554,28 +554,41 @@ def api_key_client():
 
 
 @pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer ollama"}])
-def test_a_keyless_caller_cannot_mint_an_api_key(headers):
-    """A minted key outlives the setting, so switching keyless off would not undo it."""
+def test_a_keyless_caller_cannot_manage_api_keys(headers):
+    """Both writes outlive the setting: switching keyless off neither withdraws a key it
+    handed out nor restores one it destroyed. Listing goes with them because it is the
+    step that names the key to revoke."""
     seed_user()
+    raw, row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "existing", expires_at = None
+    )
     set_keyless_api_access("full")
-    response = api_key_client().post("/api/auth/api-keys", json = {"name": "minted"}, headers = headers)
-    assert response.status_code == 403
-    assert storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME) == []
+    client = api_key_client()
+    assert (
+        client.post("/api/auth/api-keys", json = {"name": "minted"}, headers = headers).status_code
+        == 403
+    )
+    assert client.get("/api/auth/api-keys", headers = headers).status_code == 403
+    assert client.delete(f"/api/auth/api-keys/{row['id']}", headers = headers).status_code == 403
+    assert [key["name"] for key in storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)] == [
+        "existing"
+    ]
+    assert storage.validate_api_key(raw) is not None
 
 
-def test_a_working_key_can_still_mint_one_while_keyless_is_on():
+def test_a_working_key_can_still_manage_them_while_keyless_is_on():
     seed_user()
     set_keyless_api_access("full")
-    raw, _row = storage.create_api_key(
+    raw, row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
     )
-    response = api_key_client().post(
-        "/api/auth/api-keys",
-        json = {"name": "second"},
-        headers = {"Authorization": f"Bearer {raw}"},
-    )
-    assert response.status_code == 200
-    assert response.json()["key"].startswith(storage.API_KEY_PREFIX)
+    client = api_key_client()
+    headers = {"Authorization": f"Bearer {raw}"}
+    created = client.post("/api/auth/api-keys", json = {"name": "second"}, headers = headers)
+    assert created.status_code == 200
+    assert created.json()["key"].startswith(storage.API_KEY_PREFIX)
+    assert client.get("/api/auth/api-keys", headers = headers).status_code == 200
+    assert client.delete(f"/api/auth/api-keys/{row['id']}", headers = headers).status_code == 200
 
 
 def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
@@ -588,6 +601,61 @@ def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
         headers = {"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
+
+
+# --- routes that read the bearer for themselves ------------------------------
+
+SANDBOX_PATH = "/api/inference/sandbox/abc"
+
+
+def authenticate_manually(request, token = None):
+    from routes.inference import _authenticate_header_or_query
+    return asyncio.run(_authenticate_header_or_query(request, token))
+
+
+def test_the_sandbox_file_routes_follow_the_full_scope():
+    """They resolve the bearer themselves, so `security` never sees them and they have
+    to ask about keyless access separately."""
+    seed_user()
+    set_keyless_api_access("full")
+    admin = storage.DEFAULT_ADMIN_USERNAME
+    assert authenticate_manually(request_for(path = SANDBOX_PATH)) == admin
+    assert (
+        authenticate_manually(
+            request_for(path = SANDBOX_PATH, headers = {"Authorization": "Bearer unsloth-local"})
+        )
+        == admin
+    )
+    # the ?token= form an <img src> has to use, since it cannot send a header
+    assert authenticate_manually(request_for(path = SANDBOX_PATH), "unsloth-local") == admin
+
+
+def test_the_sandbox_file_routes_are_outside_the_inference_scope():
+    """Serving files is not the OpenAI surface, so opening that surface must not open them."""
+    seed_user()
+    set_keyless_api_access("inference")
+    with pytest.raises(HTTPException) as excinfo:
+        authenticate_manually(request_for(path = SANDBOX_PATH))
+    assert excinfo.value.status_code == 401
+
+
+def test_the_sandbox_file_routes_still_refuse_a_missing_token_when_access_is_off():
+    seed_user()
+    with pytest.raises(HTTPException) as excinfo:
+        authenticate_manually(request_for(path = SANDBOX_PATH))
+    assert excinfo.value.status_code == 401
+
+
+def test_a_query_token_naming_an_expired_session_still_fails():
+    """Sign-in stays authoritative on the ?token= path too, not only in the header."""
+    seed_user()
+    set_keyless_api_access("full")
+    expired = create_access_token(
+        storage.DEFAULT_ADMIN_USERNAME, expires_delta = timedelta(seconds = -60)
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        authenticate_manually(request_for(path = SANDBOX_PATH), expired)
+    assert excinfo.value.status_code == 401
 
 
 def test_the_openapi_security_scheme_name_is_unchanged():

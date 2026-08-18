@@ -2525,20 +2525,23 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
     """Resolve the bearer token from the Authorization header or the ``?token=``
     query param (needed for <img src> / <iframe>, which can't send custom
-    headers), validate it, and return the subject. Raises 401 when absent."""
+    headers), validate it, and return the subject. Raises 401 when absent.
+
+    Routed through ``credentials_for_token`` so a scope that covers this path serves it
+    without a key, the way the routes behind ``security`` already do."""
     auth_header = request.headers.get("authorization")
     if auth_header and auth_header.lower().startswith("bearer "):
         jwt_token = auth_header[7:]
-    elif token:
-        jwt_token = token
     else:
+        jwt_token = token or None
+    from auth.authentication import credentials_for_token
+
+    creds = credentials_for_token(request, jwt_token)
+    if creds is None:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Missing authentication token",
         )
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
     return await get_current_subject(creds)
 
 

@@ -71,9 +71,7 @@ def bearer_is_valid_api_key(token: str) -> bool:
     return token.startswith(API_KEY_PREFIX) and validate_api_key(token) is not None
 
 
-def admitted_without_credential(
-    credentials: Optional[HTTPAuthorizationCredentials],
-) -> bool:
+def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:
     """True when the keyless setting alone let this caller in.
 
     Narrower than ``is_keyless``, which also covers a working API key that happened
@@ -293,6 +291,27 @@ async def authenticated_via_api_key(
     if is_keyless(credentials):
         return True
     return bool(credentials and credentials.credentials.startswith(API_KEY_PREFIX))
+
+
+def credentials_for_token(
+    request: Any, token: Optional[str]
+) -> Optional[HTTPAuthorizationCredentials]:
+    """What ``security`` would resolve for a bearer the route read for itself.
+
+    Routes that take the token from somewhere the dependency cannot see, such as the
+    ``?token=`` query param an ``<img src>`` has to use, would otherwise miss keyless
+    API access entirely and answer 401 on a scope that covers them. None means no
+    usable credential and no setting to stand in for one.
+    """
+    from utils.keyless_api_access import keyless_request_allowed
+
+    keyless = keyless_request_allowed(request) and not (token and _names_a_session(token))
+    if token:
+        return HTTPAuthorizationCredentials(
+            scheme = KEYLESS_FALLBACK_SCHEME if keyless else "Bearer",
+            credentials = token,
+        )
+    return _KEYLESS_CREDENTIALS if keyless else None
 
 
 async def authenticated_without_credential(
