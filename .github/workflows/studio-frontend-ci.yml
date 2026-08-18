@@ -239,3 +239,63 @@ jobs:
           name: studio-frontend-dist
           path: studio/frontend/dist
           retention-days: 1
+
+  # The suite reads its own sources off disk, resolves modules by URL and walks
+  # directories, so it can be correct on POSIX and wrong on Windows. Running it
+  # on ubuntu only, this job's absence let 13 such failures accumulate unseen
+  # across three files: two shapes of path/URL confusion, one of them added by a
+  # PR whose whole purpose was to fix a Windows bug.
+  #
+  # Deliberately NOT a matrix over the job above. Measured on a staging replica
+  # of this workflow, `windows-latest` runs `npm test` in 49s against ubuntu's
+  # 47s, so the tests themselves are not the expensive part; typecheck (48s),
+  # build (33s), the Chromium install and the three browser smokes are, and none
+  # of them can fail on Windows for a reason they would not also fail on ubuntu.
+  # Repeating them would roughly triple the cost of this workflow to re-answer a
+  # question ubuntu already answered. Checkout, node, `npm ci` and `npm test` on
+  # Windows measured ~132s.
+  #
+  # Line endings need no special handling here: .gitattributes pins
+  # `studio/frontend/** text=auto eol=lf`, so the tree checks out LF whatever the
+  # runner's core.autocrlf says, and the assertions that match on exact source
+  # substrings see the bytes in the repo.
+  windows:
+    name: Frontend unit tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: studio/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # The same pre-install scan the ubuntu job runs, and for the same reason:
+      # a compromised tarball runs its `prepare` / `postinstall` during `npm ci`,
+      # so any catch has to fire upstream of that. Jobs run concurrently, so the
+      # ubuntu job rejecting the lockfile does not help a Windows runner that has
+      # already installed it. Pure-Python and read-only.
+      - name: Lockfile supply-chain audit (pre-install scan)
+        working-directory: ${{ github.workspace }}
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # `--ignore-scripts`, not the `--strict-allow-scripts` install the ubuntu
+      # job runs. That one needs the npm 11.16 upgrade step, and the pins it
+      # enforces are a property of the lockfile, which this job does not need to
+      # re-check: it is a platform gate. Running no install script at all is the
+      # stronger position anyway, and the suite is node:test over TypeScript
+      # sources, so nothing here needs a native build step.
+      - run: npm ci --ignore-scripts --no-fund --no-audit
+
+      - name: Unit tests
+        run: npm test
