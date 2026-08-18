@@ -3210,38 +3210,3 @@ html[data-chat-font] .aui-root {
 		);
 	}
 }
-
-/*
- * While a non-modal menu is open, keep the press that dismisses it out of the controls that
- * COMMIT ON POINTERDOWN.
- *
- * `swallowDismissingClick` in lib/menu-dismiss.ts covers every control that acts on `click`.
- * Two do not wait for one: Radix Slider commits in `onPointerDown` -> `onSlideStart` ->
- * `updateValues` -> `onValueChange`, and Radix Select opens in `onPointerDown`. On desktop the
- * Run settings panel is a co-visible `<aside>`, not an overlay, so its `ParamSlider`s sit beside
- * the composer, action-bar and project menus with nothing between them: measured on chromium,
- * firefox and webkit, one press moved Temperature 0.6 -> 1.7 and it reached `chat_settings` in
- * `studio.db` and survived a reload. The Images page sliders are exposed the same way by the
- * sidebar's non-modal "More" destinations menu, which is mounted on every route.
- *
- * This is the old modal shield restored ONLY where the damage is. The shield this branch
- * removed was `pointer-events: none` on `<body>`, an inherited property whose single write
- * invalidated the whole thread; here the rightmost compound is the control itself, so what is
- * invalidated is the sliders on the page and not the thread beneath them.
- *
- * The second block gives it back inside any popper content, so a slider or select that lives
- * inside the open menu is still the user's to press.
- */
-[data-nonmodal-menu-open] [data-slot="slider"],
-[data-nonmodal-menu-open] [data-slot="select-trigger"] {
-	pointer-events: none;
-}
-
-[data-nonmodal-menu-open]
-	[data-radix-popper-content-wrapper]
-	[data-slot="slider"],
-[data-nonmodal-menu-open]
-	[data-radix-popper-content-wrapper]
-	[data-slot="select-trigger"] {
-	pointer-events: auto;
-}
