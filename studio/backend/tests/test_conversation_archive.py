@@ -2082,15 +2082,13 @@ def test_an_overlapping_anchor_query_does_not_shrink_the_recall(conn):
         _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
 
     alone = conversation_archive.recall(THREAD, "pelican", top_k = 4)
-    merged = conversation_archive.recall(
-        THREAD, "pelican", top_k = 4, extra_queries = ["statement"]
-    )
+    merged = conversation_archive.recall(THREAD, "pelican", top_k = 4, extra_queries = ["statement"])
 
     assert alone is not None and merged is not None
     assert len(alone[1]) == 4
-    assert len(merged[1]) == 4, (
-        f"the anchor cost slots to its overlap with the latest query: {len(merged[1])} of 4"
-    )
+    assert (
+        len(merged[1]) == 4
+    ), f"the anchor cost slots to its overlap with the latest query: {len(merged[1])} of 4"
 
 
 def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
@@ -2118,6 +2116,6 @@ def test_a_shouted_question_filters_as_well_as_a_typed_one(conn):
     found = conversation_archive.recall(THREAD, question.upper(), top_k = 1)
 
     assert found is not None
-    assert VARIABLE.lower() in found[0].lower(), (
-        "the shouted question filtered nothing and spent its only slot on filler"
-    )
+    assert (
+        VARIABLE.lower() in found[0].lower()
+    ), "the shouted question filtered nothing and spent its only slot on filler"
