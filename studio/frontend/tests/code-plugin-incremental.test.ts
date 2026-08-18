@@ -331,6 +331,72 @@ test("a failed grammar load releases pending callbacks before retry", async () =
   );
 });
 
+test("a transiently failed grammar load is retried under the same cache key", async () => {
+  // The test above retries under a *different* key: swapping the theme
+  // definitions builds a new `highlighters` entry whether or not the failed one
+  // was cleaned up. A transient failure is the case that needs the cleanup --
+  // the browser re-fetches a module whose previous fetch failed
+  // (whatwg/html#10327), so the same key is asked for again and has to load. If
+  // the entry that failed were left behind, every later render of that language
+  // and theme pair would keep getting its null highlighter and the block would
+  // never highlight again for the life of the page.
+  //
+  // Keeping the same theme objects keeps the key identical; mutating them in
+  // place stands in for the chunk that failed once and loaded on the retry.
+  const light: { name: string; settings: unknown } = {
+    name: "transient-light",
+    settings: 42,
+  };
+  const dark: { name: string; settings: unknown } = {
+    name: "transient-dark",
+    settings: 42,
+  };
+  const themes = [light, dark] as unknown as [ThemeInput, ThemeInput];
+  const plugin = createCodePlugin({ themes });
+  const language = "python" as HighlightOptions["language"];
+
+  let reportFailure!: () => void;
+  const failed = new Promise<void>((resolve) => {
+    reportFailure = resolve;
+  });
+  let staleCallbacks = 0;
+  const originalError = console.error;
+  try {
+    console.error = (message?: unknown) => {
+      if (message === "[Studio Code] Failed to highlight code:") reportFailure();
+    };
+    assert.equal(
+      plugin.highlight({ code: "value = 1\n", language, themes }, () => {
+        staleCallbacks += 1;
+      }),
+      null,
+      "the first render cannot have a highlighter yet",
+    );
+    await withTimeout(failed, 500, "the invalid grammar load did not fail");
+  } finally {
+    console.error = originalError;
+  }
+
+  light.settings = [];
+  dark.settings = [];
+  const retried = await withTimeout(
+    highlightOnce(plugin, { code: "value = 1\nvalue = 2\n", language, themes }),
+    2000,
+    "the key that failed was never retried, so the fence stays plain forever",
+  );
+  assert.equal(
+    retried.tokens
+      .map((line) => line.map((token) => token.content).join(""))
+      .join("\n"),
+    "value = 1\nvalue = 2\n",
+  );
+  assert.equal(
+    staleCallbacks,
+    0,
+    "a callback from the failed load fired after the retry",
+  );
+});
+
 test("CRLF streaming matches whole-document tokenization", async () => {
   await assertMatchesFullTokenization(
     "def render():\r\n    value = '''first\r\nsecond'''\r\n    return value\r\n",
