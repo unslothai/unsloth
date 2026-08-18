@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -184,6 +185,41 @@ def test_unreadable_settings_db_reads_as_off(monkeypatch):
 def test_an_unknown_scope_is_refused(value):
     with pytest.raises(ValueError):
         set_keyless_api_access(value)
+
+
+def test_a_refresh_that_raced_the_closing_write_cannot_republish_the_open_scope():
+    """A request already reading the DB when keyless access is switched off must not
+    publish its stale answer over the value that write just cached."""
+    import utils.keyless_api_access as keyless
+
+    set_keyless_api_access("full", tools = True)
+    _reset_scope_cache()
+
+    read_done = threading.Event()
+    write_done = threading.Event()
+    real_read = keyless._read_settings
+    refreshed = []
+
+    def read_then_wait_for_the_write():
+        answer = real_read()  # the open scope, still the only thing in the db
+        read_done.set()
+        assert write_done.wait(timeout = 10)
+        return answer
+
+    keyless._read_settings = read_then_wait_for_the_write
+    reader = threading.Thread(target = lambda: refreshed.append(keyless._settings()))
+    reader.start()
+    try:
+        assert read_done.wait(timeout = 10)
+        set_keyless_api_access("off", tools = False)
+    finally:
+        write_done.set()
+        reader.join(timeout = 10)
+        keyless._read_settings = real_read
+
+    assert refreshed == [("off", False)]
+    assert keyless._cached_settings[1:] == ("off", False)
+    assert keyless_request_allowed(request_for()) is False
 
 
 def test_an_unknown_stored_scope_reads_as_off():
@@ -496,9 +532,12 @@ def test_a_working_key_was_not_admitted_by_the_setting():
     key_request = request_for(headers = {"Authorization": f"Bearer {raw}"})
     assert admitted_without_credential(resolve(key_request)) is False
     assert admitted_without_credential(resolve(request_for())) is True
-    assert admitted_without_credential(
-        resolve(request_for(headers = {"Authorization": "Bearer ollama"}))
-    ) is True
+    assert (
+        admitted_without_credential(
+            resolve(request_for(headers = {"Authorization": "Bearer ollama"}))
+        )
+        is True
+    )
 
 
 # --- credentials the setting must not be able to mint -------------------------
@@ -519,9 +558,7 @@ def test_a_keyless_caller_cannot_mint_an_api_key(headers):
     """A minted key outlives the setting, so switching keyless off would not undo it."""
     seed_user()
     set_keyless_api_access("full")
-    response = api_key_client().post(
-        "/api/auth/api-keys", json = {"name": "minted"}, headers = headers
-    )
+    response = api_key_client().post("/api/auth/api-keys", json = {"name": "minted"}, headers = headers)
     assert response.status_code == 403
     assert storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME) == []
 

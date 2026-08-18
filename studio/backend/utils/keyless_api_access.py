@@ -26,6 +26,7 @@ so the UI can say who that choice lets in. Signing in to Unsloth is unaffected.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any, Optional
 
@@ -76,12 +77,16 @@ def _coerce_bool(value: Any) -> Optional[bool]:
 # each read opens its own sqlite connection (~0.5ms), so hold the answer for a moment
 _SETTINGS_CACHE_TTL_S = 1.0
 _cached_settings: Optional[tuple[float, str, bool]] = None
+# bumped by every write, so a refresh can tell whether its read still describes the db
+_settings_generation = 0
+_cache_lock = threading.Lock()
 
 
 def _reset_scope_cache() -> None:
     """Test hook: forget settings cached before the DB was written directly."""
     global _cached_settings
-    _cached_settings = None
+    with _cache_lock:
+        _cached_settings = None
 
 
 def _read_settings() -> tuple[str, bool]:
@@ -101,15 +106,27 @@ def _settings() -> tuple[str, bool]:
     """Read the persisted scope and tool grant; anything unreadable counts as off.
 
     Unlike a normal setting these remove an authentication requirement, so a damaged
-    settings DB must never resolve to an open scope.
+    settings DB must never resolve to an open scope, and neither may a refresh that
+    read the DB before a write closed it: sqlite reads block, so a request can be
+    holding the old answer when the setting is turned off, and publishing it would
+    keep the server open for the rest of the TTL. The generation counter dates each
+    read against the writes, so only a read that still describes the DB is published.
     """
     global _cached_settings
     now = time.monotonic()
     cached = _cached_settings
     if cached is not None and now - cached[0] < _SETTINGS_CACHE_TTL_S:
         return cached[1], cached[2]
+    with _cache_lock:
+        generation = _settings_generation
     scope, tools = _read_settings()
-    _cached_settings = (now, scope, tools)
+    with _cache_lock:
+        if generation != _settings_generation:
+            published = _cached_settings
+            if published is not None:
+                return published[1], published[2]
+        else:
+            _cached_settings = (now, scope, tools)
     return scope, tools
 
 
@@ -124,7 +141,7 @@ def get_keyless_api_tools_enabled() -> bool:
 
 def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]:
     """Persist which routes are served without a key, and whether tools come with them."""
-    global _cached_settings
+    global _cached_settings, _settings_generation
     scope = _coerce_scope(value)
     if scope is None:
         raise ValueError(f"Keyless API access scope must be one of: {', '.join(KEYLESS_SCOPES)}.")
@@ -143,7 +160,9 @@ def set_keyless_api_access(value: Any, *, tools: Any = None) -> tuple[str, bool]
             KEYLESS_API_TOOLS_SETTING_KEY: allow_tools,
         }
     )
-    _cached_settings = (time.monotonic(), scope, allow_tools)
+    with _cache_lock:
+        _settings_generation += 1
+        _cached_settings = (time.monotonic(), scope, allow_tools)
     return scope, allow_tools
 
 
