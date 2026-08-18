@@ -359,9 +359,13 @@ def test_tensor_split_abort_raises_early_to_layer_fallback():
     src = inspect.getsource(LlamaCppBackend.load_model)
     raise_idx = src.find("(split-axis geometry); retrying with layer split")
     assert raise_idx != -1, "the split-axis abort must raise to trigger a layer retry"
-    # raises before both the flash-attn-off retry and the text-only mmproj strip
+    # raises before both the flash-attn-off retry and the text-only mmproj strip.
+    # Pin the strip call, not the variable handed to it: #9173 renamed that argument
+    # and the old spelling silently became a find() of -1.
+    strip_idx = src.find("_strip_mmproj_args(")
+    assert strip_idx != -1, "the text-only mmproj strip must still be reachable here"
     assert raise_idx < src.find("_with_flash_attn_off")
-    assert raise_idx < src.find("_strip_mmproj_args(_last_spawn_cmd)")
+    assert raise_idx < strip_idx
     # gated on the marker-plus-crash helper, which also drives the record just above
     guard = src[max(0, raise_idx - 600) : raise_idx]
     assert "_should_record_tensor_split_abort" in guard
