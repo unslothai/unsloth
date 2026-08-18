@@ -21,19 +21,19 @@ GENESIS_HASH = production_debt_mod.GENESIS_HASH
 class TestProductionDebtFineTuningGate(unittest.TestCase):
     def setUp(self) -> None:
         self.gate = ProductionDebtFineTuningGate(
-            never_equate_intent_to_approval=True,
-            max_acceptable_ftdi=12.0,
+            never_equate_intent_to_approval = True,
+            max_acceptable_ftdi = 12.0,
         )
 
     def test_clean_training_run_passes_readiness(self) -> None:
         report = self.gate.evaluate_training_run(
-            model_name="llama-3.3-70b-qlora-enterprise",
-            lora_rank=16,
-            allocated_vram_gb=14.2,
-            peak_vram_gb=15.1,
-            step_latency_seconds=0.85,
-            checkpoint_corruption_count=0,
-            un_gated_mutations=0,
+            model_name = "llama-3.3-70b-qlora-enterprise",
+            lora_rank = 16,
+            allocated_vram_gb = 14.2,
+            peak_vram_gb = 15.1,
+            step_latency_seconds = 0.85,
+            checkpoint_corruption_count = 0,
+            un_gated_mutations = 0,
         )
         self.assertTrue(report.is_production_ready)
         self.assertLessEqual(report.ftdi_score, 12.0)
@@ -42,13 +42,13 @@ class TestProductionDebtFineTuningGate(unittest.TestCase):
 
     def test_degraded_training_run_fails_debt(self) -> None:
         report = self.gate.evaluate_training_run(
-            model_name="uncalibrated_full_rank_run",
-            lora_rank=128,  # LoRA rank sprawl
-            allocated_vram_gb=14.0,
-            peak_vram_gb=28.5,  # High VRAM allocation sprawl (2.0x)
-            step_latency_seconds=6.5,  # High step latency
-            checkpoint_corruption_count=1,  # Checkpoint anomaly
-            un_gated_mutations=2,  # 2 un-gated mutations
+            model_name = "uncalibrated_full_rank_run",
+            lora_rank = 128,  # LoRA rank sprawl
+            allocated_vram_gb = 14.0,
+            peak_vram_gb = 28.5,  # High VRAM allocation sprawl (2.0x)
+            step_latency_seconds = 6.5,  # High step latency
+            checkpoint_corruption_count = 1,  # Checkpoint anomaly
+            un_gated_mutations = 2,  # 2 un-gated mutations
         )
         self.assertFalse(report.is_production_ready)
         self.assertGreater(report.ftdi_score, 50.0)

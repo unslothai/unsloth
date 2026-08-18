@@ -11,9 +11,7 @@ from typing import Any, Dict, List, Optional
 
 log: logging.Logger = logging.getLogger(__name__)
 
-GENESIS_HASH: str = (
-    "0000000000000000000000000000000000000000000000000000000000000000"
-)
+GENESIS_HASH: str = "0000000000000000000000000000000000000000000000000000000000000000"
 
 
 @dataclass
@@ -49,7 +47,7 @@ class TechnicalDueDiligenceLedger:
         timestamp = datetime.now(timezone.utc).isoformat()
         index = len(self._entries)
 
-        meta_bytes = json.dumps(metadata, sort_keys=True).encode("utf-8")
+        meta_bytes = json.dumps(metadata, sort_keys = True).encode("utf-8")
         canonical_content = f"{index}|{self._last_hash}|{model_name}|{event_type}|{readiness_index}|{timestamp}|{hashlib.sha256(meta_bytes).hexdigest()}"
         curr_hash = hashlib.sha256(canonical_content.encode("utf-8")).hexdigest()
 
@@ -122,11 +120,11 @@ class ProductionDebtFineTuningGate:
         # 1. Evaluate emergency kill switch
         if self.check_kill_switch():
             self.ledger.record_training_event(
-                model_name=model_name,
-                event_type="training_halted_kill_switch",
-                readiness_index=0.0,
-                critical_smells=["EMERGENCY_KILL_SWITCH_ENGAGED"],
-                metadata={"reason": "AAG_KILL_SWITCH is set"},
+                model_name = model_name,
+                event_type = "training_halted_kill_switch",
+                readiness_index = 0.0,
+                critical_smells = ["EMERGENCY_KILL_SWITCH_ENGAGED"],
+                metadata = {"reason": "AAG_KILL_SWITCH is set"},
             )
             raise PermissionError(
                 "A2Z SOC ActionGate: Emergency kill switch is engaged. Fine-tuning training run halted."
@@ -167,17 +165,15 @@ class ProductionDebtFineTuningGate:
 
         # Production Readiness Index (0 - 100)
         readiness = max(0.0, 100.0 - ftdi_score)
-        is_production_ready = (
-            ftdi_score <= self.max_acceptable_ftdi and len(critical_smells) == 0
-        )
+        is_production_ready = ftdi_score <= self.max_acceptable_ftdi and len(critical_smells) == 0
 
         # Cryptographic Ledger Entry
         entry = self.ledger.record_training_event(
-            model_name=model_name,
-            event_type="training_authorized" if is_production_ready else "training_flagged_debt",
-            readiness_index=readiness,
-            critical_smells=critical_smells,
-            metadata={
+            model_name = model_name,
+            event_type = "training_authorized" if is_production_ready else "training_flagged_debt",
+            readiness_index = readiness,
+            critical_smells = critical_smells,
+            metadata = {
                 "lora_rank": lora_rank,
                 "vram_ratio": vram_ratio,
                 "allocated_vram_gb": allocated_vram_gb,
@@ -190,15 +186,15 @@ class ProductionDebtFineTuningGate:
         )
 
         return FineTuningDebtReport(
-            model_name=model_name,
-            ftdi_score=ftdi_score,
-            vram_allocation_multiplier=round(vram_ratio, 2),
-            step_latency_seconds=round(step_latency_seconds, 2),
-            mutation_safety_score=(
+            model_name = model_name,
+            ftdi_score = ftdi_score,
+            vram_allocation_multiplier = round(vram_ratio, 2),
+            step_latency_seconds = round(step_latency_seconds, 2),
+            mutation_safety_score = (
                 100.0 if un_gated_mutations == 0 else max(0.0, 100.0 - un_gated_mutations * 30.0)
             ),
-            production_readiness_index=readiness,
-            is_production_ready=is_production_ready,
-            critical_smells=critical_smells,
-            receipt_hash=entry["curr_hash"],
+            production_readiness_index = readiness,
+            is_production_ready = is_production_ready,
+            critical_smells = critical_smells,
+            receipt_hash = entry["curr_hash"],
         )
