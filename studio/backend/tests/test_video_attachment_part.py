@@ -111,7 +111,9 @@ def test_the_cap_admits_a_clip_of_exactly_the_composer_limit():
 
 
 def _inference_source() -> str:
-    return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text()
+    return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
 
 
 def test_video_is_refused_on_the_tool_passthrough_path():

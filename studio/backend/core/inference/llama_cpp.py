@@ -19724,7 +19724,15 @@ class LlamaCppBackend:
         """llama-server's ``/props``, or None when it cannot be read."""
         url = f"{self.base_url}/props"
         try:
-            resp = httpx.get(url, timeout = 5.0, trust_env = False)
+            # /props is not one of llama-server's public endpoints, so under
+            # UNSLOTH_DIRECT_STREAM=1 (which launches the child with --api-key)
+            # an unauthenticated read 401s: the context readback silently keeps
+            # the requested -c, and video reads as unsupported on a model that
+            # supports it. None when there is no child key, which is httpx's
+            # default and what every other call site here relies on.
+            resp = httpx.get(
+                url, headers = self._auth_headers, timeout = 5.0, trust_env = False
+            )
             if resp.status_code != 200:
                 return None
             props = resp.json()
