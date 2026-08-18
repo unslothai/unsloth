@@ -433,19 +433,16 @@ def _external_llama_runtime_fallback() -> tuple[Path, str, str] | None:
         import shutil
         import subprocess
 
-        binary = (
-            os.environ.get("LLAMA_SERVER_PATH")
-            or shutil.which("llama-server")
-        )
+        binary = os.environ.get("LLAMA_SERVER_PATH") or shutil.which("llama-server")
         if not binary:
             return None
         proc = subprocess.run(
             [binary, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 20,
         )
         match = re.search(r"version:\s*(\d+)", (proc.stderr or "") + (proc.stdout or ""))
         if not match:

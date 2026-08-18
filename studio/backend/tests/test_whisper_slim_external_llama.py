@@ -21,7 +21,11 @@ iwp = importlib.import_module("install_whisper_prebuilt")
 
 
 class _Proc:
-    def __init__(self, out: str = "", err: str = ""):
+    def __init__(
+        self,
+        out: str = "",
+        err: str = "",
+    ):
         self.stdout = out
         self.stderr = err
 
@@ -29,13 +33,13 @@ class _Proc:
 @pytest.mark.p1
 def test_fallback_parses_llama_server_version(monkeypatch, tmp_path):
     server = tmp_path / "llama-server"
-    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    server.write_text("#!/bin/sh\n", encoding = "utf-8")
 
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(server))
     monkeypatch.setattr(
         iwp.subprocess,
         "run",
-        lambda *a, **k: _Proc(err="llama-server\nversion: 10360 (87da1a2)\nbuilt with ...\n"),
+        lambda *a, **k: _Proc(err = "llama-server\nversion: 10360 (87da1a2)\nbuilt with ...\n"),
     )
 
     runtime = iwp._external_llama_runtime_fallback()
@@ -49,19 +53,17 @@ def test_fallback_parses_llama_server_version(monkeypatch, tmp_path):
 @pytest.mark.p1
 def test_fallback_rejects_unknown_source_build_version(monkeypatch, tmp_path):
     server = tmp_path / "llama-server"
-    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    server.write_text("#!/bin/sh\n", encoding = "utf-8")
 
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(server))
-    monkeypatch.setattr(
-        iwp.subprocess, "run", lambda *a, **k: _Proc(err="version: 1 (no tags)")
-    )
+    monkeypatch.setattr(iwp.subprocess, "run", lambda *a, **k: _Proc(err = "version: 1 (no tags)"))
 
     assert iwp._external_llama_runtime_fallback() is None
 
 
 @pytest.mark.p1
 def test_fallback_none_without_a_llama_server(monkeypatch):
-    monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.setattr(iwp.shutil, "which", lambda name: None)
 
     assert iwp._external_llama_runtime_fallback() is None
@@ -79,14 +81,14 @@ def test_slim_pairing_uses_fallback_when_no_managed_install(monkeypatch, tmp_pat
     (tmp_path / "libggml-cuda.so").write_bytes(b"")
 
     server = tmp_path / "llama-server"
-    server.write_text("#!/bin/sh\n", encoding="utf-8")
+    server.write_text("#!/bin/sh\n", encoding = "utf-8")
 
     monkeypatch.setattr(iwp, "installed_llama_runtime", lambda *a, **k: None)
     monkeypatch.setenv("LLAMA_SERVER_PATH", str(server))
     monkeypatch.setattr(
         iwp.subprocess,
         "run",
-        lambda *a, **k: _Proc(err="version: 10360 (87da1a2)"),
+        lambda *a, **k: _Proc(err = "version: 10360 (87da1a2)"),
     )
 
     host = MagicMock()
@@ -111,7 +113,7 @@ def test_slim_pairing_still_refuses_without_any_runtime(monkeypatch):
         "requires_ggml_sonames": ["libggml.so"],
     }
     monkeypatch.setattr(iwp, "installed_llama_runtime", lambda *a, **k: None)
-    monkeypatch.delenv("LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.setattr(iwp.shutil, "which", lambda name: None)
 
     host = MagicMock()
