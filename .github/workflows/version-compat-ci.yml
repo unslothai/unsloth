@@ -243,13 +243,14 @@ jobs:
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Nested: this job checks the repo out under `unsloth/`, so the workflow
-          # file is at unsloth/.github/... . setup-python FAILS the job outright
-          # when cache-dependency-path matches nothing ("No file in ... matched"),
-          # rather than skipping the cache.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
+
       - name: Install CPU torch + supported pkg pins
         run: |
           python -m pip install --upgrade pip
@@ -297,6 +298,14 @@ jobs:
             tests/vllm_compat/test_extended_module_imports.py \
             -v --tb=short
 
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
   # Fake-CUDA GRPO/SFT/DPO patch run against REAL TRL (latest + main). Unlike
   # the static symbol/source greps above, this drives unsloth's actual
   # source-transform patchers (models/rl.py + rl_replacements.py) on a CPU-only
@@ -336,13 +345,14 @@ jobs:
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Nested: this job checks the repo out under `unsloth/`, so the workflow
-          # file is at unsloth/.github/... . setup-python FAILS the job outright
-          # when cache-dependency-path matches nothing ("No file in ... matched"),
-          # rather than skipping the cache.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
+
       - name: Install CPU torch + ecosystem + TRL latest
         run: |
           python -m pip install --upgrade pip
@@ -396,6 +406,14 @@ jobs:
             tests/version_compat/test_trl_padding_free_max_length.py \
             tests/version_compat/test_trl_loss_normalization_contract.py \
             -v --tb=short
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   # Daily-only: same suites but with --strict on importable upstream
   # tags. Schedule-only so PR jobs stay fast; cron tolerates a flake.

@@ -285,12 +285,12 @@ jobs:
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
-          cache: 'pip'
-          # Nested: this job checks the repo out under `unsloth/`, so the workflow
-          # file is at unsloth/.github/... . setup-python FAILS the job outright
-          # when cache-dependency-path matches nothing ("No file in ... matched"),
-          # rather than skipping the cache.
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             unsloth/.github/workflows/notebooks-ci.yml
 
       - name: Install CPU torch + pinned unsloth + trl + converter deps
@@ -364,6 +364,14 @@ jobs:
           python unsloth/scripts/notebook_validator.py api \
               --converted-dir _converted \
               --surface _api_surface.json
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
 
   smoke-install:
     name: smoke install (Colab-shaped venv, opt-in)
