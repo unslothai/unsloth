@@ -90,12 +90,19 @@ fn liveness_from_probe_error(error: &reqwest::Error) -> BackendLiveness {
 
 /// Whether a failed adopted-path check is a stall rather than a dead port.
 ///
-/// The ownership probe cannot answer this: every transport error inside it becomes
+/// The ownership probe cannot answer this on its own: every transport error inside it becomes
 /// `NotVerified`, indistinguishable from a port that a different process now owns. The
 /// pre-probe can: it answered, from an Unsloth backend, on this port. Silence from the
 /// requests after that is the same stall the owned path already rides out.
-fn adopted_failure_is_a_stall(verified: bool, served_alive: bool) -> bool {
-    !verified && served_alive
+///
+/// `different_owner` is the one thing the probe *can* say for certain, so it overrides both:
+/// an adopted backend that exits while the busy latch is set leaves a freed port, and a
+/// restarted Unsloth backend binding it answers the pre-probe just as the old one did. That
+/// answer is not silence -- the ownership probe got a complete reply naming a different root,
+/// token or no desktop owner at all -- so it is a takeover, not a stall, and the port must be
+/// cleared on the normal three-strike budget rather than held for twelve.
+fn adopted_failure_is_a_stall(verified: bool, served_alive: bool, different_owner: bool) -> bool {
+    !verified && served_alive && !different_owner
 }
 
 /// Whether to spend one long last-chance probe before declaring a backend dead.
@@ -550,16 +557,20 @@ async fn check_watchdog_health(
     // probe would otherwise time out during the very GIL stall this watchdog is supposed to
     // ride out, so the backend came back unverified and the warm-up read below -- which is
     // gated on that verification -- never ran at all.
+    let ownership = crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
+        owner,
+        Some(port),
+        false,
+        budget,
+    )
+    .await;
     let verified = matches!(
-        crate::desktop_backend_owner::probe_owned_backend_state_with_timeout(
-            owner,
-            Some(port),
-            false,
-            budget,
-        )
-        .await,
+        ownership,
         crate::desktop_backend_owner::OwnedBackendProbe::Verified(_)
     );
+    // The one failure the probe can be certain about: a complete answer naming an owner that
+    // is not ours. Everything else it reports could be silence.
+    let different_owner = crate::desktop_backend_owner::probe_saw_a_different_owner(&ownership);
     // The ownership probe answers "is this still our process", not "is startup over", which
     // is why the read above is consulted as well. An adopted backend having served one
     // request before this app attached is the same fallacy the owned path fixes below: a
@@ -585,8 +596,10 @@ async fn check_watchdog_health(
         //
         // The read is the evidence: an Unsloth backend answered on this port, so silence
         // from the rest of the check is a stall, not an empty port. A refused port never
-        // reaches here -- it returns above with `probe_timed_out` set from the error.
-        probe_timed_out: adopted_failure_is_a_stall(verified, served.alive),
+        // reaches here -- it returns above with `probe_timed_out` set from the error, and a
+        // port a different Unsloth backend has taken over is excluded by `different_owner`,
+        // since that one answered rather than fell silent.
+        probe_timed_out: adopted_failure_is_a_stall(verified, served.alive, different_owner),
     }
 }
 
@@ -1560,24 +1573,55 @@ mod tests {
         // The ownership check issues two more loopback requests after the read that already
         // answered, and folds a timeout on either into "not verified". Reporting that as a
         // refusal handed a generating adopted backend the three-strike budget.
-        assert!(super::adopted_failure_is_a_stall(false, true));
+        assert!(super::adopted_failure_is_a_stall(false, true, false));
         assert_eq!(
-            super::watchdog_failure_budget(true, super::adopted_failure_is_a_stall(false, true)),
+            super::watchdog_failure_budget(
+                true,
+                super::adopted_failure_is_a_stall(false, true, false)
+            ),
             super::HEALTH_WATCHDOG_MAX_FAILURES_BUSY
         );
+    }
+
+    #[test]
+    fn a_port_another_backend_took_over_stays_on_the_normal_budget() {
+        // An adopted backend that exits mid-generation leaves the busy latch set, and the
+        // freed port is routinely rebound by the next Unsloth backend the user starts. That
+        // one answers the pre-probe exactly as the old one did, so `served.alive` is true
+        // while the ownership probe rejects it -- with a complete answer, not silence.
+        //
+        // Calling that a stall gave a foreign port twelve strikes instead of three: 12 * 15s
+        // = ~180s of a backend the app still shows as running, against ~45s, plus a
+        // last-chance probe that is spent for nothing.
+        assert!(!super::adopted_failure_is_a_stall(false, true, true));
+        assert_eq!(
+            super::watchdog_failure_budget(
+                true,
+                super::adopted_failure_is_a_stall(false, true, true)
+            ),
+            super::HEALTH_WATCHDOG_MAX_FAILURES
+        );
+        assert!(!super::watchdog_should_confirm_before_death(
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            super::HEALTH_WATCHDOG_MAX_FAILURES,
+            super::adopted_failure_is_a_stall(false, true, true),
+        ));
     }
 
     #[test]
     fn an_adopted_port_that_answered_nothing_is_not_called_a_stall() {
         // The read is the only evidence there is. Without it the failure is a dead port,
         // and a dead port must still be reported at three strikes.
-        assert!(!super::adopted_failure_is_a_stall(false, false));
+        assert!(!super::adopted_failure_is_a_stall(false, false, false));
         assert_eq!(
-            super::watchdog_failure_budget(true, super::adopted_failure_is_a_stall(false, false)),
+            super::watchdog_failure_budget(
+                true,
+                super::adopted_failure_is_a_stall(false, false, false)
+            ),
             super::HEALTH_WATCHDOG_MAX_FAILURES
         );
         // And a check that passed is not a failure at all, so it is not a stall either.
-        assert!(!super::adopted_failure_is_a_stall(true, true));
+        assert!(!super::adopted_failure_is_a_stall(true, true, false));
     }
 
     #[test]
