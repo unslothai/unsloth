@@ -21,6 +21,7 @@ from core.research.citations import (
     _validate_report_document_sources,
     _validate_report_sources,
 )
+from core.research.parsing import _report_after_boundary
 from core.research.redaction import (
     _escape_link_destination,
     _sanitize_public_query,
@@ -803,119 +804,15 @@ def _run_stream(supervisor, timeout_seconds: float = 30.0) -> tuple:
     )
 
 
-@pytest.mark.parametrize(
-    "deltas",
-    (
-        pytest.param(
-            [
-                ("reasoning_content", "I will organize the answer.\n"),
-                (
-                    "reasoning_content",
-                    research_runs._REPORT_BOUNDARY_MARKER + "\n## Zusammenfassung\nBericht",
-                ),
-            ],
-            id = "reasoning-only",
-        ),
-        pytest.param(
-            [
-                (
-                    "content",
-                    research_runs._REPORT_BOUNDARY_MARKER + "\n## Overview\nReport",
-                )
-            ],
-            id = "content-only",
-        ),
-        pytest.param(
-            [
-                ("reasoning_content", "Private analysis.\n"),
-                ("content", research_runs._REPORT_BOUNDARY_MARKER),
-                ("reasoning_content", "\n### Findings\nMixed-channel report"),
-            ],
-            id = "marker-in-content-report-in-reasoning",
-        ),
-        pytest.param(
-            [
-                ("reasoning_content", "Private analysis.\n"),
-                ("content", research_runs._REPORT_BOUNDARY_MARKER[:12]),
-                ("reasoning_content", research_runs._REPORT_BOUNDARY_MARKER[12:]),
-                ("content", "\n# Results\nSplit-marker report"),
-            ],
-            id = "marker-split-across-channels",
-        ),
-        pytest.param(
-            [
-                (
-                    "reasoning_content",
-                    "I must output "
-                    + research_runs._REPORT_BOUNDARY_MARKER
-                    + " before the answer.\nMore private reasoning.\n",
-                ),
-                (
-                    "reasoning_content",
-                    research_runs._REPORT_BOUNDARY_MARKER + "\n# Answer\nPublic report",
-                ),
-            ],
-            id = "inline-marker-before-standalone-marker",
-        ),
-    ),
-)
-def test_stream_completion_recovers_marked_report_in_arrival_order(monkeypatch, deltas):
-    stream = _delta_stream_body(deltas)
-    _install_fake_client(monkeypatch, [_response(200, body = stream)])
-    monkeypatch.setattr(
-        research_runs.db,
-        "append_worker_event",
-        lambda *_args, **_kwargs: 1,
-    )
-    supervisor = _make_supervisor(_noop_check_active)
-
-    report, _reasoning, finish_reason, _usage = asyncio.run(
-        supervisor._stream_completion(
-            _waiting_run(30.0),
-            [{"role": "user"}],
-            report_progress = False,
-            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
-        )
-    )
-
-    assert "Private analysis" not in report
-    assert "organize the answer" not in report
-    assert "must output" not in report
-    assert "private reasoning" not in report
-    assert research_runs._REPORT_BOUNDARY_MARKER not in report
-    assert report.lower().endswith("report") or report.endswith("Bericht")
-    assert finish_reason == "stop"
-
-
-def test_stream_completion_keeps_content_when_model_omits_boundary(monkeypatch):
-    _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    report, _reasoning, _finish, _usage = asyncio.run(
-        supervisor._stream_completion(
-            _waiting_run(30.0),
-            [{"role": "user"}],
-            report_progress = False,
-            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
-        )
-    )
-
-    assert report == "report"
-
-
-def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
-    public_chunks = ["# Result\n" + ("a" * 300), "b" * 300, "c" * 300]
+def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypatch):
+    content_chunks = ["# Result\n" + ("a" * 300), "b" * 300, "c" * 300]
     stream = _delta_stream_body(
         [
-            (
-                "content",
-                "Private analysis mentions "
-                + research_runs._REPORT_BOUNDARY_MARKER
-                + " inline and must not become report progress.\n",
-            ),
-            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n" + public_chunks[0]),
-            ("reasoning_content", public_chunks[1]),
-            ("content", public_chunks[2]),
+            ("reasoning_content", "Private analysis."),
+            ("content", content_chunks[0]),
+            ("reasoning_content", " More private reasoning."),
+            ("content", content_chunks[1]),
+            ("content", content_chunks[2]),
         ]
     )
     _install_fake_client(monkeypatch, [_response(200, body = stream)])
@@ -934,48 +831,87 @@ def test_boundary_stream_persists_only_final_report_progress(monkeypatch):
     )
     supervisor = _make_supervisor(_noop_check_active)
 
-    report, _reasoning, _finish, _usage = asyncio.run(
-        supervisor._stream_completion(
-            _waiting_run(30.0),
-            [{"role": "user"}],
-            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
-        )
-    )
-
-    assert report == "".join(public_chunks)
-    assert len(progress_writes) == 2
-    assert progress_writes[0][0] != report
-    assert progress_writes[-1][0] == report
-    assert "".join(delta for _full, delta in progress_writes).strip() == report
-
-
-def test_empty_marked_stream_cannot_fall_back_to_private_summary(monkeypatch):
-    private_summary = "## Summary\n" + ("Private chain of thought. " * 30)
-    stream = _delta_stream_body(
-        [
-            ("reasoning_content", private_summary + "\n"),
-            ("content", research_runs._REPORT_BOUNDARY_MARKER + "\n"),
-        ]
-    )
-    _install_fake_client(monkeypatch, [_response(200, body = stream)])
-    monkeypatch.setattr(
-        research_runs.db,
-        "append_worker_event",
-        lambda *_args, **_kwargs: 1,
-    )
-    supervisor = _make_supervisor(_noop_check_active)
-
     report, reasoning, _finish, _usage = asyncio.run(
         supervisor._stream_completion(
             _waiting_run(30.0),
             [{"role": "user"}],
-            report_progress = False,
-            output_boundary = research_runs._REPORT_BOUNDARY_MARKER,
         )
     )
 
-    assert report == research_runs._REPORT_BOUNDARY_MARKER
-    assert research_runs._recover_report_from_reasoning(reasoning) == private_summary.strip()
+    assert report == "".join(content_chunks)
+    assert reasoning == "Private analysis. More private reasoning."
+    assert len(progress_writes) == 2
+    assert progress_writes[0][0] != report
+    assert progress_writes[-1][0] == report
+    assert "".join(delta for _full, delta in progress_writes) == report
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        pytest.param(
+            "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\r\n# Bericht\r\nInhalt",
+            "# Bericht\r\nInhalt",
+            id = "crlf",
+        ),
+        pytest.param(
+            "Inline <!-- UNSLOTH_FINAL_REPORT --> mention.\n"
+            "<!-- UNSLOTH_FINAL_REPORT -->\n# First\nDiscarded\n"
+            "<!-- UNSLOTH_FINAL_REPORT -->\n# Final\nKept",
+            "# Final\nKept",
+            id = "last-standalone-marker",
+        ),
+        pytest.param(
+            "```html\n<!-- UNSLOTH_FINAL_REPORT -->\n```\n# Report\nBody",
+            None,
+            id = "backtick-fence",
+        ),
+        pytest.param(
+            "~~~\n<!-- UNSLOTH_FINAL_REPORT -->\n~~~\n# Report\nBody",
+            None,
+            id = "tilde-fence",
+        ),
+        pytest.param(
+            "    <!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
+            None,
+            id = "indented-code",
+        ),
+        pytest.param(
+            "Reasoning\n<!-- UNSLOTH_FINAL_REPORT -->",
+            "",
+            id = "unterminated-marker-only",
+        ),
+        pytest.param(
+            "```bad`info\n<!-- UNSLOTH_FINAL_REPORT -->\n# Report\nBody",
+            "# Report\nBody",
+            id = "invalid-backtick-info-is-not-a-fence",
+        ),
+    ),
+)
+def test_report_boundary_parser_uses_last_non_code_standalone_marker(text, expected):
+    assert _report_after_boundary(text, research_runs._REPORT_BOUNDARY_MARKER) == expected
+
+
+def test_synthesis_report_selection_never_merges_channels():
+    marker = research_runs._REPORT_BOUNDARY_MARKER
+    assert research_runs._select_synthesis_report(marker + "\n# Public\nBody", "SECRET") == (
+        "# Public\nBody"
+    )
+    assert research_runs._select_synthesis_report("# Public\nBody", marker + "\nSECRET") == (
+        "# Public\nBody"
+    )
+    assert research_runs._select_synthesis_report("", "Analysis\n" + marker + "\n# Bericht") == (
+        "# Bericht"
+    )
+    assert research_runs._select_synthesis_report(marker + "\n", marker + "\n# Safe") == "# Safe"
+    fenced = "```html\n" + marker + "\n```\n# Report\nBody"
+    assert research_runs._select_synthesis_report(fenced, "") == fenced
+
+
+def test_empty_or_truncated_synthesis_requires_recovery():
+    assert research_runs._synthesis_needs_recovery("", "stop") is True
+    assert research_runs._synthesis_needs_recovery("report", "length") is True
+    assert research_runs._synthesis_needs_recovery("report", "stop") is False
 
 
 def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):

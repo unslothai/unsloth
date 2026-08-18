@@ -32,6 +32,7 @@ from core.research.parsing import (
     _parse_and_validate_plan,
     _parse_json_object,
     _recover_report_from_reasoning,
+    _report_after_boundary,
     _streamed_titles,
 )
 from core.research.citations import (
@@ -113,6 +114,22 @@ _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 # The SSE comment routes/inference.py sends while queued, not while the backend is silent.
 _ADMISSION_WAIT_COMMENT = ": admission-wait"
 _ADMISSION_DONE_COMMENT = ": admission-done"
+
+
+def _select_synthesis_report(content: str, reasoning: str) -> str:
+    content_report = _report_after_boundary(content, _REPORT_BOUNDARY_MARKER)
+    if content_report:
+        return content_report
+    reasoning_report = _report_after_boundary(reasoning, _REPORT_BOUNDARY_MARKER)
+    if content_report == "":
+        return reasoning_report or ""
+    if content.strip():
+        return content.strip()
+    return reasoning_report or ""
+
+
+def _synthesis_needs_recovery(report: str, finish_reason: str | None) -> bool:
+    return finish_reason == "length" or not report
 
 
 def _auto_scrape_default() -> int:
@@ -1127,7 +1144,6 @@ class ResearchSupervisor:
         max_tokens: int | None = None,
         enable_thinking: bool | None = None,
         preview_labels: bool = False,
-        output_boundary: str | None = None,
     ) -> tuple[str, str, str | None, dict[str, int] | None]:
         call_id = uuid.uuid4().hex
         expires = (datetime.now(timezone.utc) + timedelta(hours = 2)).isoformat()
@@ -1184,10 +1200,7 @@ class ResearchSupervisor:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         report = ""
-        raw_report = ""
         reasoning = ""
-        boundary_buffer = ""
-        boundary_seen = False
         pending_report = ""
         pending_reasoning = ""
         pending_reasoning_offset = 0
@@ -1197,26 +1210,6 @@ class ResearchSupervisor:
         semantic_output_at: float | None = None
         first_output_deadline: float | None = None
         emitted_labels = 0
-
-        def consume_boundary_output(piece: str) -> None:
-            nonlocal boundary_buffer, boundary_seen, pending_report, report
-            if output_boundary is None:
-                return
-            if boundary_seen:
-                report += piece
-                pending_report += piece
-                return
-            boundary_buffer += piece
-            while "\n" in boundary_buffer:
-                line, boundary_buffer = boundary_buffer.split("\n", 1)
-                if line.removesuffix("\r").strip(" \t") != output_boundary:
-                    continue
-                boundary_seen = True
-                trailing = boundary_buffer.lstrip()
-                boundary_buffer = ""
-                report += trailing
-                pending_report += trailing
-                return
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1411,7 +1404,6 @@ class ResearchSupervisor:
                             continue
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
-                            consume_boundary_output(thought)
                             semantic_output_at = loop.time()
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
@@ -1419,12 +1411,8 @@ class ResearchSupervisor:
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
                             semantic_output_at = loop.time()
-                            if output_boundary is None:
-                                report += text
-                                pending_report += text
-                            else:
-                                raw_report += text
-                                consume_boundary_output(text)
+                            report += text
+                            pending_report += text
                             # only a closing quote completes a title; per-token rescans cost ~170ms.
                             if preview_labels and '"' in text:
                                 emitted_labels = await self._emit_preview_labels(
@@ -1463,24 +1451,7 @@ class ResearchSupervisor:
                                 run["id"],
                                 exc_info = True,
                             )
-            if (
-                output_boundary is not None
-                and not boundary_seen
-                and boundary_buffer.removesuffix("\r").strip(" \t") == output_boundary
-            ):
-                boundary_seen = True
-                boundary_buffer = ""
             await flush_progress()
-            if output_boundary is not None:
-                if boundary_seen:
-                    # Preserve marker-only as an internal signal so the caller does not recover
-                    # and publish an earlier Summary section from private reasoning.
-                    report = report.strip() or output_boundary
-                else:
-                    report = raw_report
-                if report_progress and not boundary_seen and report:
-                    pending_report = report
-                    await flush_progress()
             return report, reasoning, finish_reason, usage
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise ModelWallClockTimeout(
@@ -2330,18 +2301,24 @@ class ResearchSupervisor:
             synthesis_messages,
             phase = "synthesis",
             max_tokens = 16384,
-            output_boundary = _REPORT_BOUNDARY_MARKER,
         )
         await self._check_active(run["id"])
-        if synthesis_finish_reason == "length":
+        report = _select_synthesis_report(report, synthesis_reasoning)
+        if _synthesis_needs_recovery(report, synthesis_finish_reason):
+            recovery_reason = (
+                "exhausted its output budget"
+                if synthesis_finish_reason == "length"
+                else "did not return a safely identifiable final report"
+            )
             recovery_messages = [
                 {
                     **synthesis_messages[0],
                     "content": (
                         synthesis_messages[0]["content"]
-                        + "\nThe previous synthesis exhausted its output budget. Write the report "
+                        + f"\nThe previous synthesis {recovery_reason}. Write the report "
                         "directly without exposing analysis or reconstructing source URLs. Copy "
-                        "citation titles and URLs only from the supplied catalogs."
+                        "citation titles and URLs only from the supplied catalogs. Begin with the "
+                        "required final-report boundary on its own line."
                     ),
                 },
                 synthesis_messages[1],
@@ -2362,10 +2339,9 @@ class ResearchSupervisor:
                 phase = "synthesis_recovery",
                 max_tokens = 16384,
                 enable_thinking = False,
-                output_boundary = _REPORT_BOUNDARY_MARKER,
             )
             synthesis_reasoning += recovery_reasoning
-            report = recovered_report
+            report = _select_synthesis_report(recovered_report, recovery_reasoning)
             synthesis_finish_reason = recovery_finish_reason
             synthesis_usage = recovery_usage
             await self._check_active(run["id"])
@@ -2376,13 +2352,11 @@ class ResearchSupervisor:
                         requested_max_tokens = recovery_max_tokens,
                     )
                 )
-        marked_but_empty = report == _REPORT_BOUNDARY_MARKER
-        if marked_but_empty:
-            report = ""
-        elif not report.strip():
-            report = _recover_report_from_reasoning(synthesis_reasoning)
         if not report:
-            raise ValueError("Local model returned an empty report")
+            raise ValueError(
+                "Local model returned no safely identifiable final report. Disable thinking or "
+                "use a compatible chat template and retry."
+            )
         report = _validate_report_sources(report, sources)
         report = _validate_report_document_sources(report, document_sources)
         reasoning = await asyncio.to_thread(db.get_reasoning_text, run["id"])
