@@ -150,6 +150,8 @@ export const it = {
       closeAriaLabel: "Chiudi le impostazioni",
       searchPlaceholder: "Cerca nelle impostazioni…",
       searchNoResults: "Nessuna impostazione trovata.",
+      panelFailed: "Non è stato possibile caricare questa sezione.",
+      panelReload: "Ricarica",
     },
     tabs: {
       general: "Generali",
@@ -1111,6 +1113,9 @@ export const it = {
       archivedVideos: "Video archiviati",
       archivedVideosDescription: "Visualizza e gestisci i video che hai archiviato.",
       manageAction: "Gestisci",
+      manageChats: "Gestisci chat",
+      manageChatsDescription:
+        "Seleziona più chat da spostare, fissare, archiviare, esportare o eliminare.",
       exportArchivedChats: "Esporta",
       exportingArchivedChats: "Esportazione...",
       exportedOneArchivedChat: "1 chat archiviata esportata",

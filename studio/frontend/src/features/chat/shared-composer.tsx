@@ -592,6 +592,9 @@ export function SharedComposer({
   );
   const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  const mmprojFallbackReason = useChatRuntimeStore(
+    (s) => s.mmprojFallbackReason,
+  );
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
@@ -671,6 +674,7 @@ export function SharedComposer({
     loadedIsMultimodal,
     modelLoaded,
     loadError: lastModelLoadError,
+    mmprojFallbackReason,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a
@@ -1621,6 +1625,8 @@ export function SharedComposer({
           // GPU fields on every load path so the gate can't read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+
+          mmprojFallbackReason: resp.mmproj_fallback_reason ?? null,
           activeModelIsLocal: resp.is_local_model ?? false,
           // Record the context this pane loaded with (like the single-model path)
           // so when it becomes the active model, the UI and later reload/save use

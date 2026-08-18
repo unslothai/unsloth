@@ -180,6 +180,8 @@ export const zhCN = {
       closeAriaLabel: "关闭设置",
       searchPlaceholder: "搜索设置…",
       searchNoResults: "未找到设置。",
+      panelFailed: "无法加载此部分。",
+      panelReload: "重新加载",
     },
     tabs: {
       general: "通用",
@@ -1080,6 +1082,8 @@ export const zhCN = {
       archivedVideos: "已归档的视频",
       archivedVideosDescription: "查看和管理你归档的视频。",
       manageAction: "管理",
+      manageChats: "管理聊天",
+      manageChatsDescription: "选择多个聊天进行移动、置顶、归档、导出或删除。",
       exportArchivedChats: "导出",
       exportingArchivedChats: "正在导出...",
       exportedOneArchivedChat: "已导出 1 个归档聊天",
