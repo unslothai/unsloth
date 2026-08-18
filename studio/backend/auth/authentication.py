@@ -90,6 +90,26 @@ def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentia
     return not bearer_is_valid_api_key(credentials.credentials)
 
 
+def request_admitted_without_credential(request: Any) -> bool:
+    """``admitted_without_credential`` for a caller that holds only the request.
+
+    Costs a key validation, so ask it late: past the cheap disqualifiers, next to the
+    effect being guarded.
+    """
+    from utils.keyless_api_access import keyless_request_allowed
+
+    if not keyless_request_allowed(request):
+        return False
+    try:
+        header = request.headers.get("Authorization")
+    except Exception:
+        return True  # no readable header is no credential either
+    scheme, token = get_authorization_scheme_param(header or "")
+    if scheme.lower() != "bearer" or not token:
+        return True
+    return not (_names_a_session(token) or bearer_is_valid_api_key(token))
+
+
 def admitted_without_session(request: Any) -> bool:
     """True when keyless API access lets this request through with no Studio sign-in.
 

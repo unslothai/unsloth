@@ -12,6 +12,7 @@ SETTINGS = REPO / "studio/frontend/src/features/settings"
 USAGE_EXAMPLES_TSX = SETTINGS / "components/usage-examples.tsx"
 OPENAI_MODELS_TS = SETTINGS / "api/openai-models.ts"
 API_KEYS_TAB_TSX = SETTINGS / "tabs/api-keys-tab.tsx"
+KEYLESS_SECTION_TSX = SETTINGS / "components/keyless-api-access-section.tsx"
 
 
 def test_examples_name_a_model_the_server_can_serve():
@@ -234,3 +235,11 @@ def test_a_tool_snippet_names_a_key_that_actually_gets_tools():
         assert "base, key," in built_from(variant), variant
 
     assert 'keylessScope !== "off" && keylessTools' in src
+
+
+def test_the_full_scope_confirmation_names_what_it_lets_a_stranger_destroy():
+    # "read the files and settings" understated a scope that serves the delete routes too.
+    src = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
+    full = src[src.find("  full: {") : src.find("  tools: {")]
+    assert "delete" in full, full
+    assert "read the files and settings in Unsloth" not in src

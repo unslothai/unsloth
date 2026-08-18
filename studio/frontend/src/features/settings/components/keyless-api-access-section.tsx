@@ -39,7 +39,7 @@ const CONFIRM_COPY: Record<
   full: {
     title: "Allow everything without a key?",
     body: (audience) =>
-      `${audience} will be able to chat, start training runs, and read the files and settings in Unsloth, with no API key.`,
+      `${audience} will be able to chat, start training runs, and read, change and delete the files and settings in Unsloth, with no API key.`,
     action: "Allow everything",
   },
   tools: {

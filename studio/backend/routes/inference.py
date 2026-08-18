@@ -5113,6 +5113,11 @@ async def _maybe_auto_download_model(
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if await asyncio.to_thread(_loaded_satisfies, requested_model):
         return
+    from auth.authentication import request_admitted_without_credential
+
+    # the keyless dialog offers the loaded model, not gigabytes a stranger names
+    if request_admitted_without_credential(fastapi_request):
+        return
     try:
         refusal = await maybe_auto_download(
             requested_model,

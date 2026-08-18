@@ -603,6 +603,24 @@ def test_a_working_key_can_still_manage_them_while_keyless_is_on():
     assert client.delete(f"/api/auth/api-keys/{row['id']}", headers = headers).status_code == 200
 
 
+def test_a_keyless_caller_cannot_sign_the_ui_out():
+    """Logout revokes every refresh token for the subject, and those do not come back
+    when keyless access is switched off."""
+    seed_user()
+    set_keyless_api_access("full")
+    assert api_key_client().post("/api/auth/logout").status_code == 403
+
+
+def test_a_signed_in_session_can_still_sign_out_while_keyless_is_on():
+    seed_user()
+    set_keyless_api_access("full")
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+    response = api_key_client().post(
+        "/api/auth/logout", headers = {"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 204
+
+
 def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
     seed_user()
     set_keyless_api_access("full")
@@ -613,6 +631,63 @@ def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
         headers = {"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
+
+
+# --- effects a stranger must not be able to start -----------------------------
+
+
+def auto_download_calls(monkeypatch, request):
+    """Run _maybe_auto_download_model with everything but the caller check satisfied."""
+    import core.inference.openai_auto_download as auto_download
+    import routes.inference as inference
+    import utils.openai_auto_switch_settings as auto_switch_settings
+
+    started = []
+
+    async def record(model, **kwargs):
+        started.append(model)
+        return None
+
+    monkeypatch.setattr(auto_switch_settings, "get_openai_auto_download_enabled", lambda: True)
+    monkeypatch.setattr(auto_download, "is_downloadable_ref", lambda ref: True)
+    monkeypatch.setattr(auto_download, "maybe_auto_download", record)
+    monkeypatch.setattr(inference, "_loaded_satisfies", lambda ref: False)
+    asyncio.run(inference._maybe_auto_download_model("unsloth/some-20gb-model", request))
+    return started
+
+
+def test_a_keyless_caller_cannot_start_a_download(monkeypatch):
+    """The dialog offers the loaded model, so a stranger must not be able to name
+    gigabytes of someone else's instead."""
+    seed_user()
+    set_keyless_api_access("inference")
+    assert auto_download_calls(monkeypatch, request_for()) == []
+    assert (
+        auto_download_calls(monkeypatch, request_for(headers = {"Authorization": "Bearer ollama"}))
+        == []
+    )
+
+
+def test_a_working_key_can_still_start_one(monkeypatch):
+    """Auto-download is the owner's own opt-in, and a key is a credential they issued."""
+    seed_user()
+    set_keyless_api_access("inference")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    started = auto_download_calls(
+        monkeypatch, request_for(headers = {"Authorization": f"Bearer {raw}"})
+    )
+    assert started == ["unsloth/some-20gb-model"]
+
+
+def test_a_download_still_starts_when_keyless_is_off(monkeypatch):
+    seed_user()
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+    started = auto_download_calls(
+        monkeypatch, request_for(headers = {"Authorization": f"Bearer {token}"})
+    )
+    assert started == ["unsloth/some-20gb-model"]
 
 
 # --- routes that read the bearer for themselves ------------------------------
