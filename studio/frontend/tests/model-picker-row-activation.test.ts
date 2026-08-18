@@ -134,10 +134,25 @@ test("a pointer arms the swap for the NEXT frame, never for this event", () => {
   // the down and up targets. Swapping the row's button between them means no click is fired at
   // all and the row silently fails to select -- measured against the merge base with a single
   // `mouse.click`, which is that gesture with nothing in between.
-  const shell = block(activation, "export function ModelRowShell({");
-  assert.match(shell, /frame\.current = requestAnimationFrame\(applyPending\)/);
+  //
+  // Scoped to armActivation and counted, not matched loosely against the whole component: a
+  // `requestAnimationFrame(applyPending)` ANYWHERE in the file satisfies a loose match, and the
+  // click handler and the leave handler both contain one. Written that way this assertion stayed
+  // green against a mutant that made the pointer path apply the swap immediately, which is the
+  // whole failure it exists to catch.
+  const arm = block(activation, "const armActivation = useCallback(", "\n  );");
+  assert.equal(
+    (arm.match(/requestAnimationFrame\(applyPending\)/g) ?? []).length,
+    1,
+    "armActivation must hand the pointer swap to exactly one frame",
+  );
+  assert.equal(
+    (arm.match(/\bapplyPending\(\)/g) ?? []).length,
+    1,
+    "the only direct applyPending() in armActivation is the focus branch below",
+  );
   assert.doesNotMatch(
-    block(shell, "const onPointerEnter = useCallback(", "  );"),
+    block(activation, "const onPointerEnter = useCallback(", "\n  );"),
     /applyPending\(\)/,
   );
 });
