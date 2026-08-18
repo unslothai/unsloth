@@ -585,9 +585,14 @@ def _emit_startup_output(
     display_host: str,
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
+    lan_addresses: "tuple[str, ...]" = (),
 ) -> None:
     """Print the access banner, post-startup warnings, the tool-policy notice,
-    then a single stop hint. Extracted from ``_run`` so the wiring is testable."""
+    then a single stop hint. Extracted from ``_run`` so the wiring is testable.
+
+    ``lan_addresses`` are the addresses a persisted Settings > LAN access
+    auto-start has already bound. A loopback launch carrying them is network
+    reachable, so both the banner and the tool-policy notice must say so."""
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
@@ -598,13 +603,14 @@ def _emit_startup_output(
         bind_host = host,
         display_host = display_host,
         include_stop_hint = False,
+        lan_addresses = lan_addresses,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
-    _emit_tool_policy_notice(host, False, enable_tools)
+    _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
 
 
@@ -1480,6 +1486,13 @@ def _graceful_shutdown(server = None):
     Windows where atexit handlers are unreliable after Ctrl+C.
     """
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
+
+    # 0. Drop the LAN listener first: it shares the loop uvicorn is about to stop.
+    try:
+        from lan_access import close_lan_listener_lifecycle
+        close_lan_listener_lifecycle()
+    except Exception as e:
+        logger.warning("Error stopping the LAN listener: %s", e)
 
     # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
@@ -2388,12 +2401,12 @@ def run_server(
         desktop_owned = _desktop_owner() is not None,
     )
 
-    # A desktop-owned API-only backend mounts the packaged SPA behind a
-    # Cloudflare-only request gate so Remote access can serve the WebUI without
-    # changing the direct local API-only surface.
+    # desktop api-only serves its packaged SPA to remote callers only: tunnel or LAN, not loopback
+    _frontend_mounted = False
     if frontend_path and _serve_frontend:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
         if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
+            _frontend_mounted = True
             if not silent:
                 # Resolve so logs show an absolute path for support.
                 try:
@@ -2405,7 +2418,8 @@ def run_server(
             # Remote access serves nothing; the local API the desktop asked for
             # still comes up. The tunnel gate already 404s every other request.
             logger.warning(
-                "No frontend build found, so Remote access will not serve the web UI. Tried: %s",
+                "No frontend build found, so Remote and LAN access will not serve the web UI. "
+                "Tried: %s",
                 ", ".join(str(p) for p in attempted) or "(none)",
             )
         else:
@@ -2532,6 +2546,17 @@ def run_server(
         launch_managed = _launch_tunnel_managed,
     )
 
+    from utils.lan_access_settings import configure_lan_access
+
+    configure_lan_access(
+        app.state,
+        port = port,
+        bind_host = host,
+        secure = secure,
+        is_colab = _IS_COLAB,
+        frontend_served = _serve_frontend and _frontend_mounted,
+    )
+
     # Expose a shutdown callable before the server accepts requests so
     # /api/shutdown is ready as soon as readiness publishes.
     def _trigger_shutdown():
@@ -2583,6 +2608,8 @@ def run_server(
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+        # settings > LAN access adds its listener to this loop from a request thread
+        app.state.lan_access_loop = loop
         try:
             loop.run_until_complete(_server.serve())
         except BaseException as exc:
@@ -2600,6 +2627,11 @@ def run_server(
             # which is why the marker goes here rather than in _remove_pid_file.
             _remove_startup_marker()
             _remove_pid_file()
+            # the loop is closed above, so this is what an embedded host that calls
+            # run_server again needs to stop seeing the previous listener as live
+            from lan_access import close_lan_listener_lifecycle as _close_lan_listener
+
+            _close_lan_listener()
 
     thread = Thread(target = _run, daemon = True)
     _server_thread = thread
@@ -2630,6 +2662,7 @@ def run_server(
     app.state.server_port = port
     app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
     app.state.remote_access_port = port
+    app.state.lan_access_port = port
 
     _write_pid_file(port, host)
     import atexit
@@ -2665,6 +2698,7 @@ def run_server(
     set_studio_tunnel_runtime_callback(set_remote_connector_active)
     set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
     app.state.remote_access_ready = True
+    app.state.lan_access_ready = True
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
@@ -2737,8 +2771,22 @@ def run_server(
     if maybe_auto_start_remote_access(app.state):
         logger.info("Remote access auto-start scheduled")
 
+    from lan_access import close_lan_listener_lifecycle, lan_listener_status
+    from utils.lan_access_settings import maybe_auto_start_lan_access
+
+    atexit.register(close_lan_listener_lifecycle)
+    if maybe_auto_start_lan_access(app):
+        logger.info("LAN access auto-started")
+
     if not silent:
-        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
+        _emit_startup_output(
+            host,
+            port,
+            display_host,
+            secure = secure,
+            enable_tools = enable_tools,
+            lan_addresses = tuple(lan_listener_status()["addresses"]),
+        )
 
     return app
 
