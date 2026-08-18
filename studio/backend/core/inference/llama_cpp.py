@@ -409,13 +409,11 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
     version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
     The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
-    system HIP/ROCR risks missing symbols. That mix is still what happens when the
-    prebuilt's RPATH binds bundled libamdhip64.so while LD_LIBRARY_PATH supplies
-    system libhsa-runtime64 -- then llama-server dies with
-    ``hsa_amd_queue_create, version ROCR_1`` (#8998). UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1
-    keeps the pure bundle (for a host whose system ROCm lacks this arch); load_model
-    also retries once with that bundle-only path when the mix is what crashed.
-    No-op on WSL / non-Linux.
+    system HIP/ROCR risks missing symbols. The prebuilt's RPATH can still bind bundled
+    libamdhip64.so against system libhsa-runtime64 and die on a symbol lookup (#8998),
+    so load_model retries once with the bundle-only path when that is what crashed.
+    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure bundle up front (for a host whose
+    system ROCm lacks this arch). No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -11781,15 +11779,15 @@ class LlamaCppBackend:
         # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
-        if LlamaCppBackend._is_bundled_hip_rocr_mismatch(output or ""):
-            # #8998: glibc "symbol lookup error" is also exit 127, but the
-            # missing symbol is ROCR in a mixed HIP stack, not a vanished
-            # binary. The generic 127 text below would send the user to
-            # reinstall llama-server while Vulkan / a terminal launch already
-            # work. Name the mix and keep it off VRAM.
+        # A ROCm symbol lookup is also 127, but the generic text below would send
+        # the user to reinstall a binary that Vulkan and a shell launch both run
+        # fine (#8998). Name the object and symbol the loader actually reported.
+        _rocm_miss = LlamaCppBackend._bundled_hip_symbol_miss(output or "")
+        if _rocm_miss:
+            _miss_obj, _miss_sym = _rocm_miss
             return (
-                "llama-server could not start: bundled libamdhip64.so looked "
-                "up hsa_amd_queue_create in a different ROCm than it was built "
+                f"llama-server could not start: bundled {os.path.basename(_miss_obj)} "
+                f"looked up {_miss_sym} in a different ROCm than it was built "
                 "against. That is a HIP/ROCR version mix, not a missing "
                 "binary and not out of VRAM. Try the Vulkan backend, or "
                 f"{LlamaCppBackend._runtime_remedy(binary)}."
@@ -12388,21 +12386,33 @@ class LlamaCppBackend:
         # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
 
+    # #7233 prepends the whole system ROCm dir, so any lib in it can be the one
+    # that fails to resolve, not just HIP. Anchored on the object's basename so a
+    # path component (/opt/librocm-custom/...) cannot match.
+    _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
+
     @staticmethod
-    def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
-        """True for the #8998 HIP/ROCR mix, not a missing .so and not a ggml lookup.
+    def _bundled_hip_symbol_miss(output: str) -> "Optional[tuple[str, str]]":
+        """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
 
         glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
-        version <v>]``. The object is bundled libamdhip64.so (RPATH still binds
-        the prebuilt HIP); the missing symbol is ROCR from a different-version
-        system libhsa-runtime64 that #7233 prepended on LD_LIBRARY_PATH. Field
-        log: ``libamdhip64.so.7: undefined symbol: hsa_amd_queue_create, version
-        ROCR_1``. A ggml ``undefined symbol: ggml_*`` must not match.
+        version <v>]``; field log is ``libamdhip64.so.7: undefined symbol:
+        hsa_amd_queue_create, version ROCR_1``. A ggml symbol, or an absent .so
+        (``error while loading shared libraries``), is a different failure.
         """
-        text = (output or "").lower()
-        if "symbol lookup error" not in text or "libamdhip64" not in text:
-            return False
-        return "hsa_amd_queue_create" in text or "rocr_" in text
+        match = re.search(
+            r"symbol lookup error:\s*(\S+?):\s*undefined symbol:\s*([^\s,]+)", output or ""
+        )
+        if not match:
+            return None
+        obj = os.path.basename(match.group(1)).lower()
+        if not obj.startswith(LlamaCppBackend._ROCM_OBJECT_HINTS):
+            return None
+        return match.group(1), match.group(2)
+
+    @staticmethod
+    def _is_bundled_hip_rocr_mismatch(output: str) -> bool:
+        return LlamaCppBackend._bundled_hip_symbol_miss(output) is not None
 
     @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
@@ -17092,24 +17102,21 @@ class LlamaCppBackend:
                             and not _split_axis_crash
                             and _hip_rocr_mismatch
                         ):
-                            # #7233 prepends system ROCm so bundled HIP matches
-                            # amdkfd. On some hosts that mix leaves bundled
-                            # libamdhip64.so resolving hsa_amd_queue_create
-                            # against a different libhsa-runtime64 (#8998).
-                            # A terminal launch does not prepend those dirs, so
-                            # the same binary works from the shell. Rebuild
-                            # LD_LIBRARY_PATH without them; keep the rest of
-                            # env (pooling / memory scrubs).
+                            # The #7233 prepend is what a shell launch does not do,
+                            # which is why the same binary runs from a terminal
+                            # (#8998). Drop those dirs only; the rest of env holds
+                            # the pooling and memory scrubs.
                             _bundle_only = self._llama_server_env_for_binary(
                                 binary, use_system_rocm = False
                             )
                             _retry_ld = _bundle_only.get("LD_LIBRARY_PATH", "")
-                            if _retry_ld != env.get("LD_LIBRARY_PATH"):
+                            # "" on a host that never had the var: nothing to undo.
+                            if _retry_ld and _retry_ld != env.get("LD_LIBRARY_PATH"):
                                 logger.warning(
                                     "llama-server crashed during startup (exit code %s) "
-                                    "because bundled libamdhip64 could not resolve a "
-                                    "ROCr symbol against the system ROCm; retrying once "
-                                    "with the bundled HIP only. Crash log: %s",
+                                    "because a bundled ROCm library could not resolve a "
+                                    "symbol against the system ROCm; retrying once "
+                                    "with the bundled runtime only. Crash log: %s",
                                     self._process.returncode,
                                     self._llama_log_path,
                                 )

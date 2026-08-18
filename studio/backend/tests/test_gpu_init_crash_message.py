@@ -1596,7 +1596,14 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
         def kill(self):
             return None
 
+    _real_popen = subprocess.Popen
+
     def _popen(cmd, **kwargs):
+        # Only the server is a launch. A host with the rocm_sdk wheel installed
+        # shells out to offload-arch from inside load_model, which would land at
+        # index 0 and shift every assertion below onto the wrong process.
+        if not cmd or str(cmd[0]) != "/fake/llama-server":
+            return _real_popen(cmd, **kwargs)
         idx = len(launches)
         launches.append((list(cmd), dict(kwargs["env"])))
         code = returncodes[idx] if idx < len(returncodes) else 1
@@ -1660,3 +1667,17 @@ class TestHipRocrRetryKeepsFitBudget:
         assert _fit_mode(launches[0][0]) == "off"
         assert _fit_mode(launches[1][0]) == "off"
         assert "/opt/rocm/lib" not in launches[1][1]["LD_LIBRARY_PATH"].split(":")
+
+    def test_a_mix_the_retry_did_not_fix_does_not_spend_the_fit_slot(self, monkeypatch, tmp_path):
+        # Bundle-only did not help, so the symbol is still missing. --fit cannot
+        # load a missing symbol: stop at two launches and report the mix.
+        launches, loaded, error = _run_full_offload_spawns(
+            monkeypatch,
+            tmp_path,
+            outputs = [_HIP_ROCR_MISMATCH, _HIP_ROCR_MISMATCH],
+            returncodes = [127, 127],
+        )
+        assert not loaded
+        assert len(launches) == 2
+        assert _fit_mode(launches[1][0]) == "off"
+        assert "HIP/ROCR" in str(error)

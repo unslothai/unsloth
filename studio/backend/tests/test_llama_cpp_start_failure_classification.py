@@ -540,6 +540,28 @@ class TestBundledHipRocrMismatch:
         assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch("")
         assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(None)
 
+    def test_another_lib_from_the_prepended_dir_is_the_same_mix(self):
+        # The prepend covers the whole system ROCm dir, so rocBLAS against a
+        # different-version HIP fails the same way and wants the same retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/home/t/.unsloth/llama.cpp/build/bin/librocblas.so.4: "
+            "undefined symbol: hipGraphicsResourceGetMappedPointer"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "librocblas.so.4" in msg
+        assert "hipGraphicsResourceGetMappedPointer" in msg
+        # The field log's symbol is not this crash; do not name it.
+        assert "hsa_amd_queue_create" not in msg
+
+    def test_a_path_component_does_not_stand_in_for_the_object(self):
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/librocm-vendor/lib/libfoo.so.1: undefined symbol: foo_init"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
     def test_classify_names_the_mix_not_a_missing_binary(self):
         msg = _classify(self._FIELD_OUT, "/models/x.gguf", "local/x", 127)
         assert "HIP/ROCR" in msg
@@ -559,9 +581,9 @@ class TestBundledHipRocrMismatch:
         assert "custom llama.cpp" in msg
 
     def test_hip_rocr_retry_is_checked_before_the_fit_on_retry(self):
-        # load_model's _spawn_and_wait used the one retry slot on --fit on
-        # for this 127, which cannot load a missing ROCr symbol. ROCm and
-        # --fit now have separate flags and a three-launch budget.
+        # --fit cannot load a missing symbol, so the library check has to come
+        # first. The launch sequence itself is asserted behaviourally in
+        # test_gpu_init_crash_message.py::TestHipRocrRetryKeepsFitBudget.
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         text = src.read_text(encoding = "utf-8")
         spawn_start = text.index("def _spawn_and_wait(")
@@ -571,9 +593,6 @@ class TestBundledHipRocrMismatch:
             "retrying once with --fit on so it can offload"
         )
         assert "use_system_rocm = False" in body
-        assert "for _spawn_attempt in (0, 1, 2)" in body
-        assert "not _did_rocm_retry" in body
-        assert "not _did_fit_retry" in body
 
 
 # Real dyld output. macOS says none of the things glibc says, so before #8566
