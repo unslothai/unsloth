@@ -1253,6 +1253,4 @@ def test_a_pin_is_not_charged_for_a_tool_exchange_it_does_not_hold():
         {"role": "assistant", "content": "x " * 40000},
         {"role": "user", "content": "continue"},
     ]
-    assert (
-        instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()
-    )
+    assert instruction_pin.pinned_instruction_ids(with_reply, groups = 2, max_tokens = 1024) == set()
