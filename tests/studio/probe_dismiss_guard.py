@@ -439,15 +439,15 @@ async def one_case(
         # later the guard is gone and the finger's own compatibility click lands on Delete.
         # Measured on chromium: message deleted. The plain variant lifts INSIDE the window and
         # therefore cannot see this at all, which is why both are kept.
-        await page.wait_for_timeout(
-            GRACE_HOLD_MS if case.endswith("_grace") else 150
-        )
+        await page.wait_for_timeout(GRACE_HOLD_MS if case.endswith("_grace") else 150)
         if case.endswith("_grace"):
             still_down = await page.evaluate("() => window.__multiPointer.live.length")
             if still_down < 1:
-                return {"case": case,
-                        "error": "the finger was no longer down when the bound expired, so the "
-                                 "case tested nothing"}
+                return {
+                    "case": case,
+                    "error": "the finger was no longer down when the bound expired, so the "
+                    "case tested nothing",
+                }
         await cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": finger})
         await page.wait_for_timeout(1500)
         after = await page.evaluate(FACTS_JS)
