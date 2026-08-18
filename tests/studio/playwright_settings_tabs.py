@@ -52,8 +52,7 @@ SETTLE_MS = 600
 SETTLE_TIMEOUT_S = 25.0
 # The panel scroller inside the dialog, the element `mainScrollRef` points at.
 PANEL = 'div[role="dialog"] main div.hover-scrollbar'
-# How long the Data module is held while the deep-open is walked away from, and how far
-# into that hold the walking away happens. The gap is what makes the abandon real.
+# How long the Data module is held, and how far into that hold the deep-open is abandoned.
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
 
@@ -162,16 +161,15 @@ def open_dialog(page, tab: str | None = None) -> None:
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
 
 
-# Only the subpages put a back button in the panel header, so this reads "the Data tab
-# opened on an archive listing" without depending on the locale.
+# Only subpages put a back button in the panel header, so this is locale-independent.
 ON_SUBPAGE_JS = """() => ({
     subpage: !!document.querySelector('div[role="dialog"] main header button'),
     elements: (document.querySelector('div[role="dialog"] main div.hover-scrollbar')
         || { querySelectorAll: () => [] }).querySelectorAll('*').length,
 })"""
 
-# Deep-open to the archived chats, then walk away from it partway through the hold below.
-# Both halves run in the page, because a route handler that sleeps blocks this script too.
+# Deep-open the archived chats, then walk away partway through the hold. Both halves run in
+# the page, because a route handler that sleeps blocks this script too.
 ABANDON_DEEP_OPEN_JS = """(delay) => {
     window.__abandonedAt = null;
     window.__settingsSmoke.openArchived('chats');
@@ -229,7 +227,7 @@ def run_abandoned_deep_open(page) -> None:
     page.evaluate("() => window.__settingsSmoke.close()")
     page.wait_for_timeout(200)
 
-    # The other direction: dropping the abandoned ones must not drop the honoured ones.
+    # Dropping the abandoned ones must not drop the honoured ones.
     page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
     settle_panel(page)
@@ -304,7 +302,7 @@ def run(page) -> None:
     # --- 2. every tab renders when selected -----------------------------------------
     open_dialog(page)
     settle_panel(page)
-    # Start from a tab that is not the persisted one, so the first iteration is a real switch.
+    # Start off the persisted tab, so the first iteration is a real switch.
     page.locator('[data-testid="settings-tab-about"]').click(force = True, timeout = 15000)
     settle_panel(page)
     for tab in TABS:
@@ -447,8 +445,8 @@ def main() -> int:
                         raise
                     time.sleep(2)
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
-            # Vite dev re-optimizes deps on first sight and full-reloads; let that settle,
-            # then reload once for a stable dep graph.
+            # Vite dev re-optimizes deps on first sight and full-reloads; settle, then
+            # reload once for a stable dep graph.
             page.wait_for_timeout(4000)
             page.reload(wait_until = "domcontentloaded")
             page.wait_for_function("() => !!window.__settingsSmoke", timeout = 120000)
@@ -469,8 +467,8 @@ def main() -> int:
                     fail(f"error boundary tripped: {report['error_boundary']}")
             browser.close()
     except Exception as exc:
-        # A cold-start dev server occasionally fails to serve a module, stranding the page
-        # before anything is under test. Report that rather than dying with no record.
+        # A cold-start dev server can fail to serve a module before anything is under
+        # test. Report that rather than dying with no record.
         report["aborted"] = f"{type(exc).__name__}: {exc}"
         fail(f"harness aborted: {report['aborted'].splitlines()[0]}")
         write_report()

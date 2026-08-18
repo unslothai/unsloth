@@ -53,9 +53,8 @@ import {
   type SettingsTab,
   useSettingsDialogStore,
 } from "./stores/settings-dialog-store";
-// All twelve panels sat in the entry's static import closure, so the browser fetched,
-// parsed and ran them before first paint even though the dialog starts closed. Load each
-// on first view instead; this same map drives the prefetch, so there is no second list.
+// Statically imported, all twelve panels ran before first paint even though the dialog
+// starts closed. Load each on first view instead; this map also drives the prefetch.
 const TAB_LOADERS = {
   general: () => import("./tabs/general-tab").then((m) => ({ default: m.GeneralTab })),
   profile: () => import("./tabs/profile-tab").then((m) => ({ default: m.ProfileTab })),
@@ -100,15 +99,13 @@ interface PanelBoundaryState {
 }
 
 /**
- * Fetching a panel on first view can now fail: offline, or an entry bundle that predates
- * an in-place rewrite of `dist/` and still names replaced chunks. Nothing above this
- * root-mounted dialog catches, so an unguarded failure unmounts all of Studio rather than
- * one panel, as reproduced with the panel's module blocked.
+ * A panel fetch can fail (offline, or an entry bundle naming chunks a `dist/` rewrite
+ * replaced). Nothing above this root-mounted dialog catches, so unguarded that unmounts
+ * all of Studio rather than one panel.
  *
- * Reload rather than retry: React caches a `lazy` rejection for the life of the page and
- * the browser's module map caches the failed import, so re-importing the same URL rethrows
- * with no new request (whatwg/html#6768). index.html is no-store, so a reload does pick up
- * the current chunk names.
+ * Reload rather than retry: React and the browser's module map both cache the failed
+ * import, so re-importing rethrows with no new request (whatwg/html#6768), while
+ * index.html is no-store and a reload does pick up the current chunk names.
  */
 class SettingsPanelBoundary extends Component<
   PanelBoundaryProps,
@@ -244,15 +241,14 @@ export function SettingsDialog() {
   const panelTab = useDeferredValue(activeTab);
   const [query, setQuery] = useState("");
 
-  // Once opened, pull the other panels in on idle so a tab click never waits on a network
-  // round trip. Nothing runs while closed, which is its state for the whole launch.
+  // Once opened, pull the other panels in on idle so a tab click never waits on the
+  // network. Nothing runs while closed, which is its state for the whole launch.
   useEffect(() => {
     if (!open) return;
     return scheduleIdleTask(() => {
       for (const load of Object.values(TAB_LOADERS)) {
-        // This warms panels nobody asked for, so a failed fetch is not worth reporting
-        // and must not reach the page as an unhandled rejection. The boundary above
-        // speaks for the panel the user does open.
+        // Warming a panel nobody asked for must not surface as an unhandled rejection;
+        // the boundary above speaks for the panel the user does open.
         void load().catch(() => undefined);
       }
     });
@@ -562,9 +558,8 @@ export function SettingsDialog() {
                 ref={mainScrollRef}
                 className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto p-6 [scrollbar-gutter:stable]"
               >
-                {/* Only a panel's first view waits, and the prefetch usually beats it. The
-                    fallback is delayed so a panel that arrives promptly, which is every
-                    panel on a local install, never flashes it. */}
+                {/* Only a panel's first view waits, so the fallback is delayed and a
+                    promptly arriving panel never flashes it. */}
                 <SettingsPanelBoundary
                   tab={panelTab}
                   message={t("settings.dialog.panelFailed")}

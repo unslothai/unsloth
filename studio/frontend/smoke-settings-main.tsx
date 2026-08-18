@@ -26,7 +26,7 @@ import "./src/index.css";
 
 declare global {
   interface Window {
-    // Optional: the app typechecks this entry, and only the harness page installs the handle.
+    // Optional: the app typechecks this entry, but only the harness page installs it.
     __settingsSmoke?: {
       open: (tab?: string) => void;
       openArchived: (shelf: string) => void;
@@ -50,8 +50,8 @@ window.addEventListener("unhandledrejection", (e) => {
   seenErrors.push(String(e.reason));
 });
 
-// The app has no boundary above the dialog, so give the harness one and record what reaches
-// it; whether anything does is exactly what is under test.
+// The app has no boundary above the dialog, so give the harness one: whether anything
+// reaches it is exactly what is under test.
 class Boundary extends Component<
   { children: ReactNode },
   { error: string | null }
@@ -107,7 +107,7 @@ function Harness() {
   );
 }
 
-// Several panels use router hooks (Link, useNavigate), so a one-route memory router is in scope.
+// Several panels use router hooks (Link, useNavigate), so provide a memory router.
 const harnessRootRoute = createRootRoute({ component: Harness });
 const harnessIndexRoute = createRoute({
   getParentRoute: () => harnessRootRoute,

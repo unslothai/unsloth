@@ -254,31 +254,23 @@ def main():
         if not kb_top > 0:
             fail(f"keyboard did not scroll the select viewport after 40 presses: {kb_top}")
 
-        # That value is read the instant the press registers, while the scroll it
-        # started is still running, so it reads low. Instrumented on the ubuntu CI
-        # image the viewport went on to settle 24-35px further down in 20 runs out
-        # of 20, and using it as it stands breaks the wheel check twice over: it is
-        # not the floor the wheel actually has to beat, and a wheel dispatched into
-        # a scroll Chromium is still animating gets swallowed. Let the keyboard
-        # scroll finish and re-read instead of racing it.
+        # That read lands mid-scroll and comes in low (24-35px on the ubuntu CI image),
+        # which is neither the floor the wheel has to beat nor a moment a wheel event
+        # survives. Let the scroll finish and re-read instead of racing it.
         kb_top = settled_scroll_top(page)
-        # Guard the comparison below rather than let it become unsatisfiable: at 0
-        # nothing can be under it, so the wheel would be reported as broken no
-        # matter what it did.
+        # At 0 the comparison below is unsatisfiable, so the wheel would always fail.
         if not kb_top > 0:
             fail(f"select viewport returned to the top once the keyboard scroll settled: {kb_top}")
 
         vp_box = viewport.bounding_box()
-        # Keep the pointer inside the viewport. A fixed 40px offset lands outside
-        # it whenever the box is shorter than that, and the wheel then goes to
-        # whatever is underneath.
+        # Keep the pointer inside the viewport: a fixed 40px offset lands outside a
+        # shorter box and the wheel then goes to whatever is underneath.
         page.mouse.move(
             vp_box["x"] + vp_box["width"] / 2,
             vp_box["y"] + min(40, vp_box["height"] / 2),
         )
-        # A single wheel event can still be dropped, so re-send on a bounded retry
-        # rather than reporting the first miss. A viewport that genuinely refuses
-        # the wheel never moves and still fails, just after more tries.
+        # A single wheel event can be dropped, so retry a bounded number of times. A
+        # viewport that truly refuses the wheel never moves and still fails.
         wheel_top = kb_top
         for _ in range(5):
             page.mouse.wheel(0, -400)

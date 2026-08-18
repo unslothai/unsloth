@@ -2,11 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The settings dialog is closed for the whole launch, yet its twelve tab panels were
- * static imports, so the browser fetched, parsed and executed every one before first
- * paint. Bundle membership follows the static import graph, so one static `./tabs/...`
- * edge from anywhere reachable at startup puts them all back. That graph is what these
- * assert, rather than the dialog's rendered output.
+ * The dialog is closed for the whole launch, yet its twelve tab panels were static imports
+ * and so ran before first paint. One static `./tabs/...` edge from anywhere reachable at
+ * startup puts them all back, so these assert the import graph, not rendered output.
  */
 
 import assert from "node:assert/strict";
@@ -31,9 +29,8 @@ async function* walk(dir: string): AsyncGenerator<string> {
 }
 
 /**
- * Module specifiers of the `import`/`export ... from` declarations, parsed rather than
- * grepped: a deferred `import(...)` is a call expression, so it is never collected, which
- * is exactly the distinction being enforced.
+ * Module specifiers of `import`/`export ... from` declarations, parsed rather than grepped:
+ * a deferred `import(...)` is a call expression, so it is never collected.
  */
 const staticSpecifiers = (file: string, text: string): string[] => {
   const parsed = ts.createSourceFile(
@@ -102,7 +99,7 @@ test("nothing else in src statically imports a tab panel", async () => {
 
 test("a panel that fails to load cannot take the app down with it", async () => {
   // Nothing above the root-mounted dialog catches, so an uncaught render throw unmounts
-  // the whole tree, not one panel, and panels are only fetchable because of the change above.
+  // the whole tree, not one panel.
   const source = await readFile(DIALOG, "utf8");
   const parsed = ts.createSourceFile(
     DIALOG,
@@ -174,6 +171,6 @@ test("the panels are prefetched once the dialog opens", async () => {
   const source = await readFile(DIALOG, "utf8");
   assert.match(source, /scheduleIdleTask/);
   assert.match(source, /Object\.values\(TAB_LOADERS\)/);
-  // It warms panels nobody selected, so a failed chunk must not reach the page as a rejection.
+  // It warms unselected panels, so a failed chunk must not reach the page as a rejection.
   assert.match(source, /load\(\)\.catch\(/);
 });

@@ -36,8 +36,8 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it. See
-  // requestsFor for how long it and scrollTarget live unconsumed.
+  // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
+  // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -94,12 +94,11 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
 /**
  * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
  *
- * Each is set by whoever asks for the jump and cleared only by the panel that performs it,
- * and panels are fetched on first view, so a navigation can now move before the chunk
- * arrives. A request therefore lives exactly as long as the dialog is open on the tab that
- * reads it: reselecting that tab goes nowhere and keeps it, anything else drops it, and
- * closing (below) always does. Held wider, a stale request replays on an ordinary later
- * visit; held narrower, reselecting the tab loses a deep-link that was still in flight.
+ * Only the panel that performs a jump clears its request, and panels are fetched on first
+ * view, so a navigation can move before the chunk arrives. A request therefore lives while
+ * the dialog is open on the tab that reads it: reselecting keeps it, anything else drops
+ * it, and closing (below) always does. Held wider, a stale request replays on a later
+ * visit; held narrower, reselecting loses a deep-link still in flight.
  */
 function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
   return {

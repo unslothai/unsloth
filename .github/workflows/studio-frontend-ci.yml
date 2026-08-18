@@ -187,15 +187,14 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      # The settings panels are fetched on first view, so every tab rendering, a deep-open
-      # landing where clicking to it does, and one walked away from mid-load not coming
-      # back later, are all things only a browser can answer.
+      # The settings panels are fetched on first view, so only a browser can answer whether
+      # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_settings_tabs.py
 
-      # A panel that cannot be fetched is the failure the eager tree could not have. Nothing
-      # above the root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      # A panel that cannot be fetched is new with lazy loading, and nothing above the
+      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
       - name: Browser smoke for a settings panel that cannot load
         working-directory: ${{ github.workspace }}
         env:

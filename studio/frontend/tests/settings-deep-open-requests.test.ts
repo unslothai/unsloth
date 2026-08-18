@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `archivedRequested` and `scrollTarget` are one-shot deep-link requests, each cleared only
-// by the panel that performs the jump. Panels load on first view, so a navigation can now
-// move before the chunk arrives: too wide a clear loses a deep-link the panel was still
-// coming to serve, and too narrow a one replays a stale request on an ordinary later visit.
-// Both live exactly as long as the dialog is open on the tab that reads them.
+// `archivedRequested` and `scrollTarget` are one-shot deep-link requests, cleared only by
+// the panel that performs the jump. Panels load on first view, so a navigation can move
+// before the chunk arrives: clearing too widely loses a deep-link still being served,
+// too narrowly replays a stale one. Both live while the dialog is open on their tab.
 
 import assert from "node:assert/strict";
 import test from "node:test";
