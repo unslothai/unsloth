@@ -828,6 +828,21 @@ def _conversation_order(row) -> tuple:
     return (1, int(ordinal), created, index)
 
 
+def _above_floor(hits: list, min_dense_score: float) -> list:
+    """Candidates clearing the forced path's cosine floor. Off (0.0) returns them all.
+
+    The FORCED path only. An automatic lookup that returns whatever happens to share a
+    stopword with the question is worse than none under checkpoint compaction, because
+    that block is also the model's first sight of the search tool. Lexical-only hits are
+    kept: they matched real tokens, and gating them on a similarity they never carried
+    would delete the exact-identifier hits this archive is best at. A model that wanted
+    more can still search.
+    """
+    if min_dense_score <= 0:
+        return hits
+    return [hit for hit in hits if hit.dense_score is None or hit.dense_score >= min_dense_score]
+
+
 def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> list:
     return retrieval.retrieve_hybrid(
         conn, scope, query, k = k, model_name = model, mode = "lexical", lexical_query = expression
@@ -1026,9 +1041,31 @@ def recall(
         hits: list = []
         live_documents: dict = {}
         while True:
-            candidates = _candidates(conn, scope, query, model, fetch, thread_id)
-            if not candidates:
+            fetched = _candidates(conn, scope, query, model, fetch, thread_id)
+            if not fetched:
                 return None
+            # The floor is applied to CANDIDATES, before anything is cut to `limit`.
+            # Applying it after the slice made it a deletion rather than a filter: the
+            # weak hits took the slots and were then removed, so a recall whose archive
+            # held qualifying turns returned fewer of them, or none at all. Measured at a
+            # floor of 0.5 with the top four weak and four qualifying candidates behind
+            # them: the forced recall returned nothing while the unforced one returned 4.
+            #
+            # `exhausted` is read off the RAW fetch, not the filtered list, or the widening
+            # loop would mistake "the floor removed most of this page" for "the index has
+            # nothing more to give" and stop one page early.
+            exhausted = len(fetched) < fetch
+            candidates = _above_floor(fetched, min_dense_score)
+            if not candidates:
+                if exhausted or fetch >= _BRANCH_FILTER_MAX_CANDIDATES:
+                    logger.info(
+                        "conversation_archive.recall_below_floor thread_id=%s floor=%.2f",
+                        thread_id,
+                        min_dense_score,
+                    )
+                    return None
+                fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
+                continue
             rows = store.chunks_by_id(conn, [hit.chunk_id for hit in candidates])
             if not transcript:
                 hits = candidates[:limit]
@@ -1050,34 +1087,12 @@ def recall(
                 )
             # Enough live hits, or nothing more to widen into: an abandoned branch can
             # outrank the live one, but it cannot outrank it forever.
-            if (
-                len(hits) >= limit
-                or len(candidates) < fetch
-                or fetch >= _BRANCH_FILTER_MAX_CANDIDATES
-            ):
+            if len(hits) >= limit or exhausted or fetch >= _BRANCH_FILTER_MAX_CANDIDATES:
                 hits = hits[:limit]
                 break
             fetch = min(_BRANCH_FILTER_MAX_CANDIDATES, fetch * _BRANCH_FILTER_OVERFETCH)
         if not hits:
             return None
-        if min_dense_score > 0:
-            # The FORCED path only. An automatic lookup that returns whatever happens to
-            # share a stopword with the question is worse than none under checkpoint
-            # compaction, because that block is also the model's first sight of the search
-            # tool. Lexical-only hits are kept: they matched real tokens, and gating them
-            # on a similarity they never carried would delete the exact-identifier hits
-            # this archive is best at. A model that wanted more can still search.
-            strong = [
-                hit for hit in hits if hit.dense_score is None or hit.dense_score >= min_dense_score
-            ]
-            if not strong:
-                logger.info(
-                    "conversation_archive.recall_below_floor thread_id=%s floor=%.2f",
-                    thread_id,
-                    min_dense_score,
-                )
-                return None
-            hits = strong
         if config.CONVERSATION_RECALL_ORDER == "chronological":
             # AFTER the top-k slice, never before. Sorting first would make the slice take
             # the OLDEST turns rather than the most relevant ones, which is a different

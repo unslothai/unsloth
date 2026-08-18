@@ -2033,3 +2033,58 @@ def test_recall_sources_carry_the_fields_the_merge_orders_by():
     assert sources[0]["createdAt"] == "2026-01-01T00:00:00Z"
     assert sources[0]["chunkIndex"] == 2
     assert sources[0]["turn"] is None
+
+
+def test_the_forced_floor_filters_candidates_rather_than_deleting_results(conn, monkeypatch):
+    """A floor applied after the top-k slice is a deletion, not a filter.
+
+    The weak hits took the slots and were then removed, so an archive holding qualifying
+    turns handed back fewer of them, or none at all, and the automatic block that is also
+    the model's first sight of the search tool simply did not appear. Measured at a floor
+    of 0.5 with the top four candidates weak and four qualifying ones behind them: the
+    forced recall returned nothing where the unforced one returned 4.
+
+    Only reachable when an operator raises RAG_CONVERSATION_FORCED_MIN_SCORE: the shipped
+    default is 0.0, which leaves the floor off entirely.
+    """
+    from core.rag import config
+
+    for index in range(8):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+    real = conversation_archive._candidates
+
+    def weak_first(*args, **kwargs):
+        hits = real(*args, **kwargs)
+        for position, hit in enumerate(hits):
+            hit.dense_score = 0.1 if position < 4 else 0.9
+        return hits
+
+    monkeypatch.setattr(conversation_archive, "_candidates", weak_first)
+    monkeypatch.setattr(config, "CONVERSATION_FORCED_MIN_SCORE", 0.5)
+
+    forced = conversation_archive.recall(THREAD, "pelican", top_k = 4, forced = True)
+
+    assert forced is not None, "the floor deleted the result instead of filtering candidates"
+    assert len(forced[1]) == 4
+
+
+def test_a_floor_nothing_clears_still_returns_nothing(conn, monkeypatch):
+    """The filter must not turn into "return the weak ones anyway"."""
+    from core.rag import config
+
+    for index in range(8):
+        _archive(_turn(f"pelican note {index}", f"statement about pelican {index}"))
+    real = conversation_archive._candidates
+
+    def all_weak(*args, **kwargs):
+        hits = real(*args, **kwargs)
+        for hit in hits:
+            hit.dense_score = 0.1
+        return hits
+
+    monkeypatch.setattr(conversation_archive, "_candidates", all_weak)
+    monkeypatch.setattr(config, "CONVERSATION_FORCED_MIN_SCORE", 0.5)
+
+    assert conversation_archive.recall(THREAD, "pelican", top_k = 4, forced = True) is None
+    # And the tool-initiated path is untouched by the floor.
+    assert conversation_archive.recall(THREAD, "pelican", top_k = 4) is not None
