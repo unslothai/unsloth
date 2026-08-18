@@ -431,7 +431,16 @@ def test_a_completed_predecessor_is_returned_unchanged() -> None:
     # rejecting the failure rather than rejecting every shape of proof.
     good = {"openMs": 100.0, "closeMs": 40.0, "itemsWhileOpen": 5}
     assert PROBE.checked("menu", good) is good
-    assert PROBE.checked("jump", {"landedAt": 0, "travelledPx": 19000}) is not None
+    # startedFrom/bottom are part of the jump's own report now: travelledPx is observed rather
+    # than the planned full height, so a repetition that began part-way up the thread is a
+    # shorter gesture and the proof rejects it. A fixture without them is unverifiable, not clean.
+    assert (
+        PROBE.checked(
+            "jump",
+            {"landedAt": 0, "travelledPx": 19000, "startedFrom": 19000, "bottom": 19000},
+        )
+        is not None
+    )
     assert PROBE.checked("reopen", {"ms": 500.0, "closedMs": 30.0, "before": 20, "after": 20})
 
 
