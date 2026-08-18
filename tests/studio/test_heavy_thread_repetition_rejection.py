@@ -270,9 +270,9 @@ def test_the_verdict_rejects_a_jump_that_did_not_move_in_one_repetition() -> Non
     actions = clean_actions()
     actions["jump"] = HARNESS.summarise({"jump": rows})["jump"]
     assert actions["jump"]["landedAt"] == 0, "the median is still the arrived-looking 0"
-    assert any(
-        "landed at 19000.0px on repetition 2" in f for f in failures(actions)
-    ), failures(actions)
+    assert any("landed at 19000.0px on repetition 2" in f for f in failures(actions)), failures(
+        actions
+    )
 
 
 def test_the_verdict_rejects_a_jump_with_nothing_to_jump_through_in_one_repetition() -> None:
@@ -309,9 +309,9 @@ def test_the_verdict_rejects_a_menu_that_opened_empty_in_one_repetition() -> Non
     actions = clean_actions()
     actions["menu"] = HARNESS.summarise({"menu": rows})["menu"]
     assert actions["menu"]["itemsWhileOpen"] == 5, "the median still reads a populated menu"
-    assert any(
-        "no items in it on repetition(s) [2]" in f for f in failures(actions)
-    ), failures(actions)
+    assert any("no items in it on repetition(s) [2]" in f for f in failures(actions)), failures(
+        actions
+    )
 
 
 def test_the_verdict_rejects_a_delete_whose_count_did_not_drop_in_one_repetition() -> None:
@@ -339,8 +339,14 @@ def test_the_verdict_rejects_repetitions_measured_against_different_threads() ->
     # The fixture is whole cycles of one message per kind, so the three timings behind the median
     # delete three different subtree types on a shrinking thread.
     rows = [
-        {"name": "delete", "ran": True, "ms": 120.0, "before": b, "after": b - 1,
-         "fixture_messages": b}
+        {
+            "name": "delete",
+            "ran": True,
+            "ms": 120.0,
+            "before": b,
+            "after": b - 1,
+            "fixture_messages": b,
+        }
         for b in (20, 19, 18)
     ]
     actions = clean_actions()
@@ -354,8 +360,14 @@ def test_a_restored_fixture_is_not_a_failure() -> None:
     # Expected green in both directions: a no-regression guard so the check above is known to be
     # firing on the drift rather than on the field existing at all.
     rows = [
-        {"name": "delete", "ran": True, "ms": 120.0, "before": 20, "after": 19,
-         "fixture_messages": 20}
+        {
+            "name": "delete",
+            "ran": True,
+            "ms": 120.0,
+            "before": 20,
+            "after": 19,
+            "fixture_messages": 20,
+        }
         for _ in range(3)
     ]
     actions = clean_actions()
@@ -369,10 +381,10 @@ def test_a_restored_fixture_is_not_a_failure() -> None:
 # otherwise identical scroll. It shares both defects above: its repetition loop reuses one page
 # per arm, and it published whatever the predecessor returned without ever reading it.
 
+
 def _load_probe():
     """The probe, on the stub `_load_harness` already installed for the harness it imports."""
     import scroll_predecessor_probe
-
     return scroll_predecessor_probe
 
 

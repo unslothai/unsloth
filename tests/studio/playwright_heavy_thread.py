@@ -1832,9 +1832,7 @@ NUMERIC_PROOF_ROWS = (
 TABLE_ROWS = TABLE_ROWS + tuple(
     (
         _label,
-        lambda r, _a = _act, _k = _key: format_repetitions(
-            r["actions"][_a][f"{_k}_per_repetition"]
-        ),
+        lambda r, _a = _act, _k = _key: format_repetitions(r["actions"][_a][f"{_k}_per_repetition"]),
     )
     for _act, _key, _label in NUMERIC_PROOF_ROWS
 )
@@ -2350,9 +2348,7 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
         bare = [
             index + 1
             for index, value in enumerate(
-                menu.get(
-                    "triggersWhileHovered_per_repetition", [menu.get("triggersWhileHovered")]
-                )
+                menu.get("triggersWhileHovered_per_repetition", [menu.get("triggersWhileHovered")])
             )
             if not value
         ]

@@ -481,9 +481,7 @@ def main() -> int:
                         # the predecessor runs. Printed and published, because the whole claim of
                         # this file is that N arms scrolled the SAME thread with different things
                         # in front of them, and a drifting count says they did not.
-                        fixture.append(
-                            page.evaluate("() => window.__heavyThread.messageCount()")
-                        )
+                        fixture.append(page.evaluate("() => window.__heavyThread.messageCount()"))
                         # Kept, not discarded: `park_pointer_outside` verifies through
                         # elementFromPoint that the cursor really left the scroller, and an arm
                         # whose whole meaning is "the pointer is elsewhere" must publish that

@@ -437,9 +437,7 @@ def test_the_probe_checks_that_each_predecessor_completed() -> None:
             if isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
             and call.func.attr == "evaluate"
-            and any(
-                isinstance(a, ast.Attribute) and a.attr.endswith("_JS") for a in call.args
-            )
+            and any(isinstance(a, ast.Attribute) and a.attr.endswith("_JS") for a in call.args)
         ]
         validated = [
             call
