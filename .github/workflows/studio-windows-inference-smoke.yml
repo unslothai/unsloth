@@ -68,8 +68,10 @@ jobs:
   # ~3.8 min of tests, so setup dominates and sharing it once saves ~14
   # runner-minutes and 2 of the 60 concurrent-job slots. The same trade is NOT
   # worth making on ubuntu (studio-inference-smoke.yml), where setup is ~1.9 min
-  # against ~3.0 min of tests: there the added sequential wall time costs more
-  # feedback latency than the slots are worth.
+  # against ~3.0 min of tests. That last claim no longer holds and ubuntu is now
+  # bundled too: it assumed the three jobs start together, and measured on main
+  # they usually do not (median 175s between a run's first and last job start
+  # across 18 recent multi-job runs). See that file's header for the numbers.
   #
   # Each phase keeps its own model cache directory, HF_HOME, server port, server
   # log, uploaded artifact and step timeouts, and each is gated on the SHARED
