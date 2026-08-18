@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Deep Research total-time field takes minutes and had no ceiling, while
-// ChatSettingsPayload and the run route both cap the seconds it turns into at
-// one year. A larger value used to sail through the composer, get dropped from
-// the settings patch, and then 400 every run start. These pin the ceiling on
-// the paths that write and read the value.
+// The Deep Research total-time minutes field had no ceiling, while ChatSettingsPayload and
+// the run route cap the seconds it turns into at one year: an over-cap value was dropped
+// from the settings patch and then 400d every run. These pin the ceiling on every path.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
@@ -60,8 +58,8 @@ test("an over-cap budget never reaches the store or storage", () => {
     DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
   );
 
-  // The whole patch is rejected on one out-of-contract field, so what the store
-  // holds has to survive sanitisation rather than be dropped from it.
+  // One out-of-contract field rejects the whole patch, so what the store holds
+  // has to survive sanitisation rather than be dropped from it.
   const mirrored: PersistedChatSettings = {};
   assignSanitizedMirroredSettings(
     {
@@ -86,7 +84,7 @@ test("an over-cap budget never reaches the store or storage", () => {
 });
 
 // 0 is the unlimited sentinel, so it is legal below the run route's finite floor of 10.
-// Anything between the two would hydrate, be sent unchanged, and 400 every run start.
+// Anything between the two would hydrate, be sent unchanged, and 400 every run.
 test("a sub-floor finite timeout is refused on every frontend path", () => {
   const store = useChatRuntimeStore.getState();
 
@@ -122,9 +120,8 @@ test("a sub-floor finite timeout is refused on every frontend path", () => {
   assert.equal(sanitizeBoundedNumber(10, bounds), 10);
 });
 
-// The max attribute does not stop a typed value from reaching the save handler, so the
-// handler clamps. Falling through to the default instead would hand someone asking for a
-// long run the short one they were trying to get away from.
+// The max attribute does not stop a typed value reaching the save handler, so it clamps:
+// falling through to the default would hand someone asking for a long run a short one.
 test("an over-cap typed value saves as the cap, not as the default", () => {
   const store = useChatRuntimeStore.getState();
   const maxMinutes = Math.floor(MAX_RESEARCH_MODEL_TIMEOUT_SECONDS / 60);

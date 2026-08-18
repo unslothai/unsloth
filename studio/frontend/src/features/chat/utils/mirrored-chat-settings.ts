@@ -38,12 +38,11 @@ const MIRRORED_ENUM_VALUES = {
   Record<keyof PersistedChatSettings, readonly string[]>
 >;
 
-// One year, the ceiling ChatSettingsPayload and the research run route both
-// enforce. A larger value would be dropped from the patch here and then
-// rejected when the run starts, so it is bounded where it is set instead.
+// One year, the ceiling ChatSettingsPayload and the run route both enforce. A larger value
+// would be dropped from the patch and then 400 the run, so it is bounded where it is set.
 export const MAX_RESEARCH_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600;
-// 0 is the unlimited sentinel rather than a very short budget, so it sits below the floor
-// the run route puts on a finite value. A stored 1..9 would 400 every run.
+// 0 is the unlimited sentinel, not a very short budget, so it sits below the run route's
+// finite floor. A stored 1..9 would 400 every run.
 export const MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS = 10;
 
 // Bounds match the ge/le the backend payload enforces on the same fields.

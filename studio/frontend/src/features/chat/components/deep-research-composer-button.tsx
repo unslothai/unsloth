@@ -307,9 +307,8 @@ function DeepResearchWebsiteAccessContent({
           onClick={() => {
             setPolicy(draft);
             const minutes = Number(timeoutMinutes);
-            // The max attribute does not stop a typed value from reaching here, and letting
-            // an over-cap one fall through to the default would quietly hand someone asking
-            // for a long run the 15 minute one they were trying to get away from.
+            // The max attribute does not stop a typed value reaching here, and falling
+            // through to the default would hand someone asking for a long run a short one.
             setModelTimeoutSeconds(
               unlimited
                 ? 0

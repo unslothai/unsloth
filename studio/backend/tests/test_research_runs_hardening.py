@@ -858,7 +858,7 @@ class _QueuedThenSilentResponse:
 
 
 # Queueing is not charged to the request budget, so with no wall clock behind it a backend
-# that queues and then goes quiet would otherwise hold the run open indefinitely.
+# that queues then goes quiet would hold the run open forever.
 def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
     _install_fake_client(monkeypatch, [_QueuedThenSilentResponse()])
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.2)
@@ -895,8 +895,8 @@ class _ReadTimeoutResponse:
         raise httpx.ReadTimeout("")
 
 
-# Unlimited leaves no wall clock to convert, so a bare ReadTimeout would otherwise reach the
-# user as an empty error string instead of naming the stall.
+# Unlimited leaves no wall clock to convert, so a bare ReadTimeout would reach the user as
+# an empty error string instead of naming the stall.
 @pytest.mark.parametrize(
     ("lines", "expected"),
     (

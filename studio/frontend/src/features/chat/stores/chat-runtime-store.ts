@@ -175,9 +175,8 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
 };
 export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
 
-/** 0 (unlimited) or a finite budget the settings patch and the run route both
- * accept. A value outside that would be dropped from the patch and would 400
- * the run, so it is refused here and the default stands in. */
+/** 0 (unlimited) or a finite budget the settings patch and the run route both accept.
+ * Anything else would be dropped from the patch and 400 the run, so the default stands in. */
 function isSupportedResearchModelTimeout(value: number): boolean {
   if (!Number.isSafeInteger(value) || value < 0) return false;
   if (value > MAX_RESEARCH_MODEL_TIMEOUT_SECONDS) return false;

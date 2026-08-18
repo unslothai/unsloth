@@ -118,7 +118,7 @@ _ADMISSION_DONE_COMMENT = ": admission-done"
 # Queue notices arrive on the configured heartbeat, so allow for a few missed ones.
 _ADMISSION_HEARTBEAT_MISSES = 3
 # Model-loading budget when the request budget is unlimited, and its ceiling for any budget:
-# a poll loop must stay bounded however long generation itself is allowed to run.
+# the poll loop stays bounded however long generation itself may run.
 _DEFAULT_MODEL_TIMEOUT_SECONDS = 900.0
 _MAX_MODEL_WAIT_BUDGET_SECONDS = 3600.0
 # Headroom so the named stall guards expire before HTTPX's own read timeout does.
@@ -126,8 +126,8 @@ _STREAM_READ_TIMEOUT_MARGIN_SECONDS = 30.0
 
 
 def _model_wait_budget(run: dict) -> float:
-    """Share of the request budget one model wait may spend, clamped so neither an unlimited
-    budget nor an oversized finite one leaves the poll loop unbounded."""
+    """Share of the request budget one model wait may spend, clamped so an unlimited or
+    oversized budget still leaves the poll loop bounded."""
     timeout = float(run["config"]["budgets"]["modelTimeoutSeconds"])
     capped = min(timeout or _DEFAULT_MODEL_TIMEOUT_SECONDS, _MAX_MODEL_WAIT_BUDGET_SECONDS)
     return capped / (_MAX_MODEL_WAITS + 1)
@@ -1298,10 +1298,9 @@ class ResearchSupervisor:
             )
             if model_timeout > 0:
                 first_output_budget = min(first_output_budget, model_timeout)
-            # Unlimited only removes the total wall-clock deadline. Keep connection and response
-            # headers bounded, but never let HTTPX's body-read timeout undercut the idle guard.
-            # The same bound caps the silence between queue notices, which no wall clock covers,
-            # so it has to clear the heartbeat those notices are actually paced by.
+            # Unlimited only drops the total wall clock; connect and headers stay bounded. This
+            # bound also caps the silence between queue notices, which no wall clock covers, so
+            # it has to clear the heartbeat those notices are paced by.
             admission_gap_budget = max(
                 first_output_budget,
                 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
@@ -1313,8 +1312,8 @@ class ResearchSupervisor:
                 if model_timeout
                 else httpx.Timeout(
                     first_output_budget,
-                    # Strictly looser, so the guards above report the stall by name instead of
-                    # racing HTTPX for it and losing to a ReadTimeout that carries no message.
+                    # Strictly looser than the guards above, so a stall is reported by name
+                    # rather than as a message-less HTTPX ReadTimeout.
                     read = admission_gap_budget + _STREAM_READ_TIMEOUT_MARGIN_SECONDS,
                 )
             )
@@ -1415,7 +1414,7 @@ class ResearchSupervisor:
                             # ": keep-alive" means a silent backend, which is what we bound.
                             if line.startswith(_ADMISSION_WAIT_COMMENT):
                                 # Unlimited has no wall clock behind this, so bound the gap
-                                # between queue notices; each one refreshes it.
+                                # between queue notices; each notice refreshes it.
                                 first_output_deadline = (
                                     None if model_timeout else loop.time() + admission_gap_budget
                                 )
