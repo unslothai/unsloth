@@ -775,3 +775,64 @@ def test_a_failed_spawn_releases_its_reservation(monkeypatch):
     with pytest.raises(OSError):
         dl.spawn_worker(["--repo-id", "a/b"], None, use_xet = True)
     assert bound == [None], "a spawn that never produced a process must release, not leak"
+
+
+def test_the_force_xet_escape_hatch_still_wins_over_the_free_ram_gate(monkeypatch):
+    """`UNSLOTH_FORCE_XET=1` is an operator override, not a measurement.
+
+    `unsloth_zoo.hf_xet_health` stamps `source = "forced"` on both env verdicts, and the OFF
+    switches already win (the `not health.use_xet` return above). Without the same stand-down for
+    the ON switch the pair is asymmetric: the zoo's own log tells the operator to "set
+    UNSLOTH_FORCE_XET=1 to override", and the new RAM gate would ignore it. Buffers are still
+    clamped to free RAM, so forcing costs the transport choice, not the memory bound."""
+    monkeypatch.setattr(dl, "resolve_effective_use_xet", lambda requested: requested)
+
+    forced = _types.SimpleNamespace(
+        use_xet = True, reason = "Xet forced by environment", source = "forced"
+    )
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.xet_health = lambda **kw: forced
+    fake.xet_health_is_forced = lambda h: getattr(h, "source", "") == "forced"
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free (Xet wants 4GB)"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+
+    assert dl.resolve_auto_use_xet() == (True, "Xet forced by environment")
+
+    # The OFF switch keeps winning, and keeps its own reason.
+    off = _types.SimpleNamespace(
+        use_xet = False, reason = "Xet disabled by environment", source = "forced"
+    )
+    fake.xet_health = lambda **kw: off
+    assert dl.resolve_auto_use_xet() == (False, "Xet disabled by environment")
+
+    # An ordinary measured verdict is still gated by free RAM.
+    measured = _types.SimpleNamespace(use_xet = True, reason = "Xet", source = "probe")
+    fake.xet_health = lambda **kw: measured
+    used, reason = dl.resolve_auto_use_xet()
+    assert used is False and "RAM free" in reason
+
+
+def test_the_capabilities_probe_agrees_about_a_forced_verdict(monkeypatch):
+    """The probe is where the UI's Auto is actually resolved, so it must stand down identically or
+    the picker and the API caller disagree about what UNSLOTH_FORCE_XET means."""
+    forced = _types.SimpleNamespace(
+        use_xet = True, reason = "Xet forced by environment", source = "forced"
+    )
+    fake = _types.ModuleType("utils.hf_xet_fallback")
+    fake.cached_xet_health = lambda **kw: forced
+    fake.xet_health = lambda **kw: forced
+    fake.xet_health_is_forced = lambda h: getattr(h, "source", "") == "forced"
+    fake.free_ram_pressure_reason = lambda: "HTTP: only 1.0GB RAM free (Xet wants 4GB)"
+    monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake)
+    monkeypatch.setattr(download_registry.importlib.util, "find_spec", lambda name: object())
+
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_XET
+    assert caps.auto_reason == "Xet forced by environment"
+
+    # A shim too old to answer "is this forced" must not cost the health verdict, and must leave
+    # the RAM gate in force rather than silently forcing Xet.
+    del fake.xet_health_is_forced
+    caps = download_registry.get_download_transport_capabilities(probe = True)
+    assert caps.auto_resolves_to == download_registry.TRANSPORT_HTTP
+    assert "RAM free" in (caps.auto_reason or "")

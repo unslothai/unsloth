@@ -81,6 +81,14 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
         reason = "Xet" if health is None else str(health.reason)
     if health is not None and not health.use_xet:
         return (False, reason)
+    if _health_is_forced(health):
+        # ``UNSLOTH_FORCE_XET=1``. The zoo's off switches (``UNSLOTH_DISABLE_XET``,
+        # ``UNSLOTH_STABLE_DOWNLOADS``, ``HF_HUB_DISABLE_XET``) already win above, so the on switch
+        # has to win here or the pair is asymmetric and the only escape from the RAM rule is
+        # editing the request. Buffers are still clamped to free RAM; only the transport choice is
+        # left to the operator, the same stand-down the zoo makes for a user-set
+        # HF_XET_HIGH_PERFORMANCE.
+        return (True, reason)
     # Health said Xet, or had no opinion at all. Free RAM is separate evidence, read from a
     # different zoo module, so it still gets a say: a missing health module says nothing about
     # whether this machine can afford Xet right now.
@@ -88,6 +96,17 @@ def resolve_auto_use_xet() -> tuple[bool, str]:
     if pressure is not None:
         return (False, pressure)
     return (True, reason)
+
+
+def _health_is_forced(health) -> bool:
+    """``UNSLOTH_FORCE_XET``-style verdict? Delegates so this and the capabilities probe stand down
+    on exactly the same evidence; a degraded shim answers False, which keeps the RAM gate on."""
+    try:
+        from utils.hf_xet_fallback import xet_health_is_forced
+        return xet_health_is_forced(health)
+    except Exception as exc:  # noqa: BLE001 - an unreadable verdict is not an override
+        logger.debug("Could not read the Xet health source: %s", exc)
+        return False
 
 
 def _memory_pressure_reason() -> Optional[str]:

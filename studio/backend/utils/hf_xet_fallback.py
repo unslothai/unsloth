@@ -250,6 +250,20 @@ def xet_health(**kwargs: Any) -> Any:
     return _xet_health_from(module, **kwargs)
 
 
+def xet_health_is_forced(health: Any) -> bool:
+    """Is *health* an operator override rather than a measurement of this machine?
+
+    ``unsloth_zoo.hf_xet_health`` stamps ``source = "forced"`` on exactly the two env-var verdicts:
+    ``UNSLOTH_DISABLE_XET`` / ``UNSLOTH_STABLE_DOWNLOADS`` / ``HF_HUB_DISABLE_XET`` turning Xet OFF,
+    and ``UNSLOTH_FORCE_XET`` turning it ON. Callers already honour the off switches by returning
+    early, so this exists for the on switch: the free-RAM gate must stand down for it, or Unsloth
+    ships an escape hatch that only works in one direction.
+
+    Anything unreadable (an older zoo whose verdict has no ``source``, a test double) answers False,
+    which leaves the RAM gate in force -- the safe default."""
+    return health is not None and str(getattr(health, "source", "")) == "forced"
+
+
 def record_xet_outcome(ok: bool, reason: str = "") -> None:
     """Record a finished Xet attempt so a repeatedly-failing machine stops starting on Xet."""
     module = _load_optional("unsloth_zoo.hf_xet_health")
@@ -340,6 +354,22 @@ _pending_reservation = threading.local()
 
 
 def _pid_alive(pid: int) -> bool:
+    """Is *pid* still running? Platform-aware, because this probe must not have side effects.
+
+    NOT ``os.kill(pid, 0)``: on Windows CPython maps every signal other than ``CTRL_C_EVENT`` /
+    ``CTRL_BREAK_EVENT`` onto ``TerminateProcess(handle, sig)``, so signal 0 would KILL the download
+    worker this ledger is merely asking about. ``utils.process_lifetime`` already carries the
+    handle-based probe (``OpenProcess`` + ``WaitForSingleObject``); reuse it rather than growing a
+    second copy that can drift."""
+    try:
+        from utils.process_lifetime import _pid_alive as _platform_pid_alive
+        return bool(_platform_pid_alive(pid))
+    except Exception:  # noqa: BLE001 - fall through to the POSIX probe below
+        pass
+    if os.name == "nt":
+        # No platform probe available: assume alive rather than reach for os.kill, so a reservation
+        # is at worst held too long instead of a running download being terminated.
+        return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -834,6 +864,7 @@ __all__ = [
     "free_ram_pressure_reason",
     "bind_worker_budget",
     "xet_health",
+    "xet_health_is_forced",
     "hf_hub_download_with_xet_fallback",
     "snapshot_download_with_xet_fallback",
 ]

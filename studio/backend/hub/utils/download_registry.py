@@ -107,6 +107,7 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
     xet_available = importlib.util.find_spec("hf_xet") is not None
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
     auto_reason: Optional[str] = None
+    auto_forced = False
     if xet_available:
         try:
             from utils.hf_xet_fallback import cached_xet_health, xet_health
@@ -119,10 +120,20 @@ def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTrans
             if health is not None:
                 auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
                 auto_reason = str(health.reason)
+                # UNSLOTH_FORCE_XET=1: an operator override, not a measurement, so the free-RAM
+                # gate below stands down exactly as `resolve_auto_use_xet` does. Same helper, so
+                # the probe and the API "auto" path cannot disagree about what "forced" means.
+                # Imported separately and guarded: an older or stubbed shim that lacks it must not
+                # cost us the health verdict just recorded above.
+                try:
+                    from utils.hf_xet_fallback import xet_health_is_forced
+                    auto_forced = bool(xet_health_is_forced(health))
+                except Exception:
+                    auto_forced = False
         except Exception:
             # No opinion: keep the optimistic default; the download-time ladder still recovers.
             pass
-    if xet_available and probe and auto_transport == TRANSPORT_XET:
+    if xet_available and probe and auto_transport == TRANSPORT_XET and not auto_forced:
         # Free RAM belongs in the same verdict: this IS the Auto decision, since the UI submits the
         # answer as an explicit xet/http. Read outside the health try, because a health module that
         # is missing or raising says nothing about RAM. Probe-only, so an ordinary poll stays

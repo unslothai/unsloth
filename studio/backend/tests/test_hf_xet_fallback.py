@@ -1193,3 +1193,87 @@ def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
         "the ledger read and the reservation are not one decision"
     )
     assert len(set(granted)) > 1, "identical budgets means they all read the same snapshot"
+
+
+def test_the_ledgers_liveness_probe_never_signals_on_windows(clean_ledger, monkeypatch):
+    """`os.kill(pid, 0)` is not a probe on Windows.
+
+    CPython's `os_kill_impl` routes every signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT into
+    `OpenProcess(PROCESS_ALL_ACCESS)` + `TerminateProcess(handle, sig)`, so signal 0 KILLS the
+    target. The ledger prunes dead reservations on every sizing and on every capability probe, so
+    the old probe would terminate a running download merely because a second one was considered."""
+    import os as _os
+
+    import utils.process_lifetime as pl
+
+    shim = clean_ledger
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+
+    signalled: list[tuple] = []
+
+    def _forbidden(pid, sig):
+        signalled.append((pid, sig))
+        raise AssertionError("os.kill must never be reached on Windows")
+
+    monkeypatch.setattr(_os, "kill", _forbidden)
+
+    shim._pid_alive(_os.getpid())
+    assert signalled == [], "the liveness probe signalled the worker it was asking about"
+
+
+def test_a_running_worker_keeps_its_reservation_on_windows(clean_ledger, monkeypatch):
+    """The Windows probe must also answer correctly, or every reservation is pruned on sight and
+    concurrent workers go back to promising the same free RAM."""
+    import ctypes
+    import os as _os
+
+    import utils.process_lifetime as pl
+
+    shim = clean_ledger
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(_os, "kill", _fail_on_kill)
+
+    WAIT_TIMEOUT = 0x102
+
+    class _FakeKernel32:
+        def __init__(self, *_args, **_kwargs):
+            self.OpenProcess = _FakeFn(0xBEEF)
+            self.WaitForSingleObject = _FakeFn(WAIT_TIMEOUT)  # still running
+            self.CloseHandle = _FakeFn(1)
+
+    monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32, raising = False)
+
+    assert shim._pid_alive(4321) is True
+
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    shim.clamp_to_available_ram({}, dict(sized), module = module)
+    shim.bind_worker_budget(4321)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() > 0, "a live Windows worker's reservation was pruned"
+
+    # And an exited worker (handle signalled) frees its reservation.
+    class _FakeKernel32Dead(_FakeKernel32):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.WaitForSingleObject = _FakeFn(0)  # WAIT_OBJECT_0: exited
+
+    monkeypatch.setattr(ctypes, "WinDLL", _FakeKernel32Dead, raising = False)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "an exited Windows worker still held RAM"
+
+
+class _FakeFn:
+    """A stand-in for a ctypes function pointer: assignable argtypes/restype, fixed return."""
+
+    def __init__(self, result):
+        self._result = result
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *_args, **_kwargs):
+        return self._result
+
+
+def _fail_on_kill(pid, sig):
+    raise AssertionError("os.kill must never be reached on Windows")
