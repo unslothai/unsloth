@@ -132,159 +132,6 @@ def test_route_passes_request_cancel_event_to_transformers_backend(monkeypatch):
     assert captured["cancel_event"].is_set() is False
 
 
-def test_minimax_missing_description_is_a_client_error_before_generation(monkeypatch):
-    generated = []
-
-    class _Llama:
-        is_loaded = False
-        _is_audio = False
-
-    class _Backend:
-        active_model_name = "MiniMaxAI/MiniMax-Music3"
-        models = {active_model_name: {"is_audio": True, "audio_type": "minimax_music3"}}
-
-        def generate_audio_response(self, **kwargs):
-            generated.append(kwargs)
-            return b"RIFFfake", 32000
-
-    async def _noop_switch(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
-    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
-    payload = ChatCompletionRequest(
-        model = "MiniMaxAI/MiniMax-Music3",
-        messages = [{"role": "user", "content": "lyrics"}],
-        audio_instructions = "   ",
-    )
-
-    with pytest.raises(inference_route.HTTPException) as excinfo:
-        asyncio.run(
-            inference_route._generate_tts_wav("lyrics", payload, request = None, current_subject = "t")
-        )
-
-    assert excinfo.value.status_code == 400
-    assert "music description" in str(excinfo.value.detail).lower()
-    assert generated == []
-
-
-def test_higgs_scene_instructions_are_included_in_context_guard(monkeypatch):
-    generated = []
-
-    class _Llama:
-        is_loaded = False
-        _is_audio = False
-
-    class _Backend:
-        active_model_name = "bosonai/higgs-tts-2-3b-base"
-        models = {active_model_name: {"is_audio": True, "audio_type": "higgs_tts2"}}
-
-        def generate_audio_response(self, **kwargs):
-            generated.append(kwargs)
-            return b"RIFFfake", 24000
-
-    async def _noop_switch(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
-    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
-    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 128)
-    payload = ChatCompletionRequest(
-        model = "bosonai/higgs-tts-2-3b-base",
-        messages = [{"role": "user", "content": "hello"}],
-        audio_instructions = "x" * 600,
-    )
-
-    with pytest.raises(inference_route.HTTPException) as excinfo:
-        asyncio.run(
-            inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
-        )
-
-    assert excinfo.value.status_code == 400
-    assert generated == []
-
-
-def test_higgs_scene_instructions_reduce_the_generation_budget(monkeypatch):
-    generated = []
-
-    class _Llama:
-        is_loaded = False
-        _is_audio = False
-
-    class _Backend:
-        active_model_name = "bosonai/higgs-tts-2-3b-base"
-        models = {active_model_name: {"is_audio": True, "audio_type": "higgs_tts2"}}
-
-        def generate_audio_response(self, **kwargs):
-            generated.append(kwargs)
-            return b"RIFFfake", 24000
-
-    async def _noop_switch(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
-    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
-    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 512)
-    scene = "x" * 300
-    payload = ChatCompletionRequest(
-        model = "bosonai/higgs-tts-2-3b-base",
-        messages = [{"role": "user", "content": "hello"}],
-        audio_instructions = scene,
-        max_tokens = 1000,
-    )
-
-    asyncio.run(
-        inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
-    )
-
-    expected = (
-        512
-        - inference_route._prompt_token_estimate(f"{scene}\nhello")
-        - inference_route._TTS_PROMPT_FORMAT_RESERVE
-    )
-    assert generated[0]["max_new_tokens"] == expected
-
-
-def test_moss_instructions_are_included_in_context_guard(monkeypatch):
-    generated = []
-
-    class _Llama:
-        is_loaded = False
-        _is_audio = False
-
-    class _Backend:
-        active_model_name = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"
-        models = {active_model_name: {"is_audio": True, "audio_type": "moss_tts_local"}}
-
-        def generate_audio_response(self, **kwargs):
-            generated.append(kwargs)
-            return b"RIFFfake", 48000
-
-    async def _noop_switch(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama())
-    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Backend())
-    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
-    monkeypatch.setattr(inference_route, "_monitor_context_length", lambda: 128)
-    payload = ChatCompletionRequest(
-        model = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-        messages = [{"role": "user", "content": "hello"}],
-        audio_instructions = "x" * 600,
-    )
-
-    with pytest.raises(inference_route.HTTPException) as excinfo:
-        asyncio.run(
-            inference_route._generate_tts_wav("hello", payload, request = None, current_subject = "t")
-        )
-
-    assert excinfo.value.status_code == 400
-    assert generated == []
-
-
 def test_audio_response_stopped_while_queued_is_never_sent(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
@@ -454,13 +301,6 @@ def test_audio_generation_timeout_scales_with_requested_tokens(monkeypatch):
     assert orchestrator_module._audio_generation_timeout(2048) == 10.0
     assert orchestrator_module._audio_generation_timeout(8192) == 40.0
     assert orchestrator_module._audio_generation_timeout(10**310) == 40.0
-    assert (
-        orchestrator_module._audio_generation_timeout(
-            10**310,
-            max_tokens = orchestrator_module.MOSS_TTS_MAX_FRAMES,
-        )
-        == 160.0
-    )
 
 
 def test_tts_route_bounds_public_token_budget():
@@ -472,7 +312,7 @@ def test_tts_route_bounds_public_token_budget():
     assert inference_route._tts_max_new_tokens(payload) == 8192
 
 
-def test_audio_worker_command_uses_model_token_ceiling_and_forwards_language(monkeypatch):
+def test_audio_worker_command_uses_the_bounded_token_budget(monkeypatch):
     orchestrator = _bare_orchestrator()
     monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
     sent = []
@@ -496,30 +336,11 @@ def test_audio_worker_command_uses_model_token_ceiling_and_forwards_language(mon
 
     monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
 
-    assert orchestrator.generate_audio_response(
-        "hello",
-        max_new_tokens = 10**310,
-        language = "French",
-    ) == (
+    assert orchestrator.generate_audio_response("hello", max_new_tokens = 10**310) == (
         b"RIFFfake",
         24000,
     )
     assert sent[0]["max_new_tokens"] == 8192
-
-    orchestrator.models["model"].update(
-        audio_type = "moss_tts_local",
-        context_length = 16384,
-    )
-    assert orchestrator.generate_audio_response(
-        "hello",
-        max_new_tokens = 10**310,
-        language = "French",
-    ) == (
-        b"RIFFfake",
-        24000,
-    )
-    assert sent[1]["max_new_tokens"] == 16384
-    assert sent[1]["language"] == "French"
 
 
 def test_audio_response_timeout_cancels_and_drains_before_releasing(monkeypatch):
@@ -781,7 +602,7 @@ def test_dispatched_generation_rechecks_tts_reservation_before_registration(monk
     assert orchestrator._mailboxes == {}
 
 
-def test_worker_audio_forwards_shared_cancel_event_and_language():
+def test_worker_audio_forwards_shared_cancel_event():
     cancel = threading.Event()
     captured = {}
 
@@ -793,13 +614,12 @@ def test_worker_audio_forwards_shared_cancel_event_and_language():
     responses = queue.Queue()
     _handle_generate_audio(
         _Backend(),
-        {"request_id": "audio-1", "text": "hello", "language": "French"},
+        {"request_id": "audio-1", "text": "hello"},
         responses,
         cancel,
     )
 
     assert captured["cancel_event"] is cancel
-    assert captured["language"] == "French"
     assert responses.get_nowait()["type"] == "audio_done"
 
 

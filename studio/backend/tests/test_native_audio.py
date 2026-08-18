@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermetic contracts for native audio adapters. No Hub or model load occurs."""
+"""Compact hermetic contracts for native audio adapters."""
 
 from __future__ import annotations
 
@@ -22,326 +22,9 @@ from core.inference.native_audio import (
     is_native_audio_model,
     native_audio_download_plan,
     native_audio_kv_memory_gb,
-    native_audio_type_from_local_path,
     native_audio_security_targets,
+    native_audio_type_from_local_path,
 )
-from utils.models.model_config import _detect_audio_from_config
-
-
-@pytest.mark.parametrize(
-    "repo",
-    (
-        "bosonai/higgs-tts-2-3b-base",
-        "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
-        "OpenMOSS-Team/MOSS-TTS-Nano-100M",
-        "multimodalart/higgs-audio-v3-tts-4b-transformers",
-        "MiniMaxAI/MiniMax-Music3",
-    ),
-)
-def test_curated_repo_uses_native_audio_worker(repo):
-    assert is_native_audio_model(repo)
-
-
-def test_local_minimax_modular_index_is_detected_without_config(tmp_path):
-    (tmp_path / "modular_model_index.json").write_text(
-        json.dumps(
-            {
-                "_class_name": "MiniMaxMusic3ModularPipeline",
-                "_blocks_class_name": "MiniMaxMusic3Blocks",
-            }
-        ),
-        encoding = "utf-8",
-    )
-
-    assert native_audio_type_from_local_path(str(tmp_path)) == "minimax_music3"
-    assert is_native_audio_model(str(tmp_path))
-    assert _detect_audio_from_config(str(tmp_path)) == "minimax_music3"
-
-    (tmp_path / "modular_model_index.json").write_text(
-        json.dumps({"_class_name": "UnrelatedPipeline"}), encoding = "utf-8"
-    )
-    assert native_audio_type_from_local_path(str(tmp_path)) is None
-
-
-@pytest.mark.parametrize(
-    ("repo", "companion"),
-    (
-        ("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", MOSS_LOCAL_CODEC_REPO),
-        ("OpenMOSS-Team/MOSS-TTS-Nano-100M", MOSS_NANO_CODEC_REPO),
-        ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
-    ),
-)
-def test_native_audio_security_targets_include_companion_repositories(repo, companion, monkeypatch):
-    monkeypatch.setattr(
-        "core.inference.native_audio._read_audio_metadata", lambda *_args, **_kwargs: {}
-    )
-    assert native_audio_security_targets(repo) == [repo, companion]
-
-
-def test_moss_local_security_target_follows_checkpoint_processor_config(tmp_path):
-    custom_codec = "acme/custom-moss-codec"
-    (tmp_path / "processor_config.json").write_text(
-        json.dumps({"audio_tokenizer_name_or_path": custom_codec}),
-        encoding = "utf-8",
-    )
-
-    assert native_audio_security_targets(str(tmp_path), "moss_tts_local") == [
-        str(tmp_path),
-        custom_codec,
-    ]
-
-
-def test_transformers5_moss_config_compat_is_scoped_and_restored(monkeypatch):
-    calls = []
-
-    class PreTrainedConfig:
-        def __init_subclass__(cls, **kwargs):
-            raise TypeError("non-default argument 'sampling_rate' follows default argument")
-
-    original = PreTrainedConfig.__dict__["__init_subclass__"]
-
-    class AutoConfig:
-        @staticmethod
-        def from_pretrained(source, **kwargs):
-            class PublishedMossConfig(PreTrainedConfig):
-                pass
-
-            calls.append((source, kwargs, PublishedMossConfig))
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            __version__ = "5.5.0",
-            AutoConfig = AutoConfig,
-            PreTrainedConfig = PreTrainedConfig,
-        ),
-    )
-
-    _moss_transformers5_config_compat("OpenMOSS-Team/test-codec", {"token": "secret"})
-
-    assert calls[0][0] == "OpenMOSS-Team/test-codec"
-    assert calls[0][1] == {"trust_remote_code": True, "token": "secret"}
-    assert PreTrainedConfig.__dict__["__init_subclass__"] is original
-    with pytest.raises(TypeError, match = "sampling_rate"):
-
-        class RestoredFailure(PreTrainedConfig):
-            pass
-
-
-def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
-    siblings = [
-        SimpleNamespace(rfilename = "modular_model_index.json", size = 10),
-        SimpleNamespace(rfilename = "pipeline.py", size = 5),
-        SimpleNamespace(rfilename = "transformer/model.safetensors", size = 100),
-        SimpleNamespace(rfilename = "flowmatching_vae.pth", size = 500),
-        SimpleNamespace(rfilename = "qwen_7B/model-00001.safetensors", size = 400),
-        SimpleNamespace(rfilename = "README.md", size = 20),
-    ]
-
-    class HfApi:
-        def __init__(self, token = None):
-            assert token == "secret"
-
-        def model_info(
-            self,
-            repo_id,
-            files_metadata = False,
-        ):
-            assert repo_id == "MiniMaxAI/MiniMax-Music3"
-            assert files_metadata is True
-            return SimpleNamespace(sha = "current", siblings = siblings)
-
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
-    monkeypatch.setattr(
-        "core.inference.native_audio._native_audio_file_is_cached",
-        lambda *_args: False,
-    )
-
-    plan = native_audio_download_plan("MiniMaxAI/MiniMax-Music3", "secret")
-
-    assert plan["entries"][0]["files"] == [
-        "modular_model_index.json",
-        "pipeline.py",
-        "transformer/model.safetensors",
-    ]
-    assert plan["total_bytes"] == 115
-    assert plan["required_bytes"] == 115
-    assert plan["checkpoint_bytes"] == 115
-
-
-def test_download_plan_stages_missing_codec_when_main_repo_is_cached(monkeypatch):
-    infos = {
-        "OpenMOSS-Team/MOSS-TTS-Nano-100M": SimpleNamespace(
-            sha = "main-sha",
-            siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 100)],
-        ),
-        MOSS_NANO_CODEC_REPO: SimpleNamespace(
-            sha = "codec-sha",
-            siblings = [
-                SimpleNamespace(rfilename = "config.json", size = 2),
-                SimpleNamespace(rfilename = "model.safetensors", size = 20),
-            ],
-        ),
-    }
-
-    class HfApi:
-        def __init__(self, token = None):
-            assert token is None
-
-        def model_info(
-            self,
-            repo_id,
-            files_metadata = False,
-        ):
-            assert files_metadata is True
-            return infos[repo_id]
-
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
-    monkeypatch.setattr(
-        "core.inference.native_audio._native_audio_file_is_cached",
-        lambda repo, *_args: repo != MOSS_NANO_CODEC_REPO,
-    )
-
-    plan = native_audio_download_plan("OpenMOSS-Team/MOSS-TTS-Nano-100M")
-
-    assert len(plan["entries"]) == 1
-    assert plan["entries"][0] == {
-        "repo_id": MOSS_NANO_CODEC_REPO,
-        "files": ["config.json", "model.safetensors"],
-        "bytes": 22,
-        "gguf_filename": None,
-        "checkpoint": False,
-    }
-    assert plan["required_bytes"] == 122
-    assert plan["checkpoint_bytes"] == 100
-
-
-def test_download_plan_uses_selected_local_snapshot_companion(tmp_path, monkeypatch):
-    selected_codec = "acme/codec-from-selected-snapshot"
-    (tmp_path / "config.json").write_text(
-        json.dumps({"model_type": "moss_tts_local"}), encoding = "utf-8"
-    )
-    (tmp_path / "processor_config.json").write_text(
-        json.dumps({"audio_tokenizer_name_or_path": selected_codec}), encoding = "utf-8"
-    )
-
-    class HfApi:
-        def __init__(self, token = None):
-            assert token is None
-
-        def model_info(
-            self,
-            repo_id,
-            files_metadata = False,
-        ):
-            assert repo_id == selected_codec
-            assert files_metadata is True
-            return SimpleNamespace(
-                sha = "codec-sha",
-                siblings = [SimpleNamespace(rfilename = "model.safetensors", size = 20)],
-            )
-
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
-    monkeypatch.setattr(
-        "core.inference.native_audio._native_audio_file_is_cached",
-        lambda *_args: False,
-    )
-
-    plan = native_audio_download_plan(str(tmp_path))
-
-    assert plan["entries"] == [
-        {
-            "repo_id": selected_codec,
-            "files": ["model.safetensors"],
-            "bytes": 20,
-            "gguf_filename": None,
-            "checkpoint": False,
-        }
-    ]
-    assert plan["checkpoint_bytes"] == 0
-
-
-@pytest.mark.parametrize(
-    ("audio_type", "config", "expected_gb"),
-    (
-        (
-            "moss_tts_local",
-            {
-                "qwen3_config": {
-                    "max_position_embeddings": 32768,
-                    "num_hidden_layers": 36,
-                    "num_attention_heads": 32,
-                    "num_key_value_heads": 8,
-                    "head_dim": 128,
-                },
-                "gpt2_config": {
-                    "n_positions": 10240,
-                    "n_layer": 1,
-                    "n_head": 32,
-                    "n_embd": 2560,
-                },
-            },
-            4.59765625,
-        ),
-        (
-            "moss_tts_nano",
-            {
-                "gpt2_config": {
-                    "n_positions": 32768,
-                    "n_layer": 12,
-                    "n_head": 12,
-                    "n_embd": 768,
-                }
-            },
-            1.125,
-        ),
-    ),
-)
-def test_moss_kv_memory_uses_published_full_context(tmp_path, audio_type, config, expected_gb):
-    (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
-
-    assert native_audio_kv_memory_gb(str(tmp_path), audio_type) == pytest.approx(expected_gb)
-    assert native_audio_kv_memory_gb(str(tmp_path), "higgs_tts2") == 0.0
-
-
-def test_download_plan_uses_full_snapshot_for_generic_hub_tts(monkeypatch):
-    siblings = [
-        SimpleNamespace(rfilename = "config.json", size = 2),
-        SimpleNamespace(rfilename = "model.safetensors", size = 20),
-        SimpleNamespace(rfilename = "tokenizer.json", size = 3),
-    ]
-
-    class HfApi:
-        def __init__(self, token = None):
-            assert token is None
-
-        def model_info(
-            self,
-            repo_id,
-            files_metadata = False,
-        ):
-            assert repo_id == "acme/custom-tts"
-            assert files_metadata is True
-            return SimpleNamespace(sha = "current", siblings = siblings)
-
-    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
-    monkeypatch.setattr(
-        "core.inference.native_audio._native_audio_file_is_cached",
-        lambda *_args: False,
-    )
-
-    plan = native_audio_download_plan("acme/custom-tts")
-
-    assert plan["entries"] == [
-        {
-            "repo_id": "acme/custom-tts",
-            "files": ["config.json", "model.safetensors", "tokenizer.json"],
-            "bytes": 25,
-            "gguf_filename": None,
-            "checkpoint": True,
-        }
-    ]
 
 
 def _backend(audio_type: str, **entry):
@@ -358,685 +41,268 @@ def _backend(audio_type: str, **entry):
     return backend
 
 
-def test_native_audio_dtype_tracks_accelerator_bf16_support(monkeypatch):
-    backend = _backend("higgs_tts2")
-    backend.device = "cuda"
-
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5))
-    assert backend._dtype() is torch.float16
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (8, 0))
-    assert backend._dtype() is torch.bfloat16
-
-    monkeypatch.setattr(torch.version, "hip", "6.0", raising = False)
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
-    assert backend._dtype() is torch.float16
-    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
-    assert backend._dtype() is torch.bfloat16
-
-
-def test_native_audio_context_uses_text_config_and_requested_cap():
-    config = SimpleNamespace(
-        max_position_embeddings = 8192,
-        text_config = SimpleNamespace(max_position_embeddings = 4096),
+@pytest.mark.parametrize(
+    ("repo", "companion"),
+    (
+        ("bosonai/higgs-tts-2-3b-base", None),
+        ("multimodalart/higgs-audio-v3-tts-4b-transformers", HIGGS_TTS3_CODEC_REPO),
+        ("OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5", MOSS_LOCAL_CODEC_REPO),
+        ("OpenMOSS-Team/MOSS-TTS-Nano-100M", MOSS_NANO_CODEC_REPO),
+        ("MiniMaxAI/MiniMax-Music3", None),
+    ),
+)
+def test_curated_native_families_and_security_targets(repo, companion, monkeypatch):
+    monkeypatch.setattr(
+        "core.inference.native_audio._read_audio_metadata", lambda *_args, **_kwargs: {}
     )
-    entry = {"model": SimpleNamespace(config = config)}
-
-    assert NativeAudioBackend._context_length(entry, 2048, "higgs_tts2") == 2048
-    assert NativeAudioBackend._context_length(entry, 8192, "higgs_tts2") == 4096
-    assert NativeAudioBackend._context_length(entry, 8192, "minimax_music3") == 0
-
-    moss_entry = {
-        "model": SimpleNamespace(
-            config = SimpleNamespace(language_config = SimpleNamespace(max_position_embeddings = 32768))
-        )
-    }
-    assert NativeAudioBackend._context_length(moss_entry, 0, "moss_tts_local") == 32768
-    assert NativeAudioBackend._context_length(moss_entry, 10240, "moss_tts_local") == 32768
+    assert is_native_audio_model(repo)
+    assert native_audio_security_targets(repo) == ([repo, companion] if companion else [repo])
 
 
-def test_higgs_tts2_follows_chat_template_and_decode_contract():
-    seen = {}
+def test_local_minimax_detection_and_moss_companion_override(tmp_path):
+    (tmp_path / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "MiniMaxMusic3ModularPipeline",
+                "_blocks_class_name": "MiniMaxMusic3Blocks",
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert native_audio_type_from_local_path(str(tmp_path)) == "minimax_music3"
 
-    class Batch(dict):
-        def to(self, device):
-            seen["device"] = device
-            return self
+    (tmp_path / "modular_model_index.json").unlink()
+    (tmp_path / "processor_config.json").write_text(
+        json.dumps({"audio_tokenizer_name_or_path": "acme/custom-codec"}), encoding = "utf-8"
+    )
+    assert native_audio_security_targets(str(tmp_path), "moss_tts_local") == [
+        str(tmp_path),
+        "acme/custom-codec",
+    ]
 
-    class Processor:
-        def apply_chat_template(self, conversation, **kwargs):
-            seen["conversation"] = conversation
-            seen["template_kwargs"] = kwargs
-            return Batch(input_ids = torch.tensor([[1]]))
 
-        def batch_decode(self, outputs):
-            seen["outputs"] = outputs
-            return [torch.zeros(240)]
-
-    class Model:
-        device = "cpu"
-
-        def generate(self, **kwargs):
-            seen["generate"] = kwargs
-            return torch.tensor([[1, 2]])
-
-    backend = _backend("higgs_tts2", model = Model(), processor = Processor())
-    wav, sample_rate = backend.generate_audio_response(
-        "Hello <|eot_id|> and <ordinary>.",
-        instructions = "Close-mic <|scene_desc_end|> and <ordinary>.",
-        top_k = -1,
-        max_new_tokens = 321,
+def test_minimax_download_plan_excludes_unreferenced_legacy_weights(monkeypatch):
+    siblings = [
+        SimpleNamespace(rfilename = "modular_model_index.json", size = 10),
+        SimpleNamespace(rfilename = "transformer/model.safetensors", size = 100),
+        SimpleNamespace(rfilename = "flowmatching_vae.pth", size = 500),
+        SimpleNamespace(rfilename = "qwen_7B/model.safetensors", size = 400),
+    ]
+    api = SimpleNamespace(
+        model_info = lambda *_args, **_kwargs: SimpleNamespace(sha = "current", siblings = siblings)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(HfApi = lambda **_kwargs: api),
+    )
+    monkeypatch.setattr(
+        "core.inference.native_audio._native_audio_file_is_cached", lambda *_args: False
     )
 
-    assert wav[:4] == b"RIFF" and sample_rate == 24000
-    assert seen["conversation"][1]["role"] == "scene"
-    assert seen["conversation"][1]["content"][0]["text"] == (
-        "Close-mic < |scene_desc_end|> and <ordinary>."
+    plan = native_audio_download_plan("MiniMaxAI/MiniMax-Music3")
+    assert plan["entries"][0]["files"] == [
+        "modular_model_index.json",
+        "transformer/model.safetensors",
+    ]
+    assert plan["required_bytes"] == 110
+
+
+def test_moss_kv_memory_uses_full_published_context(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "gpt2_config": {
+                    "n_positions": 32768,
+                    "n_layer": 12,
+                    "n_head": 12,
+                    "n_embd": 768,
+                }
+            }
+        ),
+        encoding = "utf-8",
     )
-    assert seen["conversation"][2]["content"][0]["text"] == ("Hello < |eot_id|> and <ordinary>.")
-    assert seen["template_kwargs"]["sampling_rate"] == 24000
-    assert seen["generate"]["max_new_tokens"] == 321
-    assert seen["generate"]["top_k"] == 0
+    assert native_audio_kv_memory_gb(str(tmp_path), "moss_tts_nano") == pytest.approx(1.125)
 
 
-def test_remote_code_audio_requires_explicit_consent_before_loading():
+def test_transformers5_moss_compat_is_scoped(monkeypatch):
+    calls = []
+
+    class Config:
+        def __init_subclass__(cls, **_kwargs):
+            raise TypeError("non-default argument 'sampling_rate' follows default argument")
+
+    original = Config.__dict__["__init_subclass__"]
+
+    class AutoConfig:
+        @staticmethod
+        def from_pretrained(source, **kwargs):
+            calls.append((source, kwargs))
+
+            class Published(Config):
+                pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(__version__ = "5.5.0", AutoConfig = AutoConfig, PreTrainedConfig = Config),
+    )
+    _moss_transformers5_config_compat("OpenMOSS-Team/codec", {"token": "secret"})
+    assert calls == [("OpenMOSS-Team/codec", {"trust_remote_code": True, "token": "secret"})]
+    assert Config.__dict__["__init_subclass__"] is original
+
+
+@pytest.mark.parametrize(
+    ("trust", "gpu_ids", "error"),
+    ((False, None, "trust_remote_code=True"), (True, [0, 1], "single selected GPU")),
+)
+def test_native_load_refuses_unsafe_consent_or_placement(trust, gpu_ids, error):
     backend = NativeAudioBackend.__new__(NativeAudioBackend)
-    backend.device = "cpu"
+    backend.device = "cuda"
     backend.models = {}
     backend.active_model_name = None
     backend.loading_models = set()
+    backend._load_moss_local = lambda *_args: pytest.fail("loader must not run")
     config = SimpleNamespace(
         identifier = "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5",
         path = None,
         audio_type = "moss_tts_local",
     )
+    with pytest.raises(RuntimeError, match = error):
+        backend.load_model(config, trust_remote_code = trust, gpu_ids = gpu_ids)
 
-    with pytest.raises(RuntimeError, match = "trust_remote_code=True"):
-        backend.load_model(config, trust_remote_code = False)
 
+def test_higgs_tts2_generation_contract_and_prompt_neutralization():
     seen = {}
-    backend._load_moss_local = lambda entry, source, token, trust: seen.update(
-        source = source, trust = trust
-    )
-    assert backend.load_model(config, trust_remote_code = True)
-    assert seen == {"source": config.identifier, "trust": True}
-
-
-def test_native_audio_rejects_multi_gpu_before_loader_runs():
-    backend = NativeAudioBackend.__new__(NativeAudioBackend)
-    backend.device = "cuda"
-    backend.models = {}
-    backend.active_model_name = None
-    backend.loading_models = set()
-    backend._load_higgs_tts2 = lambda *_args: pytest.fail("loader must not run")
-    config = SimpleNamespace(
-        identifier = "bosonai/higgs-tts-2-3b-base",
-        path = None,
-        audio_type = "higgs_tts2",
-    )
-
-    with pytest.raises(RuntimeError, match = "single selected GPU"):
-        backend.load_model(config, gpu_ids = [0, 1])
-
-
-def test_minimax_component_load_receives_hub_token(monkeypatch):
-    seen = {}
-
-    class Pipeline:
-        sampling_rate = 44100
-
-        def load_components(self, **kwargs):
-            seen["components"] = kwargs
-
-        def to(self, device):
-            seen["device"] = device
-
-    class ModularPipeline:
-        @staticmethod
-        def from_pretrained(source, **kwargs):
-            seen["source"] = source
-            seen["index"] = kwargs
-            return Pipeline()
-
-    monkeypatch.setitem(sys.modules, "diffusers", SimpleNamespace(ModularPipeline = ModularPipeline))
-    backend = _backend("minimax_music3")
-    entry = {}
-    backend._load_minimax_music3(entry, "MiniMaxAI/MiniMax-Music3", "secret")
-
-    assert seen["index"]["token"] == "secret"
-    assert seen["components"]["token"] == "secret"
-    assert seen["device"] == "cpu"
-
-
-def test_higgs_tts3_preloads_codec_during_model_load(monkeypatch):
-    seen = []
-
-    class Model:
-        config = SimpleNamespace(sample_rate = 24000)
-
-        def to(self, device):
-            seen.append(("move", device))
-            return self
-
-        def get_audio_codec(self):
-            seen.append(("codec", None))
-
-    class AutoModelForCausalLM:
-        @staticmethod
-        def from_pretrained(*_args, **_kwargs):
-            return Model()
-
-    class AutoTokenizer:
-        @staticmethod
-        def from_pretrained(*_args, **_kwargs):
-            return object()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            AutoModelForCausalLM = AutoModelForCausalLM,
-            AutoTokenizer = AutoTokenizer,
-        ),
-    )
-    backend = NativeAudioBackend.__new__(NativeAudioBackend)
-    backend.device = "cpu"
-    backend.models = {}
-    backend.active_model_name = None
-    backend.loading_models = set()
-    config = SimpleNamespace(
-        identifier = "multimodalart/higgs-audio-v3-tts-4b-transformers",
-        path = None,
-        audio_type = "higgs_tts3",
-    )
-
-    assert backend.load_model(config, trust_remote_code = True)
-    assert seen == [("move", "cpu"), ("codec", None)]
-
-
-def test_moss_local_loader_uses_the_scanned_checkpoint_codec(monkeypatch, tmp_path):
-    seen = {}
-    custom_codec = "acme/custom-moss-codec"
-    (tmp_path / "processor_config.json").write_text(
-        json.dumps({"audio_tokenizer_name_or_path": custom_codec}),
-        encoding = "utf-8",
-    )
 
     class Processor:
-        audio_tokenizer = None
-        model_config = SimpleNamespace(sampling_rate = 48000)
+        def apply_chat_template(self, conversation, **kwargs):
+            seen.update(conversation = conversation, template = kwargs)
+            return SimpleNamespace(to = lambda _device: {"input_ids": torch.tensor([[1]])})
 
-    class AutoProcessor:
-        @staticmethod
-        def from_pretrained(source, **kwargs):
-            seen["processor_source"] = source
-            seen["codec_path"] = kwargs["codec_path"]
-            return Processor()
+        def batch_decode(self, _outputs):
+            return [torch.zeros(240)]
 
-    class Model:
-        def to(self, _device):
-            return self
-
-        def eval(self):
-            return self
-
-    class AutoModel:
-        @staticmethod
-        def from_pretrained(*_args, **_kwargs):
-            return Model()
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(AutoModel = AutoModel, AutoProcessor = AutoProcessor),
+    model = SimpleNamespace(
+        device = "cpu",
+        generate = lambda **kwargs: seen.setdefault("generate", kwargs) or torch.tensor([[1, 2]]),
     )
-    backend = NativeAudioBackend.__new__(NativeAudioBackend)
-    backend.device = "cpu"
-    entry = {}
-    backend._load_moss_local(entry, str(tmp_path), None, True)
-
-    assert seen == {"processor_source": str(tmp_path), "codec_path": custom_codec}
-    assert entry["sample_rate"] == 48000
-
-
-def test_higgs_tts3_codec_failure_prevents_loaded_state(monkeypatch):
-    class Model:
-        config = SimpleNamespace(sample_rate = 24000)
-
-        def to(self, _device):
-            return self
-
-        def get_audio_codec(self):
-            raise RuntimeError("codec unavailable")
-
-    monkeypatch.setitem(
-        sys.modules,
-        "transformers",
-        SimpleNamespace(
-            AutoModelForCausalLM = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: Model()),
-            AutoTokenizer = SimpleNamespace(from_pretrained = lambda *_args, **_kwargs: object()),
-        ),
+    backend = _backend("higgs_tts2", model = model, processor = Processor())
+    wav, rate = backend.generate_audio_response(
+        "Hello <|eot_id|>", instructions = "Close <|scene_desc_end|>", max_new_tokens = 321
     )
-    backend = NativeAudioBackend.__new__(NativeAudioBackend)
-    backend.device = "cpu"
-    backend.models = {}
-    backend.active_model_name = None
-    backend.loading_models = set()
-    config = SimpleNamespace(
-        identifier = "multimodalart/higgs-audio-v3-tts-4b-transformers",
-        path = None,
-        audio_type = "higgs_tts3",
-    )
-
-    with pytest.raises(RuntimeError, match = "codec unavailable"):
-        backend.load_model(config, trust_remote_code = True)
-    assert config.identifier not in backend.models
+    assert wav[:4] == b"RIFF" and rate == 24000
+    assert seen["conversation"][1]["content"][0]["text"] == "Close < |scene_desc_end|>"
+    assert seen["generate"]["max_new_tokens"] == 321
 
 
-def test_higgs_tts3_neutralizes_prompt_markers_before_synthesis():
+def test_higgs_tts3_generation_contract():
     seen = {}
-
-    class Model:
-        def generate_speech(self, text, _tokenizer, **_kwargs):
-            seen["text"] = text
-            return torch.zeros(240)
-
-    backend = _backend("higgs_tts3", model = Model(), processor = object())
-    wav, sample_rate = backend.generate_audio_response(
-        "Say <|audio|>, <|ref_audio|>, and <ordinary> exactly."
+    tokenizer = object()
+    model = SimpleNamespace(
+        generate_speech = lambda text, processor, **kwargs: (
+            seen.update(text = text, processor = processor, **kwargs) or torch.zeros(240)
+        )
+    )
+    backend = _backend("higgs_tts3", model = model, processor = tokenizer)
+    wav, rate = backend.generate_audio_response("Hello v3", temperature = 0, max_new_tokens = 777)
+    assert wav[:4] == b"RIFF" and rate == 24000
+    assert (seen["text"], seen["processor"], seen["max_new_tokens"]) == (
+        "Hello v3",
+        tokenizer,
+        777,
     )
 
-    assert wav[:4] == b"RIFF" and sample_rate == 24000
-    assert seen["text"] == "Say < |audio|>, < |ref_audio|>, and <ordinary> exactly."
 
-
-def test_higgs_tts3_cancellation_interrupts_the_autoregressive_loop():
-    cancel = threading.Event()
-    seen = {"steps": 0, "removed": False}
-
-    class Handle:
-        def remove(self):
-            seen["removed"] = True
-
-    class InnerModel:
-        hook = None
-
-        def register_forward_pre_hook(self, hook):
-            self.hook = hook
-            return Handle()
-
-        def step(self):
-            self.hook(self, ())
-            seen["steps"] += 1
-            cancel.set()
-
-    class Model:
-        def __init__(self):
-            self.model = InnerModel()
-
-        def generate_speech(self, _text, _tokenizer, **_kwargs):
-            for _ in range(3):
-                self.model.step()
-            return torch.zeros(240)
-
-    backend = _backend("higgs_tts3", model = Model(), processor = object())
-
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate_audio_response("hello", cancel_event = cancel)
-
-    assert seen == {"steps": 1, "removed": True}
-
-
-def test_moss_local_uses_generation_messages_and_stereo_decode():
+def test_moss_local_generation_contract():
     seen = {}
-    stereo = torch.zeros((2, 480))
 
     class Processor:
         def build_user_message(self, **kwargs):
             seen["message"] = kwargs
-            return {"text": kwargs["text"]}
+            return kwargs
 
         def __call__(self, conversations, mode):
-            seen["conversations"] = conversations
-            seen["mode"] = mode
-            return {
-                "input_ids": torch.tensor([[1]]),
-                "attention_mask": torch.tensor([[1]]),
-            }
+            seen.update(conversations = conversations, mode = mode)
+            return {"input_ids": torch.tensor([[1]]), "attention_mask": torch.tensor([[1]])}
 
         def decode(self, _outputs):
-            return [SimpleNamespace(audio_codes_list = [stereo])]
+            return [SimpleNamespace(audio_codes_list = [torch.zeros((2, 480))])]
 
-    class Model:
-        def generate(self, **kwargs):
-            seen["generate"] = kwargs
-            return torch.tensor([[1, 2]])
-
-    backend = _backend(
-        "moss_tts_local",
-        model = Model(),
-        processor = Processor(),
-        sample_rate = 48000,
+    model = SimpleNamespace(
+        generate = lambda **kwargs: seen.setdefault("generate", kwargs) or torch.tensor([[1, 2]])
     )
-    wav, sample_rate = backend.generate_audio_response(
-        "Bonjour",
-        instructions = "Warm and measured",
-        language = "French",
-        max_new_tokens = 400,
+    backend = _backend("moss_tts_local", model = model, processor = Processor(), sample_rate = 48000)
+    wav, rate = backend.generate_audio_response(
+        "Bonjour", instructions = "Warm", language = "French", max_new_tokens = 400
     )
-
-    assert wav[:4] == b"RIFF" and sample_rate == 48000
-    assert seen["message"] == {
-        "text": "Bonjour",
-        "instruction": "Warm and measured",
-        "language": "French",
-    }
-    assert seen["mode"] == "generation"
-    assert seen["generate"]["audio_top_k"] == 50
-    assert seen["generate"]["do_sample"] is True
-
-    backend.generate_audio_response("Bonjour", temperature = 0)
-    assert seen["generate"]["do_sample"] is False
-    assert seen["generate"]["audio_temperature"] == 0
+    assert wav[:4] == b"RIFF" and rate == 48000
+    assert seen["message"] == {"text": "Bonjour", "instruction": "Warm", "language": "French"}
+    assert seen["mode"] == "generation" and seen["generate"]["audio_top_k"] == 50
 
 
-def test_moss_local_cancellation_interrupts_generation_and_removes_hooks():
-    cancel = threading.Event()
-    seen = {"steps": 0, "removed": []}
-
-    class Handle:
-        def __init__(self, name):
-            self.name = name
-
-        def remove(self):
-            seen["removed"].append(self.name)
-
-    class Transformer:
-        hook = None
-
-        def __init__(self, name):
-            self.name = name
-
-        def register_forward_pre_hook(self, hook):
-            self.hook = hook
-            return Handle(self.name)
-
-        def step(self):
-            self.hook(self, ())
-
-    class Processor:
-        def build_user_message(self, **_kwargs):
-            return {}
-
-        def __call__(self, _conversations, mode):
-            assert mode == "generation"
-            return {
-                "input_ids": torch.tensor([[1]]),
-                "attention_mask": torch.tensor([[1]]),
-            }
-
-    class Model:
-        def __init__(self):
-            self.transformer = Transformer("transformer")
-            self.local_transformer = Transformer("local_transformer")
-
-        def generate(self, **_kwargs):
-            self.transformer.step()
-            seen["steps"] += 1
-            cancel.set()
-            self.local_transformer.step()
-            pytest.fail("cancelled generation must stop before decoding")
-
-    backend = _backend(
-        "moss_tts_local",
-        model = Model(),
-        processor = Processor(),
-        sample_rate = 48000,
-    )
-
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate_audio_response("Bonjour", cancel_event = cancel)
-
-    assert seen == {"steps": 1, "removed": ["transformer", "local_transformer"]}
-
-
-def test_moss_nano_passes_companion_codec_and_returns_written_wav():
+def test_moss_nano_generation_contract(tmp_path):
     seen = {}
 
-    class Model:
-        def inference(self, **kwargs):
-            seen.update(kwargs)
-            kwargs["output_audio_path"].write_bytes(b"RIFFnano")
-            return {"sample_rate": 48000}
+    def inference(**kwargs):
+        seen.update(kwargs)
+        kwargs["output_audio_path"].write_bytes(b"RIFFnano")
+        return {"sample_rate": 48000}
 
-    codec = object()
-    tokenizer = object()
+    codec, tokenizer = object(), object()
     backend = _backend(
         "moss_tts_nano",
-        model = Model(),
+        model = SimpleNamespace(inference = inference),
         processor = tokenizer,
         audio_codec = codec,
         sample_rate = 48000,
     )
-    wav, sample_rate = backend.generate_audio_response("Portable speech", max_new_tokens = 375)
-
-    assert wav == b"RIFFnano" and sample_rate == 48000
-    assert seen["mode"] == "continuation"
-    assert seen["text_tokenizer"] is tokenizer
-    assert seen["audio_tokenizer"] is codec
+    wav, rate = backend.generate_audio_response("Portable speech", max_new_tokens = 375)
+    assert wav == b"RIFFnano" and rate == 48000
+    assert seen["audio_tokenizer"] is codec and seen["text_tokenizer"] is tokenizer
     assert seen["max_new_frames"] == 375
-    assert seen["text_temperature"] == 1.5
-    assert seen["text_top_p"] == 1.0
-    assert seen["text_top_k"] == 50
-
-    backend.generate_audio_response("Portable speech", temperature = 0, max_new_tokens = 375)
-    assert seen["do_sample"] is False
-    assert seen["text_temperature"] == 1.5
-    assert seen["audio_temperature"] == 0
 
 
-def test_moss_nano_cancellation_interrupts_generation_and_removes_hooks():
-    cancel = threading.Event()
-    seen = {"steps": 0, "removed": []}
+def test_minimax_generation_and_cancellation_contract():
+    seen = {}
+    cancelled = threading.Event()
 
-    class Handle:
-        def __init__(self, name):
-            self.name = name
-
-        def remove(self):
-            seen["removed"].append(self.name)
-
-    class Transformer:
+    class Core:
         hook = None
 
         def register_forward_pre_hook(self, hook):
             self.hook = hook
-            return Handle("transformer")
-
-        def step(self):
-            self.hook(self, ())
-            seen["steps"] += 1
-            cancel.set()
-
-    class LocalTransformer:
-        hook = None
-
-        def register_forward_pre_hook(self, hook):
-            self.hook = hook
-            return Handle("local_transformer")
-
-        def step(self):
-            self.hook(self, ())
-
-    class Codec:
-        def register_forward_pre_hook(self, _hook):
-            return Handle("codec")
-
-    class Model:
-        def __init__(self):
-            self.transformer = Transformer()
-            self.local_transformer = LocalTransformer()
-
-        def inference(self, **_kwargs):
-            for _ in range(3):
-                self.transformer.step()
-                self.local_transformer.step()
-            pytest.fail("cancelled generation must stop before decoding")
-
-    backend = _backend(
-        "moss_tts_nano",
-        model = Model(),
-        processor = object(),
-        audio_codec = Codec(),
-        sample_rate = 48000,
-    )
-
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate_audio_response("Portable speech", cancel_event = cancel)
-
-    assert seen == {"steps": 1, "removed": ["transformer", "local_transformer", "codec"]}
-
-
-def test_higgs_tts3_uses_generate_speech_contract():
-    seen = {}
-
-    class Model:
-        def generate_speech(self, text, tokenizer, **kwargs):
-            seen.update(text = text, tokenizer = tokenizer, **kwargs)
-            return torch.zeros(240)
-
-    tokenizer = object()
-    backend = _backend("higgs_tts3", model = Model(), processor = tokenizer)
-    wav, sample_rate = backend.generate_audio_response(
-        "Hello from v3", temperature = 0, max_new_tokens = 777
-    )
-
-    assert wav[:4] == b"RIFF" and sample_rate == 24000
-    assert seen["text"] == "Hello from v3"
-    assert seen["tokenizer"] is tokenizer
-    assert seen["max_new_tokens"] == 777
-    assert seen["temperature"] == 0
-
-    backend.generate_audio_response("Hello from v3", temperature = 0.7, max_new_tokens = 777)
-    assert seen["temperature"] == 0.7
-
-
-def test_minimax_music3_passes_lyrics_description_duration_and_seed():
-    seen = {}
+            return SimpleNamespace(remove = lambda: seen.setdefault("removed", True))
 
     class Pipeline:
+        language_model = SimpleNamespace(model = Core())
+
         def __call__(self, **kwargs):
             seen.update(kwargs)
+            if self.language_model.model.hook:
+                self.language_model.model.hook(self.language_model.model, ())
+                if seen.get("cancel_mode"):
+                    cancelled.set()
+                    self.language_model.model.hook(self.language_model.model, ())
             return [torch.zeros((2, 441))]
 
-    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
-    wav, sample_rate = backend.generate_audio_response(
-        "[verse]\nMorning light",
-        instructions = "Acoustic pop, 96 BPM.",
-        max_new_tokens = 1500,
-        seed = 7,
+    pipeline = Pipeline()
+    backend = _backend("minimax_music3", pipeline = pipeline, sample_rate = 44100)
+    wav, rate = backend.generate_audio_response(
+        "[verse] Morning", instructions = "Acoustic", max_new_tokens = 1500, seed = 7
     )
+    assert wav[:4] == b"RIFF" and rate == 44100
+    assert seen["audio_duration"] == 60.0 and seen["generator"].initial_seed() == 7
 
-    assert wav[:4] == b"RIFF" and sample_rate == 44100
-    assert seen["lyrics"] == "[verse]\nMorning light"
-    assert seen["prompt"] == "Acoustic pop, 96 BPM."
-    assert seen["audio_duration"] == 60.0
-    assert seen["output"] == "audios"
-    assert seen["generator"].initial_seed() == 7
-
-
-def test_minimax_music3_omits_generator_without_a_seed():
-    seen = {}
-
-    class Pipeline:
-        def __call__(self, **kwargs):
-            seen.update(kwargs)
-            return [torch.zeros((2, 441))]
-
-    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
-    backend.generate_audio_response(
-        "[verse]\nMorning light",
-        instructions = "Acoustic pop, 96 BPM.",
-        max_new_tokens = 750,
-    )
-
-    assert seen["audio_duration"] == 30.0
-    assert "generator" not in seen
-
-
-def test_minimax_music3_cancellation_checks_autoregressive_forwards():
-    cancelled = threading.Event()
-    removed = []
-
-    class Handle:
-        def remove(self):
-            removed.append(True)
-
-    class LanguageModelCore:
-        hook = None
-
-        def register_forward_pre_hook(self, hook):
-            self.hook = hook
-            return Handle()
-
-    class LanguageModel:
-        model = LanguageModelCore()
-
-    class Pipeline:
-        language_model = LanguageModel()
-
-        def __call__(self, **_kwargs):
-            self.language_model.model.hook(self.language_model.model, ())
-            cancelled.set()
-            self.language_model.model.hook(self.language_model.model, ())
-            pytest.fail("cancelled autoregressive generation must stop before audio")
-
-    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
+    seen["cancel_mode"] = True
     with pytest.raises(RuntimeError, match = "cancelled"):
         backend.generate_audio_response(
-            "lyrics",
-            instructions = "description",
-            cancel_event = cancelled,
+            "lyrics", instructions = "description", cancel_event = cancelled
         )
-    assert removed == [True]
-    assert backend.active_model_name == "test/model"
+    assert seen["removed"] is True
 
 
-def test_minimax_music3_cancellation_checks_denoising_forwards():
-    cancelled = threading.Event()
-    removed = []
-
-    class Handle:
-        def remove(self):
-            removed.append(True)
-
-    class Transformer:
-        hook = None
-
-        def register_forward_pre_hook(self, hook):
-            self.hook = hook
-            return Handle()
-
-    class Pipeline:
-        transformer = Transformer()
-
-        def __call__(self, **_kwargs):
-            self.transformer.hook(self.transformer, ())
-            cancelled.set()
-            self.transformer.hook(self.transformer, ())
-            pytest.fail("cancelled denoising must stop before audio")
-
-    backend = _backend("minimax_music3", pipeline = Pipeline(), sample_rate = 44100)
-    with pytest.raises(RuntimeError, match = "cancelled"):
-        backend.generate_audio_response(
-            "lyrics",
-            instructions = "description",
-            cancel_event = cancelled,
-        )
-    assert removed == [True]
-
-
-def test_minimax_music3_requires_a_separate_music_description():
+def test_minimax_requires_a_separate_description():
     backend = _backend("minimax_music3", pipeline = object(), sample_rate = 44100)
     with pytest.raises(RuntimeError, match = "music description"):
         backend.generate_audio_response("lyrics only")

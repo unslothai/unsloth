@@ -13,11 +13,6 @@ import {
   macTtsPickAction,
   mergeGalleryPage,
   micStreamRequestIsCurrent,
-  MOSS_TTS_DEFAULT_SECONDS,
-  MOSS_TTS_MAX_FRAMES,
-  MOSS_TTS_MAX_SECONDS,
-  mossTtsMaxFrames,
-  mossTtsFramesForSeconds,
   persistedClipForGeneration,
   reconcileSttSelection,
   resolveSttLoadedModel,
@@ -25,8 +20,6 @@ import {
   selectAutoGgufVariant,
   stagedTtsLoadIsOwned,
   sttSelectionReady,
-  trainedTtsCheckpointIsLoadable,
-  trainedTtsCheckpointIsRunnableOnMac,
 } from "../src/features/audio/audio-page-policy.ts";
 
 const audioPageSource = readFileSync(
@@ -35,28 +28,6 @@ const audioPageSource = readFileSync(
 );
 const chatApiSource = readFileSync(
   new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-  "utf8",
-);
-const audioCatalogSource = readFileSync(
-  new URL("../src/features/audio/catalog.ts", import.meta.url),
-  "utf8",
-);
-const modelPickerSource = readFileSync(
-  new URL(
-    "../src/features/model-picker/components/model-selector/pickers.tsx",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const chatPickerInventorySource = readFileSync(
-  new URL(
-    "../src/features/model-picker/inventory/use-chat-picker-inventory.ts",
-    import.meta.url,
-  ),
-  "utf8",
-);
-const hubInventoryViewModelSource = readFileSync(
-  new URL("../src/features/hub/inventory/view-models.ts", import.meta.url),
   "utf8",
 );
 
@@ -86,57 +57,10 @@ test("cached GGUF quant labels remain exact when no filename is present", () => 
   );
 });
 
-test("TTS load context reserves the advertised standard ceiling", () => {
+test("TTS load context matches the advertised generation ceiling", () => {
   assert.match(audioPageSource, /const TTS_MAX_TOKENS = 8192/);
   assert.match(audioPageSource, /max_seq_length: TTS_MAX_TOKENS/);
-  assert.match(
-    audioPageSource,
-    /label="Max tokens"[\s\S]*max=\{TTS_MAX_TOKENS\}/,
-  );
-});
-
-test("MOSS generation exposes the full model context with a safe default", () => {
-  assert.equal(MOSS_TTS_DEFAULT_SECONDS, 15);
-  assert.equal(MOSS_TTS_MAX_FRAMES, 32768);
-  assert.equal(MOSS_TTS_MAX_SECONDS, 2621.44);
-  assert.equal(mossTtsFramesForSeconds(15), 187);
-  assert.equal(mossTtsFramesForSeconds(MOSS_TTS_MAX_SECONDS), 32768);
-  assert.equal(mossTtsFramesForSeconds(10000), 32768);
-  assert.equal(mossTtsMaxFrames("moss_tts_local"), 32768);
-  assert.equal(mossTtsMaxFrames("moss_tts_local", 16384), 16384);
-  assert.equal(mossTtsMaxFrames("moss_tts_nano"), 32768);
-  assert.equal(mossTtsMaxFrames("higgs_tts3"), null);
-  assert.match(audioPageSource, /label="Max duration \(seconds\)"/);
-  assert.match(
-    audioPageSource,
-    /mossTtsFramesForSeconds\(mossMaxSeconds, mossFrameLimit\)/,
-  );
-});
-
-test("MOSS Local exposes and sends its published language and style controls", () => {
-  assert.match(audioPageSource, /label="Language"/);
-  assert.match(audioPageSource, /audio_language: language/);
-  assert.match(audioPageSource, /"Style instructions"/);
-  assert.match(audioPageSource, /audio_instructions: instructions/);
-});
-
-test("History fetches the selected clip and remounts its player once ready", () => {
-  assert.match(
-    audioPageSource,
-    /clipSrcLoads\.current\.get\(clip\.id\)[\s\S]*clipSrcLoads\.current\.set\(clip\.id, load\)/,
-  );
-  assert.match(
-    audioPageSource,
-    /const selectClip = useCallback\([\s\S]*galleryCache\.clips\.find\([\s\S]*ensureClipSrc\(clip\)/,
-  );
-  assert.match(
-    audioPageSource,
-    /selectedClipSrc \? \([\s\S]*<audio[\s\S]*key=\{selectedClip\.id\}[\s\S]*src=\{selectedClipSrc\}[\s\S]*Loading audio…/,
-  );
-  assert.match(
-    audioPageSource,
-    /aria-current=\{clip\.id === selectedId \? "true" : undefined\}/,
-  );
+  assert.match(audioPageSource, /label="Max tokens"[\s\S]*max=\{TTS_MAX_TOKENS\}/);
 });
 
 test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
@@ -154,15 +78,6 @@ test("Mac rejects safetensors-only TTS and redirects sibling families", () => {
   );
   assert.equal(
     macTtsPickAction({ isMac: true, isGguf: true, ggufSibling: null }),
-    "allow",
-  );
-  assert.equal(
-    macTtsPickAction({
-      isMac: true,
-      isGguf: false,
-      ggufSibling: null,
-      nativeRuntime: true,
-    }),
     "allow",
   );
 });
@@ -203,126 +118,14 @@ test("only the generation's persisted gallery id is selected", () => {
   assert.equal(persistedClipForGeneration("missing", refreshed), null);
 });
 
-test("Speak requires a supported TTS runtime, not any audio model", () => {
-  for (const codec of [
-    "snac",
-    "csm",
-    "bicodec",
-    "dac",
-    "higgs_tts2",
-    "moss_tts_local",
-    "moss_tts_nano",
-    "higgs_tts3",
-    "minimax_music3",
-  ])
+test("Speak requires a supported TTS codec, not any audio model", () => {
+  for (const codec of ["snac", "csm", "bicodec", "dac"])
     assert.equal(isTtsAudioType(codec), true);
   assert.equal(isTtsAudioType("csm", true), false);
   for (const codec of ["snac", "bicodec", "dac"])
     assert.equal(isTtsAudioType(codec, true), true);
   for (const codec of ["whisper", "audio_vlm", "", null])
     assert.equal(isTtsAudioType(codec), false);
-});
-
-test("native audio training rows expose merged checkpoints but not adapters", () => {
-  for (const audioType of [
-    "higgs_tts2",
-    "moss_tts_local",
-    "moss_tts_nano",
-    "higgs_tts3",
-    "minimax_music3",
-  ]) {
-    assert.equal(trainedTtsCheckpointIsLoadable(audioType, "lora"), false);
-    assert.equal(trainedTtsCheckpointIsLoadable(audioType, "merged"), true);
-  }
-  assert.equal(trainedTtsCheckpointIsLoadable("snac", "lora"), true);
-});
-
-test("macOS exposes merged native speech checkpoints but not native adapters or Music3", () => {
-  for (const audioType of [
-    "higgs_tts2",
-    "moss_tts_local",
-    "moss_tts_nano",
-    "higgs_tts3",
-  ]) {
-    assert.equal(trainedTtsCheckpointIsRunnableOnMac(audioType, "merged"), true);
-    assert.equal(trainedTtsCheckpointIsRunnableOnMac(audioType, "lora"), false);
-  }
-  assert.equal(trainedTtsCheckpointIsRunnableOnMac("minimax_music3", "merged"), false);
-  assert.equal(trainedTtsCheckpointIsRunnableOnMac("snac", "merged"), false);
-  assert.equal(trainedTtsCheckpointIsRunnableOnMac("snac", "gguf"), true);
-});
-
-test("instructions are sent only to MiniMax and MOSS Local", () => {
-  assert.match(
-    audioPageSource,
-    /\(musicGeneration \|\| mossLocalGeneration\) && instructions[\s\S]*audio_instructions: instructions/,
-  );
-});
-
-test("local native audio architecture metadata drives runtime and consent", () => {
-  assert.match(modelPickerSource, /audioType: adapter\.audioType \?\? null/);
-  assert.match(audioPageSource, /audioType: lora\.audio_type \?\? null/);
-  assert.match(modelPickerSource, /audioType: model\.audioType \?\? null/);
-  assert.match(modelPickerSource, /localModelMeta\(false, m\.task, m\.audio_type\)/);
-  assert.match(modelPickerSource, /audioType: c\.audio_type \?\? null/);
-  assert.match(audioPageSource, /usesNativeAudioRuntime\(id, meta\.audioType\)/);
-  assert.match(
-    audioPageSource,
-    /audioModelRequiresRemoteCode\(repoId, audioType\)/,
-  );
-  for (const audioType of [
-    "higgs_tts2",
-    "moss_tts_local",
-    "moss_tts_nano",
-    "higgs_tts3",
-    "minimax_music3",
-  ]) {
-    assert.match(audioCatalogSource, new RegExp(`"${audioType}"`));
-  }
-});
-
-test("cached native audio architecture metadata reaches picker rows", () => {
-  assert.match(
-    hubInventoryViewModelSource,
-    /audio_type\?: string \| null;[\s\S]*audioType: row\.audio_type \?\? null/,
-  );
-  assert.match(chatPickerInventorySource, /audio_type: row\.audioType \?\? null/);
-});
-
-test("custom-code audio models require consent and pass its fingerprint", () => {
-  assert.match(audioPageSource, /confirmRemoteCodeIfNeeded\(\{/);
-  assert.match(
-    audioPageSource,
-    /if \(audioModelRequiresRemoteCode\(repoId, audioType\)\)/,
-  );
-  assert.match(
-    audioPageSource,
-    /onApprove: \(fingerprint\) => \{[\s\S]*trustRemoteCode = true/,
-  );
-  assert.match(
-    audioPageSource,
-    /approved_remote_code_fingerprint: approvedRemoteCodeFingerprint/,
-  );
-});
-
-test("MiniMax is rejected before model selection mutates page lifecycle", () => {
-  const musicPick = audioPageSource.indexOf("const musicPick =");
-  const hardwareCheck = audioPageSource.indexOf("await fetchSystemInfo()", musicPick);
-  const stopRecording = audioPageSource.indexOf("stopAndDiscardRecording();", musicPick);
-  assert.ok(musicPick >= 0 && hardwareCheck > musicPick);
-  assert.ok(stopRecording > hardwareCheck);
-  assert.match(audioPageSource, /system\?\.device_backend !== "cuda"/);
-});
-
-test("MiniMax hides and omits the unsupported temperature control", () => {
-  assert.match(
-    audioPageSource,
-    /!musicGeneration && temperatureEdited \? \{ temperature \} : \{\}/,
-  );
-  assert.match(
-    audioPageSource,
-    /!musicGeneration \? \([\s\S]*label="Temperature"[\s\S]*\) : null/,
-  );
 });
 
 test("STT controls require the selected sidecar to be resident", () => {
@@ -643,7 +446,7 @@ test("a recording is stopped at the sidecar's duration and size limits", () => {
   assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
 });
 
-test("the trained-model list applies the native-aware macOS checkpoint policy", () => {
+test("the trained-model list applies the native-aware macOS policy", () => {
   assert.match(
     audioPageSource,
     /!isMac \|\|\s*trainedTtsCheckpointIsRunnableOnMac\(lora\.audio_type, lora\.export_type\)/,

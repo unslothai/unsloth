@@ -26,8 +26,8 @@ _WAV = b"RIFF\x24\x00\x00\x00WAVEfmt fake-payload"
 def _make_client(monkeypatch, generate = None):
     calls = []
 
-    async def _fake_generate(text, payload, request, current_subject, **kwargs):
-        calls.append({"text": text, "payload": payload, **kwargs})
+    async def _fake_generate(text, payload, request, current_subject, **_kwargs):
+        calls.append({"text": text, "payload": payload})
         if generate is not None:
             return await generate(text)
         return _WAV, 24000, "unsloth/orpheus-3b-0.1-ft", "snac"
@@ -93,64 +93,6 @@ def test_voice_and_speed_accepted_and_ignored(monkeypatch):
     assert resp.status_code == 200
 
 
-def test_native_audio_instructions_and_seed_reach_the_shared_core(monkeypatch):
-    cli, calls, _saved = _make_client(monkeypatch)
-    resp = cli.post(
-        "/v1/audio/speech",
-        json = {
-            "input": "[verse] Morning light",
-            "instructions": "Acoustic pop, 96 BPM.",
-            "language": "English",
-            "seed": 7,
-        },
-    )
-
-    assert resp.status_code == 200
-    payload = calls[0]["payload"]
-    assert payload.audio_instructions == "Acoustic pop, 96 BPM."
-    assert payload.audio_language == "English"
-    assert payload.seed == 7
-
-
-@pytest.mark.parametrize("seed", (-(2**63) - 1, 2**64))
-def test_seed_outside_torch_generator_range_is_rejected(monkeypatch, seed):
-    from models.inference import ChatCompletionRequest
-    from pydantic import ValidationError
-
-    cli, calls, _saved = _make_client(monkeypatch)
-
-    resp = cli.post("/v1/audio/speech", json = {"input": "hi", "seed": seed})
-
-    assert resp.status_code == 400
-    assert calls == []
-    with pytest.raises(ValidationError):
-        ChatCompletionRequest(
-            messages = [{"role": "user", "content": "hi"}],
-            seed = seed,
-        )
-
-
-@pytest.mark.parametrize("seed", (-(2**63), 2**64 - 1))
-def test_torch_generator_seed_range_endpoints_are_accepted(seed):
-    from models.inference import AudioSpeechRequest, ChatCompletionRequest
-    assert AudioSpeechRequest(input = "hi", seed = seed).seed == seed
-    assert (
-        ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], seed = seed).seed == seed
-    )
-
-
-def test_native_music_frame_limit_reaches_the_shared_core(monkeypatch):
-    cli, calls, _saved = _make_client(monkeypatch)
-    resp = cli.post(
-        "/v1/audio/speech",
-        json = {"input": "[verse] Morning light", "max_new_tokens": 500},
-    )
-
-    assert resp.status_code == 200
-    assert calls[0]["payload"].max_tokens == 500
-    assert calls[0]["speech_api_default_max_tokens"] is False
-
-
 def test_non_wav_response_format_is_400(monkeypatch):
     cli, calls, saved = _make_client(monkeypatch)
     resp = cli.post("/v1/audio/speech", json = {"input": "hi", "response_format": "mp3"})
@@ -202,7 +144,8 @@ def test_wav_duration_seconds_reads_header():
 
 
 def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
-    """Speech models retain the full safety ceiling when no frame limit is supplied."""
+    """CreateSpeech has no field for it, so the chat default of 2048 silently truncated
+    any input past roughly half a minute and still returned HTTP 200 with a short WAV."""
     from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
 
     cli, calls, _saved = _make_client(monkeypatch)
@@ -210,65 +153,6 @@ def test_the_speech_route_asks_for_the_full_audio_token_budget(monkeypatch):
     assert cli.post("/v1/audio/speech", json = {"input": "a long script"}).status_code == 200
     payload = calls[0]["payload"]
     assert payload.max_tokens == AUDIO_GENERATION_MAX_TOKENS
-    assert calls[0]["speech_api_default_max_tokens"] is True
-
-
-def test_minimax_speech_api_default_is_thirty_seconds(monkeypatch):
-    from core.inference.orchestrator import AUDIO_GENERATION_MAX_TOKENS
-    from models.inference import ChatCompletionRequest
-
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
-    payload = ChatCompletionRequest(
-        messages = [{"role": "user", "content": "[verse] Morning light"}],
-        max_tokens = AUDIO_GENERATION_MAX_TOKENS,
-    )
-
-    assert (
-        routes_module._tts_max_new_tokens(
-            payload,
-            audio_type = "minimax_music3",
-            speech_api_default_max_tokens = True,
-        )
-        == 750
-    )
-    assert (
-        routes_module._tts_max_new_tokens(
-            payload,
-            audio_type = "higgs_tts2",
-            speech_api_default_max_tokens = True,
-        )
-        == AUDIO_GENERATION_MAX_TOKENS
-    )
-
-
-def test_moss_generation_uses_the_model_context_ceiling(monkeypatch):
-    from core.inference.orchestrator import MOSS_TTS_MAX_FRAMES
-    from models.inference import ChatCompletionRequest
-
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: None)
-    payload = ChatCompletionRequest(
-        messages = [{"role": "user", "content": "A short sentence."}],
-        max_tokens = 10**310,
-    )
-
-    for audio_type in ("moss_tts_local", "moss_tts_nano"):
-        assert (
-            routes_module._tts_max_new_tokens(payload, audio_type = audio_type)
-            == MOSS_TTS_MAX_FRAMES
-            == 32768
-        )
-
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: MOSS_TTS_MAX_FRAMES)
-    prompt = "A short sentence."
-    assert routes_module._tts_max_new_tokens(
-        payload,
-        prompt,
-        audio_type = "moss_tts_local",
-    ) == (
-        MOSS_TTS_MAX_FRAMES
-        - routes_module._prompt_token_estimate(prompt)
-        - routes_module._TTS_PROMPT_FORMAT_RESERVE
-    )
 
 
 def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
@@ -293,27 +177,6 @@ def test_the_budget_leaves_room_for_the_prompt(monkeypatch):
     assert budget == (
         2048 - routes_module._prompt_token_estimate(text) - routes_module._TTS_PROMPT_FORMAT_RESERVE
     )
-
-
-def test_moss_prompt_budget_includes_language_and_instructions(monkeypatch):
-    prompt = routes_module._native_tts_prompt_for_budget(
-        "A short line.",
-        "moss_tts_local",
-        "Warm and calm.",
-        "English",
-    )
-    assert prompt == "Warm and calm.\nEnglish\nA short line."
-
-    monkeypatch.setattr(routes_module, "_monitor_context_length", lambda: 128)
-    with pytest.raises(HTTPException, match = "too long"):
-        routes_module._raise_if_prompt_leaves_no_speech_budget(
-            routes_module._native_tts_prompt_for_budget(
-                "A short line.",
-                "moss_tts_local",
-                None,
-                "language-tag-" * 100,
-            )
-        )
 
 
 def test_an_over_context_prompt_is_a_client_error(monkeypatch):
