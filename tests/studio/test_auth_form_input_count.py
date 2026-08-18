@@ -176,10 +176,7 @@ def test_auth_flow_routes_do_not_mount_global_settings():
     # early return inside a hand-rolled keydown handler; once the chords became
     # rebindable it moved into useShortcut's `enabled` option. Lock the
     # behaviour, not one spelling of it, so either form passes.
-    assert (
-        "if (isAuthFlowRoute) return;" in root
-        or "{ enabled: !isAuthFlowRoute }" in root
-    )
+    assert "if (isAuthFlowRoute) return;" in root or "{ enabled: !isAuthFlowRoute }" in root
     for route in ("login", "change-password"):
         assert "isAuthFlow: true" in (FRONTEND / f"app/routes/{route}.tsx").read_text(
             encoding = "utf-8"
