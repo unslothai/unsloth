@@ -25,74 +25,16 @@ import {
 } from "../utils/chat-thread-tombstones";
 import { requestPromptQueueStop } from "../utils/prompt-queue-boundary";
 import { repairLegacyChatTitles } from "../utils/repair-legacy-chat-titles";
+import {
+  groupThreads,
+  sameSidebarThreads,
+  useSidebarThreadGroups,
+  type SidebarItem,
+} from "./sidebar-thread-groups";
 
-export interface SidebarItem {
-  type: "single" | "compare";
-  id: string;
-  /** The pane threads behind this row id; `runningByThreadId` is keyed per pane thread. */
-  threadIds?: string[];
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  isFork?: boolean;
-  projectId?: string | null;
-}
-
-function lastActivityAt(thread: ThreadRecord): number {
-  return thread.updatedAt ?? thread.createdAt;
-}
-
-export function groupThreads(
-  threads: ThreadRecord[],
-  archived = false,
-): SidebarItem[] {
-  const items: SidebarItem[] = [];
-  const pairItems = new Map<string, SidebarItem>();
-
-  for (const t of threads) {
-    // Coerce archived to a boolean before comparing. Legacy threads (from the
-    // older browser-only Unsloth, or any record predating the archived field)
-    // can have archived === undefined or null; a raw `!== archived` comparison
-    // would drop those from BOTH the Recents (archived=false) and Archived
-    // (archived=true) lists, hiding existing chats. Treat missing as false.
-    if (Boolean(t.archived) !== archived) {
-      continue;
-    }
-    if (t.pairId) {
-      const existing = pairItems.get(t.pairId);
-      if (existing) {
-        existing.createdAt = Math.max(existing.createdAt, t.createdAt);
-        existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
-        existing.threadIds?.push(t.id);
-        continue;
-      }
-      const item: SidebarItem = {
-        type: "compare",
-        id: t.pairId,
-        threadIds: [t.id],
-        title: t.title,
-        createdAt: t.createdAt,
-        updatedAt: lastActivityAt(t),
-        projectId: t.projectId ?? null,
-      };
-      pairItems.set(t.pairId, item);
-      items.push(item);
-    } else if (!t.pairId) {
-      items.push({
-        type: "single",
-        id: t.id,
-        threadIds: [t.id],
-        title: t.title,
-        createdAt: t.createdAt,
-        updatedAt: lastActivityAt(t),
-        isFork: Boolean(t.forkedFromThreadId),
-        projectId: t.projectId ?? null,
-      });
-    }
-  }
-
-  return items.sort((a, b) => b.updatedAt - a.updatedAt);
-}
+// Re-exported, not moved: every caller in the tree imports these from here.
+export { groupThreads } from "./sidebar-thread-groups";
+export type { SidebarItem } from "./sidebar-thread-groups";
 
 // Streaming fires CHAT_HISTORY_UPDATED_EVENT per chunk. Debounce so each quiet
 // window produces at most one O(N) fetch; requestSeq discards stale responses.
@@ -131,7 +73,15 @@ export function useChatSidebarItems(options?: {
         // Discard the response if a newer request was scheduled while we
         // were in flight, or if the effect was torn down.
         if (cancelled || seq !== requestSeq) return;
-        setAllThreads(threads);
+        // Keep the previous array when the refetch changed nothing the sidebar
+        // reads. Every CHAT_HISTORY_UPDATED_EVENT refetches the WHOLE list and
+        // streaming fires that event per chunk, so without this a quiet refresh
+        // handed React a brand new array, re-rendered the rail and regrouped
+        // the entire history for no visible difference. Object.is on the state
+        // makes an unchanged refresh a genuine no-op instead.
+        setAllThreads((previous) =>
+          sameSidebarThreads(previous, threads) ? previous : threads,
+        );
         setLoaded(true);
         // Pre-cut legacy titles cannot grow with the sidebar. The repair reads
         // its own messages, as late as it can, not this list's.
@@ -165,8 +115,7 @@ export function useChatSidebarItems(options?: {
     };
   }, [enabled, options?.projectId, requireMessages]);
 
-  const items = groupThreads(allThreads ?? []);
-  const archivedItems = groupThreads(allThreads ?? [], true);
+  const { items, archivedItems } = useSidebarThreadGroups(allThreads);
   const canCompare = useChatRuntimeStore((s) => Boolean(s.params.checkpoint));
 
   return { items, archivedItems, canCompare, loaded };
