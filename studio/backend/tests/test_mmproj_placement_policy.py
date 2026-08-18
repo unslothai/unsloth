@@ -983,9 +983,7 @@ def _split_rate_backend(tmp_path, *, memory, **kwargs):
     backend, gguf = _backend(tmp_path, memory = memory, **kwargs)
     backend._compute_buffer_ctx_bytes = (
         lambda n_ctx, n_ubatch = None, cache_type_kv = None, *, layer_split = False: (
-            n_ctx
-            * _CC_PER_TOKEN
-            * (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT if layer_split else 1)
+            n_ctx * _CC_PER_TOKEN * (LlamaCppBackend._CTX_COMPUTE_SPLIT_MULT if layer_split else 1)
         )
     )
     return backend, gguf
