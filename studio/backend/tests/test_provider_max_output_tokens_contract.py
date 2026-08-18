@@ -264,8 +264,8 @@ def _create(payload: ProviderCreate):
 
 def _update(provider_id: str, payload: ProviderUpdate):
     return providers_route.update_provider_config(
-            provider_id, payload, credential = CREDENTIAL, via_api_key = False
-        )
+        provider_id, payload, credential = CREDENTIAL, via_api_key = False
+    )
 
 
 @pytest.mark.parametrize("provider_type", NON_CUSTOM_PROVIDER_TYPES)

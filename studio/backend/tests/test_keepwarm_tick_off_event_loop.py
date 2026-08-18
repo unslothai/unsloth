@@ -17,6 +17,7 @@ def _record_thread(threads: list[int], result):
     def _stub(*_args, **_kwargs):
         threads.append(threading.get_ident())
         return result
+
     return _stub
 
 

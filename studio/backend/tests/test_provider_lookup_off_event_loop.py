@@ -34,7 +34,6 @@ def _request():
 
 def _payload():
     from models.inference import ChatCompletionRequest
-
     return ChatCompletionRequest(
         messages = [{"role": "user", "content": "what is 2+2?"}],
         provider_id = "saved-1",
@@ -48,7 +47,7 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
 
     def _get_provider(_provider_id):
         threads.append(threading.get_ident())
-        return None      # a missing row 404s right after the read, which is all this needs
+        return None  # a missing row 404s right after the read, which is all this needs
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 

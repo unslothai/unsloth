@@ -30,12 +30,14 @@ def _record_thread(threads: list[int], result):
     def _stub(*_args, **_kwargs):
         threads.append(threading.get_ident())
         return result
+
     return _stub
 
 
 def _jwt_case(monkeypatch, threads):
     monkeypatch.setattr(
-        authentication, "get_user_and_secret",
+        authentication,
+        "get_user_and_secret",
         _record_thread(threads, ("salt", "hash", SECRET, False)),
     )
     token = jwt.encode({"sub": SUBJECT}, SECRET, algorithm = authentication.ALGORITHM)
@@ -44,16 +46,15 @@ def _jwt_case(monkeypatch, threads):
 
 def _api_key_case(monkeypatch, threads):
     monkeypatch.setattr(
-        authentication, "validate_api_key_with_credential",
+        authentication,
+        "validate_api_key_with_credential",
         _record_thread(threads, (SUBJECT, SECRET)),
     )
     return authentication.get_current_subject(_credentials(f"{API_KEY_PREFIX}key"))
 
 
 def _desktop_case(monkeypatch, threads):
-    monkeypatch.setattr(
-        authentication, "is_desktop_access_token", _record_thread(threads, True)
-    )
+    monkeypatch.setattr(authentication, "is_desktop_access_token", _record_thread(threads, True))
     return authentication.authenticated_via_desktop_jwt(_credentials("token"))
 
 

@@ -111,10 +111,10 @@ def test_create_refuses_stdio_from_api_key_and_writes_nothing(tmp_path, monkeypa
     _reset_db(tmp_path, monkeypatch)
     with pytest.raises(HTTPException) as exc:
         routes_mcp.create_mcp_server(
-                McpServerCreate(display_name = "Local", url = STDIO_CMD),
-                current_subject = "api-key-user",
-                via_api_key = True,
-            )
+            McpServerCreate(display_name = "Local", url = STDIO_CMD),
+            current_subject = "api-key-user",
+            via_api_key = True,
+        )
     assert exc.value.status_code == 403
     assert mcp_servers_db.list_servers() == []
 
@@ -125,10 +125,10 @@ def test_create_allows_http_from_api_key(tmp_path, monkeypatch, stdio_on):
 
     _reset_db(tmp_path, monkeypatch)
     resp = routes_mcp.create_mcp_server(
-            McpServerCreate(display_name = "Remote", url = "https://example.com/mcp"),
-            current_subject = "api-key-user",
-            via_api_key = True,
-        )
+        McpServerCreate(display_name = "Remote", url = "https://example.com/mcp"),
+        current_subject = "api-key-user",
+        via_api_key = True,
+    )
     assert resp.url == "https://example.com/mcp"
 
 
@@ -279,10 +279,10 @@ def test_import_from_api_key_keeps_http_and_reports_stdio(tmp_path, monkeypatch,
 
     _reset_db(tmp_path, monkeypatch)
     res = routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "api-key-user",
-            via_api_key = True,
-        )
+        McpServerImportRequest(config = _MIXED_CONFIG),
+        current_subject = "api-key-user",
+        via_api_key = True,
+    )
     assert [s.display_name for s in res.created] == ["remote"]
     assert any("local" in err for err in res.errors)
     assert [row["url"] for row in mcp_servers_db.list_servers()] == ["https://example.com/mcp"]
@@ -290,10 +290,10 @@ def test_import_from_api_key_keeps_http_and_reports_stdio(tmp_path, monkeypatch,
     # Re-importing the same config is idempotent: the http entry is now a skip,
     # the stdio entry is still an error, and no row is duplicated.
     again = routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "api-key-user",
-            via_api_key = True,
-        )
+        McpServerImportRequest(config = _MIXED_CONFIG),
+        current_subject = "api-key-user",
+        via_api_key = True,
+    )
     assert again.created == []
     assert again.skipped == ["remote"]
     assert any("local" in err for err in again.errors)
@@ -312,10 +312,10 @@ def test_ui_session_still_creates_and_imports_stdio(tmp_path, monkeypatch, stdio
     # real create rather than the url-dedupe skip.
     own_cmd = "/bin/echo hello"
     created = routes_mcp.create_mcp_server(
-            McpServerCreate(display_name = "Local", url = own_cmd),
-            current_subject = "owner",
-            via_api_key = False,
-        )
+        McpServerCreate(display_name = "Local", url = own_cmd),
+        current_subject = "owner",
+        via_api_key = False,
+    )
     assert created.url == own_cmd
     renamed = asyncio.run(
         routes_mcp.update_mcp_server(
@@ -327,10 +327,10 @@ def test_ui_session_still_creates_and_imports_stdio(tmp_path, monkeypatch, stdio
     )
     assert renamed.display_name == "Local FS"
     res = routes_mcp.import_mcp_servers(
-            McpServerImportRequest(config = _MIXED_CONFIG),
-            current_subject = "owner",
-            via_api_key = False,
-        )
+        McpServerImportRequest(config = _MIXED_CONFIG),
+        current_subject = "owner",
+        via_api_key = False,
+    )
     assert res.errors == []
     assert sorted(s.display_name for s in res.created) == ["local", "remote"]
 
