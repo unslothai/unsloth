@@ -49,9 +49,7 @@ def _extract(pattern: str, source: str) -> str:
 
 def _helpers(*names: str) -> str:
     source = INSTALL_PS1.read_text(encoding = "utf-8")
-    return "\n".join(
-        _extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in names
-    )
+    return "\n".join(_extract(rf"    function {name} \{{.*?\n    \}}\n", source) for name in names)
 
 
 # The whole chain the reported failure walked, plus the fallback it now lands on.
@@ -87,7 +85,12 @@ def _run_powershell(script: str, env: dict[str, str] | None = None) -> subproces
     )
 
 
-def _script(body: str, *, sabotage: bool = True, names: tuple[str, ...] = LOCK_CHAIN) -> str:
+def _script(
+    body: str,
+    *,
+    sabotage: bool = True,
+    names: tuple[str, ...] = LOCK_CHAIN,
+) -> str:
     return "\n".join(
         [
             '$ErrorActionPreference = "Stop"',
@@ -271,7 +274,7 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
 
 
 _NT_DEVICE_PREFIX = "\\??\\"
-_LIST = '$l=[System.Collections.Generic.List[string]]::new(); {0}; $l'
+_LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
 # What (Get-Item).Target actually hands back. Windows PowerShell 5.1 returns a
 # COLLECTION, not a string, and not an [array] either -- so a container test that
@@ -281,11 +284,19 @@ _LIST = '$l=[System.Collections.Generic.List[string]]::new(); {0}; $l'
 # on Linux, so Get-Item is stubbed and the paths are POSIX.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
-    ("generic collection, several entries", _LIST.format('$l.Add("/first"); $l.Add("/second")'), "/first"),
+    (
+        "generic collection, several entries",
+        _LIST.format('$l.Add("/first"); $l.Add("/second")'),
+        "/first",
+    ),
     ("array", '@("/real/target")', "/real/target"),
     ("bare string", '"/real/target"', "/real/target"),
     ("nt device prefix", f'"{_NT_DEVICE_PREFIX}/real/target"', "/real/target"),
-    ("nt device prefix in a collection", _LIST.format(f'$l.Add("{_NT_DEVICE_PREFIX}/real/target")'), "/real/target"),
+    (
+        "nt device prefix in a collection",
+        _LIST.format(f'$l.Add("{_NT_DEVICE_PREFIX}/real/target")'),
+        "/real/target",
+    ),
     ("relative to the link", '"sibling"', "/some/sibling"),
     ("pointing at itself", '"/some/link"', ""),
     ("null (system junction, AppExecLink)", "$null", ""),
@@ -301,7 +312,9 @@ _TARGET_SHAPES = [
     _TARGET_SHAPES,
     ids = [shape.replace(" ", "-") for shape, _, _ in _TARGET_SHAPES],
 )
-def test_link_targets_of_every_windows_powershell_5_1_shape(shape: str, expression: str, expected: str):
+def test_link_targets_of_every_windows_powershell_5_1_shape(
+    shape: str, expression: str, expected: str
+):
     result = _run_powershell(
         "\n".join(
             [
