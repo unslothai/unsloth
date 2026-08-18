@@ -375,3 +375,50 @@ def test_the_pointer_proof_is_taken_after_the_anchor():
         "measured gesture ran over the gutter"
     )
     assert "placement = place_pointer_over_message(page)" not in body
+
+
+# ── the sequenced table's repetitions start from the same thread ──────
+#
+# The isolated runner restores after every mutating action. The sequenced runner deliberately
+# resets nothing between actions, because the residue IS its measurement. That contract does not
+# extend across repetitions: `delete` removes an assistant message from the runtime's repository,
+# which re-opening the thread does not undo, so repetition 2 started one message short and
+# repetition 3 two short, each pass taking a different content kind off the end. The medians then
+# conflated carry-over with a progressively smaller fixture.
+
+SEQ = HARNESS_SRC.split("def sequenced_repetition", 1)[1].split("\ndef ", 1)[0]
+SEQ_LOOP = HARNESS_SRC.split("sequenced repetition {index + 1}", 1)[1].split("\n    finally:", 1)[0]
+
+
+def test_the_sequenced_loop_restores_between_repetitions():
+    assert "restore_fixture(seeded.page)" in SEQ_LOOP, (
+        "the sequenced table never restores, so each repetition runs against a thread one "
+        "message shorter than the last"
+    )
+    assert "if index + 1 < REPEATS:" in SEQ_LOOP, (
+        "the restore is unconditional, so the last repetition pays for a fixture nothing uses"
+    )
+
+
+def test_the_sequence_itself_still_resets_nothing():
+    """The restore must be in the LOOP, not inside the sequence. Restoring between actions would
+    redefine what the carry-over table measures, which is the whole reason it exists."""
+    assert "restore_fixture" not in SEQ, (
+        "the sequence restores between its own actions, so the residue it exists to measure is "
+        "being cleared"
+    )
+
+
+def test_every_sequenced_row_records_the_fixture_it_started_from():
+    """Without this the restore is an intention rather than an assertion: `action_failures`
+    rejects a table whose repetitions did not all start from the same fixture, and it can only do
+    that if the rows carry the size."""
+    assert 'row["fixture_messages"] = fixture_messages' in SEQ, (
+        "sequenced rows do not carry their starting fixture, so drift between repetitions cannot "
+        "be detected at all"
+    )
+    census = SEQ.index("messageCount()")
+    assert census < SEQ.index('drive(page, cdp, "keystroke")'), (
+        "the census is taken after the first action, so it cannot describe what that action ran "
+        "against"
+    )

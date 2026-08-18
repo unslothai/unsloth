@@ -1281,6 +1281,13 @@ def sequenced_repetition(page, cdp) -> dict[str, dict]:
     """
     rep: dict[str, dict] = {}
     settle_and_expand(page)
+    # The thread this whole repetition is about to run against, read before the first action, for
+    # the same reason the isolated runner reads it: it is what turns the restore at the end of the
+    # loop into an assertion rather than an intention. `action_failures` rejects a table whose
+    # repetitions did not all start from the same fixture, and it can only do that if every row
+    # carries the size it started from.
+    fixture_messages = page.evaluate("() => window.__heavyThread.messageCount()")
+    info(f"      fixture: {fixture_messages} messages at the start of this repetition")
     rep["keystroke"] = drive(page, cdp, "keystroke")
     # The ONE thing in this runner that is not the old sequence, and it is a precondition rather
     # than a reset. Left out, the pointer is at (0, 0) on repetition 1 and over whatever the
@@ -1312,6 +1319,8 @@ def sequenced_repetition(page, cdp) -> dict[str, dict]:
     # The per-repetition census cannot catch this, because it is taken after reopen, at which
     # point every repetition agrees on the same reduced fixture.
     rep["reopen"] = drive(page, cdp, "reopen")
+    for row in rep.values():
+        row["fixture_messages"] = fixture_messages
     return rep
 
 
@@ -1629,6 +1638,16 @@ def measure_sequenced(browser, engine: str, size: int) -> tuple[dict, list[dict]
         for index in range(REPEATS):
             info(f"  {engine} {size} chars: sequenced repetition {index + 1}/{REPEATS}")
             reps.append(sequenced_repetition(seeded.page, seeded.cdp))
+            # Between REPETITIONS, never between actions. `delete` removes an assistant message
+            # from the runtime's repository, which re-opening the thread does not undo, so without
+            # this repetition 2 started one message short and repetition 3 two short -- and the
+            # fixture is whole cycles of one message per kind, so each pass took a different kind
+            # off the end. The medians and the repetition-divergence report then conflated
+            # carry-over, which is what this table exists to measure, with a progressively smaller
+            # thread, which is not. The delete before `reopen` INSIDE a sequence is untouched:
+            # that residue is the measurement and restoring it would redefine this table.
+            if index + 1 < REPEATS:
+                restore_fixture(seeded.page)
         seeds = [seeded.finish()]
     finally:
         seeded.close()
