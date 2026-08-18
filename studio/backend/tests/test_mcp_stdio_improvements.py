@@ -60,12 +60,10 @@ def test_create_forces_oauth_off_for_stdio(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
-    resp = asyncio.run(
-        routes_mcp.create_mcp_server(
+    resp = routes_mcp.create_mcp_server(
             McpServerCreate(display_name = "FS", url = "npx -y server /tmp", use_oauth = True),
             current_subject = "u",
         )
-    )
     assert resp.use_oauth is False
     assert mcp_servers_db.get_server(resp.id)["use_oauth"] == 0
 
@@ -76,12 +74,10 @@ def test_create_keeps_oauth_for_http(tmp_path, monkeypatch):
 
     _reset_db(tmp_path, monkeypatch)
     _enable(monkeypatch)
-    resp = asyncio.run(
-        routes_mcp.create_mcp_server(
+    resp = routes_mcp.create_mcp_server(
             McpServerCreate(display_name = "GH", url = "https://gh/mcp", use_oauth = True),
             current_subject = "u",
         )
-    )
     assert resp.use_oauth is True
 
 

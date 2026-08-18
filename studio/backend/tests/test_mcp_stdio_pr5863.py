@@ -482,11 +482,11 @@ def test_create_route_gate(tmp_path, monkeypatch, transport):
 
     _disable(monkeypatch)
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
+        routes_mcp.create_mcp_server(payload, current_subject = "u")
     assert exc.value.status_code == 400
 
     _enable(monkeypatch)
-    resp = asyncio.run(routes_mcp.create_mcp_server(payload, current_subject = "u"))
+    resp = routes_mcp.create_mcp_server(payload, current_subject = "u")
     assert resp.url == "npx -y server /tmp"
 
 

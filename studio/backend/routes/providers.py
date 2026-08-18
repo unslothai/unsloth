@@ -181,15 +181,16 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 # ── Provider config CRUD ──────────────────────────────────────────
 
 
+# Keep SQLite-backed handlers synchronous so FastAPI runs them in its threadpool.
 @router.get("/", response_model = list[ProviderResponse])
-async def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
+def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
     return [_provider_response(row) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
-async def create_provider_config(
+def create_provider_config(
     payload: ProviderCreate,
     credential: tuple = Depends(get_current_credential),
     via_api_key: bool = Depends(authenticated_via_api_key),
@@ -255,7 +256,7 @@ async def create_provider_config(
 
 
 @router.put("/{provider_id}", response_model = ProviderResponse)
-async def update_provider_config(
+def update_provider_config(
     provider_id: str,
     payload: ProviderUpdate,
     credential: tuple = Depends(get_current_credential),
@@ -363,7 +364,7 @@ async def update_provider_config(
 
 
 @router.put("/{provider_id}/api-key/migrate", response_model = ProviderResponse)
-async def migrate_provider_api_key(
+def migrate_provider_api_key(
     provider_id: str,
     payload: ProviderCredentialMigration,
     credential: tuple = Depends(get_current_credential),

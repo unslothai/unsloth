@@ -9349,7 +9349,10 @@ def cached_mcp_tools() -> tuple[list[dict], bool]:
 
 
 async def get_enabled_mcp_tools() -> list[dict]:
-    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    # Keep the SQLite-backed server list off the event loop.
+    servers = [
+        s for s in await asyncio.to_thread(mcp_servers_db.list_servers) if s.get("is_enabled")
+    ]
     # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
@@ -9378,7 +9381,7 @@ async def get_enabled_mcp_tools() -> list[dict]:
         # An edit/delete can land while we await a probe; re-read and drop a
         # result whose server changed or was removed mid-probe, else a stale
         # tool list (or cool-off on a just-fixed server) persists.
-        current = {s["id"]: s for s in mcp_servers_db.list_servers()}
+        current = {s["id"]: s for s in await asyncio.to_thread(mcp_servers_db.list_servers)}
         for server, payload in zip(uncached, results):
             fresh = current.get(server["id"])
             if fresh is None or any(

@@ -259,17 +259,13 @@ def test_the_previous_release_still_reads_and_writes_a_migrated_database(
 
 
 def _create(payload: ProviderCreate):
-    return asyncio.run(
-        providers_route.create_provider_config(payload, credential = CREDENTIAL, via_api_key = False)
-    )
+    return providers_route.create_provider_config(payload, credential = CREDENTIAL, via_api_key = False)
 
 
 def _update(provider_id: str, payload: ProviderUpdate):
-    return asyncio.run(
-        providers_route.update_provider_config(
+    return providers_route.update_provider_config(
             provider_id, payload, credential = CREDENTIAL, via_api_key = False
         )
-    )
 
 
 @pytest.mark.parametrize("provider_type", NON_CUSTOM_PROVIDER_TYPES)

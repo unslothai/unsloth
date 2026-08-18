@@ -374,16 +374,15 @@ async def _tick(tracker: _Tracker, ttl: float) -> None:
         # backends and an unload frees several GB, so a residency veto applied while it runs
         # (Model Memory, or the TTL itself moved) would otherwise be ignored by every teardown
         # left in the step, freeing a model the settings page now calls pinned.
-        ttl = _effective_ttl()
-        if (
-            ttl <= 0
-            or not tracker.is_idle(ttl)
-            or _user_pinned(
-                tracker.owner,
-                status.get("repo_id"),
-                status.get("gguf_variant"),
-                status.get("h3_task"),
-            )
+        ttl = await asyncio.to_thread(_effective_ttl)
+        if ttl <= 0 or not tracker.is_idle(ttl):
+            return
+        if await asyncio.to_thread(
+            _user_pinned,
+            tracker.owner,
+            status.get("repo_id"),
+            status.get("gguf_variant"),
+            status.get("h3_task"),
         ):
             return
         await asyncio.to_thread(backend.unload)
@@ -418,7 +417,8 @@ def _user_pinned(
 
 async def idle_unload_step() -> None:
     """The media half of one idle_unload_loop tick. Inert when the TTL is off."""
-    ttl = _effective_ttl()
+    # Keep this timer's SQLite-backed settings read off the event loop.
+    ttl = await asyncio.to_thread(_effective_ttl)
     if ttl <= 0:
         return
     for tracker in _TRACKERS.values():
