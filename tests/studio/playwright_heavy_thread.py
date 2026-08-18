@@ -777,10 +777,20 @@ async (samples) => {
 """
 
 
-def median(values: list[float]) -> float | None:
-    ordered = sorted(v for v in values if v is not None)
-    if not ordered:
+def median(values: list[float | None]) -> float | None:
+    """Median across the repetitions, or None if any repetition did not produce a number.
+
+    A None here is not a missing reading, it is a repetition in which the thing being timed never
+    happened: the menu that never opened inside SETTLE_TIMEOUT_MS, the delete whose message never
+    left the DOM, the action that never reached a settled state. Dropping those and taking the
+    median of what is left changes the sample population and reports a partially broken action as
+    a clean three-repetition measurement -- and it hides it from action_failures(), whose
+    `openMs is None` / `ms is None` checks then read the median of the repetitions that did work.
+    So one bad repetition poisons the aggregate, and the run says so.
+    """
+    if not values or any(v is None for v in values):
         return None
+    ordered = sorted(values)
     middle = len(ordered) // 2
     if len(ordered) % 2:
         return round(ordered[middle], 1)
@@ -1039,7 +1049,13 @@ def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
         numeric_keys = set()
         for row in rows:
             for key, value in row.items():
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                # `value is None` is deliberately a key too. A timing that came back null in every
+                # repetition would otherwise be absent from the merged row entirely, and the
+                # verdict's `menu["openMs"] is None` would raise KeyError instead of reporting the
+                # menu that never opened. Present-and-None is the readable form of that.
+                if value is None or (
+                    isinstance(value, (int, float)) and not isinstance(value, bool)
+                ):
                     numeric_keys.add(key)
         for key in sorted(numeric_keys):
             merged[key] = median([r.get(key) for r in rows])
@@ -1048,8 +1064,9 @@ def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
         # repetition's is kept beside it, because these are the only evidence the interaction
         # happened at all: a repetition whose proof failed still put its timing into the median
         # above, so a verdict that reads rows[-1] alone passes on a median that carries an
-        # interaction which did not occur. Same shape as `dropped_repetitions` below, which is
-        # what keeps a headline timeout from being reported as a median of three.
+        # interaction which did not occur. The numeric counterpart is median() above, which
+        # returns None the moment any one repetition does rather than taking the median of the
+        # rest; that is what keeps a headline timeout from being reported as a median of three.
         for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
@@ -1886,6 +1903,19 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
     for name in ACTIONS:
         if not actions[name].get("ran"):
             failures.append(f"{where} could not run the {name} action at all")
+    # A null settle time is the settle loop giving up: the page never produced a calm window
+    # inside SETTLE_TIMEOUT_MS. It is NOT "this engine does not report that", but it prints as the
+    # same `-`, and the axis it feeds merely becomes "not recorded" -- so another axis can carry
+    # the discrimination check and the run exits 0 having timed out without measuring settlement.
+    # Reachable only now that median() propagates a null repetition instead of averaging it away.
+    for name in ("scroll", "jump", "reopen"):
+        settling = actions[name]
+        if settling.get("ran") and settling.get("settleMs") is None:
+            failures.append(
+                f"{where} ran the {name} action but it never reached a settled state within "
+                f"{SETTLE_TIMEOUT_MS}ms, so its settle time and the frame counts beside it are "
+                "the timeout rather than a measurement"
+            )
     keystroke = actions["keystroke"]
     if keystroke.get("ran"):
         # The DOM value is what the harness itself wrote, so it proves nothing on its
