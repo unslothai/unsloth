@@ -12408,10 +12408,15 @@ class LlamaCppBackend:
 
         glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
         version <v>]``. A ggml symbol, or an absent .so (``error while loading
-        shared libraries``), is a different failure.
+        shared libraries``), is a different failure. The object is echoed
+        verbatim, so split on the ": undefined symbol:" that follows it rather
+        than on whitespace, the same way the missing-library branch above keeps
+        "/opt/My Runtime/libfoo.so" whole.
         """
         match = re.search(
-            r"symbol lookup error:\s*(\S+?):\s*undefined symbol:\s*([^\s,]+)", output or ""
+            r"symbol lookup error:[ \t]*([^\r\n]{1,4096}?):"
+            r"[ \t]*undefined symbol:[ \t]*([^\s,]+)",
+            output or "",
         )
         if not match:
             return None

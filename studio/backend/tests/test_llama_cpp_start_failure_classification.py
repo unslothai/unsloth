@@ -554,15 +554,39 @@ class TestBundledHipRocrMismatch:
         assert "hsa_amd_queue_create" not in msg
 
     def test_an_oversized_loader_token_is_bounded_in_the_message(self):
-        # Both captures are runs of non-whitespace straight from the child, and
-        # _drain_stdout keeps an unterminated line whole.
+        # Straight from the child, and _drain_stdout keeps an unterminated line
+        # whole, so the message has to bound both captures.
         out = (
             "llama-server: symbol lookup error: "
-            f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: {'s' * 8192}"
+            f"/b/libamdhip64.so.{'9' * 3000}: undefined symbol: {'s' * 8192}"
         )
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "HIP/ROCR" in msg
         assert len(msg) < 1000
+
+    def test_an_object_longer_than_a_path_is_not_the_mix(self):
+        # The object capture stops at PATH_MAX: no such path can exist, and an
+        # unbounded one lets a single hostile line drive the scan quadratically.
+        out = (
+            "llama-server: symbol lookup error: "
+            f"/b/libamdhip64.so.{'9' * 8192}: undefined symbol: hsa_amd_queue_create"
+        )
+        assert not LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+
+    def test_a_bundle_under_a_path_with_spaces_is_still_the_mix(self):
+        # glibc echoes the object verbatim, and a custom LLAMA_SERVER_PATH can
+        # sit under a directory with spaces. Splitting on whitespace dropped
+        # those into the generic 127 text instead of the retry.
+        out = (
+            "llama-server: symbol lookup error: "
+            "/opt/My Runtime/build/bin/libamdhip64.so.7: "
+            "undefined symbol: hsa_amd_queue_create, version ROCR_1"
+        )
+        assert LlamaCppBackend._is_bundled_hip_rocr_mismatch(out)
+        assert LlamaCppBackend._bundled_hip_symbol_miss(out)[0].endswith(
+            "/opt/My Runtime/build/bin/libamdhip64.so.7"
+        )
+        assert "libamdhip64.so.7" in _classify(out, "/models/x.gguf", "local/x", 127)
 
     def test_a_path_component_does_not_stand_in_for_the_object(self):
         out = (
