@@ -77,9 +77,9 @@ def test_an_explicit_location_is_split_underneath_not_replaced(monkeypatch, tmp_
     monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
     module = _load()
     module.isolate_compile_caches()
-    assert os.environ["TORCHINDUCTOR_CACHE_DIR"].startswith(str(tmp_path / "chosen")), (
-        "an explicit TORCHINDUCTOR_CACHE_DIR was discarded rather than split underneath"
-    )
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"].startswith(
+        str(tmp_path / "chosen")
+    ), "an explicit TORCHINDUCTOR_CACHE_DIR was discarded rather than split underneath"
 
 
 @pytest.mark.parametrize("conftest", CONFTESTS, ids = lambda p: str(p.relative_to(REPO)))
