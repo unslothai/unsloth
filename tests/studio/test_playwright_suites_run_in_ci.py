@@ -257,6 +257,16 @@ def test_the_scan_reads_the_workflows_it_claims_to():
     )
 
 
+def _covers(pattern: str, path: str) -> bool:
+    """Does an upload-artifact path pattern cover a report path.
+
+    `logs/pw/**` covers the directory `logs/pw` itself, which neither fnmatch nor a bare
+    startswith gets right, so normalise the glob tail before comparing.
+    """
+    stem = pattern.rstrip("*").rstrip("/")
+    return fnmatch(path, pattern) or path == stem or path.startswith(stem + "/")
+
+
 def test_every_smoke_report_is_covered_by_the_failure_upload():
     """A smoke that fails must have its own diagnostic in the artifact.
 
@@ -272,17 +282,37 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
     upload = next(s for s in steps if s.get("name") == "Upload browser smoke artifacts")
     patterns = [line.strip() for line in str(upload["with"]["path"]).splitlines() if line.strip()]
 
-    # Every logs/ path the smokes CI runs actually write, read from their source.
+    # Every logs/ path the browser gates CI runs actually write, read from their source.
+    #
+    # Enumerated from the workflow's own run lines rather than from a playwright_*.py glob.
+    # The glob is what let this through twice: probe_dismiss_guard.py and
+    # hover_semantics_probe.py are browser gates that do not carry the playwright_ prefix, so
+    # a DRIVERS-based sweep never looked at them and their reports went unuploaded.
     run = " ".join(str(s.get("run", "")) for s in steps)
-    smokes = [d for d in DRIVERS if d.name in run]
+    smokes = sorted(
+        {
+            path
+            for name in re.findall(r"tests/studio/([A-Za-z0-9_]+\.py)", run)
+            if (path := REPO / "tests" / "studio" / name).exists()
+        }
+    )
     assert len(smokes) >= 5, f"expected the browser smokes to be wired up, found {len(smokes)}"
+
+    # A gate whose report directory comes from the workflow rather than from its own source.
+    for step in steps:
+        art = (step.get("env") or {}).get("PW_ART_DIR")
+        if art and not any(_covers(pattern, str(art)) for pattern in patterns):
+            raise AssertionError(
+                f"step {step.get('name')!r} writes its reports to {art}, which no upload "
+                f"pattern covers. Upload patterns: {patterns}"
+            )
 
     uncovered = []
     for driver in smokes:
         text = driver.read_text(encoding = "utf-8")
         for out in sorted(set(re.findall(r'"(logs/[^"]+)"', text))):
             stem = out.split("%")[0].split("{")[0]
-            if not any(fnmatch(stem, p) or stem.startswith(p.rstrip("*")) for p in patterns):
+            if not any(_covers(p, stem) for p in patterns):
                 uncovered.append(f"{driver.name} -> {out}")
     assert not uncovered, (
         f"these smoke reports are not in the failure upload: {uncovered}; a failing smoke "

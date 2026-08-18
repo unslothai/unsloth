@@ -308,11 +308,17 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: studio-frontend-smoke-artifacts
-          # Four of the five smokes write logs/playwright-<name>; the settings smoke writes a
-          # JSON report instead, under its own name, so a bare playwright-* glob uploaded
-          # everything EXCEPT the report of the smoke that had just failed.
+          # Every browser gate's own diagnostic, because the one worth having is the one
+          # written by the gate that just failed. Three separate ways that went wrong: the
+          # settings smoke writes a JSON report under its own name rather than a
+          # logs/playwright-<name> directory; the heavy-thread smoke writes
+          # logs/playwright_heavy_thread, which a `playwright-*` glob does not match; and the
+          # two probes write somewhere else again.
           path: |
             logs/playwright-*
+            logs/playwright_heavy_thread/**
+            logs/pw/**
+            logs/hover_semantics/**
             logs/settings_tabs_report.json
             logs/settings_tabs_blocked_report.json
           retention-days: 3
