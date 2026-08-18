@@ -395,9 +395,9 @@ def test_the_sequenced_loop_restores_between_repetitions():
         "the sequenced table never restores, so each repetition runs against a thread one "
         "message shorter than the last"
     )
-    assert "if index + 1 < REPEATS:" in SEQ_LOOP, (
-        "the restore is unconditional, so the last repetition pays for a fixture nothing uses"
-    )
+    assert (
+        "if index + 1 < REPEATS:" in SEQ_LOOP
+    ), "the restore is unconditional, so the last repetition pays for a fixture nothing uses"
 
 
 def test_the_sequence_itself_still_resets_nothing():
