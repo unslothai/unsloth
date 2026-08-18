@@ -148,8 +148,8 @@ def test_the_cold_install_lanes_never_restore_a_cache():
                 offenders.append(f"{name}:{jid}: {step.get('name') or uses}")
             if "setup-python" in uses and (step.get("with") or {}).get("cache"):
                 offenders.append(f"{name}:{jid}: setup-python cache on a cold-install lane")
-    assert not offenders, (
-        "a cold-install lane must not be warmed by a cache:\n  " + "\n  ".join(offenders)
+    assert not offenders, "a cold-install lane must not be warmed by a cache:\n  " + "\n  ".join(
+        offenders
     )
 
 
