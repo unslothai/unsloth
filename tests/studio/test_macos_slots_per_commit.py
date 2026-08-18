@@ -145,6 +145,68 @@ def test_the_push_filter_matches_the_pull_request_filter(name):
     )
 
 
+def _covered(path: str, patterns) -> bool:
+    """Whether ``path`` matches any Actions path filter in ``patterns``."""
+    import fnmatch
+
+    for pattern in patterns:
+        if pattern == path or fnmatch.fnmatch(path, pattern):
+            return True
+        if pattern.endswith("/**") and path.startswith(pattern[:-2]):
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "studio-mac-ui-smoke.yml",
+        "studio-mac-inference-smoke.yml",
+        "studio-mac-install-matrix.yml",
+        "studio-tauri-smoke.yml",
+    ],
+)
+def test_every_helper_a_workflow_executes_is_in_its_trigger(name):
+    """A scoped trigger must list the checked-in files the workflow actually runs.
+
+    Scoping a trigger is only safe if the list is complete, and these lists were not: five
+    helper scripts and one auditor were executed by name and matched no pattern. While the
+    push trigger was unfiltered that gap was invisible, because every commit ran everything
+    after merge; narrowing the trigger is what turns it into a real hole, where editing
+    `assert-llama-loads.sh` stops running the workflow that asserts with it.
+
+    Matched by looking for the path in a `run:` body, which is how every one of these is
+    invoked. That deliberately says nothing about files a workflow depends on more
+    loosely -- `studio/package.json` reaches the Tauri build through
+    `npm install --prefix studio` and is listed by hand, not found here.
+    """
+    doc = yaml.safe_load((WORKFLOWS / name).read_text(encoding = "utf-8"))
+    on = _on(doc) or {}
+    runs = "\n".join(
+        str(step.get("run", ""))
+        for job in doc["jobs"].values()
+        if isinstance(job, dict)
+        for step in job.get("steps") or []
+        if isinstance(step, dict)
+    )
+    referenced = {
+        ref.strip()
+        for pattern in (r"\.github/scripts/[\w./-]+", r"(?:^|\s)scripts/[\w./-]+")
+        for ref in re.findall(pattern, runs, re.M)
+    }
+    existing = sorted(r for r in referenced if (REPO / r).is_file())
+    assert existing, f"{name} appears to execute no checked-in helper; the scan is wrong"
+
+    for trigger in ("pull_request", "push"):
+        patterns = (on.get(trigger) or {}).get("paths") or []
+        missing = [r for r in existing if not _covered(r, patterns)]
+        assert not missing, (
+            f"{name}: these files are executed by the workflow but match no {trigger} path "
+            f"filter, so editing one of them does not run the workflow that uses it: "
+            f"{missing}"
+        )
+
+
 def test_a_commit_that_touches_nothing_relevant_starts_no_macos_job():
     """The property the whole change exists for, checked against a concrete commit.
 

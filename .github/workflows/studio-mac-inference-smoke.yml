@@ -48,6 +48,12 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Executed directly by this workflow: the load assertion, every model
+      # download, and the multi-turn chat driver. A change to any of them changes
+      # what this workflow actually runs.
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -71,6 +77,12 @@ on:
       # The install step in this workflow is `uses:` on that composite action,
       # so an edit to the action changes what this workflow actually runs.
       - '.github/actions/install-unsloth-local/action.yml'
+      # Executed directly by this workflow: the load assertion, every model
+      # download, and the multi-turn chat driver. A change to any of them changes
+      # what this workflow actually runs.
+      - '.github/scripts/assert-llama-loads.sh'
+      - '.github/scripts/hf-download-with-retry.sh'
+      - '.github/scripts/studio_smoke/multi_turn_chat.py'
   # Manual trigger for pre-warming model caches on main, or re-running
   # against an arbitrary branch without pushing a no-op commit.
   workflow_dispatch:

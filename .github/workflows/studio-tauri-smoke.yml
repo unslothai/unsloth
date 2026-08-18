@@ -25,6 +25,13 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
     # Same list as the PR filter. Without it this workflow ran on EVERY commit to
@@ -40,6 +47,13 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
