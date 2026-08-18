@@ -260,6 +260,7 @@ def measure_arm(pw, kind: str, chars: int, tick_ms: int = TICK_MS) -> dict:
 # ladder is measuring the harness, not the cache.
 MODE = os.environ.get("SMOKE_SD_MODE", "full")
 LADDER_TICK_MS = [int(n) for n in os.environ.get("SMOKE_SD_LADDER", "0,40,120,300").split(",")]
+LADDER_EXPECT = os.environ.get("SMOKE_SD_LADDER_EXPECT", "rise")
 
 
 def build_plan() -> list[tuple[str, int, int, str]]:
@@ -289,7 +290,18 @@ def ladder_failures(cells: dict) -> list[str]:
             f"({[round(x, 2) for x in control_slopes]}), so the ladder is measuring the harness"
         )
     tested_slopes = [c["slope_mb_per_fence"] for c in tested]
-    if tested_slopes[-1] <= tested_slopes[0] * 1.5:
+    # What the tested arm is expected to do depends on which tree it is. On a tree that still
+    # keeps one cache entry per refresh window it MUST rise with the pause, or the ladder is not
+    # exercising the leak. On a tree where the cache is bounded it must NOT, and a rise there is
+    # the fix failing. Default is `rise`, so a tree that is silently unfixed cannot pass by
+    # accident; a fixed tree has to say so.
+    if LADDER_EXPECT == "flat":
+        if tested_slopes[-1] > tested_slopes[0] * 1.5:
+            failures.append(
+                "tested arm rose with the tick rate on a tree that should be flat "
+                f"({[round(x, 2) for x in tested_slopes]})"
+            )
+    elif tested_slopes[-1] <= tested_slopes[0] * 1.5:
         failures.append(
             f"tested arm did not rise with the tick rate ({[round(x, 2) for x in tested_slopes]})"
         )
