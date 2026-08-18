@@ -775,8 +775,14 @@ public static class UnslothStudioFinalPathV2
             }
             $target = [System.IO.Path]::GetFullPath($target)
         } catch { return $null }
+        # Compare like against like. $target has been through GetFullPath; putting
+        # $Path through it too means a caller that passes a relative or unnormalised
+        # spelling still trips the self-reference guard instead of returning a link
+        # that points at itself and sending the walk round again.
+        $self = $Path
+        try { $self = [System.IO.Path]::GetFullPath($Path) } catch { $self = $Path }
         if ([string]::Equals(
-            $target.TrimEnd('\', '/'), $Path.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase
+            $target.TrimEnd('\', '/'), $self.TrimEnd('\', '/'), [System.StringComparison]::OrdinalIgnoreCase
         )) {
             return $null
         }

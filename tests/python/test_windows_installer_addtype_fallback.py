@@ -339,6 +339,23 @@ Write-Output "KEPT:$(Test-Path -LiteralPath $replacement)"
     assert _lines(result, "KEPT:") == ["KEPT:True"]
 
 
+def _same_path(got: str, expected: str) -> bool:
+    """Compare two resolved paths without pinning one platform's spelling.
+
+    The resolver ends with [System.IO.Path]::GetFullPath, so on Windows the POSIX
+    fixtures below come back rooted on the current drive and with backslashes:
+    "/real/target" resolves to "D:\\real\\target". That is correct, and it has
+    nothing to do with what these cases measure, which is whether the shape
+    (Get-Item).Target arrived in was unwrapped to the right single target.
+    """
+    def norm(value: str) -> str:
+        value = value.replace("\\", "/")
+        if len(value) > 1 and value[1] == ":":
+            value = value[2:]
+        return value.rstrip("/").lower()
+    return norm(got) == norm(expected)
+
+
 _NT_DEVICE_PREFIX = "\\??\\"
 _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 
@@ -347,7 +364,8 @@ _LIST = "$l=[System.Collections.Generic.List[string]]::new(); {0}; $l"
 # names one type lets the real one fall through and be space-joined into a path
 # that does not exist. Junctions store the NT device form. System junctions and
 # Store AppExecLinks report nothing at all. None of these shapes can be produced
-# on Linux, so Get-Item is stubbed and the paths are POSIX.
+# on Linux, so Get-Item is stubbed and the paths are written POSIX-style; see
+# _same_path below for why the comparison cannot be a string equality.
 _TARGET_SHAPES = [
     ("generic collection", _LIST.format('$l.Add("/real/target")'), "/real/target"),
     (
@@ -399,7 +417,9 @@ def test_link_targets_of_every_windows_powershell_5_1_shape(
         )
     )
     assert result.returncode == 0, result.stderr
-    assert _lines(result, "TARGET:") == [f"TARGET:[{expected}]"]
+    got = _lines(result, "TARGET:")
+    assert len(got) == 1, got
+    assert _same_path(got[0][len("TARGET:[") : -1], expected)
 
 
 @requires_pwsh
@@ -422,7 +442,15 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
 
     aged = time.time() - 3 * 24 * 3600
     os.utime(stale, (aged, aged))
-    os.utime(link, (aged, aged), follow_symlinks = False)
+    try:
+        os.utime(link, (aged, aged), follow_symlinks = False)
+    except (NotImplementedError, OSError):
+        # Windows has no follow_symlinks=False for utime, and aging the link any
+        # other way writes THROUGH it onto the target, leaving the link looking
+        # fresh so the sweep skips it before the guard is ever reached. The real
+        # behaviour is covered on Windows PowerShell 5.1 by the staging probe,
+        # which ages the reparse point via a FILE_FLAG_OPEN_REPARSE_POINT handle.
+        pytest.skip("this host cannot age a link without writing through it")
 
     result = _run_powershell(
         _script(

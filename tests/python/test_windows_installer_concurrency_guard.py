@@ -44,6 +44,33 @@ def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
+# The resolver Get-StudioFinalPath dispatches to. Before issue #9140 that function
+# was self-contained -- it compiled the native helper inline -- so a test could
+# extract it alone. It is a dispatcher now, and extracting it by itself yields a
+# body whose every call is undefined, which reads as "could not resolve" rather
+# than as a missing helper.
+_FINAL_PATH_CHAIN = (
+    "Write-StudioLine",
+    "Test-StudioDirectoryUsable",
+    "Remove-StudioStalePrivateTempDirectories",
+    "New-StudioPrivateTempDirectory",
+    "Initialize-StudioTempEnvironment",
+    "Write-StudioFinalPathDegraded",
+    "Initialize-StudioFinalPathNativeType",
+    "Resolve-StudioLinkTarget",
+    "Get-StudioLexicalPath",
+    "Resolve-StudioFinalPathInfo",
+    "Get-StudioFinalPath",
+)
+
+
+def _final_path_helpers(source: str) -> str:
+    return "\n".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in _FINAL_PATH_CHAIN
+    )
+
+
 def _mutex_helpers(source: str) -> str:
     return "\n".join(
         _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
@@ -502,7 +529,7 @@ def test_tauri_override_accepts_junction_alias_of_managed_root(tmp_path: Path, s
     validation_start = source.index("    # Custom Unsloth roots are not supported with --tauri")
     validation_end = source.index("    # LOCALAPPDATA may be unset", validation_start)
     validation = source[validation_start:validation_end]
-    final_path_helper = _extract(r"    function Get-StudioFinalPath \{.*?\n    \}\n", source)
+    final_path_helper = _final_path_helpers(source)
     script = f"""
 $ErrorActionPreference = "Stop"
 {final_path_helper}
