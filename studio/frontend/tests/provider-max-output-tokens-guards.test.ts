@@ -72,6 +72,7 @@ test("a documented per-model cap bounds the connection override", () => {
     ["gemini", "gemini-3-pro", 65536],
     ["deepseek", "deepseek-reasoner", 384000],
     ["openrouter", "deepseek/deepseek-reasoner", 384000],
+    ["openrouter", "minimax/minimax-m3", 512000],
     ["openai_codex", "gpt-5.3-codex", 128000],
   ];
   for (const [providerType, modelId, documented] of cases) {
@@ -90,7 +91,6 @@ test("a documented per-model cap bounds the connection override", () => {
 test("a model with no documented cap takes the connection override", () => {
   // the reported case: a router id no capability row matches pinned at 32,768
   const undocumented: Array<[string, string | null]> = [
-    ["openrouter", "minimax/minimax-m3"],
     ["openai", "gpt-4o"],
     ["vllm", "some/local-model"],
     ["ollama", null],

@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  normalizeProviderMaxOutputTokens,
+  LEGACY_CUSTOM_PROVIDER_TYPE,
+  normalizeCustomMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
 
@@ -74,7 +75,10 @@ export function clampReasoningEffortToLevels(
   return effortLevels[0] ?? "low";
 }
 
-/** Fallback cap for a model with no documented limit and no connection override. */
+/**
+ * Fallback cap for unknown providers / models and Custom connections without
+ * an explicit per-connection override.
+ */
 export const EXTERNAL_MAX_OUTPUT_TOKENS = 32768;
 
 /**
@@ -132,44 +136,29 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   // DeepSeek (V4: deepseek-chat / deepseek-reasoner alias V4-flash).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
   // MiniMax M3: 1M context window, 262K max output tokens.
-  { providerType: "minimax", prefixes: ["minimax-m3"], cap: 262144 },
+  { providerType: "minimax", prefixes: ["minimax-m3"], cap: 512000 },
 ];
 
 /**
- * The connection's effective Max Tokens ceiling for one model.
- *
- * A documented per-model cap bounds the connection override rather than replacing it:
- * one connection fronts many models on a router, so a limit set for a 256k-output model
- * must not raise the slider past what a smaller model accepts. An undocumented model
- * takes the override outright, then `EXTERNAL_MAX_OUTPUT_TOKENS`. The provider's output
- * floor wins over both, so the slider is never handed a max below its min.
+ * Documented per-model output cap; unknown ids fall back to
+ * `EXTERNAL_MAX_OUTPUT_TOKENS` (32k). Generic Custom connections use only their
+ * explicit per-connection override and never inspect the model id. OpenRouter
+ * `provider/model` ids have the prefix stripped before matching.
  */
 export function getExternalMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
-  connectionMaxOutputTokens?: number | null,
+  customMaxOutputTokens?: number | null,
 ): number {
-  const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
-  const documented = _documentedMaxOutputTokens(providerType, modelId);
-  const resolved =
-    documented != null
-      ? Math.min(documented, override ?? documented)
-      : (override ?? EXTERNAL_MAX_OUTPUT_TOKENS);
-  return Math.max(resolved, getExternalMinOutputTokens(providerType));
-}
-
-/**
- * The published per-model cap, or null when nothing documents this id. No table entry
- * targets a generic Custom connection, so those always read as undocumented. OpenRouter
- * `provider/model` ids have the prefix stripped before matching.
- */
-function _documentedMaxOutputTokens(
-  providerType: string | null | undefined,
-  modelId: string | null | undefined,
-): number | null {
-  if (!providerType || !modelId) return null;
+  if (providerType === LEGACY_CUSTOM_PROVIDER_TYPE) {
+    return (
+      normalizeCustomMaxOutputTokens(providerType, customMaxOutputTokens) ??
+      EXTERNAL_MAX_OUTPUT_TOKENS
+    );
+  }
+  if (!providerType || !modelId) return EXTERNAL_MAX_OUTPUT_TOKENS;
   const normalized = modelId.trim().toLowerCase();
-  if (!normalized) return null;
+  if (!normalized) return EXTERNAL_MAX_OUTPUT_TOKENS;
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -188,17 +177,18 @@ function _documentedMaxOutputTokens(
       return entry.cap;
     }
   }
-  return null;
+  return EXTERNAL_MAX_OUTPUT_TOKENS;
 }
 
 /**
  * The lowered Max Tokens the settings panel should write back, or null to leave it be.
  *
  * The availability guards are load-bearing: the caller PERSISTS this and it only ever
- * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider is
- * momentarily unresolved (connections toggled off, cold hydration, a deleted connection).
- * No provider means the cap is unknown, not 32,768. Returning the cap itself is what
- * makes it converge in one pass.
+ * lowers, while `maxTokensMax` collapses to the 32,768 fallback whenever the provider
+ * is momentarily unresolved (connections toggled off, cold hydration, a deleted
+ * connection). No provider means the cap is unknown, not 32,768.
+ *
+ * Returning the cap itself is what makes it converge in one pass.
  */
 export function resolveExternalMaxTokensClamp(input: {
   settingsHydrated: boolean;
@@ -217,6 +207,7 @@ export function resolveExternalMaxTokensClamp(input: {
 function _inferProviderFromOpenrouterId(
   normalizedId: string,
 ): string | null {
+  // Map OpenRouter `provider/model` prefix to our internal providerType.
   if (normalizedId.startsWith("openai/")) return "openai";
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";
