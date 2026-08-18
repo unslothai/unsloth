@@ -42,6 +42,7 @@ def blobs(monkeypatch, tmp_path):
     blobs_dir = blobs_root / "models--Org--Model" / "blobs"
     blobs_dir.mkdir(parents = True)
     monkeypatch.setenv("HF_HUB_CACHE", str(blobs_root))
+
     # Honours an explicit root, which is what a row pinned to another cache passes; None
     # still resolves to the active one. A stub that ignored the argument would answer the
     # active root for a pinned row and hide exactly the bug the pinned tests are about.
