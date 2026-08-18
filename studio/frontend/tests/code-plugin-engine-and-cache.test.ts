@@ -250,3 +250,64 @@ test("a fence evicted mid-stream still tokenizes correctly when it resumes", asy
   });
   assert.deepEqual(final.tokens, oracle(source));
 });
+
+// ── 3. the compact cache key is a hint, not the answer ─────────────────
+
+/**
+ * `codeKey` hashes a fence down to `key + length + first 32 + last 32` so an
+ * update does not rehash the whole block. That is a lossy digest, so two
+ * different fences can share one. `findFence` therefore treats a hit as a
+ * candidate and confirms it with `exact.code === code` before serving it.
+ *
+ * Drop that confirmation and the second fence is served the first one's
+ * tokens: the reader sees the wrong code, with no error anywhere. The upstream
+ * @streamdown/code cache this file replaces keys on the same shape (length
+ * plus the first and last 100 characters) and does not confirm, so the pair
+ * below is rendered wrong by it today. Two config or import blocks that share
+ * an opening and a closing but differ in the middle are the realistic shape.
+ */
+test("two fences that share a compact cache key are not served each other's tokens", async () => {
+  const plugin = createCodePlugin({ themes: THEMES });
+  // Same length, same first 32 and same last 32 characters, different middle.
+  const head = "const cfg = {\n  alpha: 1,\n  beta: 2,\n";
+  const tail = "\n  omega: 26,\n};\nexport default cfg;\n";
+  const first = `${head}  middle: 'AAAA',\n${tail}`;
+  const second = `${head}  middle: 'BBBB',\n${tail}`;
+
+  assert.equal(first.length, second.length, "fixture must share a length");
+  assert.equal(
+    first.slice(0, 32),
+    second.slice(0, 32),
+    "fixture must share the first 32 characters codeKey samples",
+  );
+  assert.equal(
+    first.slice(-32),
+    second.slice(-32),
+    "fixture must share the last 32 characters codeKey samples",
+  );
+  assert.notEqual(first, second, "fixture fences must actually differ");
+
+  const rendered = async (code: string): Promise<string> => {
+    const result = await highlightOnce(plugin, {
+      code,
+      language: "ts",
+      themes: THEMES,
+    });
+    return result.tokens
+      .map((line) => line.map((token) => token.content).join(""))
+      .join("\n");
+  };
+
+  assert.match(await rendered(first), /AAAA/);
+  const secondText = await rendered(second);
+  assert.doesNotMatch(
+    secondText,
+    /AAAA/,
+    "the second fence was served the first fence's tokens, so the reader sees code that is not in the message",
+  );
+  assert.match(
+    secondText,
+    /BBBB/,
+    "the second fence did not render its own contents",
+  );
+});
