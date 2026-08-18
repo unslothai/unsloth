@@ -53,14 +53,14 @@ const highlightOnce = (
 // ── 1. the engine the desktop CSP allows ───────────────────────────────
 
 test("the highlighter uses the JavaScript regex engine, not the WASM one", () => {
-  assert.match(
-    PLUGIN_SOURCE,
-    /createJavaScriptRegexEngine/,
+  // Assert on a boolean, not on PLUGIN_SOURCE: assert.match prints the whole
+  // subject, so matching the file directly buries the message under ~10 KB.
+  assert.ok(
+    /createJavaScriptRegexEngine/.test(PLUGIN_SOURCE),
     "code-plugin must build its highlighter with shiki's JavaScript regex engine",
   );
-  assert.doesNotMatch(
-    PLUGIN_SOURCE,
-    /shiki\/wasm|loadWasm|createOnigurumaEngine/,
+  assert.ok(
+    !/shiki\/wasm|loadWasm|createOnigurumaEngine/.test(PLUGIN_SOURCE),
     // This is a source-text assertion, not a behavioural one: it pins the name,
     // so an alias would trip it and a same-named wrapper would slip past. That
     // is the accepted cost of covering a constraint no runtime here can check,
