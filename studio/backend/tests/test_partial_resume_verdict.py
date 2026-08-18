@@ -261,7 +261,12 @@ def two_roots(monkeypatch, tmp_path):
     return active / "models--Org--Model", previous / "models--Org--Model"
 
 
-def _record_in(entry: Path, transport: str, variant, blob: str = BLOB):
+def _record_in(
+    entry: Path,
+    transport: str,
+    variant,
+    blob: str = BLOB,
+):
     download_manifest.write_manifest(
         "model",
         "Org/Model",
