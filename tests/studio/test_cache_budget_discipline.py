@@ -54,12 +54,14 @@ WORKFLOWS = REPO / ".github" / "workflows"
 
 # Jobs whose pip cache earns its place: they install a torch/transformers-class dependency
 # set, where the download genuinely dominates. Anything not listed here must not ask for it.
-# The jobs that still use setup-python's built-in cache, and therefore still save on
-# every ref. Listed rather than skipped silently: the check above would otherwise report
-# a clean bill while nine jobs did exactly the thing it exists to prohibit, and a tenth
-# could join them unnoticed. The follow-up converts these to an explicit
-# restore + main-only save pair and empties this set.
-PIP_CACHE_JOBS_PENDING_CONVERSION = {
+#
+# These nine no longer use setup-python's built-in `cache: 'pip'`. That form is read-write
+# and saves from its post-step on whatever ref the job ran on, with no knob to gate it, so
+# every PR wrote a ~700MB entry only its own re-runs could ever restore while evicting the
+# copy on main that all PRs share. Measured at 19.45 GiB across 40 entries, 15.49 GiB of it
+# on PR refs. They use the pip-cache-restore / pip-cache-save action pair instead, which
+# splits the halves so the save can be gated on the default branch.
+PIP_CACHE_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated"),
     ("consolidated-tests-ci.yml", "llama-cpp-smoke"),
     ("mlx-ci.yml", "dispatch"),
@@ -173,19 +175,39 @@ def test_the_main_only_expression_check_reads_the_expression(expr, restricted):
     assert _restricted_to_main(expr) is restricted, expr
 
 
+def _composite_actions():
+    """(name, steps) for every composite action in the repo.
+
+    Scanned because the pip cache save now lives in one. A guard that reads only workflow
+    steps would have gone blind to it the moment the logic was factored out, which is the
+    failure mode where a rule quietly stops applying to the thing it was written for.
+    """
+    for f in sorted((REPO / ".github" / "actions").rglob("action.yml")):
+        doc = yaml.safe_load(f.read_text(encoding = "utf-8"))
+        if isinstance(doc, dict):
+            yield f.parent.name, ((doc.get("runs") or {}).get("steps") or [])
+
+
 def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     offenders = []
+    for name, steps in _composite_actions():
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if "actions/cache" not in uses or "/restore@" in uses:
+                continue
+            if "refs/heads/main" not in str(step.get("if", "")):
+                offenders.append(f"action {name}: {step.get('name') or uses}")
     for name, jid, job in _jobs():
         for step in job.get("steps") or []:
             uses = str(step.get("uses", ""))
             # setup-python's `cache:` is a save too, and an invisible one: the action
             # registers a post-step (`post: dist/cache-save/index.js` in its own
             # action.yml) that runs after the job on whatever ref it ran on, with no
-            # condition to gate it. A scan that only looked for `actions/cache` steps read
-            # as green while nine jobs wrote PR-scoped entries every run.
+            # condition to gate it. A scan that only looked for `actions/cache` steps
+            # read as green while nine jobs wrote PR-scoped entries every run. Nothing
+            # is exempt now that all nine are converted.
             if "setup-python" in uses and (step.get("with") or {}).get("cache"):
-                if (name, jid) not in PIP_CACHE_JOBS_PENDING_CONVERSION:
-                    offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
+                offenders.append(f"{name}:{jid}: setup-python implicit post-step save")
                 continue
             if "actions/cache" not in uses:
                 continue
@@ -200,41 +222,148 @@ def test_no_workflow_saves_a_cache_on_a_pull_request_ref():
     )
 
 
-def test_only_jobs_that_install_heavy_dependencies_ask_for_the_pip_cache():
-    asking = {
-        (name, jid)
+def test_no_job_uses_setup_pythons_built_in_pip_cache():
+    """The built-in cache cannot be gated, so it is not used here at all any more.
+
+    `actions/setup-python`'s `cache: 'pip'` is the read-write form: it restores in the step
+    and saves from its own post-step, on whatever ref the job ran on, and exposes no
+    condition to stop that. A PR-ref entry is restorable only by re-runs of that same PR, so
+    it buys no hit rate while competing for the shared 50 GiB budget against main's copy,
+    which every PR can read. Use pip-cache-restore plus pip-cache-save instead.
+    """
+    offenders = [
+        f"{name}:{jid}"
         for name, jid, job in _jobs()
         for step in job.get("steps") or []
-        if "setup-python" in str(step.get("uses", ""))
-        and (step.get("with") or {}).get("cache") == "pip"
-    }
-    extra = asking - PIP_CACHE_JOBS_PENDING_CONVERSION
-    assert not extra, (
-        f"these jobs ask for the shared pip cache without installing anything that justifies "
-        f"a ~700MB entry: {sorted(extra)}. The setup-python pip key is one per interpreter "
-        f"across the whole repo, so every extra claimant is another racer saving under it."
+        if "setup-python" in str(step.get("uses", "")) and (step.get("with") or {}).get("cache")
+    ]
+    assert not offenders, (
+        f"these jobs use setup-python's built-in cache, which saves on every ref with no "
+        f"way to gate it: {offenders}. Swap to the pip-cache-restore / pip-cache-save pair."
     )
 
 
-@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS_PENDING_CONVERSION))
-def test_every_allowed_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
-    """Without `cache-dependency-path`, setup-python hashes dependency files repo-wide.
+def _pip_cache_users():
+    """Every job that touches either half of the pip-cache action pair, discovered."""
+    return {
+        (name, jid)
+        for name, jid, job in _jobs()
+        for step in job.get("steps") or []
+        if "pip-cache-restore" in str(step.get("uses", ""))
+        or "pip-cache-save" in str(step.get("uses", ""))
+    }
 
-    That is the second multiplier behind the 27.05 GiB: 16 distinct keys appeared in a
+
+def test_only_the_allowlisted_jobs_use_the_pip_cache_actions():
+    """The allowlist has to be enforced against what the workflows DO, not iterated over.
+
+    Every other check in this file is parametrized over PIP_CACHE_JOBS, which means a new
+    job that adds the restore/save pair is simply never visited: it gets a ~700MB entry
+    with no scoping check, no wiring check and no justification, and this file stays green.
+
+    That hole opened when the built-in `cache: 'pip'` went away. The previous guard
+    discovered claimants by scanning for setup-python's `cache:` key, so replacing that
+    mechanism removed the discovery along with it, leaving nine hardcoded names and nothing
+    watching for a tenth.
+    """
+    extra = _pip_cache_users() - PIP_CACHE_JOBS
+    assert not extra, (
+        f"these jobs use the pip cache without being listed in PIP_CACHE_JOBS: "
+        f"{sorted(extra)}. Every entry competes for the shared 50 GiB budget, so a job "
+        f"earns one by installing a torch/transformers-class dependency set where the "
+        f"download dominates. Add it to the allowlist with that justification, or drop the "
+        f"cache."
+    )
+
+
+def test_every_pip_cache_user_actually_installs_something_heavy():
+    """The allowlist records a judgement; this checks the judgement still matches the job.
+
+    A job whose heavy install is later moved elsewhere keeps its cache entry, and nothing
+    else in this file would notice: the name stays in the list and every parametrized check
+    still passes.
+    """
+    thin = []
+    for name, jid in sorted(_pip_cache_users()):
+        job = dict(_workflows())[name]["jobs"][jid]
+        body = "\n".join(
+            str(step.get("run", "")) + str(step.get("with", "")) for step in job.get("steps") or []
+        )
+        if not HEAVY.search(body):
+            thin.append(f"{name}:{jid}")
+    assert not thin, (
+        f"these jobs hold a pip cache but no longer install anything that justifies it: " f"{thin}"
+    )
+
+
+def _pip_cache_steps(name, jid):
+    """(restore step, save step) for a job, either of which may be None."""
+    job = dict(_workflows())[name]["jobs"][jid]
+    restore = save = None
+    for step in job.get("steps") or []:
+        uses = str(step.get("uses", ""))
+        if "pip-cache-restore" in uses:
+            restore = step
+        elif "pip-cache-save" in uses:
+            save = step
+    return restore, save
+
+
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS))
+def test_every_pip_cache_scopes_its_key_to_what_it_installs(name, jid):
+    """Without scoping, the key is a hash of dependency files repo-wide.
+
+    That is the second multiplier behind the 19.45 GiB: 16 distinct keys appeared in a
     week, because any requirements edit anywhere invalidates every interpreter's entry at
     once and orphans the old ones. Scoping the key to the files a job actually installs
     from -- or, for the jobs that pin their dependencies inline, to the workflow file that
     IS the dependency spec -- keeps an unrelated edit from costing ~700MB per interpreter.
     """
-    job = _workflows_by_name()[name]["jobs"][jid]
-    for step in job.get("steps") or []:
-        with_ = step.get("with") or {}
-        if "setup-python" not in str(step.get("uses", "")) or with_.get("cache") != "pip":
-            continue
-        assert with_.get("cache-dependency-path"), (
-            f"{name}:{jid} caches pip without a cache-dependency-path, so its key is a hash "
-            f"of dependency files across the whole repo and moves for reasons that have "
-            f"nothing to do with what this job installs"
+    restore, _ = _pip_cache_steps(name, jid)
+    assert restore is not None, f"{name}:{jid} no longer restores a pip cache"
+    files = [
+        l.strip()
+        for l in str((restore.get("with") or {}).get("key-files") or "").splitlines()
+        if l.strip()
+    ]
+    assert files, f"{name}:{jid} passes no key-files, so the key describes nothing"
+
+
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS))
+def test_every_restored_pip_cache_is_also_saved_and_wired_to_its_restore(name, jid):
+    """A restore with no save fills nothing; a save reading the wrong ids saves nothing.
+
+    Both halves are silent when wrong. The save takes the directory, the key and the
+    hit flag from the restore step's outputs, so a renamed or missing id yields empty
+    inputs and an entry that is never written, with a green job either way.
+    """
+    restore, save = _pip_cache_steps(name, jid)
+    assert restore is not None and save is not None, (
+        f"{name}:{jid} has restore={restore is not None}, save={save is not None}; the "
+        f"pair has to stay together or the cache is never populated"
+    )
+    ident = restore.get("id")
+    assert ident, f"{name}:{jid}'s restore step has no id, so the save cannot read its outputs"
+    with_ = save.get("with") or {}
+    for field in ("dir", "key", "cache-hit"):
+        assert f"steps.{ident}.outputs.{field}" in str(
+            with_.get(field, "")
+        ), f"{name}:{jid}'s save does not take {field} from steps.{ident}.outputs"
+
+
+def test_the_pip_cache_save_action_is_gated_on_the_default_branch():
+    """The one place the gate lives, now that nine call sites share it."""
+    doc = yaml.safe_load(
+        (REPO / ".github" / "actions" / "pip-cache-save" / "action.yml").read_text(encoding = "utf-8")
+    )
+    steps = (doc.get("runs") or {}).get("steps") or []
+    saves = [s for s in steps if "actions/cache" in str(s.get("uses", ""))]
+    assert saves, "pip-cache-save no longer saves anything"
+    for s in saves:
+        cond = str(s.get("if", ""))
+        assert "refs/heads/main" in cond, (
+            "the pip cache save is no longer gated on the default branch, so all nine call "
+            "sites went back to writing PR-scoped entries at once"
         )
 
 
@@ -242,17 +371,13 @@ def _workflows_by_name():
     return dict(_workflows())
 
 
-@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS_PENDING_CONVERSION))
+@pytest.mark.parametrize("name,jid", sorted(PIP_CACHE_JOBS))
 def test_every_allowed_pip_cache_job_still_exists_and_still_earns_it(name, jid):
-    """The allowlist must not outlive the jobs, or it silently permits nothing."""
+    """The list must not outlive the jobs, or it silently permits nothing."""
     doc = dict(_workflows()).get(name)
-    assert (
-        doc is not None
-    ), f"{name} no longer exists; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
+    assert doc is not None, f"{name} no longer exists; drop it from PIP_CACHE_JOBS"
     job = doc["jobs"].get(jid)
-    assert (
-        job is not None
-    ), f"{name} no longer has job {jid}; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
+    assert job is not None, f"{name} no longer has job {jid}; drop it from PIP_CACHE_JOBS"
     body = "\n".join(str(s.get("run", "")) for s in job.get("steps") or [])
     assert HEAVY.search(body), (
         f"{name}:{jid} is allowed a pip cache but no longer installs anything heavy; it "
@@ -340,25 +465,20 @@ def test_a_cache_save_of_downloaded_artifacts_waits_for_the_download_to_succeed(
     )
 
 
-def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
-    """setup-python FAILS the job when the path matches nothing; it does not skip the cache.
+def test_every_cache_key_path_resolves_where_the_job_checked_out():
+    """A key-files glob that matches nothing collapses every job onto one key.
 
-    "Error: No file in <workspace> matched to [...], make sure you have checked out the
-    target repository" -- actions/setup-python#807 is an open request to downgrade that to
-    a warning, so today it is fatal. Three jobs here check the repo out under `unsloth/`
-    (notebooks-ci api-introspect, version-compat-ci zoo-imports-under-spoof and
-    grpo-fake-run) because they need a second repo beside it. A key written as if the
-    checkout were at the workspace root therefore does not merely miss the cache, it stops
-    the job before it installs anything.
-
-    Scoping the keys is what introduced this, which is why it is asserted rather than
-    remembered: the failure is loud, but only once it reaches CI.
+    Three jobs check the repo out under `unsloth/` because they need a second repo beside
+    it (notebooks-ci api-introspect, version-compat-ci zoo-imports-under-spoof and
+    grpo-fake-run), so a path written as if the checkout were at the workspace root
+    resolves to nothing. Under setup-python's built-in cache that was fatal outright
+    ("No file in ... matched to ..."); hashFiles is quieter and simply returns empty, which
+    is why pip-cache-restore fails loudly on an empty hash and why this stays asserted.
 
     Each entry is resolved against the checkout it belongs to and then globbed, rather than
     prefix-matched. A prefix check calls `unsloth/.github/workflows/typo.yml` correct
     because it starts with `unsloth/`, and a job checked out at the workspace root was
-    skipped entirely, so a misspelling there was never examined at all. Both fail the job
-    exactly as hard as the wrong prefix does.
+    skipped entirely, so a misspelling there was never examined at all.
     """
     offenders = []
     for name, jid, job in _jobs():
@@ -382,9 +502,10 @@ def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
 
         for step in steps:
             with_ = step.get("with") or {}
-            if "setup-python" not in str(step.get("uses", "")):
-                continue
-            for line in str(with_.get("cache-dependency-path") or "").splitlines():
+            paths = with_.get("cache-dependency-path") or (
+                with_.get("key-files") if "pip-cache-restore" in str(step.get("uses", "")) else None
+            )
+            for line in str(paths or "").splitlines():
                 line = line.strip()
                 if not line:
                     continue
@@ -413,8 +534,8 @@ def test_every_cache_dependency_path_resolves_where_the_job_checked_out():
                         f"(resolved to {relative!r})"
                     )
     assert not offenders, (
-        "setup-python fails a job outright when cache-dependency-path matches nothing, so "
-        "each of these stops its job before it installs anything:\n  " + "\n  ".join(offenders)
+        "these cache key paths are workspace-root-relative in a job that checks the repo "
+        "out into a subdirectory, so they match no file:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -436,4 +557,37 @@ def test_no_setup_python_step_declares_a_cache_path_without_a_cache():
     assert not offenders, (
         f"these steps declare cache-dependency-path but no cache, so the key is never "
         f"used and the config only misleads: {offenders}"
+    )
+
+
+def test_local_action_references_use_the_nested_checkout_path():
+    """`uses: ./...` resolves from GITHUB_WORKSPACE, not from the workflow file.
+
+    GitHub's own docs put it plainly: if the action checks the repository out to a
+    different location than the workflow, the relative path for a local action has to be
+    updated. Three jobs here check out under `unsloth/` because they need a second repo
+    beside it, so an unprefixed `./.github/actions/...` points at a directory that does not
+    exist and the step fails with "Can't find 'action.yml', 'action.yaml' or 'Dockerfile'".
+
+    Same root cause as the cache-key path check above, one level out: the key paths were
+    fixed for these jobs and the action paths were not.
+    """
+    offenders = []
+    for name, jid, job in _jobs():
+        steps = job.get("steps") or []
+        checkout_dirs = [
+            str((s.get("with") or {}).get("path")).rstrip("/")
+            for s in steps
+            if "actions/checkout" in str(s.get("uses", "")) and (s.get("with") or {}).get("path")
+        ]
+        if not checkout_dirs:
+            continue
+        for step in steps:
+            uses = str(step.get("uses", ""))
+            if uses.startswith("./") and not any(uses.startswith(f"./{d}/") for d in checkout_dirs):
+                offenders.append(f"{name}:{jid}: {uses} (checkouts: {checkout_dirs})")
+    assert not offenders, (
+        "these local action references are workspace-root-relative in a job that checks "
+        "the repo out into a subdirectory, so the runner cannot find the action:\n  "
+        + "\n  ".join(offenders)
     )

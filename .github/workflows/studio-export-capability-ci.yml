@@ -66,9 +66,14 @@ jobs:
         # repo-wide, so one unrelated edit invalidates ~700MB per interpreter.
         with:
           python-version: '3.12'
-          cache: 'pip'
-          cache-dependency-path: |
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
             .github/workflows/studio-export-capability-ci.yml
+
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
       - name: Install CPU PyTorch
@@ -85,3 +90,12 @@ jobs:
       - name: Export capability + import-safety tests
         working-directory: studio/backend
         run: python -m pytest tests/test_export_capability.py -q
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
