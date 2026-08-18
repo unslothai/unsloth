@@ -55,13 +55,9 @@ def render(page, kind: str, chars: int, seed: int, ticks: int, tick_ms: int) -> 
     )
     # Highlighting lands asynchronously, and an early read would compare an unstyled frame against
     # a styled one and call the fix a regression. Wait for the page's own idle signal.
-    page.wait_for_function(
-        "() => window.__sd.counters().pending === 0", timeout = 120_000
-    )
+    page.wait_for_function("() => window.__sd.counters().pending === 0", timeout = 120_000)
     page.wait_for_timeout(1500)
-    page.wait_for_function(
-        "() => window.__sd.counters().pending === 0", timeout = 120_000
-    )
+    page.wait_for_function("() => window.__sd.counters().pending === 0", timeout = 120_000)
     # The tokens arrive on a callback, so the commit that paints them is one render after the
     # counter clears. Reading before it lands would compare a styled tree against an unstyled one.
     page.wait_for_timeout(400)
@@ -127,9 +123,7 @@ def open_tree(pw, tree: Path, port: int, servers: list):
     servers.append(start_vite(tree, port))
     browser = pw.chromium.launch(headless = True, args = ["--no-sandbox", "--disable-gpu"])
     page = browser.new_page()
-    page.goto(
-        f"http://127.0.0.1:{port}/smoke-shiki-retention.html", wait_until = "domcontentloaded"
-    )
+    page.goto(f"http://127.0.0.1:{port}/smoke-shiki-retention.html", wait_until = "domcontentloaded")
     page.wait_for_function("() => window.__sd && window.__sd.ready", timeout = 120_000)
     return browser, page
 

@@ -89,8 +89,7 @@ def main() -> int:
         # Guard the ratio: a control arm sits near zero in both arms and a raw division there
         # prints a number that looks like a result and is noise.
         ratios = [
-            (b / h) if abs(h) > 0.02 else float("nan")
-            for b, h in zip(base_values, head_values)
+            (b / h) if abs(h) > 0.02 else float("nan") for b, h in zip(base_values, head_values)
         ]
         finite = [r for r in ratios if r == r]
         ratio = f"{statistics.median(finite):.2f}x" if finite else "n/a"

@@ -169,7 +169,12 @@ def new_browser(pw):
     )
 
 
-def measure_arm(pw, kind: str, chars: int, tick_ms: int = TICK_MS) -> dict:
+def measure_arm(
+    pw,
+    kind: str,
+    chars: int,
+    tick_ms: int = TICK_MS,
+) -> dict:
     """One arm in its own browser, so the module-level caches start empty."""
     browser = new_browser(pw)
     try:
