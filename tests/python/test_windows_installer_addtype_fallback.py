@@ -158,6 +158,72 @@ Write-Output "CALLS:$global:AddTypeCalls"
 
 
 @requires_pwsh
+def test_the_private_temp_retry_recovers_the_native_helper(tmp_path: Path):
+    """Surviving a dead compiler is the floor. The retry has to actually work.
+
+    Add-Type is replaced by a stub that behaves the way 5.1's CodeDom does: it
+    writes the source into %TEMP% and fails when that cannot hold a file, and it
+    calls the real cmdlet once it can, so the type genuinely gets defined.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding = "utf-8")
+    dead = str(blocker / "temp")
+    local_app_data = tmp_path / "localappdata"
+    local_app_data.mkdir()
+    studio_home = tmp_path / "studio"
+    studio_home.mkdir()
+
+    env = os.environ.copy()
+    env.update({"TMP": dead, "TEMP": dead, "LOCALAPPDATA": str(local_app_data)})
+    env.pop("USERPROFILE", None)
+
+    result = _run_powershell(
+        _script(
+            f"""
+$script:RealAddType = Get-Command Add-Type -CommandType Cmdlet
+$global:Attempts = 0
+function Add-Type {{
+    param([string]$TypeDefinition, [string]$ErrorAction)
+    $global:Attempts++
+    $probe = Join-Path $env:TMP ("codedom-" + [guid]::NewGuid().ToString('N').Substring(0, 8) + ".0.cs")
+    try {{
+        [System.IO.File]::WriteAllText($probe, $TypeDefinition)
+        Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+    }} catch {{
+        throw "(0) : error CS2001: Source file '$probe' could not be found"
+    }}
+    & $script:RealAddType -TypeDefinition $TypeDefinition -ErrorAction Stop
+}}
+# Skip the session-wide temp fix, so the RETRY is the only thing that can save it.
+$script:StudioTempChecked = $true
+$info = Resolve-StudioFinalPathInfo -Path '{studio_home}'
+Write-Output "ATTEMPTS:$global:Attempts"
+Write-Output "LOADED:$([bool]("UnslothStudioFinalPathV2" -as [type]))"
+Write-Output "PATH:$($info.Path)"
+Write-Output "TMP:$env:TMP"
+Write-Output "TEMP:$env:TEMP"
+""",
+            sabotage = False,
+        ),
+        env = env,
+    )
+    assert result.returncode == 0, result.stderr
+    # One failed attempt, then one retry with a private %TEMP%, which succeeds.
+    assert _lines(result, "ATTEMPTS:") == ["ATTEMPTS:2"]
+    assert _lines(result, "LOADED:") == ["LOADED:True"]
+    assert not [line for line in result.stdout.splitlines() if "native path resolver" in line]
+    # Restored exactly, broken values and all: they are the caller's, not ours.
+    assert _lines(result, "TMP:") == [f"TMP:{dead}"]
+    assert _lines(result, "TEMP:") == [f"TEMP:{dead}"]
+    assert list((local_app_data / "Unsloth Studio" / "temp").glob("ust-*")) == []
+    # The helper's P/Invoke targets kernel32, so off Windows the type loads but the
+    # CALL fails. That is a path Windows will not take, and it has to degrade to a
+    # usable answer rather than throw.
+    assert _lines(result, "PATH:")[0].startswith("PATH:")
+    assert _lines(result, "PATH:") != ["PATH:"]
+
+
+@requires_pwsh
 def test_resolver_follows_a_linked_ancestor(tmp_path: Path):
     physical = tmp_path / "physical" / "studio"
     physical.mkdir(parents = True)
