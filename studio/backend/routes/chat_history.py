@@ -36,6 +36,7 @@ from storage.studio_db import (
     delete_chat_threads,
     ensure_chat_project_workspace,
     fork_chat_thread,
+    fork_counts_for_thread,
     get_chat_attachment,
     get_chat_project,
     get_chat_thread,
@@ -1354,6 +1355,10 @@ class ChatForkCountResponse(BaseModel):
     count: int
 
 
+class ChatThreadForkCountsResponse(BaseModel):
+    counts: dict[str, int]
+
+
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)
 def fork_thread(
     thread_id: str,
@@ -1420,6 +1425,15 @@ def get_fork_count(
     current_subject: str = Depends(get_current_subject),
 ):
     return ChatForkCountResponse(count = count_forks_for_message(thread_id, message_id))
+
+
+@router.get(
+    "/threads/{thread_id}/forks",
+    response_model = ChatThreadForkCountsResponse,
+)
+def get_thread_fork_counts(thread_id: str, current_subject: str = Depends(get_current_subject)):
+    """Every fork count of a thread in one read, so a rendered thread costs one request."""
+    return ChatThreadForkCountsResponse(counts = fork_counts_for_thread(thread_id))
 
 
 @router.get("/export", response_model = ChatExportResponse)
