@@ -516,6 +516,26 @@ def test_n_serves_one_full_generation_per_choice(monkeypatch):
     assert [c["index"] for c in body["choices"]] == [0, 1]
     assert [c["message"]["content"] for c in body["choices"]] == ["first", "second"]
     assert len(backend.calls) == 2  # a generation per choice, not one reused
+    # The shared prompt is counted once; only generated tokens accumulate.
+    assert _totals(body) == {"prompt_tokens": 7, "completion_tokens": 6, "total_tokens": 13}
+
+
+def _totals(body):
+    return {k: body["usage"][k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
+
+
+@pytest.mark.parametrize("tool_loop", [False, True])
+def test_a_non_streaming_reply_reports_the_tokens_it_spent(monkeypatch, tool_loop):
+    """The response model defaults usage to a zero-filled object, so omitting it
+    reports zeros a client cannot tell from a real count. Both non-streaming
+    shapes answer from the same stats the monitor reads."""
+    spent = {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15}
+    build = _ToolLoopBackend if tool_loop else _ScriptedBackend
+    backend = build(_fixed("hello"), stats = {"usage": spent})
+    payload = _request(stream = False, enable_tools = True) if tool_loop else _request(stream = False)
+    body = _json_body(_call(payload, monkeypatch, backend, supports_tools = tool_loop))
+    assert _totals(body) == spent
+    assert body["usage"]["prompt_tokens_details"]["cached_tokens"] == 0
 
 
 def _monitor_entry(payload, monkeypatch, backend, **install_kwargs):

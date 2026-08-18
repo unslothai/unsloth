@@ -13682,6 +13682,7 @@ async def openai_chat_completions(
                     )
                 api_monitor.set_perf(monitor_id, stop_reason = _audio_json_finish)
                 api_monitor.finish(monitor_id)
+                _audio_usage = (_audio_json_stats or {}).get("usage") or {}
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
@@ -13692,6 +13693,18 @@ async def openai_chat_completions(
                             finish_reason = _audio_json_finish,
                         )
                     ],
+                    usage = CompletionUsage(
+                        prompt_tokens = _audio_usage.get("prompt_tokens") or 0,
+                        completion_tokens = _audio_usage.get("completion_tokens") or 0,
+                        total_tokens = (
+                            _audio_usage.get("total_tokens")
+                            or (_audio_usage.get("prompt_tokens") or 0)
+                            + (_audio_usage.get("completion_tokens") or 0)
+                        ),
+                        prompt_tokens_details = _prompt_tokens_details(
+                            _audio_usage.get("prompt_tokens_details")
+                        ),
+                    ),
                 )
                 return _model_json_response(response)
 
@@ -15749,9 +15762,10 @@ async def openai_chat_completions(
 
                 for _c in _sf_flush_reasoning():
                     yield _c
-                # Usage chunk from the last turn, same shape as the
-                # GGUF tool loop's metadata. Request-scoped holder, so
-                # concurrent streams cannot read each other's stats.
+                # Usage chunk for the whole loop, same shape as the GGUF tool
+                # loop's metadata: every turn's tokens, the last turn's prompt.
+                # Request-scoped holder, so concurrent streams cannot read each
+                # other's stats. A cancelled stream reports the turns that finished.
                 _stats = _sf_stats_holder.get("stats")
                 # The last turn's own budget decides: an earlier turn stopping at the
                 # cap does not truncate the answer this one went on to write.
@@ -15892,6 +15906,7 @@ async def openai_chat_completions(
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:
                 _sf_msg_kwargs["reasoning_content"] = _reasoning_text
+            _sf_usage = (_stats or {}).get("usage") or {}
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
@@ -15902,6 +15917,18 @@ async def openai_chat_completions(
                         finish_reason = _sf_json_finish,
                     )
                 ],
+                usage = CompletionUsage(
+                    prompt_tokens = _sf_usage.get("prompt_tokens") or 0,
+                    completion_tokens = _sf_usage.get("completion_tokens") or 0,
+                    total_tokens = (
+                        _sf_usage.get("total_tokens")
+                        or (_sf_usage.get("prompt_tokens") or 0)
+                        + (_sf_usage.get("completion_tokens") or 0)
+                    ),
+                    prompt_tokens_details = _prompt_tokens_details(
+                        _sf_usage.get("prompt_tokens_details")
+                    ),
+                ),
             )
             return _model_json_response(response)
         except asyncio.CancelledError:
@@ -16455,11 +16482,20 @@ async def openai_chat_completions(
                         _prompt_details = _choice_usage.get("prompt_tokens_details")
             _msg, _finish = _monitor_replies[-1], _choices[-1].finish_reason
 
+            # Built once, so what the monitor is told below is this same object and
+            # cannot disagree with the body.
+            _usage = CompletionUsage(
+                prompt_tokens = _prompt_tokens,
+                completion_tokens = _sum_completion,
+                total_tokens = _prompt_tokens + _sum_completion,
+                prompt_tokens_details = _prompt_tokens_details(_prompt_details),
+            )
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
                 model = model_name,
                 choices = _choices,
+                usage = _usage,
             )
 
             def _reply_text(msg, finish):
@@ -16489,18 +16525,13 @@ async def openai_chat_completions(
                 # the last one's would describe the whole turn as uniformly that.
                 api_monitor.set_perf(monitor_id, stop_reason = _finish)
             if _last_stats:
-                # Every choice shares the one prompt, so the monitor is told the
-                # summed completion against a single prompt count -- not the last
-                # choice's numbers, which would under-report the work done.
-                _usage = dict(_last_stats.get("usage") or {})
-                _usage.update(
-                    prompt_tokens = _prompt_tokens,
-                    completion_tokens = _sum_completion,
-                    total_tokens = _prompt_tokens + _sum_completion,
+                _monitor_usage(
+                    monitor_id,
+                    _usage.model_dump(),
+                    # Omitted for n > 1: the totals sum every choice while the
+                    # timings describe only the last one, so they describe neither.
+                    timings = _last_stats.get("timings") if len(_choices) <= 1 else None,
                 )
-                if _prompt_details is not None:
-                    _usage["prompt_tokens_details"] = _prompt_details
-                _monitor_usage(monitor_id, _usage, timings = _last_stats.get("timings"))
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 

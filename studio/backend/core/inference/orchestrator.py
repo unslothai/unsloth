@@ -155,6 +155,43 @@ class GenStreamErrorRaised(RuntimeError):
         self.public = bool(public)
 
 
+def _summed_tool_loop_stats(total, turn):
+    """Fold one tool-loop turn's report into the loop's running total.
+
+    Every turn spends its tokens on the same request, so the reply reports their
+    sum, as the llama.cpp tool loop does; reporting only the last turn hides the
+    tokens that produced the tool call. The prompt count is the last turn's, which
+    already contains the tool results the earlier turns produced.
+    """
+    if not isinstance(turn, dict):
+        return total
+    if not isinstance(total, dict):
+        return turn
+    usage = dict(turn.get("usage") or {})
+    completion = (usage.get("completion_tokens") or 0) + (
+        (total.get("usage") or {}).get("completion_tokens") or 0
+    )
+    usage["completion_tokens"] = completion
+    usage["total_tokens"] = (usage.get("prompt_tokens") or 0) + completion
+    summed = dict(turn)
+    summed["usage"] = usage
+    timings = dict(turn.get("timings") or {})
+    if timings:
+        prior = total.get("timings") or {}
+        for field in ("predicted_ms", "predicted_n"):
+            timings[field] = (timings.get(field) or 0) + (prior.get(field) or 0)
+        # Rates describe the totals above, not the turn they arrived with: leaving
+        # the last turn's would report a speed the summed counts contradict.
+        predicted_ms = timings.get("predicted_ms") or 0
+        predicted_n = timings.get("predicted_n") or 0
+        timings["predicted_per_token_ms"] = (predicted_ms / predicted_n) if predicted_n else 0.0
+        timings["predicted_per_second"] = (
+            (predicted_n / (predicted_ms / 1000.0)) if predicted_ms else 0.0
+        )
+        summed["timings"] = timings
+    return summed
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -1820,6 +1857,7 @@ class InferenceOrchestrator:
             # run_safetensors_tool_loop drop one-shot tools (e.g. render_html) from
             # later same-response prompts.
             turn_tools = active_tools if active_tools is not None else tools
+            turn_stats: dict = {}
             common_kwargs = dict(
                 messages = conv,
                 system_prompt = "",
@@ -1838,8 +1876,9 @@ class InferenceOrchestrator:
                 # Self-limiting: after a tool call the conversation ends on a tool
                 # result, so later turns render as ordinary new turns.
                 continue_final_message = continue_final_message,
-                # last turn wins, like the GGUF tool loop
-                stats_holder = stats_holder,
+                # Reported per turn and summed below, since the whole loop answers
+                # one request.
+                stats_holder = turn_stats,
                 presence_penalty = presence_penalty,
                 seed = seed,
                 frequency_penalty = frequency_penalty,
@@ -1868,6 +1907,12 @@ class InferenceOrchestrator:
                             close()
                         except Exception:
                             logger.debug("failed to close errored generation stream", exc_info = True)
+                # A turn that never reported -- one a cancel interrupted -- folds in
+                # as nothing, leaving the turns that did.
+                if stats_holder is not None:
+                    stats_holder["stats"] = _summed_tool_loop_stats(
+                        stats_holder.get("stats"), turn_stats.get("stats")
+                    )
 
         initial = list(messages)
         if system_prompt:
