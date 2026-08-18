@@ -36,7 +36,8 @@ interface SettingsDialogState {
   // explicitly via onCloseAutoFocus.
   opener: HTMLElement | null;
   // Set when something asks to jump straight to an archive listing (the archive
-  // toast). DataTab uses it as its initial subpage, then clears it.
+  // toast). DataTab uses it as its initial subpage, then clears it. See requestsFor
+  // for how long it lives unconsumed.
   archivedRequested: ArchivedShelf | null;
   openDialog: (tab?: SettingsTab, options?: OpenDialogOptions) => void;
   openArchivedChats: () => void;
@@ -84,6 +85,31 @@ function loadInitialTab(): SettingsTab {
     : "general";
 }
 
+/** The panel that delivers each scroll target, so a navigation elsewhere abandons it. */
+const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
+  "about-updates": "about",
+  "appearance-sidebar-nav": "appearance",
+};
+
+/**
+ * The unconsumed deep-link requests that outlive a navigation landing on `tab`.
+ *
+ * Only the panel that performs a jump clears its request, and panels are fetched on first
+ * view, so a navigation can move before the chunk arrives. A request therefore lives while
+ * the dialog is open on the tab that reads it: reselecting keeps it, anything else drops
+ * it, and closing (below) always does. Held wider, a stale request replays on a later
+ * visit; held narrower, reselecting loses a deep-link still in flight.
+ */
+function requestsFor(state: SettingsDialogState, tab: SettingsTab) {
+  return {
+    scrollTarget:
+      state.scrollTarget && SCROLL_TARGET_TAB[state.scrollTarget] === tab
+        ? state.scrollTarget
+        : null,
+    archivedRequested: tab === "data" ? state.archivedRequested : null,
+  };
+}
+
 export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   open: false,
   activeTab: loadInitialTab(),
@@ -91,12 +117,18 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   opener: null,
   archivedRequested: null,
   openDialog: (tab, options) =>
-    set((state) => ({
-      open: true,
-      activeTab: tab ?? state.activeTab,
-      scrollTarget: options?.scrollTarget ?? null,
-      opener: captureOpener(),
-    })),
+    set((state) => {
+      const next = tab ?? state.activeTab;
+      const pending = requestsFor(state, next);
+      return {
+        open: true,
+        activeTab: next,
+        // A caller that names a target replaces whatever was still pending.
+        scrollTarget: options?.scrollTarget ?? pending.scrollTarget,
+        archivedRequested: pending.archivedRequested,
+        opener: captureOpener(),
+      };
+    }),
   openArchivedChats: () =>
     set({
       open: true,
@@ -121,13 +153,14 @@ export const useSettingsDialogStore = create<SettingsDialogState>((set) => ({
   // Do NOT clear `opener` here. onCloseAutoFocus runs on the next render
   // pass after `open: false` lands, so the opener must still be readable
   // from the store at that point. The next openDialog() overwrites it.
-  closeDialog: () => set({ open: false, scrollTarget: null }),
+  closeDialog: () =>
+    set({ open: false, scrollTarget: null, archivedRequested: null }),
   setActiveTab: (tab) => {
     try {
       window.localStorage.setItem(ACTIVE_TAB_KEY, tab);
     } catch {
       // ignore storage failures
     }
-    set({ activeTab: tab, scrollTarget: null });
+    set((state) => ({ activeTab: tab, ...requestsFor(state, tab) }));
   },
 }));
