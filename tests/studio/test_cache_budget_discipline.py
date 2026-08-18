@@ -3,15 +3,23 @@
 
 """No workflow may spend the shared Actions cache budget carelessly.
 
-GitHub gives a repository 10 GB of Actions cache and evicts least-recently-used once that is
-exceeded. Measured before this file existed, unslothai/unsloth held **50.0 GB across 279
-entries**, five times the limit, so eviction was running continuously and the caches that
-matter were the ones being thrown away:
+This repo's Actions cache budget is 50 GiB (not GitHub's 10 GB default), and GitHub evicts
+least-recently-used once it is exceeded. Measured before this file existed, unslothai/unsloth
+held **49.63 GiB across 258 entries -- 99.3% full**, so eviction runs at the margin and every
+new entry displaces an existing one. What fills it is almost entirely redundancy:
 
-    28.9 GB   60 entries  setup-python pip     <- 58% of the budget, only 18 DISTINCT keys
-     7.2 GB    8 entries  v0-rust
-    11.8 GB    5 entries  the GGUF / HF model caches CI actually depends on
-    25.9 GB  214 entries  were on PR refs, restorable only by re-runs of that same PR
+    20.74 GiB  duplicate waste: the SAME key held on several refs (42% of the cache)
+                 6.67 GiB   13 copies  setup-python ... python-3.13.15-pip-85e247d7...
+                 6.50 GiB   11 copies  setup-python ... python-3.11.15-pip-85e247d7...
+                 3.83 GiB   10 copies  setup-python ... python-3.12.13-pip-85e247d7...
+                 0.91 GiB    3 copies  ms-playwright-Linux-1.62.0-cfw-v1
+    10.70 GiB  84 entries written and never read again, 10.60 GiB of it setup-python
+    24.01 GiB  198 entries on PR refs, restorable only by re-runs of that same PR
+     0.00 GiB  entries unread for 7+ days -- nothing is idle, the cache is churning
+
+Every one of those duplicated keys already has a copy on `main`, which every PR can restore
+from. The PR-scoped copies are therefore redundant by construction: they buy no hit rate and
+evict the copy that does.
 
 That is a self-reinforcing loop, and the repo had already diagnosed it once for the GGUF
 caches (see the save step in studio-inference-smoke.yml: "PR misses -> downloads -> saves its
@@ -28,9 +36,11 @@ on main only, via `actions/cache/restore` plus a `github.ref == 'refs/heads/main
 
 Door 2 -- `cache: 'pip'` on a job that installs almost nothing. `actions/setup-python`
 derives one pip key per interpreter from dependency files across the whole repo, so dozens of
-unrelated jobs share it and race to save under it. The entries measured 666-715 MB. A job
-that only pip-installs `huggingface_hub` or `pytest` was paying that for the 0-7s its restore
-step took. Jobs that really do install torch/transformers keep the cache; the rest do not.
+unrelated jobs share it and race to save under it. The entries measured 666-715 MB, and the
+four interpreter keys between them account for 19.44 GiB of the 20.74 GiB of duplicate waste.
+A job that only pip-installs `huggingface_hub` or `pytest` was paying that for the 0-7s its
+restore step took. Jobs that really do install torch/transformers keep the cache; the rest do
+not.
 """
 
 import re
