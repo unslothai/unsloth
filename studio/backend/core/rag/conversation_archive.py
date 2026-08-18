@@ -283,9 +283,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
-            if _archived_under(
-                conn, scope, digest, expected_identity, occurrences = len(seats) or 1
-            ):
+            if _archived_under(conn, scope, digest, expected_identity, occurrences = len(seats) or 1):
                 # Commit here: this path holds no transaction of its own and the loop can
                 # return before ever reaching the write lock, when every turn is already
                 # archived -- which is the ordinary case on a thread being re-compacted,
@@ -529,8 +527,15 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
     ]
 
 
-def _restamp(conn, scope: str, digest: str, seats: list[int], *, copies = None,
-             commit: bool = False) -> None:
+def _restamp(
+    conn,
+    scope: str,
+    digest: str,
+    seats: list[int],
+    *,
+    copies = None,
+    commit: bool = False,
+) -> None:
     """Move existing copies of this turn onto the positions the transcript gives them.
 
     An archive written by an earlier build numbered turns as they arrived, and one written
