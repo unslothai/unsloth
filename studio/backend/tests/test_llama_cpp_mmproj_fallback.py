@@ -194,6 +194,16 @@ class TestGpuMemoryStartFailure:
     def test_gpu_allocation_errors_match(self, out):
         assert _gpu_memory_failure(out) is True
 
+    @pytest.mark.parametrize(
+        "out",
+        [
+            "ggml_alloc: failed to allocate 512.00 MiB",
+            "std::bad_alloc: out of memory",
+        ],
+    )
+    def test_host_allocation_errors_do_not_match(self, out):
+        assert _gpu_memory_failure(out) is False
+
     @pytest.mark.parametrize("out", [_BAD_ARCH_OUT, _PORT_OUT, _MISSING_OUT, ""])
     def test_unrelated_startup_errors_do_not_match(self, out):
         assert _gpu_memory_failure(out) is False

@@ -65,6 +65,14 @@ export function getImageInputUnavailableReason({
     }
     return "Load a model before adding images.";
   }
+  const fallbackReason = textOnlyMmprojUnavailableReason(
+    activeModel,
+    mmprojFallbackReason,
+  );
+  if (fallbackReason) {
+    return fallbackReason;
+  }
+
   // loadedIsMultimodal is true for vision OR audio; that one flag can't tell
   // them apart, so only block when activeModel confirms audio-only (audio
   // capability set AND isVision === false). Otherwise trust the load
@@ -77,10 +85,6 @@ export function getImageInputUnavailableReason({
       return null;
     }
   }
-  const fallbackReason = textOnlyMmprojUnavailableReason(
-    activeModel,
-    mmprojFallbackReason,
-  );
   const label = activeModel?.name || activeModel?.id || "Current model";
   const suffix = activeModel?.isGguf
     ? " with a valid mmproj before attaching images."

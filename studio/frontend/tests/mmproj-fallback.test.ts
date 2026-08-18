@@ -49,6 +49,26 @@ test("text-only projector fallback replaces the misleading generic mmproj error"
   assert.doesNotMatch(reason ?? "", GENERIC_IMAGE_ERROR);
 });
 
+test("text-only fallback overrides stale audio VLM capabilities", () => {
+  const reason = getImageInputUnavailableReason({
+    activeModel: {
+      id: "AudioVisionModel",
+      name: "AudioVisionModel",
+      isVision: true,
+      isGguf: true,
+      isLora: false,
+      isAudio: false,
+      hasAudioInput: true,
+    },
+    isExternalModel: false,
+    loadedIsMultimodal: true,
+    modelLoaded: true,
+    mmprojFallbackReason: "projector_startup_failure",
+  });
+  assert.match(reason ?? "", PROJECTOR_FAILED);
+  assert.match(reason ?? "", TEXT_ONLY_MODE);
+});
+
 function sourceBetween(path: string, start: string, end: string): string {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
   const startAt = source.indexOf(start);

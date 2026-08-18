@@ -12326,16 +12326,33 @@ class LlamaCppBackend:
 
     @staticmethod
     def _is_gpu_memory_start_failure(output: str) -> bool:
-        """Whether startup output names GPU/allocation pressure worth a CPU mmproj retry."""
+        """Whether startup output ties allocation pressure to a GPU backend."""
         text = (output or "").lower()
+        allocation_markers = (
+            "out of memory",
+            "failed to allocate",
+            "cudamalloc failed",
+            "hiperroroutofmemory",
+            "vk_error_out_of_device_memory",
+        )
+        if not any(marker in text for marker in allocation_markers):
+            return False
         return any(
             marker in text
             for marker in (
-                "out of memory",
-                "failed to allocate",
-                "cudamalloc failed",
-                "hiperroroutofmemory",
-                "vk_error_out_of_device_memory",
+                "cuda",
+                "hiperror",
+                "hipmalloc",
+                "ggml_backend_hip",
+                "rocm",
+                "vulkan",
+                "vk_",
+                "metal",
+                "sycl",
+                "oneapi",
+                "musa",
+                "gpu",
+                "device memory",
             )
         )
 
