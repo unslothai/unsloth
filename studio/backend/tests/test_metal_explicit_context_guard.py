@@ -638,6 +638,67 @@ class TestAContextAboveTheModelsNativeLength:
         assert _named_ceiling(message) > 4096
 
 
+class TestAnAboveNativeRequestOnAShortNativeModel:
+    """Native below 4096, so the extension probe's own floor is above what fits.
+
+    The probe re-prices the request through the fit to find a ceiling the native-sized
+    cap could never reach. Its floor is 4096, which is a floor and not a measurement,
+    and on a model trained at 2048 an above-native request can have room for something
+    between the two. The floored result does not fit, the footprint check discards it,
+    and the refusal falls back to naming the native-sized cap -- on a machine that
+    launches the intermediate context when asked for it directly.
+
+    Budget 9216 MiB against 5916 MiB of weights leaves 3300 MiB, so at 1 MiB per token
+    the real ceiling is 3072 and 4096 misses by ~800 MiB.
+    """
+
+    _NATIVE = 2048
+    _FITS = 3072
+    _ASKED = 8192
+
+    def _short(self, tmp_path, monkeypatch, **kw):
+        return _launch(
+            tmp_path,
+            monkeypatch,
+            real_fit = True,
+            budget_bytes = 9216 * 1024**2,
+            weights_bytes = 796 * 1024**2,
+            kv_per_token = _FAT_KV,
+            native = self._NATIVE,
+            **kw,
+        )
+
+    def test_the_intermediate_context_launches(self, tmp_path, monkeypatch):
+        """The other half of the contradiction, and what makes the number in the
+        refusal checkable: this same load is one the guard already allows."""
+        cmd = self._short(tmp_path, monkeypatch, n_ctx = self._FITS)["cmd"]
+        assert _ctx_values(cmd)[-1] == str(self._FITS)
+
+    def test_the_refusal_names_it_rather_than_the_native_length(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError) as excinfo:
+            self._short(tmp_path, monkeypatch, n_ctx = self._ASKED)
+        message = str(excinfo.value)
+        assert _named_ceiling(message) == self._FITS
+        # Naming 2,048 here sends the user to less than the machine holds.
+        assert f"{self._NATIVE:,}" not in message
+
+    def test_the_re_probe_only_ever_raises_the_ceiling(self, tmp_path, monkeypatch):
+        """It runs on every above-native request, including ones where the floored
+        probe already fits, so it must not talk a working ceiling back down."""
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(
+                tmp_path,
+                monkeypatch,
+                real_fit = True,
+                budget_bytes = _BUDGET,
+                weights_bytes = _TIGHT_WEIGHTS,
+                kv_per_token = _FAT_KV,
+                native = 262144,
+                n_ctx = 1048576,
+            )
+        assert _named_ceiling(str(excinfo.value)) >= _TIGHT_CEILING
+
+
 class TestWhenNothingFitsAtAll:
     """Weights fit, and even the smallest context the search prices does not.
 

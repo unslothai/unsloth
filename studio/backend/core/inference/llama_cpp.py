@@ -15758,6 +15758,24 @@ class LlamaCppBackend:
                             ):
                                 _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
                                 if (
+                                    _apple_footprint_mib(_extended_ceiling)
+                                    > _apple_fit_budget_mib
+                                ):
+                                    # 4096 is the helper's floor, not a measurement, and
+                                    # the cap above already has to re-price under it for
+                                    # the same reason. It bites here too whenever the
+                                    # native length is below the floor: the request is
+                                    # above native and the floor is above what fits, so
+                                    # the probe hands back a non-fitting 4096, the check
+                                    # discards it, and the refusal keeps naming the
+                                    # native-sized cap. On a 2048-native model with room
+                                    # for 3072 that reads as "the largest that fits is
+                                    # 2,048" on a machine that launches 3,072 when asked
+                                    # for it directly.
+                                    _extended_ceiling = _apple_ctx_fit(
+                                        effective_ctx, _FIT_FLOOR_MIN_CTX
+                                    )
+                                if (
                                     _extended_ceiling > _apple_measured_ceiling
                                     and _apple_footprint_mib(_extended_ceiling)
                                     <= _apple_fit_budget_mib
