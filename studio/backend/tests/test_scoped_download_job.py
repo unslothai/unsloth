@@ -25,7 +25,7 @@ if _BACKEND_DIR not in sys.path:
 
 from fastapi import HTTPException
 
-from hub.schemas.downloads import DownloadModelRequest
+from hub.schemas.downloads import DownloadModelRequest, DownloadStartResponse
 from hub.services import download_lifecycle
 from hub.services.models import downloads as dl
 from hub.utils.paths import is_valid_gguf_variant
@@ -184,6 +184,11 @@ def test_a_start_reports_whether_it_attached_to_a_live_job(monkeypatch):
         attached = asyncio.run(dl.download_model_response(_request(repo_id = repo)))
         assert attached["accepted"] is True and attached["attached"] is True
         assert attached["job_key"] == key
+
+        # The route declares response_model, which drops any key the schema does
+        # not name, so the flag has to survive that too or it never ships.
+        assert DownloadStartResponse(**attached).model_dump()["attached"] is True
+        assert DownloadStartResponse(**started).model_dump()["attached"] is False
     finally:
         dl._registry.set_job(key, "complete")
 
