@@ -1192,7 +1192,12 @@ def test_a_fractional_median_wait_count_is_not_truncated() -> None:
     """`summarise` medians the wait count across repetitions, so an even-repetition run whose
     repetitions paid 1 and 2 reports 1.5. Truncating that to 1 left half a vsync floor in the
     wall axis, and the documented two-repetition configurations are the ones that produce it."""
-    assert HARNESS.resolve_floor(HARNESS._floor_from("menu", "paint_waits"), {"actions": {"menu": {"paint_waits": 1.5}}}) == 1.5
+    assert (
+        HARNESS.resolve_floor(
+            HARNESS._floor_from("menu", "paint_waits"), {"actions": {"menu": {"paint_waits": 1.5}}}
+        )
+        == 1.5
+    )
 
 
 def test_the_fractional_floor_is_actually_subtracted() -> None:
