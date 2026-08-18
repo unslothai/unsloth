@@ -131,6 +131,33 @@ function startGrace(): void {
 }
 
 function swallowClick(event: Event): void {
+  // A click the KEYBOARD generated is not the click this arm was taken out for.
+  //
+  // The dismissing `pointerdown` focuses whatever it landed on, so if that was a control, the
+  // control is now focused with the button still held. Enter on a focused button is an
+  // activation, and the browser generates a click for it there and then -- before the pointer is
+  // released, and before the click this guard exists to eat. There is one arm and `disarm()`
+  // spends it on whichever click arrives first, so the release click that follows lands on a live
+  // control. Measured on chromium against the heavy-thread page: press and hold the unconfirmed
+  // "Delete message" button with the menu open, press Enter, release, and the message is gone.
+  // The two clicks the document sees, in order, both `isTrusted`:
+  //
+  //     detail 0, pointerId -1   the keyboard activation, swallowed, arm spent here
+  //     detail 1, pointerId  1   the release, reaches Delete, message deleted
+  //
+  // `detail` is the discriminator rather than `pointerId`, because it is on `UIEvent` and so is
+  // defined for a `click` on every engine, whereas `pointerId` requires the engine to deliver
+  // clicks as `PointerEvent`s. A pointer-generated click carries the click count and is never 0.
+  //
+  // Swallow it, since letting a keyboard activation through would fire the very control this is
+  // shielding, but do NOT consume the arm: the release still has to be caught. This cannot
+  // re-enter the synthetic touch click dispatched below, which is sent only after `disarm()` has
+  // removed this listener and cleared `pointerIsDown`.
+  if (pointerIsDown && event instanceof UIEvent && event.detail === 0) {
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
   const touch = armedByTouch;
   disarm();
   event.stopPropagation();
