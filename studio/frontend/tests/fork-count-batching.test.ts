@@ -16,6 +16,7 @@ const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
 type Store = {
   FORK_COUNT_REFRESH_DEBOUNCE_MS: number;
+  FORK_COUNT_REFRESH_MAX_WAIT_MS: number;
   subscribeForkCounts: (threadId: string, onChange: () => void) => () => void;
   forkCountFor: (threadId: string, messageId: string) => number;
 };
@@ -164,13 +165,18 @@ test("the badge no longer owns a listener or a per-message request", () => {
   assert.match(thread, /^ {2}useThreadForkCounts\(\);$/m);
 });
 
-test("a continuous stream costs one refresh, not one per debounce window", async (t) => {
+test("a continuous stream costs one refresh per ceiling, not one per debounce window", async (t) => {
   // The burst case above fires every event inside a single window, where a leading-edge
   // throttle and a trailing-edge debounce are indistinguishable. Streaming is the case that
   // separates them: the event arrives per chunk, so chunks keep landing after the window has
-  // already expired. A throttle re-arms and fetches again; a debounce keeps pushing the
-  // deadline out and fetches once, when the reply stops. Fork counts cannot change while the
-  // model is generating, so every mid-stream fetch is a wasted whole-thread request.
+  // already expired. A throttle re-arms and fetches again, once per debounce window, for as long
+  // as the reply runs.
+  //
+  // This used to assert ZERO mid-stream fetches. That was the #8992 review finding: a pure
+  // trailing edge never expires under a stream, so a fork deleted from the sidebar kept a stale
+  // badge until the unrelated reply finished. FORK_COUNT_REFRESH_MAX_WAIT_MS bounds that, and
+  // the price of the bound is what this test now measures, so it is a number in the suite rather
+  // than a claim in a comment.
   mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => mock.timers.reset());
   const { store, requests } = freshStore();
@@ -179,21 +185,153 @@ test("a continuous stream costs one refresh, not one per debounce window", async
   assert.equal(requests.length, 1, "the initial subscribe fetches once");
 
   const gap = Math.floor(store.FORK_COUNT_REFRESH_DEBOUNCE_MS / 2);
-  for (let chunk = 0; chunk < 20; chunk++) {
+  const chunks = 20;
+  for (let chunk = 0; chunk < chunks; chunk++) {
     fireHistoryUpdated();
     mock.timers.tick(gap);
     await flush();
   }
+  const streamMs = chunks * gap;
+  const midStream = requests.length - 1;
+  const throttleWould = Math.floor(streamMs / store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  const ceilingAllows = Math.floor(streamMs / store.FORK_COUNT_REFRESH_MAX_WAIT_MS);
   assert.equal(
-    requests.length,
-    1,
-    `a 20 chunk stream refetched ${requests.length - 1} time(s) mid-stream; ` +
-      "the timer is being left to expire instead of rescheduled",
+    midStream,
+    ceilingAllows,
+    `a ${chunks} chunk stream over ${streamMs}ms refetched ${midStream} time(s) mid-stream; ` +
+      `the ceiling allows ${ceilingAllows}`,
+  );
+  assert.ok(
+    midStream < throttleWould,
+    `the per-chunk traffic is back: ${midStream} fetches against the ${throttleWould} a ` +
+      "leading-edge throttle would have cost",
   );
 
   mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
   await flush();
-  assert.equal(requests.length, 2, "the quiet window after the stream refreshes exactly once");
+  assert.equal(
+    requests.length,
+    2 + ceilingAllows,
+    "the quiet window after the stream refreshes exactly once",
+  );
 
   unsubscribe();
+});
+
+// #8992 review: a trailing edge alone starves. CHAT_HISTORY_UPDATED_EVENT fires once per
+// streaming chunk, so a reply running in a background thread resets the debounce forever. A fork
+// deleted from the sidebar changes the badge on the thread the user is looking at, and without a
+// ceiling that badge stays wrong until the unrelated stream goes quiet, which on a long or queued
+// generation is minutes.
+
+test("a chunk every debounce window cannot postpone a refresh forever", async (t) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore();
+  const unsubscribe = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+  assert.equal(requests.length, 1, "the initial fetch");
+
+  // A stream chunking just inside the debounce window, which is what resets the trailing edge.
+  const step = store.FORK_COUNT_REFRESH_DEBOUNCE_MS - 1;
+  const ticks = Math.ceil(store.FORK_COUNT_REFRESH_MAX_WAIT_MS / step) + 1;
+  let firedAfter: number | null = null;
+  for (let i = 0; i < ticks; i++) {
+    fireHistoryUpdated();
+    mock.timers.tick(step);
+    await flush();
+    if (requests.length > 1) {
+      firedAfter = (i + 1) * step;
+      break;
+    }
+  }
+  assert.notEqual(
+    firedAfter,
+    null,
+    "the refresh never happened: a chunk per window postponed it indefinitely",
+  );
+  assert.ok(
+    (firedAfter as number) <= store.FORK_COUNT_REFRESH_MAX_WAIT_MS + step,
+    `the refresh waited ${firedAfter}ms, past the ${store.FORK_COUNT_REFRESH_MAX_WAIT_MS}ms bound`,
+  );
+  unsubscribe();
+});
+
+test("the ceiling does not fire while the burst is still inside the debounce window", async (t) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore();
+  const unsubscribe = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+  assert.equal(requests.length, 1);
+
+  // The ordinary case must still collapse to ONE refresh on the trailing edge. If the max-wait
+  // timer were left running after the debounce fired, this would fetch a second time later.
+  for (let i = 0; i < 20; i++) fireHistoryUpdated();
+  mock.timers.tick(store.FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  await flush();
+  assert.equal(requests.length, 2, "the trailing edge refreshes once");
+  mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS * 2);
+  await flush();
+  assert.equal(
+    requests.length,
+    2,
+    "the max-wait timer fired again after the debounce had already refreshed",
+  );
+  unsubscribe();
+});
+
+test("the ceiling restarts for the next burst rather than firing once per lifetime", async (t) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore();
+  const unsubscribe = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+
+  for (let round = 0; round < 2; round++) {
+    const step = store.FORK_COUNT_REFRESH_DEBOUNCE_MS - 1;
+    const before = requests.length;
+    const ticks = Math.ceil(store.FORK_COUNT_REFRESH_MAX_WAIT_MS / step) + 1;
+    for (let i = 0; i < ticks && requests.length === before; i++) {
+      fireHistoryUpdated();
+      mock.timers.tick(step);
+      await flush();
+    }
+    assert.equal(
+      requests.length,
+      before + 1,
+      `round ${round + 1}: the bound did not apply, so it is a one-shot rather than a ceiling`,
+    );
+  }
+  unsubscribe();
+});
+
+test("unsubscribing cancels the ceiling as well as the trailing edge", async (t) => {
+  mock.timers.enable({ apis: ["setTimeout"] });
+  t.after(() => mock.timers.reset());
+  const { store, requests } = freshStore();
+  const first = store.subscribeForkCounts("thread-a", () => {});
+  await flush();
+  assert.equal(requests.length, 1);
+
+  // Unsubscribing with the ceiling armed. Asserting "no fetch happens" here would prove nothing:
+  // the entries map is empty by then, so a leaked timer fires runRefresh over nothing and the
+  // request log looks identical either way. The leak is only observable once a LATER thread is
+  // on screen for the stale timer to refresh, which is also the case that actually costs a user
+  // a request: open a thread, close it, open another inside the ceiling window.
+  fireHistoryUpdated();
+  first();
+
+  const second = store.subscribeForkCounts("thread-b", () => {});
+  await flush();
+  assert.deepEqual(requests, ["thread-a", "thread-b"], "the new thread fetches once on subscribe");
+
+  mock.timers.tick(store.FORK_COUNT_REFRESH_MAX_WAIT_MS * 2);
+  await flush();
+  assert.deepEqual(
+    requests,
+    ["thread-a", "thread-b"],
+    "a ceiling armed by the previous thread outlived it and refetched the new one",
+  );
+  second();
 });

@@ -13,6 +13,20 @@ import { CHAT_HISTORY_UPDATED_EVENT, getThreadForkCounts } from "../api/chat-api
 // Same reasoning as the sidebar's refresh: each quiet window costs one fetch.
 export const FORK_COUNT_REFRESH_DEBOUNCE_MS = 300;
 
+// The ceiling on how long a real fork change can sit unrendered. A trailing edge alone is a
+// starvation hazard, not merely a slow path: CHAT_HISTORY_UPDATED_EVENT fires once per streaming
+// chunk, so a reply running in a background thread resets the timer forever and a fork deleted
+// from the sidebar keeps its old badge for as long as that reply runs, which on a queued or long
+// generation is minutes. The event is a bare Event with no detail and six other consumers, so
+// telling fork changes apart from chunks would mean changing a contract well outside this store;
+// bounding the wait fixes the same problem inside it.
+//
+// 2000 rather than something tighter because the cost of the bound is one whole-thread fetch per
+// window for as long as a stream runs. At 300ms that is the per-chunk traffic this store exists
+// to remove; at 2000 it is under a sixth of it, and it is paid only while something is actually
+// streaming.
+export const FORK_COUNT_REFRESH_MAX_WAIT_MS = 2000;
+
 type Counts = ReadonlyMap<string, number>;
 
 const EMPTY_COUNTS: Counts = new Map();
@@ -26,6 +40,9 @@ type Entry = {
 
 const entries = new Map<string, Entry>();
 let pendingRefresh: ReturnType<typeof setTimeout> | null = null;
+// Started by the first event of a burst and NOT restarted by the ones after it. That is what
+// makes it a ceiling rather than a second debounce.
+let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
 let listening = false;
 
 async function refresh(threadId: string): Promise<void> {
@@ -43,6 +60,23 @@ async function refresh(threadId: string): Promise<void> {
   for (const notify of [...entry.subscribers]) notify();
 }
 
+function cancelTimers(): void {
+  if (pendingRefresh) {
+    clearTimeout(pendingRefresh);
+    pendingRefresh = null;
+  }
+  if (maxWaitTimer) {
+    clearTimeout(maxWaitTimer);
+    maxWaitTimer = null;
+  }
+}
+
+function runRefresh(): void {
+  // Both timers race for this; whichever loses must not fire afterwards.
+  cancelTimers();
+  for (const threadId of entries.keys()) void refresh(threadId);
+}
+
 function onHistoryUpdated(): void {
   // Clear and reschedule, as the sidebar refresh does. Returning while a timer exists would
   // make this a leading-edge throttle: streaming fires this event per chunk, so the timer
@@ -50,10 +84,14 @@ function onHistoryUpdated(): void {
   // whole-thread fetch every FORK_COUNT_REFRESH_DEBOUNCE_MS for as long as the reply runs.
   // Fork counts cannot change during generation, so every one of those is wasted.
   if (pendingRefresh) clearTimeout(pendingRefresh);
-  pendingRefresh = setTimeout(() => {
-    pendingRefresh = null;
-    for (const threadId of entries.keys()) void refresh(threadId);
-  }, FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  pendingRefresh = setTimeout(runRefresh, FORK_COUNT_REFRESH_DEBOUNCE_MS);
+  // The bound. Deliberately not restarted while it is already running, or a per-chunk event
+  // stream would push it out exactly the way it pushes out the trailing edge, and the ceiling
+  // would not be a ceiling. Implemented as a second timer rather than a Date.now() deadline so
+  // it is driven by the same clock as the debounce and can be tested without a fake Date.
+  if (!maxWaitTimer) {
+    maxWaitTimer = setTimeout(runRefresh, FORK_COUNT_REFRESH_MAX_WAIT_MS);
+  }
 }
 
 /** Register a badge. The first subscriber of a thread pays for the fetch; the rest are free. */
@@ -80,10 +118,7 @@ export function subscribeForkCounts(
     if (entries.size === 0 && listening) {
       window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
       listening = false;
-      if (pendingRefresh) {
-        clearTimeout(pendingRefresh);
-        pendingRefresh = null;
-      }
+      cancelTimers();
     }
   };
 }
