@@ -768,9 +768,9 @@ class TestDetectRocmVersion:
                     assert _detect_rocm_version() == (6, 1)
                     probes_after_first = len(calls)
                     assert _detect_rocm_version() == (6, 1)
-                    assert len(calls) == probes_after_first, (
-                        f"second call re-probed: {calls[probes_after_first:]}"
-                    )
+                    assert (
+                        len(calls) == probes_after_first
+                    ), f"second call re-probed: {calls[probes_after_first:]}"
         assert capsys.readouterr().err.count("ROCm version sources disagree") == 1
 
     def test_memo_reset_reprobes(self, tmp_path):
@@ -2180,7 +2180,9 @@ class TestGfx1102Rocm64Floor:
 
     @staticmethod
     def _install_sh_routing_result(
-        preamble: str, leaf: str = "rocm6.1", radeon_in: str = "false"
+        preamble: str,
+        leaf: str = "rocm6.1",
+        radeon_in: str = "false",
     ) -> tuple:
         """Run install.sh's architecture-routing block, returning (leaf, floor-target flag)."""
         shell = shutil.which("bash")
