@@ -175,38 +175,13 @@ def _one_line(exc: BaseException) -> str:
     return _bounded(str(exc))
 
 
-def _is_concurrent_partial_import(exc: BaseException) -> bool:
-    """True for the ImportError shape of a concurrent first-import race (#9120).
-
-    Startup runs hardware detection, the torch warm, llama.cpp probes, and GGUF
-    precache on concurrent threads. The first-ever `import transformers` (inside
-    mlx_lm's own import chain) can land while another thread still has it
-    partially initialized, and `from transformers import AutoTokenizer` then
-    raises "cannot import name ... from ..." on a perfectly healthy install. A
-    genuinely broken install fails differently: "No module named ...", a shared
-    library error, or another exception type entirely.
-    """
-    return isinstance(exc, ImportError) and "cannot import name" in str(exc)
-
-
 def _mlx_runtime_import_blocker() -> Optional[str]:
-    """The first runtime import that will not load, and why. None when all do.
-
-    The concurrent partial-import race is retried, not reported: it clears on
-    its own once the other thread's import finishes, and one unlucky race at
-    boot would otherwise cache a chat-only verdict for the process's lifetime
-    (#9120). Only that signature is retried — a real install problem fails on
-    the first attempt and pays nothing.
-    """
+    """The first runtime import that will not load, and why. None when all do."""
     for module in _MLX_RUNTIME_IMPORTS:
-        for attempt in range(3):
-            try:
-                importlib.import_module(module)
-                break
-            except Exception as exc:
-                if not _is_concurrent_partial_import(exc) or attempt == 2:
-                    return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
-                time.sleep(0.5 * (attempt + 1))
+        try:
+            importlib.import_module(module)
+        except Exception as exc:
+            return f"{module} does not import ({type(exc).__name__}: {_one_line(exc)})"
     return None
 
 
@@ -572,17 +547,38 @@ def _run_repair_and_redetect(epoch: Optional[int] = None) -> None:
 def start_mlx_autorepair_if_needed() -> bool:
     """If this is an Apple Silicon host whose MLX stack is missing or too old,
     reinstall it on a daemon thread (off the startup critical path) and re-detect
-    on success. Returns True iff a repair thread was started. No-op (returns False)
-    off Apple Silicon, when the stack is already adequate, when already attempted
-    this process, or when disabled via UNSLOTH_DISABLE_MLX_AUTOREPAIR=1."""
+    on success. Returns True iff a repair thread was started. No-op off Apple Silicon,
+    when already attempted this process, or when disabled via
+    UNSLOTH_DISABLE_MLX_AUTOREPAIR=1. An adequate stack starts no repair but is not a
+    no-op: it overturns a published verdict that contradicts it."""
     global _attempted, _repair_thread, _repair_started_at
-    if os.environ.get(DISABLE_ENV_VAR) == "1":
-        return False
     if not is_apple_silicon():
         return False
-    if mlx_stack_available():
-        return False
     from utils.hardware import hardware as _hw
+
+    # Opting out declines a reinstall, not a correct verdict, so the overturn still runs --
+    # but with no reinstall to decide, nothing here is worth importing MLX for unless a
+    # verdict is waiting on it. Under the warm's own kill switch this would be the first.
+    opted_out = os.environ.get(DISABLE_ENV_VAR) == "1"
+    if opted_out and not _hw.verdict_blames_the_mlx_stack():
+        return False
+    # Before the measurement, so a shutdown during it discards what is published on the
+    # strength of it. The repair worker shares it rather than reading its own, later one.
+    epoch = _hw.current_detection_epoch()
+    if mlx_stack_available():
+        # Detection asks this same question as the warm's first stage, early enough to race
+        # another thread's first import of transformers: CPython hands the loser a partially
+        # initialised module rather than deadlock, so mlx_lm's import chain raises on a
+        # healthy install (issue #9120). Usable here therefore means that verdict was raced.
+        # Only the warm's is reachable; under its kill switch a later one stands unreconciled.
+        if _hw.overturn_the_mlx_verdict(epoch):
+            logger.info(
+                "MLX stack measures usable after the warm, against a chat-only verdict "
+                "from before it; re-detected. Train/Export are back (reload the page)."
+            )
+        return False
+    if opted_out:
+        return False
 
     with _attempted_lock:
         if _attempted:
@@ -592,11 +588,9 @@ def start_mlx_autorepair_if_needed() -> bool:
         # half-published: a reader landing between the two sees "attempted, nothing alive"
         # and settles the very verdict this repair is about to overturn. The worker never
         # takes this lock, so the start() handshake cannot deadlock against it.
-        # The epoch is read here rather than in the thread: it may not run for a while, and
-        # reading it there would bind the pass to a later shutdown.
         _repair_thread = threading.Thread(
             target = _run_repair_and_redetect,
-            args = (_hw.current_detection_epoch(),),
+            args = (epoch,),
             daemon = True,
             name = "mlx-autorepair",
         )

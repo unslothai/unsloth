@@ -2,13 +2,15 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """MLX self-heal: on Apple Silicon with MLX missing, reinstall it by name on a
-background thread (off the startup critical path). No-op elsewhere / when present
-/ when disabled. Models on core.training.worker's runtime backend self-heal.
+background thread (off the startup critical path). No-op elsewhere. A present stack is
+not a no-op: it overturns a chat-only verdict that contradicts it, including for a user
+who has disabled the reinstall. Models on core.training.worker's runtime backend self-heal.
 """
 
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,21 @@ import utils.mlx_repair as mr  # noqa: E402
 @pytest.fixture(autouse = True)
 def _reset_attempt_guard(monkeypatch):
     monkeypatch.setattr(mr, "_attempted", False)
+    # Both halves of the repair's one-time state, or a worker started by one test reaches
+    # _run_repair_and_redetect's "the install ran" branch on a latch an earlier test left
+    # set, and re-detects for real against whatever the next test is publishing.
+    monkeypatch.setattr(mr, "_environment_mutated", False)
     monkeypatch.delenv(mr.DISABLE_ENV_VAR, raising = False)
+    yield
+    # Still inside the stubs the test installed: a daemon worker outliving its own test
+    # would otherwise run the real detect_hardware() against the next one's globals.
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            thread.join(timeout = 5)
+            assert not thread.is_alive(), (
+                "an mlx-autorepair worker outlived its test; once these stubs are "
+                "restored it runs the real repair and detection against another test"
+            )
 
 
 def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
@@ -470,3 +486,233 @@ def test_an_unresolvable_interpreter_is_diagnosed_not_retried(monkeypatch, tmp_p
     assert (
         "--target" not in flat and "--prefix" not in flat
     ), f"a corrupting install target reached the uv command line: {flat}"
+
+
+# ── Overturning a verdict a first-import race left behind (issue #9120) ───────
+
+
+def _published_verdict(monkeypatch, *, chat_only: bool, reason):
+    """Publish a settled verdict, and re-detect into a usable MLX host when forced.
+
+    Settled means a device and a set event beside the reason -- a chat-only Mac measured
+    its way to CPU, not to nothing -- or a success check that ignores the verdict itself
+    would pass. The publication state is this test's own, so nothing leaks to the next."""
+    import utils.hardware.hardware as hw
+
+    settled = threading.Event()
+    settled.set()
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU if chat_only else hw.DeviceType.MLX)
+    monkeypatch.setattr(hw, "CHAT_ONLY", chat_only)
+    monkeypatch.setattr(hw, "CHAT_ONLY_REASON", reason)
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", settled)
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", 0)
+
+    redetects = []
+
+    def _redetect():
+        redetects.append(1)
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.MLX, False, None
+        return hw.DEVICE
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _redetect)
+    return redetects
+
+
+def _recorded_announcements(monkeypatch):
+    lines = []
+
+    class _Recorder:
+        def info(self, message, *args, **kwargs):
+            lines.append(message)
+
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(mr, "logger", _Recorder())
+    return lines
+
+
+def _join_the_repair_worker():
+    """A repair runs on a daemon thread; assertions about it must not race it."""
+    for thread in threading.enumerate():
+        if thread.name == "mlx-autorepair":
+            thread.join(timeout = 5)
+            assert not thread.is_alive()
+
+
+def test_a_stack_that_measures_usable_overturns_the_verdict(monkeypatch):
+    # The #9120 shape: detection lost a first-import race as the warm's first stage and
+    # cached chat-only; the stack the warm has since finished importing is fine.
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
+    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    announced = _recorded_announcements(monkeypatch)
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert len(redetects) == 1, "the verdict the stack contradicts was left published"
+    assert (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON) == (hw.DeviceType.MLX, False, None)
+    assert any("Train/Export are back" in line for line in announced)
+
+
+def test_a_stack_that_is_really_unusable_keeps_its_verdict(monkeypatch):
+    # The two agree, so there is nothing transient to overturn and the reinstall is what
+    # may still change the answer.
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: False)
+    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+
+    assert mr.start_mlx_autorepair_if_needed() is True
+    _join_the_repair_worker()
+    assert redetects == []
+
+
+def test_a_settled_verdict_that_does_not_blame_mlx_is_left_alone(monkeypatch):
+    # A Mac that is chat-only for another reason, and a healthy boot that is not chat-only
+    # at all, were both measured by something this cannot re-run.
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
+
+    for chat_only, reason in ((True, "no_gpu"), (False, None)):
+        redetects = _published_verdict(monkeypatch, chat_only = chat_only, reason = reason)
+        assert mr.start_mlx_autorepair_if_needed() is False
+        assert redetects == [], f"re-detected over a {reason!r} verdict"
+
+
+def test_declining_the_reinstall_does_not_mean_keeping_a_wrong_verdict(monkeypatch):
+    # UNSLOTH_DISABLE_MLX_AUTOREPAIR opts out of changing the environment. Re-detecting
+    # changes nothing on disk, so the opt-out must not cost this user the fix.
+    monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
+    redetects = _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert len(redetects) == 1
+
+
+@pytest.mark.parametrize("usable", (True, False))
+def test_the_stack_is_measured_once_before_the_decision(monkeypatch, usable):
+    """Two measurements would disagree with each other, not only with the verdict: a "not
+    usable" read followed by a "usable" one leaves the verdict standing with no reinstall
+    attempted and nothing left to revisit it."""
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: False)
+    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    probes = []
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: probes.append(1) or usable)
+
+    mr.start_mlx_autorepair_if_needed()
+    _join_the_repair_worker()
+    assert probes == [1]
+
+
+def test_the_overturn_cannot_republish_into_a_stopped_lifespan(monkeypatch):
+    """detect_hardware() reads the current epoch when it owns none, so an unscoped
+    re-detect would adopt the one shutdown moved to and publish for a lifespan that had
+    ended, which the next lifespan then inherits instead of measuring for itself."""
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    settled = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON)
+
+    def _measure_while_shutdown_lands():
+        hw.invalidate_detection()
+        return True
+
+    monkeypatch.setattr(mr, "mlx_stack_available", _measure_while_shutdown_lands)
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert (
+        hw.DEVICE,
+        hw.CHAT_ONLY,
+        hw.CHAT_ONLY_REASON,
+    ) == settled, "a retired lifespan's re-detect was published"
+
+
+def test_a_redetect_that_publishes_nothing_is_not_announced(monkeypatch):
+    """Shutdown can retire the lifespan before the pass starts or under it once started;
+    either way nothing is published. Issue #9120 was diagnosed entirely from these lines,
+    so one claiming a recovery that did not happen is worse than silence."""
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    announced = _recorded_announcements(monkeypatch)
+
+    def _measure_while_shutdown_lands():
+        hw.invalidate_detection()
+        return True
+
+    monkeypatch.setattr(mr, "mlx_stack_available", _measure_while_shutdown_lands)
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+    assert announced == [], f"announced an overturn that never published: {announced}"
+
+    # Retired mid-probe instead: the pass discards the healthy answer it just produced and
+    # leaves the reason cleared, which a check phrased as "no longer the MLX verdict" reads
+    # as a win.
+    hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = None, True, "mlx_unavailable"
+    hw.DETECTION_COMPLETE.set()
+
+    def _retired_under_the_probe():
+        hw.invalidate_detection()
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = hw.DeviceType.MLX, False, None
+        return hw.DEVICE
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _retired_under_the_probe)
+
+    assert hw.overturn_the_mlx_verdict(hw.current_detection_epoch()) is False
+    assert (hw.DEVICE, hw.CHAT_ONLY) == (None, True), "the discarded pass left state behind"
+
+    # And shutdown itself clears DEVICE, then the event, then the verdict, unlocked: a read
+    # between the first two sees a set event beside a device already gone.
+    hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = None, True, "mlx_unavailable"
+    hw.DETECTION_COMPLETE.set()
+
+    def _torn_by_a_concurrent_shutdown():
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON = None, False, None
+        hw.DETECTION_COMPLETE.set()
+        return None
+
+    monkeypatch.setattr(hw, "_detect_hardware_locked", _torn_by_a_concurrent_shutdown)
+
+    assert hw.overturn_the_mlx_verdict(hw.current_detection_epoch()) is False
+
+
+def test_an_opted_out_host_with_nothing_to_overturn_imports_nothing(monkeypatch):
+    """Under the warm's own kill switch join_background_warm() is a no-op, so detection has
+    not run and this would be the process's first MLX import. Opting out of the reinstall
+    is what makes that import buy nothing."""
+    monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    _published_verdict(monkeypatch, chat_only = True, reason = None)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: pytest.fail("imported MLX for no one"))
+
+    assert mr.start_mlx_autorepair_if_needed() is False
+
+
+def test_the_repair_worker_is_scoped_to_the_epoch_read_before_the_measurement(monkeypatch):
+    """The measurement imports the MLX runtime, so shutdown can land inside it: reading the
+    epoch afterwards would bind the repair to the one shutdown moved to."""
+    import utils.hardware.hardware as hw
+
+    monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
+    _published_verdict(monkeypatch, chat_only = True, reason = "mlx_unavailable")
+    before = hw.current_detection_epoch()
+
+    def _measure_while_shutdown_lands():
+        hw.invalidate_detection()
+        return False
+
+    monkeypatch.setattr(mr, "mlx_stack_available", _measure_while_shutdown_lands)
+    scoped_to = []
+    monkeypatch.setattr(mr, "_run_repair_and_redetect", lambda epoch = None: scoped_to.append(epoch))
+
+    assert mr.start_mlx_autorepair_if_needed() is True
+    _join_the_repair_worker()
+    assert scoped_to == [before]
+    assert hw.current_detection_epoch() != before, "the shutdown under test never happened"
