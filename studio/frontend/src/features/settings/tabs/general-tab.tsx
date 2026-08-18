@@ -13,6 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
+// Direct import, not via the @/features/chat barrel: the barrel is in an import cycle with this
+// file, so this key would still be in its temporal dead zone when the module-scope list below
+// reads it ("Cannot access ... before initialization"), killing the whole module graph.
+import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "@/features/chat/stores/sidebar-organization-store";
 import {
   LOADED_MODELS_PREFERENCE_KEYS,
   setShowLoadedModels,
@@ -74,6 +78,7 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useDesktopBooleanSetting } from "../hooks/use-desktop-boolean-setting";
 import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
+import { CHAT_PROJECT_ATTACHMENT_TARGET_KEY } from "@/features/chat/utils/project-attachment-target";
 
 // Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
 // would log the user out (unsloth_auth_token, unsloth_auth_refresh_token, and
@@ -89,9 +94,12 @@ const PREFS_KEYS: string[] = [
   "sidebar_width",
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
+  // Grouping, sort and the manual row order.
+  SIDEBAR_ORGANIZATION_STORAGE_KEY,
   "unsloth_settings_active_tab",
   SETTINGS_PANEL_PREFS_STORAGE_KEY,
   // Chat runtime prefs
+  CHAT_PROJECT_ATTACHMENT_TARGET_KEY,
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
   // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
