@@ -400,6 +400,32 @@ async def one_case(page, case: str) -> dict:
             "neutralClicks": clicks,
             "swallowedLaterClick": clicks < 1,
         }
+    elif case == "select_then_quick_click":
+        # The guard is mounted INSIDE the menu content, and Radix Presence keeps that content
+        # mounted for the 100ms `data-closed:animate-out` exit. So for that window after the menu
+        # has visibly closed, the document pointerdown listener is still installed and can arm on
+        # a press that has nothing to do with any menu. `second_click` cannot see this: it waits
+        # 200ms between clicks, which is outside the window. This one lands inside it.
+        item = await page.evaluate(WATCH_ITEM_JS)
+        if not item:
+            return {"case": case, "error": "no menu item to select"}
+        spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
+        if not spot:
+            return {"case": case, "error": "no qualifying neutral spot in the viewport"}
+        await page.evaluate("() => { window.__dismissProbe.neutralClicks = 0; }")
+        await page.mouse.click(item["x"], item["y"])
+        # Inside the exit animation, deliberately. The content and its guard stay mounted
+        # for ~126ms after the item click, measured, so this press happens while the document
+        # listener is still installed. Sweepable to show the whole window, not one point.
+        await page.wait_for_timeout(int(os.environ.get("PROBE_EXIT_DELAY_MS", "40")))
+        await page.mouse.click(spot["x"], spot["y"])
+        await page.wait_for_timeout(600)
+        clicks = await page.evaluate("() => window.__dismissProbe.neutralClicks")
+        return {
+            "case": case,
+            "neutralClicks": clicks,
+            "swallowedLaterClick": clicks == 0,
+        }
     elif case == "second_click":
         # Dismiss on neutral ground, then click a real control. Only the FIRST click is the
         # menu's to eat; a guard that stays armed would eat this one too.
@@ -470,7 +496,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,held_space_then_space,dismiss_then_space,dismiss_on_composer,touch,select,select_then_quick_click,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]
