@@ -19730,9 +19730,7 @@ class LlamaCppBackend:
             # the requested -c, and video reads as unsupported on a model that
             # supports it. None when there is no child key, which is httpx's
             # default and what every other call site here relies on.
-            resp = httpx.get(
-                url, headers = self._auth_headers, timeout = 5.0, trust_env = False
-            )
+            resp = httpx.get(url, headers = self._auth_headers, timeout = 5.0, trust_env = False)
             if resp.status_code != 200:
                 return None
             props = resp.json()

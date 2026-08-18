@@ -144,7 +144,9 @@ def test_only_a_real_json_true_turns_the_capability_on():
 def test_a_swap_to_a_model_without_video_does_not_inherit_the_old_answer():
     """A stale True here would offer video on a model that cannot take it, and
     llama-server would refuse the completion after the upload."""
-    b = _props_backend({"modalities": {"video": True}, "default_generation_settings": {"n_ctx": 8192}})
+    b = _props_backend(
+        {"modalities": {"video": True}, "default_generation_settings": {"n_ctx": 8192}}
+    )
     b._query_server_n_ctx()
     assert b._has_video_input is True
     b._query_server_props = lambda: {
@@ -165,7 +167,6 @@ def test_an_unreachable_props_leaves_the_capability_off_rather_than_guessing():
 
 def _llama_cpp_source() -> str:
     from pathlib import Path
-
     return (
         Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
     ).read_text(encoding = "utf-8")
@@ -187,7 +188,11 @@ class _Resp:
         return self._payload
 
 
-def _stub_props_http(monkeypatch, resp, record = None):
+def _stub_props_http(
+    monkeypatch,
+    resp,
+    record = None,
+):
     """Replace httpx.get inside the backend module and capture the call."""
     import core.inference.llama_cpp as llama_mod
 
@@ -241,17 +246,13 @@ def test_a_dead_server_is_swallowed(monkeypatch):
     assert b._query_server_props() is None
 
 
-def test_the_props_request_carries_the_child_api_key_when_direct_stream_set_one(
-    monkeypatch,
-):
+def test_the_props_request_carries_the_child_api_key_when_direct_stream_set_one(monkeypatch):
     """llama-server's api-key middleware protects /props (it is not in the
     public_endpoints set), so an unauthenticated read 401s and the capability
     silently reads False under UNSLOTH_DIRECT_STREAM=1."""
     record: dict = {}
     b = _live_backend(api_key = "secret-token")
-    _stub_props_http(
-        monkeypatch, _Resp(200, {"modalities": {"video": True}}), record = record
-    )
+    _stub_props_http(monkeypatch, _Resp(200, {"modalities": {"video": True}}), record = record)
     b._query_server_props()
     assert record.get("headers") == {"Authorization": "Bearer secret-token"}
 
@@ -380,8 +381,7 @@ def test_a_long_multi_turn_thread_only_carries_one_clip():
     injected = [
         m
         for m in messages
-        if isinstance(m["content"], list)
-        and any(p["type"] == "input_video" for p in m["content"])
+        if isinstance(m["content"], list) and any(p["type"] == "input_video" for p in m["content"])
     ]
     assert len(injected) == 1
     assert injected[0]["content"][0]["text"] == "last"
@@ -404,7 +404,6 @@ def test_the_part_shape_is_exactly_what_llama_server_parses():
 
 def _routes_source() -> str:
     from pathlib import Path
-
     return (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(
         encoding = "utf-8"
     )

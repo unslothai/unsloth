@@ -99,7 +99,11 @@ class _FakeResponse:
         return self._body
 
 
-def _make_backend(effective_ctx = 98304, port = 51234, api_key = None):
+def _make_backend(
+    effective_ctx = 98304,
+    port = 51234,
+    api_key = None,
+):
     inst = LlamaCppBackend.__new__(LlamaCppBackend)
     inst._port = port
     # __init__ always sets this; __new__ skips it, and the readback reads it via
