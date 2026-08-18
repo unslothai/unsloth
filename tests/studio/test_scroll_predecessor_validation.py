@@ -301,3 +301,27 @@ def test_a_jump_that_did_not_reach_the_bottom_is_still_rejected() -> None:
     """The pre-existing half of the proof, kept red-able beside the new half."""
     problems = PROBE.PREDECESSOR_PROOFS["jump"](jump_out(landedAt = 4000))
     assert any("landed at" in p for p in problems), problems
+
+
+# ── the boundary counter counts the gesture, not the anchor ───────────
+
+
+def test_the_boundary_counter_is_armed_after_the_anchor() -> None:
+    """`ACTION_SETUPS` anchors the viewport to the bottom before the gesture, and after the
+    predecessor or the previous repetition that is a full-height reposition which fires its own
+    pointerover/pointerout. Armed beforehand, those landed in the measured gesture's count by an
+    amount that depended on where each arm's predecessor had left the viewport, so the counter
+    would appear to support a predecessor effect generated outside the gesture being compared.
+    """
+    body = SOURCE.split("install_boundary_counter = ", 1)[1]
+    assert "after_setup = lambda p: p.evaluate(install_boundary_counter)" in body, (
+        "the boundary counter is not armed from run_action's after_setup hook"
+    )
+    # The bare pre-arm has to be GONE, not merely joined by the hook, or both run and the counter
+    # is installed twice with the first one still spanning the anchor.
+    stray = [
+        line
+        for line in body.splitlines()
+        if "page.evaluate(install_boundary_counter)" in line and "after_setup" not in line
+    ]
+    assert not stray, f"the counter is still armed before the anchor as well: {stray}"

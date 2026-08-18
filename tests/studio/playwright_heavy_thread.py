@@ -966,23 +966,42 @@ def wait_for_highlighting_settled(page, timeout_ms: int) -> None:
     )
 
 
-def run_action(page, cdp, name: str, script: str, arg) -> dict:
-    """One action, with the portable recorder inside it and the CDP counters bracketing it."""
+def run_action(page, cdp, name: str, script: str, arg, after_setup = None) -> dict:
+    """One action, with the portable recorder inside it and the CDP counters bracketing it.
+
+    `after_setup` runs in the one window that is after the anchor and before anything starts
+    counting. Anything that has to observe the page as the ACTION will see it, rather than as the
+    previous repetition left it, belongs there. Two things already did and both were wrong for the
+    same reason: the pointer proof was taken before the anchor, so after repetition 1 it described
+    the content under the cursor thousands of px away from where the gesture would actually run;
+    and the predecessor probe armed its pointer-boundary counter before the anchor, so an untimed
+    full-height reposition contributed boundary events to the measured gesture's count, by an
+    amount that depended on where the arm's predecessor had left the viewport. Whatever it returns
+    is merged into the row.
+    """
     # Precondition first, so it is outside every snapshot below as well as outside the recorder.
     setup = ACTION_SETUPS.get(name)
     if setup is not None:
         page.evaluate(setup)
+    extra = after_setup(page) if after_setup is not None else None
     reset_long_tasks(page)
     before = cdp_metrics(cdp)
     raw = page.evaluate(script, arg)
     after = cdp_metrics(cdp)
     if raw is None:
-        return {"name": name, "ran": False, **cdp_counters({}, {}), **long_task_summary(page)}
+        return {
+            "name": name,
+            "ran": False,
+            **cdp_counters({}, {}),
+            **long_task_summary(page),
+            **(extra or {}),
+        }
     out = {"name": name, "ran": True}
     out.update(raw.pop("metrics"))
     out.update(raw)
     out.update(cdp_counters(before, after))
     out.update(long_task_summary(page))
+    out.update(extra or {})
     # Every snapshot is in `out` now, so fixture cleanup cannot land in any of them.
     reset = ACTION_RESETS.get(name)
     if reset is not None:
@@ -1034,9 +1053,9 @@ ACTION_SCRIPTS = {
 }
 
 
-def drive(page, cdp, name: str) -> dict:
+def drive(page, cdp, name: str, after_setup = None) -> dict:
     script, arg = ACTION_SCRIPTS[name]
-    return run_action(page, cdp, name, script, arg)
+    return run_action(page, cdp, name, script, arg, after_setup = after_setup)
 
 
 def settle_and_expand(page) -> None:
@@ -1148,10 +1167,13 @@ def drive_scroll(page, cdp) -> dict:
     difference between those two columns is then part residue and part a different action. Applied
     in both, the columns differ only in residue, which is the one thing the pair is there to show.
     """
-    placement = place_pointer_over_message(page)
-    row = drive(page, cdp, "scroll")
-    row.update(placement)
-    return row
+    # AFTER the anchor, not before it. ACTION_SETUPS repositions the viewport to the bottom, and
+    # from repetition 2 on that is a full-height scroll, so a proof taken beforehand describes the
+    # content that happened to be under a stationary cursor thousands of px away from where the
+    # gesture then ran. The saved pointer_on_message could read True while the measured wheel
+    # actually travelled over a user message, whitespace or the gutter, which turns this arm into
+    # a second copy of the cheap control under the expensive one's label.
+    return drive(page, cdp, "scroll", after_setup = place_pointer_over_message)
 
 
 def reveal_last_action_bar(page) -> None:

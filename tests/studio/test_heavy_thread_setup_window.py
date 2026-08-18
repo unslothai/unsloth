@@ -90,12 +90,17 @@ def _label(script) -> str:  # noqa: ANN001
     text = script if isinstance(script, str) else str(script)
     if text is _ACTION_SCRIPT or text == _ACTION_SCRIPT:
         return "action"
+    if text == _NULL_SCRIPT:
+        return "null_action"
     if "scrollIntoView" in text or "scrollTo" in text:
         return "setup_or_reset"
     return "other"
 
 
 _ACTION_SCRIPT = "async () => ({ metrics: {} })  // stand-in for the action itself"
+_NULL_SCRIPT = "async () => null  // the action whose element was not in the DOM"
+
+HARNESS_SRC = Path(HARNESS.__file__).read_text(encoding = "utf-8")
 
 
 @pytest.fixture()
@@ -300,3 +305,73 @@ def test_a_short_per_repetition_list_does_not_silently_skip_repetitions():
     assert any(
         "repetition 3" in f for f in failures
     ), f"repetition 3 was never examined at all: {failures}"
+
+
+# ── observing the page the ACTION will see ────────────────────────────
+#
+# ACTION_SETUPS made the anchor untimed, which was the point. It also made it INVISIBLE to
+# anything that observed the page before run_action was called, and after repetition 1 the anchor
+# is a full-height scroll. Two observers were taken before it and both then described a viewport
+# thousands of px away from the one the gesture ran on.
+
+
+def test_the_setup_hook_runs_after_the_anchor_and_before_the_counters(ordering):
+    """Placed anywhere else it is useless: before the anchor it observes the stale viewport, and
+    after `reset_long_tasks` its own work is charged to the action."""
+    calls = ordering
+    page = _FakePage(calls)
+    HARNESS.run_action(
+        page,
+        object(),
+        "scroll",
+        _ACTION_SCRIPT,
+        None,
+        after_setup = lambda _p: calls.append("after_setup") or {"probe": 1},
+    )
+    assert "after_setup" in calls, f"the hook never ran: {calls}"
+    assert calls.index("evaluate:setup_or_reset") < calls.index("after_setup"), (
+        f"the hook ran before the anchor, so it observes the previous repetition's viewport: "
+        f"{calls}"
+    )
+    assert calls.index("after_setup") < calls.index("arm_long_tasks"), (
+        f"the hook ran after the counters were armed, so its own work is charged to the action: "
+        f"{calls}"
+    )
+
+
+def test_whatever_the_hook_observes_reaches_the_row(ordering):
+    row = HARNESS.run_action(
+        _FakePage(ordering),
+        object(),
+        "scroll",
+        _ACTION_SCRIPT,
+        None,
+        after_setup = lambda _p: {"pointer_on_message": True},
+    )
+    assert row.get("pointer_on_message") is True, row
+
+
+def test_the_hook_result_survives_an_action_that_did_not_run(ordering):
+    """A null action still has to publish what was observed about it, or the proof vanishes
+    exactly on the runs where it matters most."""
+    row = HARNESS.run_action(
+        _FakePage(ordering),
+        object(),
+        "scroll",
+        _NULL_SCRIPT,
+        None,
+        after_setup = lambda _p: {"pointer_on_message": False},
+    )
+    assert row["ran"] is False
+    assert row.get("pointer_on_message") is False, row
+
+
+def test_the_pointer_proof_is_taken_after_the_anchor():
+    """Source-level: the scroll precondition must hand the placement to the hook rather than run
+    it beforehand and merge the result afterwards."""
+    body = HARNESS_SRC.split("def drive_scroll", 1)[1].split("\ndef ", 1)[0]
+    assert "after_setup = place_pointer_over_message" in body, (
+        "the pointer proof is taken before the anchor again, so it can read True while the "
+        "measured gesture ran over the gutter"
+    )
+    assert "placement = place_pointer_over_message(page)" not in body

@@ -574,7 +574,14 @@ def main() -> int:
                         # whose whole meaning is "the pointer is elsewhere" must publish that
                         # verification rather than leave a reader to trust it.
                         applied = before(page)
-                        page.evaluate(install_boundary_counter)
+                        # Armed from run_action's after_setup hook, NOT here. ACTION_SETUPS
+                        # anchors the viewport to the bottom first, and after the predecessor or
+                        # the previous repetition that is a full-height reposition, which fires
+                        # its own pointer boundary events. Counting from here folded those into
+                        # the measured gesture's total by an amount that depended on where each
+                        # arm's predecessor had left the viewport -- so the counter would appear
+                        # to support a predecessor effect that was generated outside the gesture
+                        # being compared.
                         rows.append(
                             hv.run_action(
                                 page,
@@ -582,6 +589,7 @@ def main() -> int:
                                 "scroll",
                                 hv.SCROLL_JS,
                                 [hv.SCROLL_STEPS, hv.SCROLL_STEP_PX, SETTLE],
+                                after_setup = lambda p: p.evaluate(install_boundary_counter),
                             )
                         )
                         rows[-1]["boundary"] = page.evaluate(read_boundary_counter)
