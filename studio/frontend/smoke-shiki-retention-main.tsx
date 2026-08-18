@@ -37,7 +37,7 @@ type HighlightArgs = Parameters<HighlightPlugin["highlight"]>;
 // Counters for the settle predicate. `pending` is dispatches that returned null (asynchronous
 // Shiki work) minus callbacks that have landed; a synchronous cache hit never calls back, so
 // counting it as pending would leave the page permanently unsettled.
-const counters = { dispatches: 0, pending: 0 };
+const counters = { renderCalls: 0, pending: 0 };
 
 const THEMES = [unslothLightTheme, unslothDarkTheme];
 
@@ -47,7 +47,7 @@ const productionCode = createCodePlugin({ themes: THEMES });
 const code: HighlightPlugin = {
   ...productionCode,
   highlight: (opts: HighlightArgs[0], callback?: HighlightArgs[1]) => {
-    counters.dispatches += 1;
+    counters.renderCalls += 1;
     // Per-call bookkeeping, and asymmetric on purpose. Studio's throttle answers a call
     // synchronously with reused tokens AND ALSO stores its callback for a later trailing
     // dispatch, so a callback can land for a call that never went asynchronous. Decrementing on
@@ -328,7 +328,7 @@ async function rawEntries(
 declare global {
   interface Window {
     __sd: {
-      counters: () => { dispatches: number; pending: number };
+      counters: () => { renderCalls: number; pending: number };
       fixtureHash: (kind: Kind, chars: number, seed: number) => string;
       runOne: (spec: {
         kind: Kind;
@@ -336,7 +336,7 @@ declare global {
         seed: number;
         ticks: number;
         tickMs: number;
-      }) => Promise<{ dispatches: number; domNodes: number; textLength: number }>;
+      }) => Promise<{ renderCalls: number; domNodes: number; textLength: number }>;
       rawEntries: (
         chars: number,
         seed: number,
@@ -357,7 +357,7 @@ window.__sd = {
     const body = bodyFor(kind, chars, seed);
     messageCounter += 1;
     const messageId = `msg-${messageCounter}`;
-    const dispatchesBefore = counters.dispatches;
+    const renderCallsBefore = counters.renderCalls;
     await unmount();
     await mount();
     if (!push) throw new Error("host did not register");
@@ -372,7 +372,7 @@ window.__sd = {
     push({ messageId, text: body, streaming: false });
     await nextFrame();
     return {
-      dispatches: counters.dispatches - dispatchesBefore,
+      renderCalls: counters.renderCalls - renderCallsBefore,
       domNodes: container.querySelectorAll("*").length,
       textLength: body.length,
     };

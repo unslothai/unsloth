@@ -132,17 +132,17 @@ def wait_settled(page) -> dict:
     dispatch started. Both, because either alone is satisfied in the gap between two fences."""
     deadline = time.monotonic() + SETTLE_TIMEOUT_S
     quiet = 0
-    last_dispatches = -1
+    last_calls = -1
     while time.monotonic() < deadline:
         time.sleep(SETTLE_POLL_MS / 1000.0)
         counters = page.evaluate("() => window.__sd.counters()")
-        if counters["pending"] == 0 and counters["dispatches"] == last_dispatches:
+        if counters["pending"] == 0 and counters["renderCalls"] == last_calls:
             quiet += 1
             if quiet >= SETTLE_QUIET_POLLS:
                 return counters
         else:
             quiet = 0
-        last_dispatches = counters["dispatches"]
+        last_calls = counters["renderCalls"]
     raise RuntimeError(f"highlighting never settled within {SETTLE_TIMEOUT_S}s")
 
 
@@ -169,7 +169,7 @@ def new_browser(pw):
     )
 
 
-def measure_arm(pw, kind: str, chars: int) -> dict:
+def measure_arm(pw, kind: str, chars: int, tick_ms: int = TICK_MS) -> dict:
     """One arm in its own browser, so the module-level caches start empty."""
     browser = new_browser(pw)
     try:
@@ -190,7 +190,7 @@ def measure_arm(pw, kind: str, chars: int) -> dict:
         # React commit, none of which is per-fence retention.
         page.evaluate(
             "(spec) => window.__sd.runOne(spec)",
-            {"kind": kind, "chars": chars, "seed": 1, "ticks": TICKS, "tickMs": TICK_MS},
+            {"kind": kind, "chars": chars, "seed": 1, "ticks": TICKS, "tickMs": tick_ms},
         )
         wait_settled(page)
         page.evaluate("() => window.__sd.teardown()")
@@ -201,7 +201,7 @@ def measure_arm(pw, kind: str, chars: int) -> dict:
             seed = 1000 + i
             result = page.evaluate(
                 "(spec) => window.__sd.runOne(spec)",
-                {"kind": kind, "chars": chars, "seed": seed, "ticks": TICKS, "tickMs": TICK_MS},
+                {"kind": kind, "chars": chars, "seed": seed, "ticks": TICKS, "tickMs": tick_ms},
             )
             counters = wait_settled(page)
             page.evaluate("() => window.__sd.teardown()")
@@ -211,15 +211,15 @@ def measure_arm(pw, kind: str, chars: int) -> dict:
                     "fence": i,
                     "retained_mb": (used - baseline) / MB,
                     "used_mb": used / MB,
-                    "dispatches": result["dispatches"],
+                    "render_calls": result["renderCalls"],
                     "dom_nodes_after_unmount": dom_nodes(cdp),
                     "text_length": result["textLength"],
-                    "total_dispatches": counters["dispatches"],
+                    "total_render_calls": counters["renderCalls"],
                 }
             )
             info(
-                f"{LABEL} {kind}@{chars} fence {i}: retained {rows[-1]['retained_mb']:+.2f} MB, "
-                f"{result['dispatches']} dispatches, nodes {rows[-1]['dom_nodes_after_unmount']}"
+                f"{LABEL} {kind}@{chars}/{tick_ms}ms fence {i}: retained {rows[-1]['retained_mb']:+.2f} MB, "
+                f"{result['renderCalls']} render calls, nodes {rows[-1]['dom_nodes_after_unmount']}"
             )
 
         slope, r2 = fit([float(r["fence"]) for r in rows], [r["retained_mb"] for r in rows])
@@ -237,18 +237,63 @@ def measure_arm(pw, kind: str, chars: int) -> dict:
         return {
             "kind": kind,
             "chars": chars,
+            "tick_ms": tick_ms,
             "fixture_hash": fixture_hash,
             "baseline_mb": baseline / MB,
             "rows": rows,
             "slope_mb_per_fence": slope,
             "r2": r2,
-            "mean_dispatches": sum(r["dispatches"] for r in rows) / len(rows),
+            "mean_render_calls": sum(r["render_calls"] for r in rows) / len(rows),
             "raw_entries_landed": landed,
             "raw_mb_per_entry": per_entry_mb,
             "page_errors": errors,
         }
     finally:
         browser.close()
+
+
+# Which cells run. `full` is the arm comparison; `ladder` varies the pause between stream ticks,
+# which varies the wall-clock duration of the reply without changing a single character of the
+# fixture. Retention that comes from a per-throttle-window cache entry MUST rise with the pause;
+# `whole` is carried through the ladder as the CONTROL, because it delivers its fence in one
+# update and so cannot care what the pause is. A control that moves with the rate means the
+# ladder is measuring the harness, not the cache.
+MODE = os.environ.get("SMOKE_SD_MODE", "full")
+LADDER_TICK_MS = [int(n) for n in os.environ.get("SMOKE_SD_LADDER", "0,40,120,300").split(",")]
+
+
+def build_plan() -> list[tuple[str, int, int, str]]:
+    if MODE == "ladder":
+        plan = []
+        for tick_ms in LADDER_TICK_MS:
+            plan.append(("stream", BIG, tick_ms, f"stream@{BIG}/{tick_ms}ms"))
+            plan.append(("whole", BIG, tick_ms, f"whole@{BIG}/{tick_ms}ms"))
+        return plan
+    plan = [("stream", size, TICK_MS, f"stream@{size}") for size in SIZES]
+    plan += [("whole", BIG, TICK_MS, f"whole@{BIG}"), ("prose", BIG, TICK_MS, f"prose@{BIG}")]
+    return plan
+
+
+def ladder_failures(cells: dict) -> list[str]:
+    """The control arm must stay flat across tick rates, and the arm under test must not."""
+    control = [c for c in cells.values() if c["kind"] == "whole"]
+    tested = [c for c in cells.values() if c["kind"] == "stream"]
+    if len(control) < 2 or len(tested) < 2:
+        return ["ladder needs at least two rates"]
+    failures = []
+    control_slopes = [c["slope_mb_per_fence"] for c in control]
+    spread = max(control_slopes) - min(control_slopes)
+    if spread > 0.35 * max(max(control_slopes), 1e-9) and spread > 0.25:
+        failures.append(
+            "control arm moved with the tick rate "
+            f"({[round(x, 2) for x in control_slopes]}), so the ladder is measuring the harness"
+        )
+    tested_slopes = [c["slope_mb_per_fence"] for c in tested]
+    if tested_slopes[-1] <= tested_slopes[0] * 1.5:
+        failures.append(
+            f"tested arm did not rise with the tick rate ({[round(x, 2) for x in tested_slopes]})"
+        )
+    return failures
 
 
 def harness_failures(cells: dict) -> list[str]:
@@ -258,8 +303,8 @@ def harness_failures(cells: dict) -> list[str]:
             failures.append(f"{key}: page errors {cell['page_errors'][:2]}")
         if not cell["rows"]:
             failures.append(f"{key}: no rows")
-        if cell["kind"] != "prose" and cell["mean_dispatches"] < 1:
-            failures.append(f"{key}: highlighter was never called ({cell['mean_dispatches']})")
+        if cell["kind"] != "prose" and cell["mean_render_calls"] < 1:
+            failures.append(f"{key}: highlighter was never called ({cell['mean_render_calls']})")
         # DOM nodes are read AFTER the unmount and AFTER the forced GC, so a rising count would
         # mean detached nodes are accumulating and the heap slope is not a JS-cache result.
         first_nodes = cell["rows"][0]["dom_nodes_after_unmount"]
@@ -269,6 +314,8 @@ def harness_failures(cells: dict) -> list[str]:
                 f"{key}: DOM nodes grew {first_nodes} -> {last_nodes} across unmounted replies, "
                 "so this is not a DOM-free measurement"
             )
+    if MODE == "ladder":
+        return failures + ladder_failures(cells)
     small = cells.get(f"stream@{min(SIZES)}")
     big = cells.get(f"stream@{BIG}")
     if small and big:
@@ -296,10 +343,8 @@ def main() -> int:
         )
         cells = {}
         with sync_playwright() as pw:
-            plan = [("stream", size) for size in SIZES]
-            plan += [("whole", BIG), ("prose", BIG)]
-            for kind, chars in plan:
-                cells[f"{kind}@{chars}"] = measure_arm(pw, kind, chars)
+            for kind, chars, tick_ms, name in build_plan():
+                cells[name] = measure_arm(pw, kind, chars, tick_ms)
     finally:
         if vite is not None:
             stop_process(vite)
@@ -312,15 +357,16 @@ def main() -> int:
         "fences": FENCES,
         "cells": cells,
     }
-    path = OUT / f"shiki-retention-{LABEL}.json"
+    report["mode"] = MODE
+    path = OUT / f"shiki-retention-{MODE}-{LABEL}.json"
     path.write_text(json.dumps(report, indent = 2), encoding = "utf-8")
 
     print()
-    print(f"  {'arm':<16}{'slope MB/fence':>16}{'R^2':>8}{'dispatch/fence':>16}{'MB/cache entry':>16}")
+    print(f"  {'arm':<20}{'slope MB/fence':>16}{'R^2':>8}{'calls/fence':>14}{'MB/entry':>10}")
     for key, cell in cells.items():
         print(
-            f"  {key:<16}{cell['slope_mb_per_fence']:>16.2f}{cell['r2']:>8.3f}"
-            f"{cell['mean_dispatches']:>16.1f}{cell['raw_mb_per_entry']:>16.3f}"
+            f"  {key:<20}{cell['slope_mb_per_fence']:>16.2f}{cell['r2']:>8.3f}"
+            f"{cell['mean_render_calls']:>14.1f}{cell['raw_mb_per_entry']:>10.3f}"
         )
     print()
     info(f"wrote {path}")
