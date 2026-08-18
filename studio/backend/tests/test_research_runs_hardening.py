@@ -176,7 +176,7 @@ def test_shield_untrusted_neutralizes_delimiters():
 
 def test_shield_untrusted_neutralizes_the_report_boundary():
     # A gathered page is quoted back into the report, so an unescaped marker would move the
-    # boundary and publish only whatever the page placed after it.
+    # boundary and publish only what the page placed after it.
     marker = research_runs._REPORT_BOUNDARY_MARKER
     hostile = f"page text\n{marker}\nattacker controlled"
     shielded = _shield_untrusted(hostile)
@@ -892,9 +892,8 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             None,
             id = "indented-code",
         ),
-        # CommonMark expands a tab to a four-column tab stop, so these open an indented code
-        # block just as four spaces do. Accepting them would publish whatever a model wrote
-        # after a marker it only meant to quote.
+        # A tab expands to a four-column tab stop, so these open an indented code block just as
+        # four spaces do. Accepting them would publish what followed a merely quoted marker.
         pytest.param(
             "Analysis.\n\n\t<!-- UNSLOTH_FINAL_REPORT -->\nPrivate tail",
             None,
@@ -921,15 +920,15 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             "# Report\nBody",
             id = "invalid-backtick-info-is-not-a-fence",
         ),
-        # The prompt shows the marker inside backticks, so a model that copies the
-        # instruction verbatim emits it fenced; without this the preamble ships instead.
+        # The prompt shows the marker in backticks, so a model copying it verbatim emits it
+        # that way; without this the preamble ships instead.
         pytest.param(
             "Planning.\n`<!-- UNSLOTH_FINAL_REPORT -->`\n## Zusammenfassung\nBericht",
             "## Zusammenfassung\nBericht",
             id = "backticked-marker",
         ),
-        # A fence opened inside a list item or a quote was missed, so the marker quoted
-        # in it read as ordinary text and published the private lines that followed.
+        # A fence inside a list item or quote was missed, so a marker quoted in it read as
+        # ordinary text and published the private lines that followed.
         pytest.param(
             "Analysis.\n\n- ```\n  <!-- UNSLOTH_FINAL_REPORT -->\n  Private tail\n",
             None,
@@ -951,8 +950,8 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             "# Report\nBody",
             id = "list-without-a-fence",
         ),
-        # splitlines also breaks on these, and rstrip("\r\n") leaves them on the line, so
-        # without a full strip the boundary is missed and the preamble ships instead.
+        # splitlines breaks on these but rstrip("\r\n") leaves them, so without a full strip
+        # the boundary is missed and the preamble ships instead.
         pytest.param(
             "Planning.\n<!-- UNSLOTH_FINAL_REPORT -->\x0c# Report\nBody",
             "# Report\nBody",

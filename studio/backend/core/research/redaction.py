@@ -25,10 +25,9 @@ _PROMPT_DELIMITER_TAGS = re.compile(
     r"|untrusted_synthesis_audit_json|synthesis_audit_json)\s*>",
     re.IGNORECASE,
 )
-# The synthesis boundary marker. Gathered pages are quoted back into the report, so an
-# unescaped copy could move the boundary and truncate the published report to whatever the
-# page put after it. Spelled out to avoid importing prompts here; the hardening test pins it
-# against _REPORT_BOUNDARY_MARKER so the two cannot drift apart.
+# The synthesis boundary marker. Gathered pages are quoted back into the report, so an unescaped
+# copy could move the boundary and truncate the report to whatever the page put after it. Spelled
+# out to avoid importing prompts; the hardening test pins it against _REPORT_BOUNDARY_MARKER.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
@@ -136,9 +135,9 @@ def _escape_link_destination(url: str) -> str:
 
 
 def _shield_untrusted(text: str) -> str:
-    """Escape prompt-delimiter tags and the report boundary marker embedded in untrusted
-    evidence, so gathered web or document content cannot close a wrapper block to inject
-    model instructions, nor move the boundary that selects the published report."""
+    """Escape prompt-delimiter tags and the report boundary marker in untrusted evidence, so
+    gathered content cannot close a wrapper block to inject model instructions, nor move the
+    boundary that selects the published report."""
     if not text:
         return text
 

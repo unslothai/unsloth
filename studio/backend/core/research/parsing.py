@@ -21,9 +21,8 @@ from core.research.redaction import _sanitize_public_query
 _STREAMED_TITLE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 # One more than the plan-step cap, since the plan's own title matches too.
 _MAX_PREVIEW_LABELS = 31
-# A fence can open inside a list item or a block quote, where the container marker sits before
-# it ("- ```"). Without the prefix the open is missed, the lines inside are read as ordinary
-# text, and a marker quoted in that block is taken for the real boundary.
+# Allows the container marker of a list item or block quote before the fence ("- ```"), else the
+# open is missed and a marker quoted inside is mistaken for the real boundary.
 _MARKDOWN_FENCE = re.compile(r"^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|>[ \t]?)*(`{3,}|~{3,})")
 
 
@@ -302,14 +301,13 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_char = token[0]
             fence_length = len(token)
             continue
-        # CommonMark measures indentation in columns with a four-column tab stop, so one tab
-        # opens an indented code block exactly as four spaces do. Counting characters, or
-        # stripping only spaces, would accept a marker that Markdown renders as code.
+        # CommonMark measures indentation in columns with a four-column tab stop, so one tab opens
+        # an indented code block just as four spaces do.
         prefix = content[: len(content) - len(content.lstrip(" \t"))]
         indentation = len(prefix.expandtabs(4))
-        # The prompt shows the marker inside backticks, so models echo it fenced. splitlines
-        # also breaks on \x0b\x0c\x1c-\x1e\x85  , which rstrip("\r\n") leaves on the
-        # line, so strip every whitespace form rather than let a stray one hide the boundary.
+        # The prompt shows the marker in backticks, so models echo it that way. splitlines
+        # breaks on \x0b\x0c\x1c-\x1e\x85  , which rstrip("\r\n") leaves behind,
+        # so strip every whitespace form rather than let a stray one hide the boundary.
         if indentation <= 3 and content[len(prefix) :].strip().strip("`").strip() == boundary:
             boundary_line = index
     if boundary_line is None:
