@@ -162,12 +162,20 @@ function proseSource(chars: number, seed: number): string {
   return parts.join(" ").slice(0, chars);
 }
 
-type Kind = "stream" | "whole" | "prose";
+type Kind = "stream" | "whole" | "prose" | "pair";
 
 function bodyFor(kind: Kind, chars: number, seed: number): string {
   if (kind === "prose") return proseSource(chars, seed);
   return `\`\`\`python\n${pythonSource(chars, seed)}\n\`\`\``;
 }
+
+// TWO fences alive at once, where one is a strict prefix of the other. This shape is here because
+// a cache bug that only appears under it hung a CI job for thirty minutes: bidirectional prefix
+// eviction made the two fences evict each other forever, and since a miss schedules asynchronous
+// work whose callback re-renders, the page never went idle. No single-fence arm can reach it. The
+// retention question it answers is separate and also worth having: under one-directional
+// eviction two live prefix-related fences legitimately occupy TWO entries, not one.
+const PAIR_LEAD = 0.5;
 
 // Mirrors MarkdownTextImpl: same preprocessing, same incremental cache, same Streamdown props on
 // the highlighting path.
@@ -203,7 +211,13 @@ function Reply({
   );
 }
 
-type ReplyState = { messageId: string; text: string; streaming: boolean };
+type ReplyState = {
+  messageId: string;
+  text: string;
+  streaming: boolean;
+  /** Second, shorter reply rendered alongside the first. Only the `pair` kind sets it. */
+  companion?: string;
+};
 type Push = (next: ReplyState) => void;
 
 function Host({ register }: { register: (push: Push) => void }) {
@@ -217,11 +231,20 @@ function Host({ register }: { register: (push: Push) => void }) {
   }, [register]);
   if (!state.text) return null;
   return (
-    <Reply
-      messageId={state.messageId}
-      text={state.text}
-      streaming={state.streaming}
-    />
+    <>
+      <Reply
+        messageId={state.messageId}
+        text={state.text}
+        streaming={state.streaming}
+      />
+      {state.companion !== undefined && (
+        <Reply
+          messageId={`${state.messageId}-companion`}
+          text={state.companion}
+          streaming={state.streaming}
+        />
+      )}
+    </>
   );
 }
 
@@ -452,12 +475,28 @@ window.__sd = {
     const steps = kind === "whole" ? 1 : ticks;
     for (let i = 1; i <= steps; i += 1) {
       const cut = Math.round((body.length * i) / steps);
-      push({ messageId, text: body.slice(0, cut), streaming: i < steps });
+      push({
+        messageId,
+        text: body.slice(0, cut),
+        streaming: i < steps,
+        companion:
+          kind === "pair"
+            ? body.slice(0, Math.round(cut * PAIR_LEAD))
+            : undefined,
+      });
       await nextFrame();
       if (tickMs > 0 && i < steps) await sleep(tickMs);
     }
     // Final non-streaming commit, the way a finished reply lands.
-    push({ messageId, text: body, streaming: false });
+    push({
+      messageId,
+      text: body,
+      streaming: false,
+      companion:
+        kind === "pair"
+          ? body.slice(0, Math.round(body.length * PAIR_LEAD))
+          : undefined,
+    });
     await nextFrame();
     return {
       renderCalls: counters.renderCalls - renderCallsBefore,

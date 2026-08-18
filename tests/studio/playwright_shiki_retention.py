@@ -37,6 +37,11 @@ Three arms run per invocation, each in its own browser so no cache carries over:
              than about fence content, this arm must be far flatter than `stream`.
     prose    32 KB of plain text streamed the same way. The code highlighter is never called, so
              this arm must be flat. It is the "am I measuring anything specific" control.
+    pair     TWO fences alive at once, the shorter a strict prefix of the longer, both streaming.
+             This shape exists because a cache bug reachable only under it hung a CI job for
+             thirty minutes; every other arm streams a single fence and cannot produce it. Under
+             one-directional prefix eviction two live prefix-related fences legitimately hold TWO
+             entries rather than one, so this arm is expected to cost MORE than `stream`, not less.
 
 And a size ladder inside `stream`: 8 KB and 32 KB. The harness FAILS if the 32 KB slope is not
 clearly above the 8 KB slope, because a retention metric that does not rise with fence size is
@@ -276,7 +281,13 @@ def build_plan() -> list[tuple[str, int, int, str]]:
             plan.append(("whole", BIG, tick_ms, f"whole@{BIG}/{tick_ms}ms"))
         return plan
     plan = [("stream", size, TICK_MS, f"stream@{size}") for size in SIZES]
-    plan += [("whole", BIG, TICK_MS, f"whole@{BIG}"), ("prose", BIG, TICK_MS, f"prose@{BIG}")]
+    plan += [
+        ("whole", BIG, TICK_MS, f"whole@{BIG}"),
+        ("prose", BIG, TICK_MS, f"prose@{BIG}"),
+        # Two fences alive at once, one a strict prefix of the other. Added after a cache bug that
+        # only appears under this shape hung a CI job: no single-fence arm can reach it.
+        ("pair", BIG, TICK_MS, f"pair@{BIG}"),
+    ]
     return plan
 
 
@@ -320,7 +331,7 @@ def harness_failures(cells: dict) -> list[str]:
             failures.append(f"{key}: page errors {cell['page_errors'][:2]}")
         if not cell["rows"]:
             failures.append(f"{key}: no rows")
-        if cell["kind"] != "prose" and cell["mean_render_calls"] < 1:
+        if cell["kind"] not in ("prose",) and cell["mean_render_calls"] < 1:
             failures.append(f"{key}: highlighter was never called ({cell['mean_render_calls']})")
         # DOM nodes are read AFTER the unmount and AFTER the forced GC, so a rising count would
         # mean detached nodes are accumulating and the heap slope is not a JS-cache result.
