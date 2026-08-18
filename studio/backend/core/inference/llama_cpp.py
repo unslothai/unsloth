@@ -15674,7 +15674,6 @@ class LlamaCppBackend:
                                 _probe_have / 1024,
                             )
 
-
                     # Flat MTP reserve fraction: used only as the fallback when the
                     # byte-accurate mtp_overhead_fn can't size the draft KV (dims
                     # unavailable, or _mtp_kv_unsized = weights-only). A separate

@@ -1146,6 +1146,7 @@ def test_the_recovery_retry_sees_every_environment_pin(env, expected_retry):
     if expected_retry:
         assert retry[-1] == "--no-mmproj-offload"
 
+
 def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_path):
     """Ordering invariant: `_mtp_bytes` reads `mtp_overhead_fn` at call time, so the
     CPU-drafter normalization has to run before the first thing that prices it.
@@ -1166,6 +1167,6 @@ def test_the_speculative_reserve_is_normalized_before_anything_prices_it(tmp_pat
     source = Path(inspect.getsourcefile(LlamaCppBackend)).read_text()
     normalize_at = source.index("if _draft_cpu_no_embedded and mtp_overhead_fn is not None:")
     probe_at = source.index("_mm_mtp_on_gpu = _mtp_will_engage and not _draft_cpu_no_embedded")
-    assert normalize_at < probe_at, (
-        "the CPU-drafter reserve must be normalized before the projector probe prices it"
-    )
+    assert (
+        normalize_at < probe_at
+    ), "the CPU-drafter reserve must be normalized before the projector probe prices it"
