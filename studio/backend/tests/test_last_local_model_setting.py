@@ -269,8 +269,7 @@ def test_a_delayed_put_is_dated_from_arrival_not_from_the_load(client):
     )
     assert c.get("/last-local-model").json()["id"] == "newer"
 
-    # An older load whose PUT sat in a retry for 30s: both stamps are 30s old,
-    # so the shift re-dates it to roughly now and it wins.
+    # An older load whose PUT sat in a retry for 30s: the shift re-dates it to now.
     old = now - 30_000
     c.put(
         "/last-local-model",

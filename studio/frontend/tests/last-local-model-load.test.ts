@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The backend owns the remembered model, with localStorage kept as a shadow so
-// an old bundle, an old backend and a dropped write all still behave. That
-// reconciliation is where the subtlety lives and it had no coverage.
+// The backend owns the remembered model; localStorage is a shadow so old
+// bundles, old backends and dropped writes all still behave.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

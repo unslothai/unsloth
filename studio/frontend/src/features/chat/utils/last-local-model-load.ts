@@ -19,8 +19,8 @@ export type LastLocalModelLoad = {
 };
 
 const API_PATH = "/api/settings/last-local-model";
-// Pre-backend installs kept the record here; still read as a fallback so an
-// upgrade does not forget the model.
+// Pre-backend installs kept the record here; still read so an upgrade does not
+// forget the model.
 const LEGACY_STORAGE_KEY = "unsloth.last-local-model-load.v1";
 
 function isLastLocalModelKind(value: unknown): value is LastLocalModelKind {
@@ -66,11 +66,9 @@ function writeLegacyRecord(
         id: record.id,
         kind: record.kind,
         ggufVariant: record.ggufVariant,
-        // The pre-backend v1 reader rejects entries without a numeric loadedAt,
-        // and an older bundle or still-open tab shares this key.
+        // Old bundles reject entries without a numeric loadedAt.
         loadedAt,
-        // True until the backend PUT for this record confirms: a differing
-        // pending shadow may be newer than whatever the GET returns.
+        // True until this record's PUT confirms; a pending shadow may be newer.
         pendingSync,
       }),
     );
@@ -142,16 +140,11 @@ export async function readLastLocalModelLoad(
             ? legacy.pendingSync
             : legacy.loadedAt > backendLoadedAt)
         ) {
-          // A local record the backend has not seen: a load whose PUT was
-          // dropped at teardown (pendingSync), or one written by a still-open
-          // pre-upgrade bundle that cannot stamp the marker or call the API at
-          // all -- only the timestamps order loads across surfaces. Re-sync it
-          // with its original load time even when the model identity matches
-          // the backend record: the backend timestamp must advance, or an
-          // older dropped write on another surface would later outrank it.
-          // An unstamped backend record (pre-loaded_at writer) gives no such
-          // order, so only a pending shadow -- this surface's own dropped
-          // write -- outranks it; a plain stale shadow must not clobber it.
+          // A local record the backend has not seen: a PUT dropped at teardown
+          // (pendingSync) or a pre-upgrade bundle's write. Re-sync it with its
+          // original stamp, even on an identity match, so the backend stamp
+          // advances past older dropped writes elsewhere. An unstamped backend
+          // record gives no order, so only a pending shadow may outrank it.
           recordLastLocalModelLoad({
             ...legacy.record,
             loadedAt: legacy.loadedAt,
@@ -159,16 +152,14 @@ export async function readLastLocalModelLoad(
           return legacy.record;
         }
         if (legacy?.pendingSync) {
-          // The backend record is at least as new: the shadow lost. Adopt the
-          // backend copy and clear the marker.
+          // The backend record is at least as new: adopt it, clear the marker.
           writeLegacyRecord(record, false, backendLoadedAt ?? Date.now());
         }
         return record;
       }
     }
   } catch (err) {
-    // Name, not instanceof: the retry wrapper can surface an abort as a plain
-    // Error, and swallowing it answers a cancelled read with a stale record.
+    // Name, not instanceof: the retry wrapper surfaces aborts as a plain Error.
     if ((err as { name?: string } | null)?.name === "AbortError") {
       throw err;
     }
@@ -190,10 +181,8 @@ export function recordLastLocalModelLoad(input: {
   }
   const loadedAt =
     typeof input.loadedAt === "number" ? input.loadedAt : Date.now();
-  // Shadow write first, synchronously: a fetch still pending at document
-  // teardown is dropped without running either callback, and the pre-backend
-  // record was this surface's only memory of the load. It also covers the
-  // pre-route backend that answers 404 without rejecting.
+  // Shadow write first, synchronously: a fetch pending at teardown is dropped
+  // without running either callback. Also covers a pre-route backend's 404.
   writeLegacyRecord(record, true, loadedAt);
   authFetch(API_PATH, {
     method: "PUT",
@@ -205,9 +194,7 @@ export function recordLastLocalModelLoad(input: {
       gguf_variant: record.ggufVariant,
       // biome-ignore lint/style/useNamingConvention: API schema
       loaded_at: loadedAt,
-      // The server translates loaded_at into its own clock frame using this
-      // (skew = server_now - client_now), so slow or fast local clocks cannot
-      // strand or freeze the shared record.
+      // The server shifts loaded_at by (server_now - client_now).
       // biome-ignore lint/style/useNamingConvention: API schema
       client_now: Date.now(),
     }),
@@ -216,9 +203,8 @@ export function recordLastLocalModelLoad(input: {
       if (!res.ok) {
         return;
       }
-      // Adopt the server's answer: it may have clamped a future-dated stamp or
-      // ignored this write as stale in favor of a newer one, and the shadow
-      // must mirror the stored record or the next read would re-reconcile.
+      // Adopt the server's answer: it may have clamped or rejected this
+      // write, and the shadow must mirror what is stored.
       let serverRecord: LastLocalModelLoad | null = null;
       let serverLoadedAt: number | null = null;
       try {
@@ -240,17 +226,15 @@ export function recordLastLocalModelLoad(input: {
         serverLoadedAt =
           typeof body.loaded_at === "number" ? body.loaded_at : null;
         if (serverLoadedAt !== null && typeof body.server_now === "number") {
-          // Shadow stamps live in this clock's frame: translate the server's
-          // answer back before storing it next to locally stamped values.
+          // Shadow stamps live in this clock's frame: translate back first.
           serverLoadedAt -= body.server_now - Date.now();
         }
       } catch {
         // Pre-loaded_at backend or opaque response: fall back to our stamp.
       }
-      // Clear only this write's pending marker: a newer load may have replaced
-      // the shadow while the PUT was in flight -- including a reload of the
-      // same model, which identity alone cannot distinguish, so the timestamp
-      // must match too or a slow older response would demote the newer shadow.
+      // Clear only this write's marker: a newer load may have replaced the
+      // shadow mid-flight, even a reload of the same model, so the stamp must
+      // match too.
       const legacy = readLegacyEntry();
       if (
         !legacy?.pendingSync ||
