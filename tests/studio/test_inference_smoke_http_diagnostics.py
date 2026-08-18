@@ -189,7 +189,7 @@ def test_an_http_error_reports_the_response_body(name: str) -> None:
                 # it, and the status code alongside it names which request.
                 printed = "\n".join(ast.dump(call) for call in prints)
                 assert "code" in printed, (
-                    f"{name}: {helper.name}() prints on HTTPError without the " f"status code"
+                    f"{name}: {helper.name}() prints on HTTPError without the status code"
                 )
 
                 # A read can raise (a truncated or already-consumed body), and
