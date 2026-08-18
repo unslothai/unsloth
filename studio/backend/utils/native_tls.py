@@ -21,12 +21,17 @@ Studio user gains a package for a proxy they do not have; see the README there.
 Every consumer appends that directory to ``sys.path`` and imports the top-level
 name, which keeps a truststore the user installed themselves in front of ours.
 
-Default-on everywhere (Linux included since #9218: AppImage/.deb desktop
-launches cannot set the opt-in env var), opt-out anywhere with
-``UNSLOTH_STUDIO_NATIVE_TLS=0``. Explicit ``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep
-working, but become additive rather than exclusive, since truststore keeps the
-OS anchors alongside them; ``0`` is the way back to a bundle being the only
-trust root.
+On by default on macOS, Windows and Linux -- the last since #9218, where an
+AppImage/.deb desktop launch could not set the opt-in env var. Opt in elsewhere
+with ``UNSLOTH_STUDIO_NATIVE_TLS=1``, opt out anywhere with ``0``.
+
+``SSL_CERT_FILE``/``REQUESTS_CA_BUNDLE`` keep working, but they are additive only
+on macOS/Windows, whose backends query the Keychain/CryptoAPI independently of
+OpenSSL. On Linux a bundle named there drops certifi from the trust set, and the
+OS anchors survive only where the store is a hashed cert directory
+(Debian/Ubuntu); a cafile-style store is displaced with it. Do not point users
+at these variables -- installing the CA in the OS store works everywhere, and
+``0`` restores a bundle as the only trust root.
 
 Client side only: the injected class verifies a peer chain on every handshake,
 so an ``SSLContext`` built after activation cannot serve TLS. Studio serves
