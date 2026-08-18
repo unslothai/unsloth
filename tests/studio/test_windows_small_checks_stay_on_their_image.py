@@ -34,9 +34,9 @@ JOB = "small-checks"
 # contract, and a test that read it back out of the workflow could not detect the workflow
 # being wrong.
 EXPECTED_IMAGES = {
-    "pester":    {"windows-latest"},
+    "pester": {"windows-latest"},
     "no-vs-gpu": {"windows-latest"},
-    "vcredist":  {"windows-latest", "windows-2025-vs2026"},
+    "vcredist": {"windows-latest", "windows-2025-vs2026"},
     "vs-detect": {"windows-2022", "windows-2025-vs2026"},
 }
 
@@ -97,12 +97,9 @@ def test_every_step_is_gated_so_a_cell_runs_only_its_own_phases():
     ungated = [
         s.get("name") or s.get("uses")
         for s in _job()["steps"]
-        if "matrix.phases" not in str(s.get("if", ""))
-        and "checkout" not in str(s.get("uses", ""))
+        if "matrix.phases" not in str(s.get("if", "")) and "checkout" not in str(s.get("uses", ""))
     ]
-    assert not ungated, (
-        f"these steps carry no phase gate and would run on every image: {ungated}"
-    )
+    assert not ungated, f"these steps carry no phase gate and would run on every image: {ungated}"
 
 
 def test_the_vcredist_round_trip_is_the_last_phase_on_any_box_it_shares():
@@ -113,7 +110,7 @@ def test_the_vcredist_round_trip_is_the_last_phase_on_any_box_it_shares():
     )
     after = [
         s.get("name")
-        for s in steps[last_vcredist + 1:]
+        for s in steps[last_vcredist + 1 :]
         if _tokens_in(str(s.get("if", ""))) - {"vcredist"}
     ]
     assert not after, (

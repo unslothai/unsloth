@@ -86,11 +86,7 @@ def test_no_two_phases_share_a(key):
 
 
 def test_every_phase_uploads_under_its_own_artifact_name():
-    names = [
-        s["with"]["name"]
-        for s in _steps()
-        if "upload-artifact" in str(s.get("uses", ""))
-    ]
+    names = [s["with"]["name"] for s in _steps() if "upload-artifact" in str(s.get("uses", ""))]
     assert len(names) == 3, names
     assert len(set(names)) == 3, f"artifact names collide: {names}"
 
@@ -186,7 +182,7 @@ def test_the_cross_os_gemma_cache_entry_is_left_alone():
         if "actions/cache" in str(s.get("uses", ""))
     }
     assert entries.get("hf-cache", "").endswith("-v3"), entries
-    assert "runner.os" not in entries.get("hf-cache", ""), (
-        "phase 1's key gained a runner.os scope, which un-shares it from macOS and Windows"
-    )
+    assert "runner.os" not in entries.get(
+        "hf-cache", ""
+    ), "phase 1's key gained a runner.os scope, which un-shares it from macOS and Windows"
     assert len(entries) == 3, f"expected one cache path per phase, got {entries}"
