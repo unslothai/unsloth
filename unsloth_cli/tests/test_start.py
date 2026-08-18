@@ -1710,7 +1710,9 @@ def test_resolved_launch_command_normalizes_extensionless_windows_shim(monkeypat
     ]
 
 
-def test_resolved_launch_command_normalizes_extensionless_windows_exe_sibling(monkeypatch, tmp_path):
+def test_resolved_launch_command_normalizes_extensionless_windows_exe_sibling(
+    monkeypatch, tmp_path
+):
     _simulate_windows(monkeypatch)
     posix_shim = tmp_path / "fake-agent"
     posix_shim.write_text("#!/bin/sh\n", encoding = "utf-8")
