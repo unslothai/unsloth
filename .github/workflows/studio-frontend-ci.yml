@@ -21,12 +21,15 @@ on:
       - 'tests/studio/playwright_strip_ansi_smoke.py'
       - 'tests/studio/playwright_chat_autoscroll.py'
       - 'tests/studio/playwright_research_freeze.py'
+      - 'tests/studio/playwright_heavy_thread.py'
       - 'tests/studio/playwright_settings_tabs.py'
-
       - 'tests/studio/playwright_stream_pacing.py'
-      # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
+      # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_harness_contract.py'
+      - 'tests/studio/test_heavy_thread_gap_contract.py'
+      - 'tests/studio/test_heavy_thread_measurement_integrity.py'
       - 'tests/studio/test_playwright_server_lifecycle.py'
       - 'scripts/sync_allow_scripts_pins.py'
       - 'tests/studio/test_sync_allow_scripts_pins.py'
@@ -171,7 +174,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           python3 -m pytest tests/studio/test_playwright_server_lifecycle.py \
-            tests/studio/test_autoscroll_harness_contract.py -q
+            tests/studio/test_autoscroll_harness_contract.py \
+            tests/studio/test_heavy_thread_harness_contract.py \
+            tests/studio/test_heavy_thread_measurement_integrity.py \
+            tests/studio/test_heavy_thread_gap_contract.py -q
 
       - name: Browser smoke for ANSI tool output
         working-directory: ${{ github.workspace }}
@@ -189,6 +195,19 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
+      # Two small sizes and one repetition on Chromium: enough to prove the fixture still
+      # renders every kind of content it claims to and that the curve still rises, which is all
+      # a PR gate can afford. The measurement this harness exists for is the three-engine,
+      # three-size, three-repetition run, which takes tens of minutes and belongs on a runner
+      # asked for it deliberately, not on every frontend PR.
+      - name: Browser smoke for heavy-thread interaction cost
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_HEAVY_CHARS: '25000,100000'
+          SMOKE_HEAVY_ENGINES: chromium
+          SMOKE_HEAVY_REPEATS: '1'
+          PW_ART_DIR: logs/playwright_heavy_thread
+        run: python3 tests/studio/playwright_heavy_thread.py
       # The settings panels are fetched on first view, so only a browser can answer whether
       # every tab renders and deep-opens land (and abandoned ones do not come back).
       - name: Browser smoke for the settings tab panels
