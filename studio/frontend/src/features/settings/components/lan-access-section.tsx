@@ -318,6 +318,7 @@ export function LanAccessSection() {
   const blockMessage = lanAccessBlockMessage(
     status?.blockReason ?? null,
     isTauri,
+    status?.bindHost ?? null,
   );
   const errorMessage = lanAccessErrorMessage(status?.error ?? null);
   const stopAction = status?.state === "online";

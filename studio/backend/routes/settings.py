@@ -1821,6 +1821,7 @@ class LanAccessResponse(BaseModel):
     can_start: bool
     can_stop: bool
     block_reason: Optional[str] = None
+    bind_host: Optional[str] = None
     serves_web_ui: bool = True
 
 
