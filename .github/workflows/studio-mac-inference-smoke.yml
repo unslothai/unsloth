@@ -101,6 +101,30 @@ jobs:
       # something the Actions docs pin down, and a phase silently talking to the
       # previous phase's port would be a nasty way to find out.
       HF_HOME: ${{ github.workspace }}/hf-cache
+      # GitHub's macOS runners expose a PARAVIRTUAL Metal device, and Unsloth refuses to
+      # offload to it because paravirtual Apple GPUs return corrupt output. Every phase
+      # here therefore launches with `--gpu-layers 0 --device none`, which puts the WHOLE
+      # model in host RAM rather than the partial spill the host-offload guard was written
+      # for. #8883 prices that correctly and declines the load:
+      #
+      #   "About 3 GB of this model does not fit in GPU memory and would run from system
+      #    RAM. Only about 4 GB is available and 2 GB of that is kept free for the rest of
+      #    the system, leaving about 2 GB usable."
+      #
+      # The guard is right: the runner cannot host gemma-4-E2B UD-Q4_K_XL (~2.4 GB) plus
+      # mmproj-F16 (~780 MB) in 2 GB. This job ran green for weeks before the guard existed
+      # because the prompts are tiny and the mapping is paged -- which is exactly the
+      # gamble the guard stops taking on a user's machine. Here we take it knowingly. The
+      # alternative is silently swapping the model this phase covers for a smaller one,
+      # which changes what mac vision inference is tested against.
+      #
+      # Job-level, not on the vision phase alone: every phase is CPU-only for the same
+      # reason, so a runner image with a little less free RAM takes out the tool-calling
+      # phase next. Set on the job so each booted server inherits it.
+      #
+      # This removes no coverage of the guard itself, which is tested in
+      # studio/backend/tests/test_host_offload_ram_guard.py and test_llama_cpp_placement.py.
+      UNSLOTH_ALLOW_HOST_OFFLOAD: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
