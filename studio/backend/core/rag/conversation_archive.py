@@ -283,9 +283,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
             seats = _occurrences(positions, group)
-            if _archived_under(
-                conn, scope, digest, expected_identity, occurrences = len(seats) or 1
-            ):
+            if _archived_under(conn, scope, digest, expected_identity, occurrences = len(seats) or 1):
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -327,9 +325,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
             copies = store.documents_by_hash(conn, scope, digest)
-            stale = _stale_document(
-                conn, scope, digest, identity, occurrences = len(seats) or 1
-            )
+            stale = _stale_document(conn, scope, digest, identity, occurrences = len(seats) or 1)
             if stale is _ARCHIVED:
                 # Already indexed, but possibly under an archive-time number, or under no
                 # number at all if it predates the column. Re-stamp it to where the
@@ -491,8 +487,11 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
     wire = [
-        {"role": message.get("role"), "content": message.get("content"),
-         "tool_calls": message.get("tool_calls")}
+        {
+            "role": message.get("role"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+        }
         for message in messages
     ]
     return [_normalise(_probe_text(group[0])) for group in group_turns(wire) if group]
@@ -514,7 +513,14 @@ def _occurrences(positions: Optional[list[str]], group: list[dict]) -> list[int]
     return [index for index, text in enumerate(positions) if text == head]
 
 
-def _stale_document(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1):
+def _stale_document(
+    conn,
+    scope: str,
+    digest: str,
+    identity: str,
+    *,
+    occurrences: int = 1,
+):
     """The document id to replace, ``_ARCHIVED`` to skip, or None to write a new one.
 
     Hash alone is not enough, twice over.
@@ -541,11 +547,16 @@ def _stale_document(conn, scope: str, digest: str, identity: str, *, occurrences
     return _ARCHIVED if len(copies) >= max(1, occurrences) else None
 
 
-def _archived_under(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1) -> bool:
+def _archived_under(
+    conn,
+    scope: str,
+    digest: str,
+    identity: str,
+    *,
+    occurrences: int = 1,
+) -> bool:
     """Cheap pre-check before the chunking and embedding pass."""
-    return (
-        _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
-    )
+    return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
 
 
 def has_archive(thread_id: str) -> bool:
