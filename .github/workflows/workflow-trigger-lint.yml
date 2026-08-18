@@ -82,9 +82,12 @@ jobs:
 
       # ONE pytest invocation, not one per file.
       #
-      # These were 7 separate steps, each paying interpreter startup and collection to
-      # run a single module -- and each new guard added an eighth, a ninth. Collapsed
-      # into one call, which also lets pytest share collection across them.
+      # These were 8 separate steps, each paying interpreter startup and collection to
+      # run a single module -- and each new guard added a ninth, a tenth. Collapsed into
+      # one call, which also lets pytest share collection across them. Measured over the
+      # 19 modules below: 53.9s as one invocation against 300.8s as one each, because
+      # this repo's conftest is expensive to import and a step per module pays it every
+      # time.
       #
       # The list grew as much as it shrank. Every module here reads a workflow file, so
       # the edit that breaks it is by definition a workflow-only edit, and this is the
@@ -95,9 +98,9 @@ jobs:
       - name: Workflow guard suites
         run: |
           python3 -m pytest -q \
+            tests/studio/test_absorbed_lanes_still_run.py \
             tests/studio/test_backend_ci_matrix.py \
             tests/studio/test_backend_ci_parallel_isolation.py \
-            tests/studio/test_absorbed_lanes_still_run.py \
             tests/studio/test_chat_ui_shards_cover_everything.py \
             tests/studio/test_ci_shell_suite_coverage.py \
             tests/studio/test_compile_caches_are_per_worker.py \
@@ -105,7 +108,9 @@ jobs:
             tests/studio/test_frontend_dep_removal.py \
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
+            tests/studio/test_install_phase_timing.py \
             tests/studio/test_mac_host_offload_optin.py \
+            tests/studio/test_macos_slots_per_commit.py \
             tests/studio/test_main_runs_survive_merge_bursts.py \
             tests/studio/test_pester_bootstrap_hardening.py \
             tests/studio/test_playwright_suites_run_in_ci.py \
