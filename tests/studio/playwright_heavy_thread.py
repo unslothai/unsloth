@@ -673,8 +673,12 @@ async (settleMs) => {
   const settleMsTaken = await window.__hv.quiet(settleMs);
   const metrics = window.__hv.end();
   const landedAt = viewport.scrollTop;
-  viewport.scrollTo({ top: bottom, behavior: "instant" });
-  await window.__nextPaint();
+  // The scroll back to the bottom is NOT done here. It closes after __hv.end(), so the portable
+  // recorder rows already exclude it, but run_action reads the CDP counters and the long-task
+  // observer only once this evaluate returns, so doing it here put a second full-height scroll
+  // inside the Chromium-only task, layout, style and long-task rows. Measured at 300K chars the
+  // reset costs 33.2ms against the jump's own 33.5ms, so those rows described two jumps. It runs
+  // from ACTION_RESETS instead, after every snapshot is taken.
   return {
     paintedMs: Math.round(paintedMs * 10) / 10,
     settleMs: settleMsTaken === null ? null : Math.round(settleMsTaken * 10) / 10,
@@ -952,12 +956,30 @@ def run_action(page, cdp, name: str, script: str, arg) -> dict:
     out.update(raw)
     out.update(cdp_counters(before, after))
     out.update(long_task_summary(page))
+    # Every snapshot is in `out` now, so fixture cleanup cannot land in any of them.
+    reset = ACTION_RESETS.get(name)
+    if reset is not None:
+        page.evaluate(reset)
     return out
 
 
 # The script and argument for each action, so the isolated runner and the sequenced runner drive
 # exactly the same code with exactly the same arguments. Two copies of this list is how the two
 # tables would quietly stop being comparable.
+# Cleanup that must run AFTER run_action has taken its CDP and long-task snapshots. Anything here
+# is restoring the fixture for the next repetition, not part of the action being timed, and the
+# recorder window is already closed by the time it runs.
+JUMP_RESET_JS = """
+async () => {
+  const viewport = window.__heavyThread.viewport();
+  viewport.scrollTo({ top: viewport.scrollHeight, behavior: "instant" });
+  await window.__nextPaint();
+}
+"""
+
+ACTION_RESETS = {"jump": JUMP_RESET_JS}
+
+
 ACTION_SCRIPTS = {
     "keystroke": (KEYSTROKE_JS, KEYSTROKES),
     "scroll": (SCROLL_JS, [SCROLL_STEPS, SCROLL_STEP_PX, SETTLE_TIMEOUT_MS]),

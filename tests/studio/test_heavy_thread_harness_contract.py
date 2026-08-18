@@ -328,3 +328,35 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
     assert (FRONTEND / "smoke-heavy-thread-main.tsx").exists()
     assert "start_vite(PORT)" in text
     assert "stop_process(vite)" in text
+
+
+def test_fixture_cleanup_runs_after_the_counters_are_read() -> None:
+    # run_action brackets the whole page.evaluate with the CDP counters and reads the long-task
+    # observer after it returns, so anything the action script does before returning lands in the
+    # Chromium-only rows even when the portable recorder window has already closed. The jump's
+    # scroll back to the bottom cost 33.2ms against the jump's own 33.5ms at 300K chars, so those
+    # rows described two jumps. Cleanup belongs in ACTION_RESETS, applied after every snapshot.
+    body = source("playwright_heavy_thread.py")
+    run_action = body[body.index("def run_action("):body.index("ACTION_SCRIPTS = {")]
+    assert "ACTION_RESETS" in run_action, "run_action never applies the post-snapshot resets"
+    reset_at = run_action.index("ACTION_RESETS")
+    for snapshot in ("cdp_counters(before, after)", "long_task_summary(page)"):
+        assert snapshot in run_action, f"run_action no longer collects {snapshot}"
+        assert run_action.index(snapshot) < reset_at, (
+            f"the fixture reset runs before {snapshot}, so its cost lands in that snapshot"
+        )
+
+
+def test_the_jump_does_not_scroll_back_inside_its_own_measurement() -> None:
+    # Specifically the regression above: the reset was inline at the end of JUMP_JS.
+    body = source("playwright_heavy_thread.py")
+    jump = body[body.index("JUMP_JS = "):body.index("MENU_JS = ")]
+    # The scroll to the bottom BEFORE __hv.begin() is setup and is meant to be there. What must
+    # not come back is a scroll after __hv.end(), which the recorder no longer sees but the CDP
+    # counters and the long-task observer still do.
+    after_end = jump[jump.index("__hv.end()"):]
+    # `scrollTo(` with the paren: a bare "scrollTo" also matches `viewport.scrollTop`, which is
+    # a read and is fine here.
+    assert "scrollTo(" not in after_end, (
+        "JUMP_JS scrolls again after __hv.end(), inside the evaluate the counters bracket"
+    )
