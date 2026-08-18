@@ -167,9 +167,13 @@ def _workflows_by_name():
 def test_every_allowed_pip_cache_job_still_exists_and_still_earns_it(name, jid):
     """The allowlist must not outlive the jobs, or it silently permits nothing."""
     doc = dict(_workflows()).get(name)
-    assert doc is not None, f"{name} no longer exists; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
+    assert (
+        doc is not None
+    ), f"{name} no longer exists; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
     job = doc["jobs"].get(jid)
-    assert job is not None, f"{name} no longer has job {jid}; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
+    assert (
+        job is not None
+    ), f"{name} no longer has job {jid}; drop it from PIP_CACHE_JOBS_PENDING_CONVERSION"
     body = "\n".join(str(s.get("run", "")) for s in job.get("steps") or [])
     assert HEAVY.search(body), (
         f"{name}:{jid} is allowed a pip cache but no longer installs anything heavy; it "
