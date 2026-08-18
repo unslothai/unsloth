@@ -316,8 +316,7 @@ def test_text_io_names_its_encoding(path: Path) -> None:
         "UnicodeDecodeError.\n\n"
         "A platform guard above the call does NOT make this safe: the Windows codepage "
         "is only one of the two ways to get the wrong decoder, and a linux-only path "
-        'still meets the C-locale one. Pass encoding = "utf-8":\n  '
-        + "\n  ".join(offenders)
+        'still meets the C-locale one. Pass encoding = "utf-8":\n  ' + "\n  ".join(offenders)
     )
 
 
