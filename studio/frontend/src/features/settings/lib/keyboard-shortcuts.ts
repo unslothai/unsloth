@@ -187,6 +187,12 @@ export function bindingFromEvent(
 ): ShortcutBinding | null {
   const code = event.code || keyToCode(event.key ?? "");
   if (!code || isModifierCode(code)) return null;
+  // Off macOS there is nowhere to put Meta: matchesBinding rejects an event
+  // carrying it, so recording Super+Alt+K would drop the Super and persist plain
+  // Alt+K -- a chord the user did not choose, which then fires on Alt+K alone
+  // while the one they pressed never matches. Record nothing instead, the same
+  // answer the recorder already gets while only modifiers are held.
+  if (!mac && event.metaKey) return null;
   // Cmd on macOS and Ctrl elsewhere both record as Mod, so one binding reads
   // naturally on either platform. A macOS user pressing Ctrl means Ctrl.
   return {

@@ -301,3 +301,29 @@ test("every settings tab survives a reload", () => {
   assert.ok(SETTINGS_TABS.includes("keyboard-shortcuts"));
   assert.equal(new Set(SETTINGS_TABS).size, SETTINGS_TABS.length);
 });
+
+test("a Super chord off macOS records nothing rather than a different chord", () => {
+  // matchesBinding rejects a non-mac event carrying Meta, so there is nowhere to
+  // put it. Persisting Alt+K for a user who pressed Super+Alt+K would assign an
+  // action to a chord they did not choose, and fire it on Alt+K alone.
+  assert.equal(
+    bindingFromEvent(keyEvent("KeyK", { metaKey: true, altKey: true }), false),
+    null,
+  );
+  assert.equal(
+    bindingFromEvent(keyEvent("KeyK", { metaKey: true }), false),
+    null,
+  );
+  // Ctrl+Meta is likewise not a Mod chord with the Meta quietly dropped.
+  assert.equal(
+    bindingFromEvent(keyEvent("KeyK", { metaKey: true, ctrlKey: true }), false),
+    null,
+  );
+  // The same chords on macOS are ordinary Cmd bindings and still record.
+  const mac = bindingFromEvent(
+    keyEvent("KeyK", { metaKey: true, altKey: true }),
+    true,
+  );
+  assert.ok(mac);
+  assert.equal(formatBindingValue(mac), "Mod+Alt+KeyK");
+});
