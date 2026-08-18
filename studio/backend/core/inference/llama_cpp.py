@@ -822,6 +822,7 @@ def _sticky_compaction_boundary(
     if not thread_id:
         return 0
     try:
+        from core.inference import checkpoint
         from storage import studio_db
 
         # The stored rows are the whole DAG, so the newest assistant turn can belong to a
@@ -875,6 +876,17 @@ def _sticky_compaction_boundary(
                 return 0
             # Only a fit that SUCCEEDED describes a boundary worth restoring.
             if not truncation.get("fits"):
+                return 0
+            # And only under the policy that recorded it. A checkpoint boundary is the
+            # depth of a RESET, affordable because the carried-forward block is rebuilt on
+            # every replay. Under `UNSLOTH_CONTEXT_POLICY=rolling` nothing rebuilds it, and
+            # neither guard in `_fit_context` fires because both are `checkpoint.enabled()`,
+            # so the depth would be replayed with nothing handed back: measured at 18
+            # messages evicted where rolling chooses 6 for itself. Refuse it HERE rather
+            # than at the fit, because `boundary_messages` is re-recorded every turn, so a
+            # rolling turn that inherited 18 would persist 18 with no `checkpoint` key and
+            # make the reset-sized window permanent. Let rolling compute its own.
+            if truncation.get("checkpoint") and not checkpoint.enabled():
                 return 0
             # Counted against the request's own transcript, which is what it is applied
             # to. `dropped_messages` is the fallback for turns saved before that was

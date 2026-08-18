@@ -788,3 +788,69 @@ def test_a_degraded_archive_stops_the_block_promising_a_lookup_that_returns_noth
     )
     assert started["checkpoint_started"] is True
     assert checkpoint._SEARCHABLE in healthy[0]["content"]
+
+
+def _stub_studio_db(monkeypatch, messages):
+    """Stand in for storage.studio_db.list_chat_messages."""
+    import sys
+    import types
+
+    module = types.SimpleNamespace(list_chat_messages = lambda thread_id: messages)
+    package = types.ModuleType("storage")
+    package.studio_db = module
+    monkeypatch.setitem(sys.modules, "storage", package)
+    monkeypatch.setitem(sys.modules, "storage.studio_db", module)
+
+
+def test_a_checkpoint_boundary_is_not_replayed_once_the_policy_is_rolling(monkeypatch):
+    """The escape hatch has to escape the depth too, not just the reset.
+
+    A checkpoint boundary is the depth of a RESET, and what makes that depth affordable
+    is the carried-forward block rebuilt on every replay. Switch the thread to
+    `UNSLOTH_CONTEXT_POLICY=rolling` and neither of `_fit_context`'s guards fires, because
+    both are `and checkpoint.enabled()`, so the stored reset-sized boundary flowed
+    straight into `fit_rolling_context`, which replayed a near-total eviction and built no
+    block at all. Measured on a 20-message thread: 18 messages evicted where rolling
+    chooses 6 on its own, i.e. 12 extra live turns gone under a policy that cannot pay
+    for them, with the prompt then sitting far under budget.
+
+    Worse, the boundary launders itself. `boundary_messages` is re-recorded on every fit,
+    so the first rolling turn would persist 18 again with no `checkpoint` key, and the
+    checkpoint-depth window would outlive the policy that made sense of it. Refusing the
+    boundary at the READ is what stops that: rolling recomputes its own, and records that.
+
+    No restart is needed to reach this. The policy is read at call time on purpose, and
+    the boundary is read back from persisted metadata, so both sides survive one.
+    """
+    from core.inference import llama_cpp
+
+    stored = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "a",
+            "metadata": {
+                "custom": {
+                    "contextTruncation": {
+                        "fits": True, "boundary_messages": 18, "checkpoint": True,
+                    }
+                }
+            },
+        },
+    ]
+    _stub_studio_db(monkeypatch, stored)
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "checkpoint")
+    assert llama_cpp._sticky_compaction_boundary("t1") == 18
+
+    monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
+    assert llama_cpp._sticky_compaction_boundary("t1") == 0, (
+        "a reset-sized boundary was replayed under rolling, which rebuilds no block"
+    )
+
+    # A boundary that rolling itself recorded is still restored under rolling: this is
+    # about provenance, not about distrusting every stored number.
+    stored[1]["metadata"]["custom"]["contextTruncation"] = {
+        "fits": True, "boundary_messages": 6,
+    }
+    assert llama_cpp._sticky_compaction_boundary("t1") == 6
