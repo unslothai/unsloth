@@ -808,6 +808,18 @@ class _InferenceRuntimeFields(BaseModel):
             "hard-crashed and the same launch became healthy with GPU devices disabled."
         ),
     )
+
+    mmproj_fallback_reason: Optional[
+        Literal["cpu_offload", "projector_incompatible", "projector_startup_failure"]
+    ] = Field(
+        None,
+        description = (
+            "How an automatic GGUF multimodal-projector recovery changed the load. "
+            "'cpu_offload' keeps vision with the projector on CPU; "
+            "'projector_incompatible' and 'projector_startup_failure' mean the "
+            "model recovered text-only."
+        ),
+    )
     n_cpu_moe: int = Field(
         0,
         description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
