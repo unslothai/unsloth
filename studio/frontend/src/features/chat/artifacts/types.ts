@@ -80,16 +80,7 @@ export function createChatArtifact(input: ChatArtifactInput): ChatArtifact {
   };
 }
 
-export type ArtifactDownloadFormat =
-  | "html"
-  | "md"
-  | "txt"
-  | "docx"
-  | "pptx"
-  | "xlsx"
-  | "pdf"
-  | "pages"
-  | "numbers";
+export type ArtifactDownloadFormat = "html" | "md" | "txt";
 
 interface ArtifactDownloadFormatMeta {
   label: string;
@@ -116,36 +107,6 @@ const ARTIFACT_DOWNLOAD_FORMAT_META: Record<
     extension: "txt",
     mimeType: "text/plain;charset=utf-8",
   },
-  docx: {
-    label: "Word Document",
-    extension: "docx",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  },
-  pptx: {
-    label: "PowerPoint Presentation",
-    extension: "pptx",
-    mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  },
-  xlsx: {
-    label: "Excel Spreadsheet",
-    extension: "xlsx",
-    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  },
-  pdf: {
-    label: "PDF Document",
-    extension: "pdf",
-    mimeType: "application/pdf",
-  },
-  pages: {
-    label: "Pages Document",
-    extension: "pages",
-    mimeType: "application/vnd.apple.pages",
-  },
-  numbers: {
-    label: "Numbers Spreadsheet",
-    extension: "numbers",
-    mimeType: "application/vnd.apple.numbers",
-  },
 };
 
 // Order the canvas download menu is rendered in.
@@ -153,12 +114,6 @@ export const ARTIFACT_DOWNLOAD_FORMATS: readonly ArtifactDownloadFormat[] = [
   "html",
   "md",
   "txt",
-  "docx",
-  "pptx",
-  "xlsx",
-  "pdf",
-  "pages",
-  "numbers",
 ];
 
 export function getArtifactDownloadFormatLabel(
