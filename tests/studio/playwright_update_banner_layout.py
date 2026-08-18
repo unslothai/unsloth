@@ -53,6 +53,11 @@ SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
 # What the cards need after they mount, to animate in and lay out.
 SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
 
+# Must match the name use-web-update-check.ts reads. Kept short rather than zero so the
+# card still arrives after first paint, which is the situation the layout checks exist for.
+E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs"
+E2E_DELAY_MS = int(os.environ.get("STUDIO_UI_BANNER_UPDATE_DELAY_MS", "150"))
+
 LATEST = "2099.1.0"
 
 # Long enough that the collapsed preview alone overflows a capped card.
@@ -428,7 +433,37 @@ MEASURE = """
     // on which platform it is or on whether the rail happens to be scrolling.
     railGutterPx: rail ? Math.round(rail.offsetWidth - rail.clientWidth) : null,
     cardWidth: card ? Math.round(card.getBoundingClientRect().width) : null,
+    // The same card, measured off the LAYOUT box instead of the painted one.
+    // offsetWidth is the border box with no transform applied (CSSOM-View), so
+    // it answers the scrollbar question the assertion below is actually asking
+    // and cannot be moved by the card's enter animation. `cardWidth` stays,
+    // reported alongside, because the gap between the two is the diagnosis.
+    cardLayoutWidth: card ? card.offsetWidth : null,
     railPointerEvents: rail ? getComputedStyle(rail).pointerEvents : null,
+    // Everything needed to say WHY a card came out narrow, reported with the
+    // failure instead of being guessed at afterwards from two numbers. A card
+    // that lost width to a scrollbar and a card that lost it to an unfinished
+    // transform read identically as `cardWidth`, and the engine that reports
+    // offsetWidth === clientWidth while still taking the width out of the
+    // content box (Playwright WebKit on Linux) makes railGutterPx no help on
+    // its own. `borderBox` is the layout width with no transform applied.
+    widthWhy: card && rail ? {
+      transform: getComputedStyle(card).transform,
+      borderBox: card.offsetWidth,
+      cssWidth: getComputedStyle(card).width,
+      maxWidth: getComputedStyle(card).maxWidth,
+      innerWidth: innerWidth,
+      docClientWidth: document.documentElement.clientWidth,
+      railOffsetW: rail.offsetWidth,
+      railClientW: rail.clientWidth,
+      railContentW: rail.clientWidth
+        - parseFloat(getComputedStyle(rail).paddingLeft || '0')
+        - parseFloat(getComputedStyle(rail).paddingRight || '0'),
+      railScrollH: rail.scrollHeight,
+      railClientH: rail.clientHeight,
+      railMaxHeight: getComputedStyle(rail).maxHeight,
+      kids: [...rail.children].map((c) => Math.round(c.getBoundingClientRect().height)),
+    } : null,
     // What a click on the rail's own gutter lands on when it is click-through.
     gutterIsRail: rail ? (() => {
       const r = rail.getBoundingClientRect();
@@ -543,21 +578,32 @@ def measure(page, label: str) -> dict:
             reached and not seen["offscreen"],
             f"{name}={seen}",
         )
-    if facts["cardWidth"] is not None:
+    if facts["cardLayoutWidth"] is not None:
         # 448px is the card's max width and 2rem the viewport inset it keeps.
         want = min(448, view["width"] - 32)
+        # Asked of the layout box, not the painted one. A scrollbar that takes
+        # its width out of the rail's content box shrinks the card's layout
+        # width, which is the whole subject here; the card's enter animation
+        # (opacity 0, y 12, scale .96 -- see components/*/update-banner.tsx)
+        # shrinks only the painted one, and measuring that raced the animation
+        # rather than the scrollbar. 448 * 0.96 = 430.08, which is exactly the
+        # 430 this reported on the WebKit leg while its own borderBox read 448
+        # and railGutter read 0.
         check(
             f"{label}: the card keeps its full width whatever the scrollbar does",
-            abs(facts["cardWidth"] - want) <= 1,
-            f"cardWidth={facts['cardWidth']} want={want} "
-            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']}",
+            abs(facts["cardLayoutWidth"] - want) <= 1,
+            f"cardLayoutWidth={facts['cardLayoutWidth']} want={want} "
+            f"cardPaintedWidth={facts['cardWidth']} "
+            f"railGutter={facts['railGutterPx']} scrolls={facts['railScrolls']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
     if facts["railScrolls"] is not None:
         scrolls = facts["railScrolls"]
         check(
             f"{label}: the rail takes pointer input exactly when it scrolls",
             facts["railPointerEvents"] == ("auto" if scrolls else "none"),
-            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']}",
+            f"scrolls={scrolls} pointerEvents={facts['railPointerEvents']} "
+            f"why={json.dumps(facts['widthWhy'], sort_keys = True)}",
         )
         # Click-through is what pointer-events-none is for, and the gutter is
         # the widest part of the rail that no card covers.
@@ -630,9 +676,10 @@ def settle_stack(
 
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
-    # Both cards are on a timer, the app one at 5s and llama.cpp at 1s, so wait
-    # for them rather than for the worst case: this step runs 24 times and the
-    # job it shares has minutes, not tens of minutes, to spare.
+    # Both cards are on a timer, so wait for them rather than for the worst case: this
+    # step runs 24 times and the job it shares has minutes, not tens of minutes, to
+    # spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp
+    # keeps its 1s, and both still mount after first paint.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
             page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
@@ -674,6 +721,15 @@ def main() -> int:
     # add_init_script takes raw source, not a function to call.
     seed_js = (
         "(() => {"
+        # The app arms its update check on a 5s timer so the request stays off the
+        # critical path at launch. This suite boots a fresh page for every case it
+        # measures and waits out that timer each time before the card it is measuring
+        # exists, which was over two and a half minutes of a five minute step. The
+        # override is read at mount from a global that exists only here, so the shortened
+        # delay reaches no build and no browser but this one, and it stays a timer rather
+        # than becoming synchronous, because a card that mounts on the first frame would
+        # not exercise the late-mount reflow this file is about.
+        f"  window.{E2E_DELAY_GLOBAL} = {E2E_DELAY_MS};"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"  localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
         "  localStorage.setItem('unsloth_show_llama_update_banner', 'true');"
