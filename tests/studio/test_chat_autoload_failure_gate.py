@@ -182,6 +182,16 @@ async function prepareHfTokenForUse(token: any) {
   if (SCENARIO.tokenDecision === "anonymous") return { proceed: true, token: null };
   return { proceed: true, token };
 }
+// Imported by chat-adapter.ts from ../utils/mmproj-fallback, and called by
+// showAutoLoadSuccess whenever /load reports the vision projector was moved or
+// dropped. A marker rather than the real prose on purpose: the copy itself is
+// pinned by studio/frontend/tests/mmproj-fallback.test.ts, and duplicating it
+// here would only rot. What these scenarios need to prove is the wiring -- that
+// the toast description comes from this function, called with the reason the
+// backend actually reported.
+function mmprojFallbackMessage(reason: string) {
+  return `mmproj:${reason}`;
+}
 async function fetchGgufStagedMetadata(_req: any) {
   // camelCase, matching chat-api.ts: the call site reads `.isDiffusion`, so a
   // snake_case key here would be silently undefined.
@@ -235,7 +245,15 @@ const toast: any = Object.assign(
       if (opts?.action?.onClick) CANCEL_TOAST_ACTION = opts.action.onClick;
       return "toast-id";
     },
-    success: (msg: string) => EVENTS.push({ kind: "toast.success", msg }),
+    success: (msg: string, opts?: any) =>
+      EVENTS.push({ kind: "toast.success", msg, description: opts?.description }),
+    // A degraded load (no GPU, no vision projector) is a warning, not a
+    // success. Missing here it was a TypeError inside the sliced region, which
+    // the retry loop catches and scores as a failed load -- the same
+    // wrong-model failure mode the import check above exists to prevent, but
+    // for a member rather than a bare name, so that check cannot see it.
+    warning: (msg: string, opts?: any) =>
+      EVENTS.push({ kind: "toast.warning", msg, description: opts?.description }),
     error: (msg: string, opts?: any) =>
       EVENTS.push({ kind: "toast.error", msg, description: opts?.description }),
     dismiss: () => EVENTS.push({ kind: "toast.dismiss" }),
@@ -1451,6 +1469,50 @@ def test_a_legacy_gguf_row_without_model_format_loads_as_gguf():
     assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
     remembered = [e for e in out["events"] if e["kind"] == "recordLastLocal"]
     assert remembered and remembered[0]["modelKind"] == "gguf", remembered
+
+
+# --- #9173: an auto-load that lost its vision projector says so ---
+
+
+@pytest.mark.parametrize(
+    "reason,suffix",
+    [
+        ("cpu_offload", "with vision on CPU"),
+        ("projector_incompatible", "without vision"),
+        ("projector_startup_failure", "without vision"),
+    ],
+)
+def test_an_mmproj_fallback_auto_load_warns_rather_than_reporting_a_plain_success(reason, suffix):
+    """A model that came back text-only, or with its projector on the CPU, is not
+    the model the user asked for. Reporting it as a plain success is how a
+    silently degraded load reaches the composer and the first image fails."""
+    out = _run(
+        "scenario({ localModels: [LOCAL_GGUF],"
+        f" load: (p) => ({{ ...LOADED(p), mmproj_fallback_reason: '{reason}' }}) }})"
+    )
+
+    assert _loaded_paths(out) == [LOCAL_GGUF_PATH]
+    assert out["result"]["loaded"] is True
+    assert _toasts(out, "toast.success") == []
+    [warning] = _toasts(out, "toast.warning")
+    assert warning["msg"].endswith(suffix), warning
+    # The reason reaches mmprojFallbackMessage unchanged: the whole point of the
+    # per-reason copy is that "moved to system memory" and "reload to restore
+    # image input" are different instructions.
+    assert warning["description"] == f"mmproj:{reason}", warning
+
+
+def test_an_undegraded_auto_load_is_still_a_plain_success():
+    """Control for the warnings above, so they cannot be met by warning on every
+    load: no fallback reason means no description and no warning."""
+    out = _run("scenario({ localModels: [LOCAL_GGUF] })")
+
+    assert _toasts(out, "toast.warning") == []
+    [success] = _toasts(out, "toast.success")
+    # `.get`, not `[...]`: JSON.stringify drops an undefined value entirely, so
+    # the absent key IS the "no description" the ordinary path is supposed to
+    # send.
+    assert success.get("description") is None, success
 
 
 @pytest.mark.parametrize("fmt", ["'unknown'", "undefined"])

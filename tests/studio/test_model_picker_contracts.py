@@ -170,10 +170,21 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     # No description on the ordinary path. It stopped being the literal
     # `description: undefined` when the CPU-fallback branch was added, so pin the
     # branch and its undefined arm rather than one spelling of the old constant.
+    #
+    # `description: cpuFallbackReason` was still one spelling of the head of that
+    # chain, which is why this went red again when the mmproj text-only fallback
+    # added a branch ABOVE the CPU one -- a change to which degraded loads get a
+    # description, not to the contract this test exists to hold. What actually
+    # matters is unchanged and is what is asserted now: the description is
+    # conditional on a degraded-load reason, the CPU one is still among them, and
+    # the arm for a load with nothing wrong is `undefined`. Another reason can be
+    # added tomorrow without touching this.
     success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
     success_toast = success_toast.split("};", 1)[0]
-    assert "description: cpuFallbackReason" in success_toast
-    assert ": undefined," in success_toast
+    assert "description:" in success_toast, success_toast
+    description = success_toast.split("description:", 1)[1].split("duration:", 1)[0]
+    assert "cpuFallbackReason" in description, description
+    assert description.rstrip().rstrip(",").endswith("undefined"), description
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
