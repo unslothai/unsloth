@@ -174,6 +174,7 @@ def test_the_main_only_expression_check_reads_the_expression(expr, restricted):
     """The guard below is only as good as this predicate, so the predicate is tested too."""
     assert _restricted_to_main(expr) is restricted, expr
 
+
 def _composite_actions():
     """(name, steps) for every composite action in the repo.
 
@@ -291,8 +292,7 @@ def test_every_pip_cache_user_actually_installs_something_heavy():
         if not HEAVY.search(body):
             thin.append(f"{name}:{jid}")
     assert not thin, (
-        f"these jobs hold a pip cache but no longer install anything that justifies it: "
-        f"{thin}"
+        f"these jobs hold a pip cache but no longer install anything that justifies it: " f"{thin}"
     )
 
 
