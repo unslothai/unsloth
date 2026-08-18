@@ -1228,5 +1228,72 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
     assert row["discriminated"] is True, row
 
 
+# ── whole-window axes carry the whole window's floors ─────────────────
+#
+# `quiet()` and `quietUntilIdle()` return `... - this.startedAt`, not the time they themselves
+# took, and `gestureMs` is computed from `startedAt` too. All three therefore span the entire
+# recorder window and contain every double-rAF wait in it. They declared zero, which left roughly
+# twenty vsync floors in both ends of the scroll ratios.
+
+
+def axis_floor(name):
+    for axis, _pick, floored in HARNESS.GROWTH_AXES:
+        if axis == name:
+            return floored
+    raise AssertionError(f"{name} is not an axis")
+
+
+@pytest.mark.parametrize(
+    "name", ("scroll gesture ms", "scroll settle ms", "jump settle ms")
+)
+def test_whole_window_axes_use_the_measured_floor(name) -> None:
+    floored = axis_floor(name)
+    assert callable(floored), f"{name} declares a fixed floor but spans the whole window"
+    action = name.split(" ")[0]
+    assert floored({"actions": {action: {"paint_waits": 20}}}) == 20
+
+
+@pytest.mark.parametrize("name", ("jump painted ms", "menu open+close ms", "reopen ms"))
+def test_partial_window_axes_keep_their_declared_floor(name) -> None:
+    """The other half of the rule, and it is not symmetry for its own sake.
+
+    `paintedMs` starts at a mark taken after `begin()` and spans one wait while the jump's window
+    holds two. `MENU_JS` awaits no paint at all, so the window count is zero while its two floors
+    are real, coming from `settle()` reading the pre-MutationObserver state on entry. Applying the
+    window count to either would subtract a floor the number never contained, or remove one that
+    it did.
+    """
+    assert not callable(axis_floor(name)), (
+        f"{name} was given the whole-window floor, which it does not carry"
+    )
+
+
+def test_the_scroll_ratio_is_not_compressed_by_the_gesture_floors() -> None:
+    """End to end: twenty floors left in both ends is what flattens the curve."""
+    cells = {
+        "engines": ["chromium"],
+        "sizes": [25000, 300000],
+        "repetitions": 1,
+        "by_engine": {
+            "chromium": {
+                "by_size": {
+                    "25000": {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"gestureMs": 700.0, "paint_waits": 20}},
+                    },
+                    "300000": {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"gestureMs": 1300.0, "paint_waits": 20}},
+                    },
+                }
+            }
+        },
+    }
+    row = HARNESS.report_growth(cells)["chromium"]["scroll gesture ms"]
+    # 700 - 660 = 40, 1300 - 660 = 640: a 16x curve that reads as 1.86x with the floors left in.
+    assert row["small"] == 40.0 and row["large"] == 640.0, row
+    assert row["ratio"] > 10 and row["discriminated"] is True, row
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

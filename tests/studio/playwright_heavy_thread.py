@@ -1316,11 +1316,31 @@ GROWTH_AXES = tuple(
     # and `menu wall ms` was declaring none of them.
     + [(f"{a} wall ms", _action(a, "wall_ms"), _floor_from(a, "paint_waits")) for a in ACTIONS]
     + [
+        # The rule for the entries below: an axis measured from `__hv.startedAt` spans the WHOLE
+        # recorder window, so it carries every double-rAF wait in it and takes the measured
+        # `paint_waits`. An axis measured from a later mark carries only its own and keeps a
+        # declared count. Both kinds are here on purpose and the difference is not cosmetic.
+        #
+        # gestureMs is `performance.now() - __hv.startedAt`, and BOTH settle figures come from
+        # `quiet()` / `quietUntilIdle()`, which return `... - this.startedAt` rather than the time
+        # they themselves took. All three therefore contained the scroll's twenty paint waits and
+        # declared none of them, leaving ~20 vsync floors in both ends of those ratios, which
+        # compresses them hard enough to report a real size-dependent regression as flat.
+        #
+        # Counted at runtime rather than written in: the twenty come from a LOOP, so the literal
+        # `__nextPaint()` count in the source is one, and any hand-declared number here would have
+        # been wrong in the same way the old zero was.
         ("keystroke median ms", _action("keystroke", "median_sample_ms"), 1),
-        ("scroll gesture ms", _action("scroll", "gestureMs"), 0),
-        ("scroll settle ms", _action("scroll", "settleMs"), 0),
+        ("scroll gesture ms", _action("scroll", "gestureMs"), _floor_from("scroll", "paint_waits")),
+        ("scroll settle ms", _action("scroll", "settleMs"), _floor_from("scroll", "paint_waits")),
+        # NOT paint_waits: paintedMs starts at a mark taken after begin() and spans one wait,
+        # while the jump's window holds two. Using the window count here would subtract a floor
+        # the number never contained.
         ("jump painted ms", _action("jump", "paintedMs"), 1),
-        ("jump settle ms", _action("jump", "settleMs"), 0),
+        ("jump settle ms", _action("jump", "settleMs"), _floor_from("jump", "paint_waits")),
+        # Also NOT paint_waits: MENU_JS awaits no paint at all, and its two floors come from
+        # settle() reading the pre-MutationObserver state on entry, once for open and once for
+        # close. The window count is zero here and would remove a floor that is really there.
         ("menu open+close ms", _action("menu", "open_close_ms"), 2),
         ("delete ms", _action("delete", "ms"), 1),
         # 1, not 0: see paintWaits in REOPEN_JS. Leaving it at 0 left a full ~33ms vsync floor
