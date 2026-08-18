@@ -27,6 +27,7 @@ on:
       - 'studio/frontend/src/components/assistant-ui/use-hover-quiet-during-scroll.ts'
       - 'studio/frontend/src/lib/menu-dismiss.ts'
       - 'studio/frontend/src/lib/menu-dismiss-guard.tsx'
+      - 'tests/studio/playwright_stream_pacing.py'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
       - 'tests/studio/_playwright_robust.py'
       - 'tests/studio/test_autoscroll_harness_contract.py'
@@ -228,6 +229,16 @@ jobs:
           PROBE_ENGINES: chromium
           PROBE_REPS: '2'
         run: python3 tests/studio/hover_semantics_probe.py
+
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
+      - name: Browser smoke for chat stream pacing
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+        run: python3 tests/studio/playwright_stream_pacing.py
 
       - name: Build
         run: npm run build
