@@ -183,7 +183,12 @@ def _launch(
             "Process",
             (),
             {
-                "pid": 123,
+                # One below pid_max: validly shaped, but names no process, so the
+                # lifetime registry's identity check drops it and it can never be
+                # signalled. A low pid here is not inert decoration -- load_model
+                # adopts whatever it is given and teardown signals that process
+                # group, and killpg(1) is kill(-1), i.e. everything the user owns.
+                "pid": 4194303,
                 "stdout": (),
                 "poll": lambda self: None,
                 "terminate": lambda self: None,

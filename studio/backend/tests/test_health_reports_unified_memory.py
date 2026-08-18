@@ -32,7 +32,7 @@ if str(_BACKEND) not in sys.path:
 import utils.hardware as hardware_pkg  # noqa: E402
 
 
-def _restore_real_logging_modules() -> None:
+def _restore_real_logging_modules() -> dict:
     """Undo the stubs other test files install, so `main` can be imported.
 
     Several files in this tree put a plain module named `loggers` and a minimal
@@ -48,17 +48,20 @@ def _restore_real_logging_modules() -> None:
     gets a working superset. If real structlog is genuinely absent the caller skips
     rather than failing, since that is an environment gap and not a defect here.
     """
+    removed = {}
     stub = sys.modules.get("loggers")
     if stub is not None and not hasattr(stub, "__path__"):
         for name in [n for n in sys.modules if n == "loggers" or n.startswith("loggers.")]:
-            del sys.modules[name]
+            removed[name] = sys.modules.pop(name)
     stub = sys.modules.get("structlog")
     if stub is not None and not hasattr(stub, "BoundLogger"):
-        del sys.modules["structlog"]
+        removed["structlog"] = sys.modules.pop("structlog")
     try:
         import structlog  # noqa: F401
     except Exception:
+        sys.modules.update(removed)
         pytest.skip("real structlog is required to import main")
+    return removed
 
 
 def _health(
@@ -68,7 +71,7 @@ def _health(
     authed: bool = True,
 ) -> dict:
     """Drive /api/health and return the body."""
-    _restore_real_logging_modules()
+    _swapped_modules = _restore_real_logging_modules()
     import auth.authentication as _authmod
     import main as main_mod
     from fastapi import FastAPI
@@ -102,6 +105,8 @@ def _health(
     finally:
         if not was_complete:
             hw_mod.DETECTION_COMPLETE.clear()
+        # Put back exactly what was displaced, so nothing downstream inherits this.
+        sys.modules.update(_swapped_modules)
 
 
 def test_apple_silicon_is_reported(monkeypatch):
