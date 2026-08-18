@@ -201,7 +201,9 @@ def test_a_sparse_partial_is_priced_by_the_bytes_it_actually_holds(blobs):
         "Q4_K_M",
         [ExpectedFile(path = "model-Q4_K_M.gguf", size = 64 * MB, sha256 = SHARD_A)],
     )
-    partial = _sparse(blobs / f"{SHARD_A}.deadbeef{hf_cache_state.INCOMPLETE_SUFFIX}", 4 * MB, 64 * MB)
+    partial = _sparse(
+        blobs / f"{SHARD_A}.deadbeef{hf_cache_state.INCOMPLETE_SUFFIX}", 4 * MB, 64 * MB
+    )
     assert partial.stat().st_size == 64 * MB
     assert partial.stat().st_blocks * 512 < 8 * MB
 
