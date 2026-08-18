@@ -13210,6 +13210,14 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
+        from auth.authentication import request_admitted_without_credential
+
+        # caller-chosen egress from this host, which is not the loaded model on offer
+        if request_admitted_without_credential(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = "External providers can only be used from the Unsloth UI or with an API key.",
+            )
         # External provider: this request won't touch the local GGUF, so drop it
         # from the keep-warm count or its in-flight stream would falsely block a
         # concurrent local model switch from proceeding.

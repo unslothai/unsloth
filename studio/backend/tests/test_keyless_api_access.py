@@ -738,6 +738,58 @@ def test_a_switch_still_happens_when_keyless_is_off(monkeypatch):
     assert loads != []
 
 
+def provider_attempt(monkeypatch, request):
+    """POST a chat completion naming an external provider. Returns what got proxied."""
+    import routes.inference as inference
+    from models.inference import ChatCompletionRequest
+
+    proxied = []
+
+    async def record(payload, _request, _subject):
+        proxied.append(payload.provider_base_url)
+        return {}
+
+    monkeypatch.setattr(inference, "_proxy_to_external_provider", record)
+    payload = ChatCompletionRequest(
+        model = "llama3",
+        messages = [{"role": "user", "content": "hi"}],
+        provider_type = "ollama",
+        provider_base_url = "http://192.168.1.50:11434",
+    )
+    asyncio.run(inference.openai_chat_completions(payload, request, "tester"))
+    return proxied
+
+
+@pytest.mark.parametrize("headers", [None, {"Authorization": "Bearer ollama"}])
+def test_a_keyless_caller_cannot_route_through_an_external_provider(monkeypatch, headers):
+    """provider_base_url is egress from this host, and validate_provider_base_url allows
+    loopback and LAN on purpose, so a stranger could reach the network behind it."""
+    seed_user()
+    set_keyless_api_access("inference")
+    with pytest.raises(HTTPException) as excinfo:
+        provider_attempt(monkeypatch, request_for(headers = headers))
+    assert excinfo.value.status_code == 403
+
+
+def test_a_working_key_can_still_route_through_one(monkeypatch):
+    seed_user()
+    set_keyless_api_access("inference")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    proxied = provider_attempt(monkeypatch, request_for(headers = {"Authorization": f"Bearer {raw}"}))
+    assert proxied == ["http://192.168.1.50:11434"]
+
+
+def test_a_session_can_still_route_through_one_with_keyless_off(monkeypatch):
+    seed_user()
+    token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
+    proxied = provider_attempt(
+        monkeypatch, request_for(headers = {"Authorization": f"Bearer {token}"})
+    )
+    assert proxied == ["http://192.168.1.50:11434"]
+
+
 # --- routes that read the bearer for themselves ------------------------------
 
 
@@ -766,8 +818,6 @@ def test_health_is_outside_the_inference_scope():
     set_keyless_api_access("inference")
     assert "version" not in health_fields()
 
-
-# --- routes that read the bearer for themselves ------------------------------
 
 SANDBOX_PATH = "/api/inference/sandbox/abc"
 
