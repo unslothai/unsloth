@@ -121,6 +121,17 @@ export {
   reservePreStreamRun,
 } from "./utils/pre-stream-run-reservation";
 export {
+  promptQueueActiveItemChanged,
+  reorderPromptQueueItems,
+} from "./utils/prompt-queue-reorder";
+export {
+  PROMPT_QUEUE_DRAG_TYPE,
+  hasPendingPromptQueueStart,
+  isPromptQueueChord,
+  isPromptQueueDragTypes,
+  pastedTextQueueKey,
+} from "./utils/prompt-queue-input";
+export {
   localPromptQueueModelBoundary,
   planLocalPromptQueueStop,
   shouldAbortPendingQueueForModelBoundary,
@@ -167,6 +178,10 @@ export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
+export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,
   attachmentsPastedText,
@@ -183,6 +198,7 @@ export {
 export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
+  getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -194,6 +210,10 @@ export {
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  forkCountFor,
+  subscribeForkCounts,
+} from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningAutoOpensWhileStreaming,
@@ -232,7 +252,10 @@ export {
   EXPORT_FORMATS_LIST,
   buildFineTuneJsonl,
   bulkExportConversationsByScope,
+  exportBulkConversationsMerged,
+  exportBulkConversationsSeparate,
   exportFineTuneJsonl,
+  type ConvExportFormat,
   type FineTuneFormat,
 } from "./prompt-storage/prompt-storage-dialog";
 export {
@@ -247,7 +270,9 @@ export {
 export {
   archiveAllChatItems,
   archiveChatItem,
+  archiveChatItems,
   deleteChatItem,
+  deleteChatItems,
   renameChatItem,
   unarchiveChatItem,
   useChatSidebarItems,
