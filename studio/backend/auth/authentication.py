@@ -18,7 +18,6 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
-    validate_api_key,
     validate_api_key_with_credential,
     verify_refresh_token,
 )
@@ -67,8 +66,12 @@ def bearer_is_valid_api_key(token: str) -> bool:
 
     Such a key authenticates as itself even while keyless API access is on, so the
     callers below must not treat it as a credential the setting had to stand in for.
+    Asked ahead of the real validation, so it leaves ``last_used_at`` to that one.
     """
-    return token.startswith(API_KEY_PREFIX) and validate_api_key(token) is not None
+    return (
+        token.startswith(API_KEY_PREFIX)
+        and validate_api_key_with_credential(token, touch = False) is not None
+    )
 
 
 def admitted_without_credential(credentials: Optional[HTTPAuthorizationCredentials]) -> bool:

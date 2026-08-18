@@ -325,6 +325,18 @@ def test_the_middleware_sees_an_unusable_key_as_keyless(expired):
     assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is True
 
 
+def test_the_middleware_check_does_not_count_as_a_use():
+    """It runs ahead of the real validation, so stamping there would double-count every
+    request and take sqlite's global write lock for an advisory answer."""
+    seed_user()
+    set_keyless_api_access("inference")
+    raw, _row = storage.create_api_key(
+        username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
+    )
+    assert asgi_request_is_keyless(asgi_scope(headers = {"Authorization": f"Bearer {raw}"})) is False
+    assert storage.list_api_keys(storage.DEFAULT_ADMIN_USERNAME)[0]["last_used_at"] is None
+
+
 def test_the_middleware_is_inert_when_access_is_off():
     seed_user()
     assert asgi_request_is_keyless(asgi_scope()) is False
