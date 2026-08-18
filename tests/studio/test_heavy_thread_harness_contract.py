@@ -205,6 +205,53 @@ def test_the_recorder_retires_the_callbacks_of_a_finished_run() -> None:
     assert "if (this.running) setTimeout(stall, 1);" not in recorder
 
 
+def pointer_precondition() -> str:
+    return section(
+        source(HARNESS), "def place_pointer_over_message(", "def reveal_last_action_bar("
+    )
+
+
+def test_the_pointer_precondition_moves_the_real_mouse() -> None:
+    # A helper that only reads elementFromPoint verifies where the cursor ALREADY is, which on a
+    # fresh isolated page is (0, 0). Only page.mouse.move puts it on the conversation, and that is
+    # the whole difference between this row and the probe's `gutter_only` arm.
+    assert "page.mouse.move(" in pointer_precondition()
+
+
+def test_the_pointer_precondition_verifies_it_landed_on_a_message() -> None:
+    # Moving to a coordinate proves nothing: the scroller's own gutter is inside the scroller in
+    # this fixture, so an unverified point can hit the viewport element and make this a second
+    # copy of the cheap arm under the expensive arm's label.
+    assert "POINTER_TARGET_JS" in pointer_precondition()
+    assert "el.closest('[data-role=\"assistant\"]')" in section(
+        source(HARNESS), "POINTER_TARGET_JS = ", "def place_pointer_over_message("
+    )
+
+
+def test_the_isolated_scroll_arm_positions_the_pointer() -> None:
+    # Each isolated page is fresh, so its mouse has never moved and sits in the gutter. Measured
+    # on this tree at 300K: gutter 7.4ms longest stall and 17.9ms worst frame, pointer on content
+    # 37.3ms and 29.3ms, both of which are headline portable primaries.
+    isolated = section(source(HARNESS), "def isolated_repetitions(", "def sequenced_repetition(")
+    assert "drive_scroll(page, cdp)" in isolated
+
+
+def test_the_sequenced_scroll_arm_positions_the_pointer() -> None:
+    # And the carry-over runner too, or the two tables measure different gestures under one name:
+    # there the pointer is at the origin on repetition 1 and over content from repetition 2, left
+    # by the previous repetition's delete hover, which is two mechanisms inside one median.
+    sequenced = section(source(HARNESS), "def sequenced_repetition(", "# Portable headline")
+    assert "drive_scroll(page, cdp)" in sequenced
+
+
+def test_the_verdict_rejects_a_scroll_whose_pointer_was_off_content() -> None:
+    # Per repetition, not on the collapsed last one: a repetition that scrolled the gutter still
+    # contributed its timing to the reported median.
+    decision = verdict()
+    assert "pointer_on_message_per_repetition" in decision
+    assert "with the pointer off message content on " in decision
+
+
 def test_the_probe_enables_the_cdp_performance_domain() -> None:
     # `Performance.getMetrics` on a session that never had `Performance.enable` sent returns an
     # EMPTY metric list rather than an error (measured on this tree: 0 metrics without, 36 with).

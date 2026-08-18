@@ -100,9 +100,54 @@ in this fixture, and the helper that parks the cursor reports `pointer_outside: 
 candidate it tries, honestly, because there is no point on the page outside the scroller. The
 corner works because it is over the scroller's own gutter, where the hit-test target is the same
 element on every step. And it is not a reason to discount the regression. Wheel-scrolling with the
-cursor resting over the conversation is how a person reads a long chat, and it is what this
-harness does; the cheap arms are the artificial ones. The cost being live rather than sticky makes
-it more fixable, not less.
+cursor resting over the conversation is how a person reads a long chat; the cheap arms are the
+artificial ones. The cost being live rather than sticky makes it more fixable, not less.
+
+THE SCROLL ROW PUTS THE POINTER ON THE CONVERSATION, AND FOR ONE REVISION IT DID NOT. Moving each
+action onto its own page gave `scroll` a page whose mouse had never been moved, so Playwright's
+cursor sat at (0, 0) -- the scroller's gutter -- and the headline row was measuring the arm the
+probe registers as `gutter_only`, under a label that says otherwise. Every other precondition
+survived the move and this one had never existed, because on the old single page the previous
+repetition's `delete` hover supplied it by accident from repetition 2 onwards. `scroll` now takes
+`place_pointer_over_message` as a precondition in BOTH runners, on the same footing as the hover
+that `menu` and `delete` take, and prints what the pointer hit per repetition; a repetition whose
+pointer never reached message content fails the run instead of being published.
+
+WHAT THAT IS WORTH, MEASURED, AND IT IS LESS THAN THE TABLES ABOVE SAY. Chromium, 300K characters,
+medians of 3, the two arms run back to back in one session, twice each, as-is / on-content /
+on-content / as-is:
+
+    arm                          gesture ms  longest stall ms  worst frame ms  settle ms  over
+    pointer left at the origin        666.4               7.4            17.9      716.4     0
+    pointer over message content      651.0              37.3            29.3      701.0    21
+    pointer over message content      655.0              28.0            23.0      705.0    21
+    pointer left at the origin        665.5               7.6            17.8      715.7     0
+
+Two of the four portable primaries move and two do not. Longest stall goes 7.4 -> 37.3 and worst
+frame 17.9 -> 29.3, so the gutter arm was under-reporting them by 3-4x and 1.5x. `gestureMs`,
+`settleMs` and `frames over 33ms` do not move at all, because on this host the boundary work never
+costs a whole frame. The pixel-for-pixel gesture really is at the 33.3ms-a-step paint floor either
+way; what the pointer buys is jitter under one frame, not a slower scroll.
+
+AND THE 1555ms TABLE ABOVE DID NOT REPRODUCE ON RE-RUN. scroll_predecessor_probe.py, unmodified,
+same tree, 300K, medians of 3, on the host these paragraphs were re-measured on:
+
+    arm                gesture ms  longest stall ms  worst frame ms  long tasks  task ms  over
+    nothing                 666.7               9.7            18.8           0    127.7     0
+    hover_only              667.2              31.5            28.5           0    266.8    20
+    gutter_only             666.5               8.1            18.3           0    105.7     0
+    hover_then_gutter       666.6               7.9            18.3           0     91.6     0
+
+The MECHANISM reproduces exactly -- twenty steps, twenty boundary events, twenty distinct targets,
+every zero-boundary arm on the floor, main-thread task ms doubling -- and the MAGNITUDE does not:
+667ms and zero long tasks here against the 1555.5ms and eleven long tasks recorded above. Absolute
+milliseconds on this fixture are host-bound, which the paragraph on drift already says; what is new
+is that the ratio moved too, so the 2.3x in the tables above is not a constant of the app. The
+harness agrees with the probe about it: run unmodified at the revision that introduced the two
+tables, the 300K carry-over scroll comes back at 666.5ms with zero long tasks, not the 1467.3ms
+and nine long tasks recorded below. Read every millisecond in this docstring as "which arms
+differ", never as "by how much". The arms are re-runnable and the numbers should be re-taken on
+the machine a claim is being made about.
 
 Two candidate mechanisms were eliminated by construction rather than by argument, and both are
 dead ends worth not repeating. Opening the menu leaves 112 `pointerdown` and 112 `pointermove`
@@ -156,30 +201,46 @@ So there are now two tables, and they are labelled:
                 scenario worth measuring. It is simply not what the word "scroll" means on its
                 own, so it no longer gets to be printed in a column called scroll.
 
-Preconditions are kept, contamination is not. The Shiki settle gate, `expandTools` and the hover
-that reveals the action bar before `menu` and `delete` all still run before the action they belong
-to, on the isolated page as well: they are the state the action is defined against, not residue
-from a different action.
+Preconditions are kept, contamination is not. The Shiki settle gate, `expandTools`, the hover that
+reveals the action bar before `menu` and `delete`, and the pointer placed on message content before
+`scroll` all still run before the action they belong to, on the isolated page as well: they are the
+state the action is defined against, not residue from a different action.
 
 READ THE `menu` AND `delete` ROWS WITH THAT IN MIND. Their precondition IS the hover, and the
 hover is the thing that costs 890ms of the scroll column. So isolation does not make those two
 rows hover-free and was never going to: a menu you have not hovered to reach is not a menu the
 user can open. What isolation buys them is freedom from EACH OTHER and from scroll, jump and
 reopen, which is real but is less than what it buys `scroll`, `keystroke` and `reopen`, whose
-isolated pages never hover at all. A future reader looking for the hover cost in these numbers
-should look at `scroll` isolated against `scroll` sequenced, which is the clean contrast, and not
-at `menu`.
+isolated pages never open a menu at all. A future reader looking for the boundary-event cost in
+these numbers should NOT look at `scroll` isolated against `scroll` sequenced: both now place the
+pointer on the conversation, so that contrast is residue and no longer the pointer. The clean
+contrast is scroll_predecessor_probe.py's `gutter_only` against its `hover_only`, which is what
+that file is for.
 
-Measured on this tree after the restructuring, chromium, 300K characters, medians of 3, the two
-tables now read:
+Measured on this tree, chromium, 300K characters, medians of 3, once with the scroll row as the
+restructuring first left it and once with the pointer precondition it should have had, same host,
+same settings, one run each:
 
-    scroll gesture ms   isolated 666.6, carry-over 1467.3
-    scroll frames >33ms isolated 0,     carry-over 9
-    scroll long tasks   isolated 0,     carry-over 9, totalling 1040ms
-    jump painted ms     isolated  33.4, carry-over   94.5
+    300K scroll        isolated before  isolated after  carry-over before  carry-over after
+    gesture ms                   665.7           652.1              666.5             666.9
+    longest stall ms               5.9            24.5               29.0              30.1
+    worst frame ms                17.7            19.2               27.7              25.7
+    frames over 33ms                 0               0                  0                 0
+    settle ms                    715.5           702.1              716.5             716.9
+    task ms (chromium)            80.7           225.7              254.6             260.2
+    jump painted ms               33.3            33.3               33.1              33.1
 
-The isolated scroll is 20 steps at the 33.3ms paint floor this run measured, to within a
-millisecond. There is nothing in it.
+Read the two isolated columns first: adding the pointer moves longest stall 5.9 -> 24.5 and
+chromium's task ms 80.7 -> 225.7, and moves nothing else. Then read the before row across: the
+harness's own two tables disagreed about the SAME gesture by 4.9x on longest stall, 5.9 against
+29.0, and that gap was not residue -- the carry-over page had the pointer on a message from
+repetition 2 onwards because the previous repetition's `delete` hover put it there, and the
+isolated page never had it at all. After the change the two agree, 24.5 against 30.1, which is
+what a residue-only difference is supposed to look like.
+
+The gesture itself is 20 steps at the 33.3ms paint floor in every one of those four columns, to
+within a few milliseconds. There is nothing in it, and there was nothing in it before either. What
+the pointer costs is jitter under one frame, not a slower scroll.
 
 Alongside the carry-over table, every action prints repetition 1 against the median of repetitions
 2..N. That one line is the whole defect made visible -- 666.9 against 949.9 on the 300K scroll --
@@ -936,6 +997,97 @@ def settle_and_expand(page) -> None:
         )
 
 
+POINTER_TARGET_JS = """([x, y]) => {
+  const v = window.__heavyThread.viewport();
+  const el = document.elementFromPoint(x, y);
+  if (!el) return { on_message: false, tag: "-" };
+  // The scroller ITSELF is the gutter: a point that hit-tests to the viewport element keeps the
+  // same target on every step, which is the cheap arm, not the one this precondition is for.
+  if (el === v) return { on_message: false, tag: "viewport" };
+  return {
+    on_message: Boolean(el.closest('[data-role="assistant"]')),
+    tag: el.tagName.toLowerCase(),
+  };
+}"""
+
+
+def place_pointer_over_message(page) -> dict:
+    """Put the REAL pointer on assistant-message content, which is where a wheel gesture has it.
+
+    A PRECONDITION of `scroll`, in the same sense that `reveal_last_action_bar` is a precondition
+    of `menu`: a wheel gesture with no pointer anywhere is not the gesture the row is named for.
+    Every isolated page is fresh and Playwright's mouse starts at (0, 0), so without this the
+    scroll arm measures a wheel event dispatched at a viewport whose cursor is parked in the
+    top-left gutter -- which is `gutter_only` in scroll_predecessor_probe.py, the arm that exists
+    precisely to be the artificial control.
+
+    SCROLL_JS dispatches its wheel on the viewport element directly, so the pointer does not steer
+    the scroll. What it steers is whether the engine re-hit-tests content moving under a stationary
+    cursor and fires pointerover / pointerout at a different element on every step, which is the
+    only thing that separates the two arms.
+
+    Measured on this tree, chromium, 300K characters, medians of 3, two arms back to back in one
+    session, twice each in the order as-is / on-content / on-content / as-is:
+
+        arm                          gesture ms  longest stall ms  worst frame ms  pointerover
+        pointer left at the origin        666.4               7.4            17.9            0
+        pointer over message content      651.0              37.3            29.3           21
+        pointer over message content      655.0              28.0            23.0           21
+        pointer left at the origin        665.5               7.6            17.8            0
+
+    scroll_predecessor_probe.py's own arms, same host, same session length, agree: `nothing` 666.7
+    gesture / 9.7 stall / 18.8 worst / 0 boundary events, `hover_only` 667.2 / 31.5 / 28.5 / 20,
+    `gutter_only` 666.5 / 8.1 / 18.3 / 0. So the boundary work is real and it is NOT free -- it is
+    3 to 4x on longest stall and about 1.5x on worst frame, and chromium's task ms goes 127.7 to
+    266.8 -- but on this host it never crosses one frame, so `gestureMs`, `settleMs` and
+    `frames over 33ms` do not move. Both readings matter and neither is quotable without the
+    other, which is why the row now runs the honest arm and prints its pointer proof beside it.
+
+    The verification is not decoration. A point that lands on the gutter makes this a second copy
+    of the cheap arm under the label of the expensive one, so what was hit is recorded per
+    repetition and `action_failures` rejects the run rather than publishing the number.
+    """
+    rect = page.evaluate(
+        """() => { const r = window.__heavyThread.viewport().getBoundingClientRect();
+            return { x: r.x, y: r.y, w: r.width, h: r.height }; }"""
+    )
+    got = {"on_message": False, "tag": "-"}
+    for down in (0.5, 0.35, 0.65, 0.25, 0.75):
+        for across in (0.5, 0.4, 0.6, 0.3):
+            x = rect["x"] + rect["w"] * across
+            y = rect["y"] + rect["h"] * down
+            page.mouse.move(x, y)
+            # The action bar is hover-revealed, so give the mount a beat to land OUTSIDE the
+            # window the recorder is about to open. It happens once, before a real user's gesture
+            # too; charging it to the gesture would be a different error in the same row.
+            page.wait_for_timeout(120)
+            got = page.evaluate(POINTER_TARGET_JS, [round(x), round(y)])
+            if got["on_message"]:
+                return {
+                    "pointer_on_message": True,
+                    "pointer_under": got["tag"],
+                    "pointer_at": f"{round(x)},{round(y)}",
+                }
+    # Recorded, not raised. A raise here is caught by measure_cell as a crashed cell and throws
+    # away the five actions that did work; the verdict below fails the run on this field instead
+    # and still prints everything else.
+    return {"pointer_on_message": False, "pointer_under": got["tag"], "pointer_at": None}
+
+
+def drive_scroll(page, cdp) -> dict:
+    """The scroll action with its pointer precondition, for BOTH runners.
+
+    One function rather than two call sites, because a precondition that runs in the isolated
+    table and not in the carry-over one makes the two tables measure different gestures, and the
+    difference between those two columns is then part residue and part a different action. Applied
+    in both, the columns differ only in residue, which is the one thing the pair is there to show.
+    """
+    placement = place_pointer_over_message(page)
+    row = drive(page, cdp, "scroll")
+    row.update(placement)
+    return row
+
+
 def reveal_last_action_bar(page) -> None:
     """Put the pointer on the last assistant message, which is what reveals its action bar.
 
@@ -978,7 +1130,10 @@ def isolated_repetitions(page, cdp, name: str) -> list[dict]:
         # is not in the DOM.
         if name in ("menu", "delete"):
             reveal_last_action_bar(page)
-        rows.append(drive(page, cdp, name))
+        # `scroll` needs one too, and needed one from the moment each action got its own page. A
+        # fresh page has never moved Playwright's mouse, so it sits at (0, 0) -- the scroller's
+        # gutter -- and the gesture then measures the arm the probe calls `gutter_only`.
+        rows.append(drive_scroll(page, cdp) if name == "scroll" else drive(page, cdp, name))
     return rows
 
 
@@ -992,7 +1147,12 @@ def sequenced_repetition(page, cdp) -> dict[str, dict]:
     rep: dict[str, dict] = {}
     settle_and_expand(page)
     rep["keystroke"] = drive(page, cdp, "keystroke")
-    rep["scroll"] = drive(page, cdp, "scroll")
+    # The ONE thing in this runner that is not the old sequence, and it is a precondition rather
+    # than a reset. Left out, the pointer is at (0, 0) on repetition 1 and over whatever the
+    # previous repetition's delete hover left it on from repetition 2 -- two different gestures
+    # inside one median, which is the defect class this file was restructured to remove. Nothing
+    # else here is reset; the residue is still the measurement.
+    rep["scroll"] = drive_scroll(page, cdp)
     rep["jump"] = drive(page, cdp, "jump")
     reveal_last_action_bar(page)
     rep["menu"] = drive(page, cdp, "menu")
@@ -1067,7 +1227,18 @@ def summarise(rows_by_action: dict[str, list[dict]]) -> dict[str, dict]:
         # interaction which did not occur. The numeric counterpart is median() above, which
         # returns None the moment any one repetition does rather than taking the median of the
         # rest; that is what keeps a headline timeout from being reported as a median of three.
-        for key in ("domText", "runtimeText", "bodyPointerEvents", "bodyPointerEventsAfterClose"):
+        for key in (
+            "domText",
+            "runtimeText",
+            "bodyPointerEvents",
+            "bodyPointerEventsAfterClose",
+            # Where the real pointer was for each scroll gesture. Same reason as the four above:
+            # a repetition whose pointer never reached message content measured the gutter arm
+            # and still put its timing into the median.
+            "pointer_on_message",
+            "pointer_under",
+            "pointer_at",
+        ):
             if key in rows[-1]:
                 merged[key] = rows[-1][key]
             values = [r.get(key) for r in rows]
@@ -1526,6 +1697,9 @@ TABLE_ROWS = TABLE_ROWS + (
     ("scroll gesture ms", _action("scroll", "gestureMs")),
     ("scroll settle ms", _action("scroll", "settleMs")),
     ("scroll px", _action("scroll", "scrolledPx")),
+    ("scroll pointer on message", _action("scroll", "pointer_on_message")),
+    ("scroll pointer under", _action("scroll", "pointer_under")),
+    ("scroll pointer at", _action("scroll", "pointer_at")),
     ("jump painted ms", _action("jump", "paintedMs")),
     ("jump settle ms", _action("jump", "settleMs")),
     ("jump px", _action("jump", "travelledPx")),
@@ -1940,6 +2114,25 @@ def action_failures(where: str, actions: dict, counts: dict, viewport: dict) -> 
     # the floor comparison only says this particular axis has no room to move, which
     # the growth report states per axis.
     scroll = actions["scroll"]
+    # The pointer, per repetition, not on the collapsed last one. A repetition whose pointer never
+    # reached message content measured the gutter arm -- which sits 3 to 4x lower on longest stall
+    # and about 1.5x lower on worst frame, measured on this tree -- and still put its timing into
+    # the median under a row labelled `scroll`.
+    if scroll.get("ran"):
+        off = [
+            index + 1
+            for index, value in enumerate(
+                scroll.get("pointer_on_message_per_repetition", [scroll.get("pointer_on_message")])
+            )
+            if value is not True
+        ]
+        if off:
+            failures.append(
+                f"{where} ran the scroll gesture with the pointer off message content on "
+                f"repetition(s) {off} (it hit {scroll.get('pointer_under')!r}); that is the "
+                "gutter arm, not a user wheel-scrolling a conversation, and it under-reports "
+                "longest stall and worst frame"
+            )
     # Equal travel at every size or the columns are not the same gesture.
     if scroll.get("ran") and scroll["scrolledPx"] < SCROLL_STEPS * SCROLL_STEP_PX * 0.9:
         failures.append(

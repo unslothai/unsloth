@@ -135,6 +135,9 @@ def clean_actions() -> dict:
             gestureMs = 300.0,
             settleMs = 400.0,
             scrolledPx = HARNESS.SCROLL_STEPS * HARNESS.SCROLL_STEP_PX,
+            pointer_on_message = True,
+            pointer_under = "p",
+            pointer_at = "720,450",
         ),
         "jump": clean_action(paintedMs = 90.0, settleMs = 200.0, landedAt = 0, travelledPx = 19000),
         "menu": clean_action(
@@ -190,6 +193,40 @@ def test_the_verdict_rejects_a_reopen_whose_unmount_was_never_seen() -> None:
     actions = clean_actions()
     actions["reopen"] = HARNESS.summarise({"reopen": rows})["reopen"]
     assert any("never saw the thread unmount" in f for f in failures(actions)), failures(actions)
+
+
+def scroll_row(on_message: bool, under: str) -> dict:
+    return {
+        "name": "scroll",
+        "ran": True,
+        "gestureMs": 300.0,
+        "settleMs": 400.0,
+        "scrolledPx": HARNESS.SCROLL_STEPS * HARNESS.SCROLL_STEP_PX,
+        "pointer_on_message": on_message,
+        "pointer_under": under,
+        "pointer_at": "720,450" if on_message else None,
+    }
+
+
+def test_the_verdict_rejects_a_scroll_whose_pointer_was_off_content_in_one_repetition() -> None:
+    # Playwright's mouse starts at (0, 0) on every fresh page, which in this fixture is the
+    # scroller's own gutter -- the arm scroll_predecessor_probe.py registers as `gutter_only` and
+    # keeps as the artificial control. Measured on this tree at 300K, medians of 3: gutter 7.4ms
+    # longest stall and 17.9ms worst frame against 37.3ms and 29.3ms with the pointer on the
+    # conversation. So a repetition that scrolled the gutter under-reports two of the four
+    # portable primaries by 3-4x and 1.5x, and it is inside the published median.
+    #
+    # Per repetition, because `summarise` keeps only the last one's copy of a non-numeric proof.
+    rows = [
+        scroll_row(True, "p"),
+        scroll_row(False, "viewport"),
+        scroll_row(True, "p"),
+    ]
+    actions = clean_actions()
+    actions["scroll"] = HARNESS.summarise({"scroll": rows})["scroll"]
+    assert any("with the pointer off message content on repetition(s) [2]" in f for f in failures(
+        actions
+    )), failures(actions)
 
 
 def test_the_verdict_rejects_an_action_that_never_settled() -> None:
