@@ -234,6 +234,11 @@ jobs:
           BASE_URL: http://127.0.0.1:18896
           PW_ART_DIR: logs/playwright
           STUDIO_UI_STRICT: '1'
+          # #9183: this job's runners are --no-torch with no MLX, so the
+          # self-heal can only pip-install mid-test and starve the 3 vCPU
+          # runner. The shared boot script stays neutral: mlx-ci NEEDS the
+          # repair path.
+          UNSLOTH_DISABLE_MLX_AUTOREPAIR: '1'
           # macos-15 free runner is 3 vCPU / 7 GB / no Metal-accel
           # available to llama.cpp from CI; gemma-3-270m turn latency
           # has been observed to crowd the 180s default. Triple it.
