@@ -178,6 +178,10 @@ export { pasteClipboardFiles } from "./utils/clipboard-files";
 export { extractYoutubeVideoId } from "./utils/youtube-url";
 export { YoutubeTranscriptPrompt } from "./components/youtube-transcript-prompt";
 export {
+  formatMcpToolName,
+  mcpServerFromProvenance,
+} from "./utils/mcp-tool-name";
+export {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentContentText,
   attachmentsPastedText,

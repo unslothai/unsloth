@@ -114,7 +114,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     deferred_nudge_text,
-    tool_event_provenance,
+    provisional_tool_provenance,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -21685,8 +21685,8 @@ class LlamaCppBackend:
                                                 "tool_name": current_name,
                                                 "tool_call_id": current_id,
                                                 "arguments": {},
-                                                "provenance": tool_event_provenance(
-                                                    provisional = True,
+                                                "provenance": provisional_tool_provenance(
+                                                    current_name
                                                 ),
                                             }
                                         # Stream argument text so the UI shows the code being
@@ -21794,8 +21794,8 @@ class LlamaCppBackend:
                                                             "tool_name": _sniffed,
                                                             "tool_call_id": _text_args_id,
                                                             "arguments": {},
-                                                            "provenance": tool_event_provenance(
-                                                                provisional = True,
+                                                            "provenance": provisional_tool_provenance(
+                                                                _sniffed
                                                             ),
                                                         }
                                                     yield {
@@ -22248,7 +22248,7 @@ class LlamaCppBackend:
                                     "tool_name": _pname,
                                     "tool_call_id": _pid,
                                     "result": "",
-                                    "provenance": tool_event_provenance(provisional = True),
+                                    "provenance": provisional_tool_provenance(_pname),
                                 }
                         # Merge metrics from prior tool iterations so they aren't dropped.
                         yield {"type": "status", "text": ""}
@@ -22564,7 +22564,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
 
                 # Clear tool status badge before next generation/final pass.
@@ -22592,7 +22592,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "Error: lost connection to llama-server before the tool call completed.",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
@@ -22607,7 +22607,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "Error: the tool call was interrupted before it completed.",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
                 raise
 
