@@ -38,7 +38,12 @@ export function modelReadsSamplingSeed(
   activeGgufVariant: string | null | undefined,
   ggufContextLength: number | null | undefined,
   checkpoint: string | null | undefined,
+  activeModel?: Pick<ChatModelSummary, "isAudio" | "hasAudioInput"> | null,
 ): boolean {
+  // An audio-output model answers through generateAudio, whose request carries no seed.
+  if (activeModel?.isAudio && !activeModel.hasAudioInput) {
+    return false;
+  }
   return (
     activeGgufVariant != null ||
     ggufContextLength != null ||

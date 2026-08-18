@@ -146,6 +146,21 @@ test("a seed reaches only the backend that reads one", () => {
   // Transformers and MLX take the field and ignore it, so neither is offered one.
   assert.ok(!modelReadsSamplingSeed(null, null, "unsloth/Llama-4-8B"));
   assert.ok(!modelReadsSamplingSeed(null, null, undefined));
+  // An audio-output GGUF answers through generateAudio, whose request carries no seed, so
+  // the control would promise a reproducibility it cannot deliver on that path.
+  assert.ok(
+    !modelReadsSamplingSeed("Q4_K_M", 8192, "unsloth/TTS-GGUF", {
+      isAudio: true,
+      hasAudioInput: false,
+    }),
+  );
+  // A model that takes audio IN still decodes through llama-server, so it keeps the field.
+  assert.ok(
+    modelReadsSamplingSeed("Q4_K_M", 8192, "unsloth/Voxtral-GGUF", {
+      isAudio: true,
+      hasAudioInput: true,
+    }),
+  );
 });
 
 test("the panel offers the seed only where llama-server reads it", () => {
@@ -154,6 +169,8 @@ test("the panel offers the seed only where llama-server reads it", () => {
     sheet,
     /const showSeed =\s*!isExternalModel &&\s*modelReadsSamplingSeed\(/,
   );
+  // The panel passes the active model, or the audio-output exclusion never fires for it.
+  assert.match(sheet, /activeModelSummary,\s*\);/);
   // type="number" reports an entry the engine cannot parse as "", which would clear
   // the pin with no error. chat-providers-dialog documents the same trap.
   const field = slice(sheet, "{showSeed ? (", 'aria-label="Seed"');
