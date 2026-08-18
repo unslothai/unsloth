@@ -83,6 +83,24 @@ def expand(page) -> None:
         page.wait_for_function(hv.EXPANDED_PANES_GATE_JS, arg = n, timeout = 600_000)
 
 
+def settle_and_expand(page) -> None:
+    """Expand FIRST, then wait for the highlighter -- the harness's order, not the reverse.
+
+    `playwright_heavy_thread.settle_and_expand` documents why, and the probe has to agree with it
+    or it is not restoring the fixture the harness measures. Radix unmounts collapsed content, so
+    the tool result panes -- two of the seven fences a content cycle produces, and CODE -- do not
+    exist until `expandTools()` has run. Settling first therefore waits on the fences that were
+    already there and THEN mounts a fresh batch of unhighlighted ones, whose Shiki work plus the
+    cards' own open animation land in whatever is timed next. In this file that is the measured
+    successor, so the predecessor's rebuild was being charged to the arm under test.
+
+    The seed path below already had this order. The three restore paths did not, which is exactly
+    the inconsistency this collapses into one helper.
+    """
+    expand(page)
+    settled(page)
+
+
 def hover_last(page) -> None:
     page.evaluate(
         """() => { const m = window.__heavyThread.lastAssistantMessage();
@@ -406,8 +424,7 @@ def before_reopen(page):
             [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
         ),
     )
-    settled(page)
-    expand(page)
+    settle_and_expand(page)
     return out
 
 
@@ -426,8 +443,7 @@ def before_delete_reopen_keystroke(page):
             [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
         ),
     )
-    settled(page)
-    expand(page)
+    settle_and_expand(page)
     typed = checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))
     return {"delete": deleted, "reopen": reopened, "keystroke": typed}
 
@@ -592,8 +608,7 @@ def main() -> int:
                         arg = plan["messages"],
                         timeout = 1_200_000,
                     )
-                    expand(page)
-                    settled(page)
+                    settle_and_expand(page)
                     rows = []
                     applied = None
                     fixture = []
@@ -688,8 +703,7 @@ def main() -> int:
                             # A restore and a re-open both throw away every highlighted fence and
                             # collapse every tool card, so re-settle and re-expand before the next
                             # repetition rather than letting arm state drift silently.
-                            settled(page)
-                            expand(page)
+                            settle_and_expand(page)
 
                     drift = fixture_drift(fixture)
                     if drift:

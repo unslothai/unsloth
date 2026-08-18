@@ -523,3 +523,59 @@ def test_the_shared_pane_gate_reads_the_counter_that_starts_at_zero() -> None:
         1
     ), f"the shared gate does not read codeExecutionPanes: {gate.group(1)!r}"
     assert "collapsibleOutputs" not in gate.group(1)
+
+
+# ── the fixture rebuild uses the harness's order, not the reverse ─────
+
+
+def test_the_probe_expands_before_it_waits_for_the_highlighter() -> None:
+    """`settled(page)` then `expand(page)` is the wrong way round, and it was in three places.
+
+    Radix unmounts collapsed content, so the two tool-result fences per content cycle do not exist
+    until `expandTools()` has run. Waiting for the highlighter first gates on the fences that were
+    already mounted and THEN mounts a fresh unhighlighted batch, whose Shiki work plus the cards'
+    own open animation land in the next thing timed. In this file the next thing timed is the
+    measured successor, so the predecessor's rebuild was charged to the arm under test -- which is
+    the single effect this whole probe exists to attribute.
+
+    The harness states the rule in `settle_and_expand`'s own comment ("EXPAND FIRST, then wait for
+    the highlighter"), and the probe's seed path already followed it while its three restore paths
+    did not.
+    """
+    source = Path(PROBE.__file__).read_text(encoding = "utf-8")
+    body = source.split("def settle_and_expand", 1)
+    assert len(body) == 2, "the probe no longer has a settle_and_expand helper"
+    helper = body[1].split("\ndef ", 1)[0]
+    assert helper.index("expand(page)") < helper.index("settled(page)"), (
+        "settle_and_expand waits for the highlighter before expanding, which is the ordering the "
+        "harness documents as wrong"
+    )
+
+    # And no call site may still do it by hand in the other order. Checked over the whole file
+    # rather than the three known functions, so a fourth one added later is caught too.
+    lines = [ln.strip() for ln in source.splitlines()]
+    for i, ln in enumerate(lines[:-1]):
+        if ln == "settled(page)":
+            assert lines[i + 1] != "expand(page)", (
+                f"line {i + 1} of the probe still settles before expanding; route it through "
+                f"settle_and_expand instead"
+            )
+
+
+def test_every_fixture_rebuild_in_the_probe_goes_through_one_helper() -> None:
+    """The seed path and the restore paths must not be able to drift apart again.
+
+    They already had, which is how the wrong order survived: one site was right and three were
+    wrong, and nothing compared them.
+    """
+    source = Path(PROBE.__file__).read_text(encoding = "utf-8")
+    after_helper = source.split("def hover_last", 1)[1]
+    assert "settle_and_expand(page)" in after_helper, "no call site uses the shared helper"
+    strays = [
+        ln.strip()
+        for ln in after_helper.splitlines()
+        if ln.strip() in {"settled(page)", "expand(page)"}
+    ]
+    assert not strays, (
+        f"the probe still rebuilds the fixture by hand outside settle_and_expand: {strays}"
+    )
