@@ -9,6 +9,7 @@ import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef } from "react";
 import {
+  announceProjectSourcesUpdated,
   invalidateProjectSources,
   listProjectDocuments,
   subscribeProjectSourcesUpdated,
@@ -30,14 +31,16 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
   const { documents, loading, uploading, refresh, upload, remove } =
     useRagDocuments({ type: "project", projectId }, lister);
 
-  // Invalidate the sources probe before and after each mutation: a chat sent
-  // mid-upload must not cache "no sources" for the probe's TTL.
+  // Invalidate the sources probe before each mutation so a chat sent mid-upload
+  // cannot cache "no sources" for the probe's TTL, and announce after it, which
+  // is the half other instances and other tabs listen for. Announcing before
+  // would refetch and resurrect the row this panel has already dropped.
   const handleItems = useCallback(
     async (items: RagUploadItem[]) => {
       if (items.length === 0) return;
       invalidateProjectSources(projectId);
       await upload(items);
-      invalidateProjectSources(projectId);
+      announceProjectSourcesUpdated(projectId);
     },
     [projectId, upload],
   );
@@ -67,12 +70,12 @@ export function ProjectSourcesPanel({ projectId }: { projectId: string }) {
     async (documentId: string) => {
       invalidateProjectSources(projectId);
       await remove(documentId);
-      invalidateProjectSources(projectId);
+      announceProjectSourcesUpdated(projectId);
     },
     [projectId, remove],
   );
   const handleLinkedSourcesChanged = useCallback(() => {
-    invalidateProjectSources(projectId);
+    announceProjectSourcesUpdated(projectId);
     void refresh({ quiet: true });
   }, [projectId, refresh]);
 

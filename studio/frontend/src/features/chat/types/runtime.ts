@@ -23,6 +23,12 @@ export interface InferenceParams {
   fastMode?: boolean;
 }
 
+/** The params that survive a reload. `checkpoint` names the model rather than
+ * being one of its settings, so it is not one of them. */
+export type PersistedInferenceParams = Partial<
+  Omit<InferenceParams, "checkpoint">
+>;
+
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   temperature: 0.6,
   topP: 0.95,
