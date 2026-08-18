@@ -2057,9 +2057,7 @@ def test_the_newest_revision_survives_a_tie_and_the_oldest_one_still_does(conn):
     """
     values = _revisions(8)
 
-    found = conversation_archive.recall(
-        THREAD, f"what is the current value of {VARIABLE}", top_k = 4
-    )
+    found = conversation_archive.recall(THREAD, f"what is the current value of {VARIABLE}", top_k = 4)
 
     assert found is not None
     text, _sources = found

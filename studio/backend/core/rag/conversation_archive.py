@@ -870,7 +870,12 @@ def _lexical_pass(conn, scope: str, query: str, model, k: int, expression) -> li
     return _ends_first_within_ties(
         conn,
         retrieval.retrieve_hybrid(
-            conn, scope, query, k = k, model_name = model, mode = "lexical",
+            conn,
+            scope,
+            query,
+            k = k,
+            model_name = model,
+            mode = "lexical",
             lexical_query = expression,
         ),
     )
