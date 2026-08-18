@@ -2063,7 +2063,6 @@ def _tomllib():
     """
     if sys.version_info >= (3, 11):
         import tomllib
-
         return tomllib
     return pytest.importorskip("tomli")
 
