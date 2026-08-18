@@ -95,6 +95,12 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
+from utils.lan_access_settings import (
+    lan_access_status,
+    set_lan_access_auto_start,
+    start_lan_access,
+    stop_lan_access,
+)
 from utils.remote_access_settings import (
     DEFAULT_REMOTE_ACCESS_AUTO_START,
     remote_access_status,
@@ -1799,6 +1805,82 @@ def update_remote_access_auto_start(
         payload.enabled,
     )
     return _remote_access_response(request)
+
+
+class LanAccessAutoStartPayload(BaseModel):
+    enabled: StrictBool
+
+
+class LanAccessResponse(BaseModel):
+    state: Literal["off", "online", "error"]
+    urls: list[str] = []
+    public_urls: list[str] = []
+    error: Optional[str] = None
+    auto_start: bool
+    managed_by: Optional[Literal["launch", "settings"]] = None
+    can_start: bool
+    can_stop: bool
+    block_reason: Optional[str] = None
+    serves_web_ui: bool = True
+
+
+def _lan_access_response(request: Request) -> LanAccessResponse:
+    return LanAccessResponse(**lan_access_status(request.app))
+
+
+@router.get("/lan-access", response_model = LanAccessResponse)
+def get_lan_access(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    return _lan_access_response(request)
+
+
+@router.post("/lan-access/start", response_model = LanAccessResponse)
+def start_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**start_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_start_requested subject=%s", current_subject)
+    return response
+
+
+@router.post("/lan-access/stop", response_model = LanAccessResponse)
+def stop_lan_access_route(
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    try:
+        response = LanAccessResponse(**stop_lan_access(request.app))
+    except RuntimeError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    logger.info("settings.lan_access_stop_requested subject=%s", current_subject)
+    return response
+
+
+@router.put("/lan-access/auto-start", response_model = LanAccessResponse)
+def update_lan_access_auto_start(
+    request: Request,
+    payload: LanAccessAutoStartPayload,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> LanAccessResponse:
+    if bool(getattr(request.app.state, "lan_access_is_colab", False)):
+        raise HTTPException(status_code = 409, detail = "colab")
+    set_lan_access_auto_start(payload.enabled)
+    logger.info(
+        "settings.lan_access_auto_start_updated subject=%s enabled=%s",
+        current_subject,
+        payload.enabled,
+    )
+    return _lan_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)
