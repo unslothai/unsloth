@@ -3572,6 +3572,25 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
     # The same CPU host with `auto` must sail through: delegating the choice is not a contract.
     (tmp_path / "m.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
+
+    # Hold the worker thread at its first instruction, so `loaded` CANNOT be True yet.
+    # begin_load documents "Returns at once", and the assertion below used to race the
+    # daemon thread for it: on an idle host the caller wins and it passes, on a busy one
+    # the thread finishes first and it fails with `assert True is False`. Blocking the
+    # worker makes the same claim unraceable. The refusal this test is named for happens
+    # in begin_load's validation, before the thread is spawned, so stubbing the body
+    # costs no coverage.
+    release = threading.Event()
+    entered = threading.Event()
+    worker: dict = {}
+
+    def _blocked_run_load(self, **kwargs):
+        worker["thread"] = threading.current_thread()
+        entered.set()
+        release.wait(30)
+
+    monkeypatch.setattr(DiffusionBackend, "_run_load", _blocked_run_load)
+
     started = backend.begin_load(
         str(tmp_path),
         gguf_filename = "m.gguf",
@@ -3579,7 +3598,15 @@ def test_begin_load_never_refuses_auto(fake_runtime, tmp_path, monkeypatch):
         model_kind = "gguf",
         transformer_quant = "auto",
     )
-    assert started["loaded"] is False  # returns immediately; the load runs on a thread
+    assert started["loaded"] is False  # returned without waiting on the load
+    assert entered.wait(30), "begin_load never started the load thread"
+    # The load is still in flight, which is the whole claim. Checked from the caller,
+    # not with an assert inside the worker: an assertion that fails on a non-main
+    # thread does not fail the test, so that version reported a pass against a
+    # begin_load mutated to join its own thread.
+    assert worker["thread"].is_alive(), "begin_load waited for the load instead of returning"
+    release.set()
+    worker["thread"].join(30)
 
 
 def test_transformer_quant_falls_back_to_gguf_on_failure(
@@ -4132,9 +4159,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         hf_token = None,
         transformer = None,
         text_encoder = None,
+        # Spelled out rather than swallowed by a **kwargs: this double exists to pin the exact
+        # production signature, and this branch never sees the guarded pipe_kwargs, so the keyword
+        # that keeps the no-download promise has to be one _assemble_pipe really passes.
+        local_files_only = False,
     ):
         calls["base"] = base
         calls["transformer"] = transformer
+        calls["local_files_only"] = local_files_only
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
@@ -4158,7 +4190,14 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
     )
     assert isinstance(pipe, Pipe)
     # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
-    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    assert calls == {
+        "base": "unsloth/Krea-2-Turbo",
+        "transformer": marker,
+        "device": "cuda:0",
+        # Default here (a direct call), but PASSED rather than left to the loader's own default:
+        # the parameter this test binds is what an API-initiated load flips.
+        "local_files_only": False,
+    }
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(

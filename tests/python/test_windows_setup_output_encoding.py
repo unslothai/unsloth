@@ -50,6 +50,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from functools import lru_cache
 from pathlib import Path
 
@@ -161,7 +162,16 @@ def _run_capturing_bytes(
     is how the CLI spawns setup for ``unsloth studio update``. Piped stdout is
     required to reproduce, and is captured as bytes, never decoded here.
     """
-    tmp = REPO_ROOT / "tests" / "python" / f"_{stem}_probe_{int(use_command_shape)}.ps1"
+    # Unique per call. The name used to be (stem, shape), which several tests
+    # share, so under pytest-xdist one case could unlink the script after another
+    # had written it and before its pwsh child opened it. pwsh is installed on
+    # ubuntu-latest, so these do not skip there and would race for real.
+    tmp = (
+        REPO_ROOT
+        / "tests"
+        / "python"
+        / f"_{stem}_probe_{int(use_command_shape)}_{uuid.uuid4().hex}.ps1"
+    )
     tmp.write_text(script, encoding = "utf-8")
     try:
         base = [_PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass"]
