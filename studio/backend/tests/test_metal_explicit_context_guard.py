@@ -437,14 +437,12 @@ class TestTheContextCanArriveByAnotherDoor:
         with pytest.raises(RuntimeError, match = "unified"):
             _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = list(extra))
 
-    def test_a_pass_through_context_under_the_ceiling_still_launches(
-        self, tmp_path, monkeypatch
-    ):
+    def test_a_pass_through_context_under_the_ceiling_still_launches(self, tmp_path, monkeypatch):
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "4096"])["cmd"]
         assert _ctx_values(cmd)[-1] == "4096"
 
     def test_a_zero_pass_through_is_floored_not_refused(self, tmp_path, monkeypatch):
-        """"-c 0" is read as non-explicit and handled by the existing floor (#5118),
+        """ "-c 0" is read as non-explicit and handled by the existing floor (#5118),
         so it must not turn into a refusal."""
         cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, extra_args = ["-c", "0"])["cmd"]
         assert _ctx_values(cmd) and _ctx_values(cmd)[-1] != "0"
