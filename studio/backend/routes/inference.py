@@ -2805,13 +2805,14 @@ def _tools_on_by_launcher_default_only(payload) -> bool:
 def _request_states_tool_intent(payload) -> bool:
     """True when a request states its own tool intent through the standard
     OpenAI fields: a `tool_choice: "none"` withdrawal, its own tool catalog,
-    tool-result history to continue, or a `response_format` contract the tool
-    loop would break. Such a request did not omit the question, so the launcher
-    default must not answer it.
+    tool-result history to continue, or a `response_format` of any kind. Such a
+    request did not omit the question, so the launcher default must not answer it.
 
-    Mirrors what `_takes_tool_passthrough` already withholds from the policy on
-    the GGUF router, including its `bool(payload.tools)` reading of the catalog:
-    an empty `tools: []` reads the same as an omitted one on both paths."""
+    Wider than what `_takes_tool_passthrough` does with the same field, and
+    deliberately: the router asks whether decoding must be constrained, while a
+    client that named an output contract at all has said enough about the reply
+    for a launcher default not to reshape it. Both read the catalog the same way,
+    so an empty `tools: []` reads as omitted on either path."""
     if getattr(payload, "tool_choice", None) == "none":
         return True
     if payload.tools:
@@ -2900,7 +2901,10 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     supports_passthrough = getattr(llama_backend, "supports_tool_passthrough", supports_tools)
     if supports_passthrough and has_client_contract:
         return True
-    return _extract_response_format(payload) is not None
+    # Only a format that constrains decoding needs llama-server's grammar engine.
+    # `{"type": "text"}` names the default, so routing it here would withdraw
+    # whatever the ordinary path offers -- n > 1 among them -- for nothing.
+    return _response_format_constrains_decoding(payload)
 
 
 def _passthrough_client_tools(payload):
@@ -13442,6 +13446,14 @@ async def openai_chat_completions(
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
+            if _response_format_constrains_decoding(payload):
+                # This branch returns before the routing that decides a contract's
+                # fate, and no grammar can constrain a waveform, so it refuses here.
+                _raise_unsupported_openai_parameter(
+                    "response_format",
+                    "response_format cannot be honored by an audio reply; send the "
+                    "request to a text model to use guided decoding.",
+                )
             _reject_audio_output_continuation(payload)
             return await _monitored_generate_audio(
                 model_name,
@@ -13464,6 +13476,11 @@ async def openai_chat_completions(
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
             _raise_unsupported_n("streaming chat completions")
+        if _response_format_constrains_decoding(payload):
+            _raise_unsupported_openai_parameter(
+                "response_format",
+                "response_format needs the llama.cpp grammar engine; load a GGUF model to use it.",
+            )
 
         # ── Audio TTS path: auto-route to audio generation ────
         # (Whisper is ASR not TTS -- handled below in audio input path)
@@ -13933,6 +13950,22 @@ async def openai_chat_completions(
             # discovery + opt-in left it genuinely empty.
             if not tools_to_use:
                 use_tools = False
+
+        if _response_format_constrains_decoding(payload):
+            # Only an explicit request for Unsloth's tool loop reaches here with a
+            # contract; every other GGUF request took the passthrough above. Neither
+            # the loop nor the generator below forwards one, so serving it would
+            # answer with text that violates it silently.
+            raise _reject(
+                400,
+                openai_error_body(
+                    "response_format is not supported with Unsloth tool execution; "
+                    "send the request without enable_tools to use guided decoding.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = "response_format",
+                ),
+            )
 
         if use_tools:
             # permission_mode ask/auto require the confirm gate for Unsloth's own
@@ -18060,7 +18093,6 @@ def _build_chat_request(
 
     response_format = _responses_text_format(payload.text)
     if response_format is not None:
-        # Lands in model_extra, where _extract_response_format reads it.
         chat_kwargs["response_format"] = response_format
 
     return ChatCompletionRequest(**chat_kwargs)
@@ -22095,17 +22127,27 @@ async def _openai_messages_for_gguf_chat_async(payload, is_vision: bool) -> tupl
 
 
 def _extract_response_format(payload):
-    """Return the ``response_format`` field on an incoming ChatCompletionRequest
-    (or None). The model uses ``extra="allow"`` so pydantic stashes unknown
-    top-level fields in ``model_extra``; OpenAI-SDK clients spread ``extra_body``
-    into the request body top level, where guided-decoding recipes park their
-    JSON-schema response_format.
+    """The request's ``response_format``, or None if it named none.
+
+    Read by attribute rather than off the chat model's field, so a request type
+    that does not declare one is read the same way.
     """
-    extra = getattr(payload, "model_extra", None)
-    if not isinstance(extra, dict):
-        return None
-    rf = extra.get("response_format")
+    rf = getattr(payload, "response_format", None)
     return rf if isinstance(rf, dict) else None
+
+
+def _response_format_constrains_decoding(payload) -> bool:
+    """Whether the request's ``response_format`` needs a grammar engine.
+
+    ``{"type": "text"}`` is the default spelled out, so it constrains nothing and a
+    backend without a grammar engine serves it exactly as it serves no field. That
+    exact object is the only one read that way: the field takes any object, and
+    anything else -- a type this build does not know, or a text format carrying
+    members it does not know -- is a contract the caller expects to be kept, so it
+    goes where such a contract can be answered or rejected rather than dropped.
+    """
+    rf = _extract_response_format(payload)
+    return isinstance(rf, dict) and rf != {"type": "text"}
 
 
 def _build_openai_passthrough_body(

@@ -492,9 +492,11 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
 
 def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
     """An empty stop sequence is dropped rather than forwarded: it would match at
-    position 0 and end every turn before its first token."""
+    position 0 and end every turn before its first token. ``{"type": "text"}``
+    constrains nothing, so refusing it for want of a grammar engine would turn a
+    request this backend serves into a 400."""
     backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
-    payload = _request(stop = ["END", ""])
+    payload = _request(stop = ["END", ""], response_format = {"type": "text"})
     body = _json_body(_call(payload, monkeypatch, backend, supports_tools = False))
     assert backend.calls[0]["stop"] == ["END"]
     assert body["choices"][0]["message"]["content"] == "hi"
