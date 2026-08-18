@@ -2048,3 +2048,57 @@ def test_a_stalled_pool_exits_2_not_1(tmp_path, monkeypatch, capsys):
     assert rc == 2, f"a stalled scan must exit 2 (incomplete), got {rc}"
     assert "SCAN INCOMPLETE" in captured.err
     assert "scan stalled" in captured.err
+
+
+def test_digest_pinned_packages_are_version_pinned():
+    """A package whose baseline entries pin a file digest must not float in requirements.
+
+    The two mechanisms are only coherent together. `file_sha256` deliberately reopens a
+    reviewed CRITICAL on ANY edit to the file, because the evidence records a network
+    call and not its destination, so nothing weaker can tell a benign refactor from an
+    added credential send. A `>=` spec then hands the choice of file bytes to whatever
+    upstream published most recently, so the gate turns red on release day rather than
+    on a change anyone here made.
+
+    That is not hypothetical: `openai>=2.7.2` floated onto 3.2.0, which touched all four
+    pinned files, and the extras shard of the security audit went red on main with four
+    non-baselined CRITICALs that were the same reviewed-benign patterns as before.
+
+    Pinning the spec makes the bump deliberate, which is the point: the reviewer who
+    raises the version is the one who re-runs --write-baseline and re-reads the diff.
+    """
+    import json
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2]
+    baseline = json.loads(
+        (root / "scripts" / "scan_packages_baseline.json").read_text(encoding = "utf-8")
+    )
+    pinned_packages = {
+        sp._norm_pkg(e["package"])
+        for e in baseline["entries"]
+        if e.get("file_sha256")
+    }
+    assert pinned_packages, "no digest-pinned entries; this guard would be vacuous"
+
+    req_dir = root / "studio" / "backend" / "requirements"
+    offenders = []
+    for req in sorted(req_dir.glob("*.txt")):
+        for lineno, raw in enumerate(req.read_text(encoding = "utf-8").splitlines(), 1):
+            spec = raw.split("#", 1)[0].strip()
+            if not spec or spec.startswith("-") or "git+" in spec:
+                continue
+            # Name is everything before the first comparator / marker / extra.
+            name = re.split(r"[<>=!~;\[]", spec, maxsplit = 1)[0].strip()
+            if sp._norm_pkg(name) not in pinned_packages:
+                continue
+            # `==` on the bare name, not `>=`, `~=` or a bare requirement.
+            if not re.search(rf"^{re.escape(name)}\s*==", spec):
+                offenders.append(f"{req.name}:{lineno}: {spec}")
+
+    assert not offenders, (
+        "these packages carry digest-pinned baseline entries but float in requirements, "
+        "so the security audit goes red whenever upstream publishes: "
+        + "; ".join(offenders)
+    )
