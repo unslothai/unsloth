@@ -3432,14 +3432,20 @@ export function ChatPage({
           render their own copy and the shared-composer menu would have none. It
           also portals to body, so gate it on `active` like the tour above. */}
       {active && <BypassPermissionsConfirmDialog />}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is actually on
+          screen, and the thread viewport adds it to the top padding it already
+          reserves for the header. Without it the notice is an opaque bar over
+          space nothing reserved, and the top of the first message reads
+          underneath it. Declared here, on the nearest ancestor of BOTH the
+          notice and the viewport, so the two cannot disagree about its height. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-0 right-[10px] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div

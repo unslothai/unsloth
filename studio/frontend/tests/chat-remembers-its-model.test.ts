@@ -19,6 +19,7 @@ const notice = read("../src/features/chat/components/chat-model-notice.tsx");
 const page = read("../src/features/chat/chat-page.tsx");
 const sidebar = read("../src/components/app-sidebar.tsx");
 const items = read("../src/features/chat/hooks/use-chat-sidebar-items.ts");
+const thread = read("../src/components/assistant-ui/thread.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -112,7 +113,10 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
 
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  const div = slice(body, '<div className="', '">');
+  // Anchored on the marker attribute, not on `<div className="`: the bar carries
+  // other attributes now, and the shape of the opening tag is not the contract.
+  const tag = slice(body, "data-chat-model-notice", "\n    >");
+  const div = slice(tag, 'className="', '"');
   // Positioned, so it is not painted under the header.
   assert.match(div, /\babsolute\b/);
   // Offset by the SAME header height the header, its fade and the drop overlay use,
@@ -129,6 +133,39 @@ test("the notice clears the chat header instead of rendering underneath it", () 
   // An overlay over the scrolling conversation must be opaque, or messages read
   // through it. bg-muted/40 was fine only while the bar took its own row.
   assert.doesNotMatch(div, /bg-muted\//, "a translucent overlay lets messages show through");
+});
+
+test("the conversation reserves the space the notice overlay takes", () => {
+  // Measured on a built Studio before this: the viewport reserved exactly the
+  // header's 48px, the notice sat opaque at y 48..85, and the first message's own
+  // rect started at y=48 -- elementFromPoint returned the notice for every sample
+  // across its band, in a 2-turn chat AND in a 40-turn chat scrolled to the top.
+  // An overlay that reserves nothing hides content; the header gets away with it
+  // only because chat-header-fade dissolves what slides under it.
+
+  // One declaration of the height, on the nearest ancestor of both, so the bar and
+  // the padding cannot drift apart.
+  assert.match(
+    page,
+    /has-\[\[data-chat-model-notice\]\]:\[--studio-chat-notice-height:2\.25rem\]/,
+  );
+  // The notice claims the same variable rather than a padding of its own.
+  assert.match(notice, /data-chat-model-notice=""/);
+  assert.match(notice, /h-\[var\(--studio-chat-notice-height,2\.25rem\)\]/);
+  assert.doesNotMatch(
+    notice.slice(notice.indexOf("data-chat-model-notice")),
+    /py-1\.5/,
+    "a fixed height and a vertical padding would disagree about the bar's size",
+  );
+  // The viewport adds it to what it already reserved for the header, defaulting to
+  // 0px so every surface without a notice keeps exactly the padding it had.
+  assert.match(
+    thread,
+    /pt-\[calc\(var\(--studio-content-top-inset,0px\)\+48px\+var\(--studio-chat-notice-height,0px\)\)\]/,
+  );
+  // And the fade moves down with it, or it would dissolve behind the opaque bar.
+  const fade = slice(page, "chat-header-fade", '"');
+  assert.match(fade, /\+var\(--studio-chat-notice-height,0px\)\)\]/);
 });
 
 test("the sidebar label cannot collide with the spinner or the unread dot", () => {
