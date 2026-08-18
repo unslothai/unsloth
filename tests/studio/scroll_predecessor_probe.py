@@ -389,8 +389,17 @@ def before_delete(page):
     return checked("delete", page.evaluate(hv.DELETE_JS, SETTLE))
 
 
+# REOPEN_JS destructures [timeoutMs, settleMs, graceMs, probeEveryMs]. Passing only the two
+# timeouts left graceMs undefined, so quietUntilIdle's `now - lastActivity >= graceMs` compared
+# against NaN, never became true, and every reopen arm sat out the full 120s timeout instead of
+# returning when Shiki went idle. That is ~16 minutes added to a four-repetition sweep, and it
+# put a two-minute idle gap before each affected scroll, so those arms were not measuring the
+# immediate-predecessor sequence they claim to.
 def before_reopen(page):
-    out = checked("reopen", page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE]))
+    out = checked("reopen", page.evaluate(
+        hv.REOPEN_JS,
+        [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
+    ))
     settled(page)
     expand(page)
     return out
@@ -404,7 +413,10 @@ def before_delete_reopen_keystroke(page):
     """
     hover_last(page)
     deleted = checked("delete", page.evaluate(hv.DELETE_JS, SETTLE))
-    reopened = checked("reopen", page.evaluate(hv.REOPEN_JS, [SETTLE, SETTLE]))
+    reopened = checked("reopen", page.evaluate(
+        hv.REOPEN_JS,
+        [SETTLE, SETTLE, hv.HIGHLIGHT_GRACE_MS, hv.HIGHLIGHT_PROBE_MS],
+    ))
     settled(page)
     expand(page)
     typed = checked("keystroke", page.evaluate(hv.KEYSTROKE_JS, hv.KEYSTROKES))

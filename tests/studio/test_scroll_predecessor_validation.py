@@ -325,3 +325,44 @@ def test_the_boundary_counter_is_armed_after_the_anchor() -> None:
         if "page.evaluate(install_boundary_counter)" in line and "after_setup" not in line
     ]
     assert not stray, f"the counter is still armed before the anchor as well: {stray}"
+
+def test_the_probe_passes_reopen_every_argument_it_destructures() -> None:
+    """A short argument list to REOPEN_JS is silent: the missing ones read as undefined.
+
+    REOPEN_JS destructures [timeoutMs, settleMs, graceMs, probeEveryMs] and hands graceMs to
+    quietUntilIdle, which returns when `now - lastActivity >= graceMs`. Undefined makes that
+    comparison NaN, which is never true, so the call cannot return early and instead burns the
+    whole settle timeout. Nothing throws and the probe still reports a number, so the only thing
+    that catches it is counting the arguments.
+    """
+    import re
+
+    harness = HARNESS_SOURCE
+    sig = re.search(r"REOPEN_JS = \"\"\"\nasync \(\[([^\]]*)\]\)", harness)
+    assert sig, "REOPEN_JS no longer opens with a destructured argument list"
+    arity = len([a for a in sig.group(1).split(",") if a.strip()])
+    assert arity == 4, f"REOPEN_JS now takes {arity} arguments, so this guard needs rewriting"
+
+    calls = re.findall(r"hv\.REOPEN_JS,\s*\[(.*?)\]", SOURCE, re.S)
+    assert calls, "the probe no longer calls REOPEN_JS, so this guard is vacuous"
+    for args in calls:
+        n = len([a for a in args.split(",") if a.strip()])
+        assert n == arity, (
+            f"the probe passes {n} arguments to REOPEN_JS but it destructures {arity}: "
+            f"the missing ones arrive as undefined and quietUntilIdle waits out the full "
+            f"timeout instead of returning when highlighting goes idle"
+        )
+
+
+def test_the_predecessor_probe_itself_triggers_the_workflow() -> None:
+    """The contract test being registered is not enough: it imports the probe.
+
+    A pull request that edits only scroll_predecessor_probe.py would otherwise skip this
+    workflow entirely, so the contract tests that validate the probe never run against the
+    change they exist to check.
+    """
+    wf = (WORKDIR / ".github" / "workflows" / "studio-frontend-ci.yml").read_text(encoding = "utf-8")
+    assert "- 'tests/studio/scroll_predecessor_probe.py'" in wf, (
+        "scroll_predecessor_probe.py is absent from the workflow's pull_request.paths, so a "
+        "change to the probe alone does not run the contract tests that validate it"
+    )
