@@ -46,7 +46,7 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # "custom" is any user-supplied base_url and a strict endpoint 400s on an unknown field.
 # "openai" is absent because it never reaches this body: it routes to /v1/responses,
 # which reports usage on its own.
-_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
+_USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "orcarouter", "kimi"})
 
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the

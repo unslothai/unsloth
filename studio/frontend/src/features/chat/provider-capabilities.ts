@@ -158,7 +158,7 @@ export function getExternalMaxOutputTokens(
 /**
  * The published per-model cap, or null when nothing documents this id. No table entry
  * targets a generic Custom connection, so those always read as undocumented. OpenRouter
- * `provider/model` ids have the prefix stripped before matching.
+ * and OrcaRouter `provider/model` ids have the prefix stripped before matching.
  */
 function _documentedMaxOutputTokens(
   providerType: string | null | undefined,
@@ -168,11 +168,12 @@ function _documentedMaxOutputTokens(
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
   const stripped =
-    providerType === "openrouter" && normalized.includes("/")
+    (providerType === "openrouter" || providerType === "orcarouter") &&
+    normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
       : normalized;
   const effectiveProvider =
-    providerType === "openrouter"
+    providerType === "openrouter" || providerType === "orcarouter"
       ? _inferProviderFromOpenrouterId(normalized) ?? providerType
       : providerType === "openai_codex"
         ? "openai_codex"
@@ -655,6 +656,9 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
   // OpenRouter silently drops params the target model does not support, so we
   // surface every knob and let the gateway handle the per-model fan-out.
   openrouter: ALL_SUPPORTED,
+  // OrcaRouter is an OpenAI-compatible gateway with the same provider/model
+  // routing contract as OpenRouter — surface every knob and let it fan out.
+  orcarouter: ALL_SUPPORTED,
   // Local OpenAI-compat connections go through the OpenAI backend path, but
   // vLLM/Ollama/llama.cpp users often want top_k/min_p/repetition controls, so
   // be permissive.

@@ -404,6 +404,31 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "orcarouter": {
+        "display_name": "OrcaRouter",
+        "base_url": "https://api.orcarouter.ai/v1",
+        # Curated picker list (locked, not live /models). Model ids use the
+        # same provider/model format as OpenRouter.
+        "default_models": [
+            "orcarouter/auto",
+            "openai/gpt-5.5",
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4.6",
+            "anthropic/claude-opus-4.8",
+            "google/gemini-3.1-flash-lite",
+            "deepseek/deepseek-v4-flash-0731",
+            "grok/grok-4.3",
+            "qwen/qwen3.7-max",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "studio_tools": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        "notes": "OpenAI-compatible gateway routing to models across major providers; model ids use the provider/model format.",
+        "model_list_mode": "curated",
+    },
 }
 
 

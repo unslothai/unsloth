@@ -112,6 +112,7 @@ const VISION_CAPABLE_PROVIDER_TYPES = new Set<string>([
   "anthropic",
   "gemini",
   "openrouter",
+  "orcarouter",
 ]);
 
 // false = known text-only, true = known vision, null = unknown (default-allow).
@@ -385,7 +386,7 @@ export function allowsManualModelIdsWithCatalog(
   providerType: string | null | undefined,
 ): boolean {
   if (!providerType) return false;
-  if (providerType === "openrouter") return true;
+  if (providerType === "openrouter" || providerType === "orcarouter") return true;
   return supportsRemoteModelCatalog(providerType);
 }
 

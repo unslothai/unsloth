@@ -20,6 +20,7 @@ const PROVIDER_LOGO_EXT: Record<string, "svg" | "png" | "jpg"> = {
   kimi: "jpg",
   qwen: "png",
   openrouter: "svg",
+  orcarouter: "svg",
   vllm: "svg",
   ollama: "svg",
   llama_cpp: "svg",
@@ -41,7 +42,7 @@ interface ApiProviderLogoProps {
   title?: string;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "openrouter", "orcarouter"]);
 
 /** Provider logo from `public/provider-logos/`; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
