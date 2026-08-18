@@ -966,7 +966,14 @@ def wait_for_highlighting_settled(page, timeout_ms: int) -> None:
     )
 
 
-def run_action(page, cdp, name: str, script: str, arg, after_setup = None) -> dict:
+def run_action(
+    page,
+    cdp,
+    name: str,
+    script: str,
+    arg,
+    after_setup = None,
+) -> dict:
     """One action, with the portable recorder inside it and the CDP counters bracketing it.
 
     `after_setup` runs in the one window that is after the anchor and before anything starts
@@ -1053,7 +1060,12 @@ ACTION_SCRIPTS = {
 }
 
 
-def drive(page, cdp, name: str, after_setup = None) -> dict:
+def drive(
+    page,
+    cdp,
+    name: str,
+    after_setup = None,
+) -> dict:
     script, arg = ACTION_SCRIPTS[name]
     return run_action(page, cdp, name, script, arg, after_setup = after_setup)
 
