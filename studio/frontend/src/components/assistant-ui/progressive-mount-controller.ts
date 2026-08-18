@@ -47,10 +47,15 @@ export const MIN_PROGRESSIVE_MESSAGES = 40;
  * A window that undershoots what the user can see paints a gap, so the number that matters is
  * not how many viewports of the #9016 fixture 16 rows cover -- that fixture's messages are
  * large, and any answer it gives is flattering -- but how tall 16 of the SHORTEST rows this app
- * can produce are. A one-word message is 103px in this thread: a bubble, or a body plus an
- * action bar, plus the row's own margins. Sixteen of them are 1639px, and with the viewport's
- * own 48px top inset and 165px bottom spacer that fills every viewport up to 1890px of
- * clientHeight.
+ * can produce are. One-word rows are not one height: they alternate 126px for a user row and
+ * 80px for an assistant row, because the two roles carry different padding. Sixteen of them,
+ * eight of each, measure 1643px, and with the viewport's own 48px top inset and 165px bottom
+ * spacer that fills every viewport up to 1890px of clientHeight.
+ *
+ * Use the pair, not an average. 103px is the mean of 126 and 80 and it reproduces the total
+ * only for an EVEN row count; at 15 or 17 rows, or any partial slice, rows-times-103 drifts by
+ * up to 23px because the set is unbalanced. INITIAL_MESSAGES is even, which is the only reason
+ * the floor below can be quoted as a single number at all.
  *
  * Measured rather than derived, on a 144-message thread whose last 24 messages are one-word
  * replies, three rounds a point, Chromium 151 / Firefox / WebKit: at 900, 1080, 1440, 1800, 1840
