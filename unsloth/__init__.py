@@ -202,7 +202,11 @@ if _IS_MLX:
     import types as _types
     import warnings as _warnings
 
-    __version__ = unsloth_zoo.__version__
+    # unsloth_zoo is a different distribution, pinned `>=`, so borrowing its number
+    # reported neither the installed core nor the latest zoo. `_version` imports nothing,
+    # so this stays torch-free while agreeing with the GPU path and `pip show unsloth`.
+    from ._version import __version__
+
     DEVICE_TYPE = "mlx"
     _MLX_TRAINER_ACCEPTS_VAR_KWARGS = False
     _MLX_TRAINER_SUPPORTED_KWARGS = frozenset()

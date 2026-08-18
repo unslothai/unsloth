@@ -326,13 +326,25 @@ def _scope_for_owner(scope_type: str, scope_id: str) -> str:
     )
 
 
-def _require_scope_owner(scope_type: str, scope_id: str) -> None:
+def _require_scope_owner(
+    scope_type: str,
+    scope_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """404 unless the scope's owner still exists.
+
+    ``conn`` reuses a connection the caller already holds: sqlite-vec loads per
+    connection, so opening a second one to read a single row pays that twice.
+    """
     if scope_type == "knowledge_base":
-        conn = _rag_connection()
-        try:
+        if conn is not None:
             exists = store.get_kb(conn, scope_id) is not None
-        finally:
-            conn.close()
+        else:
+            owner_conn = _rag_connection()
+            try:
+                exists = store.get_kb(owner_conn, scope_id) is not None
+            finally:
+                owner_conn.close()
         detail = "Knowledge base not found"
     else:
         from storage.studio_db import get_chat_project
@@ -887,22 +899,25 @@ def folder_job_events(
 @router.post("/search")
 def search(payload: SearchRequest, subject: str = Depends(get_current_subject)) -> dict:
     _require_rag()
-    if payload.kb_id:
-        _require_scope_owner("knowledge_base", payload.kb_id)
-        scope = store.kb_scope(payload.kb_id)
-    else:
-        scopes = []
-        if payload.project_id:
-            _require_scope_owner("project", payload.project_id)
-            scopes.append(store.project_scope(payload.project_id))
-        if payload.thread_id:
-            scopes.append(store.thread_scope(payload.thread_id))
-        if not scopes:
-            raise HTTPException(status_code = 400, detail = "Provide kb_id, project_id, or thread_id")
-        scope = scopes[0] if len(scopes) == 1 else scopes
-
+    # One connection for the whole request; the ownership check reads a single row.
     conn = _rag_connection()
     try:
+        if payload.kb_id:
+            _require_scope_owner("knowledge_base", payload.kb_id, conn)
+            scope = store.kb_scope(payload.kb_id)
+        else:
+            scopes = []
+            if payload.project_id:
+                _require_scope_owner("project", payload.project_id, conn)
+                scopes.append(store.project_scope(payload.project_id))
+            if payload.thread_id:
+                scopes.append(store.thread_scope(payload.thread_id))
+            if not scopes:
+                raise HTTPException(
+                    status_code = 400, detail = "Provide kb_id, project_id, or thread_id"
+                )
+            scope = scopes[0] if len(scopes) == 1 else scopes
+
         if payload.mode == "lexical":
             hits = retrieval.retrieve_lexical(conn, scope, payload.query, payload.top_k)
         elif payload.mode == "dense":

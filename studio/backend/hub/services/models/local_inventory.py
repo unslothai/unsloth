@@ -19,7 +19,7 @@ from loggers import get_logger
 
 from hub.schemas.inventory import LocalModelInfo, LocalModelListResponse, ModelFormat
 from hub.storage.scan_folders import (
-    add_scan_folder,
+    add_scan_folder_with_status,
     list_scan_folders,
     remove_scan_folder,
 )
@@ -929,6 +929,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         # These rows feed the same pickers as /api/models/local. Classified inside the
         # shared worker so retrying waiters do not repeat GGUF metadata reads, and only
         # for a response that is actually about to be served.
+        # Classification reads GGUF headers, so keep it off the event loop too.
         try:
             from routes.models import _local_model_task
             models = [
@@ -946,7 +947,11 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         response = await _scan_local_models_response(models_dir, custom_folders, sources)
         if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
             raise _LocalCacheChanged(response)
-        return classify(response)
+        classified = await asyncio.to_thread(classify, response)
+        # That hop is an await point of its own, so a mutation can land after the check above.
+        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+            raise _LocalCacheChanged(response)
+        return classified
 
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None
@@ -979,7 +984,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     # current. Answer with the freshest one (the loop only reaches here through
     # the retry path, so there is always one) instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
-    return classify(superseded)
+    return await asyncio.to_thread(classify, superseded)
 
 
 def get_models_folder_response() -> dict:
@@ -1013,15 +1018,24 @@ def get_scan_folders_response() -> dict:
 
 def add_scan_folder_response(path: str) -> dict:
     try:
-        folder = add_scan_folder(_coerce_scan_folder_path(path))
+        folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, path)
         raise HTTPException(status_code = 400, detail = str(e))
     logger.info("Scan folder added: %s", folder.get("path"))
+    if inserted:
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+        invalidate_index()
+        warm_index_soon()
     return folder
 
 
 def remove_scan_folder_response(folder_id: int) -> dict:
-    remove_scan_folder(folder_id)
-    logger.info("Scan folder removed: id=%s", folder_id)
+    removed = remove_scan_folder(folder_id)
+    if removed:
+        logger.info("Scan folder removed: id=%s", folder_id)
+        from core.inference.local_model_resolver import invalidate_index, warm_index_soon
+
+        invalidate_index()
+        warm_index_soon()
     return {"ok": True}

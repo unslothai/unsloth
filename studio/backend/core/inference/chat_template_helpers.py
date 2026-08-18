@@ -1983,18 +1983,32 @@ class ReasoningChannelNormalizer:
     available to downstream parsers.
     """
 
-    def __init__(self, opening_marker: str, closing_marker: str):
+    def __init__(
+        self,
+        opening_marker: str,
+        closing_marker: str,
+        *,
+        in_reasoning: bool = False,
+    ):
         self._opening_marker = opening_marker
         self._closing_marker = closing_marker
         self._buffer = ""
-        self._in_reasoning = False
+        self._in_reasoning = in_reasoning
         self._reasoning_done = False
+        # Only a generated opener carries the protocol newline; from the prompt it is
+        # already consumed, so a streamed newline is content.
         self._skip_opening_newline = False
+        # A prompt-supplied opener never reaches the stream, so <think> is owed to the
+        # first delta carrying text.
+        self._pending_open = in_reasoning
 
     def feed(self, text: str) -> str:
         """Consume a raw text delta and return the stable canonical delta."""
         self._buffer += text or ""
         output: list[str] = []
+        if self._pending_open and self._buffer:
+            output.append(_THINK_OPEN)
+            self._pending_open = False
         while self._buffer:
             if self._reasoning_done:
                 output.append(self._buffer)
@@ -2031,7 +2045,10 @@ class ReasoningChannelNormalizer:
         """Flush a naturally completed stream and close an open think block."""
         output = self.drain()
         if self._in_reasoning:
-            output += _THINK_CLOSE
+            # Nothing generated: no block at all, rather than a close with no opener.
+            if not self._pending_open:
+                output += _THINK_CLOSE
+            self._pending_open = False
             self._in_reasoning = False
             self._reasoning_done = True
         return output
@@ -2043,12 +2060,46 @@ class ReasoningChannelNormalizer:
         return output
 
 
+def prompt_opens_reasoning_channel(
+    prompt: Optional[str],
+    markers: Optional[tuple[str, str]],
+    continued: bool = False,
+) -> bool:
+    """Whether a rendered prompt *ends* by opening the native reasoning channel.
+
+    Gemma-style templates end a post-tool generation prompt with the opener, so
+    generation starts inside reasoning and emits only the closing marker.
+
+    Only the tail decides -- the rule ``strip_open_reasoning_prefill`` already uses
+    for ``<think>``. Position alone cannot tell a template's own prefill from
+    replayed history, which keeps this markup through
+    ``neutralize_control_markup_in_messages``, so an opener with content after it
+    reads as closed; otherwise history could hide a plain answer in a think block.
+    The cost is that a spliced continuation resuming inside a channel also reads as
+    closed, leaving its reasoning visible as it was before.
+
+    ``continued`` means this render resumed a trailing assistant turn, so the prompt
+    ends on client text whose tail proves nothing. It is the render's own state, not
+    the request flag, which outlives the continuation: the next tool-loop pass keeps
+    the flag but renders an ordinary post-tool prompt that must still be read.
+    """
+    if continued or not prompt or not markers:
+        return False
+    opening_marker = markers[0]
+    opened_at = prompt.rfind(opening_marker)
+    if opened_at < 0:
+        return False
+    return not prompt[opened_at + len(opening_marker) :].strip()
+
+
 def normalize_reasoning_snapshots(
     stream,
     tokenizer = None,
     cancel_event = None,
     markers: Optional[tuple[str, str]] = None,
     tools = None,
+    prompt: Optional[str] = None,
+    continued: bool = False,
 ):
     """Normalize a prefix-monotonic cumulative text stream when supported."""
     markers = markers or detect_reasoning_channel_markers(tokenizer, tools = tools)
@@ -2056,7 +2107,10 @@ def normalize_reasoning_snapshots(
         yield from stream
         return
 
-    normalizer = ReasoningChannelNormalizer(*markers)
+    normalizer = ReasoningChannelNormalizer(
+        *markers,
+        in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
+    )
     raw_output = ""
     normalized_output = ""
     for snapshot in stream:

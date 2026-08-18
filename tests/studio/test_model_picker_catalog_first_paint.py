@@ -34,8 +34,10 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # Chat has no catalog: leave it on the listing.
     assert "if (!task) return [];" in seed
     # Same format policy as the listing rows, so nothing vanishes when one lands.
-    assert "isRecommendableFormat(id, isG, isMac)" in seed
+    assert "taskCatalogFormatMatches(" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
+    # The recommendable gate now runs in `keep`, over seeds and listing rows alike.
+    assert "isRecommendable: isRecommendableFormat(r.id, r.isGguf, isMac)," in source
     # Device fit reads the catalog size, not an id "<n>B" guess.
     assert "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined," in seed
 
@@ -48,7 +50,7 @@ def test_listing_takes_over_each_id_once_it_reports_it():
 
     # orderRecommendedRows hands a seed over only to a row that survived `keep`:
     # keying on the raw result set dropped curated rows the filters rejected.
-    assert "return orderRecommendedRows({" in rows
+    assert "orderRecommendedRows({" in rows
     assert "seeds: catalogSeedRows," in rows
     assert "results: recommendedSearch.results," in rows
     assert "keep,\n      deviceFiltered,\n      fits,\n    });" in rows
@@ -57,10 +59,10 @@ def test_listing_takes_over_each_id_once_it_reports_it():
 
 def test_bottom_spinner_shows_only_while_a_page_is_in_flight():
     source = _source()
-    start = source.index("{recommendedSearch.hasMore && (")
+    start = source.index("{recommendedHasMore && (")
     block = source[start : start + 700]
 
     # The sentinel still mounts on hasMore, so paging continues...
     assert '<div ref={recommendedSentinelRef} className="h-px" />' in block
     # ...but the spinner is gated on the in-flight flag.
-    assert "{recommendedSearch.isLoadingMore ? (" in block
+    assert "{recommendedIsLoadingMore ? (" in block

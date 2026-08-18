@@ -558,15 +558,16 @@ def test_linux_vulkan_health_glob_matches_bare_cpu_lib():
         (None, None, None, False),
         ("vulkan", None, "vulkan", True),
         (" VULKAN ", None, "vulkan", True),
-        ("auto", "1", None, True),
+        ("auto", "1", "auto", False),
         (None, "true", None, True),
         (None, "on", None, True),
-        ("auto", None, None, False),
+        ("auto", None, "auto", False),
         ("cpu", "0", "cpu", False),
-        ("hip", "1", "hip", False),
-        ("rocm", "on", "hip", False),
-        (" HIP ", "1", "hip", False),
-        (" ROCM ", "1", "hip", False),
+        ("cuda", "1", "cuda", False),
+        ("hip", "1", "rocm", False),
+        ("rocm", "on", "rocm", False),
+        (" HIP ", "1", "rocm", False),
+        (" ROCM ", "1", "rocm", False),
     ],
 )
 def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
@@ -574,7 +575,8 @@ def test_force_vulkan_requested_accepts_public_selector_and_legacy_alias(
 ):
     # UNSLOTH_LLAMA_CPP_BACKEND is the public selector; a recognized non-vulkan
     # value is authoritative, so it opts out even against a stale legacy alias.
-    # auto/unset/unknown leave the backend unpinned so selection stays automatic.
+    # "auto" clears a choice and outranks the legacy Vulkan alias.
+    # hip and rocm share one canonical marker value.
     for name, value in (
         ("UNSLOTH_LLAMA_CPP_BACKEND", backend),
         ("UNSLOTH_FORCE_VULKAN", legacy),
@@ -604,7 +606,8 @@ def test_forced_vulkan_filters_cpu_fallback_before_validation():
         source_label = "upstream",
         install_kind = "linux-cpu",
     )
-    assert ilp._vulkan_only_attempts([vulkan, cpu]) == [vulkan]
+    assert ilp._backend_only_attempts([vulkan, cpu], "vulkan") == [vulkan]
+    assert ilp._backend_only_attempts([vulkan, cpu], "cpu") == [cpu]
 
 
 def test_forced_vulkan_skips_cpu_only_release_plans():
@@ -629,7 +632,7 @@ def test_forced_vulkan_skips_cpu_only_release_plans():
         ilp.InstallReleasePlan("latest", "b9924", "b9924", [vulkan], SimpleNamespace()),
     ]
 
-    filtered = ilp._vulkan_only_release_plans(plans)
+    filtered = ilp._backend_only_release_plans(plans, "vulkan")
 
     assert [plan.release_tag for plan in filtered] == ["b9924"]
     assert filtered[0].attempts == [vulkan]
@@ -706,7 +709,7 @@ def test_forced_vulkan_linux_arm64_still_resolves_a_vulkan_bundle():
         ["llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz", "llama-b9925-bin-ubuntu-arm64.tar.gz"],
     )
     plan = ilp.direct_upstream_release_plan(release, routed, repo, "latest")
-    filtered = ilp._vulkan_only_release_plans([plan])
+    filtered = ilp._backend_only_release_plans([plan], "vulkan")
 
     assert [attempt.name for attempt in filtered[0].attempts] == [
         "llama-b9925-bin-ubuntu-vulkan-arm64.tar.gz"
@@ -860,20 +863,21 @@ def test_cpu_backend_env_forces_cpu_in_direct_install(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "flags, expect_force, expect_persist",
+    "flags, expect_force, expect_backend",
     [
-        ([], False, False),
-        # Automatic/transient last resort (arm64 GPU-build recovery): drops GPU but
-        # does NOT persist, so a later update heals to a GPU bundle (#6097).
-        (["--cpu-fallback"], True, False),
-        # Deliberate CPU-only (UNSLOTH_LLAMA_CPP_BACKEND=cpu): drops GPU AND persists so
-        # the updater re-asserts it and never revives the Intel iGPU crash (#7213).
-        (["--force-cpu"], True, True),
-        (["--cpu-fallback", "--force-cpu"], True, True),
+        ([], False, None),
+        # Transient CPU recovery does not persist (#6097).
+        (["--cpu-fallback"], True, None),
+        # Deliberate CPU selection persists (#7213).
+        (["--force-cpu"], False, "cpu"),
+        (["--cpu-fallback", "--force-cpu"], True, "cpu"),
+        (["--llama-backend", "vulkan"], False, "vulkan"),
+        # An explicit request outranks the legacy flag spelling of another one.
+        (["--llama-backend", "cuda", "--force-cpu"], False, "cuda"),
     ],
 )
-def test_cli_cpu_flags_thread_force_and_persist(
-    monkeypatch, tmp_path, flags, expect_force, expect_persist
+def test_cli_cpu_flags_thread_force_and_backend(
+    monkeypatch, tmp_path, flags, expect_force, expect_backend
 ):
     captured = {}
     monkeypatch.setattr(ilp, "install_prebuilt", lambda **kw: captured.update(kw))
@@ -884,13 +888,13 @@ def test_cli_cpu_flags_thread_force_and_persist(
     )
     assert ilp.main() == ilp.EXIT_SUCCESS
     assert captured["force_cpu"] is expect_force
-    assert captured["persist_force_cpu"] is expect_persist
+    assert captured["llama_backend"] == expect_backend
 
 
 @pytest.mark.parametrize(
     "existing, requested, expected",
     [
-        # A deliberate --force-cpu on top of a naturally-installed CPU bundle (same
+        # A deliberate CPU choice on top of a naturally-installed CPU bundle (same
         # asset, install skipped) must still flip the marker to true (#7213).
         (False, True, True),
         (None, True, True),
@@ -900,22 +904,54 @@ def test_cli_cpu_flags_thread_force_and_persist(
         (True, False, False),
     ],
 )
-def test_sync_marker_force_cpu(tmp_path, existing, requested, expected):
+def test_sync_marker_selection_records_force_cpu(tmp_path, existing, requested, expected):
     marker = {"tag": "b9585", "asset": "llama-b9585-bin-ubuntu-x64.tar.gz"}
     if existing is not None:
         marker["force_cpu"] = existing
     marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(json.dumps(marker))
-    ilp.sync_marker_force_cpu(tmp_path, requested)
+    ilp.sync_marker_selection(
+        tmp_path,
+        choice = _choice("linux-cpu", "llama-b9585-bin-ubuntu-x64.tar.gz"),
+        backend_request = "cpu" if requested else "auto",
+        persist_force_cpu = requested,
+    )
     written = json.loads(marker_path.read_text())
     assert written["force_cpu"] is expected
     # Unrelated fields are preserved.
     assert written["asset"] == "llama-b9585-bin-ubuntu-x64.tar.gz"
 
 
-def test_sync_marker_force_cpu_missing_marker_is_noop(tmp_path):
+def test_sync_marker_selection_records_the_backend_of_a_reused_bundle(tmp_path):
+    """A switch can resolve to the bundle already installed -- CPU-forcing a host
+    whose detected pick was already CPU. The bundle is right, but the recorded
+    choice is not, and only that stops the next update re-detecting it away."""
+    marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
+    marker_path.write_text(
+        json.dumps({"tag": "b9585", "asset": "cpu.tar.gz", "backend_request": "auto"})
+    )
+
+    ilp.sync_marker_selection(
+        tmp_path,
+        choice = _choice("linux-cpu", "cpu.tar.gz"),
+        backend_request = "cpu",
+        persist_force_cpu = True,
+    )
+
+    written = json.loads(marker_path.read_text())
+    assert written["backend_request"] == "cpu"
+    assert written["backend"] == "cpu"
+    assert written["force_cpu"] is True
+
+
+def test_sync_marker_selection_missing_marker_is_noop(tmp_path):
     # No marker (or unreadable) must not crash the reuse path.
-    ilp.sync_marker_force_cpu(tmp_path, True)
+    ilp.sync_marker_selection(
+        tmp_path,
+        choice = _choice("linux-cpu", "cpu.tar.gz"),
+        backend_request = "cpu",
+        persist_force_cpu = True,
+    )
     assert not (tmp_path / "UNSLOTH_PREBUILT_INFO.json").exists()
 
 
@@ -1972,16 +2008,27 @@ def test_a_remembered_arch_never_outranks_a_live_probe(monkeypatch):
     assert ilp._active_rocm_gfx_target(ilp._apply_host_overrides(probed)) == "gfx1100"
 
 
+def _sync_gfx(install_dir, legacy_backend, rocm_gfx):
+    """sync_marker_selection with only the routing arch in play."""
+    ilp.sync_marker_selection(
+        install_dir,
+        choice = _choice("windows-vulkan", "win-vulkan.zip"),
+        backend_request = "auto",
+        persist_llama_backend = legacy_backend,
+        rocm_gfx = rocm_gfx,
+    )
+
+
 def test_reusing_an_install_still_records_the_routing_gfx(tmp_path):
     """The reuse paths skip write_prebuilt_metadata, so they must sync it too."""
     marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(json.dumps({"llama_backend": "auto", "asset": "win-vulkan.zip"}))
 
-    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+    _sync_gfx(tmp_path, "auto", "gfx1034")
     assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
 
     # Nothing to record leaves the marker untouched.
-    ilp.sync_marker_rocm_gfx(tmp_path, None)
+    _sync_gfx(tmp_path, "auto", None)
     assert json.loads(marker_path.read_text())["rocm_gfx"] == "gfx1034"
 
 
@@ -1992,7 +2039,7 @@ def test_only_the_automatic_route_records_a_routing_gfx(tmp_path, backend):
     marker_path = tmp_path / "UNSLOTH_PREBUILT_INFO.json"
     marker_path.write_text(json.dumps({"llama_backend": backend, "asset": "win-hip.zip"}))
 
-    ilp.sync_marker_rocm_gfx(tmp_path, "gfx1034")
+    _sync_gfx(tmp_path, backend, "gfx1034")
 
     assert "rocm_gfx" not in json.loads(marker_path.read_text())
 

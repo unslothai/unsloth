@@ -3,6 +3,8 @@
 
 """Focused reproduction for Hugging Face's process-unique partial filenames."""
 
+import os
+import time
 from types import SimpleNamespace
 
 from hub.services import snapshot_progress
@@ -46,6 +48,19 @@ def test_registry_groups_duplicate_process_unique_writers_by_blob(monkeypatch, t
     )
 
     assert download_registry.incomplete_blob_hashes("model", "Org/Model") == {_BLOB_HASH}
+    # Nonce partials are refetched rather than resumed, so none of those bytes are bytes the
+    # next attempt gets to skip. Their grouping is still asserted, one blob not two.
+    assert (
+        download_registry.existing_blob_bytes(
+            "model",
+            "Org/Model",
+            frozenset({_BLOB_HASH}),
+        )
+        == 0
+    )
+
+    # The same grouping where the bytes DO count: a legacy partial under a writer that appends.
+    monkeypatch.setattr(download_registry, "partial_is_resumable", lambda _name: True)
     assert (
         download_registry.existing_blob_bytes(
             "model",
@@ -359,3 +374,38 @@ def test_finalized_blob_supersedes_an_orphaned_partial(monkeypatch, tmp_path):
     assert result["downloaded_bytes"] == 100
     assert result["complete_on_disk"] is True
     assert result["progress"] == 1.0
+
+
+def test_progress_is_stable_across_which_racer_wrote_last(monkeypatch, tmp_path):
+    """Two genuinely live writers must not make the bar jump between leader and straggler."""
+    entry = tmp_path / "models--Org--Model-GGUF"
+    blobs = entry / "blobs"
+    blobs.mkdir(parents = True)
+    leader = blobs / f"{_BLOB_HASH}.11111111.incomplete"
+    leader.write_bytes(b"x" * 80)
+    straggler = blobs / f"{_BLOB_HASH}.22222222.incomplete"
+    straggler.write_bytes(b"x" * 10)
+
+    monkeypatch.setattr(
+        snapshot_progress,
+        "preferred_repo_cache_dirs",
+        lambda *_args, **_kwargs: [entry],
+    )
+
+    def _read():
+        return snapshot_progress.compute_snapshot_progress(
+            repo_type = "model",
+            repo_id = "Org/Model-GGUF",
+            job_key = "model:org/model-gguf#q4_k_m",
+            expected_bytes = 100,
+            hf_token = None,
+            registry = _running_registry(),
+            metadata_resolver = lambda *_args: (100, frozenset({_BLOB_HASH})),
+            variant = "Q4_K_M",
+        )
+
+    now = time.time()
+    for newest in (leader, straggler):
+        # Whichever of them happened to write last, the answer has to be the same one.
+        os.utime(newest, (now, now))
+        assert _read()["downloaded_bytes"] == 80

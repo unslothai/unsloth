@@ -15,6 +15,7 @@ files, so downloads run the shared worker twice.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import socket
 import subprocess
@@ -38,9 +39,11 @@ from core.inference.stt_sidecar import (
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
+    SttTranscriptionCancelledError,
     _SelectedHubFile,
     _capture_stt_hub_cache,
     _claim_stt_repository,
+    _close_connection_on_cancel,
     _decode_audio_bounded,
     _downloaded_file_bytes,
     _fallback_revisions,
@@ -54,6 +57,10 @@ from core.inference.stt_sidecar import (
 )
 
 logger = get_logger(__name__)
+
+# A blocking unload comes from training claiming the VRAM. Bounded so training is not
+# stalled by a long recording, but long enough that a normal transcription finishes.
+_ACTIVE_REQUEST_DRAIN_TIMEOUT = 30.0
 
 
 @dataclass(frozen = True)
@@ -314,6 +321,10 @@ class _MtmdDownloadState:
                 "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
+                # Which model the cancel applies to. "model" goes None once the worker
+                # thread stops, so a settled cancellation was indistinguishable from an
+                # unrelated one and a deferred load restarted the whole download.
+                "cancelled_model": self._model_id if self._cancelled else None,
                 "bytes_total": self._total_bytes if downloading else None,
             }
             captured = (
@@ -548,6 +559,7 @@ class MtmdSttSidecar:
         # training. Kept so a dictation after the run does not stay on CPU.
         self._gpu_disabled = False
         self._load_cancel_event: Optional[threading.Event] = None
+        self._load_owner_cancel_event: Optional[threading.Event] = None
         self._update_in_progress = False
         self._keep_alive_seconds = keep_alive_seconds
         self._idle_timer: Optional[threading.Timer] = None
@@ -615,15 +627,87 @@ class MtmdSttSidecar:
             self._port = None
             self._model_id = None
 
-    def unload(self) -> None:
+    def _drain_active_requests(self, deadline: float) -> None:
+        """Wait, bounded, for in-flight transcriptions to finish.
+
+        Never called while holding ``_lock``: `transcribe` claims ``_active_requests``
+        under that lock, so waiting there would block the very request being waited on.
+        """
+        while self._active_requests and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+    def _holds_expected_model(self, expected: Optional[str]) -> bool:
+        """Whether the resident model is the one the caller claimed. Call under ``_lock``.
+
+        A caller that owns a specific model must not release whatever happens to be
+        resident: another surface can switch the engine between the ownership check and
+        the request reaching the sidecar.
+        """
+        if expected is None:
+            return True
+        current = self._model_id
+        if current is None:
+            return False
+        if current == expected:
+            return True
+        try:
+            return current == resolve_mtmd_model_id(expected)
+        except Exception:  # noqa: BLE001 - an unresolvable name is not this model
+            return False
+
+    def unload(
+        self,
+        wait: bool = True,
+        expected_model: Optional[str] = None,
+    ) -> None:
+        """Release the resident model. ``wait=False`` skips a sidecar mid-request.
+
+        `transcribe` runs outside ``_lock`` and counts itself in ``_active_requests``, so
+        that, not the lock, is what says busy here. ``expected_model`` scopes the release
+        to one model, compared under the lock.
+        """
+        if not wait and (self.is_loading() or self._active_requests):
+            return
+        # A blocking caller is training claiming the VRAM, so this cannot wait forever, but
+        # `wait=True` still must not kill llama-server under a live transcription and throw
+        # the recording away. Bounded window, then proceed.
+        drain_deadline = time.monotonic() + _ACTIVE_REQUEST_DRAIN_TIMEOUT
+        if wait:
+            self._drain_active_requests(drain_deadline)
         # A startup has not assigned _process yet, so releasing alone would let
         # it finish and republish the model that was just unloaded. Cancel and
         # settle outside _lock: load() holds _start_lock across startup and
         # takes _lock inside it, so holding _lock here would invert them.
         self.cancel_pending_load()
         self.wait_for_load_to_settle()
-        with self._lock:
-            self._release_locked()
+        while True:
+            if not self._lock.acquire(blocking = wait):
+                return
+            try:
+                # Recheck under the lock. `transcribe` claims _active_requests while holding
+                # it, so a request starting between the drain above and this acquire would
+                # otherwise have llama-server killed underneath it and lose the recording.
+                if not self._holds_expected_model(expected_model):
+                    return
+                busy = bool(self._active_requests)
+                if busy and not wait:
+                    return
+                if not busy or time.monotonic() >= drain_deadline:
+                    if busy:
+                        logger.warning(
+                            "mtmd STT still had %d active request(s) after %.0fs; "
+                            "releasing anyway",
+                            self._active_requests,
+                            _ACTIVE_REQUEST_DRAIN_TIMEOUT,
+                        )
+                    self._release_locked()
+                    return
+            finally:
+                self._lock.release()
+            # Drained outside the lock, then the release is retried under it. A blocking
+            # unload that found the sidecar busy only after acquiring cannot drain in
+            # place without deadlocking the request it is draining.
+            self._drain_active_requests(drain_deadline)
 
     def cancel_pending_load(self) -> bool:
         """Preempt a starting llama-server so training is not raced for VRAM.
@@ -640,6 +724,21 @@ class MtmdSttSidecar:
             return False
         event.set()
         process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def _cancel_owned_load(self, owner: threading.Event) -> bool:
+        """Cancel startup only when it belongs to this transcription."""
+        with self._lock:
+            event = self._load_cancel_event
+            if not self._loading or event is None or self._load_owner_cancel_event is not owner:
+                return False
+            event.set()
+            process = self._starting_process
         if process is not None and process.poll() is None:
             try:
                 process.terminate()
@@ -696,17 +795,30 @@ class MtmdSttSidecar:
             )
         return paths
 
-    def load(self, model: Optional[str] = None) -> None:
+    def load(
+        self,
+        model: Optional[str] = None,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         self._raise_if_update_in_progress()
         model_id = resolve_mtmd_model_id(model)
         binary = ensure_engine_available()
         # Startup happens outside _lock (it is slow), so this keeps two callers
         # from each spawning a server and orphaning the first.
         with self._start_lock:
+            if request_cancel_event is not None and request_cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
             self._raise_if_update_in_progress()
-            self._load_locked(model_id, binary)
+            self._load_locked(model_id, binary, request_cancel_event)
 
-    def _load_locked(self, model_id: str, binary: str) -> None:
+    def _load_locked(
+        self,
+        model_id: str,
+        binary: str,
+        request_cancel_event: Optional[threading.Event] = None,
+    ) -> None:
         with self._lock:
             training = _training_active()
             if self._process_alive() and self._model_id == model_id:
@@ -722,11 +834,16 @@ class MtmdSttSidecar:
             # Announced before the slow probe and reap: is_loading() is read lock-free,
             # so a training start would otherwise see False and wait out the startup in
             # unload() instead of cancelling this load.
-            cancel_event = threading.Event()
+            cancel_event = (
+                request_cancel_event if request_cancel_event is not None else threading.Event()
+            )
             self._load_cancel_event = cancel_event
+            self._load_owner_cancel_event = request_cancel_event
             self._loading = True
             released = False
             try:
+                if cancel_event.is_set():
+                    raise SttLoadCancelledError("Dictation model loading was cancelled.")
                 # Before the release: a 409 for a model that is not downloaded
                 # must not cost the user the server they were already using.
                 model_path, mmproj_path = self._ensure_model_downloaded(model_id)
@@ -744,6 +861,7 @@ class MtmdSttSidecar:
                 if not released:
                     self._loading = False
                     self._load_cancel_event = None
+                    self._load_owner_cancel_event = None
             # Re-read last: _release_locked() reaps the old server, which can
             # take seconds, and training admission that already passed its own
             # check cannot come back to cancel this load. Publishing _loading
@@ -818,6 +936,7 @@ class MtmdSttSidecar:
             with self._lock:
                 self._loading = False
                 self._load_cancel_event = None
+                self._load_owner_cancel_event = None
                 self._starting_process = None
 
     @staticmethod
@@ -849,6 +968,7 @@ class MtmdSttSidecar:
         model: Optional[str] = None,
         language: Optional[str] = None,
         fast: bool = False,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -857,16 +977,20 @@ class MtmdSttSidecar:
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard here on purpose: load() starts the server with
         # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
         # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
         # preload that succeeded only discarded the user's recording.
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio)
+        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            raise SttTranscriptionCancelledError("Transcription cancelled.")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        self.load(model_id)
+        self.load(model_id, request_cancel_event = cancel_event)
         with self._lock:
             port = self._port
             if port is None or not self._process_alive():
@@ -887,7 +1011,15 @@ class MtmdSttSidecar:
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
-            text = self._post_transcribe(port, model_id, wav_bytes, audio_seconds)
+            text = self._post_transcribe(
+                port, model_id, wav_bytes, audio_seconds, cancel_event = cancel_event
+            )
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+        except Exception:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            raise
         finally:
             with self._lock:
                 self._active_requests -= 1
@@ -899,12 +1031,19 @@ class MtmdSttSidecar:
             "model": model_id,
         }
 
+    def cancel_transcription(self, cancel_event: threading.Event) -> bool:
+        already_cancelled = cancel_event.is_set()
+        cancel_event.set()
+        return self._cancel_owned_load(cancel_event) or not already_cancelled
+
     def _post_transcribe(
         self,
         port: int,
         model_id: str,
         wav_bytes: bytes,
         audio_seconds: Optional[float] = None,
+        *,
+        cancel_event: Optional[threading.Event] = None,
     ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
@@ -927,13 +1066,35 @@ class MtmdSttSidecar:
             "temperature": 0,
             "max_tokens": _transcript_token_budget(audio_seconds),
         }
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            data = json.dumps(payload).encode("utf-8"),
-            headers = {"Content-Type": "application/json"},
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", port, timeout = _TRANSCRIBE_TIMEOUT_SECONDS
         )
-        with urllib.request.urlopen(request, timeout = _TRANSCRIBE_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read().decode("utf-8"))
+        cancel_done = threading.Event()
+        if cancel_event is not None:
+            threading.Thread(
+                target = _close_connection_on_cancel,
+                args = (connection, cancel_event, cancel_done),
+                daemon = True,
+            ).start()
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise SttTranscriptionCancelledError("Transcription cancelled.")
+            connection.request(
+                "POST",
+                "/v1/chat/completions",
+                body = json.dumps(payload).encode("utf-8"),
+                headers = {"Content-Type": "application/json"},
+            )
+            with connection.getresponse() as response:
+                response_body = response.read()
+                if not 200 <= response.status < 300:
+                    raise RuntimeError(
+                        f"MTMD transcription server returned HTTP {response.status}."
+                    )
+                body = json.loads(response_body.decode("utf-8"))
+        finally:
+            cancel_done.set()
+            connection.close()
         choices = body.get("choices") or []
         text = (choices[0].get("message", {}).get("content") or "") if choices else ""
         return _clean_transcript(text, spec.transcript_marker)

@@ -29,6 +29,7 @@ export {
 export { useActiveModelConfig } from "./hooks/use-active-model-config";
 export type {
   DeletedModelRef,
+  ExternalConnectionRef,
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
@@ -43,6 +44,7 @@ export {
 } from "./model-config/apply-per-model-config";
 export {
   DEFAULT_MAX_SEQ_LENGTH,
+  DEFAULT_PER_MODEL_CONFIG,
   normalizeMaxSeqLength,
   type PerModelConfig,
   adoptLegacyConfigKey,

@@ -526,6 +526,47 @@ def test_the_manual_formatters_resume_instead_of_opening_a_new_turn(format_type,
     )
 
 
+def test_native_fallback_preserves_assistant_reasoning_content():
+    InferenceBackend = _inference_backend()
+    seen = {}
+
+    class _Tokenizer:
+        chat_template = "template"
+
+        def apply_chat_template(self, messages, **_kwargs):
+            seen["messages"] = messages
+            return "rendered"
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {
+        "m": {
+            "tokenizer": _Tokenizer(),
+            "chat_template_info": {"has_template": False},
+        }
+    }
+
+    assert (
+        backend.format_chat_prompt(
+            [
+                {"role": "user", "content": "What is the answer?"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "The answer is forty-two.",
+                },
+                {"role": "user", "content": "Explain why."},
+            ]
+        )
+        == "rendered"
+    )
+    assert seen["messages"][1] == {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "The answer is forty-two.",
+    }
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     """The merge follows the same rule as the prompt boundary.
 

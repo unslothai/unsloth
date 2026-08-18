@@ -194,6 +194,29 @@ def reclaimable_snapshot_device_memory(target: Any) -> DeviceMemory:
     )
 
 
+def _settle_delay(delay_s: float) -> float:
+    """How long to wait between the retried reads, honouring ``UNSLOTH_SETTLE_DELAY_S``.
+
+    What the retry loop is for is rejecting a TRANSIENT undercount, and the ``max`` over the
+    reads does that whatever the spacing: a real neighbouring tenant caps every read, a
+    transient caps only some. The spacing exists to give a real transient time to clear on a
+    live card, so production keeps the full second.
+
+    A test that reaches this through ``_plan_memory`` cannot pass ``delay_s`` and pays the
+    wait for nothing -- its snapshots are stubs whose answers do not change with time.
+    ``test_diffusion_backend.py`` alone spent 142s of a 328s suite here, most of it in
+    tests sitting at exactly 4.00s. Callers that can pass ``delay_s = 0`` already do
+    (``test_diffusion_memory.py``); this is for the ones that cannot reach the argument.
+    """
+    override = os.environ.get("UNSLOTH_SETTLE_DELAY_S")
+    if override is None:
+        return delay_s
+    try:
+        return max(0.0, float(override))
+    except (TypeError, ValueError):
+        return delay_s  # a typo in the env must not change production behaviour
+
+
 def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
@@ -234,6 +257,7 @@ def settled_snapshot_device_memory(
     except Exception:  # noqa: BLE001 — settle is best-effort; the snapshot below still runs
         pass
     best = snapshot_device_memory(target)
+    delay_s = _settle_delay(delay_s)
     for _ in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.
@@ -254,7 +278,14 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
     try:
         import torch
 
-        free, total = torch.cuda.mem_get_info()
+        # Not torch.cuda.mem_get_info directly: on Windows ROCm its free half is an
+        # over-report that does not track residency, and this feeds the activation
+        # refusal that exists BECAUSE Windows WDDM spills to host RAM instead of
+        # raising (#8403). Imported lazily to keep this module free of backend
+        # imports at module scope.
+        from utils.hardware import trusted_mem_get_info
+
+        free, total = trusted_mem_get_info()
         kind = "discrete_vram"
         try:
             # Query the CURRENT device (mem_get_info reports it); hardcoding 0 would inspect the wrong GPU and misclassify it.
@@ -776,6 +807,7 @@ def apply_memory_plan(
     plan: MemoryPlan,
     *,
     device: str,
+    placement_device: Optional[str] = None,
     logger: Any = None,
 ) -> tuple[str, bool]:
     """Apply ``plan`` to a built diffusers pipeline: enable the VAE savers then place / offload
@@ -783,7 +815,15 @@ def apply_memory_plan(
 
     Returns the ``(offload_policy, vae_tiling)`` ACTUALLY engaged, which can differ from the plan:
     tiling is a no-op where there's no tiling control, and group / sequential offload fall back to
-    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39)."""
+    whole-module offload if unsupported (e.g. sequential is broken for GGUF through diffusers 0.39).
+
+    ``placement_device`` is the INDEXED string when a card was selected ("cuda:1"), and is what
+    every diffusers handoff below receives. A bare "cuda" is not equivalent to the CPU-offload
+    APIs: ``enable_model_cpu_offload`` reads the index off the device and, finding none, falls
+    back to ``_offload_gpu_id = 0`` and onloads to cuda:0 (pipeline_utils.py, diffusers 0.39), so
+    the modules would page onto the very card the selection existed to avoid while generation ran
+    on another. ``device`` stays bare for anything reading it as a policy string."""
+    placement = placement_device or device
     tiling_engaged = False
     if plan.vae_tiling:
         tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
@@ -793,28 +833,28 @@ def apply_memory_plan(
     def _fallback_to_model_offload() -> None:
         # The GROUP plan set vae_tiling=False (the VAE stays resident). Dropping to whole-module offload is the low-VRAM case where the decode spike can OOM, so turn tiling on now.
         nonlocal tiling_engaged
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
         if not tiling_engaged:
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
     if policy == OFFLOAD_MODEL:
-        pipe.enable_model_cpu_offload(device = device)
+        pipe.enable_model_cpu_offload(device = placement)
     elif policy == OFFLOAD_GROUP:
         # getattr, not attribute access: manually built / duck-typed plans predate this field.
         if not _apply_group_offload(
             pipe,
-            device,
+            placement,
             logger,
             stream_text_encoders = bool(getattr(plan, "stream_text_encoders", False)),
         ):
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     elif policy == OFFLOAD_STREAMING:
-        _apply_streaming_offload(pipe, device, logger)
+        _apply_streaming_offload(pipe, placement, logger)
     elif policy == OFFLOAD_SEQUENTIAL:
         try:
-            pipe.enable_sequential_cpu_offload(device = device)
+            pipe.enable_sequential_cpu_offload(device = placement)
         except Exception as exc:  # noqa: BLE001 — keep the model loadable
             if logger is not None:
                 logger.warning(
@@ -825,7 +865,7 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        pipe.to(device)
+        pipe.to(placement)
     return policy, tiling_engaged
 
 
@@ -1006,9 +1046,15 @@ def image_activation_shortfall_message(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
 ) -> Optional[str]:
     """A user-facing refusal when this generation's ACTIVATIONS plus the flat base overhead
     cannot fit the free device budget, else None.
+
+    ``source_driven`` says the refused size comes from an UPLOADED image rather than the
+    Resolution control (inpaint / extend / upscale / edit). Telling those callers to "generate at
+    a smaller resolution" points them at a control that cannot change the number in the refusal.
+    Same verdict either way; only the remedy sentence differs.
 
     Why this is a refusal and not another tuning knob: weights can be offloaded, activations
     cannot. Every offload tier moves WEIGHTS between host and device; the latents, attention
@@ -1101,7 +1147,8 @@ def image_activation_shortfall_message(
         # Only when the batch is what was budgeted. A refusal measured on ONE image cannot be
         # answered by asking for fewer, and pointing there sends the caller at the one change
         # that provably will not help.
-        f"Generate at a smaller resolution{' or a smaller batch size' if batch > 1 else ''}, "
+        f"{'Upload a smaller source image (this workflow takes its output size from the image, not the Resolution setting)' if source_driven else 'Generate at a smaller resolution'}"
+        f"{' or a smaller batch size' if batch > 1 else ''}, "
         "free device memory by closing other applications, or set "
         f"{OVERSIZED_GENERATE_ENV}=1 to attempt it anyway."
     )
@@ -1115,6 +1162,7 @@ def raise_on_image_activation_shortfall(
     batch_size: int = 1,
     family: Optional[str] = None,
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
+    source_driven: bool = False,
     logger: Any = None,
 ) -> None:
     """Refuse a generation whose activations cannot fit the free device budget. No-op whenever
@@ -1131,6 +1179,7 @@ def raise_on_image_activation_shortfall(
         batch_size = batch_size,
         family = family,
         base_overhead_mib = base_overhead_mib,
+        source_driven = source_driven,
     )
     if message is None:
         return

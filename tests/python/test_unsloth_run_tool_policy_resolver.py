@@ -1,8 +1,10 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Truth-table tests for `resolve_tool_policy`: tools default on for every bind
-(loopback, --secure tunnel, raw network), explicit on/off wins, and the resolver
-never prompts (yes/silent/prompt kept for compatibility)."""
+"""Truth-table tests for `resolve_tool_policy`: no flag installs no process-wide
+OVERRIDE on any bind (loopback, --secure tunnel, raw network), so a request's own
+`enable_tools: false` is honored -- tools still default on for a request that
+omits the field, via the backend's separate tool-policy default. Explicit on/off
+wins, and the resolver never prompts (yes/silent/prompt kept for compatibility)."""
 
 import pytest
 
@@ -24,9 +26,9 @@ class TestLocalhostHost:
             silent = False,
             prompt = _never_prompt,
         )
-        assert result is (True if flag in (None, True) else False)
+        assert result is flag
 
-    def test_default_is_on(self):
+    def test_default_is_unset(self):
         assert (
             resolve_tool_policy(
                 host = "127.0.0.1",
@@ -35,7 +37,7 @@ class TestLocalhostHost:
                 silent = False,
                 prompt = _never_prompt,
             )
-            is True
+            is None
         )
 
     def test_explicit_off(self):
@@ -52,8 +54,9 @@ class TestLocalhostHost:
 
 
 class TestZeroHost:
-    def test_default_is_on(self):
-        # Network bind defaults ON now (operator owns network security).
+    def test_default_is_unset(self):
+        # A network bind installs no override, so the Studio UI's tool pills (which
+        # send enable_tools: false when all off) are honored rather than overridden.
         assert (
             resolve_tool_policy(
                 host = "0.0.0.0",
@@ -62,7 +65,7 @@ class TestZeroHost:
                 silent = False,
                 prompt = _never_prompt,
             )
-            is True
+            is None
         )
 
     def test_explicit_off_no_prompt(self):
@@ -99,7 +102,7 @@ class TestZeroHost:
                 silent = True,
                 prompt = _never_prompt,
             )
-            is True
+            is None
         )
 
 
@@ -116,9 +119,9 @@ class TestIsExternalHost:
 
 
 class TestSpecificNetworkIP:
-    """Binding to a specific LAN IP follows the same default-on rules as 0.0.0.0."""
+    """Binding to a specific LAN IP follows the same rules as 0.0.0.0."""
 
-    def test_default_is_on(self):
+    def test_default_is_unset(self):
         assert (
             resolve_tool_policy(
                 host = "192.168.1.5",
@@ -127,7 +130,7 @@ class TestSpecificNetworkIP:
                 silent = False,
                 prompt = _never_prompt,
             )
-            is True
+            is None
         )
 
     def test_explicit_on_no_prompt(self):

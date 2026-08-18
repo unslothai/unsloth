@@ -132,6 +132,7 @@ def _raw_install_record(root: Path) -> Optional[str]:
     except Exception:  # noqa: BLE001 -- absent / unreadable / a directory: all "cannot tell"
         return None
 
+
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at
 # all: with only half of it remembered, an unwritable record leaves a serverless install looking
 # server-capable, and the load that finds a mismatched legacy server keeps reinstalling.

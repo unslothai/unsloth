@@ -27,7 +27,7 @@ pub(crate) struct DesktopUpdatePolicy {
 pub(crate) struct ManualUpdateInfo {
     version: String,
     current_version: String,
-    // Backend release this desktop build pins; CHANGELOG.md is keyed by it.
+    // Backend release this desktop build pins, which preflight checks against.
     pypi_version: Option<String>,
     body: Option<String>,
     date: Option<String>,

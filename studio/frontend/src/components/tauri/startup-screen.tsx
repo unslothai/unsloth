@@ -548,7 +548,8 @@ function StartupSurface({ children }: { children: ReactNode }) {
  *
  * A layer over the app rather than a replacement for it: a declined quit has to hand the
  * user back the tree they had, in-flight generations and unsaved drafts included. The
- * z-index clears the titlebar and the download stack, the last of which is 9998.
+ * z-index clears the titlebar, the download stack and the floating panels above it:
+ * it is Z_LAYER.STARTUP_SCREEN, which lib/z-layers puts over both.
  */
 export function ClosingScreen() {
   return (

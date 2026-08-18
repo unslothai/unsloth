@@ -677,34 +677,9 @@ def test_deferred_error_helper_defaults_a_missing_status():
     assert excinfo.value.code == 500
 
 
-@pytest.mark.parametrize(
-    ("source", "expected_source"),
-    [
-        (
-            {"gguf_hf_repo": "org/model-GGUF"},
-            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
-        ),
-        (
-            {
-                "gguf_hf_repo": None,
-                "gguf_file": "/models/model.gguf",
-                "gguf_mmproj_file": "/models/mmproj.gguf",
-                "gguf_mtp_file": "/models/mtp.gguf",
-                "gguf_dspark_file": "/models/dspark-model.gguf",
-            },
-            {
-                "gguf_path": "/models/model.gguf",
-                "mmproj_path": "/models/mmproj.gguf",
-                "mtp_draft_path": "/models/mtp.gguf",
-                "dspark_draft_path": "/models/dspark-model.gguf",
-            },
-        ),
-    ],
-    ids = ("hugging-face", "local"),
-)
-def test_load_gguf_backend_forwards_source_and_runtime_options(
-    monkeypatch, source, expected_source
-):
+def _stub_studio_gguf_load(monkeypatch):
+    """Stand in for the studio backend `_load_gguf_backend` imports in-venv, and
+    return the list the intents it builds land in."""
     import unsloth_cli._inference as inference
 
     calls = []
@@ -739,6 +714,42 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
     monkeypatch.setitem(sys.modules, "core.inference.llama_server_args", fake_args)
     monkeypatch.setitem(sys.modules, "core.inference.tensor_fallback", fake_tensor_fallback)
     monkeypatch.setattr(inference, "ensure_studio_backend_path", lambda: None)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    [
+        (
+            {"gguf_hf_repo": "org/model-GGUF"},
+            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
+        ),
+        (
+            {
+                "gguf_hf_repo": None,
+                "gguf_file": "/models/model.gguf",
+                "gguf_mmproj_file": "/models/mmproj.gguf",
+                "gguf_mtp_file": "/models/mtp.gguf",
+                "gguf_dspark_file": "/models/dspark-model.gguf",
+                "gguf_dflash_file": "/models/dflash-kquant.gguf",
+            },
+            {
+                "gguf_path": "/models/model.gguf",
+                "mmproj_path": "/models/mmproj.gguf",
+                "mtp_draft_path": "/models/mtp.gguf",
+                "dspark_draft_path": "/models/dspark-model.gguf",
+                "dflash_draft_path": "/models/dflash-kquant.gguf",
+            },
+        ),
+    ],
+    ids = ("hugging-face", "local"),
+)
+def test_load_gguf_backend_forwards_source_and_runtime_options(
+    monkeypatch, source, expected_source
+):
+    import unsloth_cli._inference as inference
+
+    calls = _stub_studio_gguf_load(monkeypatch)
 
     config = SimpleNamespace(
         gguf_variant = "Q4_K_M",
@@ -771,6 +782,30 @@ def test_load_gguf_backend_forwards_source_and_runtime_options(
             **expected_source,
         }
     ]
+
+
+def test_load_gguf_backend_hands_a_local_dflash_sidecar_to_the_load(monkeypatch):
+    """The managed CLI resolves the sidecar next to a local weight exactly as Studio
+    does, and dropping it here is silent: the load simply comes up with no drafter and
+    nothing says the sidecar sitting beside the model was ever found."""
+    import unsloth_cli._inference as inference
+
+    calls = _stub_studio_gguf_load(monkeypatch)
+    config = SimpleNamespace(
+        gguf_variant = "Q4_K_M",
+        identifier = "org/model-GGUF",
+        is_vision = False,
+        gguf_hf_repo = None,
+        gguf_file = "/models/model.gguf",
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = "/models/dflash-kquant.gguf",
+    )
+
+    inference._load_gguf_backend(config, hf_token = None, max_seq_length = 8192)
+
+    assert [intent.dflash_draft_path for intent in calls] == ["/models/dflash-kquant.gguf"]
 
 
 def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):

@@ -15,6 +15,7 @@ export const SPECULATIVE_TYPES = [
   "auto",
   "mtp",
   "dspark",
+  "dflash",
   "ngram",
   "mtp+ngram",
   "off",
@@ -23,11 +24,12 @@ export const SPECULATIVE_TYPES = [
 /**
  * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter
  * with a configurable depth. Named for the setting rather than for MTP: DSpark
- * is in here too. Mirrors DRAFT_N_MAX_SPEC_TYPES in
+ * and DFlash are in here too. Mirrors DRAFT_N_MAX_SPEC_TYPES in
  * studio/backend/utils/openai_auto_switch_settings.py.
  */
 export const DRAFT_N_MAX_SPEC_TYPES: ReadonlySet<string> = new Set([
   "mtp",
   "mtp+ngram",
   "dspark",
+  "dflash",
 ]);

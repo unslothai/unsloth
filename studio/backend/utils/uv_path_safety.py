@@ -4,9 +4,9 @@
 """Hand uv a space-free `-c`/`--override`/`-r` file path (issue #6503).
 
 uv splits `-c`/`--override` (and UV_OVERRIDE) on whitespace, so a path with a
-space truncates. Windows uses the 8.3 short form; POSIX copies the file into a
-space-free temp dir (removed at exit). Falls back to the original path on error.
-Shared by install_python_stack and utils.mlx_repair.
+space truncates. Windows uses the 8.3 short form; POSIX uses a space-free temp
+path (removed at exit). Falls back to the original path on error. Shared by
+install_python_stack and utils.mlx_repair.
 """
 
 from __future__ import annotations
@@ -55,8 +55,21 @@ def uv_safe_path(path: object) -> str:
         if " " in tmp_dir:  # e.g. TMPDIR itself has a space
             shutil.rmtree(tmp_dir, ignore_errors = True)
             return s
-        dst = os.path.join(tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_"))
-        shutil.copyfile(s, dst)
+        source_name = os.path.basename(s) or "uv_args.txt"
+        if " " in source_name:
+            dst = os.path.join(tmp_dir, source_name.replace(" ", "_"))
+            shutil.copyfile(s, dst)
+        else:
+            alias_dir = os.path.join(tmp_dir, "source")
+            source_dir = os.path.abspath(os.path.dirname(s) or os.curdir)
+            try:
+                os.symlink(source_dir, alias_dir, target_is_directory = True)
+                dst = os.path.join(alias_dir, source_name)
+            except OSError:
+                # No symlink permission: copy instead. That loses relative -r/-c
+                # includes, but returning the spaced path loses the file entirely.
+                dst = os.path.join(tmp_dir, source_name)
+                shutil.copyfile(s, dst)
         _UV_SAFE_PATH_TMPDIRS.append(tmp_dir)
         tmp_dir = None
         return dst

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from loggers import get_logger
+from utils.models.gguf_metadata import mmproj_accepts_image
 
 logger = get_logger(__name__)
 _GGUF_MODEL_INFO_TIMEOUT_SECONDS = 5.0
@@ -124,8 +125,13 @@ def is_reclaimable_drafter_path(path: str) -> bool:
     """Drafters a repo's last-variant delete may reclaim: MTP, fetched with every
     variant, and DSpark, fetched on opt-in. Both are useless once no main GGUF is
     left, and companion filtering hides them from the variant menu, so leaving one
-    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded: the
-    name doubles as a family a user picks for real weights."""
+    behind is an invisible allocation (DSpark is ~11 GB). DFlash is excluded even
+    though Auto now launches it: the name doubles as a family a user picks for
+    real weights, whole repos publish nothing but root-level ``dflash-*.gguf``
+    (Lucebox/Qwen3.6-27B-DFlash-GGUF), and the two outcomes are not symmetric.
+    Reclaiming wrongly destroys weights a user chose; not reclaiming leaves
+    ~1.5 GiB, an order of magnitude under the DSpark case this rule was written
+    for. Locked by test_deleting_the_last_variant_keeps_a_dflash_weight."""
     p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
@@ -388,6 +394,26 @@ def bare_quant_alias(key: str) -> str:
     # still re-stems, and a key arrives already extension-stripped, so hand it an extension to
     # strip rather than let it cut at the dot in "ltx-2.3".
     return extract_quant_label(f"{basename}.gguf")
+
+
+def is_qualified_gguf_variant_key(key: str) -> bool:
+    """Whether *key* names more than its bare quantization.
+
+    Usually a directory (``distilled/model-Q6_K``), but H3's root-level partitions use the full
+    filename stem (``minimax_h3_ref2va_pruned-Q6_K``). Comparing against the bare alias covers
+    both and leaves ordinary keys such as ``Q6_K`` and ``IQ4_XS-3.53bpw`` untouched.
+    """
+    normalized = (key or "").strip().replace("\\", "/")
+    return bool(normalized) and bare_quant_alias(normalized).lower() != normalized.lower()
+
+
+def is_h3_denoiser_variant_key(key: str) -> bool:
+    """Whether *key* is one of H3's root-level denoiser checkpoint identities."""
+    normalized = (key or "").strip().replace("\\", "/")
+    basename = normalized.rsplit("/", 1)[-1].lower()
+    return basename.startswith(_H3_DENOISER_PARTITIONS) and is_qualified_gguf_variant_key(
+        normalized
+    )
 
 
 def _is_quant_directory(segment: str) -> bool:
@@ -900,9 +926,11 @@ def list_local_gguf_variants(
         if h3_bundle_repo and not _is_selectable_repo_gguf(h3_bundle_repo, file.name):
             continue
         if is_mmproj_filename(file.name):
-            # A projector llama.cpp cannot open is not vision support.
+            # An empty projector is an interrupted download; an audio-only one is not vision.
             try:
-                has_vision = has_vision or file.stat().st_size > 0
+                has_vision = has_vision or (
+                    file.stat().st_size > 0 and mmproj_accepts_image(str(file))
+                )
             except OSError:
                 pass
             continue

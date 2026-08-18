@@ -25,15 +25,42 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      # CLI rename / signature change can break Tauri's spawned
+      # `unsloth studio` -- include unsloth_cli in the trigger set.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -66,7 +93,7 @@ jobs:
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -293,7 +320,7 @@ jobs:
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -309,6 +336,60 @@ jobs:
 
       # tauri-build resolves frontendDist at compile time, so dist/ must exist
       # before cargo test, exactly as in the Linux job.
+      - name: Frontend build (npm ci, vite)
+        working-directory: studio/frontend
+        run: |
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Rust unit tests (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo test --no-fail-fast
+
+      # `cargo test` builds only the debug profile, and the browser guard is
+      # installed under `not(debug_assertions)`, so nothing above compiles its
+      # call site. Check the release profile so that path cannot rot.
+      - name: Rust release type check (studio/src-tauri)
+        working-directory: studio/src-tauri
+        run: cargo check --all-targets --release
+
+  macos-unit-tests:
+    name: Rust unit tests (macos)
+    # Not macos-14: it browns out from 2026-10-05 and is removed 2026-11-02,
+    # which the other macOS workflows here have already moved off. Both are
+    # Apple Silicon, so this job keeps testing the arm64 paths.
+    runs-on: macos-15
+    # A cold cache compiles both the debug and the release dependency tree.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '24'
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 50 GiB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          workspaces: studio/src-tauri -> target
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python scripts/lockfile_supply_chain_audit.py
+
+      # tauri-build resolves frontendDist at compile time, so dist/ must exist
+      # before cargo test, exactly as in the Linux and Windows jobs.
       - name: Frontend build (npm ci, vite)
         working-directory: studio/frontend
         run: |

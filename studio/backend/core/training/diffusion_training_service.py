@@ -4,9 +4,9 @@
 """A small job service for diffusion LoRA training.
 
 This is deliberately separate from the LLM ``TrainingBackend``: that backend's
-lifecycle (LLM config build, per-run SQLite rows, matplotlib plots, transfer-to-chat-
-inference) is specific to text training and would mis-handle a diffusion run. This
-service does only what a diffusion job needs -- spawn the trainer subprocess, pump its
+lifecycle (LLM config build, per-run SQLite rows, and matplotlib plots) is specific
+to text training and would mis-handle a diffusion run. This service does only what a
+diffusion job needs -- spawn the trainer subprocess, pump its
 events (``model_load_*`` / ``progress`` / ``complete`` / ``error``) into an in-memory
 status snapshot, and support stop -- and is polled over JSON by the route layer.
 

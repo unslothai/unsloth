@@ -688,6 +688,56 @@ class TestPinnedIndexClearsUvEnvParity:
             "finally"
         ), "pip fallback must run before the scrub is restored"
 
+    def test_windows_installers_probe_uv_before_replacing_an_incumbent(self):
+        """A host can have a working older uv while AppLocker, WDAC or endpoint
+        protection refuses the one we just downloaded. Both PowerShell installers must
+        run the extracted uv.exe where it landed BEFORE anything at the destination is
+        touched, and must restore the incumbent if the published copy will not run."""
+        for path, probe in (
+            (INSTALL_PS1, "Get-UvExecutableVerdict"),
+            (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
+        ):
+            text = path.read_text(encoding = "utf-8")
+            assert f"function {probe}" in text, f"{path.name} must define {probe}"
+            # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
+            # binary is exactly how an unattended install hangs.
+            assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
+            probe_at = text.index(f"({probe} -Path $stagedUv)")
+            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
+            # verdict, and treating that as a broken binary turned three clean-machine CI legs
+            # into hard install failures: Start-Process -NoNewWindow with redirected streams
+            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
+            # the binary answering non-zero may block the install.
+            body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
+            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
+            # code is cached, which is how arm64 and the Windows containers reported "exited ."
+            # and had a working uv read as broken.
+            assert (
+                "try { $proc.WaitForExit() } catch {}" in body
+            ), f"{path.name} must settle the exit code before reading it"
+            assert (
+                '$null -eq $code -or "$code" -eq ""' in body
+            ), f"{path.name} must treat a missing exit code as inconclusive"
+            assert (
+                body.count('return "unknown"') == 3
+            ), f"{path.name}: a launch failure and a timeout must both be inconclusive"
+            assert (
+                'return "failed"' in body and 'return "ok"' in body
+            ), f"{path.name}'s probe must report a real answer as well"
+            assert (
+                f'({probe} -Path $stagedUv) -eq "failed"' in text
+            ), f"{path.name} must gate only on a failed verdict"
+            copy_at = text.index("Copy-Item -LiteralPath $src -Destination $dst -Force")
+            assert probe_at < copy_at, (
+                f"{path.name} must probe the extracted uv.exe before copying over the "
+                "destination"
+            )
+            # The publish is not a transaction: a locked or ACL-denied destination fails the
+            # install rather than being skipped, which is what the caller's fallback is for.
+            assert (
+                "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
+            ), f"{path.name} must copy each executable under -ErrorAction Stop"
+
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
         """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
         (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
