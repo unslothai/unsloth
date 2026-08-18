@@ -1903,9 +1903,7 @@ def test_a_re_embed_that_stops_partway_does_not_reorder_a_legacy_archive(conn, m
     )
     monkeypatch.setattr(embeddings, "embedding_identity", lambda *_a, **_k: identity["name"])
 
-    turns = [
-        _turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 6)
-    ]
+    turns = [_turn(f"turn {n} about pelicans", f"STATEMENT{n} about pelicans") for n in range(1, 6)]
     history = [dict(message) for turn in turns for message in turn]
     _save_thread(THREAD, history, append = True)
     assert conversation_archive.archive_turns(THREAD, [dict(m) for m in history]) == 5
