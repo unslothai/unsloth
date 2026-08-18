@@ -289,6 +289,7 @@ def test_a_native_drop_over_the_block_budget_is_refused(monkeypatch, tmp_path):
         )
     assert excinfo.value.status_code == 413
 
+
 class _BlockPlugin:
     """Meta path finder making the optional seed plugin look uninstalled."""
 
