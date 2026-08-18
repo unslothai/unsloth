@@ -131,6 +131,28 @@ test("the widening step is deferred and transition-wrapped", () => {
   assert.match(GLUE, /requestAnimationFrame\(/);
   assert.match(GLUE, /startTransition\(/);
   assert.match(GLUE, /cancelAnimationFrame\(frame\)/);
+  // Scoped to the widening effect, because the file schedules frames in three other places and a
+  // whole-file match stays green while this one is retimed to a timer. Two failures behind it. A
+  // timer fires before the commit it follows has painted, so captureAnchor samples rects from the
+  // previous layout, and the same early run is why the disarm has to happen here rather than in a
+  // layout effect (the viewport ref is populated by the paint). And the cleanup below cancels a
+  // FRAME: hand it a timer handle and a window closed between the commit and the callback widens
+  // anyway, which is a widening into a tree a run may already have taken over.
+  const widening = section(
+    GLUE,
+    "if (mountWindow == null) return;",
+    "}, [mountWindow, count, captureAnchor, isRunningNow]);",
+  );
+  assert.match(
+    widening,
+    /const frame = requestAnimationFrame\(/,
+    "the widening step must be scheduled on a frame, not a timer",
+  );
+  assert.doesNotMatch(
+    widening,
+    /setTimeout|setInterval|queueMicrotask/,
+    "cancelAnimationFrame does not cancel a timer, so a closed window would still widen",
+  );
 });
 
 test("the anchor is measured against its scroll container, not against the window", () => {
@@ -195,6 +217,22 @@ test("the window owns the viewport's scroll-anchoring mode while it is open", ()
   assert.match(capture, /setProperty\("overflow-anchor", "none"\)/);
   // And back on when the window closes, or a settled thread is not the pre-change thread.
   assert.match(GLUE, /removeProperty\("overflow-anchor"\)/);
+  // Scoped to the effect that runs on the CLOSING commit, because there is a second removeProperty
+  // in the unmount cleanup and a whole-file match is satisfied by that one alone. Losing the close
+  // path is not a transient: the thread the reader keeps scrolling for the rest of the session has
+  // native anchoring off with nothing left compensating for it, since the idle sampler and the
+  // widening correction both stop with the window. Every later image, Shiki swap or KaTeX resize
+  // above the fold then moves the reader by its own height.
+  const closing = section(
+    GLUE,
+    "if (mountWindow != null) return;",
+    "}, [mountWindow, viewportRef]);",
+  );
+  assert.match(
+    closing,
+    /removeProperty\("overflow-anchor"\)/,
+    "the closing commit must hand scroll anchoring back to the browser",
+  );
   // No feature probe and no gesture bookkeeping: both decided which behaviour the browser was
   // giving us, and the browser is no longer in that loop.
   assert.doesNotMatch(GLUE, /getUserGestureSeq/);
@@ -311,6 +349,23 @@ test("the escape hatch re-reads the completer set instead of sampling it once", 
   assert.match(
     GLUE,
     /activeCompleters\.size === 0 && \(observed \|\| Date\.now\(\) >= deadline\)/,
+  );
+  // The re-read is only worth anything if the deadline is in the FUTURE. A deadline of `Date.now()`
+  // keeps both lines above and still returns on the first pass, because a caller in the same task
+  // as the thread opening reaches the check before any completer has registered: the read-once
+  // failure again, spelled as a zero search interval. So the interval is a positive constant, and
+  // it has to outlast a cold open's history load, measured at about 160ms.
+  assert.match(
+    GLUE,
+    /const deadline = Date\.now\(\) \+ PROGRESSIVE_MOUNT_SEARCH_MS;/,
+    "an empty completer set must only be believed after a search interval",
+  );
+  const searchMs = Number(
+    /PROGRESSIVE_MOUNT_SEARCH_MS = (\d+)/.exec(GLUE)?.[1] ?? "0",
+  );
+  assert.ok(
+    searchMs >= 200,
+    `the search interval must outlast a cold open's history load, got ${searchMs}ms`,
   );
 });
 
