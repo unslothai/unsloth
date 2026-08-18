@@ -127,3 +127,13 @@ jobs:
       # exists to reject.
       - name: The host-offload opt-out is still macOS-only
         run: python3 -m pytest tests/studio/test_mac_host_offload_optin.py -q
+
+      # Same reason. This guard covers work that was moved OFF its own runner into a
+      # background lane of Lint CI, and every way that regresses -- a lane launched but
+      # never collected, a missing exit status read as success, a launch that stops
+      # detaching -- is an edit to lint-ci.yml or to one of the two absorbed workflows.
+      # No other job's paths filter matches a workflow-only change, and the failure modes
+      # are all silent, so nothing would go red while the absorbed suites quietly stopped
+      # being able to fail anything.
+      - name: The absorbed Lint CI lanes still run and can still fail
+        run: python3 -m pytest tests/studio/test_absorbed_lanes_still_run.py -q
