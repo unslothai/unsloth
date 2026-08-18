@@ -27,6 +27,7 @@ break CI, so it is asserted rather than trusted:
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,45 @@ def test_the_bash_half_rejects_zero_and_empty(fn):
     ), f'setup.sh\'s {fn}() no longer treats "" and 0 as off:\n{body}'
 
 
+def _bash_runs_posix_scripts() -> bool:
+    """Whether `bash` here is a real POSIX shell, rather than Windows' WSL launcher.
+
+    On a windows-latest runner `bash` resolves to the WSL stub, which ignores the script
+    entirely and exits 1 with a UTF-16 "no distributions installed, use `wsl --install`"
+    message on stdout. That is not a finding about setup.sh, so these two tests skip there
+    rather than failing: the cross-platform parity job runs this file on Windows too, and
+    setup.sh is not the installer Windows uses.
+
+    Probed rather than keyed off sys.platform, so a Windows box that does have a working
+    git-bash still runs them.
+    """
+    try:
+        probe = subprocess.run(
+            ["bash", "-c", "printf ok"], capture_output = True, text = True, timeout = 30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0 and probe.stdout.strip() == "ok"
+
+
+BASH_OK = _bash_runs_posix_scripts()
+
+
+def test_the_bash_probe_still_finds_bash_where_bash_exists():
+    """A skip condition that silently became always-true would disable the two tests below.
+
+    setup.sh is the installer for Linux and macOS, so on those platforms the probe failing
+    means the probe is broken, not that the environment lacks a shell.
+    """
+    if sys.platform.startswith("win"):
+        pytest.skip("Windows has no POSIX bash by default; that is the case being skipped")
+    assert BASH_OK, (
+        "the POSIX-bash probe failed on a platform that ships bash, so the two tests that "
+        "actually execute setup.sh's print helpers are being skipped everywhere"
+    )
+
+
+@pytest.mark.skipif(not BASH_OK, reason = "no POSIX bash here (Windows resolves it to WSL)")
 @pytest.mark.parametrize("fn", ["step", "substep"])
 def test_the_bash_helpers_are_silent_by_default_and_prefix_when_asked(fn):
     """Run the real function. A text check alone would not catch a broken printf."""
