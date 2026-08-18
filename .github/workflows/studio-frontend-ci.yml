@@ -26,6 +26,7 @@ on:
       - 'studio/frontend/src/lib/menu-dismiss.ts'
       - 'studio/frontend/src/lib/menu-dismiss-guard.tsx'
       # Shared lifecycle helpers, and the contract tests that keep verdicts from going unread.
+      - 'tests/studio/playwright_settings_tabs.py'
 
       - 'tests/studio/playwright_stream_pacing.py'
       # Shared lifecycle helpers, and the contract test that keeps verdicts from going unread.
@@ -217,6 +218,21 @@ jobs:
       - name: Browser check for non-modal menu dismissal
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/probe_dismiss_guard.py --label ci --engine chromium
+      # The settings panels are fetched on first view, so only a browser can answer whether
+      # every tab renders and deep-opens land (and abandoned ones do not come back).
+      - name: Browser smoke for the settings tab panels
+        working-directory: ${{ github.workspace }}
+        run: python3 tests/studio/playwright_settings_tabs.py
+
+      # A panel that cannot be fetched is new with lazy loading, and nothing above the
+      # root-mounted dialog catches, so unguarded it unmounts Studio, not one panel.
+      - name: Browser smoke for a settings panel that cannot load
+        working-directory: ${{ github.workspace }}
+        env:
+          PW_CHUNK_FAIL: data
+          PW_PORT: '5400'
+          PW_OUT: logs/settings_tabs_blocked_report.json
+        run: python3 tests/studio/playwright_settings_tabs.py
 
       # Reports, does not gate, for now. The budgets inside are calibrated on a
       # developer machine, and this measures a CPU-bound render on a shared runner

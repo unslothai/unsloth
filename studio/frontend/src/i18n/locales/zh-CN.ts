@@ -180,6 +180,8 @@ export const zhCN = {
       closeAriaLabel: "关闭设置",
       searchPlaceholder: "搜索设置…",
       searchNoResults: "未找到设置。",
+      panelFailed: "无法加载此部分。",
+      panelReload: "重新加载",
     },
     tabs: {
       general: "通用",
