@@ -169,6 +169,6 @@ def test_each_engine_keeps_a_distinct_artifact_path(engine):
     """Shared log paths would interleave three engines into one unreadable file."""
     src = SCRIPT.read_text(encoding = "utf-8")
     for pattern in ("logs/playwright-indicator-$slug", "logs/studio-indicator-$slug.log"):
-        assert pattern in src, (
-            f"{pattern} is no longer per-engine, so concurrent runs write over each other"
-        )
+        assert (
+            pattern in src
+        ), f"{pattern} is no longer per-engine, so concurrent runs write over each other"
