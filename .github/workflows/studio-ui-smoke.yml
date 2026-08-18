@@ -623,10 +623,61 @@ jobs:
           fi
 
       - name: Cross-browser loaded-models indicator
+        # The three engines are independent runs of the same suite, and running
+        # them one after another was ~870s of this job's ~1000s -- the largest
+        # single block of Linux wall-clock in CI. They are disjoint: each boots
+        # its own server and drives its own browser, so the only reason they
+        # could not overlap was shared state, not shared work.
+        #
+        # Note the sibling ui-smoke job says in-machine parallelism is
+        # deliberately not used there. That reasoning is "these are separate
+        # runners, so each still boots one Studio at a time" -- it is an argument
+        # about a SHARDED job, and this job has no shards to spread across.
+        #
+        # Two things are shared, and each gets split rather than serialised:
+        #
+        #   port  -- one per engine, so three servers coexist.
+        #   UNSLOTH_STUDIO_HOME -- one per engine. The script wipes
+        #     $studio_home/auth so the boot mints a fresh .bootstrap_password,
+        #     then reads that file back. On a shared home the three runs would
+        #     race destructively: one wipes the password another just minted and
+        #     is about to log in with.
+        #
+        # A per-engine home is cheap here precisely because it is only a DATA
+        # root. `unsloth` on PATH still resolves the installed venv, and the
+        # frontend is served from a PACKAGE-relative path
+        # (run.py's _DEFAULT_FRONTEND_PATH = <pkg>/../frontend/dist), not from
+        # studio_root(), so nothing is rebuilt per engine. The suite is
+        # UNSLOTH_API_ONLY with the /status endpoints stubbed via page.route, so
+        # a fresh home also needs no model, no GPU and no llama.cpp build --
+        # which is what makes this safe to do to THIS suite and not to a job
+        # whose home holds a downloaded model.
         run: |
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 chromium
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 firefox
-          bash .github/scripts/run-studio-indicator-browser.sh 18899 webkit
+          mkdir -p logs
+          pids=""
+          for spec in "18899 chromium" "18900 firefox" "18901 webkit"; do
+            port="${spec% *}"
+            engine="${spec#* }"
+            UNSLOTH_STUDIO_HOME="${{ github.workspace }}/.studio-indicator-$engine" \
+              bash .github/scripts/run-studio-indicator-browser.sh "$port" "$engine" \
+              >"logs/indicator-$engine.out" 2>&1 &
+            pids="$pids $!:$engine"
+          done
+          # Wait on ALL of them before failing, so one engine's breakage does not
+          # hide another's: a sequential run reported only the first failure.
+          rc=0
+          for entry in $pids; do
+            if ! wait "${entry%%:*}"; then
+              echo "::error::loaded-models indicator failed in ${entry##*:}"
+              rc=1
+            fi
+          done
+          for f in logs/indicator-*.out; do
+            echo "::group::$f"
+            cat "$f"
+            echo "::endgroup::"
+          done
+          exit "$rc"
 
       - name: Upload Playwright artifacts
         # Always, so a green run's screenshots stay reviewable: this suite is
@@ -638,4 +689,5 @@ jobs:
           path: |
             logs/playwright-indicator-*
             logs/studio-indicator-*.log
+            logs/indicator-*.out
           retention-days: 1
