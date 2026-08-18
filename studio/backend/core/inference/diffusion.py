@@ -4923,6 +4923,41 @@ class DiffusionBackend:
             explicit_offload = cpu_offload,
         )
 
+    @staticmethod
+    def _from_pipe_no_recast(pipe: Any, pipe_cls: Any, **extra: Any) -> Any:
+        """``Pipeline.from_pipe`` that never recasts component dtypes.
+
+        The bundled diffusers resolves ``torch_dtype=None`` to float32 inside
+        ``from_pipe`` and then calls ``.to(dtype)`` on EVERY component — which
+        hard-crashes GGUF-quantized transformers ("Casting a quantized model
+        to a new dtype is unsupported", #9186). When that happens, re-wire the
+        components manually: same resident modules, same references, no cast.
+        """
+        try:
+            return pipe_cls.from_pipe(pipe, torch_dtype=None, **extra)
+        except (TypeError, ValueError) as exc:
+            if "quantized" not in str(exc).lower():
+                raise
+        import inspect
+
+        components = dict(pipe.components)
+        components.update(extra)
+        params = inspect.signature(pipe_cls.__init__).parameters
+        accepted = {
+            name
+            for name, param in params.items()
+            if param.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+            or param.kind is inspect.Parameter.KEYWORD_ONLY
+        }
+        # **kwargs-style pipelines accept everything from_pipe would pass;
+        # strict signatures get exactly the names they declare.
+        has_var_kw = any(
+            param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()
+        )
+        if not has_var_kw:
+            components = {k: v for k, v in components.items() if k in accepted}
+        return pipe_cls(**components)
+
     def _workflow_pipe(self, state: _LoadState, class_name: Optional[str], workflow: str) -> Any:
         """The diffusers pipeline for an image-conditioned ``workflow``, built once and
         cached. ``Pipeline.from_pipe`` re-wires the loaded text-to-image pipe's resident
@@ -4940,7 +4975,9 @@ class DiffusionBackend:
 
         # torch_dtype=None is load-bearing: from_pipe otherwise recasts EVERY component to fp32, which hard-crashes the
         # dense-quant path (torchao subclasses cannot swap_tensors). None reuses resident modules at their loaded dtype.
-        pipe = getattr(diffusers, class_name).from_pipe(state.pipe, torch_dtype = None)
+        # The no-recast fallback covers GGUF-quantized transformers, where the bundled
+        # diffusers still resolves None to fp32 and the .to() hard-crashes (#9186).
+        pipe = self._from_pipe_no_recast(state.pipe, getattr(diffusers, class_name))
         # Publish to the shared aux cache only if THIS load is still current: from_pipe runs without _lock, so an unload can null _state and caching would hand out stale modules.
         with self._lock:
             if self._state is state:
@@ -5011,8 +5048,8 @@ class DiffusionBackend:
         key = (pipe_cls_name, resolved_cn.id)
         pipe = self._cn_pipes.get(key)
         if pipe is None:
-            pipe = getattr(diffusers, pipe_cls_name).from_pipe(
-                state.pipe, controlnet = cn_model, torch_dtype = None
+            pipe = self._from_pipe_no_recast(
+                state.pipe, getattr(diffusers, pipe_cls_name), controlnet=cn_model
             )
             with self._lock:
                 # Same race as the model cache: an unload may have cleared _cn_pipes while from_pipe ran.
