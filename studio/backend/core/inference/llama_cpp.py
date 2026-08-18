@@ -7267,6 +7267,8 @@ class LlamaCppBackend:
         requested_ctx: int,
         max_available_ctx: int,
         cache_type_kv: Optional[str] = None,
+        *,
+        nothing_fits: bool = False,
     ) -> Optional[str]:
         """Refusal when a hand-set context exceeds what unified memory holds (else None).
 
@@ -7308,10 +7310,16 @@ class LlamaCppBackend:
         UNSLOTH_ALLOW_METAL_CTX_OVERCOMMIT=1 abstains, matching the host-offload opt-out,
         though the failure mode it re-enables is the whole machine rather than one app.
         """
-        if requested_ctx <= 0 or max_available_ctx <= 0:
+        if requested_ctx <= 0:
             return None
-        if requested_ctx <= max_available_ctx:
-            return None
+        # nothing_fits carries its own verdict, and it is the one case with no positive
+        # ceiling to compare against: the fit priced the smallest context it will price
+        # and even that did not fit.
+        if not nothing_fits:
+            if max_available_ctx <= 0:
+                return None
+            if requested_ctx <= max_available_ctx:
+                return None
         # the user's own opt-out, so read the real environment, not the curated child env
         if os.environ.get(LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV, "").strip().lower() in (
             "1",
@@ -7328,6 +7336,17 @@ class LlamaCppBackend:
             if (cache_type_kv or "f16").strip().lower() in ("f16", "fp16", "")
             else ""
         )
+        if nothing_fits:
+            return (
+                "No context fits in this Mac's unified memory with this model. The weights "
+                "fit, but they leave too little for even the smallest context, so a load at "
+                f"any length would over-commit. The GPU and the rest of the system share one "
+                f"pool here, so there is nothing to offload to, and the load would bring the "
+                f"machine down instead of reporting an error. Use a smaller or more quantized "
+                f"GGUF, or free memory."
+                f"{kv_hint} Set "
+                f"{LlamaCppBackend.METAL_CTX_OVERCOMMIT_ENV}=1 to load it anyway."
+            )
         return (
             f"A context of {requested_ctx:,} tokens does not fit in this Mac's unified "
             f"memory with this model. The largest that fits is {max_available_ctx:,} "
@@ -15607,6 +15626,9 @@ class LlamaCppBackend:
                         # Only a ceiling backed by a real KV estimate may refuse; the 4096
                         # fallback below is a guess and would block working loads.
                         _apple_measured_ceiling: Optional[int] = None
+                        # The other measured verdict: nothing fits at all, so there is no
+                        # ceiling to name and every explicit request over-commits.
+                        _apple_nothing_fits = False
                         # Reserve the flat MTP fraction up front like the discrete
                         # _pin_fraction, so an unsized MTP draft (e.g. Qwen3.6-MTP, #6529)
                         # can't over-commit. No-op when MTP is off; exclusive with the
@@ -15661,16 +15683,28 @@ class LlamaCppBackend:
                                 # cannot reduce below fit_params_min_ctx (4096) either, so
                                 # the backstop had nothing left to give.
                                 _floor_cap = _apple_ctx_fit(native_ctx_for_cap, _FIT_FLOOR_MIN_CTX)
-                                if (
-                                    _floor_cap < cap
-                                    and _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib
-                                ):
+                                if _floor_cap >= cap:
+                                    # It could not shrink, so the weights themselves are
+                                    # over budget and the fit priced nothing. A different
+                                    # failure, owned by the host-RAM guard. Floor for the
+                                    # UI, but do not refuse against a number the fit never
+                                    # vouched for.
+                                    max_available_ctx = min(4096, native_ctx_for_cap)
+                                elif _apple_footprint_mib(_floor_cap) <= _apple_fit_budget_mib:
                                     max_available_ctx = _floor_cap
                                     _apple_measured_ceiling = _floor_cap
                                 else:
-                                    # Floor for the UI, but do not refuse against a number
-                                    # the fit never vouched for.
+                                    # It shrank, so the weights fit, and even the smallest
+                                    # context the search will price does not. That is a
+                                    # measurement too, and the strongest one available:
+                                    # nothing fits, so there is no number to lower to and
+                                    # every explicit request over-commits. Refuse those and
+                                    # say so. Auto is untouched, as everywhere else here --
+                                    # it keeps the 4096 floor it has always launched at,
+                                    # since changing what Auto does on this host is a
+                                    # larger claim than this guard is making.
                                     max_available_ctx = min(4096, native_ctx_for_cap)
+                                    _apple_nothing_fits = True
                         else:
                             # No KV estimate: mirror the discrete file-size-only fallback
                             # and floor to 4096 rather than launch at native and over-commit.
@@ -15678,7 +15712,7 @@ class LlamaCppBackend:
                         if not explicit_ctx:
                             effective_ctx = max_available_ctx
                         elif (
-                            _apple_measured_ceiling is not None
+                            (_apple_measured_ceiling is not None or _apple_nothing_fits)
                             and not _caller_owns_budget
                             and not _paravirtual_cpu_forced
                         ):
@@ -15707,7 +15741,9 @@ class LlamaCppBackend:
                             # afterwards, so the request really is what gets allocated.
                             # Re-price through it, and only adopt the answer when it is one
                             # the budget vouches for.
-                            if effective_ctx > native_ctx_for_cap:
+                            if _apple_measured_ceiling is not None and (
+                                effective_ctx > native_ctx_for_cap
+                            ):
                                 _extended_ceiling = _apple_ctx_fit(effective_ctx, _FIT_MIN_CTX)
                                 if (
                                     _extended_ceiling > _apple_measured_ceiling
@@ -15717,8 +15753,9 @@ class LlamaCppBackend:
                                     _apple_measured_ceiling = _extended_ceiling
                             _metal_ctx_refusal = self._metal_context_overcommit_message(
                                 effective_ctx,
-                                _apple_measured_ceiling,
+                                _apple_measured_ceiling or 0,
                                 cache_type_kv,
+                                nothing_fits = _apple_nothing_fits,
                             )
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra

@@ -622,3 +622,108 @@ class TestAContextAboveTheModelsNativeLength:
         message = str(excinfo.value)
         assert "4,096" not in message
         assert _named_ceiling(message) > 4096
+
+
+class TestWhenNothingFitsAtAll:
+    """Weights fit, and even the smallest context the search prices does not.
+
+    The narrowest of the three states the over-budget arm has to tell apart, and the
+    one with no number to lower to. It is a measurement, not an absence of one: the fit
+    shrank, which is what says the weights themselves fit, and then the floor it shrank
+    to did not fit either. Leaving it unmeasured let every explicit context through on a
+    host where all of them over-commit, which is the crash this guard exists to stop.
+
+    Told apart from weights-alone-over-budget by whether the re-priced answer is
+    smaller. That arm returns the request untouched for any min_ctx, so it cannot
+    shrink; this one always does.
+    """
+
+    # Weights heavy enough that the budget cannot afford 256 tokens on top of them at
+    # 1 MiB each, but still light enough that the fit can shrink at all -- which is the
+    # signal that separates this state from weights-alone-over-budget. Measured window
+    # for this harness: ~3850 to ~4050 MiB, with 3300 leaving room for 768 tokens and
+    # 4100 tipping into weights-over-budget.
+    NOTHING_FITS = dict(
+        real_fit = True,
+        budget_bytes = _BUDGET,
+        weights_bytes = 3950 * 1024**2,
+        kv_per_token = _FAT_KV,
+    )
+
+    def test_an_explicit_context_is_refused(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = "No context fits"):
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **self.NOTHING_FITS)
+
+    def test_even_a_tiny_explicit_context_is_refused(self, tmp_path, monkeypatch):
+        """There is no floor to fall back to: 512 over-commits the same as 32768."""
+        with pytest.raises(RuntimeError, match = "No context fits"):
+            _launch(tmp_path, monkeypatch, n_ctx = 512, **self.NOTHING_FITS)
+
+    def test_the_refusal_names_no_ceiling(self, tmp_path, monkeypatch):
+        """Naming one would be inventing a number the fit never vouched for, and the
+        user would lower to it and hit the same wall."""
+        with pytest.raises(RuntimeError) as excinfo:
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **self.NOTHING_FITS)
+        message = str(excinfo.value)
+        assert "The largest that fits" not in message
+        assert "smaller or more quantized GGUF" in message
+
+    def test_it_still_names_the_opt_out(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match = _ENV):
+            _launch(tmp_path, monkeypatch, n_ctx = 8192, **self.NOTHING_FITS)
+
+    def test_the_opt_out_loads_it_anyway(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(_ENV, "1")
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 8192, **self.NOTHING_FITS)["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_auto_is_untouched(self, tmp_path, monkeypatch):
+        """Auto has always launched at the 4096 floor on this host. Changing that is a
+        larger claim than this guard makes, and it is not what was reported."""
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 0, **self.NOTHING_FITS)["cmd"]
+        assert _ctx_values(cmd)[-1] == "4096"
+
+    def test_a_fixed_manual_layer_count_is_still_exempt(self, tmp_path, monkeypatch):
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 8192,
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+            **self.NOTHING_FITS,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_a_virtualised_device_is_still_exempt(self, tmp_path, monkeypatch):
+        cmd = _launch(tmp_path, monkeypatch, n_ctx = 8192, paravirtual = True, **self.NOTHING_FITS)[
+            "cmd"
+        ]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_weights_over_budget_is_still_not_refused(self, tmp_path, monkeypatch):
+        """The neighbouring state, and the discriminator between them. Here the fit
+        cannot shrink, so nothing was measured and the host-RAM guard owns the failure."""
+        cmd = _launch(
+            tmp_path,
+            monkeypatch,
+            n_ctx = 8192,
+            real_fit = True,
+            budget_bytes = _BUDGET,
+            weights_bytes = 4100 * 1024**2,
+            kv_per_token = _FAT_KV,
+        )["cmd"]
+        assert _ctx_values(cmd)[-1] == "8192"
+
+    def test_a_host_with_room_for_a_small_context_names_it(self, tmp_path, monkeypatch):
+        """The third state, so all three arms are pinned against the real helper: the
+        floor re-price finds something, and that something is what gets named."""
+        with pytest.raises(RuntimeError, match = "The largest that fits"):
+            _launch(
+                tmp_path,
+                monkeypatch,
+                n_ctx = 32768,
+                real_fit = True,
+                budget_bytes = _BUDGET,
+                weights_bytes = _TIGHT_WEIGHTS,
+                kv_per_token = _FAT_KV,
+            )

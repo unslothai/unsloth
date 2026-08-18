@@ -32,6 +32,35 @@ if str(_BACKEND) not in sys.path:
 import utils.hardware as hardware_pkg  # noqa: E402
 
 
+def _restore_real_logging_modules() -> None:
+    """Undo the stubs other test files install, so `main` can be imported.
+
+    Several files in this tree put a plain module named `loggers` and a minimal
+    `structlog` into sys.modules to avoid the real dependency, and pytest runs the whole
+    tree in one process. `main` does `from loggers.config import LogConfig`, and that
+    module needs both the real package (a plain module cannot satisfy `loggers.config`)
+    and real structlog (it annotates with `structlog.BoundLogger`). So whichever file
+    sorts first decides whether this one can import main at all. Predates this change:
+    the existing MLX-repair health test hits the same wall in a full-suite run.
+
+    Dropping the stubs is safe in both directions. The real `loggers` package sits in
+    this backend and exports the same `get_logger`, so a later test expecting the stub
+    gets a working superset. If real structlog is genuinely absent the caller skips
+    rather than failing, since that is an environment gap and not a defect here.
+    """
+    stub = sys.modules.get("loggers")
+    if stub is not None and not hasattr(stub, "__path__"):
+        for name in [n for n in sys.modules if n == "loggers" or n.startswith("loggers.")]:
+            del sys.modules[name]
+    stub = sys.modules.get("structlog")
+    if stub is not None and not hasattr(stub, "BoundLogger"):
+        del sys.modules["structlog"]
+    try:
+        import structlog  # noqa: F401
+    except Exception:
+        pytest.skip("real structlog is required to import main")
+
+
 def _health(
     monkeypatch,
     *,
@@ -39,6 +68,7 @@ def _health(
     authed: bool = True,
 ) -> dict:
     """Drive /api/health and return the body."""
+    _restore_real_logging_modules()
     import auth.authentication as _authmod
     import main as main_mod
     from fastapi import FastAPI
