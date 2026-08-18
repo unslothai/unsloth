@@ -886,7 +886,14 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
     def setUpClass(cls):
         cls.route = _load_inference_route()
 
-    def _preflight(self, *, metadata, availability = None, requested = None, selected = None):
+    def _preflight(
+        self,
+        *,
+        metadata,
+        availability = None,
+        requested = None,
+        selected = None,
+    ):
         config = SimpleNamespace(identifier = "test/native-audio", audio_type = "higgs_tts2")
         request = SimpleNamespace(gpu_ids = requested, hf_token = None, max_seq_length = 2048)
         placement = self.route._LoadPlacement(requested, None, False, False)
@@ -964,9 +971,7 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
         )
         backend._read_resp = lambda **_kwargs: next(replies)
         backend._ensure_subprocess_alive = lambda: True
-        response = backend._wait_response(
-            "gpu_memory", timeout = 1.0, expected_request_id = "new"
-        )
+        response = backend._wait_response("gpu_memory", timeout = 1.0, expected_request_id = "new")
         self.assertEqual(response["reclaimable_gpu_gb"], {"0": 4.0})
 
     def test_llama_floor_uses_the_child_to_physical_gpu_map(self):
@@ -980,9 +985,7 @@ class TestNativeAudioPlacementContracts(unittest.TestCase):
         self.assertEqual(backend.reclaimable_gpu_memory_gb(), {1: 10.0})
 
     def test_inflight_media_replacement_is_never_credited(self):
-        utilization = {
-            "devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]
-        }
+        utilization = {"devices": [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 18.0}]}
         media = SimpleNamespace(
             _generate_lock = threading.Lock(),
             _lock = threading.Lock(),
