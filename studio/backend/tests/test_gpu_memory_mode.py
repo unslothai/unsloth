@@ -1400,9 +1400,10 @@ def test_zero_vram_chat_load_refuses_every_gpu_companion(not_vulkan):
     assert zero("manual", 0, [], False, "model") is False
     # A CPU-pinned device and a CPU-forced drafter keep it zero-VRAM.
     assert zero("manual", 0, ["--device", "none"], False, "off") is True
-    assert zero(
-        "manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"], False, "off"
-    ) is True
+    assert (
+        zero("manual", 0, ["--model-draft", "/tmp/d.gguf", "--spec-draft-ngl", "0"], False, "off")
+        is True
+    )
 
 
 def test_zero_vram_chat_load_exempts_disabled_speculation(not_vulkan):
