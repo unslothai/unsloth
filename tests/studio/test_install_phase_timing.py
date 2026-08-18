@@ -53,59 +53,94 @@ def test_the_powershell_half_rejects_zero_rather_than_treating_it_as_truthy():
     )
 
 
-def test_the_bash_half_rejects_zero_and_empty():
+def _sh_function(name: str) -> str:
+    """The body of a shell function in setup.sh, as text."""
     src = SETUP_SH.read_text(encoding = "utf-8")
-    assert "_unsloth_elapsed()" in src, "setup.sh no longer defines the timing helper"
-    body = src[src.index("_unsloth_elapsed()") :][:400]
-    assert re.search(
-        r'""\|0\)\s*return', body
-    ), f'setup.sh\'s timing helper no longer returns early for "" and 0:\n{body[:200]}'
+    start = src.index(f"\n{name}() {{")
+    depth, i = 0, start
+    while True:
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : i + 1]
+        i += 1
 
 
-def test_the_bash_helper_is_silent_by_default_and_prefixes_when_asked():
-    """Run the real helper. A text check alone would not catch a broken printf."""
-    body = SETUP_SH.read_text(encoding = "utf-8")
-    start = body.index("_unsloth_elapsed()")
-    snippet = body[start : body.index("step()", start)]
-    script = snippet + '\nprintf "[%s]" "$(_unsloth_elapsed)"\n'
-
-    off = subprocess.run(
-        ["bash", "-c", script], capture_output = True, text = True, env = {"PATH": "/usr/bin:/bin"}
+@pytest.mark.parametrize("fn", ["step", "substep"])
+def test_the_bash_half_rejects_zero_and_empty(fn):
+    body = _sh_function(fn)
+    assert re.search(r'""\|0\)', body), (
+        f'setup.sh\'s {fn}() no longer treats "" and 0 as off:\n{body}'
     )
-    assert off.stdout == "[]", f"timing leaked into default output: {off.stdout!r}"
 
-    for value in ("0", ""):
-        r = subprocess.run(
-            ["bash", "-c", script],
-            capture_output = True,
-            text = True,
-            env = {"PATH": "/usr/bin:/bin", ENV_VAR: value},
-        )
-        assert r.stdout == "[]", f"{ENV_VAR}={value!r} enabled timing: {r.stdout!r}"
+
+@pytest.mark.parametrize("fn", ["step", "substep"])
+def test_the_bash_helpers_are_silent_by_default_and_prefix_when_asked(fn):
+    """Run the real function. A text check alone would not catch a broken printf."""
+    script = "C_DIM= C_OK= C_RST= C_WARN=\n" + _sh_function(fn) + f'\n{fn} "lbl" "msg"\n'
+    base = {"PATH": "/usr/bin:/bin"}
+
+    for env in (base, {**base, ENV_VAR: "0"}, {**base, ENV_VAR: ""}):
+        r = subprocess.run(["bash", "-c", script], capture_output = True, text = True, env = env)
+        assert r.returncode == 0, r.stderr
+        assert "s] " not in r.stdout, f"timing leaked into default output: {r.stdout!r}"
 
     on = subprocess.run(
-        ["bash", "-c", script],
-        capture_output = True,
-        text = True,
-        env = {"PATH": "/usr/bin:/bin", ENV_VAR: "1"},
+        ["bash", "-c", script], capture_output = True, text = True, env = {**base, ENV_VAR: "1"}
     )
-    assert re.fullmatch(
-        r"\[\[ *\d+s\] \]", on.stdout
-    ), f"{ENV_VAR}=1 did not produce an elapsed prefix: {on.stdout!r}"
+    assert on.returncode == 0, on.stderr
+    assert re.search(r"\[ *\d+s\] ", on.stdout), (
+        f"{ENV_VAR}=1 produced no elapsed prefix: {on.stdout!r}"
+    )
 
 
 def test_both_print_helpers_carry_the_prefix():
     """Prefixing one sink and not the other would time half the install."""
     src = SETUP_PS1.read_text(encoding = "utf-8")
     for fn, var in (("function step {", "$Value"), ("function substep {", "$Message")):
-        block = src[src.index(fn) :][:1200]
-        assert (
-            f"{var} = (Get-StudioElapsedPrefix) + {var}" in block
-        ), f"{fn.strip()} does not prefix {var} with the elapsed time"
-    sh = SETUP_SH.read_text(encoding = "utf-8")
-    for fn in ("step()", "substep()"):
-        line = next(l for l in sh.splitlines() if l.startswith(fn))
-        assert "_unsloth_elapsed" in line, f"{fn} in setup.sh carries no timing: {line!r}"
+        block = src[src.index(fn) :][:1600]
+        assert "Variable:script:StudioTimingEnabled" in block, (
+            f"{fn.strip()} no longer consults the timing switch"
+        )
+        assert f'{var} = ("[{{0,7:N1}}s] "' in block, (
+            f"{fn.strip()} does not prefix {var} with the elapsed time"
+        )
+    for fn in ("step", "substep"):
+        assert "SECONDS" in _sh_function(fn), f"setup.sh {fn}() carries no timing"
+
+
+def test_the_print_helpers_call_nothing_defined_elsewhere_in_the_file():
+    """They are dot-sourced ON THEIR OWN, so a call out of them is a crash, not a warning.
+
+    tests/python/test_windows_setup_output_encoding.py builds a probe script containing only
+    Get-StudioAnsi, Write-StudioLine, Write-StudioStdoutMirror, step and substep, and runs it.
+    A first cut of this feature had `step` call a `Get-StudioElapsedPrefix` helper defined at
+    the top of setup.ps1; the probe then died with "The term 'Get-StudioElapsedPrefix' is not
+    recognized" and took 12 tests with it. The timing logic is inline for that reason, and
+    reads its state through Test-Path so an unset $script: variable is empty rather than
+    fatal under a caller's Set-StrictMode.
+    """
+    src = SETUP_PS1.read_text(encoding = "utf-8")
+    allowed = {
+        "Get-StudioAnsi",
+        "Write-StudioLine",
+        "Write-StudioStdoutMirror",
+        "Write-Host",
+        "Test-Path",
+    }
+    for fn in ("function step {", "function substep {"):
+        block = src[src.index(fn) :]
+        block = block[: block.index("\n}\n") + 3]
+        # Comments out: the block explains itself by NAMING the cmdlets it must not call.
+        block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+        called = set(re.findall(r"\b([A-Z][a-z]+-[A-Za-z]+)\b", block))
+        stray = called - allowed
+        assert not stray, (
+            f"{fn.strip()} calls {sorted(stray)}, which the encoding probe does not "
+            f"dot-source alongside it. Inline it instead."
+        )
 
 
 def _windows_install_steps():

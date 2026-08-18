@@ -40,11 +40,6 @@ $ErrorActionPreference = "Stop"
 $script:StudioTimingEnabled = [bool]($env:UNSLOTH_INSTALL_TIMING) -and ($env:UNSLOTH_INSTALL_TIMING -ne '0')
 $script:StudioTimingSw = [System.Diagnostics.Stopwatch]::StartNew()
 
-function Get-StudioElapsedPrefix {
-    if (-not $script:StudioTimingEnabled) { return "" }
-    return ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds)
-}
-
 # This script is spawned as powershell.exe -- Windows PowerShell 5.1 (see the PSModulePath note
 # below) -- where the Invoke-WebRequest progress bar is redrawn on every read and sets the rate
 # instead of the link: the VC++ runtime (24.4 MB, Ensure-VCRedist) took 38.18s with the bar on
@@ -1778,10 +1773,15 @@ function step {
         [Parameter(Mandatory = $true)][string]$Value,
         [string]$Color = "Green"
     )
-    # Prefix the VALUE rather than each sink below, so all four output paths (mirror,
-    # VT, plain, and the colourless fallback) carry the timing without touching any of
-    # their formatting. Returns "" unless UNSLOTH_INSTALL_TIMING is set.
-    $Value = (Get-StudioElapsedPrefix) + $Value
+    # Prefix the VALUE rather than each sink below, so all four output paths (mirror, VT,
+    # plain, and the colourless fallback) carry the timing without touching any of their
+    # formatting. Inline rather than a helper call, and Test-Path-guarded: this function is
+    # dot-sourced ON ITS OWN by tests/python/test_windows_setup_output_encoding.py, where
+    # neither a helper nor the $script: state above exists, and reading an unset $script:
+    # variable under a caller's Set-StrictMode is fatal rather than empty.
+    if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
+        $Value = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Value
+    }
     $padded = if ($Label.Length -ge 15) { $Label.Substring(0, 15) } else { $Label.PadRight(15) }
     # Exactly one sink: the console handle when redirected, Write-Host (the only
     # one that colorizes) when interactive.
@@ -1820,8 +1820,11 @@ function substep {
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Color = "DarkGray"
     )
-    # Same reasoning as `step` above: prefix once, before the sinks diverge.
-    $Message = (Get-StudioElapsedPrefix) + $Message
+    # Same reasoning as `step` above: prefix once, before the sinks diverge, inline and
+    # guarded so this function still runs when dot-sourced on its own.
+    if ((Test-Path Variable:script:StudioTimingEnabled) -and $script:StudioTimingEnabled) {
+        $Message = ("[{0,7:N1}s] " -f $script:StudioTimingSw.Elapsed.TotalSeconds) + $Message
+    }
     # Exactly one sink, as in `step` above.
     if ($script:StudioStdoutRedirected) {
         Write-StudioStdoutMirror ("  {0,-15}{1}" -f "", $Message)

@@ -71,14 +71,19 @@ fi
 # platforms: the identical install is 88s on Linux and 260-291s on Windows, and
 # nothing in either log said which phase accounts for the difference.
 # $SECONDS is a bash builtin counting since shell start, so no subprocess per line.
-_unsloth_elapsed() {
-    case "${UNSLOTH_INSTALL_TIMING:-0}" in
-        ""|0) return 0 ;;
-    esac
-    printf '[%5ss] ' "$SECONDS"
+# Inlined into both helpers rather than factored out: setup.ps1's equivalents are
+# dot-sourced on their own by tests/python/test_windows_setup_output_encoding.py, and
+# keeping the two sides symmetrical means neither grows a dependency the other lacks.
+step() {
+    local _t=""
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[${SECONDS}s] " ;; esac
+    printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$_t" "$2"
 }
-step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s%s${C_RST}\n" "$1" "$(_unsloth_elapsed)" "$2"; }
-substep() { printf "  %-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$(_unsloth_elapsed)" "$1"; }
+substep() {
+    local _t=""
+    case "${UNSLOTH_INSTALL_TIMING:-0}" in ""|0) ;; *) _t="[${SECONDS}s] " ;; esac
+    printf "  %-15s${2:-$C_DIM}%s%s${C_RST}\n" "" "$_t" "$1"
+}
 
 setup_fail() {
     local exit_code=$1
