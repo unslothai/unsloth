@@ -1140,6 +1140,9 @@ export const es = {
       archivedVideos: "Vídeos archivados",
       archivedVideosDescription: "Consulta y gestiona los vídeos que has archivado.",
       manageAction: "Gestionar",
+      manageChats: "Gestionar chats",
+      manageChatsDescription:
+        "Selecciona varios chats para moverlos, fijarlos, archivarlos, exportarlos o eliminarlos.",
       exportArchivedChats: "Exportar",
       exportingArchivedChats: "Exportando...",
       exportedOneArchivedChat: "Se exportó 1 chat archivado",
