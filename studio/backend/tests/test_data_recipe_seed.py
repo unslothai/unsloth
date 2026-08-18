@@ -221,3 +221,95 @@ def test_total_upload_quota_is_scoped_per_block(monkeypatch, tmp_path):
     # Another block starts with its own untouched budget.
     other = _run_upload(seed_route, "c.txt", b"123", block_id = "other")
     assert other.status == "ok"
+
+
+class _BlockPlugin:
+    """Meta path finder making the optional seed plugin look uninstalled."""
+
+    def __init__(self, name: str = "data_designer_unstructured_seed"):
+        self.name = name
+        self.attempts = 0
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname == self.name or fullname.startswith(self.name + "."):
+            self.attempts += 1
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name = fullname)
+        return None
+
+
+def _without_plugin(monkeypatch, seed_route):
+    import sys
+
+    blocker = _BlockPlugin()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+    for name in [m for m in sys.modules if m.split(".")[0] == blocker.name]:
+        monkeypatch.delitem(sys.modules, name)
+    seed_route._CHUNKING = None
+    return blocker
+
+
+def test_unstructured_preview_reports_unavailable_without_the_plugin(monkeypatch, tmp_path):
+    """Deferring the plugin import must not change what a missing plugin looks like."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+
+    assert seed_route._chunking() is None
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        seed_route._read_preview_rows_from_unstructured_file(
+            path = tmp_path / "a.txt", preview_size = 5, chunk_size = None, chunk_overlap = None
+        )
+    assert exc.value.status_code == 500
+    assert "Unstructured seed support not available" in exc.value.detail
+
+    with pytest.raises(seed_route.HTTPException) as exc:
+        seed_route._read_preview_rows_from_multi_files(
+            block_id = "block",
+            file_ids = ["a"],
+            file_names = ["a.txt"],
+            preview_size = 5,
+            chunk_size = None,
+            chunk_overlap = None,
+        )
+    assert exc.value.status_code == 500
+    assert "Unstructured seed support not available" in exc.value.detail
+
+
+def test_missing_plugin_is_probed_once(monkeypatch, tmp_path):
+    """A failed probe is remembered, so previews do not retry the import every time."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    blocker = _without_plugin(monkeypatch, seed_route)
+
+    assert seed_route._chunking() is None
+    assert seed_route._chunking() is None
+    assert blocker.attempts == 1
+
+
+def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_path):
+    """normalize_unstructured_text lives in the plugin; without it raw text stands."""
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+    source = tmp_path / "notes.txt"
+    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+
+    # The plugin is what collapses the run of blank lines.
+    assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
+
+
+def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
+    """With the plugin installed the same call sites still go through it."""
+    pytest.importorskip("data_designer_unstructured_seed")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    seed_route._CHUNKING = None
+
+    chunking = seed_route._chunking()
+    assert chunking is not None
+    assert chunking.resolve_chunking(0, 0)[0] == 1
+    source = tmp_path / "notes.txt"
+    source.write_text("a\n\n\n\nb", encoding = "utf-8")
+    assert seed_route._extract_text_from_file(source, ".txt") == "a\n\nb"
