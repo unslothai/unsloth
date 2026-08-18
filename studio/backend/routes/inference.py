@@ -11067,9 +11067,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
             ),
         )
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}"
-        )
+        raise HTTPException(status_code = 502, detail = f"Could not reach the TTS endpoint: {exc}")
     return Response(content = audio_bytes, media_type = media_type)
 
 

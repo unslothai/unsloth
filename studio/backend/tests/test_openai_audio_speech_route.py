@@ -315,7 +315,12 @@ def test_non_latin_prompts_are_not_billed_at_the_latin_rate():
 # ── External connection proxying (provider_id) ───────────────────
 
 
-def _install_external(monkeypatch, *, enabled = True, media_type = "audio/wav"):
+def _install_external(
+    monkeypatch,
+    *,
+    enabled = True,
+    media_type = "audio/wav",
+):
     created = []
     speech_calls = []
 
@@ -334,9 +339,7 @@ def _install_external(monkeypatch, *, enabled = True, media_type = "audio/wav"):
         ),
     )
     monkeypatch.setattr(routes_module, "validate_provider_base_url", lambda url: url)
-    monkeypatch.setattr(
-        routes_module, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
-    )
+    monkeypatch.setattr(routes_module, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
 
     class _FakeClient:
         def __init__(self, provider_type, base_url, api_key):
