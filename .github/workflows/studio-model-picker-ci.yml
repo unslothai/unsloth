@@ -1,0 +1,106 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# The On Device rows mount their tooltips and their dots menu on FIRST CONTACT rather than up
+# front, which is invisible when it works and invisible when it breaks. The behaviour that can go
+# silently wrong is all pointer- and focus-shaped -- a tooltip that never opens because Radix
+# needed a pointermove, a Tab that drops focus to <body> because the focused element was replaced,
+# a click whose mousedown and mouseup land on two different nodes so the browser fires no click at
+# all -- so it needs a real browser, not a source-pinning test.
+#
+# Its own workflow rather than a step in studio-frontend-ci.yml: this is one short job with one
+# suite in it, and keeping it separate means a change to the picker cannot queue behind, or
+# conflict with, the frontend CI file every other surface also edits.
+
+name: Studio model picker
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'studio/frontend/src/features/model-picker/**'
+      - 'studio/frontend/smoke-model-picker-scale*'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'tests/studio/playwright_model_picker_deferred.py'
+      - 'tests/studio/playwright_model_picker_scale.py'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-model-picker-ci.yml'
+  pull_request:
+    paths:
+      - 'studio/frontend/src/features/model-picker/**'
+      - 'studio/frontend/smoke-model-picker-scale*'
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'tests/studio/playwright_model_picker_deferred.py'
+      - 'tests/studio/playwright_model_picker_scale.py'
+      - 'tests/studio/_playwright_robust.py'
+      - '.github/workflows/studio-model-picker-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per COMMIT on main, per ref elsewhere. A shared main group lets a merge burst cancel a pending
+  # run before it starts, with zero jobs recorded, so the workflow silently never reports on that
+  # commit; cancel-in-progress only spares runs already executing.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  picker-rows:
+    name: Model picker On Device rows
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      # node 22 bundles npm 10.x, which predates allowScripts; the frontend CI job upgrades for
+      # the same reason. --strict-allow-scripts then hard-fails on any unreviewed install script.
+      - name: Upgrade npm to 11.x (allowScripts enforcement)
+        run: |
+          npm install -g npm@^11 --no-fund --no-audit
+          V=$(npm -v)
+          case "$V" in
+            11.1[6-9].*|11.[2-9][0-9].*|1[2-9].*) echo "npm $V has allowScripts" ;;
+            *) echo "::error::npm $V lacks allowScripts (need >=11.16)"; exit 1 ;;
+          esac
+
+      - name: Install frontend dependencies
+        working-directory: studio/frontend
+        run: npm ci --strict-allow-scripts --no-fund --no-audit
+
+      - name: Install Chromium
+        run: |
+          python3 -m pip install 'playwright>=1.45,<2'
+          python3 -m playwright install --with-deps chromium
+
+      # The suite starts its own vite dev server on this port and stops it again; no dist/ is
+      # read, so nothing has to be built first.
+      - name: On Device rows defer their tooltips and menus, and still behave like rows
+        env:
+          SMOKE_PORT: '5563'
+          SMOKE_PICKER_MODELS: '200'
+        run: python3 tests/studio/playwright_model_picker_deferred.py
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v5.0.0
+        with:
+          name: studio-model-picker-artifacts
+          path: |
+            logs/playwright-model-picker-scale
+            logs/vite-*.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -40,6 +40,13 @@ NOT_IN_CI = {
     # can go wrong silently, the verdict in harness_failures, is driven without a
     # browser by test_autoscroll_harness_contract.py, which CI does run.
     "playwright_thread_weight.py",
+    # The same shape as playwright_thread_weight.py: a measurement harness, not a gate. It prints
+    # the per-N cost table the picker deferral was sized from and says so in its own docstring
+    # ("THIS HARNESS MEASURES, IT DOES NOT GATE"); it asserts no budget, and the sizes that make
+    # its curve mean anything (1000 models across a 1x/2x/4x CPU ladder) cost tens of minutes. The
+    # BEHAVIOUR it exists to protect is gated by playwright_model_picker_deferred.py, which
+    # studio-model-picker-ci.yml runs on every change to the picker.
+    "playwright_model_picker_scale.py",
 }
 
 
