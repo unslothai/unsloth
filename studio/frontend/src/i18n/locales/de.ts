@@ -186,6 +186,8 @@ export const de = {
       closeAriaLabel: "Einstellungen schließen",
       searchPlaceholder: "Einstellungen durchsuchen…",
       searchNoResults: "Keine Einstellungen gefunden.",
+      panelFailed: "Dieser Bereich konnte nicht geladen werden.",
+      panelReload: "Neu laden",
     },
     tabs: {
       general: "Allgemein",

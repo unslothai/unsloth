@@ -184,6 +184,8 @@ export const ja = {
       closeAriaLabel: "設定を閉じる",
       searchPlaceholder: "設定を検索…",
       searchNoResults: "設定が見つかりません。",
+      panelFailed: "このセクションを読み込めませんでした。",
+      panelReload: "再読み込み",
     },
     tabs: {
       general: "一般",

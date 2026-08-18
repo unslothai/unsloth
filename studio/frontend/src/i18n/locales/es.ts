@@ -185,6 +185,8 @@ export const es = {
       closeAriaLabel: "Cerrar configuración",
       searchPlaceholder: "Buscar en la configuración…",
       searchNoResults: "No se encontró ninguna opción.",
+      panelFailed: "No se pudo cargar esta sección.",
+      panelReload: "Recargar",
     },
     tabs: {
       general: "General",
