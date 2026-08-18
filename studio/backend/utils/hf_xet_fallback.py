@@ -339,7 +339,10 @@ def _as_int(value: str) -> "Optional[int]":
 # A worker allocates inside the child, after Popen returns, so free RAM does not drop until well
 # after we sized it. Four downloads starting together would each read the same untouched `available`
 # and each take a quarter of it, promising the whole machine. Reservations bridge that window:
-# sizing subtracts what live siblings were already promised.
+# sizing subtracts what live siblings were already promised but have not yet taken. Only the
+# unmaterialized remainder, because once a worker's buffers are resident `available` has ALREADY
+# dropped by them: charging the whole promise on top of that reading counts the same bytes twice,
+# for the worker's entire lifetime, and talks the next download out of RAM that is genuinely free.
 # RLock: the clamp holds this across its whole decide-and-reserve region, and the reserve retakes it.
 _budget_lock = threading.RLock()
 # token -> [bytes, pid or None, monotonic stamp]
@@ -381,17 +384,47 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _worker_rss(pid: int) -> int:
+    """Physical RAM *pid* already holds, or ``0`` when it cannot be read.
+
+    ``rss`` is psutil's portable field: RES on Linux, resident size on macOS, ``WorkingSetSize`` on
+    Windows. All three are physical pages, which is the same quantity ``virtual_memory().available``
+    has already been reduced by, so it is the right thing to credit against a promise.
+
+    Zero on any failure (no psutil, the worker exited between the liveness probe and here, Windows
+    ``AccessDenied``), which reserves the whole promise -- the conservative pre-credit behaviour."""
+    try:
+        import psutil  # noqa: PLC0415 - optional, and only on the ledger path
+        return max(0, int(psutil.Process(pid).memory_info().rss))
+    except Exception:  # noqa: BLE001 - an unreadable worker is not evidence it allocated nothing
+        return 0
+
+
 def _live_reserved_locked() -> int:
-    """Bytes promised to workers still alive, pruning anything finished or never spawned."""
+    """Bytes promised to live workers that are NOT YET RESIDENT, pruning anything finished or never
+    spawned.
+
+    A promise covers the gap between sizing and allocation. The hf_xet buffer is an adjustable
+    semaphore, so the worker draws on it as terms arrive rather than allocating it up front; every
+    byte it has drawn is already missing from ``available``. Subtracting the whole promise from that
+    reading charges the resident part a second time, which is why the credit is capped at the
+    promise: a fully materialized worker contributes nothing further, a freshly spawned one still
+    contributes all of it."""
     now = time.monotonic()
+    total = 0
     for token, entry in list(_budget_reservations.items()):
         nbytes, pid, stamp = entry
         if pid is None:
             if now - stamp > _UNBOUND_RESERVATION_TTL:
                 _budget_reservations.pop(token, None)
-        elif now - stamp > _BOUND_RESERVATION_TTL or not _pid_alive(pid):
+            else:
+                total += nbytes  # nothing spawned yet, so nothing of it is resident
+            continue
+        if now - stamp > _BOUND_RESERVATION_TTL or not _pid_alive(pid):
             _budget_reservations.pop(token, None)
-    return sum(entry[0] for entry in _budget_reservations.values())
+            continue
+        total += max(0, nbytes - _worker_rss(pid))
+    return total
 
 
 def _reserve_worker_budget(nbytes: int) -> None:
@@ -526,7 +559,7 @@ def clamp_to_available_ram(
 
         _logging.getLogger(__name__).info(
             "Xet download buffers clamped to free RAM: %.2fGB -> %.2fGB "
-            "(%.1fGB free of %.1fGB total, %.2fGB already promised to running downloads)",
+            "(%.1fGB free of %.1fGB total, %.2fGB promised to running downloads and not yet taken)",
             limit / 1e9,
             effective / 1e9,
             available / 1e9,
@@ -571,9 +604,11 @@ def free_ram_pressure_reason() -> "Optional[str]":
     as an explicit transport, and ``resolve_auto_use_xet`` covers an API caller that sends "auto".
     Unmeasurable RAM is not evidence of pressure, so anything unreadable keeps Xet.
 
-    RAM already promised to running downloads is subtracted, so the Nth concurrent download is sent
-    to HTTP rather than handed Xet's floor. The clamp alone cannot bound that: its budget bottoms out
-    at the floor, so enough simultaneous workers would still add up past free RAM."""
+    RAM promised to running downloads but not yet resident is subtracted, so the Nth concurrent
+    download is sent to HTTP rather than handed Xet's floor. The clamp alone cannot bound that: its
+    budget bottoms out at the floor, so enough simultaneous workers would still add up past free
+    RAM. Only the unclaimed remainder, since whatever a worker has already taken is missing from
+    this reading already (see ``_live_reserved_locked``)."""
     try:
         available, floor = available_ram_bytes()
         if available is not None:

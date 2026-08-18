@@ -1114,7 +1114,13 @@ def test_one_download_on_an_idle_machine_is_still_untouched(clean_ledger):
 
 def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledger, monkeypatch):
     """The clamp bottoms out at Xet's floor, so enough simultaneous workers would still add up past
-    free RAM. Subtracting reservations sends the next one to HTTP instead."""
+    free RAM. Subtracting reservations sends the next one to HTTP instead.
+
+    Both halves of that guard are asserted, because the promise and the RAM reading cover different
+    moments: three just-admitted workers have taken nothing yet, so only the ledger can stop the
+    fourth; three that have finished allocating are already missing from `available`, which stops it
+    without the ledger. `os.getpid()` stands in for all three, so its own RSS is stubbed out rather
+    than credited three times against promises it has nothing to do with."""
     import os
 
     shim = clean_ledger
@@ -1123,13 +1129,86 @@ def test_the_transport_gate_counts_ram_promised_to_running_downloads(clean_ledge
 
     module = _fake_tuning(32 * _GB, 8 * _GB)
     sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)  # spawned, nothing allocated yet
+    promised = 0
     for _ in range(3):
-        shim.clamp_to_available_ram({}, dict(sized), module = module)
+        written = shim.clamp_to_available_ram({}, dict(sized), module = module)
         shim.bind_worker_budget(os.getpid())
+        promised += int(written[_LIMIT])
 
     reason = shim.free_ram_pressure_reason()
     assert reason is not None, "three running downloads left too little RAM for a fourth on Xet"
     assert "RAM free" in reason
+
+    # Same three workers once their buffers are resident: the promises are spent, and the RAM
+    # reading they have already moved is what refuses the fourth.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promised)
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promised, 4 * _GB))
+    assert shim.free_ram_pressure_reason() is not None, (
+        "three allocated downloads left too little RAM for a fourth on Xet"
+    )
+
+
+def test_a_resident_promise_is_not_charged_against_free_ram_twice(clean_ledger, monkeypatch):
+    """Once a worker's buffers are resident, `available` has already dropped by them.
+
+    The reservation exists to cover the gap between sizing and allocation, so charging the whole
+    promise on top of a reading that already reflects it counts the same bytes twice for the
+    worker's entire lifetime. On an 8GB-free host that is the difference between the next Auto
+    download getting Xet and being told "only 2.0GB RAM free" while 4GB genuinely is."""
+    import os
+
+    shim = clean_ledger
+    module = _fake_tuning(32 * _GB, 8 * _GB)
+    sized = module.xet_env_overrides(_fake_profile_cls()(32 * _GB, 8 * _GB))
+
+    written = shim.clamp_to_available_ram({}, dict(sized), module = module)
+    promise = int(written[_LIMIT])
+    shim.bind_worker_budget(os.getpid())
+
+    # Not yet allocated: the promise is the only thing standing between the sibling and this RAM.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: 0)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == promise
+
+    # Allocated: `available` fell by `promise`, so the ledger must stop asking for it again.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == 0, "a resident promise was subtracted a second time"
+
+    # Half in flight leaves exactly the unmaterialized half reserved.
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise // 2)
+    with shim._budget_lock:
+        assert shim._live_reserved_locked() == promise - promise // 2
+
+    # And the gate follows: 8GB free with one fully resident 2GB worker is 6GB, not 4GB, so Auto
+    # for the next download stays on Xet.
+    monkeypatch.setattr(shim, "available_ram_bytes", lambda: (8 * _GB - promise, 4 * _GB))
+    monkeypatch.setattr(shim, "_worker_rss", lambda pid: promise)
+    assert shim.free_ram_pressure_reason() is None, (
+        "the next Auto download was demoted to HTTP over RAM its sibling never took"
+    )
+
+
+def test_the_ledger_reads_a_real_workers_rss(clean_ledger):
+    """The credit above is only correct if the psutil read actually works on a live child."""
+    import subprocess
+    import sys
+
+    shim = clean_ledger
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"],
+        stdin = subprocess.PIPE,
+    )
+    try:
+        rss = shim._worker_rss(child.pid)
+        assert rss > 0, "a running interpreter reported no resident memory"
+    finally:
+        child.stdin.close()
+        child.wait(timeout = 30)
+
+    # An exited worker cannot be read, and an unreadable one keeps its whole promise reserved.
+    assert shim._worker_rss(child.pid) == 0 or not shim._pid_alive(child.pid)
 
 
 def test_concurrent_sizings_cannot_all_claim_the_same_free_ram(clean_ledger):
