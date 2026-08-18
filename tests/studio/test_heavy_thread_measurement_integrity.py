@@ -973,5 +973,75 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
     )
 
 
+# ── a counter rising from zero has to say something ───────────────────
+#
+# No ratio can be formed against zero, so DISCRIMINATION_RATIO never applies to these axes and
+# `large > small` was the whole test. The CI workflow runs one repetition on Chromium, so there is
+# no median to smooth a stray dropped frame, and `harness_failures` accepts any ONE discriminating
+# axis: 0 at 25K and 1 at 100K could carry the entire verdict while every latency axis was flat.
+
+
+def counter_cells(small, large, sizes = (25000, 300000)) -> dict:
+    return {
+        "engines": ["chromium"],
+        "sizes": list(sizes),
+        "repetitions": 1,
+        "by_engine": {
+            "chromium": {
+                "by_size": {
+                    str(sizes[0]): {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"frames_over_33": small}},
+                    },
+                    str(sizes[1]): {
+                        "paint_floor_ms": 33.0,
+                        "actions": {"scroll": {"frames_over_33": large}},
+                    },
+                }
+            }
+        },
+    }
+
+
+def counter_axis(results):
+    return HARNESS.report_growth(results)["chromium"]["scroll frames over 33ms"]
+
+
+def test_one_stray_frame_does_not_discriminate() -> None:
+    """The reported case: 0 at the smallest size and 1 at the largest."""
+    row = counter_axis(counter_cells(0, 1))
+    assert row["discriminated"] is False, row
+    assert "under the" in row["reason"], row
+
+
+def test_a_counter_that_really_rose_still_discriminates() -> None:
+    """The control. Without it the check above could be met by rejecting every counter, which
+    would leave the harness unable to report a live run at all."""
+    row = counter_axis(counter_cells(0, HARNESS.ZERO_BASED_MIN_RISE))
+    assert row["discriminated"] is True, row
+    assert "rose from zero to" in row["reason"], row
+
+
+def test_a_counter_just_under_the_threshold_does_not_discriminate() -> None:
+    """Pins the boundary, so widening the threshold is a visible edit rather than a quiet one."""
+    row = counter_axis(counter_cells(0, HARNESS.ZERO_BASED_MIN_RISE - 1))
+    assert row["discriminated"] is False, row
+
+
+def test_zero_at_both_ends_is_still_reported_as_flat() -> None:
+    row = counter_axis(counter_cells(0, 0))
+    assert row["discriminated"] is False and row["reason"] == "zero at both ends", row
+
+
+def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
+    """`DISCRIMINATION_RATIO` is a ratio and there is nothing to divide by here, so a separate
+    absolute constant is required rather than a reuse of that one."""
+    assert HARNESS.ZERO_BASED_MIN_RISE == 5
+    assert "large >= ZERO_BASED_MIN_RISE" in HARNESS_SOURCE, (
+        "the zero-based branch is back to a bare `large > small`, so one incidental dropped "
+        "frame can carry the liveness verdict"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

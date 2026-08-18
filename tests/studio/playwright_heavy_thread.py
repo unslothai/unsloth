@@ -1333,6 +1333,13 @@ GROWTH_AXES = tuple(
 # to twelve times the content. That is not a flat curve, it is an axis that is not measuring the
 # thing being varied.
 DISCRIMINATION_RATIO = float(os.environ.get("SMOKE_DISCRIMINATION_RATIO", "1.5"))
+# What a counter that starts at zero has to REACH before its rise counts as an answer. A ratio
+# cannot be formed against zero, so DISCRIMINATION_RATIO does not apply to these axes at all and
+# something absolute has to. 5 because the counters this covers are dropped frames and long
+# tasks: at twelve times the content a real curve produces them in quantity, while one or two is
+# what an unloaded machine produces on its own, and the CI configuration runs a single repetition
+# so there is no median to average that away.
+ZERO_BASED_MIN_RISE = int(os.environ.get("SMOKE_ZERO_BASED_MIN_RISE", "5"))
 # Engine chatter is tolerated up to this many warnings per size. Gecko's two scroll-anchoring
 # notices are what this number exists for; anything the app emits per message would be two orders
 # of magnitude above it at 220 messages.
@@ -1405,13 +1412,29 @@ def report_growth(results: dict) -> dict[str, dict[str, dict]]:
                         "floored": floored,
                     }
                     continue
-                rose = large > small
+                # `large > small` is not enough. These are counts of missed frames and long
+                # tasks, and in the one-repetition Chromium configuration the CI workflow runs
+                # there is no median to smooth them: a single incidental dropped frame takes an
+                # axis from 0 to 1, which was marked as discriminating no matter what
+                # SMOKE_DISCRIMINATION_RATIO said, because a ratio was never computed for it.
+                # `harness_failures` accepts any ONE discriminating axis, so that stray frame
+                # could carry the whole verdict while every latency axis was flat or broken.
+                rose = large >= ZERO_BASED_MIN_RISE
+                if rose:
+                    reason = f"rose from zero to {large}"
+                elif large > small:
+                    reason = (
+                        f"rose from zero only to {large}, under the {ZERO_BASED_MIN_RISE} this "
+                        "counter needs to be distinguishable from noise"
+                    )
+                else:
+                    reason = "zero at both ends"
                 per_axis[name] = {
                     "small": small,
                     "large": large,
                     "ratio": None,
                     "discriminated": rose,
-                    "reason": "rose from zero" if rose else "zero at both ends",
+                    "reason": reason,
                     "floored": floored,
                 }
                 continue
