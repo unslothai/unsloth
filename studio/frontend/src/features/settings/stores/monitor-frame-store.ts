@@ -418,6 +418,14 @@ export function useStackGeometry(): StackPlacement {
   const [neededRoom, setNeededRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [floorRoom, setFloorRoom] = useState(ASSUMED_STACK_HEIGHT);
   const [persistentTail, setPersistentTail] = useState(0);
+  // Whether the rail is ACTUALLY scrolling, read off the node at its real cap.
+  // The derived answer below is a prediction, and a prediction can be wrong: the
+  // cards are only assumed to collapse to `floorRoom`, so whenever they stop
+  // short of it the box overflows a cap that `floorRoom > maxHeight` says it
+  // fits inside. That combination is a rail that scrolls while it is still
+  // click-through, which costs it its scrollbar and strands every card above the
+  // fold where no pointer can reach them.
+  const [domOverflowing, setDomOverflowing] = useState(false);
   useEffect(() => {
     const onResize = () =>
       setViewport({ width: window.innerWidth, height: window.innerHeight });
@@ -502,6 +510,22 @@ export function useStackGeometry(): StackPlacement {
       // hands the pending max-height change to a transition after all.
       void node.scrollHeight;
       node.style.transition = eased;
+      // Taken here, with the real cap back on and the layout already flushed by
+      // the line above, so it describes the box the reader has rather than
+      // either probe. After the `transition` restore, not between it and the
+      // flush: the cap change is already committed under the suppression, and
+      // `transition` is not itself a transitionable property, so no reflow this
+      // read forces can hand that cap to an animation.
+      //
+      // Read every time this runs, never latched: the observers below watch the
+      // rail AND every descendant, and a placement change moves the rail's own
+      // border box, so a cap that grows to fit clears this on the same pass that
+      // applied it. That is what the derived value was protecting against, and
+      // it is still true when the reading is refreshed rather than remembered.
+      const overflows = node.scrollHeight > node.clientHeight;
+      setDomOverflowing((current) =>
+        current === overflows ? current : overflows,
+      );
       setNeededRoom((current) => (current === natural ? current : natural));
       setFloorRoom((current) => (current === floor ? current : floor));
       // How much of the stack, measured up from the corner, the reader cannot
@@ -591,6 +615,11 @@ export function useStackGeometry(): StackPlacement {
     // height, so a cap below the floor is exactly when the rail has to scroll.
     // A pixel of slack, since the floor is a rounded scrollHeight and the cap
     // is not.
-    overflowing: floorRoom > geometry.maxHeight + 1,
+    //
+    // Or the box is simply scrolling, whatever the prediction says. The two
+    // agree wherever the cards do collapse to the floor they measured, so this
+    // only ever adds the case the prediction misses; it cannot take pointer
+    // input away from a rail that the derived reading already claimed.
+    overflowing: floorRoom > geometry.maxHeight + 1 || domOverflowing,
   };
 }

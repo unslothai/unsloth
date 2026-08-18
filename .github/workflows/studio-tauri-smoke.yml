@@ -25,15 +25,42 @@ on:
       # `unsloth studio` -- include unsloth_cli in the trigger set.
       - 'unsloth_cli/**'
       - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
   push:
     branches: [main]
+    # Same list as the PR filter. Without it this workflow ran on EVERY commit to
+    # main: a README-only commit fired all four unfiltered macOS workflows, seven
+    # macOS legs, against an account-wide cap of five concurrent macOS jobs. The
+    # post-merge backstop is unchanged, because a commit that cannot touch what
+    # this workflow tests has nothing here to back up.
+    # clean-machine-install-ci.yml and mlx-ci.yml already do exactly this.
+    paths:
+      - 'studio/frontend/**'
+      - 'studio/src-tauri/**'
+      # CLI rename / signature change can break Tauri's spawned
+      # `unsloth studio` -- include unsloth_cli in the trigger set.
+      - 'unsloth_cli/**'
+      - '.github/workflows/studio-tauri-smoke.yml'
+      # The Linux job installs and runs the Tauri CLI out of the studio/ package
+      # root (`npm install --prefix studio`, `npx --prefix studio`), so these
+      # manifests decide what it builds with.
+      - 'studio/package.json'
+      - 'studio/package-lock.json'
+      # Run as a step of the Linux job.
+      - 'scripts/lockfile_supply_chain_audit.py'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  # Latest-only on branches, never on main. Pushes to main land in bursts, so
-  # cancelling superseded runs there throws away the run that would have
-  # reported a regression, and the run that writes the shared caches. Same
-  # reasoning, and the same incident, as studio-ui-smoke.yml.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Latest-only on a PR branch. On main this does less than it reads like: it stops
+  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
+  # the moment a newer one is queued, so a merge burst still leaves only the tip.
+  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -66,7 +93,7 @@ jobs:
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -293,7 +320,7 @@ jobs:
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
@@ -349,7 +376,7 @@ jobs:
         with:
           # Save only on main. This action defaults to saving on every ref, and
           # a PR-scoped rust cache (550-840MB here) can only be restored by
-          # re-runs of that same PR while still counting against the 10GB
+          # re-runs of that same PR while still counting against the 50 GiB
           # per-repo budget, evicting main's copy that every PR can restore.
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target

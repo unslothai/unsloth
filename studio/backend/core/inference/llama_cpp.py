@@ -114,7 +114,7 @@ from core.inference.tool_loop_controller import (
     append_deferred_nudges,
     awaiting_approval_status,
     deferred_nudge_text,
-    tool_event_provenance,
+    provisional_tool_provenance,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -186,6 +186,8 @@ class GgufLoadIntent:
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
+    force_reload: bool = False
+
     cpu_fallback: bool = False
 
     def __post_init__(self):
@@ -3391,6 +3393,8 @@ def _report_live_llama_timings(callback, chunk) -> None:
 # margin (default 1024 MiB per device). ggml reports an iGPU's "VRAM" as shared
 # system RAM, so hold back the same margin rather than inventing a larger one.
 _IGPU_HOST_RESERVE_MIB = 1024
+_CGROUP_ROOT = "/sys/fs/cgroup"
+_PROC_SELF_CGROUP = "/proc/self/cgroup"
 
 
 def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
@@ -3670,6 +3674,10 @@ class LlamaCppBackend:
         # llama.cpp" hint in the UI. "binary_no_mtp" / "binary_outdated" ->
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
+
+        # How a requested multimodal projector recovered at startup. `cpu_offload`
+        # keeps vision; the other values accompany a deliberate text-only retry.
+        self._mmproj_fallback_reason: Optional[str] = None
         # Whether THIS load ran against a probe that did not answer, rather than one
         # that answered "no". An inconclusive probe reports every capability absent, so it
         # silently degrades speculative decoding, the DSpark sidecar and the --kv-unified
@@ -3975,6 +3983,11 @@ class LlamaCppBackend:
     def spec_fallback_reason(self) -> Optional[str]:
         """Why MTP was disabled on the last MTP-requesting load, else None."""
         return self._spec_fallback_reason
+
+    @property
+    def mmproj_fallback_reason(self) -> Optional[str]:
+        """How the active model recovered from an mmproj startup failure, else None."""
+        return self._mmproj_fallback_reason
 
     def _binary_changed_since_launch(self) -> bool:
         """Whether a different llama-server is installed than the live one was launched
@@ -4472,6 +4485,9 @@ class LlamaCppBackend:
         self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
         """Whether active runtime settings satisfy one resolved caller intent."""
+
+        if intent.force_reload:
+            return False
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -6124,6 +6140,102 @@ class LlamaCppBackend:
             logger.debug(f"install marker arch read failed: {e}")
             return None
 
+    @staticmethod
+    def _installed_llama_cuda_sms(binary: Optional[str] = None) -> Optional[frozenset]:
+        """SM targets the installed CUDA prebuilt was built for (``supported_sms``
+        in UNSLOTH_PREBUILT_INFO.json). None when unknown (no marker, older
+        install, non-CUDA bundle), so callers fail open. Never raises."""
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+
+            marker = read_install_marker(binary or LlamaCppBackend._find_llama_server_binary())
+            if not marker:
+                return None
+            sms = marker.get("supported_sms")
+            if not isinstance(sms, list) or not sms:
+                return None
+            if not all(str(s).strip().isdigit() for s in sms):
+                return None
+            return frozenset(int(s) for s in sms)
+        except Exception as e:
+            logger.debug(f"install marker supported_sms read failed: {e}")
+            return None
+
+    @staticmethod
+    def _cuda_compute_caps() -> dict:
+        """Physical id -> SM (90 for sm_90) via nvidia-smi, honoring
+        CUDA_VISIBLE_DEVICES; {} when unknown. Never raises."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,compute_cap", "--format=csv,noheader"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode != 0:
+                return {}
+            allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+            if allowed is not None and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+                # Numeric mask entries are CUDA ordinals; nvidia-smi reports PCI
+                # physical indices. Without a shared order, fail open.
+                return {}
+            caps = {}
+            for line in result.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 2:
+                    continue
+                try:
+                    idx = int(parts[0])
+                    major, minor = parts[1].split(".")
+                    sm = int(major) * 10 + int(minor)
+                except ValueError:
+                    continue
+                if allowed is not None and idx not in allowed:
+                    continue
+                caps[idx] = sm
+            return caps
+        except Exception as e:
+            logger.debug(f"compute_cap probe failed: {e}")
+            return {}
+
+    @classmethod
+    def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
+        """Error message when every visible GPU is OLDER than the oldest arch the
+        installed CUDA bundle was built for, or None to proceed. Fails open on
+        unknown coverage or caps.
+
+        Only the too-old direction is broken. The bundles compile plain arch
+        numbers, so each fatbin carries PTX beside its cubins, and the driver JITs
+        that PTX forward onto a newer card; ggml_cuda_highest_compiled_arch picks
+        the highest compiled arch <= the device and only aborts ("not compiled with
+        any CUDA arch <= N") when the device is below every one of them. So an
+        exact-SM test would refuse working installs: the legacy PTX-only bundle
+        (sm_50-61) drives an sm_86/sm_89 host at full speed. Missing native cubins
+        cost a one-time JIT, not a launch. The installer's exact-membership check
+        is a different question -- which bundle is BEST to install -- not whether
+        the installed one can run."""
+        # Resolved once so the marker read and the remedy name the same binary.
+        binary = binary or cls._find_llama_server_binary()
+        supported = cls._installed_llama_cuda_sms(binary)
+        if supported is None:
+            return None
+        caps = cls._cuda_compute_caps()
+        oldest = min(supported)
+        if not caps or any(sm >= oldest for sm in caps.values()):
+            return None
+        present = ", ".join(f"GPU {idx} is sm_{sm}" for idx, sm in sorted(caps.items()))
+        # The updater cannot replace a pinned LLAMA_SERVER_PATH or a llama-server
+        # found on PATH, so the remedy follows the binary's provenance.
+        return (
+            f"The installed llama.cpp build only has GPU code for sm_{oldest} and "
+            f"newer, but {present} -- it was likely installed on a machine with a "
+            f"newer GPU, so {cls._runtime_remedy(binary)}."
+        )
+
     @classmethod
     def _arch_gate_survivors(cls, binary: Optional[str] = None) -> list[int]:
         """Physical ids the ROCm arch gate leaves, or [] when there is nothing to
@@ -6939,23 +7051,263 @@ class LlamaCppBackend:
         return gpus
 
     @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """Memory this process can still charge to an enforcing cgroup.
+
+        ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
+        containers. Walk the process's cgroup plus its ancestors and pair each
+        limit with that same directory's usage; an ancestor slice can be the
+        binding limit and includes sibling usage that a leaf does not see.
+        Supports cgroup v2 and the legacy v1 memory controller. ``None`` means
+        no finite readable limit, so callers retain their host reading.
+        """
+
+        def _first_line(path: str) -> Optional[str]:
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    return f.readline().strip()
+            except OSError:
+                return None
+
+        def _integer(raw: Optional[str], *, limit: bool = False) -> Optional[int]:
+            if not raw or raw == "max":
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                return None
+            # cgroup v1 spells unlimited as a near-2^63 sentinel.
+            if value < 0 or (limit and value >= 1 << 60):
+                return None
+            return value
+
+        def _stat_integer(path: str, *keys: str) -> int:
+            """Read the first requested byte counter present in memory.stat."""
+            try:
+                with open(path, "r", encoding = "utf-8") as f:
+                    values = {}
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) == 2 and parts[0] in keys:
+                            value = _integer(parts[1])
+                            if value is not None:
+                                values[parts[0]] = value
+            except OSError:
+                return 0
+            return next((values[key] for key in keys if key in values), 0)
+
+        def _directories(root: str, relative: Optional[str]) -> list[str]:
+            root = os.path.abspath(root)
+            current = os.path.normpath(os.path.join(root, (relative or "/").lstrip("/")))
+            try:
+                if os.path.commonpath((root, current)) != root:
+                    return [root]
+            except ValueError:
+                return [root]
+            out = []
+            while True:
+                out.append(current)
+                if current == root:
+                    return out
+                current = os.path.dirname(current)
+
+        try:
+            with open(_PROC_SELF_CGROUP, "r", encoding = "utf-8") as f:
+                lines = [line.strip() for line in f if line.strip()]
+        except OSError:
+            lines = []
+
+        remaining: list[int] = []
+        v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
+        for directory in _directories(_CGROUP_ROOT, v2_relative):
+            limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.current")))
+            if used is not None:
+                # memory.current includes file-backed cache. Inactive file pages
+                # are reclaimable under pressure, so price the launch against the
+                # cgroup working set rather than charging cached GGUF pages twice.
+                used = max(
+                    0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
+                )
+            remaining.append(limit if used is None else limit - used)
+
+        v1_root = os.path.join(_CGROUP_ROOT, "memory")
+        v1_relative = None
+        for line in lines:
+            parts = line.split(":", 2)
+            if len(parts) == 3 and "memory" in parts[1].split(","):
+                v1_relative = parts[2]
+                break
+        for directory in _directories(v1_root, v1_relative):
+            limit = _integer(
+                _first_line(os.path.join(directory, "memory.limit_in_bytes")), limit = True
+            )
+            if limit is None:
+                continue
+            used = _integer(_first_line(os.path.join(directory, "memory.usage_in_bytes")))
+            if used is not None:
+                # v1 usage is hierarchical when use_hierarchy is enabled, so its
+                # matching counter is total_inactive_file. Fall back to the local
+                # counter for non-hierarchical controllers.
+                used = max(
+                    0,
+                    used
+                    - _stat_integer(
+                        os.path.join(directory, "memory.stat"),
+                        "total_inactive_file",
+                        "inactive_file",
+                    ),
+                )
+            remaining.append(limit if used is None else limit - used)
+
+        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+
+    @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
         """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
-        neither is readable. On a unified-memory APU this, not the ROCm-reported
-        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        neither is readable, capped by this process's cgroup remainder. On a
+        unified-memory APU this, not the ROCm-reported VRAM, is the real ceiling:
+        the weights load into shared system RAM."""
+        available = None
         try:
             import psutil
-            return int(psutil.virtual_memory().available // (1024 * 1024))
+            available = int(psutil.virtual_memory().available // (1024 * 1024))
+        except Exception:
+            pass
+        if available is None:
+            try:
+                with open("/proc/meminfo", encoding = "utf-8") as f:
+                    for line in f:
+                        if line.startswith("MemAvailable:"):
+                            available = int(line.split()[1]) // 1024  # kB -> MiB
+                            break
+            except Exception:
+                pass
+        cgroup_available = LlamaCppBackend._cgroup_available_memory_mib()
+        if available is None:
+            return cgroup_available
+        return min(available, cgroup_available) if cgroup_available is not None else available
+
+    @staticmethod
+    def _total_system_memory_mib() -> Optional[int]:
+        """Total system RAM in MiB (psutil, then /proc/meminfo), or None if neither is
+        readable. The ceiling on what ``MemAvailable`` can ever become, so a preflight that
+        runs before the resident model and pipeline are torn down can price against it
+        without charging for host memory that is about to come back."""
+        try:
+            import psutil
+            return int(psutil.virtual_memory().total // (1024 * 1024))
         except Exception:
             pass
         try:
             with open("/proc/meminfo", encoding = "utf-8") as f:
                 for line in f:
-                    if line.startswith("MemAvailable:"):
+                    if line.startswith("MemTotal:"):
                         return int(line.split()[1]) // 1024  # kB -> MiB
         except Exception:
             pass
         return None
+
+    _ARGV_MODEL = frozenset({"-m", "--model"})
+    _ARGV_RPC = frozenset({"--rpc"})
+
+    @staticmethod
+    def _binary_ships_no_gpu_backend(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether a split-library build beside ``binary`` carries no GPU backend at all.
+
+        Stricter than ``_backend_lacks_gpu_lib``, which reads cuda, hip and vulkan only:
+        a SYCL, MUSA, CANN or OpenCL build offloads too, and pricing its weights against
+        host RAM would refuse a load the accelerator can hold. A static or unrecognised
+        layout, a directory this cannot read, and a GGML_BACKEND_PATH pointing the child
+        at plugins elsewhere all answer False so a GPU build keeps its VRAM credit.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return False
+        source = os.environ if env is None else env
+        if str(source.get("GGML_BACKEND_PATH", "") or "").strip():
+            return False
+        try:
+            files = tuple(path.name for path in _llama_lib_dir(binary).iterdir() if path.is_file())
+        except OSError:
+            return False
+        cpu_stem = "ggml-cpu" if sys.platform == "win32" else "libggml-cpu"
+        base_stem = "ggml-base" if sys.platform == "win32" else "libggml-base"
+        split_library = any(name.startswith((cpu_stem, base_stem)) for name in files)
+        return split_library and not any(_GGML_GPU_BACKEND_RE.match(name) for name in files)
+
+    def _launch_host_shortfall_message(
+        self,
+        cmd: Iterable[str],
+        detected_gpus: Iterable[tuple],
+        env: Optional[Mapping[str, str]] = None,
+        *,
+        child_has_no_gpu: bool = False,
+        avail_mib: Optional[int] = None,
+        shared_gpu_ids: Iterable[int] = (),
+    ) -> Optional[str]:
+        """Refusal when the weights alone cannot fit in free VRAM plus available RAM.
+
+        Weights only, against the whole free pool, is a strict lower bound on what the
+        launch must hold: the KV cache, projector, drafter and compute buffers all add
+        to it, and a layer or device pin only narrows the VRAM actually reachable. So
+        every term this leaves out moves the estimate down, never up, and no missing
+        term can turn an allowed load into a refused one. That is what keeps the check
+        a floor with no placement modelling to keep in step with llama.cpp.
+
+        Read from the finished argv, so the model path is the one the child opens. An
+        unsized model abstains rather than guessing, and so does an empty GPU pool,
+        which means the probe threw. ``child_has_no_gpu`` is the launch reporting a
+        placement it already knows reaches no card, rather than one it could not read:
+        there the whole model is host-resident and takes no VRAM credit.
+
+        UNSLOTH_ALLOW_HOST_OFFLOAD=1 abstains outright, so a user who accepts the
+        paging can still load a variant the picker offers.
+
+        ``avail_mib`` overrides the host figure for a caller that runs before the resident
+        owners are released; the launch reads what is available now. ``shared_gpu_ids``
+        names Vulkan iGPUs whose reported free memory is the same host pool, so it must
+        not also be credited as dedicated VRAM.
+        """
+        argv = [str(a) for a in cmd or ()]
+        if not argv:
+            return None
+        model_path = _extra_args_device(argv, self._ARGV_MODEL)
+        if not model_path:
+            return None
+        # the user's own opt-out, so read the real environment, not the curated child env
+        if os.environ.get("UNSLOTH_ALLOW_HOST_OFFLOAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            logger.info("UNSLOTH_ALLOW_HOST_OFFLOAD set: skipping the host-RAM preflight.")
+            return None
+        # rpc places layers on remote devices this cannot size, in either spelling
+        _env = os.environ if env is None else env
+        if (_extra_args_device(argv, self._ARGV_RPC) or "").strip() or str(
+            _env.get("LLAMA_ARG_RPC", "") or ""
+        ).strip():
+            return None
+        try:
+            model_bytes = self._get_gguf_size_bytes(model_path)
+        except Exception:
+            return None
+        gpus = [] if child_has_no_gpu else list(detected_gpus or ())
+        # _get_gpu_memory swallows a failed probe as [], so an empty pool it did not
+        # vouch for cannot be told from a host that has no gpu at all
+        if not model_bytes or (not gpus and not child_has_no_gpu):
+            return None
+        shared = set(shared_gpu_ids or ())
+        free_vram_mib = sum(max(0, row[1]) for row in gpus if row[0] not in shared)
+        return self._host_offload_shortfall_message(
+            model_bytes - free_vram_mib * 1024 * 1024,
+            self._available_system_memory_mib() if avail_mib is None else avail_mib,
+        )
 
     @staticmethod
     def _apu_ram_shortfall_message(
@@ -6978,6 +7330,36 @@ class LlamaCppBackend:
             "APU the weights load into system RAM, so a larger model is stopped by "
             "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
             "(on WSL, raise the memory limit in .wslconfig)."
+        )
+
+    @staticmethod
+    def _host_offload_shortfall_message(
+        offload_bytes: int,
+        avail_mib: Optional[int],
+        headroom_mib: int = 2048,
+    ) -> Optional[str]:
+        """On a discrete GPU, return a user-facing refusal when the part of a load
+        that misses VRAM cannot fit in available system RAM (else None). The spill is
+        mmap'd, so an oversized one thrashes the mapping instead of failing, until the
+        OS kills the app. Priced against free VRAM with no margin subtracted, so it
+        under-states the spill and only an unambiguous shortfall refuses. None avail
+        (unknown RAM), and anything VRAM-resident, never refuse."""
+        if offload_bytes <= 0 or avail_mib is None:
+            return None
+        need_mib = offload_bytes / (1024 * 1024)
+        if need_mib <= avail_mib - headroom_mib:
+            return None
+        # need up, usable down, so the printed pair cannot round into a tie
+        need_gb = math.ceil(need_mib / 1024)
+        usable_gb = math.floor(max(0, avail_mib - headroom_mib) / 1024)
+        return (
+            f"About {need_gb} GB of this model does not fit in GPU memory and would run "
+            f"from system RAM. Only about {avail_mib / 1024:.0f} GB is available and "
+            f"{headroom_mib / 1024:.0f} GB of that is kept free for the rest of the "
+            f"system, leaving about {usable_gb} GB usable. The weights are memory-mapped, "
+            "so the machine pages them in and out until it stops responding and the OS "
+            "kills the app. Use a smaller or more quantized GGUF, free memory, or set "
+            "UNSLOTH_ALLOW_HOST_OFFLOAD=1 to load it anyway."
         )
 
     # Skip the wait when the last kill is older than this; the driver has
@@ -8640,6 +9022,60 @@ class LlamaCppBackend:
                 return verdict
         except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
             logger.debug("Non-chat GGUF preflight failed for the route: %s", e)
+        return None
+
+    def host_offload_refusal_for_intent(self, intent) -> Optional[str]:
+        """The host-RAM verdict for a resolved load intent, or None.
+
+        ``_launch_host_shortfall_message`` stays authoritative, since it reads the finished
+        argv, but it runs after the ROUTE has evicted a resident Images/Video pipeline via
+        ``acquire_for(CHAT)`` and cancelled the running generations. Asking here first spares
+        both, exactly as the non-chat header check above does.
+
+        Both capacities are read as PHYSICAL TOTALS, not as what is free right now. The
+        resident llama-server, Unsloth model and Images/Video pipeline hold VRAM and, through
+        a host KV cache, CPU-offloaded weights and locked mappings, host RAM as well, and the
+        route and ``load_model`` reclaim all of it after this runs. Pricing against the free
+        readings would refuse a switch to a model the reclaimed machine holds easily. Each
+        total is the ceiling on what the launch can ever see, and every narrowing the launch
+        applies to the pool (the ROCm arch gate, the Vulkan discrete preference, a ``gpu_ids``
+        pin) only shrinks it further, so this charges no more than the launch copy and can
+        refuse nothing the launch would allow. What survives is the pick no reclaim can
+        rescue, which is the one worth catching before the teardown.
+
+        Only a local path is priced. An HF repo may not be downloaded yet, and resolving one
+        here would start a download the route has not committed to.
+        """
+        try:
+            gguf_path = getattr(intent, "gguf_path", None)
+            if not gguf_path or getattr(intent, "hf_repo", None):
+                return None
+            if not Path(gguf_path).is_file():
+                return None
+            binary = self._find_llama_server_binary()
+            if not binary:
+                return None
+            # extras are appended after -m at launch and llama.cpp is last-wins, so read them
+            argv = [
+                binary,
+                "-m",
+                str(gguf_path),
+                *(str(arg) for arg in getattr(intent, "extra_args", None) or ()),
+            ]
+            total_ram_mib = self._total_system_memory_mib()
+            if total_ram_mib is None:
+                return None
+            probed = self._get_gpu_memory(binary)
+            # an igpu and a MIG/vGPU line report total 0, leaving the ceiling unknown
+            if any(total <= 0 for _idx, _free, total in probed):
+                return None
+            return self._launch_host_shortfall_message(
+                argv,
+                [(idx, total) for idx, _free, total in probed],
+                avail_mib = total_ram_mib,
+            )
+        except Exception as e:  # noqa: BLE001 -- a probe that failed is not a verdict
+            logger.debug("Host-RAM preflight failed for the route: %s", e)
         return None
 
     # Each ask is a repo listing, a cache verification and a range request, every one bounded
@@ -11962,6 +12398,66 @@ class LlamaCppBackend:
         return effective_ctx, max_available_ctx, gpu_indices, tensor_split
 
     @staticmethod
+    def _with_mmproj_offload_disabled(
+        cmd: Sequence[str], env: Optional[Mapping[str, str]] = None
+    ) -> Optional[List[str]]:
+        """Return a vision-preserving retry with the projector pinned to CPU.
+
+        llama.cpp's boolean placement flags are last-wins, so the recovery pin
+        must follow pass-through arguments that may have enabled GPU offload.
+        None means no projector is present or it already runs on CPU.
+        """
+        args = [str(arg) for arg in cmd]
+
+        def _flag(token: str) -> str:
+            return token.split("=", 1)[0].replace("_", "-").lower()
+
+        if not any(_flag(arg) in ("--mmproj", "-mm") for arg in args):
+            return None
+        placements = [
+            _flag(arg) for arg in args if _flag(arg) in ("--mmproj-offload", "--no-mmproj-offload")
+        ]
+        if placements and placements[-1] == "--no-mmproj-offload":
+            return None
+        if not placements:
+            env_value = str((env or {}).get("LLAMA_ARG_MMPROJ_OFFLOAD") or "").strip().lower()
+            if env_value in ("0", "false", "off", "no"):
+                return None
+        return args + ["--no-mmproj-offload"]
+
+    @staticmethod
+    def _is_gpu_memory_start_failure(output: str) -> bool:
+        """Whether startup output ties allocation pressure to a GPU backend."""
+        lines = (output or "").lower().splitlines()
+        allocation_markers = (
+            "out of memory",
+            "failed to allocate",
+            "cudamalloc failed",
+            "hiperroroutofmemory",
+            "vk_error_out_of_device_memory",
+        )
+        gpu_markers = (
+            "cuda",
+            "hiperror",
+            "hipmalloc",
+            "ggml_backend_hip",
+            "rocm",
+            "vulkan",
+            "vk_",
+            "metal",
+            "sycl",
+            "oneapi",
+            "musa",
+            "gpu",
+            "device memory",
+        )
+        return any(
+            any(marker in line for marker in allocation_markers)
+            and any(marker in line for marker in gpu_markers)
+            for line in lines
+        )
+
+    @staticmethod
     def _is_projector_incompatibility(output: str) -> bool:
         """True when llama-server aborted because it cannot load the model's
         vision/audio projector (mmproj), typically an installed llama.cpp
@@ -13360,6 +13856,8 @@ class LlamaCppBackend:
                 if not _replaying_cpu_fallback:
                     self._cpu_fallback_reason = None
                     self._cleanup_cpu_fallback_runtime()
+
+                self._mmproj_fallback_reason = None
             # Both describe the process just killed, so they are reset HERE rather than
             # where the binary is resolved: everything above can bail with the old server
             # still running (a stand-down, a non-chat refusal, a cancel), and resetting on
@@ -13872,6 +14370,7 @@ class LlamaCppBackend:
                 # empty `gpus` so the speculative defaults stay GPU-aware and the
                 # CPU-fallback check still knows GPUs were present.
                 _detected_gpus: list[tuple[int, int]] = []
+                _shared_gpu_ids: set[int] = set()
                 # Set when the arch gate emptied a non-empty GPU pool, so the env
                 # block below masks the child onto the CPU. Bound before the try for
                 # the same reason as _detected_gpus: the except path (--fit on) falls
@@ -13995,6 +14494,13 @@ class LlamaCppBackend:
                     # GPU-aware speculative defaults; the list feeds the
                     # CPU-fallback check.
                     _detected_gpus = list(gpus)
+                    # Vulkan reports total 0 only for integrated GPUs. Their
+                    # free "VRAM" is the same host pool the RAM guard prices.
+                    _shared_gpu_ids = (
+                        {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
+                        if is_vulkan_backend
+                        else set()
+                    )
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,
                     # so the slider never reached the path that runs when the fit is
@@ -16462,6 +16968,18 @@ class LlamaCppBackend:
                     and not is_vulkan_backend
                     and not self._zero_offload_keeps_gpu_visible(cmd, env)
                 )
+                # The CUDA SM gate goes here, where the child's GPU visibility is
+                # finally known: both arms below write CUDA_VISIBLE_DEVICES=-1, so no
+                # kernel image loads and the abort this pre-empts cannot happen.
+                # Deciding it from the request over-refused -- speculative "auto", a
+                # --no-mmproj-offload projector and a --spec-draft-ngl 0 drafter all
+                # read as GPU-bearing there, only the resolved argv knows. Still
+                # before every spawn below and outside the fit's try/except, so the
+                # refusal cannot be swallowed into the --fit on fallback.
+                if not (_cpu_only_zero_offload or _arch_gate_forced_cpu):
+                    _sm_gate = self._cuda_sm_gate_error(binary)
+                    if _sm_gate:
+                        raise RuntimeError(_sm_gate)
                 # The arch gate emptying the pool lands here for the same reason
                 # (#7624): no device set this binary can launch on, so the child must
                 # not see the cards it would enumerate and abort on. gpu_indices is
@@ -16588,6 +17106,29 @@ class LlamaCppBackend:
                         # physical/PCI order, so pin the child's enumeration to match.
                         # The whole visible set stays in use, only its order is fixed.
                         self._pin_visible_gpu_order_for_split(env)
+
+                # reads the argv the child gets, not the mid-fit state that produced it
+                _offload_msg = self._launch_host_shortfall_message(
+                    cmd,
+                    _detected_gpus,
+                    env,
+                    child_has_no_gpu = (
+                        # each names a device present but unusable, so it owns the empty pool
+                        _arch_gate_forced_cpu
+                        or _paravirtual_cpu_forced
+                        # neither says a device exists, so an empty pool stays unreadable
+                        or (
+                            bool(_detected_gpus)
+                            and (
+                                _cpu_only_zero_offload
+                                or self._binary_ships_no_gpu_backend(binary, env)
+                            )
+                        )
+                    ),
+                    shared_gpu_ids = _shared_gpu_ids,
+                )
+                if _offload_msg:
+                    raise RuntimeError(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -17018,6 +17559,15 @@ class LlamaCppBackend:
                             if _retry_ram_msg:
                                 self._kill_process()
                                 raise RuntimeError(_retry_ram_msg)
+                        # host guard credited the whole pool; the respawn reaches only _remaining
+                        _retry_offload_msg = self._launch_host_shortfall_message(
+                            cmd,
+                            [row for row in _detected_gpus if row[0] in set(_remaining)],
+                            env,
+                        )
+                        if _retry_offload_msg:
+                            self._kill_process()
+                            raise RuntimeError(_retry_offload_msg)
                         logger.warning(
                             f"llama-server crashed with a HIP kernel-image error on "
                             f"GPU(s) {_crashed} -- the llama.cpp build has no kernels "
@@ -17391,8 +17941,9 @@ class LlamaCppBackend:
                             )
                             extra_args = _fb_stripped_extras
 
-                # A too-old llama.cpp can reject a model's --mmproj projector
-                # (format message or a bare SIGSEGV); retry once text-only.
+                # Keep a multimodal model multimodal when only its GPU projector
+                # placement fails. llama.cpp owns mmproj offload separately from
+                # --gpu-layers, so retry it on CPU before removing --mmproj.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
@@ -17401,75 +17952,148 @@ class LlamaCppBackend:
                     # The #6415 split-axis abort is latched earlier (first spawn).
                     # Skip if a cancel/unload is pending (mirrors the MTP guard).
                     _projector_msg = self._is_projector_incompatibility(out)
+                    _projector_memory = self._is_gpu_memory_start_failure(out)
                     _signal_mmproj_guess = self._is_signal_crash(
                         _crash_rc
                     ) and not self._output_has_nonprojector_diagnostic(out)
                     if (
                         launched_with_mmproj
                         and not _load_cancelled()
-                        and (_projector_msg or _signal_mmproj_guess)
+                        and (_projector_msg or _projector_memory or _signal_mmproj_guess)
                     ):
-                        _vision_cpu_replay_cmd = list(_last_spawn_cmd)
-                        if _projector_msg:
-                            logger.warning(
-                                "llama-server could not load this model's vision "
-                                "projector (--mmproj). The installed llama.cpp build is "
-                                "likely too old for it. Loading text-only for this "
-                                "session; run 'unsloth studio update' to enable vision."
+                        _vision_gpu_cmd = list(_last_spawn_cmd)
+                        _cpu_projector_cmd = None
+                        if not _projector_msg and _paravirtual_mmproj_pinnable(server_caps):
+                            _cpu_projector_cmd = self._with_mmproj_offload_disabled(
+                                _vision_gpu_cmd, env
                             )
-                        else:
+
+                        if _cpu_projector_cmd is not None:
                             logger.warning(
-                                "llama-server crashed while loading this model's vision "
-                                "projector (--mmproj). Retrying text-only for this "
-                                "session; if this persists, run 'unsloth studio update' "
-                                "or check GPU/driver logs."
+                                "llama-server failed while loading this model's GPU "
+                                "vision projector (--mmproj); retrying with the "
+                                "projector on CPU to preserve image input."
                             )
-                        cmd = self._strip_mmproj_args(_last_spawn_cmd)
-                        # This retry bypasses _spawn_and_wait, so refresh the
-                        # launched-argv snapshot itself -- the zero-offload
-                        # classification below must not see the stripped --mmproj.
-                        _last_spawn_cmd = list(cmd)
-                        self._is_vision = False
-                        self._mmproj_has_audio = False
-                        self._start_llama_process(cmd, env)
-                        if not self._wait_for_health(timeout = 600.0):
-                            # Read the exit code before _kill_process() clears it, so
-                            # an OS-killed text-only retry still gets the OOM message.
-                            _retry_rc = self._process.poll() if self._process is not None else None
-                            self._kill_process()
-                            # A text-only signal crash is independent evidence of a GPU
-                            # startup fault. Keep a confirmed bad projector out of the
-                            # replay; a guessed one still gets a CPU try with vision.
-                            if self._is_signal_crash(_retry_rc):
-                                _cpu_replay_cmd = (
-                                    _last_spawn_cmd if _projector_msg else _vision_cpu_replay_cmd
+                            cmd = _cpu_projector_cmd
+                            healthy = _spawn_and_wait(cmd, label = "-mmproj-cpu")
+                            if healthy:
+                                self._mmproj_fallback_reason = "cpu_offload"
+                                logger.warning(
+                                    "Vision projector loaded on CPU after GPU startup "
+                                    "failed; image input remains available for this session."
                                 )
-                                if _try_auto_vulkan_cpu_fallback(
-                                    _cpu_replay_cmd,
-                                    _retry_rc,
-                                ):
-                                    healthy = True
-                                else:
+                            else:
+                                _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
+                                _cpu_projector_rc = (
+                                    self._process.poll() if self._process is not None else None
+                                )
+                                self._kill_process()
+                                if _load_cancelled():
+                                    return False
+                                if self._is_projector_incompatibility(_cpu_projector_out):
+                                    _projector_msg = True
+                                elif self._is_gpu_memory_start_failure(_cpu_projector_out):
+                                    # The projector was already off the GPU, so removing it
+                                    # cannot repair this allocation failure; keep the real error.
                                     _raise_terminal_load_failure(
-                                        self._gpu_init_crash_message(binary)
+                                        self._classify_llama_start_failure(
+                                            _cpu_projector_out,
+                                            gguf_path,
+                                            self._model_identifier,
+                                            _cpu_projector_rc,
+                                            binary,
+                                            self._llama_log_path,
+                                            (self._api_key,),
+                                            self._extra_args,
+                                        )
                                     )
-                            if not healthy:
-                                _retry_detail = self._classify_llama_start_failure(
-                                    "\n".join(self._stdout_lines[-50:]),
+                        elif _projector_memory and _paravirtual_mmproj_pinnable(server_caps):
+                            # An env/argv pin already put mmproj on CPU. Text-only
+                            # cannot free additional GPU memory, so surface the OOM.
+                            _raise_terminal_load_failure(
+                                self._classify_llama_start_failure(
+                                    out,
                                     gguf_path,
                                     self._model_identifier,
-                                    _retry_rc,
+                                    _crash_rc,
                                     binary,
                                     self._llama_log_path,
                                     (self._api_key,),
                                     self._extra_args,
                                 )
-                                _raise_terminal_load_failure(
-                                    self._mmproj_retry_failure_message(
-                                        projector_confirmed = _projector_msg,
-                                        detail = _retry_detail,
-                                    )
+                            )
+
+                        if not healthy:
+                            if _projector_msg:
+                                logger.warning(
+                                    "llama-server could not load this model's vision "
+                                    "projector (--mmproj). The installed llama.cpp build is "
+                                    "likely too old for it. Loading text-only for this "
+                                    "session; run 'unsloth studio update' to enable vision."
                                 )
+                                self._mmproj_fallback_reason = "projector_incompatible"
+                            else:
+                                logger.warning(
+                                    "llama-server could not start with this model's vision "
+                                    "projector (--mmproj), including the CPU-projector "
+                                    "recovery when available. Retrying text-only for this "
+                                    "session; check memory, GPU/driver logs, or update Studio."
+                                )
+                                self._mmproj_fallback_reason = "projector_startup_failure"
+                            cmd = self._strip_mmproj_args(_vision_gpu_cmd)
+                            # This retry bypasses _spawn_and_wait, so refresh the
+                            # launched-argv snapshot itself -- the zero-offload
+                            # classification below must not see the stripped --mmproj.
+                            _last_spawn_cmd = list(cmd)
+                            self._is_vision = False
+                            self._mmproj_has_audio = False
+                            self._start_llama_process(cmd, env)
+                            if self._wait_for_health(timeout = 600.0):
+                                healthy = True
+                            else:
+                                # Read the exit code before _kill_process() clears it, so
+                                # an OS-killed text-only retry still gets the OOM message.
+                                _retry_rc = (
+                                    self._process.poll() if self._process is not None else None
+                                )
+                                self._kill_process()
+                                # A text-only signal crash is independent evidence of a GPU
+                                # startup fault. Keep a confirmed bad projector out of the
+                                # replay; a guessed one still gets a CPU try with vision.
+                                if self._is_signal_crash(_retry_rc):
+                                    _cpu_replay_cmd = (
+                                        _last_spawn_cmd if _projector_msg else _vision_gpu_cmd
+                                    )
+                                    if _try_auto_vulkan_cpu_fallback(
+                                        _cpu_replay_cmd,
+                                        _retry_rc,
+                                    ):
+                                        healthy = True
+                                        # A whole-runtime CPU replay with the original
+                                        # vision argv supersedes the text-only diagnosis.
+                                        if not _projector_msg:
+                                            self._mmproj_fallback_reason = None
+                                    else:
+                                        _raise_terminal_load_failure(
+                                            self._gpu_init_crash_message(binary)
+                                        )
+                                if not healthy:
+                                    _retry_detail = self._classify_llama_start_failure(
+                                        "\n".join(self._stdout_lines[-50:]),
+                                        gguf_path,
+                                        self._model_identifier,
+                                        _retry_rc,
+                                        binary,
+                                        self._llama_log_path,
+                                        (self._api_key,),
+                                        self._extra_args,
+                                    )
+                                    _raise_terminal_load_failure(
+                                        self._mmproj_retry_failure_message(
+                                            projector_confirmed = _projector_msg,
+                                            detail = _retry_detail,
+                                        )
+                                    )
                     else:
                         # Try the drafter launch first, non-terminally: a build that
                         # can neither pin one to CPU nor start with it still recovers
@@ -18415,6 +19039,8 @@ class LlamaCppBackend:
             self._mtp_draft_path = None
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
+
+            self._mmproj_fallback_reason = None
             self._capability_probe_inconclusive = False
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
@@ -21059,8 +21685,8 @@ class LlamaCppBackend:
                                                 "tool_name": current_name,
                                                 "tool_call_id": current_id,
                                                 "arguments": {},
-                                                "provenance": tool_event_provenance(
-                                                    provisional = True,
+                                                "provenance": provisional_tool_provenance(
+                                                    current_name
                                                 ),
                                             }
                                         # Stream argument text so the UI shows the code being
@@ -21168,8 +21794,8 @@ class LlamaCppBackend:
                                                             "tool_name": _sniffed,
                                                             "tool_call_id": _text_args_id,
                                                             "arguments": {},
-                                                            "provenance": tool_event_provenance(
-                                                                provisional = True,
+                                                            "provenance": provisional_tool_provenance(
+                                                                _sniffed
                                                             ),
                                                         }
                                                     yield {
@@ -21622,7 +22248,7 @@ class LlamaCppBackend:
                                     "tool_name": _pname,
                                     "tool_call_id": _pid,
                                     "result": "",
-                                    "provenance": tool_event_provenance(provisional = True),
+                                    "provenance": provisional_tool_provenance(_pname),
                                 }
                         # Merge metrics from prior tool iterations so they aren't dropped.
                         yield {"type": "status", "text": ""}
@@ -21938,7 +22564,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
 
                 # Clear tool status badge before next generation/final pass.
@@ -21966,7 +22592,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "Error: lost connection to llama-server before the tool call completed.",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
@@ -21981,7 +22607,7 @@ class LlamaCppBackend:
                             "tool_name": _pname,
                             "tool_call_id": _pid,
                             "result": "Error: the tool call was interrupted before it completed.",
-                            "provenance": tool_event_provenance(provisional = True),
+                            "provenance": provisional_tool_provenance(_pname),
                         }
                 raise
 

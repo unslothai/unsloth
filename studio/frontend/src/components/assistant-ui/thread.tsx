@@ -17,9 +17,15 @@ import {
   MessageResponseModelBadge,
 } from "@/components/assistant-ui/message-response-details-sheet";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
+import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
+import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
+import {
+  proplessSlot,
+  threadMessageKind,
+} from "@/components/assistant-ui/thread-message-slot";
 import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
@@ -73,11 +79,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  CHAT_HISTORY_UPDATED_EVENT,
-  forkChatThread,
-  getForkCount,
-} from "@/features/chat/api/chat-api";
+import { forkChatThread } from "@/features/chat/api/chat-api";
 import {
   findLatestUserAudioBase64,
   resolveProjectId,
@@ -178,6 +180,8 @@ import {
   type PromptQueueUIItemStatus,
   type PromptQueueUIState,
   usePromptQueueUI,
+  forkCountFor,
+  subscribeForkCounts,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
   writeComposerDraft,
@@ -281,6 +285,7 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type FocusEvent as ReactFocusEvent,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -292,6 +297,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 import { useComposerPillFit } from "@/hooks/use-composer-pill-fit";
@@ -1461,6 +1467,29 @@ const FOOTER_GAP_BELOW_SPACER_PX = 10;
 // Covers instant responses where isRunning is already false by resize time.
 const RUN_SHRINK_WINDOW_MS = 1000;
 
+// One message, picked from its role and edit state rather than from a `components` map. See
+// thread-message-slot.ts for why the map form costs a full-thread re-render on every delete.
+// The selectors are ThreadMessageComponent's own, so what a message subscribes to is unchanged.
+const ThreadMessage: FC = () => {
+  const role = useAuiState(({ message }) => message.role);
+  const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  switch (threadMessageKind(role, isEditing)) {
+    case "edit":
+      return <EditComposer />;
+    case "user":
+      return <UserMessage />;
+    case "assistant":
+      return <AssistantMessage />;
+    default:
+      return null;
+  }
+};
+
+// Hoisted, so ThreadPrimitive.Messages sees the same children function on every Thread render. An
+// inline arrow changes identity each time, invalidating the memo that keeps the message array from
+// being rebuilt, and the bail-out below it would never get to run.
+const renderThreadMessage = proplessSlot(ThreadMessage);
+
 // Memoized: chat-page renders this inline in a store-subscribing component, so a parent render
 // would otherwise reconcile the whole message list.
 export const Thread: FC<{
@@ -1483,6 +1512,7 @@ export const Thread: FC<{
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
   const aui = useAui();
+  useThreadForkCounts();
 
   // Measured height of the floating composer dock (null until measured).
   // Drives the bottom spacer and the scroll-to-bottom footer offset.
@@ -1712,13 +1742,9 @@ export const Thread: FC<{
               </AuiIf>
             )}
 
-            <ThreadPrimitive.Messages
-              components={{
-                UserMessage,
-                EditComposer,
-                AssistantMessage,
-              }}
-            />
+            <ThreadPrimitive.Messages>
+              {renderThreadMessage}
+            </ThreadPrimitive.Messages>
 
             {/* Bottom slack so the last message has room above the sticky
             scroll-to-bottom button (and floating composer in single mode),
@@ -2193,14 +2219,7 @@ const Composer: FC<{
     );
   });
   const hasResearchMessage = useAuiState(({ thread }) =>
-    thread.messages.some((message) => {
-      const custom = (
-        message.metadata as
-          | { custom?: { researchRunId?: unknown } }
-          | undefined
-      )?.custom;
-      return typeof custom?.researchRunId === "string";
-    }),
+    threadHasResearchMessage(thread.messages),
   );
   const researchUsed = researchThreadClaimed || hasResearchMessage;
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
@@ -6243,6 +6262,23 @@ function assistantMessageText(content: readonly unknown[] | undefined): string {
  * Retry keeps its old meaning: drop the partial and start over.
  */
 const ContinueMessageBar: FC = () => {
+  // One subscription, not ten, on every message that is not the newest.
+  //
+  // The bar mounts under every assistant message and returns null unless it is the last, but the
+  // ten `useAuiState` calls below ran first, each a subscription whose selector re-runs on EVERY
+  // store update -- one per character typed (220 messages, 300K characters: 10,193 subscriptions,
+  // 10,258 selector runs per keystroke).
+  //
+  // `isLast` is the same condition the body below already gates on, asked before the work rather
+  // than after it, so nothing that used to render stops rendering.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueMessageBarForLastMessage />;
+};
+
+const ContinueMessageBarForLastMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isLast = useAuiState(({ message }) => message.isLast);
@@ -6353,6 +6389,35 @@ const ImageGenerationToolUIConfirmable = withToolConfirmation(
 const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
 const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
 
+/**
+ * At module scope on purpose. The memo comparator in
+ * `MessagePrimitivePartByIndex` checks `components.tools` by identity, so an
+ * inline literal handed it a fresh object every render, failed the comparator
+ * and rebuilt every already-finished part of a streaming reply on each chunk.
+ *
+ * Anything added here must stay referentially stable; an entry that really
+ * depends on props or state belongs in a `useMemo`, not inline in the JSX.
+ */
+const ASSISTANT_PART_COMPONENTS = {
+  Text: MarkdownText,
+  Reasoning: Reasoning,
+  ReasoningGroup: ReasoningGroup,
+  Source: Sources,
+  ToolGroup: ToolGroup,
+  tools: {
+    by_name: {
+      web_search: WebSearchToolUIConfirmable,
+      search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+      python: PythonToolUIConfirmable,
+      terminal: TerminalToolUIConfirmable,
+      code_execution: CodeExecutionToolUIConfirmable,
+      image_generation: ImageGenerationToolUIConfirmable,
+      render_html: RenderHtmlToolUIConfirmable,
+    },
+    Fallback: ToolFallbackConfirmable,
+  },
+} as const;
+
 // Live in-place denoising canvas for DiffusionGemma: while generating, render the
 // latest per-step canvas snapshot in the bubble so the user watches the answer resolve
 // out of noise. Transient (store-only, cleared on run end), so the finished message
@@ -6392,6 +6457,152 @@ const DiffusionCanvas: FC = () => {
 };
 
 /**
+ * Mounts an autohidden action bar while focus is inside the message, the way hovering it does.
+ *
+ * `autohide="not-last"` UNMOUNTS every bar but the newest reply's, so Copy, Edit, Refresh,
+ * Delete, Read aloud and More leave the tab order on older messages and a keyboard or screen
+ * reader user has no way back: `:focus-within` in CSS cannot help, there is nothing to style.
+ * The reveal has to be JS, and it drives `message.setIsHovering`, the same flag the library's
+ * own `mouseenter`/`mouseleave` (MessagePrimitive.Root) writes and the only input to
+ * `useActionBarFloatStatus` besides the More menu's interaction lock. Reusing it rather than
+ * layering a second visibility source is what keeps the two from disagreeing.
+ *
+ * One flag, two writers, so the two clobber each other unless this hook covers both crossings:
+ *   - pointer leaves while focus is inside (a Tab that scrolls the message under a parked
+ *     cursor does exactly this): the library clears the flag, which would unmount the element
+ *     that currently has focus. `reassert` below sets it back inside the same event.
+ *   - focus leaves while the pointer is still over the message: clearing would unmount a bar
+ *     the user is pointing at, and no second `mouseenter` is coming. The `:hover` test defers
+ *     to the library's own `mouseleave` instead.
+ */
+function useActionBarFocusReveal() {
+  const aui = useAui();
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const focusWithinRef = useRef(false);
+  const clearFrameRef = useRef<number | null>(null);
+
+  // The More menu is portaled OUTSIDE the message, so focus entering it looks like a blur.
+  // Its own interaction lock keeps the bar mounted meanwhile, but the trigger this hook has to
+  // hand focus back to lives in that bar, so a popup this message owns counts as engaged.
+  // Scoped to the action bar, NOT to every expanded descendant. Reasoning and tool cards are
+  // Radix CollapsibleTriggers and render aria-expanded="true" while open, which is the resting
+  // state of a message whose tool output the reader has expanded. An unscoped lookup treated
+  // those as an open popup, so `decide` rescheduled itself every frame for as long as the
+  // disclosure stayed open, held focusWithinRef and the synthetic hover set, and left the bar
+  // mounted: a per-frame DOM query per such message, which is the slowdown this branch removes.
+  const openPopupTrigger = useCallback(
+    () =>
+      rootRef.current?.querySelector(
+        '.aui-assistant-action-bar-root [aria-expanded="true"]',
+      ) ?? null,
+    [],
+  );
+
+  const isEngaged = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return false;
+    const active = document.activeElement;
+    if (active && el.contains(active)) return true;
+    return openPopupTrigger() !== null;
+  }, [openPopupTrigger]);
+
+  const cancelPendingClear = useCallback(() => {
+    if (clearFrameRef.current !== null) {
+      cancelAnimationFrame(clearFrameRef.current);
+      clearFrameRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Decide, a frame from now, whether focus has really left, and keep asking until it has.
+   *
+   * Deferred rather than read off `relatedTarget`: that is null both for focus going to the
+   * browser chrome and for focus entering a portal, and it says nothing at all when the
+   * focused element is REMOVED, which is how a menu closes and which Chrome reports with no
+   * focusout event whatsoever. Reading `document.activeElement` a frame later answers all of
+   * them. Clearing late costs a frame of a mounted bar; clearing early destroys the element
+   * the user is on, so late is the safe direction.
+   */
+  const scheduleClear = useCallback(
+    (restart: boolean) => {
+      if (clearFrameRef.current !== null) {
+        if (!restart) return;
+        cancelAnimationFrame(clearFrameRef.current);
+      }
+      const decide = () => {
+        clearFrameRef.current = null;
+        const el = rootRef.current;
+        if (!el || !focusWithinRef.current) return;
+        const active = document.activeElement;
+        if (active && el.contains(active)) return;
+        if (openPopupTrigger()) {
+          // Focus is in this message's own portaled menu, whose interaction lock is holding
+          // the bar open anyway. Deciding now would be wrong and deciding never would pin the
+          // bar open for good, so ask again next frame; the loop lasts only as long as the
+          // menu is open on this one message.
+          clearFrameRef.current = requestAnimationFrame(decide);
+          return;
+        }
+        focusWithinRef.current = false;
+        if (!el.matches(":hover")) {
+          aui.message().setIsHovering(false);
+        }
+      };
+      clearFrameRef.current = requestAnimationFrame(decide);
+    },
+    [aui, openPopupTrigger],
+  );
+
+  // onFocus/onBlur on a container are focusin/focusout in React, so they give focus-within.
+  const handleFocus = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>) => {
+      const el = rootRef.current;
+      const target = event.target as Node | null;
+      if (el && target && !el.contains(target)) {
+        // React bubbles focus events out of PORTALS along the React tree, so this is this
+        // message's own menu, rendered into document.body. Focus is not in the subtree, so do
+        // not cancel the watchdog -- the menu will take focus with it when it unmounts, and
+        // that removal fires no focusout to wake us up again.
+        scheduleClear(false);
+        return;
+      }
+      cancelPendingClear();
+      if (focusWithinRef.current) return;
+      focusWithinRef.current = true;
+      aui.message().setIsHovering(true);
+    },
+    [aui, cancelPendingClear, scheduleClear],
+  );
+
+  const handleBlur = useCallback(() => {
+    if (!focusWithinRef.current) return;
+    scheduleClear(true);
+  }, [scheduleClear]);
+
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    // From an effect on purpose: MessagePrimitive.Root binds its own mouseleave from a ref
+    // callback, which commits before effects run, so this listener is registered second and
+    // runs second on the same element. Both writes land in one dispatch, the store settles on
+    // `true`, and React never renders the intermediate `false` -- so the bar does not unmount
+    // and the focused control is not destroyed under the user.
+    const reassert = () => {
+      if (focusWithinRef.current && isEngaged()) {
+        aui.message().setIsHovering(true);
+      }
+    };
+    el.addEventListener("mouseleave", reassert);
+    return () => {
+      el.removeEventListener("mouseleave", reassert);
+      cancelPendingClear();
+    };
+  }, [aui, isEngaged, cancelPendingClear]);
+
+  return { ref: rootRef, onFocus: handleFocus, onBlur: handleBlur };
+}
+
+/**
  * AssistantMessage handles the display and inline-editing of AI responses.
  *
  * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users
@@ -6400,6 +6611,7 @@ const DiffusionCanvas: FC = () => {
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
+  const focusReveal = useActionBarFocusReveal();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
   const researchRunId = useAuiState(({ message }) => {
@@ -6470,6 +6682,20 @@ const AssistantMessage: FC = () => {
     <MessagePrimitive.Root
       className="group/assistant-message aui-assistant-message-root relative mx-auto min-w-0 w-full max-w-(--thread-content-max-width) pt-0.5 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]"
       data-role="assistant"
+      // The message itself is the tab stop that lets the reveal below fire. Without it, a reply
+      // whose body is plain prose -- no link, no image, no code fence and so not even
+      // Streamdown's per-fence Copy button -- contains nothing focusable once `autohide` has
+      // unmounted its action bar, and Tab has no way into the message at all: Copy, Edit,
+      // Delete and More are unreachable for the whole thread except its newest reply.
+      // A tabIndex rather than a visually hidden button on purpose: it adds no DOM node (this
+      // PR exists to cut per-message weight) and it draws nothing at rest. The app's own
+      // `:focus-visible` rule in index.css gives it the same soft 1px keyboard indicator every
+      // other focusable container gets, and `:focus-visible` means a mouse click on a reply
+      // still draws nothing.
+      tabIndex={0}
+      ref={focusReveal.ref}
+      onFocus={focusReveal.onFocus}
+      onBlur={focusReveal.onBlur}
     >
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
@@ -6513,27 +6739,7 @@ const AssistantMessage: FC = () => {
                 edited messages maintain the same professional styling,
                 Markdown rendering, and tool-call components as original responses.
             */}
-                <MessagePrimitive.Parts
-              components={{
-                Text: MarkdownText,
-                Reasoning: Reasoning,
-                ReasoningGroup: ReasoningGroup,
-                Source: Sources,
-                ToolGroup: ToolGroup,
-                tools: {
-                  by_name: {
-                    web_search: WebSearchToolUIConfirmable,
-                    search_knowledge_base: KnowledgeBaseToolUIConfirmable,
-                    python: PythonToolUIConfirmable,
-                    terminal: TerminalToolUIConfirmable,
-                    code_execution: CodeExecutionToolUIConfirmable,
-                    image_generation: ImageGenerationToolUIConfirmable,
-                    render_html: RenderHtmlToolUIConfirmable,
-                  },
-                  Fallback: ToolFallbackConfirmable,
-                },
-              }}
-                />
+                <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
                 <RagSourcesGroup />
                 <MessageHtmlArtifacts />
@@ -6549,41 +6755,75 @@ const AssistantMessage: FC = () => {
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
+
+      {/*
+        The same reveal, for the other traversal direction.
+
+        The tabIndex on the root above only works going FORWARD. A container is reached before its
+        own descendants, so Shift+Tab arriving from the message below lands on the last tabbable
+        thing in this message -- and with the bar unmounted that is the root, which sits BEFORE
+        the bar in DOM order. Focusing it mounts the controls and then the next Shift+Tab steps
+        past them to the previous message, so Copy, Edit, Delete and More are reachable going
+        forward and unreachable going backward.
+
+        A sentinel AFTER the bar is what makes the backward pass land inside the message: focus
+        stops here, the bar mounts, and the next Shift+Tab goes into the last control rather than
+        out of the message. Deliberately not a focus redirect to that control, which would trap
+        the forward pass in a loop between the last button and this element.
+
+        A span with no content rather than a visually hidden button: it is one node with no text,
+        which matters in a PR whose point is per-message weight, and it draws nothing at rest for
+        the same :focus-visible reason as the root.
+
+        No onFocus/onBlur of its own: React's onFocus is focusin and bubbles, so focus landing
+        here already reaches the root's handler and mounts the bar. Duplicating them would run
+        the same handler twice per focus change for no effect. No role either -- it performs no
+        action, so labelling it as a button would misdescribe it; the aria-label is what stops it
+        being an unannounced stop for a screen reader.
+      */}
+      <span
+        className="aui-assistant-reveal-sentinel"
+        tabIndex={0}
+        aria-label="Message actions"
+      />
     </MessagePrimitive.Root>
   );
 };
 
 const COPY_RESET_MS = 2000;
 
-const ForkCountBadge: FC = () => {
-  const aui = useAui();
-  const messageId = useAuiState(({ message }) => message.id);
-  const [count, setCount] = useState(0);
-
+/**
+ * One fork-count subscription for as long as the thread is on screen.
+ *
+ * The badges below sit inside action bars that autohide, so at rest at most the newest reply
+ * has one, and none at all while the thread is running or while its last message is a prompt.
+ * Left to them, the last badge leaving would drop the thread's counts and the next hover would
+ * fetch them all again -- one whole-thread request per message the pointer crosses, with the
+ * badge arriving a round trip after the bar it sits in.
+ */
+const useThreadForkCounts = (): void => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
   useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      const remoteId = aui.threadListItem().getState().remoteId;
-      if (!remoteId) {
-        if (!cancelled) setCount(0);
-        return;
-      }
-      void getForkCount(remoteId, messageId)
-        .then((n) => {
-          if (!cancelled) setCount(n);
-        })
-        .catch(() => {
-          /* swallow: badge is non-critical */
-        });
-    };
-    refresh();
-    const handler = () => refresh();
-    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    return () => {
-      cancelled = true;
-      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, handler);
-    };
-  }, [aui, messageId]);
+    if (!remoteId) return;
+    return subscribeForkCounts(remoteId, () => {});
+  }, [remoteId]);
+};
+
+const ForkCountBadge: FC = () => {
+  const remoteId =
+    useAuiState(({ threadListItem }) => threadListItem.remoteId) ?? null;
+  const messageId = useAuiState(({ message }) => message.id);
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      remoteId ? subscribeForkCounts(remoteId, onChange) : () => {},
+    [remoteId],
+  );
+  const getSnapshot = useCallback(
+    () => (remoteId ? forkCountFor(remoteId, messageId) : 0),
+    [remoteId, messageId],
+  );
+  const count = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   if (count <= 0) return null;
   return (
@@ -6695,20 +6935,28 @@ const useResearchMessageRunId = () => {
   return useAuiState(({ message }) => getResearchRunId(message.metadata));
 };
 
+// Boolean(), not `!== null`: getResearchRunId returns whatever string it found, and an empty one
+// counted as "no research reply" before. Keeping that stops an empty id hiding a message's edit
+// and delete controls.
+const hasResearchRunId = (metadata: unknown): boolean =>
+  Boolean(getResearchRunId(metadata));
+
 const useOwnsResearchMessage = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const messages = useAuiState(({ thread }) => thread.messages);
-  if (messages.length === 0) {
-    return false;
-  }
-  return aui
-    .thread()
-    .export()
-    .messages.some(
-      ({ parentId, message }) =>
-        parentId === messageId && Boolean(getResearchRunId(message.metadata)),
-    );
+  // The ANSWER is selected, not the message array: selecting the array subscribed every user
+  // message's action bar (and its tooltips) to every thread change, so one delete re-rendered all
+  // of them even when the answer had not moved. The export is shared across one revision.
+  return useAuiState(({ thread }) => {
+    if (thread.messages.length === 0) {
+      return false;
+    }
+    return researchReplyOwners(
+      thread.messages,
+      () => aui.thread().export().messages,
+      hasResearchRunId,
+    ).has(messageId);
+  });
 };
 
 // Whether the active thread has a non-terminal durable research run. After a reload the
@@ -6887,6 +7135,21 @@ const AssistantActionBar: FC = () => {
     <>
       <ActionBarPrimitive.Root
         hideWhenRunning={!speaking}
+        // Unmounts the bar on every message that is not hovered, as the user bar already does.
+        // Mounted, each one holds ~8 tooltips subscribed to the global modal-layer store, so
+        // every menu open fanned out across the whole thread.
+        //
+        // "not-last", not "always": an unmounted bar is out of the tab order too, and these are
+        // the only Copy, Refresh, Read aloud and More controls a message has. The newest reply
+        // keeps its bar, so a keyboard user still reaches the message they are acting on, and
+        // the other N-1 still go: 8 tooltip subscriptions on a 500-message thread instead of
+        // ~250. "never" while speaking because this bar carries the only Stop reading control,
+        // which neither hover nor a later reply must take away.
+        //
+        // The older N-1 are deferred, not lost: useActionBarFocusReveal on the message root
+        // remounts a bar when focus enters that message, so tabbing brings back what hovering
+        // brings back and the controls return to the accessibility tree with it.
+        autohide={speaking ? "never" : "not-last"}
         className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
       >
         <CopyButton />
@@ -6922,7 +7185,10 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.StopSpeaking>
         </MessagePrimitive.If>
-        <ActionBarMorePrimitive.Root>
+        {/* Non-modal: a modal Radix menu writes `pointer-events: none` on <body>, and
+            that is an INHERITED property, so every open invalidates style for the whole
+            document. On a long thread that recalc is the bulk of the open+close cost. */}
+        <ActionBarMorePrimitive.Root modal={false}>
           <ActionBarMorePrimitive.Trigger asChild={true}>
             <TooltipIconButton
               tooltip="More"
