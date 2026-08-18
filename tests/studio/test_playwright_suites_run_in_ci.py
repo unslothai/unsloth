@@ -262,6 +262,7 @@ def test_every_smoke_report_is_covered_by_the_failure_upload():
         f"would upload every report except its own. Upload patterns: {patterns}"
     )
 
+
 def test_a_continue_on_error_smoke_can_still_upload_its_report():
     """`failure()` cannot see a smoke that is allowed to fail.
 
@@ -278,7 +279,8 @@ def test_a_continue_on_error_smoke_can_still_upload_its_report():
     condition = str(upload.get("if", ""))
 
     lenient = [
-        s for s in steps
+        s
+        for s in steps
         if s.get("continue-on-error") and str(s.get("name", "")).startswith("Browser smoke")
     ]
     assert lenient, "expected at least one continue-on-error browser smoke; did one get renamed?"
