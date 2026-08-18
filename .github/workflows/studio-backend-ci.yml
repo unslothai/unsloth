@@ -13,7 +13,7 @@
 #     not appropriate for CPU-only runners.
 #
 # Two jobs:
-#   - pytest matrix (3.10/3.11/3.12/3.13) over studio/backend/tests
+#   - pytest on 3.13 over studio/backend/tests, with the floor checked statically
 #   - repo-cpu-tests: auto-discovered tests/ + state-isolated spoof files
 #
 # Whole-repo Python lint (syntax + ruff + debugger-leftover scan)
@@ -61,6 +61,26 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The oldest interpreter this code is expected to run on.
+  #
+  # Nothing executes it any more. The 3.10, 3.11 and 3.12 legs ran the same suite as 3.13
+  # and differed by exactly one skip marker, at 97 runner-minutes per push against a queue
+  # that has been observed 195 deep, so they are gone and the wall-clock they were costing
+  # every other workflow is gone with them.
+  #
+  # What they were really defending is that nothing reaches for a symbol newer than this,
+  # which is static, and scripts/lint_backend_python_floor.py now checks it here on every
+  # pull request in seconds across 1093 files. Raise this number only with a reason, and
+  # remember that raising it is a support decision, not a CI one.
+  #
+  # 3.10 rather than the 3.9 pyproject.toml declares, because 3.9 is not true today:
+  # unsloth/models/_utils.py uses dataclasses.dataclass(kw_only) and
+  # tempfile.TemporaryDirectory(ignore_cleanup_errors), both 3.10. Reconciling those two
+  # is worth doing separately; this lint is what made it visible.
+  PYTHON_FLOOR: '3.10'
+
+
 jobs:
   pytest:
     name: (Python ${{ matrix.python }})
@@ -82,31 +102,42 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both ends on a pull request, all four on main.
+        # 3.13 only, on pull requests and on main alike.
         #
-        # Measured on one runner over the same tree: the four legs collect the same
-        # 26,320 tests and differ by exactly ONE of them, the >= 3.12 gate on
-        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 report
-        # 26193 passed / 127 skipped, 3.12 and 3.13 report 26194 / 126. Four legs cost
-        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a
-        # queue that has been observed 195 deep.
+        # Measured on one runner over the same tree: the four legs collected the same
+        # 26,320 tests and differed by exactly ONE of them, the >= 3.12 gate on
+        # test_demonstrates_the_underlying_stdlib_regression. 3.10 and 3.11 reported
+        # 26193 passed / 127 skipped, 3.12 and 3.13 reported 26194 / 126. Four legs cost
+        # 97 runner-minutes per push (1663 + 1249 + 1419 + 1506 seconds) against a queue
+        # that has been observed 195 deep, to re-run one identical suite four times and
+        # learn the value of a single skip marker.
         #
-        # A single leg was tried and is wrong. tests/test_python39_compatibility.py
-        # covers older SYNTAX statically, against the floor pyproject.toml declares
-        # (3.9), which is lower than any leg here. It cannot cover a version-conditional
-        # branch, because it parses rather than runs: sitecustomize.py repoints
-        # pathlib's pre-3.11 _NormalAccessor, native_path_leases.py and
-        # third_party_source.py branch on >= 3.12, and worker.py on a minimum below
-        # that. On 3.13 alone the older side of each is never executed.
+        # What the older legs were really defending is that nothing in the tree reaches
+        # for a symbol newer than the floor, and that is a static property. It is now
+        # checked statically, on every pull request, in seconds, by
+        # scripts/lint_backend_python_floor.py, which reads stdlib API availability
+        # rather than syntax alone and covers 1093 shipped and executed files.
         #
-        # So: the ends. The floor exercises those branches, the ceiling is where
-        # removals and deprecations land and where the one version-gated test runs
-        # rather than skipping. What is left uncovered until merge is a difference
-        # peculiar to 3.11 or 3.12 alone.
-        python: >-
-          ${{ github.event_name == 'pull_request'
-              && fromJSON('["3.10", "3.13"]')
-              || fromJSON('["3.10", "3.11", "3.12", "3.13"]') }}
+        # A static check does not run anything, though, and that part cannot be waved
+        # away: two interpreters that both accept a line can still behave differently on
+        # it, and a sys.version_info branch is only ever parsed, never taken.
+        #
+        # So the branches were counted rather than assumed. Seven files in the backend
+        # carry one, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by
+        # the old matrix, whose oldest leg was 3.10, so every leg took the same side of
+        # them and removing legs loses nothing there. 3.14 is above every leg there has
+        # ever been. What is genuinely lost is the PRE-3.12 side of three files, and that
+        # is small enough to keep executing directly.
+        #
+        # Hence the second entry: 3.11, the newest version that still takes that side,
+        # running those three files and nothing else. Roughly 40 tests in under ten
+        # seconds, not a second copy of the suite, and it runs beside the full leg rather
+        # than in front of it, so the critical path is unchanged.
+        include:
+          - python: '3.13'
+            scope: full
+          - python: '3.11'
+            scope: floor-spot-check
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -166,6 +197,7 @@ jobs:
           pip install torchao
 
       - name: Backend tests
+        if: matrix.scope == 'full'
         working-directory: studio/backend
         # Locally validated against this dep set: 831 passed, 5 skipped, 35 deselected.
         # Deselections (all environment-specific, would never pass on a GPU-less
@@ -221,6 +253,7 @@ jobs:
             -k 'not llama_cpp_load_progress_live and not TestGpuAutoSelection and not TestPreSpawnGpuResolution and not TestPerGpuFitGuardAllCounts and not TestTransformersIntrospection and not test_returns_cuda_when_cuda_available and not test_calls_cuda_cache_when_cuda'
 
       - name: Backend tests that cannot share a worker
+        if: matrix.scope == 'full'
         working-directory: studio/backend
         # Relative timing against a reference measured in the same process. Serial, so the
         # comparison is between two implementations rather than between two schedulings.
@@ -237,6 +270,26 @@ jobs:
             tests/test_scan_loras_off_event_loop.py \
             tests/test_anthropic_messages.py \
             tests/test_profile_stats.py
+
+      - name: Pre-3.12 branches, on the newest interpreter that takes them
+        if: matrix.scope == 'floor-spot-check'
+        working-directory: studio/backend
+        # Not a second copy of the suite. Seven backend files carry a sys.version_info
+        # branch, at 3.10, 3.12 and 3.14. The 3.10 ones were never straddled even by the
+        # old four-leg matrix, whose oldest leg WAS 3.10, so every leg took the same side
+        # and dropping legs loses nothing there. 3.14 is above every leg there has ever
+        # been. What a 3.13-only matrix genuinely stops executing is the pre-3.12 side of
+        # these files, and that is small enough to keep running rather than argue about.
+        #
+        # 3.11 because it is the newest version that still takes that side: closest to
+        # the ceiling, so anything it catches is about the boundary rather than about
+        # being old. Roughly 40 tests in under ten seconds, beside the full leg rather
+        # than in front of it, so the critical path is the full leg either way.
+        run: |
+          python -m pytest -q --tb=short \
+            tests/test_third_party_source.py \
+            tests/test_recommended_folders_permission.py \
+            tests/test_hf_cache_settings.py
 
   repo-cpu-tests:
     # Auto-discover everything under tests/ that is not GPU-bound by

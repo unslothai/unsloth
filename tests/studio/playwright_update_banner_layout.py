@@ -53,6 +53,11 @@ SETTLE_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLE_MS", "9000"))
 # What the cards need after they mount, to animate in and lay out.
 SETTLED_MS = int(os.environ.get("STUDIO_UI_BANNER_SETTLED_MS", "900"))
 
+# Must match the name use-web-update-check.ts reads. Kept short rather than zero so the
+# card still arrives after first paint, which is the situation the layout checks exist for.
+E2E_DELAY_GLOBAL = "__unslothE2EWebUpdateDelayMs"
+E2E_DELAY_MS = int(os.environ.get("STUDIO_UI_BANNER_UPDATE_DELAY_MS", "150"))
+
 LATEST = "2099.1.0"
 
 # Long enough that the collapsed preview alone overflows a capped card.
@@ -630,9 +635,10 @@ def settle_stack(
 
 def boot(page, path: str) -> None:
     page.goto(f"{BASE}{path}", wait_until = "domcontentloaded")
-    # Both cards are on a timer, the app one at 5s and llama.cpp at 1s, so wait
-    # for them rather than for the worst case: this step runs 24 times and the
-    # job it shares has minutes, not tens of minutes, to spare.
+    # Both cards are on a timer, so wait for them rather than for the worst case: this
+    # step runs 24 times and the job it shares has minutes, not tens of minutes, to
+    # spare. The app card's 5s is shortened to E2E_DELAY_MS by the seed script, llama.cpp
+    # keeps its 1s, and both still mount after first paint.
     for testid in ("web-update-banner", "llama-update-banner"):
         try:
             page.wait_for_selector(f'[data-testid="{testid}"]', state = "attached", timeout = SETTLE_MS)
@@ -674,6 +680,15 @@ def main() -> int:
     # add_init_script takes raw source, not a function to call.
     seed_js = (
         "(() => {"
+        # The app arms its update check on a 5s timer so the request stays off the
+        # critical path at launch. This suite boots a fresh page for every case it
+        # measures and waits out that timer each time before the card it is measuring
+        # exists, which was over two and a half minutes of a five minute step. The
+        # override is read at mount from a global that exists only here, so the shortened
+        # delay reaches no build and no browser but this one, and it stays a timer rather
+        # than becoming synchronous, because a card that mounts on the first frame would
+        # not exercise the late-mount reflow this file is about.
+        f"  window.{E2E_DELAY_GLOBAL} = {E2E_DELAY_MS};"
         f"  localStorage.setItem('unsloth_auth_token', {json.dumps(session['access_token'])});"
         f"  localStorage.setItem('unsloth_refresh_token', {json.dumps(session.get('refresh_token', ''))});"
         "  localStorage.setItem('unsloth_show_llama_update_banner', 'true');"

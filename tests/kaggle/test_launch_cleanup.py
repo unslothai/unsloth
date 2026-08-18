@@ -17,6 +17,7 @@ about process death and nothing weaker would show it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -50,13 +51,28 @@ def _fake_kaggle(bin_dir: Path, record: Path) -> None:
     shim.chmod(0o755)
 
 
+# Arm faulthandler against a FILE, not stderr.
+#
+# PYTHONFAULTHANDLER sends the dump to fd 2, and every launcher here has fd 2 redirected
+# onto the stdout pipe. One of these tests deliberately fills that pipe and stops draining
+# it, which is exactly the hang worth diagnosing, and a raw write bypasses Python's io
+# lock but not pipe backpressure: SIGABRT would kill the child with nothing written and
+# the failure message would be as empty as before. A file has no reader to block on.
+_FAULT_PREAMBLE = """\
+import faulthandler as _faulthandler, os as _os
+_fault_dump = open(_os.environ["LAUNCH_FAULT_DUMP"], "w", buffering = 1)
+_faulthandler.enable(file = _fault_dump)
+"""
+
+
 def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
     """Run `body` against the real launch module, with a fake kaggle CLI."""
     record = tmp_path / "kaggle_calls.txt"
     _fake_kaggle(tmp_path / "bin", record)
     script = tmp_path / "runner.py"
     script.write_text(
-        textwrap.dedent(f"""\
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
         import sys, time
         sys.path.insert(0, {str(CI_DIR)!r})
         import launch
@@ -65,7 +81,7 @@ def _runner(tmp_path: Path, body: str) -> subprocess.Popen:
         """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(tmp_path / "bin")
     return subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -96,20 +112,59 @@ def _await_ready(proc: subprocess.Popen) -> None:
     raise AssertionError("the runner never reached its READY point")
 
 
-def _wait_for_death(proc: subprocess.Popen) -> None:
-    """Wait out the budget, and say what the launcher logged if it never dies.
+def _fault_dump(tmp_path: Path) -> Path:
+    """Where the child writes its stacks. One per test, beside its other artefacts."""
+    return tmp_path / "fault.txt"
+
+
+def _child_env(bin_dir: Path) -> dict:
+    """The launcher's environment, pointing faulthandler at a file.
+
+    `_wait_for_death` sends SIGABRT before it kills a launcher that overstayed its
+    budget, and faulthandler turns that into every thread's stack. The destination is a
+    FILE rather than stderr: fd 2 is redirected onto the stdout pipe here, one of these
+    tests deliberately fills that pipe and stops draining it, and a raw write bypasses
+    Python's io lock but not pipe backpressure. Dumping there would block, the child
+    would die with nothing written, and the failure message would be as empty as the one
+    this exists to replace. A file has no reader to block on.
+    """
+    return {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "LAUNCH_FAULT_DUMP": str(_fault_dump(bin_dir.parent)),
+    }
+
+
+def _wait_for_death(proc: subprocess.Popen, tmp_path: Path | None = None) -> None:
+    """Wait out the budget, and say where the launcher was if it never dies.
 
     A hang and a wrong exit status are different faults, and the bare TimeoutExpired
     named neither. Killing first is what lets the pipe reach EOF so the tail reads.
+
+    SIGABRT before SIGKILL, because the tail on its own has already proved too coarse:
+    CI produced "(nothing logged after READY)" on this file, which is the same output
+    whether the handler never ran, ran and was refused the pipe, or ran and blocked
+    inside a delete. With faulthandler armed in the child, SIGABRT writes the stack it
+    is actually stuck on to a file, and then ends the process, so the answer costs
+    nothing extra when the hang does not happen.
+
+    The file matters rather than being an implementation detail: the pipe is one of the
+    things that can be the hang, so a diagnostic that travels down it can be silenced by
+    the very fault it is describing.
     """
     try:
         proc.wait(timeout = _DEATH_BUDGET_SEC)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        with contextlib.suppress(Exception):
+            proc.send_signal(signal.SIGABRT)
+            proc.wait(timeout = 10)
+        if proc.poll() is None:
+            proc.kill()
         proc.wait(timeout = 30)
         raise AssertionError(
             f"the launcher was still alive {_DEATH_BUDGET_SEC}s after its signal. "
-            f"Launcher said: {_tail(proc)}"
+            f"Launcher said: {_tail(proc)}\n"
+            f"Stack at the abort: {_stacks(tmp_path)}"
         ) from None
 
 
@@ -127,6 +182,16 @@ def _tail(proc: subprocess.Popen) -> str:
         return (proc.stdout.read() or "").strip() or "(nothing logged after READY)"
     except Exception as exc:  # noqa: BLE001 -- a diagnostic must not mask the failure
         return f"(could not read the launcher's output: {type(exc).__name__}: {exc})"
+
+
+def _stacks(tmp_path: Path | None) -> str:
+    """The child's own stacks, written by faulthandler on the SIGABRT above."""
+    if tmp_path is None:
+        return "(not requested: this call site passed no tmp_path)"
+    dump = _fault_dump(tmp_path)
+    if not dump.is_file():
+        return "(no dump: the child died before faulthandler could write, or never armed it)"
+    return dump.read_text(encoding = "utf-8", errors = "replace").strip() or "(dump empty)"
 
 
 def _deletions(tmp_path: Path) -> list[str]:
@@ -466,7 +531,7 @@ def test_a_signalled_launcher_deletes_its_kernels(tmp_path, signame):
     try:
         _await_ready(proc)
         proc.send_signal(getattr(signal, signame))
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -492,7 +557,7 @@ def test_the_exit_status_still_says_it_was_killed(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -534,7 +599,7 @@ def test_the_exit_status_survives_a_release_that_fails(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -592,7 +657,7 @@ def test_the_handler_survives_its_own_logging_failing(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -624,7 +689,7 @@ def test_the_handler_survives_a_stdout_nobody_is_draining(tmp_path):
         _await_ready(proc)
         time.sleep(2)  # long enough for the pipe to fill and the write to park
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -673,7 +738,8 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
 
     script = tmp_path / "runner.py"
     script.write_text(
-        textwrap.dedent(f"""\
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
         import sys, time
         sys.path.insert(0, {str(CI_DIR)!r})
         import launch
@@ -696,7 +762,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
     """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(bin_dir)
     proc = subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -707,7 +773,7 @@ def test_a_reentrant_log_inside_the_delete_retries_does_not_abandon_them(tmp_pat
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -751,7 +817,8 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     )
     script = tmp_path / "runner.py"
     script.write_text(
-        textwrap.dedent(f"""\
+        _FAULT_PREAMBLE
+        + textwrap.dedent(f"""\
         import sys, time
         sys.path.insert(0, {str(CI_DIR)!r})
         import launch
@@ -760,7 +827,7 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
     """),
         encoding = "utf-8",
     )
-    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    env = _child_env(bin_dir)
     proc = subprocess.Popen(
         [sys.executable, str(script)],
         env = env,
@@ -772,7 +839,7 @@ def test_the_leaked_kernel_warning_does_not_strand_the_handler(tmp_path):
         _await_ready(proc)
         time.sleep(2)  # let the pipe fill and the write park
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -848,7 +915,7 @@ def test_an_unhandled_exception_still_deletes(tmp_path):
         raise RuntimeError("boom")
     """,
     )
-    _wait_for_death(proc)
+    _wait_for_death(proc, tmp_path)
     assert any("me/k-1" in c for c in _deletions(tmp_path))
     assert json.loads((tmp_path / "inflight.json").read_text()) == []
 
@@ -868,7 +935,7 @@ def test_kill_9_leaves_it_for_the_sweep(tmp_path):
     try:
         assert proc.stdout.readline().strip() == "READY"
         proc.send_signal(signal.SIGKILL)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -998,7 +1065,7 @@ def test_a_kernel_pushed_before_the_signal_is_still_deleted(tmp_path):
     try:
         _await_ready(proc)
         proc.send_signal(signal.SIGTERM)
-        _wait_for_death(proc)
+        _wait_for_death(proc, tmp_path)
     finally:
         if proc.poll() is None:
             proc.kill()
