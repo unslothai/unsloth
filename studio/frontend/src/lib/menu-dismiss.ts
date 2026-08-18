@@ -298,11 +298,67 @@ const arm = (touch: boolean): void => {
 };
 
 /**
+ * Marks the document while at least one non-modal menu is open, so CSS can take the controls
+ * that COMMIT ON POINTERDOWN out of the hit test for exactly that long.
+ *
+ * WHY AN ATTRIBUTE AND NOT THE OLD SHIELD
+ *
+ * Swallowing the click is enough for every control that acts on `click`, which is all of them
+ * bar two: Radix Slider commits in `onPointerDown` -> `onSlideStart` -> `updateValues` ->
+ * `onValueChange`, and Radix Select opens in `onPointerDown`. Those two have already acted by
+ * the time `swallowClick` runs, so on desktop a single press on a visible `ParamSlider` with a
+ * composer, action-bar or project menu open both dismissed the menu and wrote a new inference
+ * value: measured, temperature 0.6 -> 1.7 on chromium and 0.6 -> 1.69 on firefox and webkit,
+ * reaching `chat_settings` in `studio.db` and surviving a reload. The merge base's modal shield
+ * absorbed the same press (`elementFromPoint` was `HTML`, body `pointer-events: none`), so this
+ * is a regression of this branch rather than something pre-existing.
+ *
+ * The shield that used to do this was `pointer-events: none` on `<body>`, and `pointer-events`
+ * is inherited, which is the whole reason this branch exists. The rule this attribute drives
+ * names the committing controls as its RIGHTMOST compound instead, so the invalidation is
+ * bounded by the number of sliders on the page rather than by the length of the thread.
+ *
+ * Cancelling the `pointerdown` was built and rejected earlier on this branch: it removes the
+ * press from React's delegation entirely, so the settings panel's own resize handle stopped
+ * dragging and another menu's trigger opened nothing. Taking only the committing controls out
+ * of the hit test leaves every other press exactly where it was, the resize handle included.
+ */
+export const NON_MODAL_MENU_OPEN_ATTRIBUTE = "data-nonmodal-menu-open";
+
+/**
+ * Ref-counted: submenus mount a guard of their own inside the parent's content, so the last
+ * one to unmount owns the removal. A plain set/remove pair drops the shield while the parent
+ * menu is still open.
+ */
+let openGuards = 0;
+
+/**
+ * Mark the document as having a non-modal menu open, and return the release. Exported so the
+ * ref-count can be tested without a renderer; mount `<MenuDismissGuard />` in application code.
+ */
+export function markNonModalMenuOpen(): () => void {
+  if (openGuards++ === 0) {
+    document.documentElement.setAttribute(NON_MODAL_MENU_OPEN_ATTRIBUTE, "");
+  }
+  let released = false;
+  return () => {
+    // Idempotent: React can run an effect's cleanup twice under StrictMode, and a second
+    // decrement would drop the shield while another menu is still open.
+    if (released) return;
+    released = true;
+    openGuards = Math.max(0, openGuards - 1);
+    if (openGuards > 0) return;
+    document.documentElement.removeAttribute(NON_MODAL_MENU_OPEN_ATTRIBUTE);
+  };
+}
+
+/**
  * Call from inside an open non-modal menu's content. Mount it via `<MenuDismissGuard />`
  * rather than calling it directly, so the guard's lifetime is exactly the content's.
  */
 export function useDismissingClickGuard(): void {
   useEffect(() => {
+    const releaseMenuMark = markNonModalMenuOpen();
     const onPointerDown = (event: PointerEvent): void => {
       // A new gesture always supersedes the last one, so a press that never produced a click
       // cannot leave the swallower armed.
@@ -327,6 +383,7 @@ export function useDismissingClickGuard(): void {
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
+      releaseMenuMark();
     };
   }, []);
 }
