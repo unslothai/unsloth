@@ -36,7 +36,7 @@ const MUTANTS = [
   {
     name: "no prefix eviction",
     test: "a streamed fence occupies one entry, not one per refresh window",
-    from: "        if (code.startsWith(other.code) || other.code.startsWith(code)) {\n          drop(otherKey, other);\n        }",
+    from: "        if (code.startsWith(other.code)) {\n          drop(otherKey, other);\n        }",
     to: "        if (false) {\n          drop(otherKey, other);\n        }",
   },
   {
