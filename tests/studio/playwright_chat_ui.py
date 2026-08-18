@@ -186,7 +186,12 @@ def exercise_permission_mode_controls(page, shoot):
     page.route("**/api/chat/settings", refuse_settings_hydration)
     set_legacy_confirm(None)
     page.reload(wait_until = "domcontentloaded")
-    expect(pill).to_be_visible()
+    # Explicit timeout: this is the post-reload assertion, and the reloaded
+    # page stays silent until the backend's warm/self-heal settles on a busy
+    # runner. The 5s expect default turns that starvation into a flake; the
+    # page's own 60s budget matches what every other assertion here already
+    # uses via set_default_timeout (#9183).
+    expect(pill).to_be_visible(timeout = 60_000)
 
     # Fresh profiles default to Approve for me.
     expect_mode("Approve for me")
