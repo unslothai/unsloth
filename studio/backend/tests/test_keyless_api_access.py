@@ -653,58 +653,89 @@ def test_a_signed_in_session_can_still_mint_one_while_keyless_is_on():
 # --- effects a stranger must not be able to start -----------------------------
 
 
-def auto_download_calls(monkeypatch, request):
-    """Run _maybe_auto_download_model with everything but the caller check satisfied."""
+def switch_attempt(
+    monkeypatch,
+    request,
+    *,
+    on_disk = True,
+):
+    """Drive _maybe_auto_switch_model with auto-switch and auto-download both on.
+
+    Returns (loads, downloads): what the request would have made this server do.
+    """
+    import core.inference.local_model_resolver as resolver
     import core.inference.openai_auto_download as auto_download
     import routes.inference as inference
-    import utils.openai_auto_switch_settings as auto_switch_settings
+    import utils.openai_auto_switch_settings as switch_settings
 
-    started = []
+    loads, downloads = [], []
+    resolved = ("unsloth/Other-GGUF", None, "unsloth/Other-GGUF") if on_disk else None
 
-    async def record(model, **kwargs):
-        started.append(model)
+    async def record_load(*args, **kwargs):
+        loads.append(args[0] if args else kwargs)
+
+    async def record_download(model, **kwargs):
+        downloads.append(model)
         return None
 
-    monkeypatch.setattr(auto_switch_settings, "get_openai_auto_download_enabled", lambda: True)
-    monkeypatch.setattr(auto_download, "is_downloadable_ref", lambda ref: True)
-    monkeypatch.setattr(auto_download, "maybe_auto_download", record)
-    monkeypatch.setattr(inference, "_loaded_satisfies", lambda ref: False)
-    asyncio.run(inference._maybe_auto_download_model("unsloth/some-20gb-model", request))
-    return started
+    monkeypatch.setattr(switch_settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(switch_settings, "get_openai_auto_download_enabled", lambda: True)
+    monkeypatch.setattr(switch_settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda _m, **_k: resolved)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda _m, **_k: resolved)
+    monkeypatch.setattr(resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(auto_download, "is_downloadable_ref", lambda _r: True)
+    monkeypatch.setattr(auto_download, "maybe_auto_download", record_download)
+    monkeypatch.setattr(inference, "_loaded_identity_satisfies", lambda _m: False)
+    monkeypatch.setattr(inference, "_load_model_impl", record_load)
+    monkeypatch.setattr(inference, "_auto_switch_waiters", {})
+    try:
+        asyncio.run(inference._maybe_auto_switch_model("unsloth/Other-GGUF", request, "tester"))
+    except HTTPException as exc:
+        # a named model this caller may not switch to must say so, never be answered by another
+        assert exc.status_code in (404, 503), exc.status_code
+    return loads, downloads
+
+
+@pytest.mark.parametrize("headers", [None, {"Authorization": "Bearer ollama"}])
+def test_a_keyless_caller_cannot_switch_the_loaded_model(monkeypatch, headers):
+    """The dialog offers the loaded model, so a stranger must not be able to evict it
+    for another one already on disk."""
+    seed_user()
+    set_keyless_api_access("inference")
+    loads, downloads = switch_attempt(monkeypatch, request_for(headers = headers))
+    assert (loads, downloads) == ([], [])
 
 
 def test_a_keyless_caller_cannot_start_a_download(monkeypatch):
-    """The dialog offers the loaded model, so a stranger must not be able to name
-    gigabytes of someone else's instead."""
+    """Same for a name that is not on disk: no gigabytes fetched on a stranger's word."""
     seed_user()
     set_keyless_api_access("inference")
-    assert auto_download_calls(monkeypatch, request_for()) == []
-    assert (
-        auto_download_calls(monkeypatch, request_for(headers = {"Authorization": "Bearer ollama"}))
-        == []
-    )
+    loads, downloads = switch_attempt(monkeypatch, request_for(), on_disk = False)
+    assert (loads, downloads) == ([], [])
 
 
-def test_a_working_key_can_still_start_one(monkeypatch):
-    """Auto-download is the owner's own opt-in, and a key is a credential they issued."""
+def test_a_working_key_can_still_switch_and_download(monkeypatch):
+    """Both are the owner's own opt-ins, and a key is a credential they issued."""
     seed_user()
     set_keyless_api_access("inference")
     raw, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME, name = "client", expires_at = None
     )
-    started = auto_download_calls(
-        monkeypatch, request_for(headers = {"Authorization": f"Bearer {raw}"})
-    )
-    assert started == ["unsloth/some-20gb-model"]
+    headers = {"Authorization": f"Bearer {raw}"}
+    loads, _ = switch_attempt(monkeypatch, request_for(headers = headers))
+    assert loads != []
+    _, downloads = switch_attempt(monkeypatch, request_for(headers = headers), on_disk = False)
+    assert downloads == ["unsloth/Other-GGUF"]
 
 
-def test_a_download_still_starts_when_keyless_is_off(monkeypatch):
+def test_a_switch_still_happens_when_keyless_is_off(monkeypatch):
     seed_user()
     token = create_access_token(storage.DEFAULT_ADMIN_USERNAME)
-    started = auto_download_calls(
+    loads, _ = switch_attempt(
         monkeypatch, request_for(headers = {"Authorization": f"Bearer {token}"})
     )
-    assert started == ["unsloth/some-20gb-model"]
+    assert loads != []
 
 
 # --- routes that read the bearer for themselves ------------------------------

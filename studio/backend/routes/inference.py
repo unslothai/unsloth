@@ -5124,11 +5124,6 @@ async def _maybe_auto_download_model(
     # An Ollama-style tag (":latest") names no quant, so the resolver misses a servable model.
     if await asyncio.to_thread(_loaded_satisfies, requested_model):
         return
-    from auth.authentication import request_admitted_without_credential
-
-    # the keyless dialog offers the loaded model, not gigabytes a stranger names
-    if request_admitted_without_credential(fastapi_request):
-        return
     try:
         refusal = await maybe_auto_download(
             requested_model,
@@ -5598,6 +5593,15 @@ async def _maybe_auto_switch_model(
     if auto_switch_on and await asyncio.to_thread(_loaded_identity_satisfies, requested_model):
         warm_index_soon()
         return
+
+    from auth.authentication import request_admitted_without_credential
+
+    # the keyless dialog offers the loaded model, so a stranger swaps or fetches nothing
+    if auto_switch_on and request_admitted_without_credential(fastapi_request):
+        auto_switch_on = False
+        if not idle_unload_is_configured():
+            await _reject_unservable_model(requested_model, fastapi_request)
+            return
 
     async def _resolve_and_switch() -> None:
         # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
