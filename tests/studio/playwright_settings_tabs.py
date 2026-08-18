@@ -15,6 +15,7 @@ in-flight for; PW_CHUNK_FAIL=<tab> aborts one tab's module outright.
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -55,6 +56,8 @@ PANEL = 'div[role="dialog"] main div.hover-scrollbar'
 # How long the Data module is held, and how far into that hold the deep-open is abandoned.
 DEEP_OPEN_HOLD_MS = 2500
 DEEP_OPEN_ABANDON_MS = 300
+# The Data panel's own module, however the server spells it (vite appends ?t=, ?v=).
+DATA_MODULE = re.compile(r"/data-tab(\.tsx)?(\?|$)")
 
 report: dict = {
     "engine": ENGINE,
@@ -194,17 +197,21 @@ def run_abandoned_deep_open(page) -> None:
     dialog, so the Data module is still cold and the hold is what decides when it arrives.
     """
 
+    # Matched on the Data module alone rather than on everything. The sleep below runs on
+    # the driver thread, so a handler that sees every request makes the whole page's module
+    # load queue behind it, and the panel that arrives next has to be rendered by a main
+    # thread that got the lot at once. On a busy two-core runner that pushed the reopen
+    # below past its timeout even though nothing was wrong with the dialog.
     def hold_data(route):
-        if "/data-tab" in route.request.url:
-            time.sleep(DEEP_OPEN_HOLD_MS / 1000)
-        return route.fallback()
+        time.sleep(DEEP_OPEN_HOLD_MS / 1000)
+        return route.continue_()
 
-    page.route("**/*", hold_data)
+    page.route(DATA_MODULE, hold_data)
     try:
         page.evaluate(ABANDON_DEEP_OPEN_JS, DEEP_OPEN_ABANDON_MS)
         page.wait_for_timeout(DEEP_OPEN_HOLD_MS + 1500)
     finally:
-        page.unroute("**/*", hold_data)
+        page.unroute(DATA_MODULE, hold_data)
     abandoned = page.evaluate("() => window.__abandonedAt")
     open_dialog(page, "data")
     settled = settle_panel(page)
