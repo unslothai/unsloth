@@ -81,11 +81,8 @@ type AutoScrollContextValue = {
    * user keeps looking at the same thing. Progressive mounting (see
    * progressive-mount-controller) is the only caller and calls on EVERY
    * widening commit, zero included, since a zero correction still resyncs the
-   * intent bookkeeping below.
-   *
-   * This exists as a method rather than a scrollTop write next to the inserting
-   * commit because this hook owns scrollTop and the caller never writes it. See
-   * the implementation for why it no-ops while the user is following.
+   * intent bookkeeping below. A method rather than a scrollTop write at the
+   * inserting commit because this hook owns scrollTop.
    */
   adjustForContentInsertedAbove: (deltaPx: number) => void;
 };
@@ -366,14 +363,13 @@ export function useIntentAwareAutoScroll(): {
       // THIS HOOK OWNS scrollTop; the progressive mount only reports the height
       // it put above the fold, so the two never both write.
       //
-      // While the user is FOLLOWING there is deliberately nothing to do. The
-      // widening commit is a childList mutation, so the MutationObserver below
-      // already runs onLayoutChange -> pinIfFollowing in the same frame before
-      // paint, and since widening only prepends, "pin to the bottom" and "shift
-      // by the height inserted above" are the same pixel. Correcting here too
-      // would be a second writer for no gain, would double the forced layouts
-      // per frame, and its scroll event could re-attach a user who
-      // deliberately detached within RE_ATTACH_THRESHOLD_PX of the bottom.
+      // While the user is FOLLOWING there is deliberately nothing to do: the
+      // MutationObserver below already runs onLayoutChange -> pinIfFollowing in
+      // the same frame before paint, and since widening only prepends, "pin to
+      // the bottom" and "shift by the height inserted above" are the same pixel.
+      // Correcting here too would double the forced layouts per frame and its
+      // scroll event could re-attach a user who deliberately detached within
+      // RE_ATTACH_THRESHOLD_PX of the bottom.
       //
       // While the user is DETACHED nothing else moves the viewport: extendFollow
       // early-returns, stabilize only rebases its high-water mark, and
@@ -393,17 +389,16 @@ export function useIntentAwareAutoScroll(): {
         //
         // With a write, this stops the scroll event it provokes from reading as
         // reader movement: the `delta > 0` branch below would re-attach a user
-        // parked near the bottom (where detachFromBottom puts them when the
-        // composer grows) and the next widening frame would yank them down.
+        // parked near the bottom and the next widening frame would yank them
+        // down.
         //
         // WITHOUT a write it matters just as much. When native scroll anchoring
         // absorbs a widening in full the correction is zero, but the browser
         // still moved scrollTop by the whole inserted height and still fires a
-        // scroll event for it: measured, one event carrying the new offset on
-        // Chromium 151, WebKit 26.5 and Firefox 153. Returning early left
-        // lastScrollTop a whole insertion behind, so that event arrived as a
-        // large downward scroll nobody made. Layout effects run before the event
-        // is dispatched, so resyncing here is what makes it read as zero.
+        // scroll event for it (measured on Chromium 151, WebKit 26.5, Firefox
+        // 153). Returning early left lastScrollTop a whole insertion behind, so
+        // that event arrived as a large downward scroll nobody made. Layout
+        // effects run before it is dispatched, so resyncing here reads as zero.
         lastScrollTop = el.scrollTop;
         lastDistanceFromBottom = distanceFromBottom();
       };

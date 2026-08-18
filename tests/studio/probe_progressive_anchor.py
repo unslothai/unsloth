@@ -4,11 +4,11 @@
 """Does the page move under a reader who scrolls up while a long thread is still widening?
 
 The #9016 re-open action leaves the viewport pinned to the bottom, so it exercises only the branch
-of the progressive mount where the autoscroll hook already owns the correction. The branch that has
-no other actor is the DETACHED one: the user scrolls up the instant the thread opens, and the
-widening keeps inserting messages ABOVE them. If the correction there is wrong, or missing, the
-content they are reading slides down the page on every widening frame. That is precisely the
-regression Open WebUI shipped and reverted (open-webui#23990).
+where the autoscroll hook already owns the correction. The branch with no other actor is the
+DETACHED one: the user scrolls up the instant the thread opens and the widening keeps inserting
+messages ABOVE them. If the correction there is wrong, or missing, what they are reading slides
+down the page every widening frame: the regression Open WebUI shipped and reverted
+(open-webui#23990).
 
 The probe re-opens the thread, scrolls up hard on the frame the first row appears, then samples the
 document-space top of a chosen visible message every frame until the thread has converged. A
@@ -37,10 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from playwright_heavy_thread import RECORDER_INIT  # noqa: E402
 except ModuleNotFoundError as exc:  # pragma: no cover - the message IS the behaviour
-    # #9016 is not merged, so its three fixture files are absent and this import is where that
-    # becomes visible. Say so instead of raising a bare ModuleNotFoundError, and do not vendor a
-    # copy: two copies of a measurement harness stop agreeing, and these numbers are only
-    # comparable to #9016's while there is exactly one.
+    # #9016 is not merged, so its fixture files are absent and this import is where that becomes
+    # visible. Say so instead of raising a bare ModuleNotFoundError, and do not vendor a copy: these
+    # numbers are only comparable to #9016's while there is exactly one harness.
     raise SystemExit(
         "probe_progressive_anchor needs #9016's heavy-thread harness, which is not on this "
         "branch yet: tests/studio/playwright_heavy_thread.py plus "
@@ -205,9 +204,8 @@ def main() -> int:
                 # A REAL wheel from the input pipeline, over a message rather than the scroll
                 # container. A synthetic dispatchEvent on the viewport does not detach: the hook
                 # asks innerScrollWillConsumeUpward(e.target) whether something nested will consume
-                # the gesture, and an event dispatched ON the viewport answers that about the
-                # viewport itself. The first version did that and its own guard caught it, reporting
-                # a reader at distance 0 from the bottom.
+                # the gesture, and an event dispatched ON the viewport answers about the viewport
+                # itself. The first version did that and its own guard caught it.
                 if not opened["widenedBeforeScroll"]:
                     info("no widening landed before the scroll; the fixture is not long enough")
                     return 1

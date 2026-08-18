@@ -5,23 +5,21 @@
 
 The mount window opens on INITIAL_MESSAGES rows. If those rows plus the viewport's bottom spacer
 are shorter than clientHeight -- a compact tail in a tall viewport -- the first painted commit
-cannot fill the screen, and the question is how big the resulting empty band is and how long it
-lasts before a widening chunk covers it.
+cannot fill the screen, and this measures how big the empty band is and how long it lasts.
 
-Measured with it, on a 144-message thread whose last 24 messages are one-word replies: at 900,
-1080, 1440, 1800, 1840 and 1860px of clientHeight there is no band the settled thread does not
-also have, because 16 one-word rows are 1639px and the viewport's own inset and spacer carry that
-to 1890px. Above 1890px there is one -- 10px at 1900, 110px at 2000, 270px at 2160 -- for 287 to
-499ms until the first widening chunk closes it. See INITIAL_MESSAGES.
+Measured on a 144-message thread whose last 24 messages are one-word replies: at 900, 1080, 1440,
+1800, 1840 and 1860px of clientHeight there is no band the settled thread does not also have,
+because 16 one-word rows are 1639px and the viewport's own inset and spacer carry that to 1890px.
+Above 1890px there is one -- 10px at 1900, 110px at 2000, 270px at 2160 -- for 287 to 499ms until
+the first widening chunk closes it. See INITIAL_MESSAGES.
 
 Prints and exits 0 on any measurement. Not a gate.
 
     PM_PORT=5731 PM_ENGINE=chromium PM_HEIGHTS=900,1080,1440 \
         python3 tests/studio/probe_compact_tail_gap.py
 
-Needs #9016's heavy-thread harness, the same dependency probe_progressive_anchor.py and
-probe_progressive_reflow.py have, plus two methods on it that carry the compact tail and the
-per-frame geometry: `seedCompactTail(chars, tailMessages)` and `gapMetrics()`.
+Needs #9016's heavy-thread harness, plus two methods on it: `seedCompactTail(chars, tailMessages)`
+and `gapMetrics()`.
 """
 
 from __future__ import annotations
@@ -124,9 +122,8 @@ def run_engine(pw, engine: str) -> dict:
             result = page.evaluate(RUN_JS, [plan["messages"], 6])
             samples = result["samples"]
             first = samples[0]
-            # Empty band below the last mounted row, measured against the SETTLED value of the
-            # same quantity, not zero: the bottom spacer and sticky footer leave a band before and
-            # after this change, and only the excess over it is this change's doing.
+            # Empty band below the last mounted row, measured against the SETTLED value of the same
+            # quantity, not zero: the bottom spacer and sticky footer leave a band either way.
             baseline = samples[-1]["gapBottom"]
 
             def netgap(s):
@@ -180,7 +177,7 @@ def run_engine(pw, engine: str) -> dict:
         page.screenshot(path = str(OUT / f"{LABEL}-{engine}-{height}-firstcommit.png"))
         out[height] = rounds
         # After every height, not once at the end: a browser dying on the tallest viewport used to
-        # take every earlier measurement down with it.
+        # take every earlier measurement with it.
         (OUT / f"{LABEL}-{engine}-rounds.json").write_text(
             json.dumps(out, indent = 1), encoding = "utf-8"
         )

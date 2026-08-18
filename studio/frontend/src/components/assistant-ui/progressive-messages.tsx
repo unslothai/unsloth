@@ -1,19 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// React glue for the widen-only mount window. The state machine, and why this is not a
-// virtualizer, are in progressive-mount-controller.ts.
+// React glue for the widen-only mount window. The state machine, and why this is not a virtualizer,
+// are in progressive-mount-controller.ts.
 //
 // This replaces `<ThreadPrimitive.Messages>{renderThreadMessage}</ThreadPrimitive.Messages>` with
 // an equivalent map over a bounded index range: upstream renders `MessageByIndexProvider ->
 // RenderChildrenWithAccessor -> children({ message })`, this renders `MessageByIndexProvider ->
-// children`, dropping an accessor wrapper the thread's slot does not use. That wrapper emits no
-// DOM, so the document is the same either way.
+// children`, dropping an accessor wrapper the thread's slot does not use and that emits no DOM.
 //
-// The replacement is permanent, not a mode the thread leaves once the window closes: swapping
-// between upstream's tree and this one would change the element type at that position, and React
-// would unmount and rebuild every message on the convergence commit, which is the cost being
-// avoided. Rendering one of them throughout means only the row count ever changes.
+// The replacement is permanent, not a mode the thread leaves once the window closes: swapping trees
+// would change the element type at that position, so React would unmount and rebuild every message
+// on the convergence commit, which is the cost being avoided.
 //
 // It takes the SAME propless slot #9042 gave `ThreadPrimitive.Messages`, for the same reason.
 // `renderMessage()` returns one shared element object, so a commit that changes the row count hands
@@ -50,9 +48,9 @@ import {
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 
 /**
- * Every mount window currently withholding rows. Module-level rather than context: the consumers
- * are imperative DOM readers (screenshot capture, the #9016 harness census) not necessarily inside
- * the React tree, and a thread can be mounted twice at once (the Compare panes).
+ * Every mount window currently withholding rows. Module-level rather than context: the consumers are
+ * imperative DOM readers (screenshot capture, the #9016 harness census) not necessarily in the React
+ * tree, and a thread can be mounted twice at once (the Compare panes).
  */
 const activeCompleters = new Set<() => Promise<void>>();
 
@@ -68,19 +66,17 @@ export const PROGRESSIVE_MOUNT_SEARCH_MS = 400;
 export async function completeProgressiveMounts(): Promise<void> {
   // Two waits, failing in opposite directions.
   //
-  // Draining is easy: ask every completer that exists to finish. Reading the set ONCE is not
-  // enough, since completers register from a layout effect and a caller in the same task as the
-  // thread opening finds it empty. Measured on that version: returned in 0.1ms, 16 of 220 rows two
-  // frames later.
+  // Draining is easy: ask every completer that exists to finish. Reading the set ONCE is not enough,
+  // since completers register from a layout effect and a caller in the same task as the thread
+  // opening finds it empty (measured: returned in 0.1ms, 16 of 220 rows two frames later).
   //
   // The hard half is that "empty" is ambiguous: a settled thread and a thread still loading history
-  // (about 160ms on a cold open) look alike, so returning at the first empty reading resolves
-  // before any row exists. An empty set is therefore only believed after SEARCH_MS of looking; a
-  // set that was non-empty and has drained is believed immediately.
+  // (about 160ms on a cold open) look alike, so returning at the first empty reading resolves before
+  // any row exists. An empty set is therefore only believed after SEARCH_MS of looking; a set that
+  // was non-empty and has drained is believed immediately.
   //
-  // So a caller on a settled thread pays SEARCH_MS. That is the deliberate direction to be wrong
-  // in: the alternative is a screenshot or export of a conversation that is not there yet, and any
-  // whole-thread DOM read is already far more expensive than this.
+  // So a caller on a settled thread pays SEARCH_MS, the deliberate direction to be wrong in: the
+  // alternative is a screenshot or export of a conversation that is not there yet.
   const deadline = Date.now() + PROGRESSIVE_MOUNT_SEARCH_MS;
   let observed = false;
   for (;;) {
@@ -107,8 +103,8 @@ export function hasPendingProgressiveMounts(): boolean {
  *
  * Widening prepends above everything, so for a widening any row will do. A RELAYOUT will not: a row
  * growing between the topmost row and the fold moves the reader while leaving the topmost row where
- * it was. Measured with a 600px height change injected into one row above a detached reader with
- * the window open: 600px of movement, reported as 0 by a topmost-row anchor.
+ * it was. Measured with a 600px height change injected into one row above a detached reader with the
+ * window open: 600px of movement, reported as 0 by a topmost-row anchor.
  */
 function pickAnchorRow(viewport: HTMLElement): Element | null {
   const fold = viewport.getBoundingClientRect().top;
@@ -122,19 +118,16 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   }
   if (!anchor) return null;
   // Then descend to the fold. A row can be taller than the viewport (a long answer with images and
-  // code usually is), so a reader partway through one has the row's top ABOVE them: an image or
-  // Shiki block earlier in that message growing moves everything they see while the row's top
-  // stays put, and a whole-row anchor reports zero. The first descendant reaching the fold does
-  // not. Bounded because the block straddling the fold is a few levels down, and this runs once
-  // per re-pick, not per frame.
+  // code usually is), so a reader partway through one has the row's top ABOVE them: a block earlier
+  // in that message growing moves everything they see while the row's top stays put, and a whole-row
+  // anchor reports zero. The first descendant reaching the fold does not. Bounded because that block
+  // is a few levels down, and this runs once per re-pick, not per frame.
   //
-  // Not covered, so the bound is known: if the fold lands inside a tall LEAF block (a paragraph
-  // with no element children) the descent stops with its top above the reader, and lines reflowing
-  // inside that block move what they see without moving the block. Everything else is covered, so
-  // the residual is one paragraph's height change, for a detached reader, during the few hundred ms
-  // a window is open. Closing it needs a caret point at the fold, spelled differently on all three
-  // engines, costing a Range and a rect every frame, and not itself stable across the reflow it
-  // would measure.
+  // Known residual: if the fold lands inside a tall LEAF block (a paragraph with no element
+  // children) the descent stops with its top above the reader, so lines reflowing inside it move
+  // what they see without moving the block. Closing that needs a caret point at the fold, spelled
+  // differently on all three engines, costing a Range and a rect every frame, and not itself stable
+  // across the reflow it would measure.
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
@@ -168,8 +161,7 @@ function sampleAnchor(viewport: HTMLElement, element: Element): AnchorSample {
  * Being an ANCESTOR, the row does not move when the replacement changes height inside it, so that
  * height change goes uncorrected. That is the better of the two available errors: an anchor BELOW
  * the replaced block would also see it grow DOWNWARD past the fold, which moves nothing the reader
- * sees, trading an error in a rare case for one in the common case. Measuring the replaced block AT
- * the fold needs the caret point pickAnchorRow's note rules out. Either way the residual is one
+ * sees, trading an error in a rare case for one in the common case. Either way the residual is one
  * code block's height change, for a detached reader, while a window is open.
  */
 function holdAnchor(viewport: HTMLElement, element: Element): HeldAnchor {
@@ -218,12 +210,11 @@ function useProgressiveMountWindow(
   // Re-arm per thread, adjusting state during render as React documents, so the previous thread's
   // window can never gate the new one for a frame.
   //
-  // UNEXERCISED in the app today: `<GeneratedImageOverlayProvider key={runtimeThreadId}>` in
-  // thread.tsx wraps this subtree, so a thread switch destroys and rebuilds this component and the
-  // useState initialiser above re-arms instead. Measured across in-app switches: zero arm records
-  // from this branch, a fresh instance and a recreated viewport node every time. Kept because it is
-  // what makes this component correct on its own terms; remove that ancestor key and it is the only
-  // thing between a thread switch and the previous window gating the next thread.
+  // UNEXERCISED today: `<GeneratedImageOverlayProvider key={runtimeThreadId}>` in thread.tsx wraps
+  // this subtree, so a thread switch rebuilds this component and the useState initialiser above
+  // re-arms instead (measured across in-app switches: zero arm records from this branch). Kept
+  // because it is what makes this component correct on its own terms; remove that ancestor key and
+  // it is the only thing between a thread switch and the previous window gating the next thread.
   const [previousKey, setPreviousKey] = useState(resetKey);
   if (previousKey !== resetKey) {
     setPreviousKey(resetKey);
@@ -239,10 +230,10 @@ function useProgressiveMountWindow(
   // unbounded commit: the stall this file exists to remove. Measured opening a 220-message thread:
   // mount at count 0, count 220 about 160ms later, same resetKey, first paint carrying all 220.
   //
-  // Gated on the PREVIOUS count being zero rather than on crossing MIN_PROGRESSIVE_MESSAGES, which
-  // is the whole safety argument: a tree that never rendered a row has no scroll position to lose,
-  // so arming here cannot move a reader. Appending a 40th message to a 39-message thread crosses
-  // the threshold too, and would window a conversation the reader is in the middle of.
+  // Gated on the PREVIOUS count being zero rather than on crossing MIN_PROGRESSIVE_MESSAGES: a tree
+  // that never rendered a row has no scroll position to lose, so arming here cannot move a reader.
+  // Appending a 40th message to a 39-message thread crosses the threshold too, and would window a
+  // conversation the reader is in the middle of.
   const [previousCount, setPreviousCount] = useState(count);
   if (previousCount !== count) {
     setPreviousCount(count);
@@ -255,7 +246,7 @@ function useProgressiveMountWindow(
   // A thread that shrank at or past the live window's start is reconciled HERE, during render, not
   // at the next widening. Rendering every row (below) is only half: the STATE still says start 204,
   // and a widen against a 100-message thread would produce start 68 and unmount the 68 rows this
-  // render just mounted. Before this existed, the stale state painted an empty column for 2 to 8
+  // render just mounted. Before this existed the stale state painted an empty column for 2 to 8
   // frames.
   if (mountWindow != null && mountWindow.start >= count) {
     setMountWindow(null);
@@ -293,17 +284,15 @@ function useProgressiveMountWindow(
     // A layout effect is too early: this component is a DESCENDANT of the viewport, so on the
     // mounting commit React runs this subtree's layout effects before the viewport's ref callback,
     // `viewportRef.current` is null and the style is silently skipped. Measured on that version,
-    // computed `overflow-anchor` stayed `auto` from the first painted row at +305ms until the FIRST
-    // widening at +803ms, so that widening ran with anchoring live and applied the document-space
-    // correction on top of the browser's: a reader who scrolled 4000px was left 776px short, and
-    // one whose whole gesture landed inside it ended 24px from the bottom of a 118,004px thread.
-    // This callback runs from a requestAnimationFrame, after a paint, so the ref is populated.
+    // computed `overflow-anchor` stayed `auto` until the FIRST widening at +803ms, so that widening
+    // applied the document-space correction on top of the browser's: a reader who scrolled 4000px
+    // was left 776px short. This callback runs from a requestAnimationFrame, after a paint, so the
+    // ref is populated.
     if (viewport) viewport.style.setProperty("overflow-anchor", "none");
     const anchor = viewport ? pickAnchorRow(viewport) : null;
-    // The enclosing row is captured as a fallback: the anchor is often the `<pre>` Streamdown
-    // replaces when Shiki finishes, and a transition-deferred widening leaves plenty of room for
-    // that. Without a fallback the correction is dropped, and with anchoring off a whole chunk of
-    // prepended rows moves the reader permanently. A `[data-role]` row is never replaced in place.
+    // The enclosing row is a fallback: the anchor is often the `<pre>` Streamdown replaces when
+    // Shiki finishes. Without a fallback the correction is dropped, and with anchoring off a whole
+    // chunk of prepended rows moves the reader permanently. A row is never replaced in place.
     const row = anchor?.closest("[data-role]") ?? null;
     anchorRef.current =
       viewport && anchor
@@ -332,9 +321,8 @@ function useProgressiveMountWindow(
     return () => cancelAnimationFrame(frame);
   }, [mountWindow, count, captureAnchor, isRunningNow]);
 
-  // mountWindow is the TRIGGER, not a value the body reads, which is why the rule cannot see it.
-  // This effect exists to run in the commit that widened the window, before it paints; dropping the
-  // dependency would run it once on mount and never correct a shift again.
+  // mountWindow is the TRIGGER, not a value the body reads, which is why the rule cannot see it:
+  // this effect must run in the commit that widened the window, before it paints.
   // biome-ignore lint/correctness/useExhaustiveDependencies: mountWindow is a trigger, see above
   useLayoutEffect(() => {
     const captured = anchorRef.current;
@@ -350,44 +338,37 @@ function useProgressiveMountWindow(
     if (!element || !baseline) return;
     const shift = anchorCorrection(baseline, sampleAnchor(viewport, element));
     // Called on EVERY widening commit, including no-op ones: a zero correction still resyncs the
-    // hook's scroll bookkeeping past the offset native anchoring moved, or the scroll event
-    // anchoring fires arrives as a downward scroll the reader did not make. The hook decides
-    // whether anything is written; see adjustForContentInsertedAbove.
+    // hook's scroll bookkeeping, or the scroll event native anchoring fires arrives as a downward
+    // scroll the reader did not make. See adjustForContentInsertedAbove.
     adjustForContentInsertedAbove(shift ?? 0);
-    // Hand the idle sampler a POST-correction baseline rather than nulling it. Nulling made the
-    // next frame re-pick and re-base, so an image or Shiki block landing in between was folded into
-    // the new baseline and never corrected: with anchoring off the reader kept the displacement.
+    // Hand the idle sampler a POST-correction baseline rather than nulling it. Nulling made the next
+    // frame re-pick and re-base, so a block landing in between was folded into the new baseline and
+    // never corrected: with anchoring off the reader kept the displacement.
     idleRef.current = holdAnchor(viewport, element);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
   // Content above the reader also moves for reasons that are not a widening, and nothing else
   // watches for it while the window is open: Streamdown replaces a `<pre>` when Shiki finishes,
-  // KaTeX resizes a formula, an image lands. Native anchoring is what absorbs those and it is
-  // disabled for the duration, so compensation has to cover the whole interval, not just widening
-  // commits. The autoscroll hook's mutation path does not help; it pins a FOLLOWING reader and
-  // deliberately leaves a detached one alone.
+  // KaTeX resizes a formula, an image lands. Native anchoring absorbs those and is disabled for the
+  // duration, so compensation has to cover the whole interval, not just widening commits. The
+  // autoscroll hook's mutation path pins a FOLLOWING reader and leaves a detached one alone.
   //
-  // Measured when written, injecting a 600px height change into one row above a detached reader
-  // with the window open: without this the reader moved the full 600px, against 0px on the merge
-  // base where native anchoring absorbed it.
+  // Measured when written, injecting a 600px height change into one row above a detached reader with
+  // the window open: without this the reader moved the full 600px, against 0px on the merge base.
   //
   // RE-MEASURED SINCE, AND IT NO LONGER REPRODUCES ITS OWN MEASUREMENT: ablating this whole effect
-  // (`return` at the top) leaves grow 600, grow 3600 and shrink 1200 identical to head within
-  // noise. The cause is declaration ORDER, not the logic. The widening capture effect above is
-  // declared FIRST, so React registers its rAF first and its callback always runs before this one,
-  // leaving `anchorRef.current` non-null on every frame the window is open. This body therefore
-  // returns at its first line: instrumented, 0 of 1110 frames across chromium, firefox and webkit
-  // got past it, and the widening layout effect absorbs the reflow instead. Confirmed causally by
-  // swapping only the two effect declarations, after which this body runs about 5 times per
-  // repetition. Anyone reordering these two effects is switching this on.
+  // leaves grow 600, grow 3600 and shrink 1200 identical to head within noise. The cause is
+  // declaration ORDER, not the logic: the widening capture effect above registers its rAF first, so
+  // `anchorRef.current` is non-null on every frame the window is open and this body returns at its
+  // first line. Instrumented, 0 of 1110 frames across chromium, firefox and webkit got past it, and
+  // the widening layout effect absorbs the reflow instead. Confirmed causally by swapping only the
+  // two effect declarations, after which this body runs about 5 times per repetition. Anyone
+  // reordering these two effects is switching this on.
   //
   // Kept because the widening path it defers to has no visibility test, so this is the only thing
-  // that would catch a reflow on a frame with no widening pending.
-  //
-  // The anchor is the first row the reader can SEE, not the first in the list, which is why the
-  // first version of this measured nothing: widening prepends above everything so any row moves, a
-  // reflow between the topmost row and the fold does not move the topmost row. It is re-picked only
-  // when gone or scrolled out of view, so per frame this costs one rect and one scrollTop read.
+  // that would catch a reflow on a frame with no widening pending. The anchor is the first row the
+  // reader can SEE, re-picked only when gone or scrolled out of view, so per frame this costs one
+  // rect and one scrollTop read.
   useEffect(() => {
     if (mountWindow == null) {
       idleRef.current = null;
@@ -407,8 +388,7 @@ function useProgressiveMountWindow(
         return;
       }
       // The anchor, or its row if replaced since the last frame. Re-picking instead would discard
-      // the only pre-replacement sample and re-base AFTER the replacement's own reflow, so with
-      // anchoring off the reader would keep that height change.
+      // the only pre-replacement sample and re-base AFTER the replacement's own reflow.
       const [element, baseline] = held.element.isConnected
         ? [held.element, held.sample]
         : held.row?.isConnected && held.rowSample
@@ -422,13 +402,11 @@ function useProgressiveMountWindow(
         return;
       }
       // Scrolled past: hold something the reader can see instead. Tested by the row's box, not its
-      // top offset, since a tall row just off screen can still have its top within a viewport of
-      // the fold, and a reflow between it and the first visible row moves the reader while leaving
-      // it still.
+      // top offset, since a tall row just off screen can still have its top within a viewport of the
+      // fold, and a reflow between it and the first visible row moves the reader while it stays put.
       if (!isAnchorVisible(viewport, element)) {
         // Re-pick in THIS frame rather than nulling and waiting: a baseline-free frame folds a
-        // reflow above the newly visible content into the next baseline, the same gap that made
-        // nulling after a widening wrong.
+        // reflow above the newly visible content into the next baseline.
         const replacement = pickAnchorRow(viewport);
         idleRef.current = replacement
           ? holdAnchor(viewport, replacement)
@@ -438,8 +416,8 @@ function useProgressiveMountWindow(
       const shift = anchorCorrection(baseline, sampleAnchor(viewport, element));
       if (shift !== null) adjustForContentInsertedAbove(shift);
       // Re-based EVERY frame, no-ops included. Returning early on a no-op left the baseline's
-      // scrollTop several frames stale, and anchorCorrection's clamp term reads it, so a later
-      // shrink near the bottom would subtract the wrong amount.
+      // scrollTop stale, and anchorCorrection's clamp term reads it, so a later shrink near the
+      // bottom would subtract the wrong amount.
       idleRef.current = holdAnchor(viewport, element);
     };
     frame = requestAnimationFrame(tick);
@@ -452,9 +430,8 @@ function useProgressiveMountWindow(
   //
   // Why it must be off: left on, the browser moves scrollTop by the inserted height on some frames
   // and not others (never on any shipping Safari, and suppressed per frame elsewhere after a
-  // programmatic scroll, which scrollbar drag, PageUp and middle-click autoscroll all are), and no
-  // in-frame measurement can tell which kind of frame it is in. Off, scrollTop moves only when the
-  // reader or this code moves it, which is the assumption anchorCorrection is built on.
+  // programmatic scroll), and no in-frame measurement can tell which kind of frame it is in. Off,
+  // scrollTop moves only when the reader or this code moves it, which anchorCorrection assumes.
   useLayoutEffect(() => {
     if (mountWindow != null) return;
     viewportRef.current?.style.removeProperty("overflow-anchor");
@@ -469,9 +446,8 @@ function useProgressiveMountWindow(
   }, [viewportRef]);
 
   // Registered only while rows are actually withheld, so completeProgressiveMounts is free on the
-  // settled thread that is the common case. A layout effect rather than an effect because it runs
-  // one phase earlier, narrowing (not closing) the window in which a caller sees an empty completer
-  // set while rows are already withheld.
+  // settled thread that is the common case. A layout effect runs one phase earlier, narrowing (not
+  // closing) the window in which a caller sees an empty completer set while rows are withheld.
   const isWithholding = mountWindow != null;
   const completionWaiters = useRef<Array<() => void>>([]);
   useLayoutEffect(() => {
@@ -489,8 +465,7 @@ function useProgressiveMountWindow(
 
   // Resolve on the commit that actually dropped the window, then after a paint. A bare two-frame
   // timer started at the call raced the commit it had just asked for: measured, it resolved with 16
-  // of 220 rows still in the document on 4 of 5 WebKit and 2 of 5 Firefox runs, and held on
-  // Chromium only because the widening commit happened to block the frame loop.
+  // of 220 rows still in the document on 4 of 5 WebKit and 2 of 5 Firefox runs.
   const flushCompletionWaiters = useCallback(() => {
     const waiters = completionWaiters.current;
     completionWaiters.current = [];
@@ -508,9 +483,8 @@ function useProgressiveMountWindow(
   }, [mountWindow, flushCompletionWaiters]);
 
   // A thread that goes away settles anything still waiting on it. Without this a DOM capture racing
-  // a thread switch waited forever: the cleanup above removes the completer from activeCompleters,
-  // but the promise it already handed out is only resolved by the effect above, which does not run
-  // again on an unmounted component.
+  // a thread switch waited forever: the cleanup above removes the completer, but the promise it
+  // already handed out is only resolved by the effect above, which no longer runs.
   useEffect(() => flushCompletionWaiters, [flushCompletionWaiters]);
 
   return mountWindow;
@@ -538,15 +512,14 @@ export const ProgressiveMessages: FC<{
       // `start >= count` means the thread shrank under a live window (a bulk delete, or a switch to
       // a shorter thread), and clamping `start` to `count` would make this loop emit NOTHING.
       // Measured before this line: dropping a 220-message thread to 10 with the window at start=204
-      // painted an empty column for 2 to 8 frames (37 to 146ms) on all three engines, 10 messages
-      // sitting in the store. `widen` heals it a frame later but runs inside startTransition, so
-      // the blank persists. Drop the restriction in the same commit: it can withhold nothing now.
+      // painted an empty column for 2 to 8 frames (37 to 146ms) on all three engines. `widen` heals
+      // it a frame later but runs inside startTransition, so the blank persists. Drop the
+      // restriction in the same commit: it can withhold nothing now.
       const first =
         mountWindow == null || mountWindow.start >= count
           ? 0
           : Math.max(mountWindow.start, 0);
-      // One shared element for every row, which is what lets React skip unchanged rows when the
-      // count moves. See the header.
+      // One shared element for every row, which is what lets React skip unchanged rows. See header.
       const message = renderMessage();
       const rows: ReactElement[] = [];
       for (let index = first; index < count; index += 1) {

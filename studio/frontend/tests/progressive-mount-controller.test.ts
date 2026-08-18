@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // The widen-only mount window, tested where it is pure. The React glue is a .tsx and node's type
-// stripping cannot import one, so the invariants it carries are pinned by source assertion in
+// stripping cannot import one, so its invariants are pinned by source assertion in
 // progressive-mount-glue.test.ts instead.
 //
 // The property all of these protect: the window only ever grows, and it always reaches null. A
@@ -84,8 +84,7 @@ test("widening reaches null from every thread length", () => {
 
 test("the number of widening frames is bounded and small", () => {
   // One frame per chunk after the first commit. 220 messages is #9016's largest fixture, and at
-  // 60Hz seven frames is under 120ms, the budget this whole change rests on. A constant edited
-  // into a long thread taking a second to converge fails here.
+  // 60Hz seven frames is under 120ms, the budget this whole change rests on.
   assert.equal(
     stepsToCover(220),
     Math.ceil((220 - INITIAL_MESSAGES) / CHUNK_MESSAGES),
@@ -129,9 +128,7 @@ test("isCovered is true exactly when nothing is being withheld", () => {
 
 test("the constants stay inside the range they were measured over", () => {
   // Bounds, not equalities, so a future edit cannot quietly turn the first commit into one row or
-  // the floor into every thread and stay green. INITIAL_MESSAGES must cover more than one viewport
-  // of the #9016 fixture (under two messages), and the floor must stay above a thread length whose
-  // re-open is already at 438ms.
+  // the floor into every thread and stay green.
   assert.ok(
     INITIAL_MESSAGES >= 8 && INITIAL_MESSAGES <= 64,
     `INITIAL_MESSAGES ${INITIAL_MESSAGES} is outside the measured range`,
@@ -146,9 +143,8 @@ test("the constants stay inside the range they were measured over", () => {
   );
 });
 
-// anchorCorrection, extracted. The correction used to live inside the .tsx where nothing could
-// test it, and its one bug so far, measuring in document space against an engine that had already
-// compensated, was found by a browser probe rather than a test.
+// anchorCorrection, extracted. It used to live inside the .tsx where nothing could test it, and its
+// one bug so far was found by a browser probe rather than a test.
 
 const sample = (viewportOffset: number, scrollTop: number, maxScrollTop = 1_000_000) => ({
   viewportOffset,
@@ -163,8 +159,7 @@ test("the correction is the height inserted above, in document space", () => {
 
 test("the reader's own scroll is subtracted, not skipped", () => {
   // 12000px inserted above in the frame the reader scrolled down 3000px; document space nets those
-  // to the 12000px to apply. The version that skipped such frames, assuming the browser had
-  // compensated, left the reader 19,259px out when it had not.
+  // to the 12000px to apply. The version that skipped such frames left the reader 19,259px out.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(8500, 23000)), 12000);
   // A frame holding only the reader's own scroll is a no-op, with no gesture bookkeeping needed.
   assert.equal(anchorCorrection(sample(-500, 20000), sample(-3500, 23000)), null);
@@ -185,9 +180,9 @@ test("sub-pixel movement is never acted on", () => {
 });
 
 test("a window past the end of a shrunken thread is dropped, never narrowed", () => {
-  // The failure this rules out: {start: 204} against a thread that shrank to 100. Clamping to
-  // count then subtracting a chunk gives {start: 68}, and the caller already rendered all 100 rows
-  // because start was past the end, so rows 0 to 67 would be unmounted. Nothing here may unmount.
+  // The failure this rules out: {start: 204} against a thread that shrank to 100. Clamping to count
+  // then subtracting a chunk gives {start: 68}, and the caller already rendered all 100 rows, so
+  // rows 0 to 67 would be unmounted.
   assert.equal(widen({ start: 204 }, 100), null);
   assert.equal(widen({ start: 204 }, 0), null);
   assert.equal(widen({ start: 100 }, 100), null);
@@ -213,8 +208,8 @@ test("widening is monotone in start for every reachable window and count", () =>
 test("a shrink the browser already clamped is not corrected twice", () => {
   // With anchoring off the browser moves scrollTop for exactly one reason: content shrinks above a
   // reader near the bottom, their offset stops existing, and it clamps to the new maximum. The
-  // document-space delta reports the whole shrink anyway, so applying it on top of the clamp moves
-  // the viewport twice by the clamped part.
+  // document-space delta reports the whole shrink anyway, so applying it on top of the clamp would
+  // move the viewport twice by the clamped part.
   //
   // 500px removed above a reader at scrollTop 9000, maximum dropping to 8600: the browser absorbed
   // 400, so 100 is left to apply.

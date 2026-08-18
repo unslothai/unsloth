@@ -3,35 +3,32 @@
 
 // Widen-only mount window for the chat thread.
 //
-// Re-opening a 300K thread costs 3175ms on Chromium (#9016), 2817ms of it script, all of it
-// mounting messages from nothing. Mounting only the last 20 of 220 re-opens in 438ms and is FLAT
-// in thread length (441ms at 25K, 470ms at 100K, 438ms at 300K, medians of 8 paired rounds): cost
-// follows mounted nodes, not thread length.
+// Re-opening a 300K thread costs 3175ms on Chromium (#9016), nearly all of it mounting messages
+// from nothing. Mounting only the last 20 of 220 re-opens in 438ms and is FLAT in thread length
+// (441ms at 25K, 470ms at 100K, 438ms at 300K, medians of 8 paired rounds): cost follows mounted
+// nodes, not thread length.
 //
-// Deliberately not a virtualizer. Unmounting what scrolls away breaks find-in-page, cross-message
-// selection, copy-all, screen readers, print and export. Open WebUI shipped that in 02690339 and
-// reverted it ten days later in d56d74b3 as "catastrophic mount/destroy thrashing"; the scroll-jump
-// report in between is open-webui#23990.
+// Not a virtualizer: unmounting what scrolls away breaks find-in-page, cross-message selection,
+// copy-all, screen readers, print and export. Open WebUI shipped that in 02690339 and reverted it
+// ten days later in d56d74b3 as "catastrophic mount/destroy thrashing" (open-webui#23990).
 //
 // So the window only ever GROWS: first commit mounts the tail, each frame adds a chunk, and once it
 // covers the thread the restriction is dropped for good. Nothing is ever unmounted, so the document
-// converges to exactly the pre-change tree a few frames later and every DOM consumer keeps working;
-// those that cannot wait have `completeProgressiveMounts` (see use-progressive-mount).
+// converges to exactly the pre-change tree a few frames later; consumers that cannot wait have
+// `completeProgressiveMounts` (see use-progressive-mount).
 //
-// The thread is always bottom-anchored (Viewport mounts with autoScroll and every scrollToBottom*
-// flag off, and useIntentAwareAutoScroll puts a re-opened thread at the bottom), so the window is a
-// single `start` index. That is the one simplification over LibreChat#14901, which also has to
-// support a top anchor.
+// The thread is always bottom-anchored, so the window is a single `start` index. That is the one
+// simplification over LibreChat#14901, which also has to support a top anchor.
 
 /**
- * Indices `[start, count)` are allowed to mount. `null` means no restriction at all, which is the
- * state a settled thread rests in and the only state a short thread is ever in.
+ * Indices `[start, count)` may mount. `null` means no restriction: where a settled thread rests,
+ * and the only state a short thread is ever in.
  */
 export type MountWindow = { start: number } | null;
 
 /**
- * Below this many messages the whole thread mounts in one commit, as before this change. Chunking a
- * thread that was never slow only adds frames: at 20 messages, 446ms against a 438ms floor.
+ * Below this many messages the whole thread mounts in one commit, as before. Chunking a thread that
+ * was never slow only adds frames: at 20 messages, 446ms against a 438ms floor.
  */
 export const MIN_PROGRESSIVE_MESSAGES = 40;
 
@@ -39,13 +36,11 @@ export const MIN_PROGRESSIVE_MESSAGES = 40;
  * Messages in the first commit.
  *
  * A window that undershoots what the user can see paints a gap, so what matters is how tall 16 of
- * the SHORTEST rows this app can produce are, not how many viewports 16 of #9016's large fixture
- * rows cover. One-word rows alternate 126px (user) and 80px (assistant) because the roles carry
- * different padding; sixteen of them, eight each, measure 1643px, and with the viewport's 48px top
- * inset and 165px bottom spacer that fills every clientHeight up to 1890px. Quote the pair, not
- * their 103px mean: the mean only reproduces the total for an EVEN row count, and drifts up to 23px
- * at 15 or 17 rows or any partial slice. INITIAL_MESSAGES being even is why the floor is a single
- * number at all.
+ * the SHORTEST rows this app can produce are. One-word rows alternate 126px (user) and 80px
+ * (assistant) because the roles carry different padding; sixteen of them measure 1643px, and with
+ * the viewport's 48px top inset and 165px bottom spacer that fills every clientHeight up to 1890px.
+ * Quote the pair, not their 103px mean: the mean only reproduces the total for an EVEN row count,
+ * drifting up to 23px otherwise, which is why INITIAL_MESSAGES is even.
  *
  * Measured, not derived, on a 144-message thread whose last 24 messages are one-word replies, three
  * rounds a point, Chromium 151 / Firefox / WebKit: at 900, 1080, 1440, 1800, 1840 and 1860px of
@@ -53,14 +48,12 @@ export const MIN_PROGRESSIVE_MESSAGES = 40;
  * settled thread has, so 0px of it is this window's. First row on screen at 133 to 315ms by engine.
  *
  * Above 1890px it undershoots, left unfixed: 10px of band at 1900px, 110px at 2000px, 270px at
- * 2160px, on screen 287 to 499ms until the first chunk closes it, nothing unreachable meanwhile.
- * Deriving the window from clientHeight would have to guess how many rows fill it before mounting
- * any, and the comparison that decides it is the merge base, which at 2160px paints NOTHING for
- * 1318ms and then the whole thread at once. 270px of white for a third of a second, at a height
- * needing a 4K panel in portrait or a zoomed-out window, beats 1.3s of empty screen at every
- * height. 16 is also what LibreChat#14901 ships for the same job.
+ * 2160px, closed by the first chunk and nothing unreachable meanwhile. Deriving the window from
+ * clientHeight would have to guess how many rows fill it before mounting any, and the merge base it
+ * is compared against paints NOTHING for 1318ms at 2160px and then the whole thread at once. 270px
+ * of white for a third of a second, at a height needing a 4K panel in portrait, beats 1.3s of empty
+ * screen at every height. 16 is also what LibreChat#14901 ships for the same job.
  *
- * The 438ms floor was measured at 20 messages, so the first commit is bounded by it either way.
  * Probe: tests/studio/probe_compact_tail_gap.py.
  */
 export const INITIAL_MESSAGES = 16;
@@ -77,20 +70,16 @@ export const INITIAL_MESSAGES = 16;
  * | 32 | 236ms | 3186ms | 437ms | 9 |
  * | 64 | 222ms | 3170ms | 703ms | 6 |
  *
- * The headline number does not move: chunk size cannot affect the first commit (always
- * INITIAL_MESSAGES wide) nor the total work. It only distributes the rest, trading build-in height
- * against length. 32 is the midpoint and what LibreChat#14901 uses; 16 and 64 are both defensible.
+ * Chunk size cannot affect the first commit (always INITIAL_MESSAGES wide) nor the total work; it
+ * only trades build-in height against length. 32 is the midpoint and what LibreChat#14901 uses.
  * Changing it chooses a shape, not a speedup.
  */
 export const CHUNK_MESSAGES = 32;
 
 /**
- * The window a thread opens with.
- *
- * A running thread opens unrestricted. Widening and streaming write the same scroll position, and a
- * run starting under a short window would commit its reply into a tree that has not reached it.
- * Suppressing the window for the whole run is cheap and obviously correct, and a mid-run thread was
- * mounted a moment ago anyway.
+ * The window a thread opens with. A running thread opens unrestricted: widening and streaming write
+ * the same scroll position, and a run starting under a short window would commit its reply into a
+ * tree that has not reached it. A mid-run thread was mounted a moment ago anyway.
  */
 export function initialWindow(count: number, isRunning: boolean): MountWindow {
   if (isRunning || count < MIN_PROGRESSIVE_MESSAGES) return null;
@@ -111,10 +100,9 @@ export function isCovered(current: MountWindow): boolean {
  */
 export function widen(current: MountWindow, count: number): MountWindow {
   if (current == null) return null;
-  // A start at or past the end withholds nothing, so every row is already rendered. Clamping to
-  // `count` then subtracting a chunk would move `start` BACKWARDS relative to the screen ({start:
-  // 204} on a thread that shrank to 100 becomes {start: 68}, unmounting rows 0 to 67), and nothing
-  // here may unmount a row. Drop the window instead.
+  // A start at or past the end withholds nothing. Clamping to `count` then subtracting a chunk
+  // would move `start` BACKWARDS relative to the screen ({start: 204} on a thread that shrank to
+  // 100 becomes {start: 68}, unmounting rows 0 to 67). Drop the window instead.
   if (current.start >= count) return null;
   const start = Math.max(0, current.start - CHUNK_MESSAGES);
   if (start <= 0) return null;
@@ -122,8 +110,8 @@ export function widen(current: MountWindow, count: number): MountWindow {
 }
 
 /**
- * Whether `index` may mount under `current`. Out-of-window indices are not rendered at all rather
- * than rendered-and-hidden: the cost avoided is mounting, so hiding would collect nothing.
+ * Whether `index` may mount. Out-of-window indices are not rendered at all rather than hidden: the
+ * cost avoided is mounting, so hiding would collect nothing.
  */
 export function admits(current: MountWindow, index: number): boolean {
   return current == null || index >= current.start;
@@ -134,23 +122,22 @@ export type AnchorSample = {
   /**
    * The anchor row's offset from the top of the SCROLL CONTAINER, not of the window.
    *
-   * `getBoundingClientRect().top` is window-relative, so it also moves when the container moves,
-   * which here happens for reasons unrelated to the thread: the composer grows a line, mobile
-   * chrome slides away, a parent relayouts, the window resizes. Any of those landing between
-   * capture and the widening commit would read as content inserted above and be corrected away,
-   * moving a detached reader for nothing. Subtracting the container's own top at both ends
-   * removes it.
+   * `getBoundingClientRect().top` is window-relative, so it also moves when the container moves
+   * for reasons unrelated to the thread: the composer grows a line, mobile chrome slides away, a
+   * parent relayouts, the window resizes. Any of those landing between capture and the widening
+   * commit would read as content inserted above and be corrected away, moving a detached reader
+   * for nothing. Subtracting the container's own top at both ends removes it.
    */
   viewportOffset: number;
   /** The scroll container's scrollTop at the same instant. */
   scrollTop: number;
   /**
-   * The largest scrollTop possible at the same instant, i.e. `scrollHeight - clientHeight`.
+   * The largest scrollTop possible at the same instant (`scrollHeight - clientHeight`).
    *
    * Only for the one case where the browser moves scrollTop with anchoring off: content above a
    * reader near the bottom SHRINKING forces a clamp, since the old offset no longer exists. The
-   * document-space delta reports the whole shrink anyway, so applying it on top of the clamp moves
-   * the viewport twice by the clamped part. See anchorCorrection.
+   * document-space delta reports the whole shrink anyway, so applying it on top of the clamp would
+   * move the viewport twice by the clamped part. See anchorCorrection.
    */
   maxScrollTop: number;
 };
@@ -161,14 +148,13 @@ export type AnchorSample = {
  *
  * DOCUMENT space, correct only because the viewport turns CSS scroll anchoring OFF while the window
  * is open (see progressive-messages). With native anchoring live the browser moves scrollTop by the
- * inserted height and a document-space delta reports that insertion anyway, so applying it doubles
- * the browser's correction: that was v1, and it walked a parked reader's scrollTop 22,897 to
- * 117,104, dumping them at the bottom of a 300K thread.
+ * inserted height and a document-space delta reports that insertion too, so applying it doubles the
+ * browser's correction: that was v1, and it walked a parked reader's scrollTop 22,897 to 117,104.
  *
  * v2 kept anchoring on, measured the residual in viewport space, and dropped any frame the reader
  * scrolled through, since in viewport space a gesture and a layout shift are the same number. That
- * holds exactly while the browser compensates, and it is not in charge of whether it does. Measured
- * at 150K characters:
+ * holds only while the browser compensates, and it is not in charge of whether it does. Measured at
+ * 150K characters:
  *
  * - Every shipping Safari and iOS browser has no scroll anchoring at all today; WebKit implemented
  *   it in February 2026 and Playwright's WebKit 26.5 has it, which hid this on this machine. With
@@ -176,13 +162,12 @@ export type AnchorSample = {
  *   19,259px and dropping every frame walked them 45,873px, on all three engines.
  * - Anchoring is also suppressed PER FRAME on engines that have it, including after a programmatic
  *   scroll, which is what scrollbar drag, PageUp and middle-click autoscroll all become. Chromium
- *   151 with anchoring available and a reader scrolling that way through the build-in: 45,161px of
- *   drift, every such frame both uncompensated and skipped.
+ *   151 with a reader scrolling that way through the build-in: 45,161px of drift.
  *
  * So the browser is taken out of the loop rather than trusted in it. With anchoring off scrollTop
  * moves only when the reader or this code moves it, and document space subtracts the reader's own
- * movement arithmetically instead of dodging it: no frame skipped, nothing to feature-probe. Same
- * fixture, same reader: 12px.
+ * movement arithmetically: no frame skipped, nothing to feature-probe. Same fixture, same reader:
+ * 12px.
  */
 export function anchorCorrection(
   captured: AnchorSample,
@@ -193,15 +178,13 @@ export function anchorCorrection(
   // part already happened, so only the remainder is applied.
   //
   // The clamp is estimated from the captured scrollTop, so it is exact only for a reader who did
-  // not scroll during the frame, and that bound cannot be closed here. A reader scrolling in the
-  // frame the shrink lands changes how much the browser really absorbed, and the two orderings
-  // (clamp then gesture, gesture then clamp) produce the SAME pair of samples while wanting
-  // different answers. Nothing in the frame separates them, so gating on "scrollTop did not end at
-  // maxScrollTop" just moves the error to the other ordering. This picks clamp-first and is wrong
-  // by at most `captured.scrollTop - now.maxScrollTop`, the height of the shrink the reader was
-  // hanging over, never by their gesture. It needs a DETACHED reader parked inside that overhang,
-  // content above them shrinking, and a scroll in that one frame, with a window open. Everything
-  // else, insertions included, has this term at zero.
+  // not scroll during the frame, and that bound cannot be closed here: the two orderings (clamp
+  // then gesture, gesture then clamp) produce the SAME pair of samples while wanting different
+  // answers, so gating on "scrollTop did not end at maxScrollTop" just moves the error to the other
+  // ordering. This picks clamp-first and is wrong by at most `captured.scrollTop -
+  // now.maxScrollTop`, the height of the shrink the reader was hanging over, never by their
+  // gesture. It needs a DETACHED reader parked inside that overhang, content above them shrinking,
+  // and a scroll in that one frame, with a window open. Everything else has this term at zero.
   const clamped = Math.max(0, captured.scrollTop - now.maxScrollTop);
   const shift =
     now.viewportOffset +
@@ -222,8 +205,7 @@ export function stepsToCover(count: number): number {
   while (current != null) {
     current = widen(current, count);
     steps += 1;
-    // Bounded by construction; the guard makes a future non-progressing widen fail a test instead
-    // of hanging the browser.
+    // Bounded by construction; fails a test rather than hanging the browser if that ever changes.
     if (steps > count + 2) throw new Error("widen made no progress");
   }
   return steps;

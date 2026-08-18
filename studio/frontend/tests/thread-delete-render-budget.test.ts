@@ -35,8 +35,7 @@ test("the message list is rendered through a render prop, not a components map",
   //
   // The list is ProgressiveMessages, not ThreadPrimitive.Messages (#9058), so what is pinned here
   // is that the slot still reaches the row map. That list renders this same propless element in
-  // each MessageByIndexProvider, so the bail-out is unchanged; the rest of its wiring is in
-  // progressive-mount-glue.test.ts.
+  // each MessageByIndexProvider, so the bail-out is unchanged.
   assert.match(thread, /renderMessage=\{renderThreadMessage\}/);
   assert.doesNotMatch(thread, /<ThreadPrimitive\.Messages\b/);
   assert.doesNotMatch(thread, /<ProgressiveMessages[^>]*\scomponents=/s);
