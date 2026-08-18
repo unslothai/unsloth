@@ -1106,6 +1106,9 @@ export const en = {
       archivedVideos: "Archived videos",
       archivedVideosDescription: "View and manage videos you have archived.",
       manageAction: "Manage",
+      manageChats: "Manage chats",
+      manageChatsDescription:
+        "Select multiple chats to move, pin, archive, export, or delete.",
       exportArchivedChats: "Export",
       exportingArchivedChats: "Exporting...",
       exportedOneArchivedChat: "Exported 1 archived chat",
