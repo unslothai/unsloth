@@ -249,17 +249,19 @@ function DeepResearchWebsiteAccessContent({
       <DialogHeader>
         <DialogTitle>Deep research</DialogTitle>
         <DialogDescription>
-          Control website access and run time for the next Deep Research run.
+          Control website access and model request time for the next Deep
+          Research run.
         </DialogDescription>
       </DialogHeader>
       <div className="space-y-6">
         <div className="space-y-2">
           <div>
-            <div className="text-sm font-medium">Total time</div>
+            {/* A run makes many model requests, so this bounds each one, not the run. */}
+            <div className="text-sm font-medium">Time per model request</div>
             <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
               {unlimited
-                ? "No total time limit. Slow models can continue while they keep producing output."
-                : "Maximum time for each model request. Output stall safeguards stay active."}
+                ? "No limit on a single model request. Slow models can continue while they keep producing output."
+                : "Maximum time for each model request, so a run of many requests can take longer. Output stall safeguards stay active."}
             </p>
           </div>
           <div className="flex gap-2">
@@ -271,7 +273,7 @@ function DeepResearchWebsiteAccessContent({
               value={timeoutMinutes}
               disabled={unlimited}
               onChange={(event) => setTimeoutMinutes(event.target.value)}
-              aria-label="Deep Research total time in minutes"
+              aria-label="Deep Research time per model request in minutes"
               className="w-28"
             />
             <span className="self-center text-sm text-muted-foreground">
