@@ -576,6 +576,6 @@ def test_every_fixture_rebuild_in_the_probe_goes_through_one_helper() -> None:
         for ln in after_helper.splitlines()
         if ln.strip() in {"settled(page)", "expand(page)"}
     ]
-    assert not strays, (
-        f"the probe still rebuilds the fixture by hand outside settle_and_expand: {strays}"
-    )
+    assert (
+        not strays
+    ), f"the probe still rebuilds the fixture by hand outside settle_and_expand: {strays}"
