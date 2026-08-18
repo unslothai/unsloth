@@ -436,9 +436,7 @@ def documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list
 
 def set_archive_ordinal(conn: sqlite3.Connection, document_id: str, ordinal: int) -> None:
     """Re-stamp one document's position. Used to migrate rows numbered by archive time."""
-    conn.execute(
-        "UPDATE documents SET archive_ordinal=? WHERE id=?", (int(ordinal), document_id)
-    )
+    conn.execute("UPDATE documents SET archive_ordinal=? WHERE id=?", (int(ordinal), document_id))
 
 
 def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:

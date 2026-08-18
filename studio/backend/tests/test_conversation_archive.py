@@ -2297,3 +2297,79 @@ def test_an_out_of_order_eviction_still_numbers_turns_in_conversation_order(conn
     assert found is not None
     text = found[0]
     assert text.index("standing instruction") < text.index("middle turn") < text.index("final turn")
+
+
+def test_two_turns_that_start_the_same_do_not_take_each_others_places(conn):
+    """A turn is matched by the whole turn, not by the line it opens with.
+
+    Repeated "continue" prompts, the same question re-asked, a regenerated reply: all of
+    them produce two DIFFERENT turns sharing a first message. Matched on the head alone
+    both claimed both seats, so both were stamped with the same ordinal, and because each
+    then believed it had a second occurrence still to fill, the next compaction wrote both
+    of them again. Measured: 4 documents for 2 turns, the recall spending four slots on
+    two turns' content, and the older answer quoted under the higher turn number, which
+    the header presents to the model as the one that supersedes.
+    """
+    first = _turn("continue ZQXVARA123", "the first continuation, about ducks")
+    second = _turn("continue ZQXVARA123", "the second continuation, about geese")
+
+    written = [_archive(first), _archive(second)]
+    scope = store.conversation_archive_scope(THREAD)
+    ordinals = sorted(
+        row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope=?", (scope,)
+        ).fetchall()
+    )
+    # And re-evicting the same two turns stays free.
+    again = [_archive(first, persist = False), _archive(second, persist = False)]
+
+    assert written == [1, 1]
+    assert ordinals == [0, 1]
+    assert again == [0, 0]
+    assert len(store.list_documents(conn, scope)) == 2
+
+
+def test_an_archive_numbered_by_the_old_allocator_converges_on_the_next_compaction(conn):
+    """The migration has to actually run, and it ran on a path that could not be reached.
+
+    The cheap pre-check ahead of the embedding pass fires on exactly the condition the
+    write-locked branch does, so re-stamping only in the latter was dead code outside a
+    race. Measured before this: an archive forced back to NULL ordinals still read
+    NULL, NULL after a full re-compaction, and one forced into archive-time order 1, 0
+    stayed 1, 0, with the recall rendering the second turn first under a header saying the
+    higher number supersedes.
+    """
+    conversation = _turn("alpha about pelicans", "first") + _turn("beta about pelicans", "second")
+    _save_thread(THREAD, conversation)
+    conversation_archive.archive_turns(THREAD, conversation)
+    scope = store.conversation_archive_scope(THREAD)
+
+    def ordinals():
+        return [
+            row["archive_ordinal"]
+            for row in conn.execute(
+                "SELECT archive_ordinal FROM documents WHERE scope=? ORDER BY created_at",
+                (scope,),
+            ).fetchall()
+        ]
+
+    assert ordinals() == [0, 1]
+
+    # An archive written before the column existed.
+    conn.execute("UPDATE documents SET archive_ordinal=NULL WHERE scope=?", (scope,))
+    conn.commit()
+    conversation_archive.archive_turns(THREAD, conversation)
+    assert ordinals() == [0, 1]
+
+    # And one numbered in the order the turns happened to be archived.
+    conn.execute(
+        "UPDATE documents SET archive_ordinal=(CASE WHEN archive_ordinal=0 THEN 1 ELSE 0 END) "
+        "WHERE scope=?",
+        (scope,),
+    )
+    conn.commit()
+    conversation_archive.archive_turns(THREAD, conversation)
+    assert ordinals() == [0, 1]
+    text, _sources = conversation_archive.recall(THREAD, "pelicans", top_k = 4)
+    assert text.index("alpha") < text.index("beta")

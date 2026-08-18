@@ -300,6 +300,11 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
             if _archived_under(
                 conn, scope, digest, expected_identity, occurrences = len(seats) or 1
             ):
+                # Commit here: this path holds no transaction of its own and the loop can
+                # return before ever reaching the write lock, when every turn is already
+                # archived -- which is the ordinary case on a thread being re-compacted,
+                # and therefore the only chance an upgraded archive gets to converge.
+                _restamp(conn, scope, digest, seats, commit = True)
                 continue
             chunks = chunk_pages(
                 [Page(text = text, page_number = None, char_count = len(text))],
@@ -341,22 +346,9 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # Already in a transaction: the insert is still atomic with the re-check.
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
             copies = store.documents_by_hash(conn, scope, digest)
-            stale = _stale_document(
-                conn, scope, digest, identity, occurrences = len(seats) or 1
-            )
+            stale = _stale_document(conn, scope, digest, identity, occurrences = len(seats) or 1)
             if stale is _ARCHIVED:
-                # Already indexed, but possibly under an archive-time number, or under no
-                # number at all if it predates the column. Re-stamp it to where the
-                # transcript says it was said, so an archive written by an earlier build
-                # converges on conversation order at the next compaction instead of
-                # keeping an order that was never true. Nothing is duplicated: this is an
-                # UPDATE on the copy that already exists.
-                for seat, copy in zip(seats, copies):
-                    if copy.get("archive_ordinal") != seat:
-                        try:
-                            store.set_archive_ordinal(conn, copy["id"], seat)
-                        except Exception:  # noqa: BLE001 -- ordering is not worth a chat
-                            logger.debug("conversation_archive.restamp_failed", exc_info = True)
+                _restamp(conn, scope, digest, seats, copies = copies)
                 if _write_lock:
                     conn.commit()
                 continue
@@ -505,30 +497,92 @@ def _transcript_positions(thread_id: str) -> Optional[list[str]]:
     # message's: the ordinal is compared against other turns, and `archive_messages`
     # already records how many messages a turn holds.
     wire = [
-        {"role": message.get("role"), "content": message.get("content"),
-         "tool_calls": message.get("tool_calls")}
+        {
+            "role": message.get("role"),
+            "content": message.get("content"),
+            "tool_calls": message.get("tool_calls"),
+        }
         for message in messages
     ]
-    return [_normalise(_probe_text(group[0])) for group in group_turns(wire) if group]
+    return [
+        [_normalise(_probe_text(message)) for message in group]
+        for group in group_turns(wire)
+        if group
+    ]
 
 
-def _occurrences(positions: Optional[list[str]], group: list[dict]) -> list[int]:
+def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
     """Where this turn sits in the transcript, every time it was said.
 
-    Located by its FIRST message, which is the turn's own opening line. A list rather
-    than one index because a conversation may legitimately contain the same turn twice,
-    and the later occurrence is usually the one that matters -- "set X to 1", "set X to
-    2", "set X to 1" ends with X at 1.
+    The WHOLE turn, not just its opening line. Matching on the first message alone made
+    two different turns that merely start the same -- a repeated "continue", the same
+    question re-asked, a regenerated reply -- claim each other's seats: measured, both
+    were stamped with ordinal 0, and because each then believed it had two occurrences to
+    fill, the next compaction wrote both of them AGAIN. Four documents for two turns,
+    twice the recall slots spent on the same content, and the older answer quoted under
+    the higher turn number, which the header presents as the one that supersedes.
+
+    Compared as a prefix, because the transcript legitimately lags the evicted group: a
+    turn is archived mid-request, before its own reply has been persisted. A turn that
+    matches nothing yields no seats and falls back to the previous allocator, so this can
+    never do worse than not looking.
+
+    A list rather than one index because a conversation may legitimately contain the same
+    turn twice, and the later occurrence is usually the one that matters -- "set X to 1",
+    "set X to 2", "set X to 1" ends with X at 1.
     """
     if not positions or not group:
         return []
-    head = _normalise(_probe_text(group[0]))
-    if not head:
+    texts = [_normalise(_probe_text(message)) for message in group]
+    if not texts or not texts[0]:
         return []
-    return [index for index, text in enumerate(positions) if text == head]
+    return [
+        index
+        for index, position in enumerate(positions)
+        if position and position[: len(texts)] == texts[: len(position)]
+    ]
 
 
-def _stale_document(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1):
+def _restamp(conn, scope: str, digest: str, seats: list[int], *, copies = None,
+             commit: bool = False) -> None:
+    """Move existing copies of this turn onto the positions the transcript gives them.
+
+    An archive written by an earlier build numbered turns as they arrived, and one written
+    before the column existed has no number at all. Both keep an order that was never
+    true, and `format_conversation_recall` states that the higher number was said later
+    and supersedes the earlier one, so the block asserts it. Re-stamping at the next
+    compaction lets those archives converge with no migration pass and no reindex: this is
+    an UPDATE on rows that already exist, so nothing is duplicated.
+
+    Called from BOTH archived paths. The cheap pre-check that runs before chunking fires
+    on exactly the condition the write-lock branch does, so a restamp only in the latter
+    was unreachable outside a race: measured, a forced-legacy archive still read NULL,NULL
+    after a full re-compaction, and an archive-time order of 1,0 stayed 1,0 with the
+    recall rendering the second turn first.
+    """
+    if not seats:
+        return
+    try:
+        rows = copies if copies is not None else store.documents_by_hash(conn, scope, digest)
+        moved = False
+        for seat, copy in zip(seats, rows):
+            if copy.get("archive_ordinal") != seat:
+                store.set_archive_ordinal(conn, copy["id"], seat)
+                moved = True
+        if moved and commit:
+            conn.commit()
+    except Exception:  # noqa: BLE001 -- ordering an old archive is not worth a chat
+        logger.debug("conversation_archive.restamp_failed", exc_info = True)
+
+
+def _stale_document(
+    conn,
+    scope: str,
+    digest: str,
+    identity: str,
+    *,
+    occurrences: int = 1,
+):
     """The document id to replace, ``_ARCHIVED`` to skip, or None to write a new one.
 
     Hash alone is not enough, twice over.
@@ -555,11 +609,16 @@ def _stale_document(conn, scope: str, digest: str, identity: str, *, occurrences
     return _ARCHIVED if len(copies) >= max(1, occurrences) else None
 
 
-def _archived_under(conn, scope: str, digest: str, identity: str, *, occurrences: int = 1) -> bool:
+def _archived_under(
+    conn,
+    scope: str,
+    digest: str,
+    identity: str,
+    *,
+    occurrences: int = 1,
+) -> bool:
     """Cheap pre-check before the chunking and embedding pass."""
-    return (
-        _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
-    )
+    return _stale_document(conn, scope, digest, identity, occurrences = occurrences) is _ARCHIVED
 
 
 def has_archive(thread_id: str) -> bool:
