@@ -5,6 +5,11 @@ import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
 
+export type MmprojFallbackReason =
+  | "cpu_offload"
+  | "projector_incompatible"
+  | "projector_startup_failure";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -247,6 +252,8 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How Studio recovered after a multimodal projector failed at startup. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -336,6 +343,8 @@ export interface InferenceStatusResponse {
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
   cpu_fallback_reason?: CpuFallbackReason | null;
+  /** How the active GGUF recovered after a multimodal projector startup failure. */
+  mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
