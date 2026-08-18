@@ -132,6 +132,12 @@ def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
     pill = page.locator('button[aria-label="Permission level for tool calls"]:visible').first
+    # The composer can mount and then go back behind the root Suspense fallback
+    # while the route chunk finishes loading, so the first assertion here lands
+    # on "Loading..." and the 5s default expects it to already be over. Windows
+    # has no retry wrapper around this script (macos does), so on a slow runner
+    # that surfaces raw. Wait the pill out on the same budget as the composer.
+    pill.wait_for(state = "visible", timeout = 60_000)
     expect(pill).to_be_visible()
 
     def expect_mode(label):
