@@ -27,6 +27,14 @@ The guard must swallow too little nowhere:
                  so Enter activates it and the browser fires a keyboard-generated click with the
                  pointer still down. A guard that spends itself on that has nothing left for the
                  click the release synthesises. Discriminates: chromium.
+  held_space     press, hold Space, RELEASE THE POINTER, then release Space. Space activates a
+                 focused control on its keyup, so its click arrives after the pointer's own, on a
+                 guard that has already spent itself. Discriminates: FIREFOX ONLY, and that is a
+                 property of the engines rather than of the harness. Gecko tracks the pending
+                 activation on its own `HTML_ELEMENT_ACTIVE_FOR_KEYBOARD` flag, which the mouse
+                 release does not clear, so the click still fires; Blink and WebKit gate it on the
+                 shared `:active` state, which the release does clear, so no click is ever
+                 dispatched and the case cannot fail there however broken the guard is.
 
 and too much nowhere:
 
@@ -234,6 +242,21 @@ async def one_case(page, case: str) -> dict:
         await page.keyboard.press("Enter")
         await page.wait_for_timeout(120)
         await page.mouse.up()
+    elif case == "held_space":
+        # The same shape as `held_enter` with the one key that activates on KEYUP rather than
+        # keydown. Press and hold, hold Space down, RELEASE THE POINTER, then release Space. The
+        # pointer's own click arrives with the pointer already up, so a guard keyed on
+        # `pointerIsDown` spends itself on it, and the activation click Space fires on its keyup
+        # lands afterwards on a disarmed document. HTML spec: Space activates a button on keyup,
+        # Enter on keydown, which is why `held_enter` cannot cover this ordering.
+        await page.mouse.move(x, y)
+        await page.mouse.down()
+        await page.wait_for_timeout(120)
+        await page.keyboard.down("Space")
+        await page.wait_for_timeout(120)
+        await page.mouse.up()
+        await page.wait_for_timeout(120)
+        await page.keyboard.up("Space")
     elif case == "touch":
         await page.touchscreen.tap(x, y)
     elif case == "select":
@@ -385,7 +408,7 @@ def main() -> int:
     ap.add_argument("--engine", default = "chromium", choices = ("chromium", "webkit", "firefox"))
     ap.add_argument(
         "--cases",
-        default = "quick,held,busy,held_modifier,held_enter,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
+        default = "quick,held,busy,held_modifier,held_enter,held_space,touch,select,second_click,rightclick_then_click,dragoff_then_click,touch_neutral,touch_trigger",
     )
     args = ap.parse_args()
     cases = [c.strip() for c in args.cases.split(",") if c.strip()]

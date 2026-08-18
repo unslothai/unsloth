@@ -97,16 +97,61 @@ let armedByTouch = false;
  * still synthesise the click the guard exists to eat.
  */
 let pointerIsDown = false;
+/**
+ * Whether an activation key is held down during the guarded gesture. Space is the whole set: a
+ * button activates on Space's KEYUP and on Enter's keydown, so Enter has always fired before the
+ * pointer's own click and is covered by the `pointerIsDown` branch in `swallowClick`, while Space
+ * still owes a click after the pointer is long gone.
+ *
+ * The engines split on whether that late click survives an intervening mouse release, and the
+ * split is in their source rather than in anything we do. Gecko tracks the pending activation on
+ * its own `HTML_ELEMENT_ACTIVE_FOR_KEYBOARD` flag, set on keydown and unset only on keyup
+ * (`nsGenericHTMLElement::HandleKeyboardActivation`), so the release does not touch it. Blink and
+ * WebKit gate the same activation on the shared `:active` state (`HTMLElement::
+ * HandleKeyboardActivation`: `if (IsActive()) DispatchSimulatedClick`), which the release clears,
+ * so they never fire it. Measured on all three: the message is deleted on firefox and not on
+ * chromium or webkit.
+ */
+let activationKeyIsDown = false;
+/**
+ * Armed for a KEYBOARD-generated click only. Entered when the pointer's own click was swallowed
+ * with Space still held: the release is accounted for, the Space keyup click is not. Any real
+ * click in this state is a new gesture and must land.
+ */
+let keyboardOnly = false;
 
 /** How long after the pointer is RELEASED a click may still arrive. */
 const CLICK_GRACE_MS = 500;
 
-const disarmOnKey = (): void => {
+/** A key that fires the focused control's click on its KEYUP. Enter fires on keydown instead. */
+const isActivationKey = (event: KeyboardEvent): boolean =>
+  event.key === " " || event.key === "Spacebar";
+
+const disarmOnKey = (event: KeyboardEvent): void => {
+  // Space has not activated anything yet -- that happens on its keyup -- so it cannot mean "the
+  // user has moved on", whatever the pointer does next. Auto-repeat re-sets this, which is what
+  // recovers the flag if a disarm cleared it while the key was still physically down.
+  if (isActivationKey(event)) {
+    activationKeyIsDown = true;
+    return;
+  }
   // Shift, Ctrl and friends get pressed mid-gesture constantly. Disarming on one while the button
   // is still held meant a press on the unconfirmed "Delete message" button, then a modifier, then
   // a release, deleted the message: measured on chromium, and safe once this returns early.
   if (pointerIsDown) return;
   disarm();
+};
+
+const disarmOnActivationKeyUp = (event: KeyboardEvent): void => {
+  if (!isActivationKey(event)) return;
+  activationKeyIsDown = false;
+  // The pointer is still down, so its release still owes a click and the bound belongs to that.
+  if (pointerIsDown) return;
+  // The activation click is dispatched by THIS keyup's own default action, so it lands before a
+  // zero-delay timeout runs; anything later than that is not this gesture's. Capture phase runs
+  // ahead of the default action, which is why the timeout is scheduled here rather than after.
+  if (graceTimer !== undefined) window.clearTimeout(graceTimer);
+  graceTimer = window.setTimeout(disarm, 0);
 };
 
 const disarm = (): void => {
@@ -117,27 +162,61 @@ const disarm = (): void => {
   if (!armed) return;
   armed = false;
   pointerIsDown = false;
+  activationKeyIsDown = false;
+  keyboardOnly = false;
   document.removeEventListener("click", swallowClick, true);
   document.removeEventListener("pointerup", startGrace, true);
   document.removeEventListener("pointercancel", disarm, true);
   document.removeEventListener("keydown", disarmOnKey, true);
+  document.removeEventListener("keyup", disarmOnActivationKeyUp, true);
   window.removeEventListener("blur", disarm);
 };
 
 function startGrace(): void {
   pointerIsDown = false;
   if (graceTimer !== undefined) window.clearTimeout(graceTimer);
+  // A release-anchored bound cannot retire the guard while Space is still down: the click that
+  // key fires on its own keyup is still to come, and on Gecko it comes however long the key is
+  // held. `disarmOnActivationKeyUp` re-imposes the bound the moment it is released, and `blur`
+  // and `pointercancel` still cover a gesture that never gets that far.
+  if (activationKeyIsDown) {
+    graceTimer = undefined;
+    return;
+  }
   graceTimer = window.setTimeout(disarm, CLICK_GRACE_MS);
 }
 
 function swallowClick(event: Event): void {
+  const keyboardGenerated = (event as MouseEvent).detail === 0;
+  if (keyboardOnly) {
+    // Everything the pointer owed has been paid; the only click left to eat is the one a held
+    // Space fires on its keyup. A real click here is a NEW gesture and must land -- eating it is
+    // the "swallowed too much" failure `second_click` and `rightclick_then_click` exist to catch.
+    disarm();
+    if (!keyboardGenerated) return;
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
   // A KEYBOARD-generated click carries no click count, and one that arrives while the guarded
   // pointer is still down is not the click this guard was armed for. Pressing a control focuses
   // it, so Enter or Space mid-gesture activates it, and treating that as the awaited click
   // leaves nothing armed for the one the RELEASE still synthesises. Measured on chromium: press
   // and hold the unconfirmed "Delete message" button with the menu open, press Enter, release,
   // and the message is gone. Swallow it and stay armed.
-  if (pointerIsDown && (event as MouseEvent).detail === 0) {
+  if (pointerIsDown && keyboardGenerated) {
+    event.stopPropagation();
+    event.preventDefault();
+    return;
+  }
+  if (activationKeyIsDown && !keyboardGenerated && !armedByTouch) {
+    // The pointer's own click, with Space still held. On Gecko the control's activation click is
+    // still to come on that key's keyup, so disarming here leaves nothing to eat it: measured on
+    // firefox, press and hold the unconfirmed "Delete message" button with the menu open, hold
+    // Space, release the pointer, release Space, and the message is gone. Swallow this one and
+    // stay armed for exactly one keyboard-generated click. Mouse only: a touch tap has no key in
+    // flight, and the branch below owes Radix a re-raised click that this path does not send.
+    keyboardOnly = true;
     event.stopPropagation();
     event.preventDefault();
     return;
@@ -172,6 +251,8 @@ const arm = (touch: boolean): void => {
   armed = true;
   armedByTouch = touch;
   pointerIsDown = true;
+  activationKeyIsDown = false;
+  keyboardOnly = false;
   // Capture, so this runs before React's root-container delegation reaches any control.
   document.addEventListener("click", swallowClick, true);
   // A gesture that never becomes a click must not leave the swallower waiting for an unrelated
@@ -179,6 +260,7 @@ const arm = (touch: boolean): void => {
   document.addEventListener("pointerup", startGrace, true);
   document.addEventListener("pointercancel", disarm, true);
   document.addEventListener("keydown", disarmOnKey, true);
+  document.addEventListener("keyup", disarmOnActivationKeyUp, true);
   window.addEventListener("blur", disarm);
 };
 
