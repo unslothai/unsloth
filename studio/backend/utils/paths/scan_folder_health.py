@@ -69,6 +69,12 @@ def _probe_dir(path: str, *, depth: int, budget: list[int]) -> tuple[str, Option
         return classify_scan_error(error), path
     for subdir in subdirs:
         status, cause = _probe_dir(subdir, depth = depth - 1, budget = budget)
+        if status == STATUS_MISSING:
+            # It was in the listing a moment ago and is gone now: a model being
+            # deleted, or a download renaming its temp directory away mid-walk.
+            # That says nothing about the folder the user registered. The folder
+            # itself disappearing is still caught by the scandir above.
+            continue
         if status != STATUS_OK:
             return status, cause or subdir
     return (STATUS_UNKNOWN, None) if truncated else (STATUS_OK, None)
@@ -103,8 +109,22 @@ def is_readable_dir(path: str) -> bool:
     return probe_status(path) == STATUS_OK
 
 
+# Windows reports the real reason in ``winerror``; ``errno`` is a lossy translation of
+# it, and CPython's PC/errmap.h folds ERROR_NOT_READY, ERROR_CRC, ERROR_GEN_FAILURE and
+# every other media or device failure onto EACCES. Without this, an ejected card reader
+# or an unmounted volume tells the user to go and fix the folder's permissions.
+_WINDOWS_PERMISSION = frozenset((5, 65, 1314))
+_WINDOWS_MISSING = frozenset((2, 3, 15, 20, 21, 53, 55, 67, 161, 206, 267))
+
+
 def classify_scan_error(error: OSError) -> str:
     """Map an error the scan already raised onto a status the UI can render."""
+    # Absent on POSIX, and None unless CPython set it, so this never shadows errno.
+    winerror = getattr(error, "winerror", None)
+    if winerror is not None:
+        if winerror in _WINDOWS_PERMISSION:
+            return STATUS_PERMISSION_DENIED
+        return STATUS_MISSING if winerror in _WINDOWS_MISSING else STATUS_UNREADABLE
     if isinstance(error, PermissionError) or error.errno in (errno.EACCES, errno.EPERM):
         return STATUS_PERMISSION_DENIED
     if isinstance(error, FileNotFoundError) or error.errno in (errno.ENOENT, errno.ENOTDIR):

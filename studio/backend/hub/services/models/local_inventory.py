@@ -738,7 +738,9 @@ async def _collect_models_from_default_sources(
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
             continue
-        note_scan_folder_scanned(row_path, found = bool(custom_models))
+        # Off the loop, like the scan above it: the probe opens directories, and on a
+        # stalled network mount scandir sits in the kernel with nothing to yield to.
+        await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
     return local_models

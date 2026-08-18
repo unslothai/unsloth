@@ -296,6 +296,146 @@ def test_the_real_scan_records_a_folder_it_cannot_read(tmp_path: Path):
         denied.chmod(stat.S_IRWXU)
 
 
+@pytest.mark.parametrize(
+    "winerror, expected",
+    [
+        (5, STATUS_PERMISSION_DENIED),      # ERROR_ACCESS_DENIED
+        (65, STATUS_PERMISSION_DENIED),     # ERROR_NETWORK_ACCESS_DENIED
+        (21, STATUS_MISSING),               # ERROR_NOT_READY: nothing in the card reader
+        (53, STATUS_MISSING),               # ERROR_BAD_NETPATH
+        (267, STATUS_MISSING),              # ERROR_DIRECTORY
+        (23, STATUS_UNREADABLE),            # ERROR_CRC: the drive is failing
+        (31, STATUS_UNREADABLE),            # ERROR_GEN_FAILURE
+    ],
+)
+def test_windows_errors_classify_from_the_native_code(winerror, expected):
+    """Windows errno is a lossy translation, so read the native code first.
+
+    CPython's PC/errmap.h folds 27 distinct winerrors onto EACCES, only two of
+    which are access denials. Going by errno alone tells a user whose drive is
+    unplugged to fix the folder's permissions.
+    """
+    error = OSError(errno.EACCES, "simulated")
+    error.winerror = winerror
+    assert classify_scan_error(error) == expected
+
+
+def test_a_posix_error_is_unaffected_by_the_windows_branch():
+    assert classify_scan_error(PermissionError(errno.EACCES, "denied")) == (
+        STATUS_PERMISSION_DENIED
+    )
+    assert classify_scan_error(FileNotFoundError(errno.ENOENT, "gone")) == STATUS_MISSING
+
+
+def test_a_model_deleted_mid_scan_does_not_condemn_the_folder(tmp_path: Path):
+    """A child in the listing and gone by the time it is opened proves nothing.
+
+    Downloads create and rename temp directories inside a scan folder constantly,
+    so treating a vanished child as the folder's own status told a user who was
+    merely downloading a model that some of their models could not be read.
+    """
+    folder = tmp_path / "models"
+    keep = folder / "keep"
+    keep.mkdir(parents = True)
+    (keep / "model.gguf").write_bytes(b"stub")
+    doomed = folder / "downloading.tmp"
+    doomed.mkdir()
+
+    real_scandir = os.scandir
+
+    class _Listed:
+        """A finished listing, so the entry survives the directory going away."""
+
+        def __init__(self, entries):
+            self._entries = iter(entries)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def __iter__(self):
+            return self._entries
+
+        def __next__(self):
+            return next(self._entries)
+
+    def _vanishing(path = "."):
+        # Read the listing to completion, then delete the temp dir. The entry is
+        # still in what we hand back, exactly as when a download renames it away
+        # between the folder being listed and the child being opened.
+        if str(path) == str(folder) and doomed.exists():
+            with real_scandir(path) as entries:
+                listed = list(entries)
+            doomed.rmdir()
+            return _Listed(listed)
+        return real_scandir(path)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(os, "scandir", _vanishing)
+    try:
+        note_scan_folder_scanned(str(folder), found = True)
+    finally:
+        monkey.undo()
+
+    assert scan_folder_status(str(folder)) == STATUS_OK
+
+
+def test_the_folder_itself_disappearing_still_reports_missing(tmp_path: Path):
+    """The guard above must not swallow the case the feature exists for."""
+    note_scan_folder_scanned(str(tmp_path / "never-existed"), found = False)
+    assert scan_folder_status(str(tmp_path / "never-existed")) == STATUS_MISSING
+
+
+def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
+    """The probe opens directories, so it cannot run on the loop.
+
+    Every other filesystem step in ``_collect_models_from_default_sources`` is
+    already wrapped in ``asyncio.to_thread``. This one opens up to 64 directories
+    per registered folder, and on a stalled network mount ``scandir`` sits in the
+    kernel with nothing to yield to, so the whole Studio server stops answering.
+    """
+    import asyncio as _asyncio
+
+    import hub.services.models.local_inventory as inventory
+
+    folder = tmp_path / "models"
+    (folder / "some-model").mkdir(parents = True)
+    (folder / "some-model" / "model.gguf").write_bytes(b"stub")
+    rows = [{"id": 1, "path": str(folder), "created_at": "2026-01-01"}]
+
+    on_loop: list[bool] = []
+
+    def _spy(path, *, found):
+        try:
+            _asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(inventory, "note_scan_folder_scanned", _spy)
+    try:
+        _asyncio.run(
+            inventory._collect_models_from_default_sources(
+                tmp_path,
+                tmp_path / "hf",
+                tmp_path / "legacy",
+                tmp_path / "default",
+                [],
+                [],
+                [],
+                list(rows),
+            )
+        )
+    finally:
+        monkey.undo()
+
+    assert on_loop == [False], "the folder probe ran on the event loop"
+
+
 @requires_posix_permissions
 def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     """The Hub inventory has its own custom-folder loop, and it feeds the dialog.
