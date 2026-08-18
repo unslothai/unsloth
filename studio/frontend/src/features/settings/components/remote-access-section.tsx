@@ -51,12 +51,13 @@ const STATE_LABEL: Record<RemoteAccessStatus["state"], string> = {
   error: "Error",
 };
 
+// Settings is the ordinary owner, so naming it in the status says nothing.
 const OWNER_LABEL: Record<
   Exclude<RemoteAccessStatus["managedBy"], null>,
-  string
+  string | null
 > = {
   launch: "Launch managed",
-  settings: "Settings managed",
+  settings: null,
   colab: "Colab managed",
 };
 
