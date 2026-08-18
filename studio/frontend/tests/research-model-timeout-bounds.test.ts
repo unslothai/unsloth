@@ -15,6 +15,8 @@ import type { PersistedChatSettings } from "../src/features/chat/api/chat-settin
 import {
   assignSanitizedMirroredSettings,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  sanitizeBoundedNumber,
 } from "../src/features/chat/utils/mirrored-chat-settings.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
 
@@ -81,4 +83,41 @@ test("an over-cap budget never reaches the store or storage", () => {
   );
   store.setResearchModelTimeoutSeconds(0);
   assert.equal(useChatRuntimeStore.getState().researchModelTimeoutSeconds, 0);
+});
+
+// 0 is the unlimited sentinel, so it is legal below the run route's finite floor of 10.
+// Anything between the two would hydrate, be sent unchanged, and 400 every run start.
+test("a sub-floor finite timeout is refused on every frontend path", () => {
+  const store = useChatRuntimeStore.getState();
+
+  for (const rejected of [1, 5, 9]) {
+    const mirrored: PersistedChatSettings = {};
+    assignSanitizedMirroredSettings(
+      { researchModelTimeoutSeconds: rejected },
+      mirrored,
+    );
+    assert.equal(mirrored.researchModelTimeoutSeconds, undefined);
+
+    store.setResearchModelTimeoutSeconds(rejected);
+    assert.equal(
+      useChatRuntimeStore.getState().researchModelTimeoutSeconds,
+      DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS,
+    );
+  }
+
+  // The sentinel and the floor itself stay legal.
+  for (const accepted of [0, MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS]) {
+    const mirrored: PersistedChatSettings = {};
+    assignSanitizedMirroredSettings(
+      { researchModelTimeoutSeconds: accepted },
+      mirrored,
+    );
+    assert.equal(mirrored.researchModelTimeoutSeconds, accepted);
+  }
+
+  // The shared sanitizer keeps the rule for any caller, not just this field.
+  const bounds = { min: 0, minPositive: 10, max: 100, integer: true };
+  assert.equal(sanitizeBoundedNumber(0, bounds), 0);
+  assert.equal(sanitizeBoundedNumber(5, bounds), undefined);
+  assert.equal(sanitizeBoundedNumber(10, bounds), 10);
 });

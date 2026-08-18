@@ -42,6 +42,9 @@ const MIRRORED_ENUM_VALUES = {
 // enforce. A larger value would be dropped from the patch here and then
 // rejected when the run starts, so it is bounded where it is set instead.
 export const MAX_RESEARCH_MODEL_TIMEOUT_SECONDS = 365 * 24 * 3600;
+// 0 is the unlimited sentinel rather than a very short budget, so it sits below the floor
+// the run route puts on a finite value. A stored 1..9 would 400 every run.
+export const MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS = 10;
 
 // Bounds match the ge/le the backend payload enforces on the same fields.
 const MIRRORED_NUMBER_BOUNDS = {
@@ -49,13 +52,14 @@ const MIRRORED_NUMBER_BOUNDS = {
   ragAutoInjectMinScore: { min: 0, max: 1, integer: false },
   researchModelTimeoutSeconds: {
     min: 0,
+    minPositive: MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
     max: MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
     integer: true,
   },
 } as const satisfies Partial<
   Record<
     keyof PersistedChatSettings,
-    { min: number; max: number; integer: boolean }
+    { min: number; minPositive?: number; max: number; integer: boolean }
   >
 >;
 
@@ -118,10 +122,19 @@ export function sanitizeRagSource(
 
 export function sanitizeBoundedNumber(
   value: unknown,
-  { min, max, integer }: { min: number; max: number; integer: boolean },
+  {
+    min,
+    minPositive,
+    max,
+    integer,
+  }: { min: number; minPositive?: number; max: number; integer: boolean },
 ): number | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (integer && !Number.isInteger(value)) return undefined;
+  // A sentinel below the floor stays legal; anything between the two is not.
+  if (minPositive !== undefined && value > min && value < minPositive) {
+    return undefined;
+  }
   return value >= min && value <= max ? value : undefined;
 }
 

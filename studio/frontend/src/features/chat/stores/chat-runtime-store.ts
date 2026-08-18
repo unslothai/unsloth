@@ -58,6 +58,7 @@ import {
 import {
   loadShadowOwnsMirroredSetting,
   MAX_RESEARCH_MODEL_TIMEOUT_SECONDS,
+  MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS,
   normalizeStoredPermissionMode,
   normalizeStoredRagAutoInject,
 } from "../utils/mirrored-chat-settings";
@@ -174,14 +175,12 @@ export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
 export const DEFAULT_RESEARCH_MODEL_TIMEOUT_SECONDS = 900;
 
 /** 0 (unlimited) or a finite budget the settings patch and the run route both
- * accept. An over-cap value would be dropped from the patch and would 400 the
- * run, so it is refused here and the default stands in. */
+ * accept. A value outside that would be dropped from the patch and would 400
+ * the run, so it is refused here and the default stands in. */
 function isSupportedResearchModelTimeout(value: number): boolean {
-  return (
-    Number.isSafeInteger(value) &&
-    value >= 0 &&
-    value <= MAX_RESEARCH_MODEL_TIMEOUT_SECONDS
-  );
+  if (!Number.isSafeInteger(value) || value < 0) return false;
+  if (value > MAX_RESEARCH_MODEL_TIMEOUT_SECONDS) return false;
+  return value === 0 || value >= MIN_FINITE_RESEARCH_MODEL_TIMEOUT_SECONDS;
 }
 
 function loadResearchModelTimeoutSeconds(): number {
