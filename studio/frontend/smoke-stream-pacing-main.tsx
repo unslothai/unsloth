@@ -26,6 +26,12 @@
 // cycle from the renderer leaves the constant in its temporal dead zone and the harness
 // renders nothing. Evaluating the store first breaks the tie, as the app's entry order does.
 import "@/features/chat/stores/sidebar-organization-store";
+// And the chat barrel before MarkdownText, as the app's entry does. thread.tsx builds
+// ASSISTANT_PART_COMPONENTS at module scope with `Text: MarkdownText`, so entering the
+// markdown-text -> features/chat -> chat-page -> thread cycle from markdown-text runs that
+// object literal while the MarkdownText binding is still in its temporal dead zone and the
+// page dies with "Cannot access 'MarkdownText' before initialization".
+import "@/features/chat";
 /* eslint-enable no-restricted-imports */
 
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
