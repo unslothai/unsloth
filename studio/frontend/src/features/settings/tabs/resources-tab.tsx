@@ -242,6 +242,7 @@ export function ResourcesTab() {
     const diskTotal = systemInfo.disk?.total_gb ?? 0;
     const diskFree = systemInfo.disk?.free_gb ?? 0;
     const diskUsed = Math.max(0, diskTotal - diskFree);
+    const diskPercent = diskTotal > 0 ? (diskUsed / diskTotal) * 100 : 0;
     const vramTotal = aggregateGpuMemoryTotalGb(devices);
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
@@ -275,6 +276,7 @@ export function ResourcesTab() {
       diskTotal,
       diskFree,
       diskUsed,
+      diskPercent,
       vramTotal,
       vramUsed,
       vramFree,
@@ -431,7 +433,7 @@ export function ResourcesTab() {
             detail={t("settings.resources.liveMonitor.free", {
               value: formatGb(metrics.diskFree),
             })}
-            percent={systemInfo.disk?.percent_used ?? 0}
+            percent={metrics.diskPercent}
           />
           <MetricTile
             label={t("settings.resources.liveMonitor.vram")}

@@ -83,11 +83,13 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
+import type { HostClass } from "@/features/model-picker/components/model-selector/host-artifact-policy";
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
   loadSpecFor,
 } from "@/features/model-picker/components/model-selector/model-catalog";
+import { useHostClass } from "@/hooks/use-host-class";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -161,7 +163,11 @@ import {
 
 // Curated models come from the shared catalog: one canonical group per model with its artifacts as data (HunyuanVideo carries both repacks), and the load kind per artifact via loadSpecFor.
 // The picker renders groups with a format second level, which also surfaces LTX-2.3 in Recommended (its HF pipeline_tag is image-to-video).
-const VIDEO_MODELS: ModelOption[] = catalogToModelOptions(VIDEO_CATALOG);
+// Host-dependent, so it is built per render rather than once at module load: a Mac is offered
+// only the GGUF rows, and an accelerated host gets the speed qualifiers.
+function useVideoModels(host: HostClass): ModelOption[] {
+  return useMemo(() => catalogToModelOptions(VIDEO_CATALOG, host), [host]);
+}
 
 // Per-model generation defaults (steps + guidance), matched by repo-id substring, most specific first.
 const DEFAULT_GEN = { steps: 8, guidance: 1 };
@@ -819,6 +825,8 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 }
 
 function VideoGenerator({ active = true }: { active?: boolean }) {
+  const hostClass = useHostClass();
+  const videoModels = useVideoModels(hostClass);
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompt, setPrompt] = useState(
     "Ultra-realistic cinematic documentary footage of a quiet Kyoto neighborhood at sunrise. An elderly Japanese man opens his traditional wooden shop while a young woman wearing a simple kimono walks past carrying a small basket. Cherry blossom petals gently fall through the air, bicycles pass by, warm sunlight enters between narrow streets, distant temple bells echo. The camera slowly moves forward like a professional travel documentary, realistic human movements, natural expressions, authentic Japanese architecture, subtle wind movement in clothing and trees, realistic colors, 35mm film photography style.",
@@ -3266,7 +3274,7 @@ function VideoGenerator({ active = true }: { active?: boolean }) {
         {/* min-w-0: without it a long resident model name pushes the Images link off a phone screen. */}
         <div className="pointer-events-auto flex min-w-0 items-center gap-3">
           <ModelSelector
-            models={VIDEO_MODELS}
+            models={videoModels}
             value={status?.loaded ? status.repo_id ?? undefined : undefined}
             activeGgufVariant={quant}
             onValueChange={handleModelSelect}
