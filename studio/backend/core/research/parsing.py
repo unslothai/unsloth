@@ -300,7 +300,8 @@ def _report_after_boundary(text: str, boundary: str) -> str | None:
             fence_length = len(token)
             continue
         indentation = len(content) - len(content.lstrip(" "))
-        if indentation <= 3 and content[indentation:].strip(" \t") == boundary:
+        # The prompt shows the marker inside backticks, so models echo it fenced.
+        if indentation <= 3 and content[indentation:].strip(" \t`").strip(" \t") == boundary:
             boundary_line = index
     if boundary_line is None:
         return None

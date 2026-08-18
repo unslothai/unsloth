@@ -886,6 +886,13 @@ def test_stream_completion_keeps_channels_separate_and_streams_content(monkeypat
             "# Report\nBody",
             id = "invalid-backtick-info-is-not-a-fence",
         ),
+        # The prompt shows the marker inside backticks, so a model that copies the
+        # instruction verbatim emits it fenced; without this the preamble ships instead.
+        pytest.param(
+            "Planning.\n`<!-- UNSLOTH_FINAL_REPORT -->`\n## Zusammenfassung\nBericht",
+            "## Zusammenfassung\nBericht",
+            id = "backticked-marker",
+        ),
     ),
 )
 def test_report_boundary_parser_uses_last_non_code_standalone_marker(text, expected):
