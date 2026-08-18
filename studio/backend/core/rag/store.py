@@ -98,12 +98,20 @@ was we were what when where which who why will with would you your
 _HAS_LETTER_AND_DIGIT = re.compile(r"(?=.*[^\W\d_])(?=.*\d)", re.UNICODE)
 
 
-def _is_identifier(token: str, raw_query: str) -> bool:
+def _is_identifier(token: str, raw_tokens: frozenset[str]) -> bool:
+    """``raw_tokens`` is the query's tokens BEFORE lower-casing, tokenized once.
+
+    Once, and as a set, because the caller runs this per distinct token: re-scanning the
+    query text inside the loop made the whole function quadratic in the question's
+    length, which a pasted log turns into a multi-second stall on the request that
+    compacts the thread (48 KB of pasted text measured at 4.6s, 96 KB at 17.7s, against
+    2.3ms for the same text through `_match_query`).
+    """
     if "_" in token:
         return True
     if _HAS_LETTER_AND_DIGIT.match(token):
         return True
-    return len(token) >= 3 and token.upper() in _TOKEN.findall(raw_query)
+    return len(token) >= 3 and token.upper() in raw_tokens
 
 
 def conversation_match_queries(query: str) -> list[str]:
@@ -142,7 +150,8 @@ def conversation_match_queries(query: str) -> list[str]:
     tokens = list(dict.fromkeys(_TOKEN.findall(query.lower())))
     if not tokens:
         return []
-    identifiers = [t for t in tokens if _is_identifier(t, query)]
+    raw_tokens = frozenset(_TOKEN.findall(query))
+    identifiers = [t for t in tokens if _is_identifier(t, raw_tokens)]
     content = [t for t in tokens if t not in _ARCHIVE_STOPWORDS] or tokens
     permissive = " OR ".join(f'"{t}"' for t in content)
     if not identifiers:
@@ -252,8 +261,18 @@ def create_document(
     linked_relative_path: str | None = None,
     archive_messages: int | None = None,
     archive_ordinal: int | None = None,
+    created_at: str | None = None,
     commit: bool = True,
 ) -> str:
+    """``created_at`` is for a REWRITE of a row that already exists, and nothing else.
+
+    A re-embed deletes the old row and inserts a new one for the same content, so stamping
+    it with the current time would say the turn was archived when its vectors were
+    rebuilt. That is not a cosmetic difference for an archived turn: an archive written
+    before `archive_ordinal` existed is ordered by `created_at` alone, so a rewrite that
+    takes a fresh timestamp moves that turn to the end of its own conversation. Omitted,
+    this is byte for byte what every other caller has always got.
+    """
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
@@ -270,7 +289,7 @@ def create_document(
             sha256,
             status,
             stored_path,
-            _now(),
+            created_at or _now(),
             embedding_model,
             linked_folder_id,
             linked_relative_path,

@@ -89,6 +89,27 @@ _CONTINUATIONS = frozenset(
 )
 _PUNCTUATION = re.compile(r"[\s\.,!\?;:\-–—]+")
 
+# What "anaphoric" means, as a closed list rather than a word count: function words and
+# pronouns, none of which can name the subject of a request. A message made only of these
+# ("what about it", "and then") has nothing to search an archive for; a message with one
+# word outside them ("review billing") names its own subject and must keep its own
+# retrieval slots. Same shape and the same reason as `_CONTINUATIONS`: reviewable, and
+# identical on every install.
+#
+# Negation is left out on purpose, matching `store._ARCHIVE_STOPWORDS`: "not that" is the
+# conservative side of the line, and being conservative here only costs an anchor, while
+# being wrong the other way costs the answer.
+_FUNCTION_WORDS = frozenset(
+    """
+a about all also am an and another any anything are as at be been being both but by can
+could did do does doing each either else even ever for from get give had has have he her
+here him his how i if in into is it its just like me mine my of on once one only or other
+our ours out over please same she should so some someone something still such than that
+the their theirs them then there these they thing things this those to too us was we were
+what when where which while who whom whose why will with would you your yours
+""".split()
+)
+
 
 def _text_of(message: dict) -> str:
     content = message.get("content")
@@ -150,16 +171,34 @@ def last_substantive_instruction(
 
 
 def is_thin_query(text: str, *, min_chars: int = INSTRUCTION_MIN_CHARS) -> bool:
-    """Whether searching an archive for this text is worth a retrieval slot."""
+    """Whether searching an archive for this text is worth a retrieval slot.
+
+    Thin means the message NAMES NOTHING TO SEARCH FOR: every word of it is a function
+    word, an anaphor or a continuation. It deliberately does not mean "short". Counting
+    words instead swept in every self-contained two-word request -- "review billing",
+    "restart nginx", "ZQXVARA123?" -- and the anchor a thin query earns is spent ahead of
+    the user's own words in `conversation_archive.recall`. At the top_k of 1 that both the
+    over-budget backoff (4 -> 2 -> 1) and a small window (`_recall_top_k` is
+    `budget // CHUNK_TOKENS`) reach, the anchor takes the only slot: measured on a
+    nine-turn archive, "review billing" at top_k=1 recalled the standing instruction and
+    NOT the billing turn, which the same recall returns without an anchor.
+    """
     stripped = (text or "").strip()
     if not stripped:
         return True
     if len(stripped) >= min_chars:
         return False
     normalised = _PUNCTUATION.sub(" ", stripped.lower()).strip()
+    if normalised in _CONTINUATIONS:
+        return True
     # Short AND anaphoric. A short question that names something ("what is ZQXVARA123?")
     # is a perfectly good query and must not be replaced by an older instruction.
-    return normalised in _CONTINUATIONS or len(normalised.split()) <= 2
+    words = normalised.split()
+    if not words:
+        # Punctuation only ("???"). Nothing survives tokenisation, so the archive query
+        # would be empty and the recall would return nothing at all.
+        return True
+    return all(word in _FUNCTION_WORDS or word in _CONTINUATIONS for word in words)
 
 
 def _protected_cost(turns: list[list[dict]], index: int) -> int:

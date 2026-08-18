@@ -1165,6 +1165,26 @@ def test_a_thin_query_is_recognised_but_a_short_real_question_is_not():
     assert not instruction_pin.is_thin_query("what is ZQXVARA123 now?")
 
 
+def test_a_self_contained_two_word_request_is_not_thin():
+    """Thin has to mean "names nothing", not "is short".
+
+    A word count swept in every self-contained short request, and a thin query earns an
+    anchor that `conversation_archive.recall` spends AHEAD of the user's own words. At
+    top_k=1 -- which the over-budget backoff (4 -> 2 -> 1) and a small window both reach,
+    since `_recall_top_k` is `budget // CHUNK_TOKENS` -- the anchor takes the only slot
+    and the turn answering what was actually asked is never retrieved.
+    """
+    from core.inference import instruction_pin
+
+    for request in ("review billing", "restart nginx", "fix authentication", "ZQXVARA123?"):
+        assert not instruction_pin.is_thin_query(request), request
+
+    # Still thin, because every word of these is a function word or a nudge: there is
+    # genuinely nothing in them to search an archive for.
+    for nudge in ("what about it", "and then?", "do it", "yes please", "why?", "???"):
+        assert instruction_pin.is_thin_query(nudge), nudge
+
+
 def test_a_pin_is_charged_for_everything_it_holds():
     """`truncate_oldest_messages` protects by GROUP, so the reply rides along with the
     instruction. Charging only the instruction let a 28-token pin hold 20037 tokens, past

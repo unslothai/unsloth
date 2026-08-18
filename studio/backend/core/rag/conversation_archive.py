@@ -326,6 +326,7 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                     conn.rollback()
                 continue
             ordinal = None
+            archived_at = None
             if stale is not None:
                 # Same turn, vectors from an embedder the query side no longer asks for.
                 # Skipping it would leave the turn invisible to dense search forever, so
@@ -339,8 +340,19 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # allocating a fresh ordinal for one of those would move the oldest turn
                 # in the conversation behind every numbered turn, and the chronological
                 # renderer would then present it as the LATER, superseding statement.
+                #
+                # And it keeps its TIMESTAMP, which is the same claim for the rows that
+                # have no ordinal to keep. A turn archived before the column existed is
+                # ordered by `created_at` alone, so re-stamping it with the moment its
+                # vectors were rebuilt moves it to the end of its own conversation, and
+                # the header then tells the model the oldest statement is the current
+                # one. A re-embed rewrites HOW a turn is indexed, not WHEN it was said,
+                # and a pass that stops partway through -- a locked database, a full
+                # disk, a cancelled request -- leaves exactly that reordering behind:
+                # the turns it reached move ahead of the turns it never got to.
                 previous = store.get_document(conn, stale) or {}
                 ordinal = previous.get("archive_ordinal")
+                archived_at = previous.get("created_at")
                 store.delete_document(conn, stale, commit = False)
             else:
                 ordinal = store.next_archive_ordinal(conn, scope)
@@ -363,6 +375,9 @@ def archive_turns(thread_id: str, evicted: list[dict]) -> int:
                 # unconditionally, with no knob: a period with ordering switched off must
                 # not punch permanent holes in the sequence.
                 archive_ordinal = ordinal,
+                # When the turn was archived, not when this row was written. None for a
+                # turn seen for the first time, which takes the clock as before.
+                created_at = archived_at,
                 commit = False,
             )
             try:
@@ -831,7 +846,18 @@ def _focused_lexical(conn, scope: str, query: str, model, fetch: int) -> list:
             conn, scope, query, model, fetch, expressions[0] if expressions else None
         )
     strict = _lexical_pass(conn, scope, query, model, _BRANCH_FILTER_MAX_CANDIDATES, expressions[0])
-    loose = _lexical_pass(conn, scope, query, model, fetch, expressions[-1])
+    # The ranking pass is fetched to the same bound as the filter pass, not to `fetch`.
+    # It ranks the ELIGIBLE chunks, and at `fetch` rows its window can be spent entirely
+    # on chunks that never name the identifier: a question's content word ("current") is
+    # ordinary English, so an archive holding `fetch` other turns that use it pushes the
+    # one turn stating the value out of the window. Nothing eligible is left to order,
+    # the merged list falls back to the filter pass's IDF-floored order, and the answer
+    # is dropped -- measured on a 41-turn archive (20 turns discussing the variable, the
+    # assignment, 20 ordinary turns using "current"/"value" about other things): the
+    # assignment ranked 21st of 21 in the filter pass and never reached the caller.
+    loose = _lexical_pass(
+        conn, scope, query, model, max(fetch, _BRANCH_FILTER_MAX_CANDIDATES), expressions[-1]
+    )
     # Eligibility is asked of the index, not read off the strict pass's top rows. That
     # pass is capped, and its order is the arbitrary one described above, so a chunk
     # naming the identifier can be missing from it purely because the archive is long:

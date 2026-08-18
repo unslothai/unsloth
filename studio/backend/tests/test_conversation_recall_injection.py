@@ -1352,6 +1352,29 @@ def test_an_anaphoric_latest_message_recalls_the_governing_instruction(
     assert "markdown table" in built["prefix"]
 
 
+def test_a_short_self_contained_request_keeps_the_only_recall_slot(
+    rag_home, rag_conn, stub_embeddings
+):
+    """The anchor is a rescue for a message that names nothing, not a tax on short ones.
+
+    `recall` spends the anchor's share of the budget FIRST, so at a limit of one it takes
+    the only slot. A top_k of 1 is not a corner: `_recall_top_k` is
+    `budget_tokens // CHUNK_TOKENS`, and the over-budget retry walks 4 -> 2 -> 1. So a
+    two-word request that names its own subject must not be classed thin, or the recall
+    block comes back holding an unrelated older instruction and NOT the turn that answers
+    what was asked.
+    """
+    turns = _instructed_thread()
+    branch = turns + [{"role": "user", "content": "section 3"}]
+
+    built = tools_mod.build_conversation_recall(
+        branch, THREAD, style = "inline", top_k = 1, branch_messages = branch
+    )
+
+    assert built is not None
+    assert "section 3" in built["prefix"].lower()
+
+
 def test_a_substantive_latest_message_still_drives_the_query_alone(
     rag_home, rag_conn, stub_embeddings, monkeypatch
 ):
