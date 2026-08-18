@@ -688,8 +688,14 @@ def case_h7_pen_drift_during_scroll(page) -> dict:
         if cdp is not None:
             cdp.send(
                 "Input.dispatchMouseEvent",
-                {"type": "mouseMoved", "x": px, "y": py, "button": "none",
-                 "pointerType": "pen", "force": 0.0},
+                {
+                    "type": "mouseMoved",
+                    "x": px,
+                    "y": py,
+                    "button": "none",
+                    "pointerType": "pen",
+                    "force": 0.0,
+                },
             )
             return
         page.evaluate(
