@@ -409,11 +409,9 @@ def _native_linux_system_rocm_lib_dirs(binary_dir: str = "") -> "list[str]":
     in hsa_init(); prepending the whole system ROCm lib dir loads a driver-matched,
     version-consistent stack (libhsa-runtime64 / libamdhip64 / librocblas) ahead of it.
     The whole dir is deliberate: mixing the bundle's rocBLAS with a different-version
-    system HIP/ROCR risks missing symbols. The prebuilt's RPATH can still bind bundled
-    libamdhip64.so against system libhsa-runtime64 and die on a symbol lookup (#8998),
-    so load_model retries once with the bundle-only path when that is what crashed.
-    UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 keeps the pure bundle up front (for a host whose
-    system ROCm lacks this arch). No-op on WSL / non-Linux.
+    system HIP/ROCR risks missing symbols, and when it does load_model retries once
+    with the bundle only. UNSLOTH_LLAMA_NO_SYSTEM_ROCM=1 skips the prepend up front,
+    for a host whose system ROCm lacks this arch. No-op on WSL / non-Linux.
     """
     if os.environ.get("UNSLOTH_LLAMA_NO_SYSTEM_ROCM") == "1":
         return []
@@ -7474,9 +7472,8 @@ class LlamaCppBackend:
     ) -> dict[str, str]:
         """Build a subprocess env that lets llama-server resolve native libs.
 
-        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend
-        (#8998). Default True keeps the #7233 amdkfd-matched stack. WSL's
-        librocdxg prepend is independent and is not gated by this flag.
+        ``use_system_rocm=False`` skips the native-Linux system ROCm prepend.
+        WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
@@ -7520,7 +7517,6 @@ class LlamaCppBackend:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             # Native Linux AMD: system ROCm libs before the bundle's HIP runtime,
             # which can be incompatible with the host amdkfd driver (#7233).
-            # The #8998 retry rebuilds this env with use_system_rocm=False.
             if use_system_rocm:
                 lib_dirs.extend(_native_linux_system_rocm_lib_dirs(binary_dir))
             lib_dirs.append(binary_dir)
@@ -11780,8 +11776,7 @@ class LlamaCppBackend:
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
         # A ROCm symbol lookup is also 127, but the generic text below would send
-        # the user to reinstall a binary that Vulkan and a shell launch both run
-        # fine (#8998). Name the object and symbol the loader actually reported.
+        # the user to reinstall a binary Vulkan and a shell launch both run fine.
         _rocm_miss = LlamaCppBackend._bundled_hip_symbol_miss(output or "")
         if _rocm_miss:
             _miss_obj, _miss_sym = _rocm_miss
@@ -12386,9 +12381,9 @@ class LlamaCppBackend:
         # the split-axis enum token, unique to this assert (not the source file).
         return "split_axis" in text
 
-    # #7233 prepends the whole system ROCm dir, so any lib in it can be the one
-    # that fails to resolve, not just HIP. Anchored on the object's basename so a
-    # path component (/opt/librocm-custom/...) cannot match.
+    # The prepend covers the whole system ROCm dir, so any lib in it can be the
+    # one that fails to resolve, not just HIP. Matched on the basename so a path
+    # component (/opt/librocm-custom/...) cannot stand in for the object.
     _ROCM_OBJECT_HINTS = ("libamdhip", "libamd_comgr", "libhsa-runtime", "libhip", "libroc")
 
     @staticmethod
@@ -12396,9 +12391,8 @@ class LlamaCppBackend:
         """(object, symbol) when a bundled ROCm lib failed a symbol lookup (#8998).
 
         glibc prints ``symbol lookup error: <object>: undefined symbol: <sym>[,
-        version <v>]``; field log is ``libamdhip64.so.7: undefined symbol:
-        hsa_amd_queue_create, version ROCR_1``. A ggml symbol, or an absent .so
-        (``error while loading shared libraries``), is a different failure.
+        version <v>]``. A ggml symbol, or an absent .so (``error while loading
+        shared libraries``), is a different failure.
         """
         match = re.search(
             r"symbol lookup error:\s*(\S+?):\s*undefined symbol:\s*([^\s,]+)", output or ""
@@ -17019,10 +17013,10 @@ class LlamaCppBackend:
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
-                    Up to three launches: the first, one HIP/ROCR env
-                    correction (#8998), and one --fit recovery. Separate
-                    flags so a library mix does not spend the fit slot, and
-                    a later VRAM crash after bundled HIP can still fit-retry.
+                    Up to three launches: the first, one ROCm env correction,
+                    and one --fit recovery. Separate flags, so a library mix
+                    does not spend the fit slot and a VRAM crash after the
+                    correction can still fit-retry.
                     """
                     # _mem_host_resident too: the --fit on retry re-arms the
                     # page-lock and writes it back, which without this makes the
@@ -17102,10 +17096,10 @@ class LlamaCppBackend:
                             and not _split_axis_crash
                             and _hip_rocr_mismatch
                         ):
-                            # The #7233 prepend is what a shell launch does not do,
-                            # which is why the same binary runs from a terminal
-                            # (#8998). Drop those dirs only; the rest of env holds
-                            # the pooling and memory scrubs.
+                            # The prepend is what a shell launch does not do, which
+                            # is why the same binary runs from a terminal. Drop
+                            # those dirs only: the rest of env holds the pooling
+                            # and memory scrubs.
                             _bundle_only = self._llama_server_env_for_binary(
                                 binary, use_system_rocm = False
                             )

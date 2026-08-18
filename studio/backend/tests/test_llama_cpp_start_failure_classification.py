@@ -293,7 +293,7 @@ class TestMissingSharedLibrary:
         out = "llama-server: symbol lookup error: llama-server: undefined symbol: ggml_backend_init"
         msg = _classify(out, "/models/x.gguf", "local/x", 127)
         assert "package manager" not in msg
-        # Must not steal the #8998 HIP/ROCR branch (that one names libamdhip64).
+        # Must not steal the ROCm branch: the object here is llama-server.
         assert "HIP/ROCR" not in msg
         assert "hsa_amd_queue_create" not in msg
 
@@ -503,11 +503,9 @@ class TestMissingSharedLibrary:
 
 
 class TestBundledHipRocrMismatch:
-    """#8998: Studio prepends system ROCm, the prebuilt still binds bundled
-    libamdhip64.so, and glibc exits 127 on hsa_amd_queue_create@ROCR_1.
-
-    That used to be classified as a missing llama-server (generic 127) and
-    retried as a VRAM miss (--fit on). Neither is true.
+    """Studio prepends system ROCm, the prebuilt still binds its bundled HIP,
+    and glibc exits 127 on the symbol lookup (#8998). That used to read as a
+    missing llama-server and get retried as a VRAM miss. Neither is true.
     """
 
     _FIELD_OUT = (

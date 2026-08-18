@@ -1529,7 +1529,7 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
 
     Each spawn's stdout is ``outputs[i]`` and its exit is ``returncodes[i]``
     (None means healthy). The child env prepends /opt/rocm/lib unless
-    ``use_system_rocm=False``, which is the #8998 retry.
+    ``use_system_rocm=False``, which is the retry under test.
     """
 
     def _gguf_string(value: str) -> bytes:
@@ -1630,8 +1630,8 @@ def _run_full_offload_spawns(monkeypatch, tmp_path, *, outputs, returncodes):
 
 
 class TestHipRocrRetryKeepsFitBudget:
-    """#8998: the ROCm env correction has its own attempt, so a later VRAM
-    crash after bundled HIP can still take the --fit on recovery.
+    """The ROCm env correction has its own attempt, so a later VRAM crash
+    after the bundle-only launch can still take the --fit on recovery.
     """
 
     def test_mix_then_vram_still_gets_fit_on(self, monkeypatch, tmp_path):

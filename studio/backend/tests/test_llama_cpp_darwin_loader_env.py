@@ -151,7 +151,7 @@ class TestLinuxUnchanged:
         assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
 
     def test_use_system_rocm_false_skips_native_linux_prepend(self, monkeypatch, binary):
-        # #8998 retry: same CUDA/bundle dirs, no /opt/rocm-style prepend.
+        # The retry keeps the CUDA and bundle dirs, drops the system ROCm one.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -167,8 +167,8 @@ class TestLinuxUnchanged:
         assert bundle_only["LD_LIBRARY_PATH"].startswith(str(binary.parent))
 
     def test_use_system_rocm_false_keeps_the_wsl_prepend(self, monkeypatch, binary):
-        # librocdxg is a different mix (#7233 WSL). Do not drop it on the
-        # native-Linux HIP/ROCR retry flag.
+        # librocdxg is a different mix (WSL). The native-Linux flag must not
+        # drop it.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
