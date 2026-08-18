@@ -158,7 +158,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.12'
-          cache: 'pip'
+
+      - name: Restore the pip cache
+        id: pip-cache
+        uses: ./.github/actions/pip-cache-restore
+        with:
+          key-files: |
+            pyproject.toml
+            studio/backend/requirements/*.txt
 
       # macOS install ladder, validated locally against a Linux
       # mac-sim venv (platform spoofed + mlx_simulation shim + real
@@ -534,3 +541,12 @@ jobs:
             exit 1
           fi
           echo "OK: Unsloth prebuilt llama.cpp on Mac M1 + GGUF /completion works"
+
+      - name: Save the pip cache
+        if: always()
+        uses: ./.github/actions/pip-cache-save
+        with:
+          dir: ${{ steps.pip-cache.outputs.dir }}
+          key: ${{ steps.pip-cache.outputs.key }}
+          cache-hit: ${{ steps.pip-cache.outputs.cache-hit }}
+
