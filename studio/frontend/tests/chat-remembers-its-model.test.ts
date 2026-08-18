@@ -100,6 +100,37 @@ test("only models that can actually be selected are offered", () => {
   }
 });
 
+test("the notice clears the chat header instead of rendering underneath it", () => {
+  // The bug this pins: the notice was an in-flow sibling of the chat header, and the
+  // header is `absolute ... top-[--studio-content-top-inset] z-40` with an OPAQUE
+  // bg-background. Per CSS painting order a positioned element is painted above every
+  // non-positioned one whatever the source order, so the whole bar sat underneath the
+  // header and only the 10px the header's `right-[10px]` leaves uncovered was visible.
+  // Measured on a built Studio: the notice's rect was {x:280,y:0,w:1220,h:37}, exactly
+  // the header's own band, and the before/after screenshots differed by a 10x37 sliver.
+  const header = slice(page, "chat-header-fade", "</div>");
+  assert.match(header, /z-40/, "the header is still the z-40 absolute overlay");
+
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  const div = slice(body, '<div className="', '">');
+  // Positioned, so it is not painted under the header.
+  assert.match(div, /\babsolute\b/);
+  // Offset by the SAME header height the header, its fade and the drop overlay use,
+  // so a change to either variable moves all four together.
+  assert.match(div, /top-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-height,48px\)\)\]/);
+  // Between the header fade (z-20) and the header itself (z-40): over the gradient,
+  // under the model picker, whose menu must stay clickable.
+  const z = /\bz-(\d+)\b/.exec(div);
+  assert.ok(z, "the notice needs an explicit z-index");
+  assert.ok(
+    Number(z[1]) > 20 && Number(z[1]) < 40,
+    `notice z-${z[1]} must sit above the z-20 fade and below the z-40 header`,
+  );
+  // An overlay over the scrolling conversation must be opaque, or messages read
+  // through it. bg-muted/40 was fine only while the bar took its own row.
+  assert.doesNotMatch(div, /bg-muted\//, "a translucent overlay lets messages show through");
+});
+
 test("the sidebar label cannot collide with the spinner or the unread dot", () => {
   // Both take the same right-hand slot, and the dot is positioned over it.
   assert.match(
