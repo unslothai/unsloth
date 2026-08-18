@@ -176,6 +176,20 @@ function mlxRuntimeStateFrom(resp: any) {
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
   };
 }
+// Imported by chat-adapter.ts from ../utils/mmproj-fallback and used by the auto-load
+// success toast, which #9173 taught to describe a vision-projector fallback. Without a
+// stub it is a bare ReferenceError inside the retry loop, which scores as a failed load
+// and fails every scenario as a wrong-model assertion -- the exact shape the guard below
+// exists to catch, and the third time it has happened (see #7699).
+//
+// Returns a string rather than the real three-message record on purpose. The value only
+// reaches `options.description`, and these scenarios assert on which model loaded, never
+// on toast copy; copying user-facing strings in here would give them a second home to
+// drift from. Returning undefined is not an option either, since that is
+// indistinguishable from the missing import this stub exists to prevent.
+function mmprojFallbackMessage(reason: string): string {
+  return `mmproj fallback: ${reason}`;
+}
 async function prepareHfTokenForUse(token: any) {
   EVENTS.push({ kind: "prepareHfToken" });
   if (SCENARIO.tokenDecision === "decline") return { proceed: false, token };

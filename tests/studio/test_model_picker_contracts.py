@@ -167,13 +167,26 @@ def test_chat_autoload_toast_is_persistent_and_dismissible():
     assert "onDismiss:" in auto_load
     # Terminal success uses a fresh finite toast after manual progress dismissal.
     assert "showAutoLoadSuccess" in auto_load
-    # No description on the ordinary path. It stopped being the literal
-    # `description: undefined` when the CPU-fallback branch was added, so pin the
-    # branch and its undefined arm rather than one spelling of the old constant.
+    # No description on the ordinary path. This assertion has now moved twice: it
+    # stopped being the literal `description: undefined` when the CPU-fallback branch
+    # was added, and stopped being `description: cpuFallbackReason` when the
+    # mmproj-fallback branch went in front of it. Both times the property held and only
+    # the spelling changed, so pin the property: the description is driven by some
+    # fallback reason, CPU fallback is still one of them, and the ordinary path still
+    # has an `undefined` arm.
     success_toast = auto_load.split("const showAutoLoadSuccess", 1)[1]
     success_toast = success_toast.split("};", 1)[0]
-    assert "description: cpuFallbackReason" in success_toast
-    assert ": undefined," in success_toast
+    # Scoped to the description EXPRESSION, not the whole helper. `cpuFallbackReason`
+    # is also the name of a parameter in the signature above, so a substring test over
+    # the block stays green with the CPU-fallback branch deleted outright. Verified by
+    # mutation: that is exactly what happened to the first cut of this check.
+    description = success_toast.split("description:", 1)[1].split("duration:", 1)[0]
+    for reason in ("mmprojFallbackReason", "cpuFallbackReason"):
+        assert reason in description, (
+            f"the auto-load success toast no longer varies its description on {reason}, "
+            f"so a degraded load reads as a plain success:\n{description}"
+        )
+    assert "undefined" in description, description
     assert "icon: undefined" in auto_load
     assert "duration: 5000" in auto_load
     assert "duration: 30000" not in auto_load
