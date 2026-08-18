@@ -405,16 +405,53 @@ def test_can_reset_false_replays_an_epoch_but_never_starts_one():
     assert fitted is messages
 
 
-def test_a_degraded_archive_stops_the_thread_resetting_again(monkeypatch):
+def test_a_degraded_archive_stops_a_NEW_epoch_but_keeps_the_one_in_force(monkeypatch):
     """`enabled()` and `can_archive()` are capability checks, so both keep saying yes while
-    the embedder is failing and nothing is being indexed. The reset would then promise a
-    searchable history that does not exist."""
+    the embedder is failing and nothing is being indexed, and starting an epoch there would
+    promise a searchable history that does not exist.
+
+    But refusing OUTRIGHT was worse than the problem: it sent the request to the rolling
+    window, which replays the same boundary WITHOUT rebuilding the carried-forward block,
+    so a thread that already had an epoch silently lost its standing instructions. And
+    `degraded()` does not self-clear when the embedder is broken rather than briefly
+    unhappy. So a degraded archive downgrades reset to replay: the block survives, only a
+    new epoch is refused.
+    """
     from core.inference import llama_cpp
 
-    monkeypatch.setattr("core.rag.conversation_archive.enabled", lambda: True)
-    monkeypatch.setattr("core.rag.conversation_archive.can_archive", lambda thread_id: True)
-    monkeypatch.setattr("core.rag.conversation_archive.degraded", lambda: False)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is True
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: True)
+    messages = _thread() + [{"role": "user", "content": "continue"}]
 
-    monkeypatch.setattr("core.rag.conversation_archive.degraded", lambda: True)
-    assert llama_cpp._can_reset_epoch("thread-1", True) is False
+    # An epoch already in force: replayed, and X is rebuilt.
+    _, replayed = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 18,
+    )
+    assert replayed["fits"] is True
+    assert replayed["carried_forward_chars"] > 0
+    assert replayed["checkpoint_started"] is False
+
+    # No epoch yet: no new one is started, and the request still gets served by rolling
+    # rather than refused.
+    _, fresh = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 0,
+    )
+    assert fresh["fits"] is True
+    assert fresh.get("checkpoint") is None
+    assert fresh["dropped_messages"] > 0
+
+
+def test_a_healthy_archive_still_starts_an_epoch(monkeypatch):
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    messages = _thread() + [{"role": "user", "content": "continue"}]
+
+    _, truncation = llama_cpp._fit_context(
+        messages, context_length = 1200, max_tokens = 200, count_tokens = count,
+        can_reset = True, sticky_dropped = 0,
+    )
+
+    assert truncation["checkpoint"] is True
+    assert truncation["checkpoint_started"] is True

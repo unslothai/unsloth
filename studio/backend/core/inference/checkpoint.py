@@ -179,6 +179,17 @@ def fit_checkpoint_context(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
     protected_message_ids: Optional[set[int]] = None,
+    # Accepted for signature compatibility with `fit_rolling_context` and DELIBERATELY
+    # unused. The rolling fit spends it by trimming further, which is a choice it has and
+    # this one does not: after a reset the kept set is the system turn and the newest user
+    # turn, and a second pass drops nothing more. Applying the reserve here could only turn
+    # a request that answers into one that refuses. The one lever left is X itself, and
+    # sacrificing a full X buys exactly one recalled chunk -- trading the user's verbatim
+    # standing instructions for one retrieved passage, which is the side this feature's own
+    # campaign measured as losing (an instruction recalled as four passages was still not
+    # obeyed; the same instruction in view was obeyed every time). So when the reset leaves
+    # less than one chunk of headroom the automatic recall is skipped, the turns are still
+    # archived, and `search_conversation` is offered from the very next request onward.
     reserve_tokens: int = 0,
     sticky_dropped: int = 0,
     keeps_boundary: bool = False,

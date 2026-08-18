@@ -130,18 +130,23 @@ def _can_reset_epoch(thread_id, supports_tools: bool) -> bool:
     try:
         from core.rag import conversation_archive
 
-        if conversation_archive.degraded():
-            # The last archive write failed outright, so `enabled()` and `can_archive()`
-            # both still say yes while nothing is actually being indexed. Resetting there
-            # hands the model a block whose header promises the dropped turns are
-            # searchable when they are not. A lagging flag cannot prevent the FIRST bad
-            # reset, but it stops the thread compounding it on every turn afterwards, and
-            # the same signal already gates the recall reserve 15 lines above for exactly
-            # this reason. Nothing is lost either way: the transcript stays in studio.db
-            # and the client keeps re-sending it, so rolling simply shows more of it.
-            return False
         return bool(conversation_archive.enabled() and conversation_archive.can_archive(thread_id))
     except Exception:  # noqa: BLE001 -- an unavailable archive is a "no", never an error
+        return False
+
+
+def _archive_is_degraded() -> bool:
+    """Whether the last archive write failed outright.
+
+    Read separately from `_can_reset_epoch` because it answers a different question. The
+    admission gates gate whether an epoch may EXIST at all; this one only says whether a
+    NEW one may start right now, and an epoch already in force is unaffected.
+    """
+    try:
+        from core.rag import conversation_archive
+
+        return bool(conversation_archive.degraded())
+    except Exception:  # noqa: BLE001 -- an unreadable flag is "healthy", never an error
         return False
 
 
@@ -159,7 +164,24 @@ def _fit_context(messages, **kwargs):
         from core.inference import checkpoint
 
         if can_reset and checkpoint.enabled():
-            return checkpoint.fit_checkpoint_context(messages, can_reset = True, **kwargs)
+            # A degraded archive downgrades reset to REPLAY rather than closing the door.
+            # Refusing outright sent the request to the rolling window, which replays the
+            # same boundary WITHOUT rebuilding the carried-forward block, so a thread that
+            # already had an epoch silently lost its standing instructions -- and
+            # `degraded()` does not self-clear when the embedder is broken rather than
+            # briefly unhappy, so "transient" is not a safe assumption. Replaying keeps the
+            # block; only starting a NEW epoch is refused, which is the half that would
+            # promise a searchable history that is not being written.
+            fitted, truncation = checkpoint.fit_checkpoint_context(
+                messages, can_reset = not _archive_is_degraded(), **kwargs
+            )
+            # `can_reset = False` has no phase two, so once the replayed boundary stops
+            # being enough it refuses. Measured: a threadless request went from
+            # `dropped 4, fits True` to `fits False`, i.e. every incognito and API overflow
+            # erroring instead of being trimmed. Rolling still serves those, so a refusal
+            # here falls through to it rather than reaching the caller.
+            if truncation is None or truncation.get("fits"):
+                return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
         logger.warning("Checkpoint fit failed; falling back to the rolling window",
                        exc_info = True)
