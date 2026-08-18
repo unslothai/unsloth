@@ -92,6 +92,8 @@ export const zhCN = {
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
+      showMore: "显示更多",
+      showLess: "显示更少",
       settings: "设置",
       api: "API",
       lightMode: "浅色模式",
@@ -105,6 +107,44 @@ export const zhCN = {
       title: "页面未找到",
       description: "{path} 不存在。",
       backToChat: "返回聊天",
+    },
+    selection: {
+      pinProjects: "置顶项目",
+      unpinProjects: "取消置顶项目",
+      deleteProjects: "删除项目",
+      deleteProjectsTitle: "删除项目",
+      deleteProjectsDescription:
+        "删除 {count} 个项目？其中的对话将被永久删除。",
+      deleteProjectsFilesDescription:
+        "每个项目的工作区文件夹会从磁盘中删除。",
+      countSelected: "已选择 {count} 个",
+      pinChats: "置顶对话",
+      unpinChats: "取消置顶",
+      archiveChats: "归档对话",
+      markUnread: "标记为未读",
+      deleteChats: "删除对话",
+      deleteTitle: "删除对话",
+      deleteDescription: "删除 {count} 个对话？此操作无法撤销。",
+      deleteFilesDescription:
+        "每个对话自己的沙盒文件夹会从磁盘中删除。它们在项目内写入的文件仍保留在该项目的工作区中。",
+      deleteFilesLabel: "删除文件和沙盒文件夹",
+      deleteChatFilesDescription:
+        "此对话自己的沙盒文件夹将从磁盘中移除。它在项目中写入的文件仍保留在该项目的工作区内。",
+    },
+    organize: {
+      sidebarHeading: "整理侧边栏",
+      byProject: "按项目",
+      inOneList: "合并为一个列表",
+      sortChatsBy: "对话排序方式",
+      sortPinnedBy: "置顶排序方式",
+      priority: "优先级",
+      lastUpdated: "最近更新",
+      manualOrder: "手动排序",
+      moveUp: "上移",
+      moveDown: "下移",
+      organizeChats: "整理对话",
+      organizeProjects: "整理项目",
+      sortPinnedChats: "对置顶对话排序",
     },
     dialog: {
       deleteChat: {
@@ -140,6 +180,8 @@ export const zhCN = {
       closeAriaLabel: "关闭设置",
       searchPlaceholder: "搜索设置…",
       searchNoResults: "未找到设置。",
+      panelFailed: "无法加载此部分。",
+      panelReload: "重新加载",
     },
     tabs: {
       general: "通用",
@@ -153,6 +195,31 @@ export const zhCN = {
       voice: "语音",
       data: "数据",
       agents: "智能体",
+      debugging: "日志",
+    },
+    debugging: {
+      logSection: "日志文件",
+      source: "日志文件",
+      sourceHint: "模型运行器会各自写入日志，因此加载或生成失败的原因通常记录在那里，而不是服务器日志中。",
+      path: "位置",
+      pathCopy: "复制路径",
+      refreshSection: "刷新",
+      mode: "模式",
+      modeLive: "实时",
+      modeInterval: "每 3 秒",
+      modeManual: "手动",
+      refreshNow: "立即刷新",
+      privacyNote: "此视图中的凭据已被遮蔽。磁盘上的文件不会被遮蔽。",
+      copyVisible: "复制可见日志",
+      empty: "目前还没有任何日志。",
+      disabled: "文件日志已关闭 (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
+      missing: "未找到日志文件。",
+      unreadable: "无法读取日志文件。",
+      timeout: "日志请求超时。服务器可能无法访问。",
+      droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
+      morePending: "仍在读取更多行，它们将在下次刷新时显示。",
+      staleSession: "文件日志已关闭，因此这是较早的会话，不会更新。",
+      keywords: "调试 日志 错误 崩溃 堆栈 跟踪 诊断 排查 故障 debug log logs error",
     },
     voice: {
       title: "语音",
@@ -214,6 +281,8 @@ export const zhCN = {
         allowMicrophone: "允许使用麦克风",
         micAccessBlocked:
           "麦克风访问已被阻止。请在浏览器中允许此 Unsloth 页面使用麦克风，然后重试。",
+        micAccessBlockedDesktop:
+          "麦克风访问已被阻止。请重试并选择允许，或在系统隐私设置中启用麦克风。",
         micAccessUnsupported: "此浏览器或环境不支持访问麦克风。",
         systemDefault: "系统默认",
         savedMicDisconnected: "已保存的麦克风（未连接）",
@@ -354,6 +423,15 @@ export const zhCN = {
         idleUnloadDescription:
           "空闲达到该秒数后释放 VRAM。设为 0 则保持加载，最小值为 60 秒。",
         idleSecondsAriaLabel: "空闲自动卸载秒数",
+        mediaEnable: "按请求切换图像和视频模型",
+        mediaEnableDescription:
+          "在生成前加载 API 请求中指定的已下载图像或视频模型。这是独立的设置：上面那项仅适用于聊天模型。默认关闭。",
+        mediaIdleUnload: "图像和视频的空闲自动卸载",
+        mediaIdleUnloadDescription:
+          "空闲达到该秒数后卸载图像和视频模型以释放 VRAM。这是独立的设置：上面那项仅适用于聊天模型。设为 0 则保持加载，最小值为 60 秒。",
+        mediaIdleSecondsAriaLabel: "图像和视频空闲自动卸载秒数",
+        mediaIdlePaused:
+          "当“将模型保留在 GPU 内存中”开启时暂停。",
         idleNeedsEnable: "请先开启“按请求切换模型”。",
         idleActiveViaEnv: "已通过 UNSLOTH_MODEL_IDLE_TTL 启用。",
         loadError: "加载模型自动切换设置失败。",
@@ -881,6 +959,9 @@ export const zhCN = {
       },
     },
     chat: {
+      projectsSection: "显示项目分区",
+      projectsSectionDescription:
+        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -902,11 +983,20 @@ export const zhCN = {
         compareChat: "对比聊天",
         exportChat: "导出聊天",
       },
+      pastedTextThreshold: "压缩长粘贴内容",
+      pastedTextThresholdDescription: "超过此长度的粘贴文本将变为 .txt 附件，而不会填满消息输入框。",
+      pastedTextThresholdOff: "关闭",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       modelDisclaimer: "显示模型免责声明",
       modelDisclaimerDescription:
         "在聊天框下方显示“LLM 可能会出错”。",
+      projectAttachments: "在项目内共享文件",
+      projectAttachmentsDescription:
+        "属于某个项目的聊天中所附文件的默认行为：为整个项目建立索引，使该项目中的每个聊天都能使用。每个聊天都可以在附件菜单中单独更改。",
+      rememberParamsPerModel: "按模型记住设置",
+      rememberParamsPerModelDescription:
+        "切换模型时会恢复你上次在该模型上使用的温度、提示词等设置。关闭后，所有模型共用一套设置。",
       thinking: {
         collapseByDefault: "默认折叠思考过程",
         collapseByDefaultDescription:
@@ -992,6 +1082,8 @@ export const zhCN = {
       archivedVideos: "已归档的视频",
       archivedVideosDescription: "查看和管理你归档的视频。",
       manageAction: "管理",
+      manageChats: "管理聊天",
+      manageChatsDescription: "选择多个聊天进行移动、置顶、归档、导出或删除。",
       exportArchivedChats: "导出",
       exportingArchivedChats: "正在导出...",
       exportedOneArchivedChat: "已导出 1 个归档聊天",
@@ -1013,6 +1105,9 @@ export const zhCN = {
       confirmBeforeDeleting: "删除前确认",
       confirmBeforeDeletingDescription:
         "删除聊天前先询问确认。关闭后将立即删除。",
+      alwaysDeleteFiles: "始终删除文件",
+      alwaysDeleteFilesDescription:
+        "删除对话时，同时从磁盘中删除它自己的沙盒文件夹。它在项目内写入的文件仍保留在该项目的工作区中。",
       filesSection: "文件",
       uploadedFiles: "上传的文件",
       uploadedFilesDescription: "查看和管理上传到聊天、项目和知识库的文件。",
@@ -1255,6 +1350,12 @@ export const zhCN = {
         "此数据集尚未存储在本设备上。训练时会自动下载。",
       noticeDatasetPartial:
         "训练会先继续并完成数据集下载，然后再读取数据集。",
+      noticeTransformersUpgrade:
+        "已安装的 transformers 均不支持该架构。启动运行时会先提示安装 transformers {version}。",
+      noticeSixteenBitOnly:
+        "该架构以 16 位 LoRA 训练：无法使用 4 位，因此显存需求远高于 QLoRA。",
+      noticeInstallSwitchesSixteenBit:
+        "安装该版本而非沿用模型自带代码，会将本次运行切换为 16 位 LoRA，显存需求远高于 QLoRA。",
       advancedSettings: "高级设置",
       defaultAdvancedSettings: "默认值",
       nonDefaultAdvancedSettings: "{count} 项非默认设置",

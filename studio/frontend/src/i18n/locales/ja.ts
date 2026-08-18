@@ -96,6 +96,8 @@ export const ja = {
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
+      showMore: "もっと見る",
+      showLess: "表示を減らす",
       settings: "設定",
       api: "API",
       lightMode: "ライトモード",
@@ -109,6 +111,44 @@ export const ja = {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
       backToChat: "チャットに戻る",
+    },
+    selection: {
+      pinProjects: "プロジェクトをピン留め",
+      unpinProjects: "ピン留めを解除",
+      deleteProjects: "プロジェクトを削除",
+      deleteProjectsTitle: "プロジェクトを削除",
+      deleteProjectsDescription:
+        "{count} 件のプロジェクトを削除しますか。含まれるチャットは完全に削除されます。",
+      deleteProjectsFilesDescription:
+        "各プロジェクトのワークスペースフォルダーがディスクから削除されます。",
+      countSelected: "{count} 件選択中",
+      pinChats: "チャットをピン留め",
+      unpinChats: "ピン留めを解除",
+      archiveChats: "チャットをアーカイブ",
+      markUnread: "未読にする",
+      deleteChats: "チャットを削除",
+      deleteTitle: "チャットを削除",
+      deleteDescription: "{count} 件のチャットを削除しますか。元に戻せません。",
+      deleteFilesDescription:
+        "各チャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
+      deleteFilesLabel: "ファイルとサンドボックスフォルダーを削除",
+      deleteChatFilesDescription:
+        "このチャット専用のサンドボックスフォルダーがディスクから削除されます。プロジェクト内に書き込んだファイルは、そのプロジェクトのワークスペースに残ります。",
+    },
+    organize: {
+      sidebarHeading: "サイドバーの整理",
+      byProject: "プロジェクト別",
+      inOneList: "1つのリストで",
+      sortChatsBy: "チャットの並び順",
+      sortPinnedBy: "ピン留めの並び順",
+      priority: "優先度",
+      lastUpdated: "最終更新",
+      manualOrder: "手動で並べ替え",
+      moveUp: "上へ移動",
+      moveDown: "下へ移動",
+      organizeChats: "チャットを整理",
+      organizeProjects: "プロジェクトを整理",
+      sortPinnedChats: "ピン留めチャットを並べ替え",
     },
     dialog: {
       deleteChat: {
@@ -144,6 +184,8 @@ export const ja = {
       closeAriaLabel: "設定を閉じる",
       searchPlaceholder: "設定を検索…",
       searchNoResults: "設定が見つかりません。",
+      panelFailed: "このセクションを読み込めませんでした。",
+      panelReload: "再読み込み",
     },
     tabs: {
       general: "一般",
@@ -157,6 +199,31 @@ export const ja = {
       voice: "音声",
       data: "データ",
       agents: "エージェント",
+      debugging: "ログ",
+    },
+    debugging: {
+      logSection: "ログファイル",
+      source: "ログファイル",
+      sourceHint: "モデルランナーはそれぞれ独自のログを書き出すため、読み込みや生成の失敗の理由は、サーバーログではなくそちらに記録されていることがよくあります。",
+      path: "場所",
+      pathCopy: "パスをコピー",
+      refreshSection: "更新",
+      mode: "モード",
+      modeLive: "ライブ",
+      modeInterval: "3 秒ごと",
+      modeManual: "手動",
+      refreshNow: "今すぐ更新",
+      privacyNote: "この表示では認証情報をマスクしています。ディスク上のファイルはマスクされません。",
+      copyVisible: "表示中のログをコピー",
+      empty: "まだ何も記録されていません。",
+      disabled: "ファイルへのログ出力は無効です (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
+      missing: "ログファイルが見つかりませんでした。",
+      unreadable: "ログファイルを読み取れませんでした。",
+      timeout: "ログの取得がタイムアウトしました。サーバーに接続できない可能性があります。",
+      droppedNotice: "一部の行がスキップされました。ログの書き込みが読み取りに追いつきませんでした。",
+      morePending: "さらに行を読み込み中です。次回の更新時に表示されます。",
+      staleSession: "ファイルへのログ出力が無効なため、これは以前のセッションであり更新されません。",
+      keywords: "デバッグ ログ エラー クラッシュ トレースバック スタックトレース 診断 障害 調査 debug log logs error",
     },
     voice: {
       title: "音声",
@@ -220,6 +287,8 @@ export const ja = {
         allowMicrophone: "マイクへのアクセスを許可",
         micAccessBlocked:
           "マイクへのアクセスがブロックされました。この Unsloth のページでマイクへのアクセスを許可してから、もう一度お試しください。",
+        micAccessBlockedDesktop:
+          "マイクへのアクセスがブロックされました。もう一度お試しになり「許可」を選択するか、システムのプライバシー設定でマイクを有効にしてください。",
         micAccessUnsupported:
           "このブラウザーまたはコンテキストではマイクへのアクセスに対応していません。",
         systemDefault: "システムのデフォルト",
@@ -363,6 +432,16 @@ export const ja = {
         idleUnloadDescription:
           "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
         idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
+        mediaEnable: "リクエストごとに画像・動画モデルを切り替え",
+        mediaEnableDescription:
+          "API リクエストで指定されたダウンロード済みの画像・動画モデルを、生成前に読み込みます。上の設定はチャットモデルのみが対象で、これは独立した設定です。デフォルトではオフです。",
+        mediaIdleUnload: "画像と動画のアイドル時の自動アンロード",
+        mediaIdleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、画像モデルと動画モデルをアンロードして VRAM を解放します。これは独立した設定です。上の設定はチャットモデルのみが対象です。0 にすると読み込んだままになります。最小値は 60 秒です。",
+        mediaIdleSecondsAriaLabel:
+          "画像と動画のアイドル時の自動アンロードまでの秒数",
+        mediaIdlePaused:
+          "「モデルを GPU メモリに保持」がオンの間は一時停止します。",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -893,6 +972,9 @@ export const ja = {
       },
     },
     chat: {
+      projectsSection: "プロジェクトセクションを表示",
+      projectsSectionDescription:
+        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {
@@ -914,11 +996,20 @@ export const ja = {
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
       },
+      pastedTextThreshold: "長い貼り付けを圧縮",
+      pastedTextThresholdDescription: "この長さを超える貼り付けテキストは、入力欄を埋める代わりに .txt 添付ファイルになります。",
+      pastedTextThresholdOff: "オフ",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
+      projectAttachments: "プロジェクト全体でファイルを共有",
+      projectAttachmentsDescription:
+        "プロジェクトに属するチャットで添付したファイルの既定の扱いです。プロジェクト全体にインデックスし、そのプロジェクト内のどのチャットからも利用できるようにします。チャットごとに添付メニューから変更できます。",
+      rememberParamsPerModel: "モデルごとに設定を記憶",
+      rememberParamsPerModelDescription:
+        "モデルを切り替えると、そのモデルで最後に使った温度やプロンプトなどの設定が復元されます。オフの場合は、すべてのモデルで同じ設定を使います。",
       thinking: {
         collapseByDefault: "思考をデフォルトで折りたたむ",
         collapseByDefaultDescription:
@@ -997,6 +1088,9 @@ export const ja = {
       archivedVideos: "アーカイブ済み動画",
       archivedVideosDescription: "アーカイブした動画を表示・管理します。",
       manageAction: "管理",
+      manageChats: "チャットを管理",
+      manageChatsDescription:
+        "複数のチャットを選択して移動、ピン留め、アーカイブ、エクスポート、削除できます。",
       exportArchivedChats: "エクスポート",
       exportingArchivedChats: "エクスポート中...",
       exportedOneArchivedChat: "アーカイブ済みチャット 1 件をエクスポートしました",
@@ -1021,6 +1115,9 @@ export const ja = {
       confirmBeforeDeleting: "削除前に確認する",
       confirmBeforeDeletingDescription:
         "チャットを削除する前に確認を求めます。オフにすると即座に削除します。",
+      alwaysDeleteFiles: "常にファイルを削除",
+      alwaysDeleteFilesDescription:
+        "チャットを削除すると、そのチャット専用のサンドボックスフォルダーもディスクから削除されます。プロジェクト内で作成したファイルは、そのプロジェクトのワークスペースに残ります。",
       filesSection: "ファイル",
       uploadedFiles: "アップロード済みファイル",
       uploadedFilesDescription:
@@ -1266,6 +1363,12 @@ export const ja = {
         "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
       noticeDatasetPartial:
         "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+      noticeTransformersUpgrade:
+        "インストール済みの transformers はこのアーキテクチャに未対応です。実行を開始すると、まず transformers {version} のインストールを確認します。",
+      noticeSixteenBitOnly:
+        "このアーキテクチャは 16 ビット LoRA で学習します。4 ビットは利用できないため、QLoRA より大幅に多い VRAM が必要です。",
+      noticeInstallSwitchesSixteenBit:
+        "モデル独自のコードを使う代わりにそのリリースをインストールすると、この実行は 16 ビット LoRA に切り替わり、QLoRA より大幅に多い VRAM が必要になります。",
       advancedSettings: "詳細設定",
       defaultAdvancedSettings: "デフォルト",
       nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",

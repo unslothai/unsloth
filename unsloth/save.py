@@ -15,6 +15,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
+from contextlib import contextmanager
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -49,6 +50,7 @@ except Exception:
 from peft.tuners.lora import Linear as Peft_Linear
 from typing import Optional, Callable, Union, List
 import sys
+import math
 import requests
 import torch
 import os
@@ -102,12 +104,24 @@ LLAMA_CPP_TARGETS = [
     "llama-server",
 ]
 
-# Check environments
-keynames = "\n" + "\n".join(os.environ.keys())
-IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
-IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
-KAGGLE_TMP = "/tmp"
-del keynames
+# Check environments. `is_kaggle_environment` needs a real Kaggle kernel, not
+# merely a KAGGLE_* variable: KAGGLE_USERNAME / KAGGLE_KEY / KAGGLE_CONFIG_DIR
+# are what the Kaggle CLI reads on an ordinary laptop, and every one of the
+# Kaggle branches below (rewriting save paths to /tmp, deleting the cached base
+# model) is wrong to take there.
+from .disk_utils import (
+    KAGGLE_TMP,
+    is_colab_environment,
+    is_kaggle_environment,
+    estimate_gguf_export_bytes,
+    free_bytes,
+    kaggle_tmp_redirect,
+    logical_numel,
+    model_16bit_bytes,
+)
+
+IS_COLAB_ENVIRONMENT = is_colab_environment()
+IS_KAGGLE_ENVIRONMENT = is_kaggle_environment()
 
 # Weights
 LLAMA_WEIGHTS = (
@@ -2379,6 +2393,26 @@ def unsloth_save_pretrained_merged(
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
 
+    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
+    # kernel is measured in terabytes. Relative paths under /kaggle/working that
+    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
+    # machine are untouched.
+    _forwards_state_dict, _writes_model_verbatim = _merge_writer_disposition(self, save_method)
+    save_directory = _preflight_merge_disk(
+        self,
+        save_directory,
+        save_method,
+        push_to_hub = push_to_hub,
+        state_dict = state_dict,
+        forwards_state_dict = _forwards_state_dict,
+        writes_model_verbatim = _writes_model_verbatim,
+        # No `writer_runs_merge_guard`: this entrypoint's writer for a plain
+        # merge is `unsloth_save_model`, which merges and writes the shards
+        # itself and never reaches `merge_and_overwrite_lora`. A compressed
+        # export from here does go through `unsloth_generic_save`, and the
+        # preflight recognises that from the method alone.
+    )
+
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)
     if _compressed is not None:
@@ -2446,6 +2480,8 @@ def unsloth_save_pretrained_merged(
     del arguments["self"]
     del arguments["_compressed"]
     del arguments["_torchao"]
+    del arguments["_forwards_state_dict"]
+    del arguments["_writes_model_verbatim"]
     del arguments["calibration_dataset"]
     del arguments["num_calibration_samples"]
     del arguments["max_seq_length"]
@@ -2959,6 +2995,1469 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+@contextmanager
+def _hub_cache_prewarm_disabled(disable):
+    """Turn the base-model cache pre-warm off for one export, then restore it.
+
+    The pre-warm is an optimization for the NEXT export, so on a disk that
+    cannot hold the cached base and the export at once, the export wins. The
+    old value goes back afterwards, including on an exception, so nothing
+    leaks into the rest of the session.
+    """
+    if not disable:
+        yield
+        return
+    key = "UNSLOTH_PREWARM_HUB_CACHE"
+    previous = os.environ.get(key, None)
+    os.environ[key] = "0"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
+# unsloth_zoo's own merge guard compares the save against `int(free * 0.95)`
+# (`saving_utils.merge_and_overwrite_lora`), and `model_16bit_bytes` counts
+# tensors only: config.json, the tokenizer files and the safetensors index are
+# written on top of them. Ask the redirect for that same effective figure, or a
+# working directory that measures "just big enough" keeps the export and the
+# merge then refuses it outright instead of using /tmp.
+_MERGE_FREE_SPACE_RESERVE = 0.95
+
+# torchao weight-only fp8 / int8: one byte per quantized weight.
+_TORCHAO_SIBLING_WEIGHT_BITS = 8
+
+
+def _compressed_scheme_weight_bits(scheme):
+    """Bits per weight of a compressed-tensors sibling checkpoint.
+
+    Four for every scheme that quantizes weights to 4 bits (`W4*`, and any
+    `*FP4` microscaling variant), eight for the rest. Rounded the way
+    unsloth_zoo rounds its GGUF table: over-estimating costs headroom,
+    under-estimating costs the whole export.
+    """
+    scheme = str(scheme).upper()
+    return 4 if scheme.startswith("W4") or "FP4" in scheme else 8
+
+
+def _compressed_ignore_patterns(model):
+    """The compressed recipe's own `ignore` list for this model, or an empty list.
+
+    Read out of `_compressed_quantize.py` rather than restated here, so the
+    sizing cannot drift from the recipe the way it already had. That module is
+    otherwise only ever *executed* by file path; its module-level imports are
+    stdlib only, so importing it costs nothing and imports no llm-compressor.
+
+    Any failure (module renamed, symbol gone, a config that will not answer)
+    returns nothing, which leaves the estimate exactly as it was.
+    """
+    try:
+        from unsloth._compressed_quantize import compressed_ignore_patterns
+        return list(compressed_ignore_patterns(getattr(model, "config", None)))
+    except Exception:
+        return []
+
+
+def _matches_ignore_pattern(name, module, patterns):
+    """Mirror compressed-tensors' `is_match` for one module against `ignore`.
+
+    `compressed_tensors.utils.match._match_name` treats a `re:` prefix as
+    `re.match(pattern, name)` - anchored at the start of the fully qualified
+    module name, and not required to reach its end - and everything else as
+    `target == name`. `_match_class` additionally matches a plain entry
+    against the names of the module's parent classes, which is why the MRO is
+    walked here too.
+
+    An unparseable pattern matches nothing rather than raising.
+    """
+    for pattern in patterns:
+        try:
+            if isinstance(pattern, str) and pattern.startswith("re:"):
+                if re.match(pattern.removeprefix("re:"), name) is not None:
+                    return True
+            elif pattern == name:
+                return True
+            elif any(cls.__name__ == pattern for cls in type(module).__mro__):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _named_parameters(module):
+    """`(name, parameter)` pairs, named where the module can say.
+
+    `logical_numel` needs the name to spot MXFP4 packing, which has no
+    `quant_state` to give it away and is only identifiable by the
+    `_blocks` / `_scales` suffix. `torch.nn.Module` always offers
+    `named_parameters`; the fall back to `parameters()` keeps any other object
+    that answers the older call working, just without the MXFP4 case.
+    """
+    try:
+        return list(module.named_parameters())
+    except Exception:
+        return [("", parameter) for parameter in module.parameters()]
+
+
+def _unquantized_parameter_bytes(model, ignore_patterns = ()):
+    """Bytes a weight-only export leaves at 16 bits in the sibling checkpoint.
+
+    compressed-tensors and torchao both quantize `Linear` weights only, so the
+    input embeddings and an untied `lm_head` stay 16-bit. They are the
+    dominant exclusion (a 4.5B model measured 0.5B of them), so pricing the
+    whole sibling at the scheme's width under-sizes it by the embedding share.
+
+    `ignore_patterns` is the recipe's `ignore` list, and every module it names
+    stays 16-bit as well: the vision tower of a VLM, a Qwen3-Next hybrid's
+    linear-attention blocks, an MTP head, the MoE router gates. Those are the
+    same order of magnitude as the embeddings, and pricing them at 4 or 8 bits
+    under-sizes the merge, which is the direction that loses the redirect.
+    Empty for torchao, which quantizes with no ignore list of its own.
+
+    Every parameter is measured with `logical_numel`, the same helper
+    `model_16bit_bytes` sizes the merge with, and NOT with `numel()`. A model
+    loaded in 4 bits holds `Params4bit`, whose `numel()` is the packed uint8
+    count and roughly half the logical one; MXFP4 blocks are worth twice
+    theirs. Believing `numel()` would price an ignored subtree at half what
+    the export writes for it while the merge it is subtracted from was priced
+    logically, and the two have to agree.
+
+    Tied embeddings are one tensor and are counted once, and a module already
+    counted through an embedding getter or through an enclosing ignored module
+    is not counted again. Zero when the model does not answer, which leaves
+    the estimate exactly as it was.
+    """
+    total = 0
+    seen = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            weight = getattr(getattr(model, getter)(), "weight", None)
+            if weight is None or id(weight) in seen:
+                continue
+            seen.add(id(weight))
+            total += logical_numel(weight) * 2
+        except Exception:
+            continue
+    if not ignore_patterns:
+        return total
+    try:
+        named_modules = list(model.named_modules())
+    except Exception:
+        # A model whose modules cannot be walked keeps the embeddings-only figure.
+        return total
+    for name, module in named_modules:
+        try:
+            if not _matches_ignore_pattern(name, module, ignore_patterns):
+                continue
+            for parameter_name, parameter in _named_parameters(module):
+                if id(parameter) in seen:
+                    continue
+                seen.add(id(parameter))
+                total += logical_numel(parameter, parameter_name) * 2
+        except Exception:
+            continue
+    return total
+
+
+def _quantized_sibling_bytes(
+    model,
+    merge_bytes,
+    weight_bits,
+    ignore_patterns = (),
+):
+    """Bytes of the quantized sibling written to `save_directory + "-<suffix>"`.
+
+    `merge_bytes` is the 16-bit checkpoint size. Only the part of it that a
+    weight-only scheme actually quantizes shrinks; the rest is copied across
+    at 16 bits.
+    """
+    unquantized = min(_unquantized_parameter_bytes(model, ignore_patterns), merge_bytes)
+    return int((merge_bytes - unquantized) * weight_bits / 16) + unquantized
+
+
+def _full_model_checkpoint_bytes(model, state_dict = None):
+    """Bytes `save_pretrained` writes for a model with no adapter to merge.
+
+    Measured from the parameters' real storage rather than assumed to be a
+    16-bit merge, because this checkpoint is written with no cast: an fp32
+    model costs four bytes per parameter, a 4-bit one its packed storage.
+    Zero when the model cannot be measured, which leaves the caller with
+    today's behaviour.
+
+    A caller-supplied `state_dict` is measured INSTEAD of the model, because
+    it is what `save_pretrained` writes and the two can disagree by a whole
+    factor: only `"16bit" in save_method` casts the dict, so a `"lora"` save
+    on a model with no adapter forwards an fp32 dict verbatim while the
+    resident parameters are fp16, and sizing the model would price the export
+    at half. Undercounting here is not a crash but a missed `/tmp` redirect,
+    which is how the 20GB Kaggle working directory fills instead.
+    """
+    try:
+        # `is not None`, matching `unsloth_generic_save`, which forwards the
+        # dict on exactly that test. An explicitly empty one therefore reaches
+        # `save_pretrained` and writes no tensors at all, so sizing the resident
+        # model there would price tens of gigabytes for a save that writes none
+        # and move it off persistent Kaggle storage for nothing.
+        if state_dict is not None:
+            total = 0
+            for tensor in state_dict.values():
+                tensor = getattr(tensor, "data", tensor)
+                total += tensor.numel() * tensor.element_size()
+            return int(total)
+        total = 0
+        for parameter in model.parameters():
+            total += parameter.numel() * parameter.element_size()
+        return int(total)
+    except Exception:
+        return 0
+
+
+def _cast_16bit_state_dict_bytes(state_dict):
+    """Bytes a `"16bit"` save writes for a caller-supplied `state_dict`.
+
+    `unsloth_generic_save` casts every FLOATING entry to bf16/fp16 and leaves
+    the rest alone, then hands the dictionary straight to `save_pretrained`.
+    So the floats are two bytes per element whatever they arrived as, and an
+    integer or bool entry keeps its own width.
+
+    `numel()` and not `logical_numel`, because these are the tensors the
+    writer writes: a packed 4-bit entry is stored exactly as it stands here,
+    not expanded.
+    """
+    total = 0
+    for tensor in state_dict.values():
+        tensor = getattr(tensor, "data", tensor)
+        try:
+            floating = bool(tensor.is_floating_point())
+        except Exception:
+            floating = False
+        total += tensor.numel() * (2 if floating else tensor.element_size())
+    return int(total)
+
+
+def _same_filesystem(left, right):
+    """True when two paths sit on the same mount.
+
+    Neither path has to exist. The nearest existing ancestor answers, exactly
+    as `free_bytes` resolves the disk it measures, because that ancestor is
+    the filesystem a write to the path really lands on. A destination is
+    routinely absent here: `_preflight_merge_disk` runs before anything is
+    created, so stat-ing it directly raised, the callers' broad handlers
+    swallowed the probe, and a first export got no TMPDIR warning at all.
+
+    Raises when either side cannot be identified, which is what every caller
+    already reads as "cannot tell".
+    """
+    left_id = _filesystem_id(left)
+    right_id = _filesystem_id(right)
+    if left_id is None or right_id is None:
+        raise OSError(f"Unsloth: cannot identify the filesystem holding `{left}` or `{right}`.")
+    return left_id == right_id
+
+
+def _destination_holds_torchao_staging(destination, need_bytes, staging_bytes):
+    """Can the redirect target hold the torchao staging merge as well?
+
+    `_unsloth_save_torchao` merges into `tempfile.mkdtemp()` and removes it
+    only once quantization has finished, so where the tempfile default and the
+    redirect target are the same filesystem - which is exactly a Kaggle kernel,
+    where both are /tmp - the staging checkpoint and the quantized sibling sit
+    on the destination at the same time.
+
+    Checked here rather than added to `need_bytes`, because the staging
+    directory never lands in /kaggle/working: charging it there would relocate
+    exports that fit into /tmp, which is not kept as notebook output. So this
+    can only ever cancel a redirect, never cause one, and it cancels one only
+    when the destination could not have held the export anyway - in which case
+    staying put leaves the working directory's own guard to raise the real
+    error.
+    """
+    import tempfile
+    try:
+        if staging_bytes <= 0:
+            return True
+        if not _same_filesystem(tempfile.gettempdir(), destination):
+            return True
+        free = free_bytes(destination)
+        if free is None:
+            return True
+        return free >= need_bytes + staging_bytes
+    except Exception:
+        return True
+
+
+def _warn_if_sibling_filesystem_is_short(save_directory, suffix, sibling_bytes):
+    """Say so when the quantized sibling lands on a disk nobody measured.
+
+    Compressed and torchao exports build their output lexically, as
+    `save_directory + "-<suffix>"`, so the sibling is a child of the PARENT of
+    `save_directory`. That is the same filesystem the preflight probed, unless
+    `save_directory` is itself a symlink or a mount point. When it is, the
+    probe answers for the target and the sibling is written on the other side:
+    a `model` symlinked into a roomy /tmp passes here while `model-fp8` fills
+    a 20GB working directory.
+
+    A warning rather than a different redirect, for the same reason as the
+    staging one. `kaggle_tmp_redirect` relocates `save_directory`, and the
+    caller derives the sibling from whatever this function returns, so a
+    redirect already moves both. The uncovered case is the one where NO
+    redirect fires, and there is nothing to cancel there.
+    """
+    try:
+        if sibling_bytes <= 0 or not suffix:
+            return
+        sibling = f"{save_directory}-{suffix}"
+        # The directory the sibling is created IN, which is what has the space.
+        holder = os.path.dirname(os.path.abspath(sibling)) or "."
+        if _same_filesystem(holder, save_directory):
+            return
+        free = free_bytes(holder)
+        if free is None or free >= sibling_bytes:
+            return
+        print(
+            f"Unsloth: `{holder}` has {free / 1024**3:.1f}GB free and the quantized "
+            f"`{os.path.basename(sibling)}` needs about {sibling_bytes / 1024**3:.1f}GB there.\n"
+            f"`{save_directory}` resolves to a different filesystem, and the sibling is "
+            f"written next to the name rather than next to the target, so the room at "
+            f"`{save_directory}` does not help.\n"
+            f"Save to a path on the roomy filesystem itself rather than through a link."
+        )
+    except Exception:
+        return
+
+
+def _warn_if_torchao_staging_filesystem_is_short(destination, staging_bytes):
+    """Say so when TMPDIR cannot hold the staging merge either.
+
+    `_destination_holds_torchao_staging` asks whether the DESTINATION can hold
+    the staging directory as well, which is the whole question while
+    `tempfile` resolves onto the same filesystem. When it does not, that
+    function returns True and nothing has measured the staging filesystem at
+    all, so a 4GB tmpfs is handed a 60GB merge and `_unsloth_save_torchao`
+    dies inside `tempfile.mkdtemp` without naming TMPDIR as the reason.
+
+    A warning, not a refusal: the preflight never raises, and unlike the
+    destination check this cannot be answered by cancelling the redirect.
+    The staging merge is written to TMPDIR whether or not the export was
+    relocated, so declining the move leaves the identical failure and puts
+    the output on the smaller disk as well.
+    """
+    import tempfile
+    try:
+        if staging_bytes <= 0:
+            return
+        staging_directory = tempfile.gettempdir()
+        if _same_filesystem(staging_directory, destination):
+            return
+        free = free_bytes(staging_directory)
+        # The staging merge is written by `merge_and_overwrite_lora`, which
+        # refuses it unless `free * 0.95` covers it. Comparing against the
+        # bare size leaves the 5% band where the merge predictably dies and
+        # this says nothing, which is the one thing it exists to prevent.
+        needed = math.ceil(staging_bytes / _MERGE_FREE_SPACE_RESERVE)
+        if free is None or free >= needed:
+            return
+        print(
+            f"Unsloth: `{staging_directory}` has {free / 1024**3:.1f}GB free and the "
+            f"16-bit staging merge needs about {needed / 1024**3:.1f}GB there.\n"
+            f"The torchao export merges into a temporary directory before it quantizes, "
+            f"and that directory is on a different filesystem from `{destination}`, so "
+            f"the room at the destination does not help.\n"
+            f"Point TMPDIR at a filesystem with the space if the export runs out."
+        )
+    except Exception:
+        return
+
+
+def _warn_if_a_cancelled_redirect_leaves_no_room(save_directory, sibling_bytes):
+    """Say so when the export is handed back a filesystem that cannot hold it.
+
+    Cancelling the torchao redirect returns the quantized sibling to
+    `save_directory`, and outside `UNSLOTH_KAGGLE_USE_TMP=1` the only reason
+    the redirect fired at all is that that filesystem measured too small for
+    it. Nothing downstream covers the sibling: the torchao merge is staged in
+    TMPDIR, so `merge_and_overwrite_lora`'s `free * 0.95` measures the staging
+    disk and never this one, and the sibling is written at the very end of a
+    long quantization. Cancelling is still the right move - /tmp cannot hold
+    the staging merge and the sibling together, so relocating fails too - but
+    it must not be silent for the minutes the quantization takes.
+
+    A warning and not a refusal, for the same reason as the two warnings
+    beside it: this preflight never raises, and the sibling is an estimate.
+    """
+    try:
+        if sibling_bytes <= 0:
+            return
+        free = free_bytes(save_directory)
+        if free is None or free >= sibling_bytes:
+            return
+        print(
+            f"Unsloth: `{save_directory}` has {free / 1024**3:.1f}GB free and the quantized "
+            f"checkpoint needs about {sibling_bytes / 1024**3:.1f}GB there.\n"
+            f"The export was left here rather than moved to a larger filesystem, because "
+            f"that filesystem cannot hold the temporary 16-bit merge as well.\n"
+            f"Free space here, or point TMPDIR at a filesystem with room for the merge, "
+            f"before the quantization runs: it is written at the end of the export."
+        )
+    except Exception:
+        return
+
+
+def _merge_writer_disposition(model, save_method):
+    """What `save_pretrained_merged`'s writer does with a supplied `state_dict`.
+
+    Returns `(forwards, verbatim)` for the `_preflight_merge_disk` arguments of
+    the same meaning. Three writers sit behind that one entrypoint and they do
+    not agree:
+
+      - a compressed-tensors or torchao export hands the dictionary to
+        `unsloth_generic_save(save_method = "merged_16bit")`, which casts every
+        floating entry to two bytes and writes it. That checkpoint is the
+        staging (torchao) or kept (compressed) merge, so it is sized from the
+        dictionary, not from the resident model,
+      - `unsloth_save_model` on an architecture that walks `.model.layers`
+        rebuilds the dictionary from the merged layers and drops whatever it
+        was handed, so sizing the caller's would price a save that is not
+        happening,
+      - `unsloth_save_model` on any other architecture takes its generic
+        fallback and calls `save_pretrained(**save_pretrained_settings)` with
+        the caller's dictionary untouched AND uncast, so the bytes written are
+        the dictionary's own, at its own dtypes.
+
+    Never raises: an unreadable model or an unrecognised method reports the
+    conservative `(False, False)`, which is the behaviour before this existed.
+    """
+    method = str(save_method).lower().strip().replace("-", "_").replace(" ", "_")
+    try:
+        compressed = _normalize_compressed_method(method)
+        torchao = _normalize_torchao_method(method)
+    except Exception:
+        return False, False
+    if compressed is not None or torchao is not None:
+        return True, False
+    if method != "merged_16bit":
+        return False, False
+    # A PeftModel in the generic fallback writes ADAPTERS and not a checkpoint,
+    # so it keeps the sizing it has rather than being priced a full model.
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return False, False
+    try:
+        # The same predicate `unsloth_save_model` dispatches on, and no other.
+        takes_generic_fallback = not hasattr(model, "model") or not hasattr(
+            getattr(model, "model", None), "layers"
+        )
+    except Exception:
+        return False, False
+    return (True, True) if takes_generic_fallback else (False, False)
+
+
+def _preflight_merge_disk(
+    model,
+    save_directory,
+    save_method,
+    push_to_hub = False,
+    state_dict = None,
+    forwards_state_dict = False,
+    writes_model_verbatim = False,
+    writer_runs_merge_guard = False,
+):
+    """Kaggle only: send a merge that cannot fit in /kaggle/working to /tmp.
+
+    Never raises. A merge that is short of space on an ordinary machine is
+    already handled by unsloth_zoo's own guard, which knows about shard
+    streaming and the push_to_hub fallbacks; this exists purely so the ~20GB
+    Kaggle working directory stops being the ceiling when a terabyte of
+    overlay is mounted next to it.
+
+    Skipped entirely when pushing to the hub, because there `save_directory`
+    is a repo id like "user/model", not a filesystem path, and rewriting it
+    would push to the wrong repository.
+
+    `forwards_state_dict` says the writer behind this call hands a supplied
+    `state_dict` to `save_pretrained` for a 16-bit save rather than building
+    its own, casting its floating entries to two bytes on the way, as
+    `unsloth_generic_save` does. `unsloth_save_model`'s merge path instead
+    rebuilds the dictionary from the merged layers and drops whatever it was
+    given, so sizing the caller's there would price a save that is not
+    happening.
+
+    `writes_model_verbatim` says the writer copies what it holds to
+    `save_pretrained` with no cast at all, which is `unsloth_save_model`'s
+    generic architecture fallback. Then the checkpoint is the dictionary's own
+    bytes, at its own dtypes, or the resident parameters' own bytes when no
+    dictionary was supplied, and never two bytes per logical parameter.
+    `_merge_writer_disposition` decides both for the public entrypoint.
+
+    `writer_runs_merge_guard` says the writer behind this call is
+    `unsloth_generic_save`, whose PEFT branch is the one and only caller of
+    `merge_and_overwrite_lora` here and therefore the only writer that brings
+    its `free * 0.95` guard with it. It is deliberately separate from the two
+    flags above, which decide SIZING: a compressed export is cast to two bytes
+    by that same writer and is sized accordingly, yet it reserves nothing
+    unless there is an adapter for the guard to merge.
+    """
+    if push_to_hub:
+        return save_directory
+    # `unsloth_save_model` normalizes spaces before it dispatches, so
+    # "merged 16bit" is the same full merge as "merged_16bit" and has to be
+    # measured as one. `_normalize_compressed_method` normalizes the same way.
+    method = str(save_method).lower().strip().replace("-", "_").replace(" ", "_")
+    try:
+        # Every compressed export keeps the 16-bit merge at `save_directory`
+        # and writes a quantized sibling next to it, so all of them belong
+        # here, not just mxfp4.
+        compressed = _normalize_compressed_method(method)
+    except Exception:
+        # An unsupported near-miss name raises later, where the message is.
+        return save_directory
+    # The torchao portable exports are the same shape as the compressed ones
+    # from here: a quantized sibling at `save_directory + "-<suffix>"`.
+    torchao = _normalize_torchao_method(method)
+    # `lora` on a model that has no adapter writes the WHOLE model instead:
+    # both `unsloth_generic_save` and `unsloth_save_model` fall back to
+    # `save_pretrained` there, so a full fine-tune asked for "lora" fills
+    # /kaggle/working exactly like a merge. A real PeftModel writes adapters
+    # only and is still skipped.
+    is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
+    full_model_lora = method == "lora" and not is_peft
+    # `unsloth_generic_save` only reaches for `model.state_dict()` when it was
+    # given none, and a model with no adapter is saved from whatever dictionary
+    # it ends up holding. A PeftModel goes to `merge_and_overwrite_lora`, which
+    # takes no state dict at all, so only the non-PEFT case follows it.
+    supplied_dict = state_dict if (forwards_state_dict and not is_peft) else None
+    # Same reason the dict is only followed for a non-PEFT model: a PeftModel
+    # never reaches the fallback that would copy one verbatim.
+    verbatim = bool(writes_model_verbatim) and not is_peft
+    if compressed is None and torchao is None and method != "merged_16bit" and not full_model_lora:
+        return save_directory
+    try:
+        # A merge writes 2 bytes per logical parameter and no GGUF at all, so
+        # this is `model_16bit_bytes` and not the GGUF export estimate: that
+        # one always prices an intermediate GGUF conversion this never does.
+        # The full-model fallback casts nothing, so it is sized from the
+        # tensors' own dtype instead.
+        #
+        # A 16-bit save of a model with no adapter writes the dictionary it was
+        # handed, cast, and not the resident parameters: an empty or partial one
+        # writes correspondingly less, and one carrying more than the model does
+        # writes more. Sizing the model there redirects a nearly empty save off
+        # persistent Kaggle storage, or leaves a larger one to fill the working
+        # filesystem.
+        #
+        # A compressed or torchao export writes that same 16-bit checkpoint
+        # through the same `unsloth_generic_save`, as its staging (torchao) or
+        # kept (compressed) merge, so the dictionary decides its size too and
+        # not only a literal `merged_16bit` request.
+        if full_model_lora or verbatim:
+            need = _full_model_checkpoint_bytes(model, state_dict)
+        elif supplied_dict is not None:
+            need = _cast_16bit_state_dict_bytes(supplied_dict)
+        else:
+            need = model_16bit_bytes(model)
+        if need <= 0:
+            return save_directory
+        # What the torchao staging directory costs on whatever filesystem
+        # `tempfile` resolves to. Zero for every other export, which stages
+        # nothing.
+        staging = 0
+        # The lexical suffix the quantized sibling is written under, so the
+        # filesystem holding it can be measured separately below.
+        sibling_suffix = ""
+        sibling_bytes = 0
+        # What `merge_and_overwrite_lora` will be asked to write HERE, which is
+        # the only part its `free * 0.95` guard measures. Split out from `need`
+        # because the reserve belongs on this and on nothing else: charging it
+        # around the whole estimate relocates an export that fits, and on
+        # Kaggle that means moving it to a /tmp the kernel does not keep.
+        # The guard belongs to `merge_and_overwrite_lora` and to nothing else,
+        # and only `unsloth_generic_save`'s PEFT branch calls it. Every other
+        # writer that lands a 16-bit checkpoint here is a bare
+        # `save_pretrained`: the generic architecture fallback, the full-model
+        # `lora` fallback, `unsloth_save_model`'s own merge, and
+        # `unsloth_generic_save`'s no-adapter branch, which casts the dict and
+        # writes it directly. None of them reserves anything, so charging them
+        # 1/0.95 refuses a filesystem their writer would have accepted.
+        #
+        # Sizing is decided separately, above: a compressed export really is
+        # cast to two bytes by `unsloth_generic_save`, so it keeps that sizing
+        # whether or not there is an adapter to merge.
+        guard_runs_here = is_peft and (compressed is not None or bool(writer_runs_merge_guard))
+        merge_here = need if guard_runs_here else 0
+        if torchao is not None:
+            # `_unsloth_save_torchao` merges into a `tempfile.mkdtemp` staging
+            # directory rather than `save_directory`, so the only thing landing
+            # here is the 8-bit sibling, and no merge guard runs against this
+            # filesystem at all.
+            staging = need
+            merge_here = 0
+            # No ignore list: `_unsloth_save_torchao` quantizes with a bare
+            # `Float8WeightOnlyConfig()` / `Int8WeightOnlyConfig()`. Charging it
+            # the compressed recipe's exclusions would over-count, and
+            # over-counting relocates an export that fits into a /tmp Kaggle
+            # does not keep as notebook output.
+            need = _quantized_sibling_bytes(model, need, _TORCHAO_SIBLING_WEIGHT_BITS)
+            sibling_suffix = torchao[1]
+            sibling_bytes = need
+        elif compressed is not None:
+            sibling_bytes = _quantized_sibling_bytes(
+                model,
+                need,
+                _compressed_scheme_weight_bits(compressed[0]),
+                # Everything the recipe refuses to quantize is copied across at
+                # 16 bits: the vision tower, linear attention, MTP, MoE gates.
+                _compressed_ignore_patterns(model),
+            )
+            sibling_suffix = compressed[2]
+            need += sibling_bytes
+        # The reserve raises the ask for the merge alone, and the rest is added
+        # at face value. `max` rather than a sum of the two halves: the sibling
+        # coexists with the merge, so the peak is the whole estimate, and it
+        # must also clear the merge's own reserved figure.
+        need = max(need, math.ceil(merge_here / _MERGE_FREE_SPACE_RESERVE))
+        new_directory, message = kaggle_tmp_redirect(
+            save_directory,
+            need_bytes = need,
+            what = "model checkpoint" if (full_model_lora or verbatim) else "16-bit merge",
+        )
+    except Exception:
+        return save_directory
+    if message is not None:
+        if not _destination_holds_torchao_staging(new_directory, need, staging):
+            _warn_if_a_cancelled_redirect_leaves_no_room(save_directory, need)
+            _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
+            _warn_if_sibling_filesystem_is_short(save_directory, sibling_suffix, sibling_bytes)
+            return save_directory
+        print(message)
+        _warn_if_torchao_staging_filesystem_is_short(new_directory, staging)
+        _warn_if_sibling_filesystem_is_short(new_directory, sibling_suffix, sibling_bytes)
+        return new_directory
+    _warn_if_torchao_staging_filesystem_is_short(save_directory, staging)
+    _warn_if_sibling_filesystem_is_short(save_directory, sibling_suffix, sibling_bytes)
+    return save_directory
+
+
+def _normalize_quantization_methods(quantization_method):
+    """The list of GGUF types an export will actually write.
+
+    Mirrors the normalisation `save_to_gguf` does, but cheaply and without
+    validating, because this only feeds a size estimate: an unrecognised name
+    is sized as q8_0 rather than rejected here, and the real validation still
+    happens later where it always did.
+    """
+    if quantization_method is None:
+        return []
+    if isinstance(quantization_method, str):
+        methods = [quantization_method]
+    elif isinstance(quantization_method, (list, tuple)):
+        methods = list(quantization_method)
+    else:
+        return []
+    out = []
+    for method in methods:
+        if method is None:
+            method = "q8_0"
+        method = str(method).lower()
+        if method == "not_quantized":
+            method = "f16"
+        elif method == "fast_quantized":
+            method = "q8_0"
+        elif method == "quantized":
+            method = "q4_k_m"
+        out.append(method)
+    return out
+
+
+def _imatrix_is_enabled(imatrix_file):
+    """Whether an imatrix will really be applied, as `_resolve_imatrix_file` reads it.
+
+    None and False both disable it. The preflight has to agree: an imatrix
+    forces the two-pass route, so reading False as "enabled" sizes an
+    intermediate GGUF that a direct-convertible export never writes, and can
+    refuse an export that fits.
+    """
+    return imatrix_file is not None and imatrix_file is not False
+
+
+def _gguf_writes_16bit_checkpoint(model):
+    """Whether a GGUF export writes a full 16-bit checkpoint before converting.
+
+    A PEFT model is merged into one. A non-PEFT model reuses an existing
+    checkpoint when `_name_or_path` names a directory, and otherwise falls
+    back to `save_pretrained`, which writes the same two bytes per parameter
+    the merge would have. Sizing that fallback at zero is what lets an export
+    pass the preflight and then fill the disk with the checkpoint.
+
+    A module-level helper rather than a local, because the caller snapshots
+    `locals()` into the kwargs of `unsloth_generic_save`.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return True
+    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    try:
+        return not (name_or_path and os.path.isdir(str(name_or_path)))
+    except Exception:
+        return True
+
+
+def _fallback_checkpoint_extra_bytes(model):
+    """Bytes the non-PEFT fallback checkpoint costs ON TOP of the 16-bit estimate.
+
+    `estimate_gguf_export_bytes` budgets two bytes per logical parameter for
+    the checkpoint, which is what a LoRA merge writes. The non-PEFT fallback
+    calls `self.save_pretrained` with no cast, so a model loaded with
+    `dtype = torch.float32` (a supported load) writes four and can fill a disk
+    the preflight called big enough.
+
+    Measured from the parameters' real storage, so a mixed-dtype model is not
+    priced off its largest tensor, and clamped at zero: this can only ever ask
+    for more room, never less, and an unmeasurable model adds nothing.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return 0
+    if not _gguf_writes_16bit_checkpoint(model):
+        return 0
+    try:
+        actual = 0
+        for parameter in model.parameters():
+            actual += parameter.numel() * parameter.element_size()
+        return max(0, actual - model_16bit_bytes(model))
+    except Exception:
+        return 0
+
+
+def _gguf_output_directory(save_directory):
+    """Where the GGUF files land: a SIBLING of `save_directory`, not a child.
+
+    One definition for the preflight and for the export itself, so the disk
+    that gets measured cannot drift from the disk that gets written.
+    """
+    return f"{save_directory}_gguf"
+
+
+def _filesystem_id(path):
+    """Device id of the filesystem `free_bytes(path)` would measure, or None.
+
+    Mirrors `free_bytes`: lexical `abspath`, so a symlinked directory keeps
+    its own name, then the nearest existing ancestor, because the GGUF
+    sibling does not exist yet. `os.stat` follows symlinks, so this is the
+    device `shutil.disk_usage` reports for the very same path. Windows fills
+    `st_dev` from the volume serial number; a zero is the platform declining
+    to answer and counts as unmeasurable.
+    """
+    try:
+        probe = os.path.abspath(os.path.expanduser(str(path)))
+        while probe and not os.path.exists(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        return os.stat(probe).st_dev or None
+    except Exception:
+        return None
+
+
+def _on_separate_filesystems(directory, sibling):
+    """True only when both paths are identified AND on different filesystems.
+
+    Unmeasurable is False rather than a guess, so a path nothing can identify
+    leaves the caller charging one filesystem for the whole export, which is
+    what it did before this existed. Device ids and not "the sibling reports
+    less free space": two `disk_usage` calls on ONE filesystem can disagree
+    when something else writes between them, and reading that as two
+    filesystems would charge a single-filesystem export the larger of the two
+    halves instead of their sum.
+
+    Separate from `_same_filesystem`, which resolves paths the same way but
+    answers a different question for the torchao redirect: it raises when a
+    path cannot be identified, because its callers want that to cancel the
+    probe rather than to charge one filesystem for both halves.
+    """
+    left = _filesystem_id(directory)
+    right = _filesystem_id(sibling)
+    if left is None or right is None:
+        return False
+    return left != right
+
+
+def _shares_filesystem(directory, sibling):
+    """True only when both paths are identified AND on the same filesystem.
+
+    Not `not _on_separate_filesystems(...)`: that reads an unidentifiable path
+    as "together", which is right where the answer removes a charge and wrong
+    where it adds one. This is the predicate for the adding case, so it says
+    no to anything it cannot see, and neither predicate ever guesses.
+    """
+    left = _filesystem_id(directory)
+    right = _filesystem_id(sibling)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
+def _directory_is_writable(directory):
+    """Can a file be created here? The same probe `convert_to_gguf` makes.
+
+    `tempfile.mkstemp` is exclusive, so it never truncates an existing file
+    and never follows a symlink. Anything that goes wrong reads as "no".
+    """
+    import tempfile
+    try:
+        handle, probe = tempfile.mkstemp(prefix = ".unsloth_write_test_", dir = directory)
+        os.close(handle)
+        os.remove(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _gguf_conversion_directory(model_directory):
+    """Where the intermediate GGUF is written, before it is moved.
+
+    `unsloth_zoo.llama_cpp.convert_to_gguf` passes a BARE filename as
+    `--outfile`, so llama.cpp resolves it against the process CWD; the only
+    fallback to the input folder fires when that CWD cannot be written to.
+    `save_to_gguf` then `shutil.move`s the finished file into the `_gguf`
+    directory, which is a copy and not a rename when the two sit on different
+    filesystems.
+
+    So on a Kaggle kernel the intermediate - two bytes per parameter, the
+    largest single staging artefact - still lands in the 20GB /kaggle/working
+    even after the export has been redirected to /tmp, and that is the one
+    filesystem the rest of this preflight never measures.
+
+    None when the CWD cannot be read, and then nothing is charged.
+    """
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        return None
+    return cwd if _directory_is_writable(cwd) else model_directory
+
+
+def _gguf_model_input_directory(model, save_directory):
+    """The folder the converter reads, which is not always `save_directory`.
+
+    A non-PEFT model whose `_name_or_path` names a directory is converted from
+    that checkpoint: `unsloth_save_pretrained_gguf` reassigns `save_directory`
+    to it before calling `save_to_gguf`, so it is that path which arrives as
+    `convert_to_gguf`'s `input_folder`. The same condition
+    `_gguf_writes_16bit_checkpoint` uses to decide no merge is written.
+
+    It matters only where the input folder is also written to, which is the
+    unwritable-CWD fallback: the intermediate GGUF then lands beside the
+    reused checkpoint rather than beside the requested output, and those two
+    can be on different filesystems.
+    """
+    if isinstance(model, (PeftModel, PeftModelForCausalLM)):
+        return save_directory
+    name_or_path = getattr(getattr(model, "config", None), "_name_or_path", None)
+    try:
+        if name_or_path and os.path.isdir(str(name_or_path)):
+            return str(name_or_path)
+    except Exception:
+        pass
+    return save_directory
+
+
+def _merge_reclamation_is_possible(save_directory):
+    """Will `_free_merge_if_disk_is_tight` have a merge to reclaim?
+
+    It never touches a file that was in `save_directory` before the export
+    started, because that file is the caller's, not this export's. A directory
+    already holding a checkpoint under the names a merge writes therefore
+    yields nothing, and sizing that export as though the merge would go would
+    pass one that really does peak at all three artefacts.
+
+    A directory that does not exist yet is entirely this export's own, so
+    True. One that cannot be listed is False, which is what the reclamation
+    itself does with unreadable provenance.
+    """
+    try:
+        names = os.listdir(save_directory)
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+    try:
+        return not _merge_weight_files(save_directory, names)
+    except Exception:
+        return False
+
+
+def _hub_cache_directory():
+    """Where `_prewarm_base_model_hub_cache` downloads the base model.
+
+    Resolved from the live environment exactly as the pre-warm does, and not
+    from huggingface_hub's frozen constants, so a runtime cache redirect is
+    followed here too. Falls back to the constant, then to None, and None
+    leaves every caller charging the cache where it charged it before.
+    """
+    try:
+        from unsloth_zoo.hf_cache import _active_caches
+        cache = _active_caches()[1]
+        if cache is not None:
+            return str(cache)
+    except Exception:
+        pass
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        return str(HF_HUB_CACHE) or None
+    except Exception:
+        return None
+
+
+def _gguf_source_dtype(model):
+    """The initial-conversion dtype `save_to_gguf` will derive from the model.
+
+    `estimate_gguf_export_bytes` omits a requested output that EQUALS the
+    initial conversion, because that file is already on disk and gets no
+    quantize pass. So the preflight has to name the same dtype the export
+    will: told "f16" for a bf16 model asked for `["f16", "q4_k_m"]`, it charges
+    the f16 file as the intermediate and nothing else, while `save_to_gguf`
+    writes a bf16 intermediate AND a separate f16 output. That is one whole
+    checkpoint unaccounted for (15.3GB on Qwen3-8B).
+
+    Mirrors `save_to_gguf` step for step: `dtype_from_config`, mapped to the
+    f16 / bf16 names it uses, then the same drop to f16 on hardware with no
+    bf16. Returns "f16" whenever anything cannot be read, which is the same
+    fallback the exporter prints and takes.
+    """
+    try:
+        model_dtype = dtype_from_config(model.config)
+        if type(model_dtype) is str:
+            dtype = "bf16" if model_dtype == "bfloat16" else "f16"
+        elif model_dtype == torch.bfloat16:
+            dtype = "bf16"
+        else:
+            dtype = "f16"
+    except Exception:
+        return "f16"
+    if dtype == "bf16":
+        try:
+            if not torch.cuda.is_bf16_supported():
+                return "f16"
+        except Exception:
+            # `save_to_gguf` calls this unguarded, so a raise here means no
+            # export happens at all and the figure never gets used. "f16" is
+            # the same width either way; only the name has to match.
+            return "f16"
+    return dtype
+
+
+def _preflight_gguf_disk(
+    model,
+    save_directory,
+    quantization_method,
+    first_conversion = None,
+    model_dtype = "f16",
+    has_imatrix = False,
+    needs_merge = True,
+    merge_is_disposable = False,
+):
+    """Refuse a GGUF export that cannot fit, before it writes a single byte.
+
+    Returns `(directory, prewarm_ok)`. `directory` differs from the input
+    only when a Kaggle kernel's tiny working directory was swapped for the
+    large /tmp overlay (and then it says so, once). `prewarm_ok` is False when
+    the export fits only if the Hugging Face cache is not pre-warmed with the
+    base model first.
+
+    A GGUF export peaks at more than "the model, twice". It caches the
+    full-precision base, writes the 16-bit HF merge, then an intermediate
+    GGUF at the source dtype, then each requested quant, and every earlier
+    artefact is still on disk while the next is written. Gemma4 (26B A4B)
+    Vision, Gemma4 (31B) Vision and Qwen3 32B each trained, ran inference and
+    completed `merged_16bit` before dying partway through a GGUF shard,
+    because the check in front of them had sized the job at two copies.
+
+    Dropping the pre-warm is tried before refusing, because it is a pure
+    optimization for the NEXT export - the merge downloads what it needs
+    either way - and an export that runs is worth more than a cache.
+
+    `merge_is_disposable` says the merge is this export's own throwaway, so
+    `_free_merge_if_disk_is_tight` may delete it once the intermediate GGUF
+    exists. Then the three artefacts never coexist and the peak is the larger
+    of the two phases, not their sum. Defaults off: charging the aggregate is
+    what every caller got before this argument existed.
+
+    Never blocks on a guess: an unmeasurable model or an unmeasurable disk
+    returns the directory untouched. Set UNSLOTH_DISK_PREFLIGHT=0 to disable.
+    """
+    if os.environ.get("UNSLOTH_DISK_PREFLIGHT", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return save_directory, True
+
+    try:
+        methods = _normalize_quantization_methods(quantization_method)
+        if first_conversion is None or not isinstance(first_conversion, str):
+            first_conversion = _choose_first_conversion(
+                methods, model_dtype, has_imatrix = has_imatrix
+            )
+        # `save_to_gguf` drops a bf16 initial conversion to f16 on hardware
+        # with no bf16, AFTER it has resolved one, so the drop has to be
+        # applied after both branches above and not only inside the resolver.
+        # `_gguf_source_dtype` covers the dtype this is TOLD; it cannot cover
+        # a `first_conversion` the caller passed, nor the single direct-convert
+        # method `_choose_first_conversion` returns unchanged.
+        #
+        # It is the requested-output rule that makes this cost a checkpoint:
+        # the estimate omits an output EQUAL to the initial conversion, so
+        # `["bf16"]` at first_conversion "bf16" is priced as one 16-bit file,
+        # while a T4 writes an f16 intermediate AND a separate bf16 output.
+        # 15.3GB unaccounted for on Qwen3-8B, the same figure and the same
+        # mechanism as the dtype case.
+        if first_conversion == "bf16":
+            try:
+                if not torch.cuda.is_bf16_supported():
+                    first_conversion = "f16"
+            except Exception:
+                # `save_to_gguf` asks unguarded, so a raise here means no
+                # export runs and this figure is never used. f16 is the wider
+                # of the two readings, and never the narrower.
+                first_conversion = "f16"
+        need = estimate_gguf_export_bytes(
+            model = model,
+            quantization_methods = methods,
+            first_conversion = first_conversion,
+            needs_merge = needs_merge,
+        )
+        # The pre-warm only happens on the merge path, and only when it has
+        # not already been switched off. Kaggle and Colab return before it
+        # ever runs (`_prewarm_base_model_hub_cache`), so pricing a cache copy
+        # there would send an export that fits in /kaggle/working to /tmp,
+        # which is not kept as notebook output.
+        prewarm_possible = (
+            needs_merge
+            and not IS_KAGGLE_ENVIRONMENT
+            and not IS_COLAB_ENVIRONMENT
+            and os.environ.get("UNSLOTH_PREWARM_HUB_CACHE", "1").strip().lower()
+            not in ("0", "false", "no", "off")
+        )
+        need_with_cache = (
+            estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = methods,
+                first_conversion = first_conversion,
+                needs_merge = needs_merge,
+                base_cache_copy = True,
+            )
+            if prewarm_possible
+            else need
+        )
+        # The estimate prices the checkpoint at two bytes per parameter. The
+        # non-PEFT fallback writes it at the model's own dtype, so an fp32
+        # model needs the difference on top. Zero for every 16-bit model.
+        if need > 0 and needs_merge:
+            extra = _fallback_checkpoint_extra_bytes(model)
+            need += extra
+            need_with_cache += extra
+        # The same estimate without the checkpoint: what lands in the `_gguf`
+        # sibling directory, which is the intermediate conversion plus every
+        # quant. Only used when that sibling turns out to be on a different,
+        # smaller filesystem than `save_directory`. Its own try, so an
+        # estimator that cannot answer this leaves the main guard standing
+        # rather than turning the whole preflight off.
+        try:
+            need_sibling = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = methods,
+                first_conversion = first_conversion,
+                needs_merge = False,
+            )
+        except Exception:
+            need_sibling = 0
+        # The first of the two phases a disposable merge really peaks at: the
+        # merge and the intermediate GGUF on disk together, before any quant
+        # is written. `quantization_methods = ()` still prices the
+        # intermediate, which is what the conversion has to write before it
+        # can be read. Its own try for the same reason as the sibling: an
+        # estimator that cannot answer leaves the aggregate standing.
+        try:
+            need_merge_phase = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = (),
+                first_conversion = first_conversion,
+                needs_merge = needs_merge,
+            ) + (extra if need > 0 and needs_merge else 0)
+        except Exception:
+            need_merge_phase = 0
+        # Reclamation only helps when a quantize pass actually follows it, and
+        # `save_to_gguf` skips a method equal to the initial conversion because
+        # that file is already on disk. Same rule, same list.
+        has_quantize_pass = bool([m for m in dict.fromkeys(methods) if m != first_conversion])
+        # The intermediate conversion on its own, for the filesystem it is
+        # written to before the move. Same shape of `try` as the two above.
+        try:
+            need_conversion = estimate_gguf_export_bytes(
+                model = model,
+                quantization_methods = (),
+                first_conversion = first_conversion,
+                needs_merge = False,
+            )
+        except Exception:
+            need_conversion = 0
+    except Exception:
+        # Sizing is best effort. A failure here must not stop an export that
+        # would otherwise have worked.
+        return save_directory, True
+    if need <= 0:
+        return save_directory, True
+
+    # The redirect has to be asked for the same figure the refusal below reads.
+    # `need_with_cache` is the aggregate, and a disposable merge is reclaimed
+    # before the quants are written, so an export whose phased peak fits in
+    # /kaggle/working was relocated to a /tmp Kaggle does not keep as notebook
+    # output. Same predicates as the branch that lowers `need_here`, read
+    # against the directory as it stands BEFORE any move, and it can only ever
+    # lower the ask: nothing that used to stay put is relocated now.
+    phased_need = 0
+    if (
+        merge_is_disposable
+        and needs_merge
+        and has_quantize_pass
+        and need_merge_phase > 0
+        and need_sibling > 0
+        and not _on_separate_filesystems(save_directory, _gguf_output_directory(save_directory))
+    ):
+        redirect_peak = max(need_merge_phase, need_sibling)
+        if redirect_peak < need:
+            phased_need = redirect_peak + max(0, need_with_cache - need)
+
+    redirect_need = need_with_cache
+    if phased_need > 0 and _merge_reclamation_is_possible(save_directory):
+        redirect_need = phased_need
+
+    new_directory, message = kaggle_tmp_redirect(
+        save_directory,
+        need_bytes = redirect_need,
+        what = "GGUF export",
+    )
+    # Asked the aggregate because THIS directory already holds weights the
+    # reclamation may not touch, and declined. The relocation writes the merge
+    # into a directory of the export's own, where it can be reclaimed, so the
+    # move is worth a second ask at the phased peak: 63GB merge, 60GB
+    # intermediate, 18GB Q4_K_M asks 141GB, a 130GB /tmp declines it, and the
+    # 123GB peak it would really have peaked at there fits.
+    #
+    # Gated on this directory already being too small for the aggregate the
+    # refusal below will read, which is what makes the lower ask safe. A lower
+    # ask can otherwise CANCEL a move: /kaggle/working with room for the peak
+    # but not the aggregate keeps an export that has no reclamation here, and
+    # then the refusal reads the aggregate anyway.
+    if message is None and 0 < phased_need < redirect_need:
+        free_before_move = free_bytes(save_directory)
+        if free_before_move is not None and free_before_move < need:
+            new_directory, message = kaggle_tmp_redirect(
+                save_directory,
+                need_bytes = phased_need,
+                what = "GGUF export",
+            )
+    if message is not None:
+        print(message)
+        save_directory = new_directory
+
+    free = free_bytes(save_directory)
+
+    # The quants and the intermediate GGUF are written to a SIBLING of
+    # `save_directory`, so they live on the parent's filesystem. That is the
+    # same disk `free` just measured unless `save_directory` is itself a mount
+    # point or a symlink onto another one. When it is, each filesystem is
+    # charged only for what is written to it: the checkpoint here, the
+    # conversion and the quants there. Charging the aggregate to either one
+    # refuses a split export whose every artefact has room.
+    #
+    # One predicate, computed once, so the two halves cannot disagree about
+    # whether the storage is split, and an unmeasurable path leaves every
+    # decision below exactly as it was.
+    gguf_directory = _gguf_output_directory(save_directory)
+    gguf_free = free_bytes(gguf_directory)
+    separate_storage = (
+        free is not None
+        and gguf_free is not None
+        and _on_separate_filesystems(save_directory, gguf_directory)
+    )
+    # Resolved before the split is priced, because where the conversion lands
+    # decides which filesystem it is charged to.
+    conversion_directory = _gguf_conversion_directory(
+        _gguf_model_input_directory(model, save_directory)
+    )
+
+    # Cleared where the base-model cache turns out to share a filesystem that
+    # has room for what the export writes there but not for a cached base as
+    # well: dropping the optional half beats failing the export. The message
+    # travels with the flag because more than one filesystem can now set it,
+    # and each has to name the one it measured.
+    sibling_prewarm_ok = True
+    prewarm_drop_message = None
+    # Resolved once, above the split, because the cache is not necessarily on
+    # either of the two filesystems the split is about: the conversion's own
+    # filesystem below asks the same question of the same path. Zero whenever
+    # the pre-warm cannot run, which is what leaves every branch below inert.
+    cache_extra = max(0, need_with_cache - need)
+    cache_directory = _hub_cache_directory() if cache_extra > 0 else None
+    # The cache copy lands wherever the cache is, which is not necessarily the
+    # filesystem holding `save_directory` - `HF_HOME` on a data volume is the
+    # ordinary layout on a machine with more than one disk. Charging it here
+    # anyway drops the pre-warm on a disk that had room for everything written
+    # to it, and the next export downloads the whole base again, which is the
+    # exact re-download the pre-warm exists to stop. It only ever LOWERS the
+    # figure, and only the pre-warm decision reads it, so no export that fit
+    # before is refused now. Unresolvable leaves it charged here, where it was
+    # charged before. The split branch asks the same of the sibling below.
+    cache_here = cache_extra
+    if (
+        cache_extra > 0
+        and cache_directory is not None
+        and _on_separate_filesystems(cache_directory, save_directory)
+    ):
+        cache_here = 0
+    need_here = need
+    need_here_with_cache = need + cache_here
+    if separate_storage:
+        # `need_sibling` is the same estimate without the checkpoint, so the
+        # difference is the checkpoint and nothing else. An estimator that
+        # could not size the sibling leaves it 0, and then this is `need`:
+        # the previous behaviour, not a relaxed one.
+        #
+        # Nothing else, though, includes the slack: both terms carry the
+        # estimator's flat `DISK_SLACK_BYTES` and the subtraction cancels it,
+        # leaving two bytes per parameter exactly. `merge_and_overwrite_lora`
+        # refuses that merge unless `free * 0.95` covers it, so the same
+        # reserve `_preflight_merge_disk` already applies has to be applied
+        # here too, or this passes an export the merge kills seconds later.
+        # The aggregate branch needs no such thing: it charges the quants as
+        # well, which is already more than the checkpoint plus its reserve.
+        checkpoint_here = max(0, need - need_sibling)
+        need_here = checkpoint_here
+        # The cache copy is not part of the merge and is not what the zoo
+        # guard measures, so it rides on top of the checkpoint rather than
+        # being reserved itself.
+        #
+        # It also does not necessarily land HERE. `save_directory` being a
+        # mount onto another disk is the whole premise of this branch, and
+        # then `~/.cache` and the lexical `_gguf` sibling both stay on the
+        # parent disk. Charging the checkpoint's filesystem for bytes written
+        # to the sibling's drops a pre-warm that had room and, worse, lets the
+        # sibling check accept `need_sibling` alone on a filesystem the base
+        # model is about to be downloaded onto. `cache_here` above has already
+        # answered the first half; the sibling is the half only this branch has.
+        cache_sibling = 0
+        if (
+            cache_extra > 0
+            and cache_here == 0
+            and _shares_filesystem(cache_directory, gguf_directory)
+        ):
+            cache_sibling = cache_extra
+        need_here_with_cache = checkpoint_here + cache_here
+        writes_a_lora_merge = isinstance(model, (PeftModel, PeftModelForCausalLM))
+        if writes_a_lora_merge and needs_merge and need_sibling > 0 and checkpoint_here > 0:
+            # Four conditions, each removing a way to charge for a guard that
+            # will not run. Only a PEFT model reaches `merge_and_overwrite_lora`
+            # and its `free * 0.95`: a non-PEFT model with no reusable local
+            # checkpoint still needs `needs_merge`, because the GGUF path has
+            # to write one, but it is written by a bare `self.save_pretrained`
+            # that reserves nothing, so charging the reserve there refuses a
+            # filesystem with room for the checkpoint the writer would have
+            # accepted. `needs_merge = False` writes no merge at all. A sibling
+            # the estimator could not size leaves `checkpoint_here` equal to
+            # the aggregate, which is a fallback figure and not a checkpoint
+            # to reserve against. And `min(need, ...)` keeps the promise the
+            # split made when it was introduced: it may cancel a redirect,
+            # never cause a refusal the aggregate would have allowed.
+            reserved = min(need, math.ceil(checkpoint_here / _MERGE_FREE_SPACE_RESERVE))
+            need_here = max(need_here, reserved)
+            # The cache copy is written BEFORE the merge and is still there when
+            # the guard runs, so it comes off the free space the guard measures.
+            # It rides on top of the reserved figure rather than beside it: a
+            # 16GB checkpoint with a 14GB cache on 30.5GB free passes a `max`
+            # asking 30GB, and then the merge sees 16.5GB and refuses 16GB under
+            # its own 5%. Added instead, this band drops the pre-warm, which is
+            # the optional half, rather than failing the export.
+            need_here_with_cache = max(need_here_with_cache, reserved + cache_here)
+        # The intermediate conversion is written to the working directory and
+        # only moved to the sibling afterwards, so when that working directory
+        # is on THIS filesystem the checkpoint and the conversion are on it
+        # together. Charging each of them alone lets a 60GB checkpoint and a
+        # 60GB conversion both pass on 100GB, and then it fills. Only the
+        # split branch needs this: on one filesystem the aggregate already
+        # counts them both, and a conversion sharing the sibling's disk is
+        # counted in `need_sibling`.
+        #
+        # `max` and not `+`, because the two figures are two PHASES and not two
+        # artefacts. The merge runs first and its guard wants the checkpoint
+        # over 0.95 with nothing else written yet; the conversion is written
+        # after, against the unreserved checkpoint. Summing them charges the
+        # reserve on top of a conversion that does not exist while the guard
+        # runs: a 60GB merge and a 60GB conversion on 122GB free clear both
+        # phases (63.2GB, then 120GB) and the sum asks 123.2GB and refuses.
+        if (
+            need_conversion > 0
+            and conversion_directory is not None
+            and _shares_filesystem(conversion_directory, save_directory)
+        ):
+            need_here = max(need_here, checkpoint_here + need_conversion)
+            need_here_with_cache = max(
+                need_here_with_cache, checkpoint_here + need_conversion + cache_here
+            )
+        # Not gated on the sibling being the TIGHTER of the two any more.
+        # Now that the checkpoint is charged only its own portion, a sibling
+        # with more free space than `save_directory` and still less than
+        # `need_sibling` has to be refused here, because the aggregate
+        # comparison that used to catch it no longer exists.
+        if gguf_free < need_sibling:
+            raise RuntimeError(
+                f"Unsloth: Not enough disk space to convert to GGUF.\n"
+                f"The GGUF files are written to `{gguf_directory}`, which is on a different "
+                f"filesystem from `{save_directory}` and has {gguf_free / 1024**3:.1f}GB free; "
+                f"the intermediate `{first_conversion}` conversion and the quants need about "
+                f"{need_sibling / 1024**3:.1f}GB there.\n"
+                f"Options: free space on that filesystem, export fewer quantization methods, or "
+                f"point `save_directory` at a path whose parent directory has the room.\n"
+                f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+            )
+        if cache_sibling > 0 and gguf_free < need_sibling + cache_sibling:
+            sibling_prewarm_ok = False
+            prewarm_drop_message = (
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
+                f"cache is on the same filesystem as `{gguf_directory}`, which has "
+                f"{gguf_free / 1024**3:.1f}GB free: enough for the GGUF files "
+                f"(~{need_sibling / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"model as well. The next export will download the base again."
+            )
+    elif (
+        merge_is_disposable
+        and needs_merge
+        and has_quantize_pass
+        and need_merge_phase > 0
+        and need_sibling > 0
+        and _merge_reclamation_is_possible(save_directory)
+    ):
+        # `_free_merge_if_disk_is_tight` deletes this export's own merge once
+        # the intermediate GGUF exists and before the first quantize pass, so
+        # the three artefacts never coexist: the peak is the larger of "merge
+        # plus intermediate" and "intermediate plus every quant", not their
+        # sum. Nemotron-3-Nano-30B-A3B is the case in front of it - 63GB merge,
+        # 60GB BF16 intermediate, 18GB Q4_K_M - which peaks at 123GB on a 132GB
+        # disk and which the aggregate 141GB refuses.
+        #
+        # Only in the single-filesystem branch, because the reclamation itself
+        # declines when the merge and the GGUF output are on different devices:
+        # freeing bytes on one filesystem does nothing for a quantize pass
+        # writing to another.
+        peak = max(need_merge_phase, need_sibling)
+        if peak < need:
+            # Can only ever lower the figure, so no input that head allowed is
+            # refused here. The cache copy is not what gets reclaimed, so it
+            # rides on top of the peak exactly as it rode on top of the sum.
+            need_here = peak
+            need_here_with_cache = peak + cache_here
+
+    # The intermediate conversion is written to the process CWD, not into
+    # `save_directory` and not into the `_gguf` sibling, and only afterwards
+    # moved. When that CWD is on its own filesystem, nothing above has measured
+    # the disk the largest staging artefact actually lands on: on Kaggle it is
+    # the 20GB working directory the redirect just moved the export away from.
+    if (
+        need_conversion > 0
+        and conversion_directory is not None
+        and _on_separate_filesystems(conversion_directory, gguf_directory)
+    ):
+        conversion_free = free_bytes(conversion_directory)
+        # The pre-warm runs BEFORE the merge and leaves the base model in the
+        # Hugging Face cache for the rest of the export, so when the cache
+        # shares this filesystem the cached base and the intermediate are on
+        # it together. Nothing above has charged that: `cache_here` and
+        # `cache_sibling` only ever place the cache on the checkpoint's
+        # filesystem or the sibling's, and this is neither.
+        #
+        # The pre-warmer's own gate does not cover it either. It asks for two
+        # base copies free on the cache filesystem, and an `f32` conversion is
+        # two base copies on its own: 38.1GB free clears the pre-warm's 30.5GB
+        # threshold and this 30.5GB conversion check, then holds a 15.3GB
+        # cached base while writing 30.5GB, and runs out 7.6GB short.
+        cache_with_conversion = (
+            cache_extra
+            if cache_directory is not None
+            and _shares_filesystem(cache_directory, conversion_directory)
+            else 0
+        )
+        if conversion_free is not None and conversion_free < need_conversion:
+            raise RuntimeError(
+                f"Unsloth: Not enough disk space to convert to GGUF.\n"
+                f"The intermediate `{first_conversion}` conversion is written to the current "
+                f"working directory `{conversion_directory}` before it is moved to "
+                f"`{gguf_directory}`, and that filesystem has "
+                f"{conversion_free / 1024**3:.1f}GB free; the conversion needs about "
+                f"{need_conversion / 1024**3:.1f}GB there.\n"
+                f"Options: free space on that filesystem, or `os.chdir(...)` to a directory "
+                f"on the same filesystem as the export.\n"
+                f"`.push_to_hub_gguf(...)` does not avoid this one: it exports through a "
+                f"temporary directory but never changes the working directory, so the "
+                f"conversion is written here either way.\n"
+                f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+            )
+        if (
+            conversion_free is not None
+            and cache_with_conversion > 0
+            and conversion_free < need_conversion + cache_with_conversion
+        ):
+            # Only reached once the conversion alone has cleared the raise
+            # above, so this can never turn a refusal into a pass: it drops
+            # the optional half of an export that otherwise fits.
+            sibling_prewarm_ok = False
+            prewarm_drop_message = (
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - the Hugging Face "
+                f"cache is on the same filesystem as the working directory "
+                f"`{conversion_directory}`, which has "
+                f"{conversion_free / 1024**3:.1f}GB free: enough for the intermediate "
+                f"`{first_conversion}` conversion (~{need_conversion / 1024**3:.1f}GB) but "
+                f"not for a cached copy of the base model as well. The next export will "
+                f"download the base again."
+            )
+
+    if free is None or free >= need_here_with_cache:
+        if not sibling_prewarm_ok and prewarm_possible and prewarm_drop_message:
+            print(prewarm_drop_message)
+        return save_directory, sibling_prewarm_ok
+
+    if free >= need_here:
+        if prewarm_possible:
+            print(
+                f"Unsloth: Skipping the Hugging Face cache pre-warm - "
+                f"{free / 1024**3:.1f}GB free is enough for this GGUF export "
+                f"(~{need_here / 1024**3:.1f}GB) but not for a cached copy of the base "
+                f"model as well. The next export will download the base again."
+            )
+        return save_directory, False
+
+    raise RuntimeError(
+        f"Unsloth: Not enough disk space to convert to GGUF.\n"
+        f"The export needs about {need_here / 1024**3:.1f}GB on the filesystem holding "
+        f"`{save_directory}`, which has {free / 1024**3:.1f}GB free.\n"
+        + (
+            f"Only the 16-bit merge is charged here; the intermediate "
+            f"`{first_conversion}` conversion and the quants go to a sibling directory "
+            f"on another filesystem.\n"
+            if separate_storage
+            else f"It writes a 16-bit merge, then a `{first_conversion}` GGUF, then "
+            f"{', '.join(_normalize_quantization_methods(quantization_method)) or 'no'} "
+            f"quants, and the merge and the intermediate are both still on disk while "
+            f"the quants are written.\n"
+        )
+        + f"Options: free space, export fewer quantization methods, point "
+        f"`save_directory` at a bigger filesystem, or push straight to Hugging Face "
+        f"with `.push_to_hub_gguf(...)`.\n"
+        f"To skip this check set the environment variable UNSLOTH_DISK_PREFLIGHT=0."
+    )
+
+
 def _offloaded_parameter_hint(model):
     """Sentence to append when a save failed on offloaded (meta) parameters.
 
@@ -3141,6 +4640,30 @@ def unsloth_save_pretrained_gguf(
     is_processor = is_vlm and isinstance(tokenizer, ProcessorMixin)
 
     is_gpt_oss = _is_gpt_oss(self)
+
+    # Step 1b: Will this fit? Ask before the merge, not after. Runs here rather
+    # than lower down because `arguments` below snapshots locals(), so a
+    # redirected `save_directory` has to be in place first. gpt-oss takes the
+    # mxfp4 route instead of the merge/convert/quantize one this sizes.
+    _gguf_prewarm_ok = True
+    if not is_gpt_oss:
+        save_directory, _gguf_prewarm_ok = _preflight_gguf_disk(
+            model = self,
+            save_directory = save_directory,
+            quantization_method = quantization_method,
+            first_conversion = first_conversion,
+            # Resolved here rather than left at the default, because the
+            # default says "f16" and the export asks the config.
+            model_dtype = _gguf_source_dtype(self),
+            has_imatrix = _imatrix_is_enabled(imatrix_file),
+            needs_merge = _gguf_writes_16bit_checkpoint(self),
+            # The same flag `save_to_gguf` reclaims on. Where a non-PEFT model
+            # reuses its own checkpoint the flag is cleared below, and there
+            # `_gguf_writes_16bit_checkpoint` is already False on the same
+            # condition, so the two cannot disagree.
+            merge_is_disposable = merge_is_disposable,
+        )
+
     # Step 2: Prepare arguments for model saving
     arguments = dict(locals())
     arguments["model"] = self
@@ -3174,10 +4697,13 @@ def unsloth_save_pretrained_gguf(
     del arguments["base_model_name"]
     del arguments["is_processor"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
+    del arguments["_gguf_prewarm_ok"]  # a local decision, not a save_pretrained kwarg
     del arguments["merge_is_disposable"]  # decides reclamation, not how the merge is written
 
     # Preserve the requested output before reusing a non-PEFT checkpoint as input.
-    gguf_directory = f"{save_directory}_gguf"
+    # Same definition the preflight sized, so the disk it measured is the one
+    # these files land on.
+    gguf_directory = _gguf_output_directory(save_directory)
 
     # Step 3: Fix tokenizer BOS token if needed
     if is_processor:
@@ -3217,7 +4743,8 @@ def unsloth_save_pretrained_gguf(
         print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
             # Call unsloth_generic_save directly (it's in the same file)
-            unsloth_generic_save(**arguments)
+            with _hub_cache_prewarm_disabled(not _gguf_prewarm_ok):
+                unsloth_generic_save(**arguments)
 
         except Exception as e:
             raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
@@ -4935,6 +6462,24 @@ def unsloth_generic_save_pretrained_merged(
             "Unsloth: You're not saving a tokenizer as well?\n"
             "You can do it separately via `tokenizer.save_pretrained(...)`"
         )
+
+    # Kaggle's working directory is ~20GB while the overlay at /tmp on the same
+    # kernel is measured in terabytes. Relative paths under /kaggle/working that
+    # do not fit move there; absolute paths, hub pushes and every non-Kaggle
+    # machine are untouched.
+    save_directory = _preflight_merge_disk(
+        self,
+        save_directory,
+        save_method,
+        push_to_hub = push_to_hub,
+        state_dict = state_dict,
+        # `unsloth_generic_save` writes a supplied dictionary rather than the
+        # resident model when there is no adapter to merge.
+        forwards_state_dict = True,
+        # And it is the writer that runs `merge_and_overwrite_lora` when there
+        # IS one, which no other entrypoint here does.
+        writer_runs_merge_guard = True,
+    )
 
     # FP8 / FP4 compressed-tensors export (llm-compressor) -> handled separately.
     _compressed = _normalize_compressed_method(save_method)

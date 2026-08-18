@@ -207,3 +207,74 @@ def reset_cache_case_resolution_state() -> None:
     _CACHE_CASE_RESOLUTION_MEMO.clear()
     for key in _CACHE_CASE_RESOLUTION_STATS:
         _CACHE_CASE_RESOLUTION_STATS[key] = 0
+
+
+def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
+    import subprocess
+    if not _IS_WSL:
+        return False
+    try:
+        windows_path = subprocess.run(
+            ["wslpath", "-w", str(path)],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            check = True,
+            timeout = 10,
+        ).stdout.strip()
+        if not windows_path:
+            return False
+        argument = f"/select,{windows_path}" if is_file else windows_path
+        subprocess.Popen(["explorer.exe", argument])
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
+    """Open the OS file manager with *path* selected (best effort per platform).
+
+    Raises ``FileNotFoundError`` when the target is gone: the Linux branch falls
+    back to the parent, which for a sandbox is the root holding every other
+    chat's.
+
+    ``expect_dir`` refuses anything that is not a real directory, symlinks
+    included, since both would take the file branch and name that same parent.
+    One ``lstat`` answers type and link-ness together, leaving no window between
+    the checks (``is_dir()`` follows links; ``follow_symlinks = False`` is 3.13+
+    only, and this runs on 3.10). Off by default: the cached-model reveal points
+    at a file, and a symlinked one, as an HF cache snapshot is a link farm.
+    """
+    import stat as stat_module
+    import subprocess
+
+    if expect_dir:
+        try:
+            entry = os.lstat(path)  # No-follow, and the only stat here.
+        except OSError as exc:
+            raise FileNotFoundError(str(path)) from exc
+        if not stat_module.S_ISDIR(entry.st_mode):
+            raise FileNotFoundError(str(path))
+        is_dir, is_file = True, False
+    else:
+        if not path.exists():
+            raise FileNotFoundError(str(path))
+        # Decided ONCE and then only read; each branch used to re-stat.
+        is_dir = path.is_dir()
+        is_file = not is_dir and path.is_file()
+        if not is_dir and not is_file:
+            raise FileNotFoundError(str(path))
+
+    target = str(path)
+    if sys.platform == "darwin":
+        cmd = ["open", "-R", target] if is_file else ["open", target]
+        subprocess.Popen(cmd)
+    elif os.name == "nt":
+        if is_file:
+            subprocess.Popen(["explorer", f"/select,{target}"])
+        else:
+            os.startfile(target)  # noqa: S606 - local user's own file manager
+    elif not _wsl_reveal_in_explorer(path, is_file):
+        # No cross-desktop "select file" standard on Linux; open the directory.
+        subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
